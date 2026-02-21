@@ -1,0 +1,35 @@
+# STT Service - Speech-to-Text with Faster-Whisper
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-venv python3-pip \
+    git curl ffmpeg libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+RUN python -m pip install --upgrade pip
+
+WORKDIR /app
+
+# Install STT dependencies
+RUN pip install --no-cache-dir \
+    faster-whisper>=1.0.0 \
+    torch>=2.1.0 \
+    torchaudio>=2.1.0 \
+    fastapi>=0.104.0 \
+    uvicorn[standard]>=0.24.0 \
+    numpy>=1.24.0 \
+    soundfile>=0.12.0
+
+# Copy STT service code
+COPY src/stt /app/src/stt
+COPY docker/services/stt_service.py /app/service.py
+
+RUN useradd -m -u 1000 kza && chown -R kza:kza /app
+USER kza
+
+EXPOSE 8001
+CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8001"]

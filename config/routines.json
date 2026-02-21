@@ -1,0 +1,301 @@
+{
+  "routines": [
+    {
+      "routine_id": "voice_welcome_gabriel",
+      "name": "Bienvenida Gabriel",
+      "description": "Música y clima personalizado cuando llega Gabriel",
+      "triggers": [
+        {
+          "type": "presence_enter",
+          "config": {
+            "user_id": "gabriel",
+            "zone": "home"
+          }
+        }
+      ],
+      "conditions": [],
+      "actions": [
+        {
+          "type": "ha_service",
+          "entity_id": "climate.home",
+          "domain": "climate",
+          "service": "set_temperature",
+          "data": {"temperature": 22},
+          "description": "Temperatura preferida de Gabriel"
+        },
+        {
+          "type": "tts_speak",
+          "text": "Hola Gabriel, bienvenido a casa",
+          "zone": "living"
+        },
+        {
+          "type": "spotify_play",
+          "playlist": "gabriel_favorites",
+          "zone": "living"
+        }
+      ],
+      "enabled": true,
+      "cooldown_seconds": 300,
+      "created_at": "2026-02-05T10:00:00",
+      "created_by": "voice",
+      "tags": ["presencia", "personal"],
+      "owner_user_id": "gabriel",
+      "allowed_users": ["gabriel"],
+      "guest_allowed": false
+    },
+    {
+      "routine_id": "voice_welcome_generic",
+      "name": "Bienvenida a casa",
+      "description": "Enciende luces al llegar cualquier persona",
+      "triggers": [
+        {
+          "type": "presence_enter",
+          "config": {
+            "zone": "home"
+          }
+        }
+      ],
+      "conditions": [
+        {
+          "type": "time_range",
+          "config": {
+            "start": "18:00",
+            "end": "23:00"
+          }
+        }
+      ],
+      "actions": [
+        {
+          "type": "ha_service",
+          "entity_id": "light.living_room",
+          "domain": "light",
+          "service": "turn_on",
+          "data": {
+            "brightness_pct": 80
+          },
+          "description": "Encender luz del living"
+        },
+        {
+          "type": "tts_speak",
+          "text": "Bienvenido a casa",
+          "zone": "living"
+        }
+      ],
+      "enabled": true,
+      "cooldown_seconds": 300,
+      "created_at": "2026-02-05T10:00:00",
+      "created_by": "dashboard",
+      "tags": ["presencia", "automatica"],
+      "allowed_users": [],
+      "guest_allowed": true
+    },
+    {
+      "routine_id": "voice_guest_detected",
+      "name": "Invitado detectado",
+      "description": "Cuando se detecta un dispositivo BLE desconocido",
+      "triggers": [
+        {
+          "type": "presence_guest",
+          "config": {}
+        }
+      ],
+      "conditions": [],
+      "actions": [
+        {
+          "type": "tts_speak",
+          "text": "Se detectó un visitante",
+          "zone": "living"
+        },
+        {
+          "type": "notify",
+          "message": "Dispositivo desconocido detectado en casa",
+          "title": "KZA Alerta"
+        }
+      ],
+      "enabled": true,
+      "cooldown_seconds": 600,
+      "created_at": "2026-02-05T10:00:00",
+      "created_by": "dashboard",
+      "tags": ["seguridad", "invitados"],
+      "allowed_users": [],
+      "guest_allowed": false
+    },
+    {
+      "routine_id": "voice_morning",
+      "name": "Buenos días",
+      "description": "Rutina matutina a las 7am",
+      "triggers": [
+        {
+          "type": "time",
+          "config": {
+            "at": "07:00:00"
+          }
+        }
+      ],
+      "conditions": [
+        {
+          "type": "weekday",
+          "config": {
+            "days": [0, 1, 2, 3, 4]
+          }
+        },
+        {
+          "type": "presence",
+          "config": {
+            "is_home": true
+          }
+        }
+      ],
+      "actions": [
+        {
+          "type": "ha_service",
+          "entity_id": "cover.bedroom",
+          "domain": "cover",
+          "service": "open_cover",
+          "data": {},
+          "description": "Abrir persianas dormitorio"
+        },
+        {
+          "type": "delay",
+          "seconds": 5
+        },
+        {
+          "type": "ha_service",
+          "entity_id": "light.bedroom",
+          "domain": "light",
+          "service": "turn_on",
+          "data": {
+            "brightness_pct": 50,
+            "kelvin": 4000
+          },
+          "description": "Encender luz suave"
+        },
+        {
+          "type": "tts_speak",
+          "text": "Buenos días. Son las 7 de la mañana.",
+          "zone": "bedroom"
+        }
+      ],
+      "enabled": true,
+      "cooldown_seconds": 60,
+      "created_at": "2026-02-05T10:00:00",
+      "created_by": "voice",
+      "tags": ["mañana", "automatica"]
+    },
+    {
+      "routine_id": "voice_goodbye",
+      "name": "Adiós",
+      "description": "Apaga todo al salir de casa",
+      "triggers": [
+        {
+          "type": "presence_away",
+          "config": {}
+        }
+      ],
+      "conditions": [],
+      "actions": [
+        {
+          "type": "ha_service",
+          "entity_id": "light.all",
+          "domain": "light",
+          "service": "turn_off",
+          "data": {},
+          "description": "Apagar todas las luces"
+        },
+        {
+          "type": "ha_service",
+          "entity_id": "climate.home",
+          "domain": "climate",
+          "service": "set_temperature",
+          "data": {
+            "temperature": 18
+          },
+          "description": "Bajar calefacción"
+        },
+        {
+          "type": "spotify_pause",
+          "zone": "all"
+        }
+      ],
+      "enabled": true,
+      "cooldown_seconds": 600,
+      "created_at": "2026-02-05T10:00:00",
+      "created_by": "dashboard",
+      "tags": ["presencia", "ahorro"]
+    },
+    {
+      "routine_id": "voice_movie",
+      "name": "Modo película",
+      "description": "Prepara el ambiente para ver películas",
+      "triggers": [
+        {
+          "type": "voice_command",
+          "config": {}
+        }
+      ],
+      "conditions": [],
+      "actions": [
+        {
+          "type": "ha_service",
+          "entity_id": "light.living_room",
+          "domain": "light",
+          "service": "turn_on",
+          "data": {
+            "brightness_pct": 10,
+            "rgb_color": [255, 147, 41]
+          },
+          "description": "Luz ambiente cálida"
+        },
+        {
+          "type": "ha_service",
+          "entity_id": "cover.living_room",
+          "domain": "cover",
+          "service": "close_cover",
+          "data": {},
+          "description": "Cerrar persianas"
+        },
+        {
+          "type": "spotify_pause"
+        }
+      ],
+      "enabled": true,
+      "cooldown_seconds": 30,
+      "created_at": "2026-02-05T10:00:00",
+      "created_by": "voice",
+      "tags": ["entretenimiento", "manual"]
+    },
+    {
+      "routine_id": "voice_sunset",
+      "name": "Atardecer",
+      "description": "Enciende luces al atardecer",
+      "triggers": [
+        {
+          "type": "sunset",
+          "config": {
+            "offset_minutes": -30
+          }
+        }
+      ],
+      "conditions": [
+        {
+          "type": "presence",
+          "config": {
+            "is_home": true
+          }
+        }
+      ],
+      "actions": [
+        {
+          "type": "ha_scene",
+          "scene_id": "scene.atardecer",
+          "description": "Activar escena atardecer"
+        }
+      ],
+      "enabled": true,
+      "cooldown_seconds": 60,
+      "created_at": "2026-02-05T10:00:00",
+      "created_by": "dashboard",
+      "tags": ["automatica", "iluminacion"]
+    }
+  ]
+}

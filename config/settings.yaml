@@ -1,0 +1,836 @@
+# Home Assistant Voice Control - Configuration
+
+# Home Assistant Connection
+home_assistant:
+  url: "http://192.168.1.100:8123"
+  token: "${HOME_ASSISTANT_TOKEN}"  # Usar variable de entorno
+  timeout: 2.0  # segundos
+
+# Audio Settings
+audio:
+  sample_rate: 16000
+  channels: 1
+  chunk_duration: 0.08  # 80ms chunks para wake word
+  command_duration: 2.0  # segundos para capturar comando
+  silence_threshold: 0.01  # VAD simple
+
+# =============================================================================
+# Alert System Configuration
+# =============================================================================
+alerts:
+  # Habilitar/deshabilitar sistema de alertas
+  enabled: true
+
+  # Configuración general
+  general:
+    cooldown_seconds: 300        # Tiempo mínimo entre alertas idénticas (5 min)
+    max_history: 1000            # Máximo número de alertas en historial
+    voice_notifications: true    # Activar notificaciones de voz para alertas críticas
+
+  # Scheduler - Intervalos para verificaciones periódicas
+  scheduler:
+    enabled: true
+    security_interval_seconds: 60        # Verificar seguridad cada 1 minuto
+    pattern_interval_seconds: 300        # Verificar patrones cada 5 minutos
+    device_interval_seconds: 600         # Verificar dispositivos cada 10 minutos
+
+  # Tipos de alertas habilitadas
+  enabled_types:
+    security: true      # Puertas, movimiento, acceso
+    pattern: true       # Desviaciones de rutina, anomalías
+    device: true        # Estado de dispositivos, batería, conectividad
+    reminder: false     # Recordatorios (futuro)
+    wellness: false     # Bienestar (futuro)
+
+  # Configuración de seguridad
+  security:
+    # Umbrales y contextos por zona
+    zones:
+      entrada:
+        name: "Entrada principal"
+        alert_on_open: true
+        alert_on_motion: true
+      garaje:
+        name: "Garaje"
+        alert_on_open: true
+        alert_on_motion: true
+      cocina:
+        name: "Cocina"
+        alert_on_open: false
+        alert_on_motion: false
+      sala:
+        name: "Sala"
+        alert_on_open: false
+        alert_on_motion: false
+      dormitorio:
+        name: "Dormitorio"
+        alert_on_open: true
+        alert_on_motion: true
+
+  # Configuración de patrones
+  patterns:
+    # Umbrales de desviación para detectar anomalías
+    energy_usage_threshold: 120.0      # % de normal para alertar
+    water_usage_threshold: 150.0       # % de normal
+    temperature_tolerance: 3.0         # Grados C de tolerancia
+    activity_level_threshold: 180.0    # % de normal
+
+    # Monitoreo de rutinas
+    monitor_routines: true
+    routine_tolerance_minutes: 60      # Minutos de tolerancia para rutinas
+
+    # Monitoreo de sueño
+    monitor_sleep: true
+    expected_sleep_hours: 8.0
+    sleep_deviation_threshold: 2.0     # Horas de desviación
+
+  # Configuración de dispositivos
+  devices:
+    # Umbrales de batería por tipo
+    battery_thresholds:
+      sensor_default: 20
+      sensor_door: 15
+      sensor_motion: 20
+      sensor_temperature: 20
+      sensor_humidity: 20
+      remote: 10
+      light: 15
+      switch: 15
+
+    # Umbrales de conectividad
+    offline_alert_enabled: true
+    signal_strength_threshold_db: -85.0
+
+    # Monitoreo de firmware
+    monitor_firmware_updates: true
+
+    # Respuesta de dispositivos
+    max_response_time_ms: 5000.0
+
+  # Mensajes y localizacion
+  messages:
+    language: "es"
+    # Los mensajes específicos se definen en cada módulo de alertas
+    voice_alert_prefix: "Alerta: "
+    voice_critical_prefix: "Alerta crítica: "
+    voice_high_prefix: "Alerta importante: "
+
+# Wake Word
+wake_word:
+  model: "hey_jarvis"  # O personalizado
+  threshold: 0.5
+  inference_framework: "onnx"
+
+# Speech-to-Text (GPU 0)
+stt:
+  model: "distil-whisper/distil-small.en"  # Rápido
+  # model: "openai/whisper-large-v3"  # Mejor calidad
+  device: "cuda:0"
+  compute_type: "float16"
+  language: "es"
+  beam_size: 1  # Más rápido
+  vad_filter: true
+
+# Text-to-Speech (GPU 3)
+tts:
+  engine: "piper"  # "piper" (rápido) o "xtts" (calidad)
+  piper:
+    model: "es_ES-davefx-medium.onnx"
+    sample_rate: 22050
+  xtts:
+    model: "tts_models/multilingual/multi-dataset/xtts_v2"
+    device: "cuda:3"
+    speaker_wav: null  # Path a audio para clonar voz
+
+  # Streaming audio configuration (para reproducción sin cortes)
+  streaming:
+    enabled: true           # Usar streaming en vez de batch
+    buffer_ms: 150          # Buffer circular total (ms) - mayor = más suave
+    prebuffer_ms: 30        # Pre-buffer ULTRA-LOW LATENCY (30ms)
+    block_size: 512         # Tamaño de bloque de audio
+    # Ajustes recomendados:
+    # - Audio se corta: aumentar buffer_ms (200-300) o prebuffer_ms (80)
+    # - Mucha latencia: reducir prebuffer_ms (40-50)
+    # - Sistema lento: aumentar ambos
+
+# Embeddings (GPU 1)
+embeddings:
+  model: "BAAI/bge-small-en-v1.5"  # Rápido
+  # model: "BAAI/bge-m3"  # Mejor calidad, multilingüe
+  device: "cuda:1"
+
+# Router/Clasificador (GPU 2)
+router:
+  enabled: true
+  model: "Qwen/Qwen2.5-7B-Instruct"
+  device: "cuda:2"
+  gpu_memory_utilization: 0.85
+  # OPTIMIZACIÓN: Prefix caching para system prompt
+  # El KV-cache del system prompt se reutiliza entre inferencias
+  # Ahorro estimado: ~40-80ms por consulta
+  enable_prefix_caching: true
+
+# LLM para Razonamiento (CPU - 128GB RAM, 8x16GB, 8 canales)
+reasoner:
+  # ==========================================================================
+  # OPTIMIZADO PARA 8x16GB (128GB, 8 canales, ~358 GB/s)
+  # Con 8 canales tienes ~3.5x más ancho de banda = tokens más rápidos
+  # ==========================================================================
+
+  # Modelo principal - Q4_K_M RECOMENDADO para 8x16GB
+  # ~40GB RAM, deja ~64GB para contexto y servicios
+  model_path: "./models/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+
+  # Alternativas:
+  # model_path: "./models/Qwen2.5-72B-Instruct-Q4_K_M.gguf"   # Mejor en español
+  # model_path: "./models/Qwen2.5-32B-Instruct-Q8_0.gguf"     # Máxima calidad, ~34GB
+  # model_path: "./models/Llama-3.3-70B-Instruct-Q6_K.gguf"   # Balance (~55GB)
+
+  # LoRA adapter personalizado (se carga si existe)
+  lora_path: "./models/lora_adapters/custom_adapter"
+  lora_scale: 1.0  # 1.0 = full adapter, 0.5 = medio
+
+  # Contexto 32K - balance latencia/capacidad
+  # Permite historial extenso por usuario + conversaciones largas
+  n_ctx: 32768      # 32K tokens
+  n_batch: 512      # Batch estándar
+
+  # CPU - usar todos los cores del Threadripper
+  n_threads: 24
+  n_gpu_layers: 0  # Todo en CPU (GPUs ocupadas con otros modelos)
+
+  # Chat format para Llama 3.x
+  chat_format: "llama-3"
+
+  # RoPE scaling para 32K
+  rope_freq_base: 500000.0
+  rope_freq_scale: 1.0
+
+  # ==========================================================================
+  # LLM Buffering - Para conversacion fluida con LLMs lentos (6-10 tok/s)
+  # ==========================================================================
+  # Permite que el TTS hable mientras el LLM sigue generando
+  buffering:
+    # Preset: "fast", "balanced", "smooth", "slow_llm"
+    # - fast: Minimo buffering, puede entrecortarse
+    # - balanced: Recomendado para 32B (6-10 tok/s)
+    # - smooth: Mas buffering, mas latencia inicial
+    # - slow_llm: Optimizado para 70B (2-4 tok/s)
+    preset: "balanced"
+
+    # Usar frase de relleno mientras el LLM piensa
+    # Ej: "Dejame ver...", "Un momento..."
+    use_filler: true
+
+    # Frases de relleno personalizadas (opcional)
+    # Si no se especifica, usa las predeterminadas
+    filler_phrases:
+      - "Dejame ver..."
+      - "Un momento..."
+      - "Mmm, pensando..."
+      - "Dame un segundo..."
+
+    # Configuracion avanzada (override del preset)
+    # min_tokens_before_speech: 15    # Tokens antes de empezar a hablar
+    # min_chars_before_speech: 40     # Caracteres minimos
+    # max_buffer_time_ms: 3000        # Flush forzado despues de N ms
+    # inter_sentence_pause_ms: 150    # Pausa entre oraciones
+
+# Vector Database
+vectordb:
+  path: "./data/chroma_db"
+  commands_collection: "home_assistant_commands"
+  routines_collection: "home_assistant_routines"
+  search_threshold: 0.65  # Similitud mínima para match
+
+# Sync Settings
+sync:
+  interval_hours: 1
+  on_startup: true
+  max_entities_per_batch: 100
+
+# Memory System (Contextual Memory)
+memory:
+  enabled: true
+  chroma_path: "./data/memory_db"
+  preferences_path: "./data/preferences.json"
+  short_term_size: 10  # Últimos N turnos de conversación
+  long_term_collection: "user_memories"
+
+# Contexto Persistente por Usuario
+# Guarda historial de conversación por persona detectada
+context_persistence:
+  enabled: true
+  storage_path: "./data/contexts"       # Directorio para guardar contextos
+  max_history_memory: 10                # Turnos en memoria activa (rápido)
+  persist_history: 50                   # Turnos guardados por usuario (disco)
+  inactive_timeout: 300                 # Segundos sin actividad -> guardar y liberar RAM
+  auto_save_interval: 60                # Auto-guardar cada N segundos
+  # Con 10 usuarios y 50 turnos c/u = ~500KB total en disco
+
+# Speaker Identification (GPU 1 - compartido con embeddings)
+speaker_id:
+  enabled: true
+  model: "speechbrain/spkrec-ecapa-voxceleb"  # O "resemblyzer" (más ligero)
+  device: "cuda:1"
+  threshold: 0.75  # Similitud mínima para identificar usuario
+  users_path: "./data/users.json"
+  enrollment_samples: 3  # Muestras de voz para registrar usuario
+
+# Permission Levels (jerárquico)
+# GUEST=0: Solo consultas
+# CHILD=1: + dispositivos básicos (luces, música)
+# TEEN=2: + más dispositivos (clima, persianas)
+# ADULT=3: + seguridad (cerraduras, cámaras)
+# ADMIN=4: Control total (agregar usuarios, config)
+
+# Domótica - Device Mappings (fallback si no hay match en vectordb)
+device_aliases:
+  luz: "light"
+  luces: "light"
+  lampara: "light"
+  aire: "climate"
+  aire acondicionado: "climate"
+  persiana: "cover"
+  persianas: "cover"
+  cortina: "cover"
+  ventilador: "fan"
+  tele: "media_player"
+  television: "media_player"
+
+room_aliases:
+  living: "living_room"
+  cocina: "kitchen"
+  dormitorio: "bedroom"
+  baño: "bathroom"
+  garage: "garage"
+  comedor: "dining_room"
+  oficina: "office"
+
+action_aliases:
+  prender: "turn_on"
+  prende: "turn_on"
+  encender: "turn_on"
+  enciende: "turn_on"
+  apagar: "turn_off"
+  apaga: "turn_off"
+  abrir: "open_cover"
+  abre: "open_cover"
+  cerrar: "close_cover"
+  cierra: "close_cover"
+  subir: "open_cover"
+  sube: "open_cover"
+  bajar: "close_cover"
+  baja: "close_cover"
+
+# =============================================================================
+# Spotify Multi-Room - Grupos de Altavoces (estilo Alexa)
+# =============================================================================
+# Permite comandos como:
+#   - "Pon música en la cocina"
+#   - "Pon jazz en toda la casa"
+#   - "Mueve la música al dormitorio"
+#   - "Sube el volumen en el living"
+
+spotify:
+  # Credenciales de Spotify
+  client_id: "${SPOTIFY_CLIENT_ID}"
+  client_secret: "${SPOTIFY_CLIENT_SECRET}"
+  redirect_uri: "http://localhost:8888/callback"
+  tokens_path: "./data/spotify_tokens.json"
+
+  # Configuración de altavoces
+  speaker_groups:
+    enabled: true
+    config_path: "./data/speaker_groups.json"
+    auto_discover: true  # Descubrir dispositivos Spotify automáticamente
+
+    # Mapeo de speakers a dispositivos Spotify
+    # El "spotify_device_name" es el nombre como aparece en Spotify
+    speakers:
+      kitchen:
+        name: "Bocina Cocina"
+        spotify_device_name: "Echo Dot Cocina"  # Nombre en Spotify Connect
+        room: "cocina"
+        floor: "planta_baja"
+        zone_id: "zone_1"  # Para MA1260
+        aliases: ["cocina", "kitchen"]
+        volume_offset: 0
+
+      living:
+        name: "Bocina Sala"
+        spotify_device_name: "Echo Studio Sala"
+        room: "sala"
+        floor: "planta_baja"
+        zone_id: "zone_2"
+        is_default: true  # Speaker principal
+        aliases: ["sala", "living", "sala de estar"]
+        volume_offset: -5  # Un poco más bajo que otros
+
+      bedroom:
+        name: "Bocina Dormitorio"
+        spotify_device_name: "Echo Dot Dormitorio"
+        room: "dormitorio"
+        floor: "planta_alta"
+        zone_id: "zone_3"
+        aliases: ["dormitorio", "cuarto", "habitación", "bedroom"]
+        volume_offset: -10  # Más bajo para la noche
+
+      bathroom:
+        name: "Bocina Baño"
+        spotify_device_name: "Sonos Baño"
+        room: "baño"
+        floor: "planta_alta"
+        zone_id: "zone_4"
+        aliases: ["baño", "bathroom"]
+        supports_spotify: true
+        volume_offset: 5  # Un poco más alto por el ruido del agua
+
+    # Grupos predefinidos
+    groups:
+      downstairs:
+        name: "Planta Baja"
+        type: "floor"
+        speakers: ["kitchen", "living"]
+        aliases: ["abajo", "primer piso", "planta baja"]
+
+      upstairs:
+        name: "Planta Alta"
+        type: "floor"
+        speakers: ["bedroom", "bathroom"]
+        aliases: ["arriba", "segundo piso", "planta alta"]
+
+      social:
+        name: "Área Social"
+        type: "zone"
+        speakers: ["kitchen", "living"]
+        aliases: ["área social", "para la fiesta"]
+
+      # "toda la casa" se crea automáticamente
+
+  # Modo seguimiento - la música sigue al usuario
+  follow_mode:
+    enabled: false  # Activar con "activa modo seguimiento"
+    detect_by: "voice"  # voice, motion, speaker_id
+
+# Latency Targets (ms)
+latency_targets:
+  wake_word: 10
+  stt: 150
+  vector_search: 20
+  home_assistant: 50
+  tts: 80
+  total: 300
+
+# Monitoring
+monitoring:
+  enabled: true
+  db_path: "./data/latency.db"
+  alert_on_high_latency: true
+
+# Smart Automations (Pattern-based suggestions)
+analytics:
+  enabled: true
+  events_db: "./data/events.db"          # SQLite para eventos
+  suggestions_path: "./data/suggestions.json"  # Sugerencias generadas
+  retention_days: 90                      # Días de historial a mantener
+  min_confidence: 0.7                     # Confianza mínima para sugerir
+  suggestion_interval: 20                 # Presentar sugerencia cada N comandos
+
+  # Parámetros de detección de patrones
+  patterns:
+    min_occurrences: 5          # Mínimo de eventos para detectar patrón
+    time_tolerance_minutes: 30  # Tolerancia para "misma hora"
+    sequence_window_minutes: 10 # Ventana para secuencias A→B
+
+# Training & Personalization
+training:
+  # Conversation collector for LoRA training
+  conversations_dir: "./data/conversations"
+  auto_save_interval: 10  # Guardar cada N turnos
+  max_conversations_in_memory: 100
+
+  # Personality settings
+  personality_path: "./data/personality.json"
+
+  # LoRA training settings
+  lora:
+    output_dir: "./models/lora_adapters"
+    base_model: "meta-llama/Llama-3.1-70B-Instruct"  # Para entrenar
+    epochs: 3
+    batch_size: 4
+    learning_rate: 0.0002
+    lora_r: 16
+    lora_alpha: 32
+    lora_dropout: 0.05
+
+  # ==========================================================================
+  # Nightly Training - Entrenamiento nocturno automático con QLoRA
+  # ==========================================================================
+  # Usa las conversaciones del día para entrenar LoRA adapters personalizados
+  # Aprovecha las 4x RTX 3070 que están libres de noche
+  #
+  # FLUJO NOCTURNO:
+  #   1. 3:00 AM - Descargar modelos de día (TTS, Whisper, Router)
+  #   2. Liberar VRAM de las 4 GPUs
+  #   3. Entrenar con QLoRA (4-bit) distribuido
+  #   4. Guardar adapter personalizado
+  #   5. Recargar modelos de día
+  #   6. Sistema listo para la mañana
+  nightly:
+    enabled: true
+
+    # Horario de entrenamiento (24h)
+    schedule:
+      hour: 3                # 3 AM
+      minute: 0
+
+    # Datos
+    data:
+      min_samples: 20        # Mínimo de ejemplos para entrenar
+      include_unmarked: true # Incluir turnos sin marcar calidad
+      include_all_users: true
+      max_samples: 1000      # Máximo por sesión
+
+    # GPUs a usar (libres de noche)
+    gpus: [0, 1, 2, 3]       # Las 4x RTX 3070
+    use_distributed: true    # Entrenamiento paralelo en múltiples GPUs
+
+    # Gestión de VRAM (IMPORTANTE para RTX 3070 de 8GB)
+    vram_management:
+      unload_daytime_models: true   # Descargar TTS, Whisper, Router antes
+      reload_after_training: true   # Recargar después de entrenar
+
+    # QLoRA - Cuantización para caber en 8GB VRAM
+    # Un modelo 8B en 4-bit ocupa ~5GB en vez de ~16GB
+    qlora:
+      enabled: true           # SIEMPRE true para RTX 3070
+      bits: 4                 # 4-bit NF4 quantization
+      compute_dtype: "float16"
+      double_quant: true      # Ahorra más VRAM
+
+    # Modelo base para fine-tuning (QLoRA)
+    # Opciones para RTX 3070 (8GB):
+    #   - Llama-3.2-3B-Instruct  → ~4GB con QLoRA (RECOMENDADO)
+    #   - Llama-3.1-8B-Instruct  → ~6GB con QLoRA
+    #   - Qwen2.5-7B-Instruct    → ~5GB con QLoRA
+    base_model: "meta-llama/Llama-3.2-3B-Instruct"
+
+    # Configuración LoRA
+    lora_config:
+      r: 16
+      alpha: 32
+      dropout: 0.05
+      target_modules:
+        - "q_proj"
+        - "v_proj"
+        - "k_proj"
+        - "o_proj"
+        - "gate_proj"
+        - "up_proj"
+        - "down_proj"
+
+    # Hiperparámetros de entrenamiento (ajustados para 8GB VRAM)
+    hyperparams:
+      epochs: 3
+      batch_size: 2                    # Reducido para 8GB
+      gradient_accumulation_steps: 8   # Compensa batch pequeño
+      learning_rate: 0.0002
+      warmup_ratio: 0.1
+      max_seq_length: 512
+      gradient_checkpointing: true     # Ahorra VRAM
+
+    # Paths
+    output_dir: "./models/lora_adapters/nightly"
+    data_dir: "./data/nightly_training"
+
+  # Command learning
+  custom_commands_enabled: true
+
+  # ==========================================================================
+  # Habit Learning - Aprendizaje de costumbres del usuario
+  # ==========================================================================
+  # Genera datasets enriquecidos a partir de patrones, eventos y conversaciones
+  # Se integra con el NightlyTrainer para mejorar el modelo continuamente
+  habits:
+    enabled: true
+    data_dir: "./data/habit_training"
+    min_confidence: 0.6            # Confianza mínima para incluir ejemplos
+    synthetic_multiplier: 3        # Variaciones sintéticas por patrón real
+    include_profiles: true         # Generar ejemplos desde perfiles de usuario
+    include_sequences: true        # Detectar secuencias de acciones
+
+# =============================================================================
+# Multi-User Orchestrator
+# =============================================================================
+# Sistema de orquestacion para multiples usuarios concurrentes
+orchestrator:
+  enabled: true
+
+  # Contexto por usuario
+  context:
+    max_history: 10              # Turnos de conversacion por usuario
+    inactive_timeout: 300        # Segundos antes de limpiar contexto inactivo
+    cleanup_interval: 60         # Intervalo de limpieza (segundos)
+
+  # Cola priorizada
+  queue:
+    max_size: 100                # Maximo de peticiones en cola
+    auto_cancel_previous: true   # Cancelar peticion anterior del mismo usuario
+
+    # Timeouts por prioridad (segundos)
+    timeouts:
+      critical: 60
+      high: 30
+      medium: 60
+      low: 120
+
+  # Prioridades para tipos de peticion
+  # 0=CRITICAL, 1=HIGH, 2=MEDIUM, 3=LOW
+  priorities:
+    domotics: 1           # Luces, clima, etc -> HIGH
+    routines: 2           # Automatizaciones -> MEDIUM
+    simple_query: 2       # Preguntas simples -> MEDIUM
+    conversation: 3       # Chat general -> LOW
+    reasoning: 3          # Razonamiento profundo -> LOW
+
+  # Fast path (paralelo)
+  fast_path:
+    enabled: true
+    use_router_for_simple: true  # Usar Router 7B para preguntas simples
+    vector_threshold: 0.65       # Umbral para vector search
+
+  # Mensajes de feedback
+  messages:
+    waiting: "Un momento, estoy respondiendo a {other_user}"
+    queued: "Hay {count} peticion(es) antes, te respondo enseguida"
+    cancelled: "Cancelado"
+    timeout: "Lo siento, tarde demasiado. Intenta de nuevo."
+
+# Logging
+logging:
+  level: "INFO"
+  file: "./logs/voice_assistant.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# =============================================================================
+# Multi-Zone Audio System (Dayton Audio MA1260)
+# =============================================================================
+zones:
+  enabled: true
+
+  # Conexión al amplificador MA1260
+  ma1260:
+    connection_type: "serial"      # "serial", "ip", o "simulation"
+    serial_port: "/dev/ttyUSB0"    # Puerto serial RS-232
+    baudrate: 9600
+    # ip_address: "192.168.1.50"   # Si usa módulo de red
+    # ip_port: 8080
+    audio_output_device: null      # Índice del dispositivo de salida (null = default)
+    default_source: 1              # Fuente de entrada por defecto (1-6)
+
+  # Detección de zona de origen
+  detection:
+    priority_mode: "loudest"       # "loudest", "first", "last_active"
+    detection_window_ms: 500       # Ventana para detectar zona
+    vad_threshold: 0.02            # Umbral de detección de voz
+
+  # Configuración de zonas
+  # Cada zona tiene un micrófono y una salida del MA1260
+  zone_list:
+    - id: "zone_living"
+      name: "Living Room"
+      mic_device_index: 1          # Índice del micrófono USB
+      ma1260_zone: 1               # Salida del amplificador (1-6)
+      default_volume: 60
+      noise_floor: 0.01
+
+    - id: "zone_kitchen"
+      name: "Kitchen"
+      mic_device_index: 2
+      ma1260_zone: 2
+      default_volume: 55
+      noise_floor: 0.015
+
+    - id: "zone_bedroom"
+      name: "Bedroom"
+      mic_device_index: 3
+      ma1260_zone: 3
+      default_volume: 45
+      noise_floor: 0.01
+
+    - id: "zone_office"
+      name: "Office"
+      mic_device_index: 4
+      ma1260_zone: 4
+      default_volume: 50
+      noise_floor: 0.01
+
+    - id: "zone_bathroom"
+      name: "Bathroom"
+      mic_device_index: 5
+      ma1260_zone: 5
+      default_volume: 50
+      noise_floor: 0.02
+
+    - id: "zone_garage"
+      name: "Garage"
+      mic_device_index: 6
+      ma1260_zone: 6
+      default_volume: 65
+      noise_floor: 0.025
+
+# =============================================================================
+# Spotify Integration
+# =============================================================================
+# Control avanzado de Spotify con interpretación de contexto
+spotify:
+  enabled: true
+
+  # Credenciales de la aplicación Spotify
+  # Crear en: https://developer.spotify.com/dashboard
+  client_id: "${SPOTIFY_CLIENT_ID}"
+  client_secret: "${SPOTIFY_CLIENT_SECRET}"  # Opcional si usas PKCE
+
+  # OAuth settings
+  auth:
+    redirect_port: 8888                        # Puerto para callback OAuth
+    tokens_path: "./data/spotify_tokens.json"  # Donde guardar tokens
+
+  # Configuración de reproducción
+  playback:
+    default_limit: 20              # Tracks por búsqueda/recomendación
+    shuffle_by_default: true       # Activar shuffle automáticamente
+    market: "ES"                   # Mercado para búsquedas (ES, US, MX, etc.)
+
+  # Interpretación de contexto con LLM
+  mood_interpretation:
+    use_llm_for_context: true      # Usar LLM para "música para cocinar"
+    llm_timeout: 5.0               # Timeout para interpretación LLM (segundos)
+
+  # Perfiles de mood personalizados (adicionales a los predefinidos)
+  # Los predefinidos incluyen: happy, sad, calm, energetic, romantic,
+  # workout, focus, sleep, cooking, party, driving, morning, dinner
+  custom_moods:
+    # Ejemplo de mood personalizado:
+    # trabajo_profundo:
+    #   energy: 0.3
+    #   valence: 0.5
+    #   instrumentalness: 0.9
+    #   genres: ["ambient", "classical", "electronic"]
+    #   keywords: ["trabajo profundo", "deep work", "concentración máxima"]
+
+  # Mensajes de respuesta
+  messages:
+    not_configured: "Spotify no está configurado"
+    not_found_artist: "No encontré al artista {name}"
+    not_found_track: "No encontré la canción {name}"
+    not_found_playlist: "No encontré la playlist {name}"
+    now_playing: "Reproduciendo {track} de {artist}"
+    paused: "Música pausada"
+    resumed: "Continuando reproducción"
+    no_devices: "No hay dispositivos de Spotify activos"
+
+# =============================================================================
+# Room Context (Micrófono + Bluetooth por habitación)
+# =============================================================================
+# Cada habitación tiene:
+#   - 1x ReSpeaker XVF3800 (mic USB sobre extensor RJ45)
+#   - 1x Dongle BT 5.0 (USB sobre extensor RJ45)
+#   - Ambos llegan al servidor como dispositivos USB locales
+#
+# El sistema auto-detecta los dispositivos al iniciar.
+# Ejecutar: python -m src.rooms.room_context --detect
+# =============================================================================
+
+rooms:
+  enabled: true
+  cross_validation: true   # Usar BT para confirmar habitación del mic
+  fallback_room: "living"  # Habitación por defecto si no se puede determinar
+
+  # Configuración por habitación
+  living:
+    name: "Living"
+    display_name: "el living"
+    mic_device_name: "XVF3800"    # Auto-detect por nombre USB
+    bt_adapter: "hci0"
+    default_light: "light.living"
+    default_climate: "climate.living_ac"
+    default_cover: "cover.living_persiana"
+    default_media_player: "media_player.living_tv"
+    motion_sensor: "binary_sensor.motion_living"
+    temperature_sensor: "sensor.temperature_living"
+    tts_speaker: "media_player.living_speaker"
+    aliases: ["living", "sala", "salón", "el living"]
+
+  escritorio:
+    name: "Escritorio"
+    display_name: "el escritorio"
+    mic_device_name: "XVF3800"
+    bt_adapter: "hci1"
+    default_light: "light.escritorio"
+    default_climate: "climate.escritorio_ac"
+    default_media_player: "media_player.escritorio_monitor"
+    motion_sensor: "binary_sensor.motion_escritorio"
+    temperature_sensor: "sensor.temperature_escritorio"
+    tts_speaker: "media_player.escritorio_speaker"
+    aliases: ["escritorio", "oficina", "estudio", "el escritorio"]
+
+  hall:
+    name: "Hall"
+    display_name: "el hall"
+    mic_device_name: "XVF3800"
+    bt_adapter: "hci2"
+    default_light: "light.hall"
+    motion_sensor: "binary_sensor.motion_hall"
+    tts_speaker: "media_player.hall_speaker"
+    aliases: ["hall", "pasillo", "entrada", "el hall"]
+
+  cocina:
+    name: "Cocina"
+    display_name: "la cocina"
+    mic_device_name: "XVF3800"
+    bt_adapter: "hci3"
+    default_light: "light.cocina"
+    default_fan: "fan.cocina_extractor"
+    motion_sensor: "binary_sensor.motion_cocina"
+    temperature_sensor: "sensor.temperature_cocina"
+    humidity_sensor: "sensor.humidity_cocina"
+    tts_speaker: "media_player.cocina_speaker"
+    aliases: ["cocina", "la cocina", "kitchen"]
+
+  bano:
+    name: "Baño"
+    display_name: "el baño"
+    mic_device_name: "XVF3800"
+    bt_adapter: "hci4"
+    default_light: "light.bano"
+    default_fan: "fan.bano_extractor"
+    motion_sensor: "binary_sensor.motion_bano"
+    humidity_sensor: "sensor.humidity_bano"
+    tts_speaker: "media_player.bano_speaker"
+    aliases: ["baño", "el baño", "bathroom"]
+
+# =============================================================================
+# Presence Detection (BLE + Sensors)
+# =============================================================================
+presence:
+  enabled: true
+
+  # Timeout para considerar a alguien como ausente (segundos)
+  away_timeout: 300  # 5 minutos
+
+  # Duración del estado "recién llegó" (segundos)
+  just_arrived_duration: 300  # 5 minutos
+
+  # Configuración del scanner BLE
+  ble:
+    scan_interval: 5.0      # Segundos entre escaneos
+    device_timeout: 120.0   # Segundos sin ver = dispositivo perdido
+
+    # Dispositivos pre-registrados (se pueden agregar por voz)
+    # registered_devices:
+    #   "AA:BB:CC:DD:EE:FF":
+    #     user_id: "mastar"
+    #     friendly_name: "Celular de Mastar"
+    #     device_type: "phone_android"

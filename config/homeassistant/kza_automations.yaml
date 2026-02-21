@@ -1,0 +1,155 @@
+# =============================================================================
+# KZA Automations para Home Assistant
+# =============================================================================
+# Agregar a configuration.yaml:
+#   automation: !include kza_automations.yaml
+# O copiar el contenido dentro de tu sección automation existente
+# =============================================================================
+
+# Activar DND en la noche
+- id: kza_dnd_night_on
+  alias: "KZA: Activar DND de noche"
+  description: "Activa No Molestar a las 23:00"
+  trigger:
+    - platform: time
+      at: "23:00:00"
+  action:
+    - service: kza.set_dnd
+      data:
+        enabled: true
+
+# Desactivar DND en la mañana
+- id: kza_dnd_morning_off
+  alias: "KZA: Desactivar DND de mañana"
+  description: "Desactiva No Molestar a las 07:00"
+  trigger:
+    - platform: time
+      at: "07:00:00"
+  action:
+    - service: kza.set_dnd
+      data:
+        enabled: false
+
+# Anunciar cuando alguien llega
+- id: kza_announce_arrival
+  alias: "KZA: Anunciar llegada"
+  description: "Anuncia cuando alguien llega a casa"
+  trigger:
+    - platform: state
+      entity_id: sensor.kza_presence
+  condition:
+    - condition: template
+      value_template: "{{ trigger.to_state.state | int > trigger.from_state.state | int }}"
+  action:
+    - delay: "00:00:05"  # Esperar 5 segundos para identificar quién llegó
+    - service: kza.announce
+      data:
+        message: >
+          {% set users = state_attr('sensor.kza_presence', 'users') %}
+          {% if users and users | length == 1 %}
+          {{ users[0] }} acaba de llegar a casa.
+          {% else %}
+          Alguien acaba de llegar a casa.
+          {% endif %}
+        priority: normal
+
+# Anunciar cuando todos se van
+- id: kza_announce_house_empty
+  alias: "KZA: Anunciar casa vacía"
+  description: "Anuncia cuando la casa queda vacía"
+  trigger:
+    - platform: state
+      entity_id: sensor.kza_presence
+      to: "0"
+  action:
+    - service: kza.speak
+      data:
+        message: "Todos han salido de casa. Activando modo ausente."
+
+# Alerta si hay muchas alertas activas
+- id: kza_alert_notification
+  alias: "KZA: Notificar alertas"
+  description: "Notifica si hay más de 3 alertas activas"
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.kza_alerts
+      above: 3
+  action:
+    - service: kza.announce
+      data:
+        message: "Atención. Hay {{ states('sensor.kza_alerts') }} alertas activas que requieren tu atención."
+        priority: high
+
+# Recordatorio de timer (cuando queda 1 minuto)
+- id: kza_timer_reminder
+  alias: "KZA: Recordatorio de timer"
+  description: "Avisa cuando un timer está por terminar"
+  trigger:
+    - platform: state
+      entity_id: sensor.kza_active_timers
+  condition:
+    - condition: template
+      value_template: >
+        {% set timers = state_attr('sensor.kza_active_timers', 'timers') %}
+        {% if timers %}
+          {% for t in timers %}
+            {% if t.remaining_seconds > 55 and t.remaining_seconds < 65 %}
+              true
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+  action:
+    - service: kza.speak
+      data:
+        message: "Un minuto para que termine un timer."
+
+# Briefing matutino automático
+- id: kza_morning_briefing_auto
+  alias: "KZA: Briefing matutino automático"
+  description: "Entrega briefing cuando el primer usuario llega a la cocina en la mañana"
+  trigger:
+    - platform: state
+      entity_id: binary_sensor.cocina_motion  # Cambiar por tu sensor
+      to: "on"
+  condition:
+    - condition: time
+      after: "06:30:00"
+      before: "09:30:00"
+    - condition: state
+      entity_id: input_boolean.kza_briefing_delivered_today  # Crear este helper
+      state: "off"
+  action:
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.kza_briefing_delivered_today
+    - delay: "00:00:03"
+    - service: script.kza_morning_briefing
+
+# Reset del flag de briefing a medianoche
+- id: kza_reset_briefing_flag
+  alias: "KZA: Reset flag de briefing"
+  trigger:
+    - platform: time
+      at: "00:00:00"
+  action:
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.kza_briefing_delivered_today
+
+# Anunciar cuando termina la lavadora
+- id: kza_washer_done
+  alias: "KZA: Lavadora terminó"
+  trigger:
+    - platform: state
+      entity_id: sensor.lavadora_power  # Cambiar por tu sensor
+      to: "0"
+      for: "00:02:00"  # 2 minutos en 0W = terminó
+  condition:
+    - condition: numeric_state
+      entity_id: sensor.lavadora_power
+      below: 5
+  action:
+    - service: kza.announce
+      data:
+        message: "La lavadora terminó el ciclo."
+        priority: normal

@@ -1,0 +1,63 @@
+# Home Assistant Voice - GPU Docker Image
+# Requires NVIDIA Container Toolkit
+
+FROM nvidia/cuda:12.1-cudnn8-runtime-ubuntu22.04
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    ffmpeg \
+    libsndfile1 \
+    portaudio19-dev \
+    libasound2-dev \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.11 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+
+# Create app directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# Install CUDA-specific packages
+RUN pip install --no-cache-dir \
+    torch>=2.1.0 \
+    torchaudio>=2.1.0 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# Copy application code
+COPY . .
+
+# Create directories for data
+RUN mkdir -p /app/data/chroma_db /app/models /app/logs
+
+# Set environment variables
+ENV CUDA_VISIBLE_DEVICES=0,1,2,3
+ENV MODELS_PATH=/app/models
+ENV CHROMA_PATH=/app/data/chroma_db
+
+# Expose health check port (optional)
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "from src.health.health_check import quick_check; exit(0 if quick_check() else 1)" || exit 1
+
+# Default command
+CMD ["python", "-m", "src.main"]

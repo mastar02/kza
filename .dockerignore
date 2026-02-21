@@ -1,0 +1,68 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv
+env/
+venv/
+ENV/
+.eggs/
+*.egg-info/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Models (mounted as volume)
+models/
+*.gguf
+*.onnx
+*.bin
+*.safetensors
+
+# Data (mounted as volume)
+data/
+*.db
+*.sqlite
+*.json
+logs/
+
+# Build artifacts
+build/
+dist/
+*.whl
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Misc
+.DS_Store
+Thumbs.db
+*.log
+tmp/
+temp/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.docker/

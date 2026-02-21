@@ -1,0 +1,236 @@
+# Home Assistant Voice Control - Docker Compose
+# Hardware: Threadripper PRO 9965WX + 4x RTX 3070 + 128GB RAM
+
+services:
+  # =============================================================================
+  # ChromaDB - Vector Database
+  # =============================================================================
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: kza-chromadb
+    volumes:
+      - ./data/chroma_db:/chroma/chroma
+    ports:
+      - "8000:8000"
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+      - ANONYMIZED_TELEMETRY=False
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # =============================================================================
+  # STT Service - Speech-to-Text (GPU 0)
+  # =============================================================================
+  stt:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.stt
+    container_name: kza-stt
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - MODEL_NAME=${STT_MODEL:-distil-whisper/distil-small.en}
+      - DEVICE=cuda:0
+    ports:
+      - "8001:8001"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # =============================================================================
+  # Embeddings Service - BGE + Speaker ID (GPU 1)
+  # =============================================================================
+  embeddings:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.embeddings
+    container_name: kza-embeddings
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-BAAI/bge-small-en-v1.5}
+      - SPEAKER_MODEL=${SPEAKER_MODEL:-speechbrain/spkrec-ecapa-voxceleb}
+      - DEVICE=cuda:0
+    ports:
+      - "8002:8002"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # =============================================================================
+  # Router Service - Fast Classification (GPU 2)
+  # =============================================================================
+  router:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.router
+    container_name: kza-router
+    volumes:
+      - ./models:/app/models:ro
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - MODEL_NAME=${ROUTER_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      - GPU_MEMORY_UTILIZATION=0.85
+    ports:
+      - "8003:8003"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+
+  # =============================================================================
+  # TTS Service - Text-to-Speech (GPU 3)
+  # =============================================================================
+  tts:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.tts
+    container_name: kza-tts
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - TTS_ENGINE=${TTS_ENGINE:-piper}
+      - PIPER_MODEL=${PIPER_MODEL:-es_ES-davefx-medium}
+    ports:
+      - "8004:8004"
+    devices:
+      - /dev/snd:/dev/snd
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['3']
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # =============================================================================
+  # LLM Reasoner - Deep Reasoning (CPU - 24 cores, ~70GB RAM)
+  # =============================================================================
+  reasoner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.reasoner
+    container_name: kza-reasoner
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data
+    environment:
+      - MODEL_PATH=/app/models/Llama-3.3-70B-Instruct-Q8_0.gguf
+      - LORA_PATH=/app/models/lora_adapters/custom_adapter
+      - N_CTX=32768
+      - N_THREADS=24
+      - N_BATCH=512
+    ports:
+      - "8005:8005"
+    deploy:
+      resources:
+        limits:
+          memory: 80G
+        reservations:
+          memory: 70G
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+
+  # =============================================================================
+  # Voice Pipeline - Main Orchestrator
+  # =============================================================================
+  pipeline:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pipeline
+    container_name: kza-pipeline
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - HOME_ASSISTANT_URL=${HOME_ASSISTANT_URL}
+      - HOME_ASSISTANT_TOKEN=${HOME_ASSISTANT_TOKEN}
+      - STT_SERVICE_URL=http://stt:8001
+      - TTS_SERVICE_URL=http://tts:8004
+      - EMBEDDINGS_SERVICE_URL=http://embeddings:8002
+      - ROUTER_SERVICE_URL=http://router:8003
+      - REASONER_SERVICE_URL=http://reasoner:8005
+      - CHROMADB_URL=http://chromadb:8000
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    devices:
+      - /dev/snd:/dev/snd
+    depends_on:
+      chromadb:
+        condition: service_healthy
+      stt:
+        condition: service_healthy
+      tts:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy
+      router:
+        condition: service_healthy
+      reasoner:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  chroma_data:
+    driver: local
+  models:
+    driver: local
+  app_data:
+    driver: local
+
+networks:
+  default:
+    name: kza-network
+    driver: bridge

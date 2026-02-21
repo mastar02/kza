@@ -1,0 +1,133 @@
+# =============================================================================
+# KZA Scripts para Home Assistant
+# =============================================================================
+# Agregar a configuration.yaml:
+#   script: !include kza_scripts.yaml
+# O copiar el contenido dentro de tu sección script existente
+# =============================================================================
+
+# Cancelar todos los timers
+kza_cancel_all_timers:
+  alias: "KZA: Cancelar Todos los Timers"
+  icon: mdi:timer-off
+  sequence:
+    - service: kza.cancel_timer
+      data:
+        name: "todos"
+
+# Crear timer desde input
+kza_create_timer_from_input:
+  alias: "KZA: Crear Timer desde Input"
+  icon: mdi:timer-plus
+  sequence:
+    - service: kza.set_timer
+      data:
+        name: "{{ states('input_text.kza_timer_name') }}"
+        minutes: "{{ states('input_text.kza_timer_minutes') | int }}"
+
+# Anunciar desde input
+kza_announce_from_input:
+  alias: "KZA: Anunciar desde Input"
+  icon: mdi:bullhorn
+  sequence:
+    - service: kza.announce
+      data:
+        message: "{{ states('input_text.kza_announce_message') }}"
+    - service: input_text.set_value
+      target:
+        entity_id: input_text.kza_announce_message
+      data:
+        value: ""
+
+# Briefing matutino
+kza_morning_briefing:
+  alias: "KZA: Briefing Matutino"
+  icon: mdi:weather-sunny
+  sequence:
+    - service: kza.speak
+      data:
+        message: "Buenos días. Dame un momento para preparar tu briefing."
+
+# Anuncio de emergencia
+kza_emergency_announcement:
+  alias: "KZA: Anuncio de Emergencia"
+  icon: mdi:alert
+  fields:
+    message:
+      description: "Mensaje de emergencia"
+      required: true
+      example: "Evacuación inmediata"
+  sequence:
+    - service: kza.announce
+      data:
+        message: "{{ message }}"
+        priority: "emergency"
+
+# Decir algo
+kza_say:
+  alias: "KZA: Decir"
+  icon: mdi:account-voice
+  fields:
+    message:
+      description: "Mensaje a decir"
+      required: true
+  sequence:
+    - service: kza.speak
+      data:
+        message: "{{ message }}"
+
+# Toggle DND
+kza_toggle_dnd:
+  alias: "KZA: Toggle No Molestar"
+  icon: mdi:bell-ring
+  sequence:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: binary_sensor.kza_dnd
+              state: "off"
+          sequence:
+            - service: kza.set_dnd
+              data:
+                enabled: true
+      default:
+        - service: kza.set_dnd
+          data:
+            enabled: false
+
+# Timer de cocina presets
+kza_timer_pasta:
+  alias: "KZA: Timer Pasta (10 min)"
+  icon: mdi:pasta
+  sequence:
+    - service: kza.set_timer
+      data:
+        name: "pasta"
+        minutes: 10
+
+kza_timer_arroz:
+  alias: "KZA: Timer Arroz (18 min)"
+  icon: mdi:rice
+  sequence:
+    - service: kza.set_timer
+      data:
+        name: "arroz"
+        minutes: 18
+
+kza_timer_huevos:
+  alias: "KZA: Timer Huevos (7 min)"
+  icon: mdi:egg
+  sequence:
+    - service: kza.set_timer
+      data:
+        name: "huevos"
+        minutes: 7
+
+kza_timer_te:
+  alias: "KZA: Timer Té (4 min)"
+  icon: mdi:tea
+  sequence:
+    - service: kza.set_timer
+      data:
+        name: "te"
+        minutes: 4

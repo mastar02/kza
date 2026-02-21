@@ -1,0 +1,312 @@
+# =============================================================================
+# KZA Dashboard para Home Assistant
+# =============================================================================
+# Cómo usar:
+# 1. Copia este archivo a tu carpeta de config de HA
+# 2. En configuration.yaml agrega:
+#    lovelace:
+#      mode: yaml
+#      resources: []
+#      dashboards:
+#        kza-dashboard:
+#          mode: yaml
+#          filename: kza_dashboard.yaml
+#          title: KZA
+#          icon: mdi:robot
+#          show_in_sidebar: true
+# 3. Reinicia Home Assistant
+# =============================================================================
+
+title: KZA Voice Assistant
+views:
+  - title: Principal
+    icon: mdi:home
+    path: main
+    cards:
+      # ========== ESTADO PRINCIPAL ==========
+      - type: vertical-stack
+        cards:
+          - type: custom:mushroom-title-card
+            title: "🤖 KZA Voice Assistant"
+            subtitle: "Estado del sistema"
+
+          - type: horizontal-stack
+            cards:
+              - type: custom:mushroom-entity-card
+                entity: binary_sensor.kza_listening
+                name: Escuchando
+                icon_color: green
+                fill_container: true
+
+              - type: custom:mushroom-entity-card
+                entity: binary_sensor.kza_speaking
+                name: Hablando
+                icon_color: blue
+                fill_container: true
+
+              - type: custom:mushroom-entity-card
+                entity: binary_sensor.kza_conversation_active
+                name: Conversación
+                icon_color: orange
+                fill_container: true
+
+      # ========== TIMERS ==========
+      - type: vertical-stack
+        cards:
+          - type: custom:mushroom-title-card
+            title: "⏱️ Timers"
+
+          - type: entities
+            entities:
+              - entity: sensor.kza_active_timers
+                name: Timers Activos
+                icon: mdi:timer-outline
+
+          - type: markdown
+            content: |
+              {% set timers = state_attr('sensor.kza_active_timers', 'timers') %}
+              {% if timers and timers | length > 0 %}
+              {% for t in timers %}
+              **{{ t.name }}**: {{ t.remaining }}
+              {% endfor %}
+              {% else %}
+              *No hay timers activos*
+              {% endif %}
+
+          - type: horizontal-stack
+            cards:
+              - type: button
+                name: "5 min"
+                icon: mdi:timer-5
+                tap_action:
+                  action: call-service
+                  service: kza.set_timer
+                  service_data:
+                    name: "rapido"
+                    minutes: 5
+
+              - type: button
+                name: "10 min"
+                icon: mdi:timer-10
+                tap_action:
+                  action: call-service
+                  service: kza.set_timer
+                  service_data:
+                    name: "medio"
+                    minutes: 10
+
+              - type: button
+                name: "15 min"
+                icon: mdi:timer
+                tap_action:
+                  action: call-service
+                  service: kza.set_timer
+                  service_data:
+                    name: "largo"
+                    minutes: 15
+
+      # ========== PRESENCIA ==========
+      - type: vertical-stack
+        cards:
+          - type: custom:mushroom-title-card
+            title: "👥 Presencia"
+
+          - type: custom:mushroom-entity-card
+            entity: sensor.kza_presence
+            name: Personas en Casa
+            icon: mdi:home-account
+            primary_info: state
+            secondary_info: last-updated
+
+          - type: markdown
+            content: |
+              {% set users = state_attr('sensor.kza_presence', 'users') %}
+              **En casa:** {% if users and users | length > 0 %}{{ users | join(', ') }}{% else %}Nadie{% endif %}
+
+      # ========== ALERTAS ==========
+      - type: conditional
+        conditions:
+          - entity: sensor.kza_alerts
+            state_not: "0"
+        card:
+          type: vertical-stack
+          cards:
+            - type: custom:mushroom-title-card
+              title: "⚠️ Alertas Activas"
+
+            - type: entities
+              entities:
+                - entity: sensor.kza_alerts
+                  name: Cantidad de Alertas
+
+            - type: markdown
+              content: |
+                {% set alerts = state_attr('sensor.kza_alerts', 'alerts') %}
+                {% if alerts %}
+                {% for a in alerts %}
+                - {{ a.message }}
+                {% endfor %}
+                {% endif %}
+
+  - title: Intercom
+    icon: mdi:bullhorn
+    path: intercom
+    cards:
+      # ========== ANUNCIOS ==========
+      - type: vertical-stack
+        cards:
+          - type: custom:mushroom-title-card
+            title: "📢 Sistema de Anuncios"
+
+          - type: entities
+            entities:
+              - entity: sensor.kza_intercom
+                name: Zonas Disponibles
+
+          - type: custom:mushroom-textfield-card
+            entity: input_text.kza_announce_message
+            name: Mensaje
+
+          - type: horizontal-stack
+            cards:
+              - type: button
+                name: "Anunciar"
+                icon: mdi:bullhorn
+                tap_action:
+                  action: call-service
+                  service: kza.announce
+                  service_data:
+                    message: "{{ states('input_text.kza_announce_message') }}"
+                    priority: normal
+
+              - type: button
+                name: "Emergencia"
+                icon: mdi:alert
+                tap_action:
+                  action: call-service
+                  service: kza.announce
+                  service_data:
+                    message: "{{ states('input_text.kza_announce_message') }}"
+                    priority: emergency
+                  confirmation:
+                    text: "¿Enviar anuncio de emergencia?"
+
+      # ========== MENSAJES RÁPIDOS ==========
+      - type: vertical-stack
+        cards:
+          - type: custom:mushroom-title-card
+            title: "💬 Mensajes Rápidos"
+
+          - type: grid
+            columns: 2
+            cards:
+              - type: button
+                name: "La cena está lista"
+                icon: mdi:food
+                tap_action:
+                  action: call-service
+                  service: kza.announce
+                  service_data:
+                    message: "La cena está lista"
+
+              - type: button
+                name: "Hora de salir"
+                icon: mdi:car
+                tap_action:
+                  action: call-service
+                  service: kza.announce
+                  service_data:
+                    message: "Es hora de salir"
+
+              - type: button
+                name: "Llegó visita"
+                icon: mdi:account-multiple
+                tap_action:
+                  action: call-service
+                  service: kza.announce
+                  service_data:
+                    message: "Hay visitas en la puerta"
+
+              - type: button
+                name: "Bajen a comer"
+                icon: mdi:silverware-fork-knife
+                tap_action:
+                  action: call-service
+                  service: kza.announce
+                  service_data:
+                    message: "Bajen a comer"
+
+  - title: Configuración
+    icon: mdi:cog
+    path: config
+    cards:
+      # ========== NO MOLESTAR ==========
+      - type: vertical-stack
+        cards:
+          - type: custom:mushroom-title-card
+            title: "🔕 No Molestar"
+
+          - type: custom:mushroom-entity-card
+            entity: binary_sensor.kza_dnd
+            name: Estado DND
+
+          - type: horizontal-stack
+            cards:
+              - type: button
+                name: "Activar DND"
+                icon: mdi:bell-off
+                tap_action:
+                  action: call-service
+                  service: kza.set_dnd
+                  service_data:
+                    enabled: true
+
+              - type: button
+                name: "Desactivar DND"
+                icon: mdi:bell
+                tap_action:
+                  action: call-service
+                  service: kza.set_dnd
+                  service_data:
+                    enabled: false
+
+      # ========== ECHO SUPPRESSOR ==========
+      - type: vertical-stack
+        cards:
+          - type: custom:mushroom-title-card
+            title: "🔇 Echo Suppressor"
+
+          - type: entities
+            entities:
+              - entity: sensor.kza_echo_suppressor
+                name: Estado
+
+          - type: markdown
+            content: |
+              {% set stats = state_attr('sensor.kza_echo_suppressor', '') %}
+              **Estadísticas:**
+              - Ecos detectados: {{ state_attr('sensor.kza_echo_suppressor', 'echo_detections') | default(0) }}
+              - Falsos positivos evitados: {{ state_attr('sensor.kza_echo_suppressor', 'false_triggers_prevented') | default(0) }}
+              - Ms suprimidos: {{ state_attr('sensor.kza_echo_suppressor', 'total_suppressed_ms') | default(0) }}
+
+      # ========== FEATURES ==========
+      - type: vertical-stack
+        cards:
+          - type: custom:mushroom-title-card
+            title: "✨ Features Activos"
+
+          - type: glance
+            entities:
+              - entity: sensor.kza_features
+                name: General
+            show_state: false
+
+          - type: markdown
+            content: |
+              {% set f = state_attr('sensor.kza_features', '') %}
+              | Feature | Estado |
+              |---------|--------|
+              | Follow-up Mode | {{ '✅' if state_attr('sensor.kza_features', 'follow_up') else '❌' }} |
+              | Detección Ambiental | {{ '✅' if state_attr('sensor.kza_features', 'ambient_detection') else '❌' }} |
+              | Pattern Learning | {{ '✅' if state_attr('sensor.kza_features', 'pattern_learning') else '❌' }} |
+              | Briefings | {{ '✅' if state_attr('sensor.kza_features', 'briefings') else '❌' }} |

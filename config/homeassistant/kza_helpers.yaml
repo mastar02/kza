@@ -1,0 +1,28 @@
+# =============================================================================
+# KZA Helpers para Home Assistant
+# =============================================================================
+# Agregar a configuration.yaml:
+#   input_text: !include kza_helpers.yaml
+# O copiar el contenido dentro de tu sección input_text existente
+# =============================================================================
+
+# Input para mensaje de anuncio
+kza_announce_message:
+  name: "KZA: Mensaje para Anunciar"
+  initial: ""
+  max: 255
+  icon: mdi:message-text
+
+# Input para nombre de timer
+kza_timer_name:
+  name: "KZA: Nombre de Timer"
+  initial: "timer"
+  max: 50
+  icon: mdi:timer
+
+# Input para duración de timer
+kza_timer_minutes:
+  name: "KZA: Minutos de Timer"
+  initial: "5"
+  max: 10
+  icon: mdi:clock-outline

@@ -1,0 +1,43 @@
+# TTS Service - Text-to-Speech with Piper
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-venv python3-pip \
+    git curl ffmpeg libsndfile1 \
+    espeak-ng libespeak-ng1 \
+    libasound2 libasound2-dev alsa-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+RUN python -m pip install --upgrade pip
+
+WORKDIR /app
+
+# Install TTS dependencies
+RUN pip install --no-cache-dir \
+    piper-tts>=1.2.0 \
+    onnxruntime-gpu>=1.16.0 \
+    soundfile>=0.12.0 \
+    fastapi>=0.104.0 \
+    uvicorn[standard]>=0.24.0 \
+    numpy>=1.24.0
+
+# Download Piper models
+RUN mkdir -p /app/models/piper && \
+    curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx" \
+    -o /app/models/piper/es_ES-davefx-medium.onnx && \
+    curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx.json" \
+    -o /app/models/piper/es_ES-davefx-medium.onnx.json
+
+# Copy service code
+COPY src/tts /app/src/tts
+COPY docker/services/tts_service.py /app/service.py
+
+RUN useradd -m -u 1000 kza && chown -R kza:kza /app
+USER kza
+
+EXPOSE 8004
+CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8004"]

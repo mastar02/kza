@@ -1,0 +1,55 @@
+[Unit]
+Description=KZA Voice Assistant - Home Automation
+Documentation=https://github.com/tu-repo/kza
+After=network-online.target sound.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=kza
+Group=kza
+WorkingDirectory=/opt/kza
+
+# Entorno
+Environment="PATH=/opt/kza/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/opt/kza/.env
+
+# GPUs disponibles para el proceso principal
+# Cada componente selecciona su GPU internamente via config
+Environment="CUDA_VISIBLE_DEVICES=0,1,2,3"
+
+# Límites de recursos
+LimitNOFILE=65535
+LimitMEMLOCK=infinity
+
+# Audio - acceso a dispositivos de sonido
+SupplementaryGroups=audio
+
+# Ejecución
+ExecStart=/opt/kza/venv/bin/python -m src.main
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Reinicio automático
+Restart=on-failure
+RestartSec=10
+
+# Timeout para shutdown graceful
+TimeoutStopSec=30
+
+# Logs
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kza-voice
+
+# Seguridad (opcional pero recomendado)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/kza/data /opt/kza/logs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

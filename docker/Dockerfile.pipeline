@@ -1,0 +1,36 @@
+# Voice Pipeline - Main Orchestrator
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ffmpeg libsndfile1 \
+    portaudio19-dev libasound2-dev alsa-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install pipeline dependencies
+RUN pip install --no-cache-dir \
+    fastapi>=0.104.0 \
+    uvicorn[standard]>=0.24.0 \
+    httpx>=0.25.0 \
+    websockets>=12.0 \
+    pyyaml>=6.0.0 \
+    python-dotenv>=1.0.0 \
+    sounddevice>=0.4.0 \
+    numpy>=1.24.0 \
+    chromadb>=0.4.0 \
+    openwakeword>=0.5.0
+
+# Copy all source code
+COPY src /app/src
+COPY config /app/config
+COPY docker/services/pipeline_service.py /app/service.py
+
+RUN useradd -m -u 1000 kza && chown -R kza:kza /app
+USER kza
+
+EXPOSE 8080 8081
+CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8080"]

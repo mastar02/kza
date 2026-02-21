@@ -1,0 +1,390 @@
+================================================================================
+ARQUITECTURA DEL SISTEMA DE ALERTAS
+================================================================================
+
+1. COMPONENTES PRINCIPALES
+================================================================================
+
+                    ┌─────────────────────────────────────────────┐
+                    │          Home Assistant Client              │
+                    │    (Estados de dispositivos y sensores)     │
+                    └──────────────────┬──────────────────────────┘
+                                       │
+                    ┌──────────────────▼──────────────────┐
+                    │    Alert Scheduler (Periódico)      │
+                    │                                       │
+                    │  Cada 60s:   Security Checks        │
+                    │  Cada 300s:  Pattern Checks         │
+                    │  Cada 600s:  Device Checks          │
+                    └──────────────────┬──────────────────┘
+                                       │
+                    ┌──────────────────▼──────────────────┐
+        ┌───────────▶│      Alert Manager (Centro)        │◀───────────┐
+        │            │                                      │            │
+        │            │ - Deduplicación (cooldown)         │            │
+        │            │ - Historial                         │            │
+        │            │ - Handlers por tipo                │            │
+        │            │ - TTS notificaciones               │            │
+        │            └──────────────────┬──────────────────┘            │
+        │                               │                               │
+        │        ┌──────────────────────┼──────────────────────┐        │
+        │        │                      │                      │        │
+    ┌───┴────┐ ┌─▼───────────┐ ┌──────▼──────┐ ┌──────────┐ │
+    │Security│ │   Pattern   │ │   Device    │ │Handlers  │ │
+    │Alerts  │ │   Alerts    │ │   Alerts    │ │ Custom   │ │
+    └────────┘ └─────────────┘ └─────────────┘ └──────────┘ │
+        │            │               │              │         │
+        └────────────┴───────────────┴──────────────┘         │
+                                │                              │
+                    ┌───────────▼────────────┐                │
+                    │   Voice Pipeline       │                │
+                    │ (handle_alert_commands)│◀───────────────┘
+                    └───────────┬────────────┘
+                                │
+                    ┌───────────▼────────────┐
+                    │   TTS Service          │
+                    │  (Notificaciones)      │
+                    └────────────────────────┘
+
+================================================================================
+
+2. FLUJO DE DATOS
+================================================================================
+
+Iniciación:
+───────────
+    main.py
+        ↓
+    initialize_alert_system()
+        ├─ AlertManager(config)
+        ├─ SecurityAlerts(manager)
+        ├─ PatternAlerts(manager)
+        ├─ DeviceAlerts(manager)
+        └─ AlertScheduler(manager)
+        ↓
+    register_alert_handlers()
+        ├─ Handler de seguridad
+        ├─ Handler de dispositivos
+        └─ Handler personalizado
+        ↓
+    start_alert_scheduler()
+        └─ background task asyncio
+
+
+Procesamiento de Alertas:
+────────────────────────
+    Evento (puerta abierta, batería baja, etc.)
+        ↓
+    SecurityAlerts/DeviceAlerts/PatternAlerts.check_*()
+        ↓
+    create_alert(AlertManager)
+        ├─ Verificar deduplicación
+        ├─ Si ok, crear Alert
+        ├─ Ejecutar handlers registrados
+        ├─ Si prioridad HIGH/CRITICAL, TTS
+        └─ Agregar al historial
+        ↓
+    Handler ejecuta (log, notificación, etc.)
+
+
+Comando de Voz:
+───────────────
+    Usuario: "¿Tengo alertas pendientes?"
+        ↓
+    Voice Pipeline → handle_alert_voice_commands()
+        ├─ Detectar palabras clave
+        ├─ Buscar en histórico
+        ├─ Generar respuesta
+        └─ Retornar respuesta
+        ↓
+    TTS: "Tienes 3 alertas pendientes..."
+
+================================================================================
+
+3. TIPOS DE ALERTAS
+================================================================================
+
+AlertType.SECURITY
+├─ check_door_status()      → Puertas abiertas
+├─ check_unusual_motion()   → Movimiento sin ocupación
+├─ check_door_sequence()    → Secuencias anormales
+└─ check_access_denied()    → Acceso denegado
+
+AlertType.PATTERN
+├─ check_routine_deviation()      → Horarios alterados
+├─ check_unusual_activity()       → Deviaciones de consumo
+├─ check_sleep_pattern_anomaly()  → Sueño irregular
+└─ check_activity_gap()           → Períodos sin actividad
+
+AlertType.DEVICE
+├─ check_battery_level()      → Batería baja
+├─ check_connectivity()       → Dispositivo offline
+├─ check_signal_strength()    → Señal débil
+├─ check_firmware_update()    → Actualizaciones
+├─ check_response_time()      → Respuesta lenta
+└─ check_multiple_devices()   → Verificación batch
+
+================================================================================
+
+4. PRIORIDADES
+================================================================================
+
+AlertPriority.CRITICAL  (0)
+├─ Genera TTS automático
+├─ Máxima urgencia
+└─ Ejemplo: Intruso, acceso denegado
+
+AlertPriority.HIGH      (1)
+├─ Genera TTS automático
+├─ Importante
+└─ Ejemplo: Puerta abierta inesperadamente
+
+AlertPriority.MEDIUM    (2)
+├─ Registrado en historial
+├─ Notificación de voz deshabilitada
+└─ Ejemplo: Batería baja, patrón anómalo
+
+AlertPriority.LOW       (3)
+├─ Informativo
+├─ Sin notificación
+└─ Ejemplo: Actualización firmware disponible
+
+================================================================================
+
+5. DEDUPLICACIÓN
+================================================================================
+
+Verificación:
+└─ Clave = "{tipo_alerta}:{mensaje}"
+
+Cooldown:
+├─ Por defecto: 300 segundos (5 minutos)
+├─ Configurable en YAML
+└─ Timestamp guardado en _last_alert_time
+
+Flujo:
+    Alerta A
+        ├─ Primera vez → Crear ✓
+        ├─ Dentro de 5 min → Deduplicar (retorna None)
+        └─ Después de 5 min → Crear de nuevo ✓
+
+Ejemplo:
+        t=0s:   Puerta abierta    → Alerta creada
+        t=30s:  Puerta abierta    → Deduplicada
+        t=301s: Puerta abierta    → Alerta creada
+
+================================================================================
+
+6. SCHEDULER - CRONOGRAMA
+================================================================================
+
+Tiempo Real:
+┌─────────────────────────────────────────────────────────────────────┐
+│ 0s  60s  120s 180s 240s 300s 360s 420s 480s 540s 600s             │
+├─────────────────────────────────────────────────────────────────────┤
+│ S   S    S    S    S    S    S    S    S    S    S        (Security)│
+│ P                        P                        P        (Pattern)│
+│ D                                                 D        (Device) │
+└─────────────────────────────────────────────────────────────────────┘
+
+Legend:
+  S = Security check (cada 60s)
+  P = Pattern check (cada 300s)
+  D = Device check (cada 600s)
+
+Ejecutable en paralelo:
+├─ Security: Hasta 60s para completar
+├─ Pattern: Hasta 300s para completar
+└─ Device: Hasta 600s para completar
+
+Error Handling:
+├─ Si falla un check → Log error, continuar
+├─ Si falla un handler → Log error, continuar
+└─ Scheduler sigue ejecutándose aunque haya errores
+
+================================================================================
+
+7. DIAGRAMA DE ESTADOS DE ALERTA
+================================================================================
+
+    ┌─────────────────────────────────────────┐
+    │         Evento Detectado                │
+    │  (puerta abierta, batería baja, etc.)   │
+    └──────────────┬──────────────────────────┘
+                   │
+                   ▼
+    ┌─────────────────────────────────────────┐
+    │    ¿Alerta duplicada dentro de         │
+    │    cooldown (5 min)?                    │
+    └──────────┬──────────────────────────────┘
+               │
+         No   │    Yes
+             │
+             ▼
+    ┌──────────────────────┐        ┌──────────────────────┐
+    │  CREAR ALERTA        │        │  DESCARTAR           │
+    │  ├─ Generar ID       │        │  (No hacer nada)     │
+    │  ├─ Almacenar        │        └──────────────────────┘
+    │  └─ Priority?        │
+    └──────────┬───────────┘
+               │
+         ┌─────┴─────┬──────────┐
+         │ CRITICAL  │ HIGH     │ MEDIUM/LOW
+         ▼ HIGH      ▼          ▼
+    ┌──────────────────┐ ┌─────────────────────┐
+    │   TTS Alert      │ │  Registrar Historial│
+    │   + Ejecutar     │ │  + Ejecutar Handlers│
+    │   Handlers       │ │                     │
+    └──────────────────┘ └─────────────────────┘
+         │                        │
+         └────────────┬───────────┘
+                      ▼
+         ┌──────────────────────────┐
+         │  Alerta Almacenada       │
+         │  processed = False       │
+         │  Pendiente de procesar   │
+         └──────────────────────────┘
+                      │
+              Usuario procesa
+              mark_processed()
+                      │
+                      ▼
+         ┌──────────────────────────┐
+         │  Alerta Procesada        │
+         │  processed = True        │
+         │  processed_at = datetime │
+         └──────────────────────────┘
+
+================================================================================
+
+8. HANDLERS - EJECUCIÓN
+================================================================================
+
+Registro:
+    alert_manager.register_handler(AlertType.SECURITY, my_handler)
+
+Tipos:
+    ├─ Async: async def handler(alert): ...
+    └─ Sync:  def handler(alert): ...
+             └─ Sistema detecta automáticamente
+
+Ejecución:
+    create_alert()
+        └─ Para cada handler registrado:
+           ├─ Si es async → await handler(alert)
+           └─ Si es sync → handler(alert)
+           └─ Capturar excepciones y continuar
+
+Ejemplo:
+    async def my_security_handler(alert):
+        if alert.priority == AlertPriority.CRITICAL:
+            await ha_client.activate_alarm()
+        await send_notification(alert)
+
+    alert_manager.register_handler(AlertType.SECURITY, my_security_handler)
+
+================================================================================
+
+9. COMANDOS DE VOZ - FLUJO
+================================================================================
+
+Voice Input:
+    "¿Tengo alertas pendientes?"
+         │
+         ▼
+    Voice Pipeline
+         │
+         ▼
+    handle_alert_voice_commands()
+         │
+         ├─ Detectar palabras clave
+         │  └─ "pendientes", "alertas", etc.
+         │
+         ├─ Llamar método apropiado
+         │  └─ get_pending_summary()
+         │
+         ├─ Generar respuesta natural
+         │  └─ Formatear con detalles
+         │
+         └─ Retornar string de respuesta
+              │
+              ▼
+         Voice Output (TTS)
+              │
+              ▼
+         "Tienes 3 alertas pendientes..."
+
+Detalles Generados:
+    ├─ Total de alertas
+    ├─ Alertas críticas
+    ├─ Alertas importantes
+    └─ Otros detalles según comando
+
+================================================================================
+
+10. HISTORIAL Y ESTADÍSTICAS
+================================================================================
+
+Historial:
+    ├─ Máximo 1000 alertas (configurable)
+    ├─ Más antiguas se descartan
+    ├─ Orden: FIFO (First In, First Out)
+    └─ Recuperable: get_history(limit=N)
+
+Resumen:
+    summary = alert_manager.get_pending_summary()
+    ├─ total_pending: número de no procesadas
+    ├─ by_type: conteo por tipo
+    └─ by_priority: conteo por prioridad
+
+Estadísticas:
+    stats = alert_manager.get_stats()
+    ├─ total_alerts: todas las alertas
+    ├─ pending_alerts: no procesadas
+    ├─ processed_alerts: procesadas
+    ├─ dedup_keys: claves de deduplicación activas
+    ├─ by_type: distribución por tipo
+    └─ by_priority: distribución por prioridad
+
+================================================================================
+
+11. CONFIGURACIÓN YAML
+================================================================================
+
+alerts:
+    enabled: true/false                    ← Sistema completo
+    general:
+        cooldown_seconds: 300              ← Deduplicación
+        max_history: 1000                  ← Límite de historial
+        voice_notifications: true          ← TTS para críticas
+    scheduler:
+        enabled: true                      ← Scheduler activo
+        security_interval_seconds: 60      ← Cada 1 minuto
+        pattern_interval_seconds: 300      ← Cada 5 minutos
+        device_interval_seconds: 600       ← Cada 10 minutos
+    enabled_types:
+        security: true                     ← Habilitar tipos
+        pattern: true
+        device: true
+    security:                              ← Config por zona
+        zones:
+            entrada:
+                alert_on_open: true
+                alert_on_motion: true
+    devices:                               ← Umbrales
+        battery_thresholds:
+            sensor_motion: 20
+            light: 15
+
+================================================================================
+
+NOTAS:
+======
+- Todos los procesos son asincronos (asyncio)
+- Thread-safe con asyncio.Lock donde necesario
+- Errores no detienen la ejecución (graceful degradation)
+- Sin dependencias externas
+- Completamente configurable
+- Extensible para nuevos tipos de alertas
+
+================================================================================
