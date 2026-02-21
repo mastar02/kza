@@ -282,32 +282,3 @@ class CommandProcessor:
             return None
 
         return self.emotion_detector.detect(audio)
-
-    @staticmethod
-    def classify_intent(text: str, chroma=None, ha_client=None) -> str:
-        """
-        Clasificar intent del comando.
-
-        Args:
-            text: Texto transcrito
-            chroma: Vector DB para búsqueda de comandos
-            ha_client: Home Assistant client
-
-        Returns:
-            Intent: 'domotics', 'conversation', 'routine', etc.
-        """
-        text_lower = text.lower().strip()
-
-        # Detectar si es comando de domótica
-        if chroma:
-            command = chroma.search_command(text, threshold=0.65)
-            if command:
-                return "domotics"
-
-        # Detectar si es comando de rutina
-        if ha_client:
-            # Aquí iría lógica para detectar rutinas
-            pass
-
-        # Default: conversación
-        return "conversation"
