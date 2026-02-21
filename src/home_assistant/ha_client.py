@@ -4,7 +4,6 @@ Comunicacion con Home Assistant via REST API y WebSocket
 """
 
 import asyncio
-import json
 import logging
 from typing import Optional
 import aiohttp
@@ -24,6 +23,7 @@ class HomeAssistantClient:
             "Content-Type": "application/json"
         }
         self._session: Optional[aiohttp.ClientSession] = None
+        self._session_lock = asyncio.Lock()
         self._ws_connection = None
         self._ws_connected = False
         self._ws_msg_id = 1  # Contador de mensajes WebSocket
@@ -36,11 +36,12 @@ class HomeAssistantClient:
         Returns:
             Active aiohttp.ClientSession instance.
         """
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                headers=self.headers,
-                timeout=aiohttp.ClientTimeout(total=self.timeout)
-            )
+        async with self._session_lock:
+            if self._session is None or self._session.closed:
+                self._session = aiohttp.ClientSession(
+                    headers=self.headers,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout)
+                )
         return self._session
 
     # ==================== REST API ====================
@@ -168,6 +169,7 @@ class HomeAssistantClient:
                     await self._reload_automations()
                     logger.info(f"Automatizacion eliminada: {automation_id}")
                     return True
+                logger.warning(f"Delete automation {automation_id} returned status {response.status}")
                 return False
         except Exception as e:
             logger.error(f"Error eliminando automatizacion: {e}")
@@ -186,7 +188,8 @@ class HomeAssistantClient:
                 f"{self.url}/api/services/automation/reload",
                 timeout=aiohttp.ClientTimeout(total=5)
             ) as response:
-                pass
+                if response.status not in (200, 204):
+                    logger.warning(f"Automation reload returned status {response.status}")
         except Exception as e:
             logger.error(f"Error reloading automations: {e}")
 
