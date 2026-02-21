@@ -323,96 +323,6 @@ action_aliases:
   bajar: "close_cover"
   baja: "close_cover"
 
-# =============================================================================
-# Spotify Multi-Room - Grupos de Altavoces (estilo Alexa)
-# =============================================================================
-# Permite comandos como:
-#   - "Pon música en la cocina"
-#   - "Pon jazz en toda la casa"
-#   - "Mueve la música al dormitorio"
-#   - "Sube el volumen en el living"
-
-spotify:
-  # Credenciales de Spotify
-  client_id: "${SPOTIFY_CLIENT_ID}"
-  client_secret: "${SPOTIFY_CLIENT_SECRET}"
-  redirect_uri: "http://localhost:8888/callback"
-  tokens_path: "./data/spotify_tokens.json"
-
-  # Configuración de altavoces
-  speaker_groups:
-    enabled: true
-    config_path: "./data/speaker_groups.json"
-    auto_discover: true  # Descubrir dispositivos Spotify automáticamente
-
-    # Mapeo de speakers a dispositivos Spotify
-    # El "spotify_device_name" es el nombre como aparece en Spotify
-    speakers:
-      kitchen:
-        name: "Bocina Cocina"
-        spotify_device_name: "Echo Dot Cocina"  # Nombre en Spotify Connect
-        room: "cocina"
-        floor: "planta_baja"
-        zone_id: "zone_1"  # Para MA1260
-        aliases: ["cocina", "kitchen"]
-        volume_offset: 0
-
-      living:
-        name: "Bocina Sala"
-        spotify_device_name: "Echo Studio Sala"
-        room: "sala"
-        floor: "planta_baja"
-        zone_id: "zone_2"
-        is_default: true  # Speaker principal
-        aliases: ["sala", "living", "sala de estar"]
-        volume_offset: -5  # Un poco más bajo que otros
-
-      bedroom:
-        name: "Bocina Dormitorio"
-        spotify_device_name: "Echo Dot Dormitorio"
-        room: "dormitorio"
-        floor: "planta_alta"
-        zone_id: "zone_3"
-        aliases: ["dormitorio", "cuarto", "habitación", "bedroom"]
-        volume_offset: -10  # Más bajo para la noche
-
-      bathroom:
-        name: "Bocina Baño"
-        spotify_device_name: "Sonos Baño"
-        room: "baño"
-        floor: "planta_alta"
-        zone_id: "zone_4"
-        aliases: ["baño", "bathroom"]
-        supports_spotify: true
-        volume_offset: 5  # Un poco más alto por el ruido del agua
-
-    # Grupos predefinidos
-    groups:
-      downstairs:
-        name: "Planta Baja"
-        type: "floor"
-        speakers: ["kitchen", "living"]
-        aliases: ["abajo", "primer piso", "planta baja"]
-
-      upstairs:
-        name: "Planta Alta"
-        type: "floor"
-        speakers: ["bedroom", "bathroom"]
-        aliases: ["arriba", "segundo piso", "planta alta"]
-
-      social:
-        name: "Área Social"
-        type: "zone"
-        speakers: ["kitchen", "living"]
-        aliases: ["área social", "para la fiesta"]
-
-      # "toda la casa" se crea automáticamente
-
-  # Modo seguimiento - la música sigue al usuario
-  follow_mode:
-    enabled: false  # Activar con "activa modo seguimiento"
-    detect_by: "voice"  # voice, motion, speaker_id
-
 # Latency Targets (ms)
 latency_targets:
   wake_word: 10
@@ -730,6 +640,87 @@ spotify:
     paused: "Música pausada"
     resumed: "Continuando reproducción"
     no_devices: "No hay dispositivos de Spotify activos"
+
+  # ---------------------------------------------------------------------------
+  # Multi-Room - Grupos de Altavoces (estilo Alexa)
+  # ---------------------------------------------------------------------------
+  # Permite comandos como:
+  #   - "Pon música en la cocina"
+  #   - "Pon jazz en toda la casa"
+  #   - "Mueve la música al dormitorio"
+  #   - "Sube el volumen en el living"
+  speaker_groups:
+    enabled: true
+    config_path: "./data/speaker_groups.json"
+    auto_discover: true  # Descubrir dispositivos Spotify automáticamente
+
+    # Mapeo de speakers a dispositivos Spotify
+    # El "spotify_device_name" es el nombre como aparece en Spotify
+    speakers:
+      kitchen:
+        name: "Bocina Cocina"
+        spotify_device_name: "Echo Dot Cocina"  # Nombre en Spotify Connect
+        room: "cocina"
+        floor: "planta_baja"
+        zone_id: "zone_1"  # Para MA1260
+        aliases: ["cocina", "kitchen"]
+        volume_offset: 0
+
+      living:
+        name: "Bocina Sala"
+        spotify_device_name: "Echo Studio Sala"
+        room: "sala"
+        floor: "planta_baja"
+        zone_id: "zone_2"
+        is_default: true  # Speaker principal
+        aliases: ["sala", "living", "sala de estar"]
+        volume_offset: -5  # Un poco más bajo que otros
+
+      bedroom:
+        name: "Bocina Dormitorio"
+        spotify_device_name: "Echo Dot Dormitorio"
+        room: "dormitorio"
+        floor: "planta_alta"
+        zone_id: "zone_3"
+        aliases: ["dormitorio", "cuarto", "habitación", "bedroom"]
+        volume_offset: -10  # Más bajo para la noche
+
+      bathroom:
+        name: "Bocina Baño"
+        spotify_device_name: "Sonos Baño"
+        room: "baño"
+        floor: "planta_alta"
+        zone_id: "zone_4"
+        aliases: ["baño", "bathroom"]
+        supports_spotify: true
+        volume_offset: 5  # Un poco más alto por el ruido del agua
+
+    # Grupos predefinidos
+    groups:
+      downstairs:
+        name: "Planta Baja"
+        type: "floor"
+        speakers: ["kitchen", "living"]
+        aliases: ["abajo", "primer piso", "planta baja"]
+
+      upstairs:
+        name: "Planta Alta"
+        type: "floor"
+        speakers: ["bedroom", "bathroom"]
+        aliases: ["arriba", "segundo piso", "planta alta"]
+
+      social:
+        name: "Área Social"
+        type: "zone"
+        speakers: ["kitchen", "living"]
+        aliases: ["área social", "para la fiesta"]
+
+      # "toda la casa" se crea automáticamente
+
+  # Modo seguimiento - la música sigue al usuario
+  follow_mode:
+    enabled: false  # Activar con "activa modo seguimiento"
+    detect_by: "voice"  # voice, motion, speaker_id
 
 # =============================================================================
 # Room Context (Micrófono + Bluetooth por habitación)

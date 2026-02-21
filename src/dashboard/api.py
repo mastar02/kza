@@ -534,7 +534,7 @@ class DashboardAPI:
                 "components": {
                     "scheduler": self.scheduler is not None,
                     "presence": self.presence is not None,
-                    "home_assistant": self.ha is not None and self.ha.test_connection()
+                    "home_assistant": self.ha is not None and await self.ha.test_connection()
                 },
                 "routines_count": len(self.scheduler.get_all_routines()) if self.scheduler else 0
             }

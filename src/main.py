@@ -39,6 +39,11 @@ from src.audio.ma1260_controller import MA1260Controller, MA1260Source
 from src.audio.echo_suppressor import EchoSuppressor
 from src.conversation.follow_up_mode import FollowUpMode
 from src.orchestrator import MultiUserOrchestrator
+from src.timers.named_timers import NamedTimerManager
+from src.intercom.intercom_system import IntercomSystem
+from src.notifications.smart_notifications import SmartNotificationManager
+from src.alerts.alert_manager import AlertManager
+from src.alerts.alert_scheduler import AlertScheduler
 
 # Configurar logging
 logging.basicConfig(
@@ -349,8 +354,48 @@ async def main():
         suggestion_interval=analytics_config.get("suggestion_interval", 20),
     )
 
-    # Feature manager (timers, intercom, notifications, alerts — not yet wired)
-    feature_manager = FeatureManager()
+    # Feature subsystems (timers, intercom, notifications, alerts)
+    alerts_config = config.get("alerts", {})
+    alert_manager = None
+    alert_scheduler = None
+    timer_manager = None
+    intercom = None
+    notifications = None
+
+    if alerts_config.get("enabled", True):
+        general = alerts_config.get("general", {})
+        alert_manager = AlertManager(
+            cooldown_seconds=general.get("cooldown_seconds", 300.0),
+            max_history=general.get("max_history", 1000),
+        )
+
+        sched = alerts_config.get("scheduler", {})
+        if sched.get("enabled", True):
+            alert_scheduler = AlertScheduler(
+                alert_manager=alert_manager,
+                security_interval=sched.get("security_interval_seconds", 60.0),
+                pattern_interval=sched.get("pattern_interval_seconds", 300.0),
+                device_interval=sched.get("device_interval_seconds", 600.0),
+            )
+        logger.info("Alert system enabled")
+
+    timer_manager = NamedTimerManager()
+    intercom = IntercomSystem(
+        zone_manager=zone_manager,
+        ha_client=ha_client,
+    )
+    notifications = SmartNotificationManager(
+        user_manager=user_manager,
+        ha_client=ha_client,
+    )
+
+    feature_manager = FeatureManager(
+        timer_manager=timer_manager,
+        intercom=intercom,
+        notifications=notifications,
+        alert_manager=alert_manager,
+        alert_scheduler=alert_scheduler,
+    )
 
     # Assemble the slim VoicePipeline
     pipeline = VoicePipeline(
