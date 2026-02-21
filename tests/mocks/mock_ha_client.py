@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock
 
 
 class MockHomeAssistantClient:
-    """Mock implementation of HomeAssistantClient for testing"""
+    """Mock implementation of HomeAssistantClient for testing.
+
+    All methods are async to match the real HomeAssistantClient interface.
+    """
 
     def __init__(self):
         self.url = "http://localhost:8123"
@@ -62,10 +65,10 @@ class MockHomeAssistantClient:
             }
         ]
 
-    def get_all_entities(self) -> list[dict]:
+    async def get_all_entities(self) -> list[dict]:
         return self._entities
 
-    def get_all_services(self) -> list[dict]:
+    async def get_all_services(self) -> list[dict]:
         return [
             {
                 "domain": "light",
@@ -93,13 +96,13 @@ class MockHomeAssistantClient:
             }
         ]
 
-    def get_entity_state(self, entity_id: str) -> Optional[dict]:
+    async def get_entity_state(self, entity_id: str) -> Optional[dict]:
         for entity in self._entities:
             if entity["entity_id"] == entity_id:
                 return entity
         return None
 
-    def call_service(
+    async def call_service(
         self,
         domain: str,
         service: str,
@@ -126,14 +129,14 @@ class MockHomeAssistantClient:
 
         return False
 
-    def get_domotics_entities(self) -> list[dict]:
+    async def get_domotics_entities(self) -> list[dict]:
         domotics_domains = ["light", "switch", "cover", "climate"]
         return [
             e for e in self._entities
             if e["entity_id"].split(".")[0] in domotics_domains
         ]
 
-    def test_connection(self) -> bool:
+    async def test_connection(self) -> bool:
         return True
 
     async def connect_websocket(self) -> bool:
@@ -147,7 +150,7 @@ class MockHomeAssistantClient:
         entity_id: str,
         data: Optional[dict] = None
     ) -> bool:
-        return self.call_service(domain, service, entity_id, data)
+        return await self.call_service(domain, service, entity_id, data)
 
     async def close(self):
         self._ws_connected = False
