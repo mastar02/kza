@@ -9,8 +9,10 @@ Módulos:
 - voice_pipeline: Coordinador principal (orquestación)
 - model_manager: Gestión centralizada de modelos GPU (carga/descarga)
 - feature_manager: Lifecycle for timers, intercom, notifications, alerts, HA
+- audio_loop: Main audio capture and wake word detection loop
 """
 
+from src.pipeline.audio_loop import AudioLoop
 from src.pipeline.audio_manager import AudioManager
 from src.pipeline.command_processor import CommandProcessor
 from src.pipeline.response_handler import ResponseHandler
@@ -27,6 +29,7 @@ from src.pipeline.model_manager import (
 )
 
 __all__ = [
+    "AudioLoop",
     "AudioManager",
     "CommandProcessor",
     "ResponseHandler",

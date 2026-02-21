@@ -9,9 +9,9 @@ import time
 from typing import Optional
 
 import numpy as np
-import sounddevice as sd
 
 from src.pipeline.audio_manager import AudioManager
+from src.pipeline.audio_loop import AudioLoop
 from src.pipeline.command_processor import CommandProcessor
 from src.pipeline.response_handler import ResponseHandler
 from src.orchestrator import (
@@ -105,6 +105,7 @@ class VoicePipeline:
         suggestion_engine=None,
         zone_manager=None,
         features=None,             # FeatureManager (timers, intercom, alerts, etc.)
+        audio_loop=None,           # AudioLoop (extracted audio capture loop)
         # ===== NUEVAS FUNCIONALIDADES DIFERENCIADORES =====
         weather_provider=None,     # Para briefings
         calendar_provider=None,    # Para briefings
@@ -312,6 +313,9 @@ class VoicePipeline:
         self.features = features
         if features:
             logger.info("FeatureManager injected")
+
+        # 7. AudioLoop (extracted audio capture loop)
+        self.audio_loop = audio_loop
 
     async def process_command(self, audio: np.ndarray) -> dict:
         """
@@ -1006,11 +1010,7 @@ Asistente:"""
         # Sincronizar entidades de Home Assistant
         await self.sync_entities_from_ha()
 
-        # Iniciar detector ambiental
-        if self.ambient_detector:
-            await self.ambient_detector.initialize()
-            await self.ambient_detector.start()
-            logger.info("🔔 Detección ambiental activa")
+        # Ambient detector initialization is handled by AudioLoop.start()
 
         # Iniciar análisis de patrones en background
         if self.pattern_learner:
@@ -1022,137 +1022,69 @@ Asistente:"""
             await self.features.start()
             logger.info("FeatureManager started")
 
-        CHUNK_SIZE = 1280
-        audio_buffer = []
-        listening_for_command = False
-        command_start_time = None
-        ambient_buffer = []  # Buffer para detección ambiental
-
-        logger.info(f"\n🎤 Sistema listo. Wake word: '{self.audio_manager.wake_word_model}'")
-        logger.info(f"   Target latency: {self.latency_target_ms}ms")
-        logger.info(f"   ✨ Follow-up mode: {self.follow_up.follow_up_window}s window")
-        logger.info(f"   ✨ Ambient detection: {'ON' if self.ambient_detector else 'OFF'}")
-        logger.info(f"   ✨ Pattern learning: {'ON' if self.pattern_learner else 'OFF'}")
-        logger.info(f"   🔇 Echo suppression: ON (cooldown={self.echo_suppressor.config.post_speech_buffer_ms}ms)")
-        logger.info(f"   Features: {'ON' if self.features else 'OFF'}\n")
+        logger.info(f"Sistema listo. Target latency: {self.latency_target_ms}ms")
+        logger.info(f"  Pattern learning: {'ON' if self.pattern_learner else 'OFF'}")
+        logger.info(f"  Features: {'ON' if self.features else 'OFF'}")
 
         self._running = True
 
-        def audio_callback(indata, frames, time_info, status):
-            nonlocal audio_buffer, listening_for_command, command_start_time, ambient_buffer
+        # ===== AUDIO LOOP =====
+        if self.audio_loop:
+            # Register command callback
+            self.audio_loop.on_command(self.process_command)
 
-            audio_chunk = indata[:, 0].copy()
+            # Register post-command callback for learning and follow-up
+            self.audio_loop.on_post_command(self._post_command_handler)
 
-            # ===== SUPRESIÓN DE ECO =====
-            # Si KZA está hablando, ignorar el audio del mic
-            if not self.echo_suppressor.is_safe_to_listen:
-                # No procesar audio mientras KZA habla (evita eco)
-                return
+            # Start audio subsystems (wake word, ambient)
+            await self.audio_loop.start()
 
-            # Verificar si el audio capturado es eco del TTS
-            should_process, reason = self.echo_suppressor.should_process_audio(audio_chunk)
-            if not should_process:
-                if reason == "echo_detected":
-                    logger.debug("🔇 Echo detectado, ignorando audio")
-                return
+            # Run the audio loop (blocks until stop)
+            await self.audio_loop.run()
+        else:
+            logger.warning("No AudioLoop configured — pipeline running without audio capture")
 
-            # Acumular para detección ambiental (siempre activo)
-            ambient_buffer.extend(audio_chunk)
+    async def _post_command_handler(self, result: dict, audio_data: np.ndarray):
+        """
+        Post-command processing after AudioLoop captures and processes a command.
 
-            if not listening_for_command:
-                # Detectar wake word
-                detection = self.audio_manager.detect_wake_word(audio_chunk)
+        Handles pattern learning, entity alias learning, follow-up notifications,
+        and question detection for conversation window extension.
 
-                if detection:
-                    listening_for_command = True
-                    command_start_time = time.time()
-                    audio_buffer = []
-                    # Iniciar conversación
-                    self.start_conversation()
+        Args:
+            result: Command processing result dict.
+            audio_data: Raw audio data of the captured command.
+        """
+        # Learn from the action
+        if result.get("success") and result.get("action"):
+            action = result["action"]
+            user = result.get("user", {})
 
-                # NUEVO: Follow-up mode - aceptar sin wake word si conversación activa
-                elif self.follow_up.is_active:
-                    # Detectar si hay habla (VAD simple)
-                    rms = np.sqrt(np.mean(audio_chunk ** 2))
-                    if rms > 0.02:  # Umbral de actividad
-                        # Verificar que no sea la propia voz de KZA
-                        if self.echo_suppressor.is_human_voice(audio_chunk):
-                            listening_for_command = True
-                            command_start_time = time.time()
-                            audio_buffer = []
-                            logger.debug("Follow-up: capturando sin wake word")
-            else:
-                audio_buffer.extend(audio_chunk)
+            # Record for pattern learning
+            self.record_user_action(
+                action_type=f"{action.get('domain', 'unknown')}_{action.get('service', 'unknown')}",
+                entity_id=action.get("entity_id", ""),
+                user_id=user.get("user_id"),
+                data=action.get("data")
+            )
 
-        stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype='float32',
-            blocksize=CHUNK_SIZE,
-            callback=audio_callback
+            # Learn alias if natural language was used
+            if result.get("text"):
+                self.learn_entity_alias(
+                    text=result["text"],
+                    entity_id=action.get("entity_id", ""),
+                    user_id=user.get("user_id")
+                )
+
+        # Notify follow-up mode
+        self.notify_user_spoke(
+            result.get("text", ""),
+            result.get("user", {}).get("user_id")
         )
 
-        with stream:
-            while self._running:
-                await asyncio.sleep(0.05)
-
-                # ===== DETECCIÓN AMBIENTAL (en paralelo) =====
-                if self.ambient_detector and len(ambient_buffer) >= self.sample_rate:
-                    # Procesar 1 segundo de audio
-                    chunk = np.array(ambient_buffer[:self.sample_rate], dtype=np.float32)
-                    ambient_buffer = ambient_buffer[self.sample_rate:]
-
-                    # Analizar en background (no bloquea)
-                    asyncio.create_task(self.analyze_ambient_audio(chunk))
-
-                # ===== PROCESAMIENTO DE COMANDOS =====
-                if listening_for_command:
-                    # OPTIMIZACIÓN: Usar VAD temprano para detectar fin de habla
-                    is_complete, elapsed_ms, audio_data, early_exit = self.audio_manager.capture_command_with_vad(
-                        audio_buffer,
-                        command_start_time,
-                        silence_threshold=0.015,
-                        silence_duration_ms=300,
-                        min_speech_ms=300
-                    )
-
-                    if is_complete and audio_data is not None:
-                        if early_exit:
-                            logger.debug(f"VAD early exit: comando capturado en {elapsed_ms:.0f}ms")
-
-                        # Procesar comando
-                        result = await self.process_command(audio_data)
-
-                        # ===== APRENDER DE LA ACCIÓN =====
-                        if result.get("success") and result.get("action"):
-                            action = result["action"]
-                            user = result.get("user", {})
-
-                            # Registrar para aprendizaje de patrones
-                            self.record_user_action(
-                                action_type=f"{action.get('domain', 'unknown')}_{action.get('service', 'unknown')}",
-                                entity_id=action.get("entity_id", ""),
-                                user_id=user.get("user_id"),
-                                data=action.get("data")
-                            )
-
-                            # Aprender alias si se usó lenguaje natural
-                            if result.get("text"):
-                                self.learn_entity_alias(
-                                    text=result["text"],
-                                    entity_id=action.get("entity_id", ""),
-                                    user_id=user.get("user_id")
-                                )
-
-                        # Notificar al follow-up mode
-                        self.notify_user_spoke(result.get("text", ""), result.get("user", {}).get("user_id"))
-
-                        # Si KZA respondió con pregunta, extender ventana
-                        asked_question = "?" in result.get("response", "")
-                        self.notify_kza_responded(asked_question=asked_question)
-
-                        listening_for_command = False
-                        audio_buffer = []
+        # If KZA responded with a question, extend follow-up window
+        asked_question = "?" in result.get("response", "")
+        self.notify_kza_responded(asked_question=asked_question)
 
     async def stop(self):
         """Detener pipeline."""
@@ -1164,9 +1096,9 @@ Asistente:"""
         if self.routine_scheduler:
             await self.routine_scheduler.stop()
 
-        # Detener nuevas funcionalidades
-        if self.ambient_detector:
-            await self.ambient_detector.stop()
+        # Stop audio loop (handles ambient detector)
+        if self.audio_loop:
+            await self.audio_loop.stop()
 
         if self.follow_up.is_active:
             self.follow_up.end_conversation("shutdown")
@@ -1458,12 +1390,6 @@ Asistente:"""
             self.response_handler.speak(alerts[event.event_type], priority=True)
 
             # TODO: Enviar notificación push, activar cámaras, etc.
-
-    async def analyze_ambient_audio(self, audio_chunk) -> list:
-        """Analizar chunk de audio para eventos ambientales"""
-        if not self.ambient_detector:
-            return []
-        return await self.ambient_detector.analyze_chunk(audio_chunk)
 
     def configure_ambient_event(self, event_type: str, enabled: bool = None, sensitivity: float = None):
         """Configurar detección de un tipo de evento"""
