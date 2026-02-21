@@ -2,8 +2,8 @@
 Integration tests for Voice Pipeline.
 
 These tests verify the pipeline's end-to-end behavior using mocks
-for external dependencies. After the RequestRouter extraction,
-process_command delegates to RequestRouter.
+for external dependencies. After the slim-pipeline refactor,
+VoicePipeline receives pre-built components via DI.
 """
 
 import sys
@@ -25,36 +25,58 @@ class TestVoicePipelineIntegration:
 
     @pytest.fixture
     def pipeline(self, mock_stt, mock_tts, mock_chroma, mock_routine_manager, mock_ha_client, mock_llm):
-        """Create a pipeline with mocked dependencies and a RequestRouter"""
+        """Create a slim pipeline with pre-built mocked components."""
         from src.pipeline.voice_pipeline import VoicePipeline
+        from src.pipeline.command_processor import CommandProcessor
+        from src.pipeline.response_handler import ResponseHandler
+        from src.pipeline.audio_manager import AudioManager
         from src.pipeline.request_router import RequestRouter
 
-        vp = VoicePipeline(
+        # Build components externally (as main.py will do)
+        command_processor = CommandProcessor(
             stt=mock_stt,
-            tts=mock_tts,
-            chroma_sync=mock_chroma,
-            routine_manager=mock_routine_manager,
-            ha_client=mock_ha_client,
-            llm_reasoner=mock_llm,
-            fast_router=None,
-            latency_target_ms=300,
-            orchestrator_enabled=False,  # Use legacy path for integration tests
+            sample_rate=16000,
         )
 
-        # Create RequestRouter and wire it into the pipeline
+        response_handler = ResponseHandler(
+            tts=mock_tts,
+        )
+
+        audio_manager = AudioManager(
+            sample_rate=16000,
+        )
+
         router = RequestRouter(
-            command_processor=vp.command_processor,
-            response_handler=vp.response_handler,
-            audio_manager=vp.audio_manager,
+            command_processor=command_processor,
+            response_handler=response_handler,
+            audio_manager=audio_manager,
             orchestrator_enabled=False,
             chroma_sync=mock_chroma,
             ha_client=mock_ha_client,
             llm_reasoner=mock_llm,
             routine_manager=mock_routine_manager,
-            vector_search_threshold=vp.vector_search_threshold,
-            latency_target_ms=vp.latency_target_ms,
+            vector_search_threshold=0.65,
+            latency_target_ms=300,
         )
-        vp.request_router = router
+
+        audio_loop = MagicMock()
+        audio_loop.start = AsyncMock()
+        audio_loop.run = AsyncMock()
+        audio_loop.stop = AsyncMock()
+        audio_loop.on_command = MagicMock()
+
+        feature_manager = MagicMock()
+        feature_manager.start = AsyncMock()
+        feature_manager.stop = AsyncMock()
+
+        vp = VoicePipeline(
+            audio_loop=audio_loop,
+            command_processor=command_processor,
+            request_router=router,
+            response_handler=response_handler,
+            feature_manager=feature_manager,
+            chroma_sync=mock_chroma,
+        )
         return vp
 
     @pytest.mark.asyncio
@@ -152,20 +174,17 @@ class TestVoicePipelineIntegration:
         assert "stt" in result["timings"]
 
     @pytest.mark.asyncio
-    async def test_no_router_returns_error(self, mock_stt, mock_tts, mock_chroma, mock_routine_manager, mock_ha_client, mock_llm, sample_audio):
+    async def test_no_router_returns_error(self, sample_audio):
         """Test that pipeline without request_router returns error"""
         from src.pipeline.voice_pipeline import VoicePipeline
 
         vp = VoicePipeline(
-            stt=mock_stt,
-            tts=mock_tts,
-            chroma_sync=mock_chroma,
-            routine_manager=mock_routine_manager,
-            ha_client=mock_ha_client,
-            llm_reasoner=mock_llm,
-            fast_router=None,
+            audio_loop=MagicMock(),
+            command_processor=MagicMock(),
+            request_router=None,
+            response_handler=MagicMock(),
+            feature_manager=MagicMock(),
         )
-        # No request_router set
         result = await vp.process_command(sample_audio)
 
         assert result["success"] is False
