@@ -41,9 +41,9 @@ class VoicePipeline:
         request_router: RequestRouter,
         response_handler: ResponseHandler,
         feature_manager: FeatureManager,
-        chroma_sync=None,
-        memory_manager=None,
-        orchestrator=None,
+        chroma_sync: Optional[object] = None,
+        memory_manager: Optional[object] = None,
+        orchestrator: Optional[object] = None,
     ):
         """
         Initialize VoicePipeline with pre-built components.

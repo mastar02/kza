@@ -13,26 +13,32 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-# Agregar src al path
-sys.path.insert(0, str(Path(__file__).parent))
-
-from stt.whisper_fast import create_stt
-from tts.piper_tts import create_tts
-from vectordb.chroma_sync import ChromaSync
-from home_assistant.ha_client import HomeAssistantClient
-from llm.reasoner import LLMReasoner, FastRouter
-from routines.routine_manager import RoutineManager
-from pipeline.voice_pipeline import VoicePipeline
-from memory.memory_manager import MemoryManager
-from users.speaker_identifier import SpeakerIdentifier
-from users.user_manager import UserManager
-from users.voice_enrollment import VoiceEnrollment
-from monitoring.latency_monitor import LatencyMonitor
-from analytics.event_logger import EventLogger
-from analytics.pattern_analyzer import PatternAnalyzer
-from analytics.suggestion_engine import SuggestionEngine
-from audio.zone_manager import ZoneManager, Zone
-from audio.ma1260_controller import MA1260Controller, MA1260Source
+from src.stt.whisper_fast import create_stt
+from src.tts.piper_tts import create_tts
+from src.vectordb.chroma_sync import ChromaSync
+from src.home_assistant.ha_client import HomeAssistantClient
+from src.llm.reasoner import LLMReasoner, FastRouter
+from src.routines.routine_manager import RoutineManager
+from src.pipeline.voice_pipeline import VoicePipeline
+from src.pipeline.audio_loop import AudioLoop
+from src.pipeline.audio_manager import AudioManager
+from src.pipeline.command_processor import CommandProcessor
+from src.pipeline.response_handler import ResponseHandler
+from src.pipeline.feature_manager import FeatureManager
+from src.pipeline.request_router import RequestRouter
+from src.memory.memory_manager import MemoryManager
+from src.users.speaker_identifier import SpeakerIdentifier
+from src.users.user_manager import UserManager
+from src.users.voice_enrollment import VoiceEnrollment
+from src.monitoring.latency_monitor import LatencyMonitor
+from src.analytics.event_logger import EventLogger
+from src.analytics.pattern_analyzer import PatternAnalyzer
+from src.analytics.suggestion_engine import SuggestionEngine
+from src.audio.zone_manager import ZoneManager, Zone
+from src.audio.ma1260_controller import MA1260Controller, MA1260Source
+from src.audio.echo_suppressor import EchoSuppressor
+from src.conversation.follow_up_mode import FollowUpMode
+from src.orchestrator import MultiUserOrchestrator
 
 # Configurar logging
 logging.basicConfig(
@@ -46,7 +52,7 @@ def load_config(config_path: str = "config/settings.yaml") -> dict:
     """Cargar configuración desde YAML"""
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
-    
+
     # Reemplazar variables de entorno
     def replace_env_vars(obj):
         if isinstance(obj, str) and obj.startswith("${") and obj.endswith("}"):
@@ -57,53 +63,53 @@ def load_config(config_path: str = "config/settings.yaml") -> dict:
         elif isinstance(obj, list):
             return [replace_env_vars(item) for item in obj]
         return obj
-    
+
     return replace_env_vars(config)
 
 
 async def main():
     """Entry point principal"""
-    
+
     # Cargar variables de entorno
     load_dotenv()
-    
+
     # Cargar configuración
     config_path = os.getenv("CONFIG_PATH", "config/settings.yaml")
     logger.info(f"Cargando configuración: {config_path}")
     config = load_config(config_path)
-    
+
     # Verificar Home Assistant
     ha_config = config.get("home_assistant", {})
     ha_url = ha_config.get("url")
     ha_token = ha_config.get("token")
-    
+
     if not ha_url or not ha_token or ha_token.startswith("${"):
-        logger.error("❌ Configura HOME_ASSISTANT_URL y HOME_ASSISTANT_TOKEN")
+        logger.error("Configura HOME_ASSISTANT_URL y HOME_ASSISTANT_TOKEN")
         logger.error("   Copia .env.example a .env y completa los valores")
         sys.exit(1)
-    
+
     # Crear componentes
     logger.info("Inicializando componentes...")
-    
+
     # Home Assistant Client
     ha_client = HomeAssistantClient(
         url=ha_url,
         token=ha_token,
         timeout=ha_config.get("timeout", 2.0)
     )
-    
-    # Verificar conexión
-    if not ha_client.test_connection():
-        logger.error(f"❌ No se puede conectar a Home Assistant: {ha_url}")
+
+    # Verificar conexión (async)
+    if not await ha_client.test_connection():
+        logger.error(f"No se puede conectar a Home Assistant: {ha_url}")
         sys.exit(1)
-    logger.info(f"✅ Conectado a Home Assistant: {ha_url}")
-    
+    logger.info(f"Conectado a Home Assistant: {ha_url}")
+
     # Speech-to-Text
     stt = create_stt(config.get("stt", {}))
-    
+
     # Text-to-Speech
     tts = create_tts(config.get("tts", {}))
-    
+
     # Vector Database
     vectordb_config = config.get("vectordb", {})
     embeddings_config = config.get("embeddings", {})
@@ -112,13 +118,13 @@ async def main():
         embedder_model=embeddings_config.get("model", "BAAI/bge-small-en-v1.5"),
         embedder_device=embeddings_config.get("device", "cuda:1")
     )
-    
+
     # LLM Reasoner
     reasoner_config = config.get("reasoner", {})
     model_path = reasoner_config.get("model_path")
-    
+
     if not model_path or not Path(model_path).exists():
-        logger.warning(f"⚠️ Modelo LLM no encontrado: {model_path}")
+        logger.warning(f"Modelo LLM no encontrado: {model_path}")
         logger.warning("   Ejecuta: ./scripts/download_models.sh")
         llm = None
     else:
@@ -127,7 +133,7 @@ async def main():
             n_ctx=reasoner_config.get("n_ctx", 8192),
             n_threads=reasoner_config.get("n_threads", 24)
         )
-    
+
     # Routine Manager
     routine_manager = RoutineManager(ha_client, chroma, llm)
 
@@ -186,7 +192,7 @@ async def main():
     latency_monitor = None
     if monitoring_config.get("enabled", True):
         def on_latency_alert(record):
-            logger.warning(f"⚠️ Latencia alta: {record.total_ms:.0f}ms (target: {record.target_ms}ms)")
+            logger.warning(f"Latencia alta: {record.total_ms:.0f}ms (target: {record.target_ms}ms)")
 
         latency_monitor = LatencyMonitor(
             db_path=monitoring_config.get("db_path", "./data/latency.db"),
@@ -257,42 +263,112 @@ async def main():
         )
         logger.info(f"Multi-zone audio habilitado ({len(zone_list)} zonas)")
 
-    # Voice Pipeline
+    # ----------------------------------------------------------------
+    # Build pipeline components (DI chain)
+    # ----------------------------------------------------------------
+
+    # TTS / streaming config
     tts_config = config.get("tts", {})
     streaming_config = tts_config.get("streaming", {})
 
-    pipeline = VoicePipeline(
+    # Audio manager (wake word + VAD)
+    audio_manager = AudioManager(
+        zone_manager=zone_manager,
+        wake_word_model=wake_config.get("model", "hey_jarvis"),
+        wake_word_threshold=wake_config.get("threshold", 0.5),
+        sample_rate=16000,
+        command_duration=2.0,
+    )
+
+    # Command processor (STT + speaker ID + emotion)
+    command_processor = CommandProcessor(
         stt=stt,
+        speaker_identifier=speaker_identifier,
+        user_manager=user_manager,
+        emotion_detector=None,  # TODO: add emotion detector
+        sample_rate=16000,
+    )
+
+    # Response handler (TTS + streaming + zone routing)
+    response_handler = ResponseHandler(
         tts=tts,
+        zone_manager=zone_manager,
+        llm=llm,
+        streaming_enabled=streaming_config.get("enabled", True),
+        streaming_buffer_ms=streaming_config.get("buffer_ms", 150),
+        streaming_prebuffer_ms=streaming_config.get("prebuffer_ms", 80),
+    )
+
+    # Echo suppressor and follow-up mode (needed by AudioLoop)
+    echo_suppressor = EchoSuppressor(sample_rate=16000)
+    follow_up = FollowUpMode(follow_up_window=8.0)
+
+    # Audio loop (capture + wake word + echo suppression + follow-up)
+    audio_loop = AudioLoop(
+        audio_manager=audio_manager,
+        echo_suppressor=echo_suppressor,
+        follow_up=follow_up,
+        sample_rate=16000,
+    )
+
+    # Multi-user orchestrator (optional)
+    orchestrator = None
+    orchestrator_enabled = config.get("orchestrator", {}).get("enabled", True)
+    if orchestrator_enabled:
+        orchestrator = MultiUserOrchestrator(
+            chroma_sync=chroma,
+            ha_client=ha_client,
+            routine_manager=routine_manager,
+            router=fast_router,
+            llm=llm,
+            tts=tts,
+            speaker_identifier=speaker_identifier,
+            user_manager=user_manager,
+        )
+
+    # Request router (command routing: orchestrated + legacy paths)
+    request_router = RequestRouter(
+        command_processor=command_processor,
+        response_handler=response_handler,
+        audio_manager=audio_manager,
+        orchestrator=orchestrator,
+        orchestrator_enabled=orchestrator_enabled,
         chroma_sync=chroma,
-        routine_manager=routine_manager,
         ha_client=ha_client,
         llm_reasoner=llm,
         fast_router=fast_router,
         memory_manager=memory_manager,
-        speaker_identifier=speaker_identifier,
         user_manager=user_manager,
-        voice_enrollment=voice_enrollment,
-        latency_monitor=latency_monitor,
+        enrollment=voice_enrollment,
         event_logger=event_logger,
         suggestion_engine=suggestion_engine,
-        zone_manager=zone_manager,
-        wake_word_model=wake_config.get("model", "hey_jarvis"),
-        wake_word_threshold=wake_config.get("threshold", 0.5),
+        latency_monitor=latency_monitor,
+        routine_manager=routine_manager,
         vector_search_threshold=vectordb_config.get("search_threshold", 0.65),
         latency_target_ms=latency_config.get("total", 300),
         suggestion_interval=analytics_config.get("suggestion_interval", 20),
-        # Streaming audio config
-        streaming_enabled=streaming_config.get("enabled", True),
-        streaming_buffer_ms=streaming_config.get("buffer_ms", 150),
-        streaming_prebuffer_ms=streaming_config.get("prebuffer_ms", 80)
     )
-    
+
+    # Feature manager (timers, intercom, notifications, alerts — not yet wired)
+    feature_manager = FeatureManager()
+
+    # Assemble the slim VoicePipeline
+    pipeline = VoicePipeline(
+        audio_loop=audio_loop,
+        command_processor=command_processor,
+        request_router=request_router,
+        response_handler=response_handler,
+        feature_manager=feature_manager,
+        chroma_sync=chroma,
+        memory_manager=memory_manager,
+        orchestrator=orchestrator,
+    )
+
     # Ejecutar
     try:
         await pipeline.run()
     except KeyboardInterrupt:
-        logger.info("\n👋 Deteniendo...")
+        logger.info("\nDeteniendo...")
         await pipeline.stop()
 
 
