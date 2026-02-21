@@ -368,8 +368,8 @@ class KZAHomeAssistantIntegration:
                     "briefings": features_status.get("briefings", {}).get("enabled", False)
                 }
             }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to get features status for HA sensor: {e}")
 
         return sensors
 

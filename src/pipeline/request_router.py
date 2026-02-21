@@ -724,8 +724,8 @@ class RequestRouter:
                 recent = self.memory.get_recent_context(limit=3)
                 if recent:
                     context_parts.append(f"Reciente: {recent}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to get memory context: {e}")
 
         return " | ".join(context_parts) if context_parts else ""
 
@@ -760,8 +760,8 @@ class RequestRouter:
 
             if relevant_states:
                 home_context = "\nEstado del hogar:\n" + "\n".join(relevant_states[:5])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to get HA entity states for prompt: {e}")
 
         system_prompt = f"""Eres un asistente de hogar inteligente. Responde de forma concisa y natural en español.
 Hora actual: {time_context}{home_context}{memory_context}

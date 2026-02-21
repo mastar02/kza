@@ -213,7 +213,7 @@ class BLEScanner:
 
         async with scanner:
             async for device in scanner.scan_continuous():
-                print(f"Detectado: {device.friendly_name or device.address}")
+                logger.debug(f"Detectado: {device.friendly_name or device.address}")
 
     FIX: Soporta iOS MAC randomization mediante fingerprinting de dispositivos.
     """

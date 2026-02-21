@@ -30,6 +30,7 @@ from src.memory.memory_manager import MemoryManager
 from src.users.speaker_identifier import SpeakerIdentifier
 from src.users.user_manager import UserManager
 from src.users.voice_enrollment import VoiceEnrollment
+from src.users.emotion_detector import EmotionDetector
 from src.monitoring.latency_monitor import LatencyMonitor
 from src.analytics.event_logger import EventLogger
 from src.analytics.pattern_analyzer import PatternAnalyzer
@@ -188,6 +189,13 @@ async def main():
         )
         logger.info("Speaker identification habilitado")
 
+    # Emotion Detection (GPU 1 — shared with speaker ID)
+    emotion_detector = EmotionDetector(
+        device=speaker_config.get("device", "cuda:1"),
+        sample_rate=16000,
+    )
+    logger.info("Emotion detector habilitado")
+
     # Voice Pipeline config
     wake_config = config.get("wake_word", {})
     latency_config = config.get("latency_targets", {})
@@ -290,7 +298,7 @@ async def main():
         stt=stt,
         speaker_identifier=speaker_identifier,
         user_manager=user_manager,
-        emotion_detector=None,  # TODO: add emotion detector
+        emotion_detector=emotion_detector,
         sample_rate=16000,
     )
 

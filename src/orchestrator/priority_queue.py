@@ -645,12 +645,12 @@ class RequestProcessor:
             for chunk in self.llm.generate_stream(prompt):
                 # Verificar cancelacion
                 if token.is_cancelled:
-                    raise InterruptedError("Generacion cancelada")
+                    raise GenerationInterruptedError("Generacion cancelada")
 
                 # Verificar si hay peticion de mayor prioridad
                 if self.queue.interrupt_for_priority(priority):
                     token.cancel(CancellationReason.HIGHER_PRIORITY)
-                    raise InterruptedError("Interrumpido por mayor prioridad")
+                    raise GenerationInterruptedError("Interrumpido por mayor prioridad")
 
                 chunks.append(chunk.get("token", ""))
 
@@ -669,6 +669,6 @@ class RequestProcessor:
             return response
 
 
-class InterruptedError(Exception):
+class GenerationInterruptedError(Exception):
     """Error cuando una generacion es interrumpida"""
     pass
