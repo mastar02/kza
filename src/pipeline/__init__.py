@@ -8,12 +8,14 @@ Módulos:
 - response_handler: TTS, streaming, enrutamiento a zonas
 - voice_pipeline: Coordinador principal (orquestación)
 - model_manager: Gestión centralizada de modelos GPU (carga/descarga)
+- feature_manager: Lifecycle for timers, intercom, notifications, alerts, HA
 """
 
 from src.pipeline.audio_manager import AudioManager
 from src.pipeline.command_processor import CommandProcessor
 from src.pipeline.response_handler import ResponseHandler
 from src.pipeline.voice_pipeline import VoicePipeline
+from src.pipeline.feature_manager import FeatureManager
 from src.pipeline.model_manager import (
     ModelManager,
     ModelManagerConfig,
@@ -29,6 +31,7 @@ __all__ = [
     "CommandProcessor",
     "ResponseHandler",
     "VoicePipeline",
+    "FeatureManager",
     "ModelManager",
     "ModelManagerConfig",
     "ModelState",

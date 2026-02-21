@@ -30,17 +30,8 @@ from src.ambient import AudioEventDetector, AudioEventType
 from src.proactive import MorningBriefing, BriefingConfig
 from src.learning import EntityLearner, PatternLearner
 
-# Módulos adicionales de diferenciación
-from src.timers import NamedTimerManager, NamedTimer
-from src.intercom import IntercomSystem, AnnouncementPriority
-from src.notifications import SmartNotificationManager, NotificationPriority
-from src.alerts import AlertManager, AlertScheduler
-
 # Audio processing
 from src.audio import EchoSuppressor, EchoSuppressionConfig, SpeakerState
-
-# Home Assistant integration
-from src.integrations import KZAHomeAssistantIntegration
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +104,7 @@ class VoicePipeline:
         event_logger=None,
         suggestion_engine=None,
         zone_manager=None,
+        features=None,             # FeatureManager (timers, intercom, alerts, etc.)
         # ===== NUEVAS FUNCIONALIDADES DIFERENCIADORES =====
         weather_provider=None,     # Para briefings
         calendar_provider=None,    # Para briefings
@@ -316,47 +308,10 @@ class VoicePipeline:
             self.briefing.on_briefing_ready(self._on_briefing_ready)
             logger.info("Briefings proactivos inicializados")
 
-        # 6. Named Timers (cocina y más)
-        self.timer_manager = NamedTimerManager(
-            tts_callback=lambda text, zone: self.response_handler.speak(text, zone_id=zone),
-            max_timers=20,
-            default_announce_intervals=[60, 30, 10, 5]
-        )
-        logger.info("Sistema de timers inicializado")
-
-        # 7. Intercom / Anuncios
-        self.intercom = IntercomSystem(
-            tts_callback=lambda text, zone: self.response_handler.speak(text, zone_id=zone),
-            zone_manager=zone_manager,
-            ha_client=ha_client
-        )
-        logger.info("Sistema de intercom inicializado")
-
-        # 8. Notificaciones Inteligentes
-        self.notifications = SmartNotificationManager(
-            tts_callback=lambda text, zone: self.response_handler.speak(text, zone_id=zone),
-            presence_detector=presence_detector,
-            user_manager=user_manager,
-            ha_client=ha_client
-        )
-        logger.info("Sistema de notificaciones inicializado")
-
-        # 9. Alertas Proactivas (usa sistema existente)
-        self.alert_manager = AlertManager(
-            tts_callback=lambda msg: self.response_handler.speak(msg, priority=True)
-        )
-        self.alert_scheduler = AlertScheduler(
-            alert_manager=self.alert_manager,
-            ha_client=ha_client
-        )
-        logger.info("Sistema de alertas inicializado")
-
-        # 10. Integración con Home Assistant (sensores y servicios)
-        self.ha_integration = KZAHomeAssistantIntegration(
-            ha_client=ha_client,
-            pipeline=self
-        )
-        logger.info("Integración con Home Assistant inicializada")
+        # 6. Feature Manager (timers, intercom, notifications, alerts, HA integration)
+        self.features = features
+        if features:
+            logger.info("FeatureManager injected")
 
     async def process_command(self, audio: np.ndarray) -> dict:
         """
@@ -570,46 +525,49 @@ class VoicePipeline:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
-        # 6b. Verificar comando de timer
-        timer_result = self.timer_manager.handle_voice_command(
-            text,
-            user_id=user.user_id if user else None,
-            zone_id=self.audio_manager.detect_source_zone(audio) or "default"
-        )
-        if timer_result["handled"]:
-            result["intent"] = "timer"
-            result["response"] = timer_result["response"]
-            result["success"] = True
-            self.response_handler.speak(result["response"])
-            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-            return result
+        # 6b. Verificar comando de timer (via FeatureManager)
+        if self.features and self.features.timer_manager:
+            timer_result = self.features.timer_manager.handle_voice_command(
+                text,
+                user_id=user.user_id if user else None,
+                zone_id=self.audio_manager.detect_source_zone(audio) or "default"
+            )
+            if timer_result["handled"]:
+                result["intent"] = "timer"
+                result["response"] = timer_result["response"]
+                result["success"] = True
+                self.response_handler.speak(result["response"])
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
 
-        # 6c. Verificar comando de intercom/anuncio
-        intercom_result = self.intercom.handle_voice_command(
-            text,
-            user_id=user.user_id if user else None,
-            source_zone=self.audio_manager.detect_source_zone(audio)
-        )
-        if intercom_result["handled"]:
-            result["intent"] = "intercom"
-            result["response"] = intercom_result["response"]
-            result["success"] = True
-            self.response_handler.speak(result["response"])
-            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-            return result
+        # 6c. Verificar comando de intercom/anuncio (via FeatureManager)
+        if self.features and self.features.intercom:
+            intercom_result = self.features.intercom.handle_voice_command(
+                text,
+                user_id=user.user_id if user else None,
+                source_zone=self.audio_manager.detect_source_zone(audio)
+            )
+            if intercom_result["handled"]:
+                result["intent"] = "intercom"
+                result["response"] = intercom_result["response"]
+                result["success"] = True
+                self.response_handler.speak(result["response"])
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
 
-        # 6d. Verificar comando de notificaciones (DND, etc.)
-        notif_result = self.notifications.handle_voice_command(
-            text,
-            user_id=user.user_id if user else None
-        )
-        if notif_result["handled"]:
-            result["intent"] = "notification_config"
-            result["response"] = notif_result["response"]
-            result["success"] = True
-            self.response_handler.speak(result["response"])
-            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-            return result
+        # 6d. Verificar comando de notificaciones (via FeatureManager)
+        if self.features and self.features.notifications:
+            notif_result = self.features.notifications.handle_voice_command(
+                text,
+                user_id=user.user_id if user else None
+            )
+            if notif_result["handled"]:
+                result["intent"] = "notification_config"
+                result["response"] = notif_result["response"]
+                result["success"] = True
+                self.response_handler.speak(result["response"])
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
 
         # 7. Verificar rutina (nuevo sistema con VoiceRoutineHandler)
         t_routine = time.perf_counter()
@@ -1059,25 +1017,10 @@ Asistente:"""
             asyncio.create_task(self.pattern_learner.run_analysis_loop(interval_hours=24))
             logger.info("🧠 Aprendizaje de patrones activo")
 
-        # Iniciar timer manager
-        await self.timer_manager.start()
-        logger.info("⏱️ Timer manager activo")
-
-        # Iniciar intercom
-        await self.intercom.start()
-        logger.info("📢 Sistema de intercom activo")
-
-        # Iniciar notificaciones
-        await self.notifications.start()
-        logger.info("🔔 Sistema de notificaciones activo")
-
-        # Iniciar alertas
-        await self.alert_scheduler.start()
-        logger.info("⚠️ Sistema de alertas activo")
-
-        # Iniciar integración con Home Assistant
-        await self.ha_integration.start()
-        logger.info("🏠 Integración con Home Assistant activa")
+        # Iniciar FeatureManager (timers, intercom, notifications, alerts, HA)
+        if self.features:
+            await self.features.start()
+            logger.info("FeatureManager started")
 
         CHUNK_SIZE = 1280
         audio_buffer = []
@@ -1090,12 +1033,8 @@ Asistente:"""
         logger.info(f"   ✨ Follow-up mode: {self.follow_up.follow_up_window}s window")
         logger.info(f"   ✨ Ambient detection: {'ON' if self.ambient_detector else 'OFF'}")
         logger.info(f"   ✨ Pattern learning: {'ON' if self.pattern_learner else 'OFF'}")
-        logger.info(f"   ⏱️ Named timers: ON (max {self.timer_manager.max_timers})")
-        logger.info(f"   📢 Intercom: ON ({len(self.intercom._zones)} zonas)")
-        logger.info(f"   🔔 Smart notifications: ON")
-        logger.info(f"   ⚠️ Proactive alerts: ON")
         logger.info(f"   🔇 Echo suppression: ON (cooldown={self.echo_suppressor.config.post_speech_buffer_ms}ms)")
-        logger.info(f"   🏠 Home Assistant integration: ON\n")
+        logger.info(f"   Features: {'ON' if self.features else 'OFF'}\n")
 
         self._running = True
 
@@ -1232,12 +1171,9 @@ Asistente:"""
         if self.follow_up.is_active:
             self.follow_up.end_conversation("shutdown")
 
-        # Detener sistemas adicionales
-        await self.timer_manager.stop()
-        await self.intercom.stop()
-        await self.notifications.stop()
-        await self.alert_scheduler.stop()
-        await self.ha_integration.stop()
+        # Detener FeatureManager
+        if self.features:
+            await self.features.stop()
 
         if self._ws_connected:
             await self.ha.close()
@@ -1681,7 +1617,7 @@ Asistente:"""
 
     def get_new_features_status(self) -> dict:
         """Obtener estado de las nuevas funcionalidades"""
-        return {
+        status = {
             "follow_up_mode": {
                 "active": self.follow_up.is_active,
                 "state": self.follow_up.state.value,
@@ -1702,168 +1638,17 @@ Asistente:"""
                 "enabled": self.briefing is not None,
                 "status": self.briefing.get_status() if self.briefing else None
             },
-            "timers": {
-                "status": self.timer_manager.get_status()
-            },
-            "intercom": {
-                "status": self.intercom.get_status()
-            },
-            "notifications": {
-                "status": self.notifications.get_status()
-            },
-            "alerts": {
-                "active": len(self.alert_manager.get_pending_alerts()) if hasattr(self.alert_manager, 'get_pending_alerts') else 0
-            },
             "echo_suppression": {
                 "enabled": self.echo_suppressor.config.ducking_enabled,
                 "state": self.echo_suppressor.state.value,
                 "stats": self.echo_suppressor.get_stats()
             }
         }
+        # Merge FeatureManager status (timers, intercom, notifications, alerts)
+        if self.features:
+            status.update(self.features.get_status())
+        return status
 
-    # =========================================================================
-    # TIMERS CON NOMBRE (Cocina y más)
-    # =========================================================================
-
-    def create_timer(self, name: str, duration_seconds: int, user_id: str = None, zone_id: str = "default") -> NamedTimer:
-        """Crear un timer programáticamente"""
-        return self.timer_manager.create_timer(name, duration_seconds, user_id, zone_id)
-
-    def get_active_timers(self) -> list[NamedTimer]:
-        """Obtener timers activos"""
-        return self.timer_manager.get_active_timers()
-
-    def cancel_timer(self, name: str) -> bool:
-        """Cancelar timer por nombre"""
-        timer = self.timer_manager._find_timer_by_name(name)
-        if timer:
-            return self.timer_manager.cancel_timer(timer.timer_id)
-        return False
-
-    def get_timer_status(self) -> dict:
-        """Obtener estado del sistema de timers"""
-        return self.timer_manager.get_status()
-
-    # =========================================================================
-    # INTERCOM / ANUNCIOS
-    # =========================================================================
-
-    async def announce(self, message: str, zones: list[str] = None, priority: str = "normal") -> dict:
-        """
-        Hacer un anuncio.
-
-        Args:
-            message: Texto del anuncio
-            zones: Lista de zonas (None = todas)
-            priority: "low", "normal", "high", "emergency"
-        """
-        priority_map = {
-            "low": AnnouncementPriority.LOW,
-            "normal": AnnouncementPriority.NORMAL,
-            "high": AnnouncementPriority.HIGH,
-            "emergency": AnnouncementPriority.EMERGENCY
-        }
-        announcement = await self.intercom.announce(
-            message=message,
-            zones=zones,
-            priority=priority_map.get(priority, AnnouncementPriority.NORMAL)
-        )
-        return {"success": True, "announcement_id": announcement.announcement_id}
-
-    async def announce_emergency(self, message: str) -> dict:
-        """Anuncio de emergencia en toda la casa"""
-        announcement = await self.intercom.announce_emergency(message)
-        return {"success": True, "announcement_id": announcement.announcement_id}
-
-    def get_intercom_zones(self) -> dict:
-        """Obtener zonas disponibles para intercom"""
-        return self.intercom.get_zones()
-
-    def get_announcement_history(self, limit: int = 10) -> list:
-        """Obtener historial de anuncios"""
-        return self.intercom.get_history(limit)
-
-    # =========================================================================
-    # NOTIFICACIONES INTELIGENTES
-    # =========================================================================
-
-    async def send_notification(
-        self,
-        message: str,
-        user_id: str = None,
-        title: str = None,
-        priority: str = "normal"
-    ) -> dict:
-        """
-        Enviar notificación inteligente.
-
-        La notificación se entregará según contexto del usuario.
-        """
-        priority_map = {
-            "low": NotificationPriority.LOW,
-            "normal": NotificationPriority.NORMAL,
-            "high": NotificationPriority.HIGH,
-            "urgent": NotificationPriority.URGENT,
-            "emergency": NotificationPriority.EMERGENCY
-        }
-        notification = await self.notifications.notify(
-            message=message,
-            title=title,
-            user_id=user_id,
-            priority=priority_map.get(priority, NotificationPriority.NORMAL)
-        )
-        return {"success": True, "notification_id": notification.notification_id}
-
-    def set_do_not_disturb(self, user_id: str, enabled: bool = True):
-        """Activar/desactivar modo No Molestar para un usuario"""
-        self.notifications.set_dnd(user_id, enabled)
-
-    def is_do_not_disturb(self, user_id: str) -> bool:
-        """¿Está el modo No Molestar activo?"""
-        return self.notifications.is_dnd_active(user_id)
-
-    def get_notification_history(self, user_id: str = None, limit: int = 20) -> list:
-        """Obtener historial de notificaciones"""
-        return self.notifications.get_history(user_id, limit)
-
-    # =========================================================================
-    # ALERTAS PROACTIVAS
-    # =========================================================================
-
-    def add_alert_condition(
-        self,
-        entity_id: str,
-        state_equals: str = None,
-        duration_minutes: int = 0,
-        message: str = None
-    ):
-        """
-        Agregar condición de alerta simple.
-
-        Ejemplo:
-            add_alert_condition(
-                "binary_sensor.garage_door",
-                state_equals="on",
-                duration_minutes=30,
-                message="La puerta del garage lleva {duration} abierta"
-            )
-        """
-        from src.alerts import AlertType, AlertPriority
-        self.alert_scheduler.add_check_simple(
-            entity_id=entity_id,
-            state=state_equals,
-            duration_minutes=duration_minutes,
-            message=message or f"{entity_id} en estado {state_equals}"
-        )
-
-    def get_active_alerts(self) -> list:
-        """Obtener alertas activas"""
-        return self.alert_manager.get_pending_alerts() if hasattr(self.alert_manager, 'get_pending_alerts') else []
-
-    def acknowledge_alert(self, alert_id: str, user_id: str = None) -> bool:
-        """Marcar alerta como vista"""
-        return self.alert_manager.acknowledge(alert_id) if hasattr(self.alert_manager, 'acknowledge') else False
-
-    def get_alert_summary(self) -> str:
-        """Obtener resumen de alertas para voz"""
-        return self.alert_manager.get_summary() if hasattr(self.alert_manager, 'get_summary') else "No hay alertas activas"
+    # Timer, intercom, notification, and alert methods have been moved to
+    # FeatureManager (src/pipeline/feature_manager.py).
+    # Access them via self.features.<method> or pipeline.features.<method>.
