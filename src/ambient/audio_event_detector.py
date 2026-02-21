@@ -408,8 +408,8 @@ class AudioEventDetector:
                 peak_diffs = np.diff(peaks)
                 if np.std(peak_diffs) / np.mean(peak_diffs) < 0.3:  # Variación < 30%
                     return True
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Beep pattern detection failed: {e}")
         return False
 
     def _map_class_to_event(self, class_name: str) -> AudioEventType:

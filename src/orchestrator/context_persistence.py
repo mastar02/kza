@@ -268,8 +268,8 @@ class PersistentContextManager(ContextManager):
                     with open(user_file, 'r', encoding='utf-8') as f:
                         existing = json.load(f)
                         existing_history = existing.get("conversation_history", [])
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to read existing context for user: {e}")
 
             # Combinar historial existente con nuevo (evitar duplicados)
             new_history = [t.to_dict() for t in ctx.conversation_history]
@@ -380,8 +380,8 @@ class PersistentContextManager(ContextManager):
                     data = json.load(f)
                     history = data.get("conversation_history", [])
                     return history[-last_n:]
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to read user history: {e}")
 
         return []
 

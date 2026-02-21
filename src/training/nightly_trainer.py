@@ -714,8 +714,8 @@ class NightlyTrainer:
                                 loss = float(parts[i + 1].strip(","))
                                 self.current_session.loss_history.append(loss)
                                 break
-                except:
-                    pass
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Failed to parse loss from output: {e}")
 
         await process.wait()
 
@@ -1071,8 +1071,8 @@ if __name__ == "__main__":
                                 "lora_alpha": config.get("lora_alpha"),
                                 "created": adapter_dir.stat().st_mtime
                             })
-                        except:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Failed to read adapter metadata: {e}")
 
         return sorted(adapters, key=lambda x: x.get("created", 0), reverse=True)
 
