@@ -123,24 +123,34 @@ wake_word:
 
 # Speech-to-Text (GPU 0)
 stt:
-  model: "distil-whisper/distil-small.en"  # Rápido
-  # model: "openai/whisper-large-v3"  # Mejor calidad
+  model: "marianbasti/distil-whisper-large-v3-es"  # Distilado para ES, WER 5.11%
+  # model: "distil-whisper/distil-small.en"  # Solo inglés (anterior)
+  # model: "openai/whisper-large-v3"  # Mejor calidad, más lento
   device: "cuda:0"
-  compute_type: "float16"
+  compute_type: "float16"  # ~3GB, máxima precisión (sobra VRAM en cuda:0)
   language: "es"
   beam_size: 1  # Más rápido
   vad_filter: true
 
-# Text-to-Speech (GPU 3)
+# Text-to-Speech (GPU 3) — Dual engine
 tts:
-  engine: "piper"  # "piper" (rápido) o "xtts" (calidad)
+  engine: "dual"  # "dual" (Kokoro+Qwen3), "piper" (CPU), "xtts" (legacy)
+  kokoro:
+    model: "hexgrad/Kokoro-82M"
+    device: "cuda:3"
+    default_voice: "af_heart"      # Voz en español
+  qwen3:
+    model: "Qwen/Qwen3-TTS-0.6B"
+    device: "cuda:3"
+    speaker_wav: "./data/speaker_reference.wav"  # 3s de referencia para voice cloning
+  quality_threshold: 50   # Caracteres: <=50 -> Kokoro, >50 -> Qwen3
   piper:
     model: "es_ES-davefx-medium.onnx"
     sample_rate: 22050
   xtts:
     model: "tts_models/multilingual/multi-dataset/xtts_v2"
     device: "cuda:3"
-    speaker_wav: null  # Path a audio para clonar voz
+    speaker_wav: null
 
   # Streaming audio configuration (para reproducción sin cortes)
   streaming:
@@ -155,8 +165,8 @@ tts:
 
 # Embeddings (GPU 1)
 embeddings:
-  model: "BAAI/bge-small-en-v1.5"  # Rápido
-  # model: "BAAI/bge-m3"  # Mejor calidad, multilingüe
+  model: "BAAI/bge-m3"  # Multilingual (170 idiomas), dim=1024, ~1GB VRAM
+  # model: "BAAI/bge-small-en-v1.5"  # Solo inglés, dim=384 (anterior)
   device: "cuda:1"
 
 # Router/Clasificador (GPU 2)
@@ -169,53 +179,64 @@ router:
   # El KV-cache del system prompt se reutiliza entre inferencias
   # Ahorro estimado: ~40-80ms por consulta
   enable_prefix_caching: true
+  # LoRA adapter del nightly training (hot-swap sin reiniciar vLLM)
+  enable_lora: true
+  lora_path: "./models/lora_adapters/nightly/latest"
+  max_lora_rank: 32
 
 # LLM para Razonamiento (CPU - 128GB RAM, 8x16GB, 8 canales)
 reasoner:
   # ==========================================================================
   # OPTIMIZADO PARA 8x16GB (128GB, 8 canales, ~358 GB/s)
-  # Con 8 canales tienes ~3.5x más ancho de banda = tokens más rápidos
+  # Bandwidth efectivo ~250-270 GB/s → tok/s ≈ bandwidth / model_size
   # ==========================================================================
 
-  # Modelo principal - Q4_K_M RECOMENDADO para 8x16GB
-  # ~40GB RAM, deja ~64GB para contexto y servicios
-  model_path: "./models/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+  # Modelo principal - Qwen2.5-72B Q6_K
+  # Mejor modelo open-source para español. Q6_K = 99.84% de calidad FP16.
+  # ~64GB modelo + ~5GB KV cache (Q8) + ~2GB overhead = ~71GB total
+  # Velocidad estimada: ~3.9 tok/s → preset "balanced"
+  model_path: "./models/Qwen2.5-72B-Instruct-Q6_K.gguf"
 
   # Alternativas:
-  # model_path: "./models/Qwen2.5-72B-Instruct-Q4_K_M.gguf"   # Mejor en español
-  # model_path: "./models/Qwen2.5-32B-Instruct-Q8_0.gguf"     # Máxima calidad, ~34GB
-  # model_path: "./models/Llama-3.3-70B-Instruct-Q6_K.gguf"   # Balance (~55GB)
+  # model_path: "./models/Qwen2.5-72B-Instruct-Q8_0.gguf"     # Máxima calidad (~84GB, ~3.2 tok/s)
+  # model_path: "./models/Qwen3-32B-Q8_0.gguf"                # Rápido (~41GB, ~7.2 tok/s, preset "fast")
+  # model_path: "./models/Qwen2.5-72B-Instruct-Q4_K_M.gguf"   # Más ligero (~59GB, ~5.3 tok/s)
+  # model_path: "./models/Llama-3.3-70B-Instruct-Q4_K_M.gguf"  # Fallback si Qwen falla
 
   # LoRA adapter personalizado (se carga si existe)
   lora_path: "./models/lora_adapters/custom_adapter"
   lora_scale: 1.0  # 1.0 = full adapter, 0.5 = medio
 
   # Contexto 32K - balance latencia/capacidad
-  # Permite historial extenso por usuario + conversaciones largas
+  # KV cache para 72B a 32K: ~10GB (FP16) o ~5GB (Q8_0)
   n_ctx: 32768      # 32K tokens
   n_batch: 512      # Batch estándar
 
-  # CPU - usar todos los cores del Threadripper
+  # CPU - usar todos los cores del Threadripper PRO 7965WX
   n_threads: 24
   n_gpu_layers: 0  # Todo en CPU (GPUs ocupadas con otros modelos)
 
-  # Chat format para Llama 3.x
-  chat_format: "llama-3"
+  # Chat format para Qwen2.5 (ChatML)
+  chat_format: "chatml"
 
-  # RoPE scaling para 32K
-  rope_freq_base: 500000.0
+  # RoPE scaling - Qwen2.5 usa base 1M
+  rope_freq_base: 1000000.0
   rope_freq_scale: 1.0
 
+  # KV cache cuantizado para ahorrar ~5GB RAM (requiere flash attention)
+  # cache_type_k: "q8_0"
+  # cache_type_v: "q8_0"
+
   # ==========================================================================
-  # LLM Buffering - Para conversacion fluida con LLMs lentos (6-10 tok/s)
+  # LLM Buffering - Para conversacion fluida con LLMs lentos
   # ==========================================================================
   # Permite que el TTS hable mientras el LLM sigue generando
   buffering:
     # Preset: "fast", "balanced", "smooth", "slow_llm"
-    # - fast: Minimo buffering, puede entrecortarse
-    # - balanced: Recomendado para 32B (6-10 tok/s)
+    # - fast: Minimo buffering, para 7+ tok/s (Qwen3-32B)
+    # - balanced: Recomendado para 3.5-6 tok/s (Qwen2.5-72B Q6_K)
     # - smooth: Mas buffering, mas latencia inicial
-    # - slow_llm: Optimizado para 70B (2-4 tok/s)
+    # - slow_llm: Optimizado para 2-3 tok/s (72B Q8_0)
     preset: "balanced"
 
     # Usar frase de relleno mientras el LLM piensa
@@ -420,11 +441,12 @@ training:
       double_quant: true      # Ahorra más VRAM
 
     # Modelo base para fine-tuning (QLoRA)
+    # Debe coincidir con el router de día para que el adapter sea compatible
     # Opciones para RTX 3070 (8GB):
-    #   - Llama-3.2-3B-Instruct  → ~4GB con QLoRA (RECOMENDADO)
+    #   - Qwen2.5-7B-Instruct    → ~5GB con QLoRA (PRODUCCIÓN - mismo que router)
+    #   - Llama-3.2-3B-Instruct  → ~4GB con QLoRA
     #   - Llama-3.1-8B-Instruct  → ~6GB con QLoRA
-    #   - Qwen2.5-7B-Instruct    → ~5GB con QLoRA
-    base_model: "meta-llama/Llama-3.2-3B-Instruct"
+    base_model: "Qwen/Qwen2.5-7B-Instruct"
 
     # Configuración LoRA
     lora_config:
@@ -443,16 +465,36 @@ training:
     # Hiperparámetros de entrenamiento (ajustados para 8GB VRAM)
     hyperparams:
       epochs: 3
-      batch_size: 2                    # Reducido para 8GB
-      gradient_accumulation_steps: 8   # Compensa batch pequeño
+      batch_size: 1                    # Reducido para Qwen 7B en 8GB VRAM
+      gradient_accumulation_steps: 16  # Compensa batch=1 (efectivo=16)
       learning_rate: 0.0002
       warmup_ratio: 0.1
       max_seq_length: 512
       gradient_checkpointing: true     # Ahorra VRAM
 
+    # Whisper fine-tune (semanal, condicional a correcciones acumuladas)
+    whisper_finetune:
+      enabled: true
+      threshold: 100              # Correcciones mínimas para trigger
+      base_model: "marianbasti/distil-whisper-large-v3-es"
+      lora_r: 8
+      lora_alpha: 16
+      epochs: 2
+      batch_size: 4
+      learning_rate: 0.0001
+      output_dir: "./models/lora_adapters/whisper"
+      convert_to_ctranslate2: true  # Post-training conversion para faster-whisper
+
     # Paths
     output_dir: "./models/lora_adapters/nightly"
     data_dir: "./data/nightly_training"
+
+  # STT Corrections - Recolecta correcciones para fine-tune de Whisper
+  stt_corrections:
+    enabled: true
+    data_dir: "./data/stt_corrections"
+    max_audio_duration: 30.0
+    threshold_for_training: 100  # Correcciones antes de trigger fine-tune
 
   # Command learning
   custom_commands_enabled: true

@@ -1,6 +1,6 @@
 # KZA — Asistente de Voz Local para Domótica
 
-Sistema de control por voz 100% local para Home Assistant. Latencia <300ms para domótica, LLM 70B en CPU para razonamiento complejo. 4x RTX 3070 distribuidas por función. Python 3.10+, async/await, ~38K líneas, 617+ tests.
+Sistema de control por voz 100% local para Home Assistant. Latencia <300ms para domótica, LLM 72B en CPU para razonamiento complejo. 4x RTX 3070 distribuidas por función. Python 3.13 (vLLM requiere <3.14), async/await, ~38K líneas, 617+ tests.
 
 ## Reglas para Claude — LEER SIEMPRE
 
@@ -61,7 +61,7 @@ class MiServicio:
 ```
 Mic → WakeWord(CPU) → STT(GPU0) → Router(GPU2) → TTS(GPU3) → Speaker
                          ↕              ↕
-                   SpeakerID(GPU1)   LLM 70B(CPU)
+                   SpeakerID(GPU1)   LLM 72B(CPU)
                    Emotion(GPU1)     ChromaDB
                                      HomeAssistant
 ```
@@ -69,7 +69,7 @@ Mic → WakeWord(CPU) → STT(GPU0) → Router(GPU2) → TTS(GPU3) → Speaker
 **Paths de ejecución:**
 - **Fast path** (<300ms): Domótica → VectorSearch → HA action → TTS
 - **Music path** (~500ms): Spotify → MoodMapper → ZoneController → TTS
-- **Slow path** (5-30s): LLM 70B reasoning → Memory → TTS
+- **Slow path** (5-30s): LLM 72B reasoning → Memory → TTS
 
 **Orquestación multi-usuario:** `MultiUserOrchestrator` → `PriorityRequestQueue` → `ContextManager` (contexto por usuario) → `CancellationManager`
 
@@ -83,7 +83,7 @@ Mic → WakeWord(CPU) → STT(GPU0) → Router(GPU2) → TTS(GPU3) → Speaker
 | `src/pipeline/response_handler.py` | Texto → audio con streaming | Cambios en respuesta |
 | `src/orchestrator/request_dispatcher.py` | Routing fast/slow path | Agregar nuevos paths |
 | `src/orchestrator/context_manager.py` | Contexto conversacional por usuario | Cambios en memoria |
-| `src/llm/reasoner.py` | LLM 70B + FastRouter 7B | Cambios en inferencia |
+| `src/llm/reasoner.py` | LLM 72B + FastRouter 7B | Cambios en inferencia |
 | `src/home_assistant/ha_client.py` | Cliente HA REST + WebSocket | Nuevas integraciones HA |
 | `src/spotify/music_dispatcher.py` | Routing de comandos musicales | Nuevos comandos Spotify |
 | `src/spotify/speaker_groups.py` | Gestión de bocinas y zonas | Cambios en multi-room |
@@ -107,7 +107,7 @@ Mic → WakeWord(CPU) → STT(GPU0) → Router(GPU2) → TTS(GPU3) → Speaker
 | pipeline | 2,492 | Voice pipeline, command processor |
 | users | 1,511 | Speaker ID, emociones, permisos |
 | audio | 1,271 | Multi-zona, MA1260, captura |
-| llm | 948 | Reasoner 70B + Router 7B |
+| llm | 948 | Reasoner 72B + Router 7B |
 | memory | 721 | Short/long term, preferencias |
 | presence | ~600 | BLE scanning, tracking por zona |
 | rooms | ~400 | Contexto por habitación |
@@ -134,8 +134,8 @@ python tools/benchmark_latency.py --iterations 20
 
 ## Hardware Resumen (detalle en docs/HARDWARE.md)
 
-- **CPU**: Threadripper PRO 9965WX — 24c/48t, LLM 70B Q4 usa ~45GB RAM + 24 threads
-- **RAM**: 128GB DDR5 ECC (expandible a 512GB)
+- **CPU**: Threadripper PRO 7965WX — 24c/48t, LLM 72B Q6_K usa ~71GB RAM + 24 threads
+- **RAM**: 128GB DDR5-5600 RDIMM (8x16GB, 8 canales, ~358 GB/s)
 - **GPUs**: 4x RTX 3070 8GB — cada una dedicada (STT/Embeddings/Router/TTS)
 - **Audio**: ReSpeaker XVF3800 por habitación + extensores USB Cat5e
 - **Amplificador**: Monoprice MA1260 (6 zonas)

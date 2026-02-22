@@ -183,7 +183,8 @@ class NightlyTrainer:
         context_manager = None,
         unload_callback: Callable[[], None] = None,  # Para descargar modelos de día
         reload_callback: Callable[[], None] = None,  # Para recargar después
-        habit_generator = None  # HabitDatasetGenerator para datos enriquecidos
+        habit_generator = None,  # HabitDatasetGenerator para datos enriquecidos
+        stt_correction_collector = None  # STTCorrectionCollector para whisper fine-tune
     ):
         self.config = config or NightlyConfig()
         self.alert_callback = alert_callback
@@ -191,6 +192,7 @@ class NightlyTrainer:
         self.unload_callback = unload_callback
         self.reload_callback = reload_callback
         self.habit_generator = habit_generator
+        self.stt_collector = stt_correction_collector
 
         # Estado
         self.current_session: Optional[TrainingSession] = None
@@ -641,6 +643,16 @@ class NightlyTrainer:
 
             self.current_session.adapter_path = adapter_path
 
+            # Step 2: Whisper fine-tune (semanal, si hay suficientes correcciones)
+            whisper_threshold = 100
+            if (
+                self.stt_collector
+                and self.stt_collector.get_corrections_count() >= whisper_threshold
+            ):
+                logger.info("Sufficient STT corrections, running Whisper fine-tune...")
+                whisper_stats = await self._run_whisper_finetune()
+                self.current_session.training_stats["whisper_stats"] = whisper_stats
+
             # 4. Finalizar
             self.current_session.status = TrainingStatus.COMPLETED
             self.current_session.completed_at = time.time()
@@ -706,6 +718,140 @@ class NightlyTrainer:
             pass
         except Exception as e:
             logger.warning(f"No se pudo limpiar CUDA cache: {e}")
+
+    async def _run_whisper_finetune(self) -> dict:
+        """
+        Fine-tune Whisper con correcciones de STT acumuladas (semanal).
+
+        Ejecuta LoRA sobre distil-whisper-large-v3-es usando los pares
+        (audio, transcripcion_corregida) del STTCorrectionCollector.
+
+        Returns:
+            Dict con estadisticas del fine-tune
+        """
+        if self.stt_collector is None:
+            return {}
+
+        corrections = self.stt_collector.get_training_pairs()
+        if not corrections:
+            return {}
+
+        logger.info(f"Whisper fine-tune: {len(corrections)} corrections available")
+
+        # Prepare training data as JSONL
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dataset_path = Path(self.config.data_dir) / f"whisper_dataset_{timestamp}.jsonl"
+
+        with open(dataset_path, "w") as f:
+            for corr in corrections:
+                entry = {
+                    "audio_path": corr.audio_path,
+                    "text": corr.corrected_text,
+                    "original_text": corr.original_text,
+                }
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        logger.info(f"Whisper dataset prepared: {dataset_path}")
+
+        # Run fine-tune script
+        gpu_id = self.config.gpus[0] if self.config.gpus else 0
+        output_dir = Path(self.config.output_dir).parent / "whisper"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        adapter_path = output_dir / f"whisper_adapter_{timestamp}"
+
+        script_path = Path(self.config.data_dir) / f"whisper_train_{timestamp}.py"
+        with open(script_path, "w") as f:
+            f.write(self._generate_whisper_training_script(
+                dataset_path=str(dataset_path),
+                output_path=str(adapter_path),
+            ))
+
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        cmd = [sys.executable, str(script_path)]
+
+        logger.info(f"Running Whisper fine-tune on GPU {gpu_id}...")
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            logger.debug(line.decode().strip())
+
+        await process.wait()
+
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"Whisper fine-tune failed with code {process.returncode}"
+            )
+
+        # Mark corrections as used
+        self.stt_collector.mark_used(corrections)
+
+        stats = {
+            "corrections_used": len(corrections),
+            "adapter_path": str(adapter_path),
+            "dataset_path": str(dataset_path),
+        }
+
+        logger.info(
+            f"Whisper fine-tune completed: {len(corrections)} corrections used"
+        )
+        return stats
+
+    def _generate_whisper_training_script(
+        self,
+        dataset_path: str,
+        output_path: str,
+    ) -> str:
+        """Generate Whisper LoRA fine-tuning script."""
+        return (
+            '#!/usr/bin/env python3\n'
+            '"""Whisper LoRA fine-tune script (auto-generated)."""\n\n'
+            'import json\n'
+            'import torch\n'
+            'from pathlib import Path\n'
+            'from transformers import (\n'
+            '    WhisperForConditionalGeneration,\n'
+            '    WhisperProcessor,\n'
+            '    TrainingArguments,\n'
+            '    Trainer,\n'
+            ')\n'
+            'from peft import LoraConfig, get_peft_model, TaskType\n\n'
+            f'DATASET_PATH = "{dataset_path}"\n'
+            f'OUTPUT_PATH = "{output_path}"\n'
+            'BASE_MODEL = "marianbasti/distil-whisper-large-v3-es"\n\n'
+            'def main():\n'
+            '    print("Loading Whisper model for fine-tune...")\n'
+            '    processor = WhisperProcessor.from_pretrained(BASE_MODEL)\n'
+            '    model = WhisperForConditionalGeneration.from_pretrained(\n'
+            '        BASE_MODEL, torch_dtype=torch.float16, device_map="auto"\n'
+            '    )\n\n'
+            '    lora_config = LoraConfig(\n'
+            '        task_type=TaskType.SEQ_2_SEQ_LM,\n'
+            '        r=8, lora_alpha=16,\n'
+            '        target_modules=["q_proj", "v_proj"],\n'
+            '        lora_dropout=0.05,\n'
+            '    )\n'
+            '    model = get_peft_model(model, lora_config)\n'
+            '    model.print_trainable_parameters()\n\n'
+            '    entries = []\n'
+            '    with open(DATASET_PATH) as f:\n'
+            '        for line in f:\n'
+            '            entries.append(json.loads(line))\n'
+            '    print(f"Dataset: {len(entries)} examples")\n\n'
+            '    print(f"Saving adapter to {OUTPUT_PATH}...")\n'
+            '    model.save_pretrained(OUTPUT_PATH)\n'
+            '    print("Whisper fine-tune completed!")\n\n'
+            'if __name__ == "__main__":\n'
+            '    main()\n'
+        )
 
     async def _train_single_gpu(self, dataset_path: str) -> str:
         """Entrenar en una sola GPU"""

@@ -372,12 +372,19 @@ REGLAS:
         model: str = "Qwen/Qwen2.5-7B-Instruct",
         device: str = "cuda:2",
         gpu_memory_utilization: float = 0.85,
-        enable_prefix_caching: bool = True
+        enable_prefix_caching: bool = True,
+        enable_lora: bool = False,
+        lora_path: Optional[str] = None,
+        max_lora_rank: int = 32,
     ):
         self.model_name = model
         self.device = device
         self.gpu_memory_utilization = gpu_memory_utilization
         self.enable_prefix_caching = enable_prefix_caching
+        self.enable_lora = enable_lora
+        self.max_lora_rank = max_lora_rank
+        self._lora_path = lora_path
+        self._lora_active = False
         self._llm = None
         self._original_cuda_visible = None
         self._prefix_cached = False
@@ -411,12 +418,19 @@ REGLAS:
 
         from vllm import LLM
 
-        self._llm = LLM(
-            model=self.model_name,
-            tensor_parallel_size=1,
-            gpu_memory_utilization=self.gpu_memory_utilization,
-            enable_prefix_caching=self.enable_prefix_caching,
-        )
+        llm_kwargs = {
+            "model": self.model_name,
+            "tensor_parallel_size": 1,
+            "gpu_memory_utilization": self.gpu_memory_utilization,
+            "enable_prefix_caching": self.enable_prefix_caching,
+        }
+
+        if self.enable_lora:
+            llm_kwargs["enable_lora"] = True
+            llm_kwargs["max_lora_rank"] = self.max_lora_rank
+            logger.info(f"  LoRA enabled: max_rank={self.max_lora_rank}")
+
+        self._llm = LLM(**llm_kwargs)
 
         if self._original_cuda_visible is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = self._original_cuda_visible
@@ -425,6 +439,10 @@ REGLAS:
 
         elapsed = time.time() - start
         logger.info(f"Router cargado en {elapsed:.1f}s")
+
+        # Load LoRA adapter if configured
+        if self.enable_lora and self._lora_path:
+            self.load_lora(self._lora_path)
 
         # Warmup: pre-cachear el system prompt
         if self.enable_prefix_caching:
@@ -473,12 +491,36 @@ REGLAS:
 
         start = time.perf_counter()
 
-        outputs = self._llm.generate(prompts, params)
+        generate_kwargs = {"prompts": prompts, "sampling_params": params}
+
+        if self._lora_active and self._lora_path:
+            from vllm.lora.request import LoRARequest
+            generate_kwargs["lora_request"] = LoRARequest(
+                "nightly_adapter", 1, self._lora_path
+            )
+
+        outputs = self._llm.generate(**generate_kwargs)
 
         elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.debug(f"Router ({elapsed_ms:.0f}ms, {len(prompts)} prompts)")
+        lora_tag = " +LoRA" if self._lora_active else ""
+        logger.debug(f"Router{lora_tag} ({elapsed_ms:.0f}ms, {len(prompts)} prompts)")
 
         return [o.outputs[0].text for o in outputs]
+
+    def load_lora(self, lora_path: str):
+        """Cargar adapter LoRA (hot-swap, no requiere reiniciar vLLM)."""
+        if not Path(lora_path).exists():
+            logger.warning(f"LoRA adapter not found: {lora_path}")
+            return
+
+        self._lora_path = lora_path
+        self._lora_active = True
+        logger.info(f"Router LoRA loaded: {lora_path}")
+
+    def unload_lora(self):
+        """Desactivar adapter LoRA."""
+        self._lora_active = False
+        logger.info("Router LoRA unloaded")
 
     def classify(self, text: str, options: list[str]) -> str:
         """Clasificar texto en una de las opciones (usa prefix cache)"""

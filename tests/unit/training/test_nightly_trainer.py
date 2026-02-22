@@ -584,3 +584,116 @@ class TestHabitIntegration:
         assert session.status == TrainingStatus.COMPLETED
         assert session.samples_collected == 9
         assert mock_train.called
+
+
+# =========================================================================
+# Tests de Whisper fine-tune
+# =========================================================================
+
+class TestWhisperFinetune:
+    """Tests para el paso de Whisper fine-tune en NightlyTrainer"""
+
+    def _make_mock_collector(self, count: int):
+        """Helper: crea STTCorrectionCollector mock con N correcciones"""
+        from src.training.stt_correction_collector import STTCorrection
+
+        mock_collector = MagicMock()
+        mock_collector.get_corrections_count.return_value = count
+        mock_collector.get_training_pairs.return_value = [
+            STTCorrection(
+                audio_path=f"/tmp/audio_{i}.wav",
+                original_text=f"original {i}",
+                corrected_text=f"corrected {i}",
+                timestamp="2025-01-01T00:00:00",
+            )
+            for i in range(count)
+        ]
+        return mock_collector
+
+    @pytest.mark.asyncio
+    async def test_whisper_finetune_skips_below_threshold(self, config):
+        """No entrena Whisper si hay <100 correcciones"""
+        mock_collector = self._make_mock_collector(50)
+
+        turns = [
+            {
+                "timestamp": time.time(),
+                "user_input": f"Cmd {i}",
+                "assistant_response": f"Resp {i}",
+                "quality": "good",
+            }
+            for i in range(10)
+        ]
+        _create_conversation_file(config.conversations_dir, turns)
+
+        trainer = NightlyTrainer(
+            config=config, stt_correction_collector=mock_collector
+        )
+
+        with patch.object(trainer, '_run_training_script', new_callable=AsyncMock) as mock_train:
+            mock_train.return_value = str(Path(config.output_dir) / "adapter")
+            session = await trainer.run_training()
+
+        assert session.status == TrainingStatus.COMPLETED
+        # Whisper fine-tune should NOT have been called
+        mock_collector.get_training_pairs.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_whisper_finetune_runs_above_threshold(self, config):
+        """Entrena Whisper si hay >=100 correcciones"""
+        mock_collector = self._make_mock_collector(100)
+
+        turns = [
+            {
+                "timestamp": time.time(),
+                "user_input": f"Cmd {i}",
+                "assistant_response": f"Resp {i}",
+                "quality": "good",
+            }
+            for i in range(10)
+        ]
+        _create_conversation_file(config.conversations_dir, turns)
+
+        trainer = NightlyTrainer(
+            config=config, stt_correction_collector=mock_collector
+        )
+
+        with patch.object(trainer, '_run_training_script', new_callable=AsyncMock) as mock_train, \
+             patch.object(trainer, '_run_whisper_finetune', new_callable=AsyncMock) as mock_whisper:
+            mock_train.return_value = str(Path(config.output_dir) / "adapter")
+            mock_whisper.return_value = {"corrections_used": 100}
+            session = await trainer.run_training()
+
+        assert session.status == TrainingStatus.COMPLETED
+        mock_whisper.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_training_includes_whisper_stats(self, config):
+        """run_training incluye whisper_stats en training_stats"""
+        mock_collector = self._make_mock_collector(150)
+
+        turns = [
+            {
+                "timestamp": time.time(),
+                "user_input": f"Cmd {i}",
+                "assistant_response": f"Resp {i}",
+                "quality": "good",
+            }
+            for i in range(10)
+        ]
+        _create_conversation_file(config.conversations_dir, turns)
+
+        trainer = NightlyTrainer(
+            config=config, stt_correction_collector=mock_collector
+        )
+
+        whisper_result = {"corrections_used": 150, "adapter_path": "/models/whisper"}
+        with patch.object(trainer, '_run_training_script', new_callable=AsyncMock) as mock_train, \
+             patch.object(trainer, '_run_whisper_finetune', new_callable=AsyncMock) as mock_whisper:
+            mock_train.return_value = str(Path(config.output_dir) / "adapter")
+            mock_whisper.return_value = whisper_result
+            session = await trainer.run_training()
+
+        assert session.status == TrainingStatus.COMPLETED
+        assert "whisper_stats" in session.training_stats
+        assert session.training_stats["whisper_stats"]["corrections_used"] == 150

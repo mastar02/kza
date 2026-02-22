@@ -1,19 +1,19 @@
 # KZA — Especificaciones de Hardware
 
 ## CPU
-- **AMD Ryzen Threadripper PRO 9965WX**
+- **AMD Ryzen Threadripper PRO 7965WX**
   - 24 cores / 48 threads
-  - Arquitectura: Zen 5 (4nm)
-  - Frecuencia Base: 4.2 GHz / Boost: 5.4 GHz
+  - Arquitectura: Zen 4 (5nm)
+  - Frecuencia Base: 4.2 GHz / Boost: 5.3 GHz
   - Cache L3: 128MB
   - TDP: 350W
-  - Socket: sWRX8e
+  - Socket: sTR5
   - PCIe: 128 lanes PCIe 5.0
-  - Memoria: 8 canales DDR5-6400
+  - Memoria: 8 canales DDR5-5200
 
 ## Motherboard
 - **ASUS Pro WS WRX90E-SAGE SE**
-  - Chipset: AMD WRX90, Socket: sWRX8e (sTR5)
+  - Chipset: AMD WRX90, Socket: sTR5
   - Form Factor: EEB
   - RAM: 8x DIMM DDR5, hasta 2TB
   - PCIe: 7x PCIe 5.0 x16 slots
@@ -23,15 +23,13 @@
   - IPMI/BMC (AST2600), PCIe Q-Release
 
 ## RAM
-- **A-Tech 128GB (2x64GB) DDR5-5600 RDIMM ECC**
+- **NEMIX RAM 128GB (8x16GB) DDR5-5600 RDIMM**
   - Tipo: RDIMM (Registered) - OBLIGATORIO para WRX90
-  - ECC: Sí
   - Velocidad: 5600 MT/s (PC5-44800)
-  - Configuración: 2Rx4 (Dual Rank), 1.1V
-  - Canales activos: 2 de 8 (con 2 módulos)
-  - Ancho de banda actual: ~102 GB/s
-  - **Expansión planificada**: 4x64GB = 256GB (~205 GB/s)
-  - **Máximo soportado**: 8x64GB = 512GB (~358 GB/s)
+  - Configuración: 1Rx8 (Single Rank), 1.1V
+  - Canales activos: 8 de 8 (todos los slots ocupados)
+  - Ancho de banda: ~358 GB/s (máximo para DDR5-5600 en 8 canales)
+  - **Expansión**: Requiere reemplazar módulos (8x32GB = 256GB o 8x64GB = 512GB)
 
 ## GPUs (4x NVIDIA RTX 3070)
 
@@ -54,8 +52,8 @@ Especificaciones RTX 3070: 5888 CUDA Cores, 8GB GDDR6, 448 GB/s, TDP 220W, PCIe 
 
 | Recurso | Disponible | Uso Esperado |
 |---------|------------|--------------|
-| CPU Cores | 24 (48 threads) | LLM 70B inference (~24 threads) |
-| RAM | 128GB | LLM 70B Q4 (~45GB) + OS + buffers |
+| CPU Cores | 24 (48 threads) | LLM 72B inference (~24 threads) |
+| RAM | 128GB (8x16GB, 8 canales, ~358 GB/s) | LLM 72B Q6_K (~71GB total) + OS + servicios |
 | VRAM Total | 32GB (4x8GB) | STT + Embeddings + Router + TTS |
 | PCIe Lanes | 128 | 4 GPUs x 16 = 64 lanes usadas |
 

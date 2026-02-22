@@ -78,9 +78,18 @@ class MockLLMReasoner:
 class MockFastRouter:
     """Mock implementation of FastRouter for testing"""
 
-    def __init__(self):
+    def __init__(
+        self,
+        enable_lora: bool = False,
+        lora_path: str = None,
+        max_lora_rank: int = 32,
+    ):
         self._loaded = False
         self._should_deep_reason = False
+        self.enable_lora = enable_lora
+        self.max_lora_rank = max_lora_rank
+        self._lora_path = lora_path
+        self._lora_active = False
 
     def load(self):
         self._loaded = True
@@ -104,6 +113,15 @@ class MockFastRouter:
             if keyword in text.lower():
                 return True
         return self._should_deep_reason
+
+    def load_lora(self, lora_path: str):
+        """Mock LoRA loading"""
+        self._lora_path = lora_path
+        self._lora_active = True
+
+    def unload_lora(self):
+        """Mock LoRA unloading"""
+        self._lora_active = False
 
     # Test helpers
     def set_deep_reasoning(self, value: bool):

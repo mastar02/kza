@@ -4,6 +4,8 @@ TTS rápido con Piper y opción de alta calidad con XTTS
 Soporta streaming para menor latencia percibida.
 """
 
+from __future__ import annotations
+
 import logging
 import time
 import threading
@@ -542,38 +544,157 @@ class XTTS:
 
 class KokoroTTS:
     """
-    Alternativa: Kokoro TTS (buen balance velocidad/calidad)
+    TTS rapido con Kokoro-82M (~1.5GB VRAM).
+    Para respuestas cortas de domotica: "Listo", "Luz encendida", etc.
     https://github.com/hexgrad/kokoro
     """
-    
-    def __init__(self, device: str = "cuda:3"):
+
+    def __init__(
+        self,
+        model: str = "hexgrad/Kokoro-82M",
+        device: str = "cuda:3",
+        default_voice: str = "af_heart",
+    ):
+        self.model_name = model
         self.device = device
+        self.default_voice = default_voice
         self._model = None
         self.sample_rate = 24000
-    
+
     def load(self):
         """Cargar Kokoro"""
         try:
             import kokoro
-            
-            logger.info("Cargando Kokoro TTS")
+
+            logger.info(f"Cargando Kokoro TTS: {self.model_name}")
+            start = time.time()
             self._model = kokoro.Pipeline(device=self.device)
-            logger.info("Kokoro cargado")
+            elapsed = time.time() - start
+            logger.info(f"Kokoro cargado en {elapsed:.1f}s")
         except ImportError:
-            logger.error("Kokoro no instalado")
+            logger.error("Kokoro no instalado: pip install kokoro")
             raise
-    
-    def synthesize(self, text: str, voice: str = "af") -> tuple[np.ndarray, float]:
+
+    def synthesize(self, text: str, voice: str = None) -> tuple[np.ndarray, float]:
         """Sintetizar con Kokoro"""
         if self._model is None:
             self.load()
-        
+
+        voice = voice or self.default_voice
         start = time.perf_counter()
-        
         audio, _ = self._model(text, voice=voice)
-        
         elapsed_ms = (time.perf_counter() - start) * 1000
+
+        logger.debug(f"Kokoro TTS ({elapsed_ms:.0f}ms): {text[:30]}...")
         return audio, elapsed_ms
+
+    def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
+        """Sintetizar en streaming (Kokoro genera rapido, yield en chunks)."""
+        audio, _ = self.synthesize(text)
+        chunk_size = 4096
+        for i in range(0, len(audio), chunk_size):
+            yield audio[i:i + chunk_size]
+
+    def speak(self, text: str, blocking: bool = True):
+        """Sintetizar y reproducir"""
+        audio, _ = self.synthesize(text)
+        sd.play(audio, samplerate=self.sample_rate)
+        if blocking:
+            sd.wait()
+
+
+class Qwen3TTS:
+    """
+    TTS conversacional con Qwen3-TTS y voice cloning (~4.5GB VRAM).
+    Para respuestas largas con voz natural y clonada.
+    """
+
+    def __init__(
+        self,
+        model: str = "Qwen/Qwen3-TTS-0.6B",
+        device: str = "cuda:3",
+        speaker_wav: Optional[str] = None,
+    ):
+        self.model_name = model
+        self.device = device
+        self.speaker_wav = speaker_wav
+        self._model = None
+        self._processor = None
+        self._speaker_embedding = None
+        self.sample_rate = 24000
+
+    def load(self):
+        """Cargar Qwen3-TTS con transformers"""
+        try:
+            from transformers import AutoModelForCausalLM, AutoProcessor
+
+            logger.info(f"Cargando Qwen3-TTS: {self.model_name}")
+            start = time.time()
+
+            self._processor = AutoProcessor.from_pretrained(
+                self.model_name, trust_remote_code=True
+            )
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self.model_name, trust_remote_code=True
+            ).to(self.device)
+
+            elapsed = time.time() - start
+            logger.info(f"Qwen3-TTS cargado en {elapsed:.1f}s")
+
+            # Pre-cargar speaker embedding si hay audio de referencia
+            if self.speaker_wav and Path(self.speaker_wav).exists():
+                self._load_speaker_embedding()
+
+        except ImportError:
+            logger.error("transformers no instalado: pip install transformers")
+            raise
+
+    def _load_speaker_embedding(self):
+        """Pre-cargar embedding del speaker de referencia."""
+        try:
+            import soundfile as sf
+
+            audio, sr = sf.read(self.speaker_wav)
+            self._speaker_embedding = audio
+            logger.info(f"Speaker reference loaded: {self.speaker_wav}")
+        except Exception as e:
+            logger.warning(f"Failed to load speaker reference: {e}")
+
+    def synthesize(self, text: str) -> tuple[np.ndarray, float]:
+        """Sintetizar texto a audio con Qwen3-TTS."""
+        if self._model is None:
+            self.load()
+
+        start = time.perf_counter()
+
+        inputs = self._processor(text=text, return_tensors="pt").to(self.device)
+
+        with __import__("torch").no_grad():
+            outputs = self._model.generate(**inputs, max_new_tokens=2048)
+
+        audio = self._processor.decode(outputs[0])
+        if isinstance(audio, np.ndarray):
+            audio_array = audio
+        else:
+            audio_array = np.array(audio, dtype=np.float32)
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.debug(f"Qwen3 TTS ({elapsed_ms:.0f}ms): {text[:30]}...")
+        return audio_array, elapsed_ms
+
+    def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
+        """Sintetizar en streaming."""
+        audio, _ = self.synthesize(text)
+        chunk_size = 4096
+        for i in range(0, len(audio), chunk_size):
+            yield audio[i:i + chunk_size]
+
+    def speak(self, text: str, blocking: bool = True):
+        """Sintetizar y reproducir"""
+        audio, _ = self.synthesize(text)
+        sd.play(audio, samplerate=self.sample_rate)
+        if blocking:
+            sd.wait()
 
 
 class HybridTTS:
@@ -640,7 +761,70 @@ class HybridTTS:
             sd.wait()
 
 
-def create_tts(config: dict) -> PiperTTS | XTTS | HybridTTS:
+class DualTTS:
+    """
+    TTS dual: Kokoro para fast path, Qwen3 para conversacional.
+
+    Routing automatico por longitud de texto:
+    - len(text) <= threshold -> Kokoro (rapido, ~30ms)
+    - len(text) > threshold  -> Qwen3 (conversacional, voice cloning)
+    """
+
+    def __init__(
+        self,
+        kokoro_config: dict = None,
+        qwen3_config: dict = None,
+        quality_threshold: int = 50,
+    ):
+        self.kokoro = KokoroTTS(**(kokoro_config or {}))
+        self.qwen3 = Qwen3TTS(**(qwen3_config or {}))
+        self.quality_threshold = quality_threshold
+        self.sample_rate = 24000  # Both engines use 24kHz
+
+    def load(self):
+        """Cargar ambos motores (comparten GPU 3)."""
+        self.kokoro.load()
+        self.qwen3.load()
+
+    def _select_engine(self, text: str) -> str:
+        """Seleccionar motor segun longitud del texto."""
+        if len(text) <= self.quality_threshold:
+            return "kokoro"
+        return "qwen3"
+
+    def synthesize(
+        self, text: str, force_quality: bool = False
+    ) -> tuple[np.ndarray, float, str]:
+        """
+        Sintetizar eligiendo motor automaticamente.
+
+        Returns:
+            (audio, tiempo_ms, motor_usado)
+        """
+        if force_quality or self._select_engine(text) == "qwen3":
+            audio, elapsed = self.qwen3.synthesize(text)
+            return audio, elapsed, "qwen3"
+
+        audio, elapsed = self.kokoro.synthesize(text)
+        return audio, elapsed, "kokoro"
+
+    def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
+        """Streaming delegado al motor seleccionado."""
+        engine = self._select_engine(text)
+        if engine == "qwen3":
+            yield from self.qwen3.synthesize_stream(text)
+        else:
+            yield from self.kokoro.synthesize_stream(text)
+
+    def speak(self, text: str, blocking: bool = True):
+        """Sintetizar y reproducir."""
+        audio, _, engine = self.synthesize(text)
+        sd.play(audio, samplerate=self.sample_rate)
+        if blocking:
+            sd.wait()
+
+
+def create_tts(config: dict) -> PiperTTS | XTTS | HybridTTS | DualTTS:
     """Factory para crear TTS según configuración"""
     engine = config.get("engine", "piper")
     
@@ -662,6 +846,12 @@ def create_tts(config: dict) -> PiperTTS | XTTS | HybridTTS:
             piper_model=config.get("piper", {}).get("model"),
             xtts_model=config.get("xtts", {}).get("model"),
             xtts_device=config.get("xtts", {}).get("device", "cuda:3")
+        )
+    elif engine == "dual":
+        return DualTTS(
+            kokoro_config=config.get("kokoro", {}),
+            qwen3_config=config.get("qwen3", {}),
+            quality_threshold=config.get("quality_threshold", 50),
         )
     else:
         raise ValueError(f"Engine TTS desconocido: {engine}")
