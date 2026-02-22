@@ -9,9 +9,9 @@ Cliente asíncrono para la API de Spotify con soporte para:
 """
 
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Any
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 import aiohttp
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 
 
-class RepeatMode(Enum):
+class RepeatMode(StrEnum):
     OFF = "off"
     TRACK = "track"
     CONTEXT = "context"
@@ -54,7 +54,7 @@ class SpotifyTrack:
     id: str
     uri: str
     name: str
-    artists: List[str]
+    artists: list[str]
     album: str
     duration_ms: int
     popularity: int
@@ -80,8 +80,8 @@ class SpotifyTrack:
 class PlaybackState:
     """Estado actual de reproducción"""
     is_playing: bool
-    track: Optional[SpotifyTrack]
-    device: Optional[SpotifyDevice]
+    track: SpotifyTrack | None
+    device: SpotifyDevice | None
     progress_ms: int
     shuffle: bool
     repeat: RepeatMode
@@ -130,7 +130,7 @@ class SpotifyClient:
 
     def __init__(self, auth: SpotifyAuth):
         self.auth = auth
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Obtener o crear sesión HTTP"""
@@ -147,9 +147,9 @@ class SpotifyClient:
         self,
         method: str,
         endpoint: str,
-        params: Optional[dict] = None,
-        json_data: Optional[dict] = None,
-    ) -> Optional[dict]:
+        params: dict | None = None,
+        json_data: dict | None = None,
+    ) -> dict | None:
         """Realizar request a la API de Spotify"""
         token = await self.auth.get_access_token()
         if not token:
@@ -198,7 +198,7 @@ class SpotifyClient:
         query: str,
         limit: int = 10,
         market: str = "ES"
-    ) -> List[SpotifyTrack]:
+    ) -> list[SpotifyTrack]:
         """Buscar tracks por query"""
         result = await self._request(
             "GET",
@@ -215,7 +215,7 @@ class SpotifyClient:
         self,
         query: str,
         limit: int = 5
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Buscar artistas por query"""
         result = await self._request(
             "GET",
@@ -231,7 +231,7 @@ class SpotifyClient:
         self,
         query: str,
         limit: int = 5
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Buscar playlists por query"""
         result = await self._request(
             "GET",
@@ -245,7 +245,7 @@ class SpotifyClient:
 
     # ==================== Playback Control ====================
 
-    async def get_devices(self) -> List[SpotifyDevice]:
+    async def get_devices(self) -> list[SpotifyDevice]:
         """Obtener dispositivos disponibles"""
         result = await self._request("GET", "/me/player/devices")
         if not result:
@@ -254,7 +254,7 @@ class SpotifyClient:
         devices = result.get("devices", [])
         return [SpotifyDevice.from_api(d) for d in devices]
 
-    async def get_playback_state(self) -> Optional[PlaybackState]:
+    async def get_playback_state(self) -> PlaybackState | None:
         """Obtener estado actual de reproducción"""
         result = await self._request("GET", "/me/player")
         if not result:
@@ -264,10 +264,10 @@ class SpotifyClient:
 
     async def play(
         self,
-        device_id: Optional[str] = None,
-        context_uri: Optional[str] = None,  # album, playlist, artist URI
-        uris: Optional[List[str]] = None,   # lista de track URIs
-        offset: Optional[int] = None,       # posición en context
+        device_id: str | None = None,
+        context_uri: str | None = None,  # album, playlist, artist URI
+        uris: list[str] | None = None,   # lista de track URIs
+        offset: int | None = None,       # posición en context
         position_ms: int = 0
     ) -> bool:
         """
@@ -305,25 +305,25 @@ class SpotifyClient:
         )
         return result is not None
 
-    async def pause(self, device_id: Optional[str] = None) -> bool:
+    async def pause(self, device_id: str | None = None) -> bool:
         """Pausar reproducción"""
         params = {"device_id": device_id} if device_id else None
         result = await self._request("PUT", "/me/player/pause", params=params)
         return result is not None
 
-    async def next_track(self, device_id: Optional[str] = None) -> bool:
+    async def next_track(self, device_id: str | None = None) -> bool:
         """Siguiente track"""
         params = {"device_id": device_id} if device_id else None
         result = await self._request("POST", "/me/player/next", params=params)
         return result is not None
 
-    async def previous_track(self, device_id: Optional[str] = None) -> bool:
+    async def previous_track(self, device_id: str | None = None) -> bool:
         """Track anterior"""
         params = {"device_id": device_id} if device_id else None
         result = await self._request("POST", "/me/player/previous", params=params)
         return result is not None
 
-    async def set_volume(self, volume_percent: int, device_id: Optional[str] = None) -> bool:
+    async def set_volume(self, volume_percent: int, device_id: str | None = None) -> bool:
         """Ajustar volumen (0-100)"""
         volume_percent = max(0, min(100, volume_percent))
         params = {"volume_percent": volume_percent}
@@ -333,7 +333,7 @@ class SpotifyClient:
         result = await self._request("PUT", "/me/player/volume", params=params)
         return result is not None
 
-    async def set_shuffle(self, state: bool, device_id: Optional[str] = None) -> bool:
+    async def set_shuffle(self, state: bool, device_id: str | None = None) -> bool:
         """Activar/desactivar shuffle"""
         params = {"state": str(state).lower()}
         if device_id:
@@ -342,7 +342,7 @@ class SpotifyClient:
         result = await self._request("PUT", "/me/player/shuffle", params=params)
         return result is not None
 
-    async def set_repeat(self, mode: RepeatMode, device_id: Optional[str] = None) -> bool:
+    async def set_repeat(self, mode: RepeatMode, device_id: str | None = None) -> bool:
         """Configurar modo de repetición"""
         params = {"state": mode.value}
         if device_id:
@@ -351,7 +351,7 @@ class SpotifyClient:
         result = await self._request("PUT", "/me/player/repeat", params=params)
         return result is not None
 
-    async def seek(self, position_ms: int, device_id: Optional[str] = None) -> bool:
+    async def seek(self, position_ms: int, device_id: str | None = None) -> bool:
         """Saltar a posición en track"""
         params = {"position_ms": position_ms}
         if device_id:
@@ -360,7 +360,7 @@ class SpotifyClient:
         result = await self._request("PUT", "/me/player/seek", params=params)
         return result is not None
 
-    async def add_to_queue(self, uri: str, device_id: Optional[str] = None) -> bool:
+    async def add_to_queue(self, uri: str, device_id: str | None = None) -> bool:
         """Agregar track a la cola"""
         params = {"uri": uri}
         if device_id:
@@ -382,27 +382,27 @@ class SpotifyClient:
 
     async def get_recommendations(
         self,
-        seed_artists: Optional[List[str]] = None,
-        seed_tracks: Optional[List[str]] = None,
-        seed_genres: Optional[List[str]] = None,
+        seed_artists: list[str] | None = None,
+        seed_tracks: list[str] | None = None,
+        seed_genres: list[str] | None = None,
         limit: int = 20,
         market: str = "ES",
         # Audio features targets (0.0 - 1.0)
-        target_acousticness: Optional[float] = None,
-        target_danceability: Optional[float] = None,
-        target_energy: Optional[float] = None,
-        target_instrumentalness: Optional[float] = None,
-        target_liveness: Optional[float] = None,
-        target_speechiness: Optional[float] = None,
-        target_valence: Optional[float] = None,  # Positividad/alegría
+        target_acousticness: float | None = None,
+        target_danceability: float | None = None,
+        target_energy: float | None = None,
+        target_instrumentalness: float | None = None,
+        target_liveness: float | None = None,
+        target_speechiness: float | None = None,
+        target_valence: float | None = None,  # Positividad/alegría
         # Tempo target (BPM)
-        target_tempo: Optional[float] = None,
-        min_tempo: Optional[float] = None,
-        max_tempo: Optional[float] = None,
+        target_tempo: float | None = None,
+        min_tempo: float | None = None,
+        max_tempo: float | None = None,
         # Popularity (0-100)
-        min_popularity: Optional[int] = None,
-        max_popularity: Optional[int] = None,
-    ) -> List[SpotifyTrack]:
+        min_popularity: int | None = None,
+        max_popularity: int | None = None,
+    ) -> list[SpotifyTrack]:
         """
         Obtener recomendaciones basadas en seeds y audio features.
 
@@ -466,7 +466,7 @@ class SpotifyClient:
         tracks = result.get("tracks", [])
         return [SpotifyTrack.from_api(t) for t in tracks]
 
-    async def get_available_genres(self) -> List[str]:
+    async def get_available_genres(self) -> list[str]:
         """Obtener géneros disponibles para recomendaciones"""
         result = await self._request("GET", "/recommendations/available-genre-seeds")
         if not result:
@@ -480,7 +480,7 @@ class SpotifyClient:
         self,
         time_range: str = "medium_term",  # short_term, medium_term, long_term
         limit: int = 20
-    ) -> List[SpotifyTrack]:
+    ) -> list[SpotifyTrack]:
         """Obtener top tracks del usuario"""
         result = await self._request(
             "GET",
@@ -496,7 +496,7 @@ class SpotifyClient:
         self,
         time_range: str = "medium_term",
         limit: int = 20
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Obtener top artistas del usuario"""
         result = await self._request(
             "GET",
@@ -508,7 +508,7 @@ class SpotifyClient:
 
         return result.get("items", [])
 
-    async def get_recently_played(self, limit: int = 20) -> List[SpotifyTrack]:
+    async def get_recently_played(self, limit: int = 20) -> list[SpotifyTrack]:
         """Obtener tracks recientemente reproducidos"""
         result = await self._request(
             "GET",
@@ -520,7 +520,7 @@ class SpotifyClient:
 
         return [SpotifyTrack.from_api(item["track"]) for item in result.get("items", [])]
 
-    async def get_user_playlists(self, limit: int = 50) -> List[Dict[str, Any]]:
+    async def get_user_playlists(self, limit: int = 50) -> list[dict[str, Any]]:
         """Obtener playlists del usuario"""
         result = await self._request(
             "GET",
@@ -544,7 +544,7 @@ class SpotifyClient:
         artist_uri = artists[0]["uri"]
         return await self.play(context_uri=artist_uri)
 
-    async def play_track(self, track_name: str, artist: Optional[str] = None) -> bool:
+    async def play_track(self, track_name: str, artist: str | None = None) -> bool:
         """Buscar y reproducir un track"""
         query = f"{track_name} {artist}" if artist else track_name
         tracks = await self.search_tracks(query, limit=1)
@@ -564,7 +564,7 @@ class SpotifyClient:
         playlist_uri = playlists[0]["uri"]
         return await self.play(context_uri=playlist_uri)
 
-    async def get_current_track_info(self) -> Optional[str]:
+    async def get_current_track_info(self) -> str | None:
         """Obtener info del track actual como string"""
         state = await self.get_playback_state()
         if not state or not state.track:

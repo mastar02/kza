@@ -31,9 +31,10 @@ Uso:
 
 import asyncio
 import logging
-from typing import Callable, Optional, Dict, List, TYPE_CHECKING
+from collections.abc import Awaitable
+from typing import Callable, TYPE_CHECKING
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from src.core.logging import get_logger
 from .alert_manager import AlertManager
@@ -47,7 +48,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-class CheckType(Enum):
+class CheckType(StrEnum):
     """Tipos de verificaciones programadas"""
     SECURITY = "security"
     PATTERN = "pattern"
@@ -91,10 +92,10 @@ class AlertScheduler:
         """
         self.alert_manager = alert_manager
         self._running = False
-        self._tasks: List[asyncio.Task] = []
+        self._tasks: list[asyncio.Task] = []
 
         # Configuraciones de chequeo
-        self._check_configs: Dict[CheckType, CheckConfig] = {
+        self._check_configs: dict[CheckType, CheckConfig] = {
             CheckType.SECURITY: CheckConfig(
                 check_type=CheckType.SECURITY,
                 interval_seconds=security_interval,
@@ -113,9 +114,9 @@ class AlertScheduler:
         }
 
         # Handlers registrados para cada tipo de verificación
-        self._security_handlers: List[Callable[[], asyncio.coroutine]] = []
-        self._pattern_handlers: List[Callable[[], asyncio.coroutine]] = []
-        self._device_handlers: List[Callable[[], asyncio.coroutine]] = []
+        self._security_handlers: list[Callable[[], Awaitable[None]]] = []
+        self._pattern_handlers: list[Callable[[], Awaitable[None]]] = []
+        self._device_handlers: list[Callable[[], Awaitable[None]]] = []
 
         logger.info(
             f"AlertScheduler initialized "
@@ -124,7 +125,7 @@ class AlertScheduler:
 
     def register_security_handler(
         self,
-        handler: Callable[[], asyncio.coroutine],
+        handler: Callable[[], Awaitable[None]],
     ) -> None:
         """
         Registrar handler para verificaciones de seguridad.
@@ -137,7 +138,7 @@ class AlertScheduler:
 
     def register_pattern_handler(
         self,
-        handler: Callable[[], asyncio.coroutine],
+        handler: Callable[[], Awaitable[None]],
     ) -> None:
         """
         Registrar handler para verificaciones de patrones.
@@ -150,7 +151,7 @@ class AlertScheduler:
 
     def register_device_handler(
         self,
-        handler: Callable[[], asyncio.coroutine],
+        handler: Callable[[], Awaitable[None]],
     ) -> None:
         """
         Registrar handler para verificaciones de dispositivos.
@@ -363,7 +364,7 @@ class AlertScheduler:
             self._check_configs[check_type].interval_seconds = interval_seconds
             logger.info(f"{check_type.value} check interval set to {interval_seconds}s")
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> dict:
         """
         Obtener estado actual del scheduler.
 

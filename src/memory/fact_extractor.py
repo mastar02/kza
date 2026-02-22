@@ -6,7 +6,6 @@ Usa LLM para extraer hechos importantes de conversaciones.
 import json
 import logging
 import re
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +133,7 @@ class FactExtractor:
 
         return facts
 
-    def _format_quick_fact(self, label: str, value: str, original: str) -> Optional[str]:
+    def _format_quick_fact(self, label: str, value: str, original: str) -> str | None:
         """Formatear un hecho extraído por patrón"""
         templates = {
             "temperature_preference": f"El usuario prefiere la temperatura a {value} grados",

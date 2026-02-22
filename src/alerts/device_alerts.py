@@ -26,7 +26,6 @@ Uso:
     )
 """
 
-from typing import Optional
 
 from src.core.logging import get_logger
 from .alert_manager import Alert, AlertManager, AlertPriority, AlertType
@@ -75,7 +74,7 @@ class DeviceAlerts:
         device_name: str,
         battery_percent: float,
         device_type: str = "sensor_default",
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Verificar nivel de batería de dispositivo.
 
@@ -125,7 +124,7 @@ class DeviceAlerts:
         device_name: str,
         is_online: bool,
         device_type: str = "sensor",
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Verificar conectividad de dispositivo.
 
@@ -166,7 +165,7 @@ class DeviceAlerts:
         device_name: str,
         signal_strength_db: float,
         min_signal_db: float = -85.0,
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Verificar fortaleza de señal de dispositivo.
 
@@ -206,7 +205,7 @@ class DeviceAlerts:
         device_name: str,
         current_version: str,
         latest_version: str,
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Alertar sobre actualización de firmware disponible.
 
@@ -249,7 +248,7 @@ class DeviceAlerts:
         device_name: str,
         response_time_ms: float,
         max_response_time_ms: float = 5000.0,
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Alertar si dispositivo responde lentamente.
 
@@ -288,7 +287,7 @@ class DeviceAlerts:
     async def check_multiple_devices(
         self,
         devices: list[dict],
-    ) -> list[Optional[Alert]]:
+    ) -> list[Alert | None]:
         """
         Verificar múltiples dispositivos en una sola llamada.
 

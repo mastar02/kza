@@ -7,7 +7,6 @@ Extracted from VoicePipeline to reduce its responsibility.
 """
 
 import logging
-from typing import Optional
 
 from src.timers import NamedTimerManager, NamedTimer
 from src.intercom import IntercomSystem, AnnouncementPriority
@@ -36,11 +35,11 @@ class FeatureManager:
 
     def __init__(
         self,
-        timer_manager: Optional[NamedTimerManager] = None,
-        intercom: Optional[IntercomSystem] = None,
-        notifications: Optional[SmartNotificationManager] = None,
-        alert_manager: Optional[AlertManager] = None,
-        alert_scheduler: Optional[AlertScheduler] = None,
+        timer_manager: NamedTimerManager | None = None,
+        intercom: IntercomSystem | None = None,
+        notifications: SmartNotificationManager | None = None,
+        alert_manager: AlertManager | None = None,
+        alert_scheduler: AlertScheduler | None = None,
         ha_integration=None,
         briefing=None,
     ):
@@ -173,7 +172,7 @@ class FeatureManager:
         duration_seconds: int,
         user_id: str = None,
         zone_id: str = "default",
-    ) -> Optional[NamedTimer]:
+    ) -> NamedTimer | None:
         """Create a named timer.
 
         Args:

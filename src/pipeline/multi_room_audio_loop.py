@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Callable, Awaitable, Tuple
+from typing import Callable, Awaitable
 
 import numpy as np
 import sounddevice as sd
@@ -48,7 +48,7 @@ class MultiRoomAudioLoop:
 
     def __init__(
         self,
-        room_streams: Dict[str, RoomStream],
+        room_streams: dict[str, RoomStream],
         follow_up: FollowUpMode,
         sample_rate: int = 16000,
         command_duration: float = 2.0,
@@ -67,12 +67,8 @@ class MultiRoomAudioLoop:
         self.dedup_window_ms = dedup_window_ms
 
         self._running = False
-        self._on_command_callback: Optional[
-            Callable[[CommandEvent], Awaitable[dict]]
-        ] = None
-        self._on_post_command_callback: Optional[
-            Callable[[dict, CommandEvent], Awaitable[None]]
-        ] = None
+        self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
+        self._on_post_command_callback: Callable[[dict, CommandEvent], Awaitable[None]] | None = None
 
         # Deduplication state
         self._last_wakeword_time: float = 0.0
@@ -227,7 +223,7 @@ class MultiRoomAudioLoop:
 
         return audio_callback
 
-    def _check_vad_completion(self, rs: RoomStream) -> Tuple[bool, Optional[np.ndarray]]:
+    def _check_vad_completion(self, rs: RoomStream) -> tuple[bool, np.ndarray | None]:
         """Check if a room's command capture is complete (VAD or timeout)."""
         elapsed = time.time() - rs.command_start_time
         elapsed_ms = elapsed * 1000

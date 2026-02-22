@@ -22,7 +22,7 @@ Servicios:
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional, Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class KZAHomeAssistantIntegration:
         self.ha = ha_client
         self.pipeline = pipeline
         self._running = False
-        self._update_task: Optional[asyncio.Task] = None
+        self._update_task: asyncio.Task | None = None
         self._update_interval = 5  # Segundos entre updates
 
         # Estado actual de sensores

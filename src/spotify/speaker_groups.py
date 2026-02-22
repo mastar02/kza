@@ -11,14 +11,14 @@ Permite:
 import logging
 import json
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Set, Any
+from typing import Any
 from pathlib import Path
-from enum import Enum
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
 
-class GroupType(Enum):
+class GroupType(StrEnum):
     """Tipos de grupos de altavoces"""
     ROOM = "room"           # Habitación individual (cocina, sala)
     FLOOR = "floor"         # Piso completo (planta baja, planta alta)
@@ -31,16 +31,16 @@ class Speaker:
     """Un altavoz/dispositivo de audio"""
     id: str                     # ID único interno
     name: str                   # Nombre amigable ("Bocina Cocina")
-    spotify_device_id: Optional[str] = None  # ID de Spotify Connect
-    zone_id: Optional[str] = None            # ID de zona MA1260
-    room: Optional[str] = None               # Habitación ("cocina", "sala")
-    floor: Optional[str] = None              # Piso ("planta_baja", "planta_alta")
+    spotify_device_id: str | None = None  # ID de Spotify Connect
+    zone_id: str | None = None            # ID de zona MA1260
+    room: str | None = None               # Habitación ("cocina", "sala")
+    floor: str | None = None              # Piso ("planta_baja", "planta_alta")
     is_default: bool = False                 # Altavoz por defecto
     supports_spotify: bool = True            # Si soporta Spotify Connect
     volume_offset: int = 0                   # Ajuste de volumen relativo (-20 a +20)
 
     # Aliases para reconocimiento de voz
-    aliases: List[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
 
     def matches_name(self, query: str) -> bool:
         """Verificar si el query coincide con este speaker"""
@@ -86,14 +86,14 @@ class SpeakerGroup:
     id: str                     # "toda_la_casa", "planta_baja"
     name: str                   # Nombre amigable
     group_type: GroupType       # Tipo de grupo
-    speaker_ids: List[str]      # IDs de speakers en el grupo
+    speaker_ids: list[str]      # IDs de speakers en el grupo
 
     # Aliases para reconocimiento de voz
-    aliases: List[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
 
     # Configuración de grupo
     sync_playback: bool = True  # Sincronizar reproducción entre speakers
-    master_speaker_id: Optional[str] = None  # Speaker principal del grupo
+    master_speaker_id: str | None = None  # Speaker principal del grupo
 
     def matches_name(self, query: str) -> bool:
         """Verificar si el query coincide con este grupo"""
@@ -161,7 +161,7 @@ class SpeakerGroupManager:
 
     def __init__(
         self,
-        config_path: Optional[Path] = None,
+        config_path: Path | None = None,
         auto_discover: bool = True
     ):
         """
@@ -169,8 +169,8 @@ class SpeakerGroupManager:
             config_path: Ruta al archivo de configuración
             auto_discover: Intentar descubrir dispositivos automáticamente
         """
-        self.speakers: Dict[str, Speaker] = {}
-        self.groups: Dict[str, SpeakerGroup] = {}
+        self.speakers: dict[str, Speaker] = {}
+        self.groups: dict[str, SpeakerGroup] = {}
         self.config_path = config_path
 
         # Aliases comunes para "toda la casa"
@@ -208,26 +208,26 @@ class SpeakerGroupManager:
                 if speaker_id in group.speaker_ids:
                     group.speaker_ids.remove(speaker_id)
 
-    def get_speaker(self, speaker_id: str) -> Optional[Speaker]:
+    def get_speaker(self, speaker_id: str) -> Speaker | None:
         """Obtener speaker por ID"""
         return self.speakers.get(speaker_id)
 
-    def get_speaker_by_spotify_id(self, spotify_id: str) -> Optional[Speaker]:
+    def get_speaker_by_spotify_id(self, spotify_id: str) -> Speaker | None:
         """Obtener speaker por ID de Spotify"""
         for speaker in self.speakers.values():
             if speaker.spotify_device_id == spotify_id:
                 return speaker
         return None
 
-    def get_speakers_by_room(self, room: str) -> List[Speaker]:
+    def get_speakers_by_room(self, room: str) -> list[Speaker]:
         """Obtener speakers de una habitación"""
         return [s for s in self.speakers.values() if s.room and s.room.lower() == room.lower()]
 
-    def get_speakers_by_floor(self, floor: str) -> List[Speaker]:
+    def get_speakers_by_floor(self, floor: str) -> list[Speaker]:
         """Obtener speakers de un piso"""
         return [s for s in self.speakers.values() if s.floor and s.floor.lower() == floor.lower()]
 
-    def get_default_speaker(self) -> Optional[Speaker]:
+    def get_default_speaker(self) -> Speaker | None:
         """Obtener speaker por defecto"""
         for speaker in self.speakers.values():
             if speaker.is_default:
@@ -250,8 +250,8 @@ class SpeakerGroupManager:
         id: str,
         name: str,
         group_type: GroupType,
-        speaker_ids: List[str],
-        aliases: List[str] = None
+        speaker_ids: list[str],
+        aliases: list[str] = None
     ) -> SpeakerGroup:
         """Crear un nuevo grupo de altavoces"""
         # Validar que los speakers existan
@@ -279,11 +279,11 @@ class SpeakerGroupManager:
         if group_id in self.groups and group_id != "everywhere":
             del self.groups[group_id]
 
-    def get_group(self, group_id: str) -> Optional[SpeakerGroup]:
+    def get_group(self, group_id: str) -> SpeakerGroup | None:
         """Obtener grupo por ID"""
         return self.groups.get(group_id)
 
-    def get_group_speakers(self, group_id: str) -> List[Speaker]:
+    def get_group_speakers(self, group_id: str) -> list[Speaker]:
         """Obtener speakers de un grupo"""
         group = self.groups.get(group_id)
         if not group:
@@ -322,7 +322,7 @@ class SpeakerGroupManager:
     # Resolución de Destino (para comandos de voz)
     # =========================================================================
 
-    def resolve_target(self, query: str) -> Optional[Dict[str, Any]]:
+    def resolve_target(self, query: str) -> dict[str, Any] | None:
         """
         Resolver el destino de un comando de voz.
 
@@ -393,7 +393,7 @@ class SpeakerGroupManager:
                 return True
         return False
 
-    def _resolve_everywhere(self) -> Dict[str, Any]:
+    def _resolve_everywhere(self) -> dict[str, Any]:
         """Resolver destino 'toda la casa'"""
         everywhere = self.groups.get("everywhere")
         speakers = list(self.speakers.values())
@@ -405,7 +405,7 @@ class SpeakerGroupManager:
             "spotify_device_ids": [s.spotify_device_id for s in speakers if s.spotify_device_id]
         }
 
-    def resolve_default(self) -> Optional[Dict[str, Any]]:
+    def resolve_default(self) -> dict[str, Any] | None:
         """Resolver destino por defecto (speaker principal)"""
         default = self.get_default_speaker()
         if default:
@@ -421,7 +421,7 @@ class SpeakerGroupManager:
     # Parsing de Comandos de Voz
     # =========================================================================
 
-    def parse_zone_from_command(self, text: str) -> tuple[Optional[Dict], str]:
+    def parse_zone_from_command(self, text: str) -> tuple[dict | None, str]:
         """
         Extraer zona/grupo de un comando de voz.
 
@@ -465,7 +465,7 @@ class SpeakerGroupManager:
     # Persistencia
     # =========================================================================
 
-    def save_config(self, path: Optional[Path] = None):
+    def save_config(self, path: Path | None = None):
         """Guardar configuración a archivo"""
         path = path or self.config_path
         if not path:
@@ -508,7 +508,7 @@ class SpeakerGroupManager:
     # Estado
     # =========================================================================
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """Obtener estado actual"""
         return {
             "speakers": {
@@ -531,7 +531,7 @@ class SpeakerGroupManager:
             "default_speaker": self.get_default_speaker().id if self.get_default_speaker() else None
         }
 
-    def list_available_targets(self) -> List[str]:
+    def list_available_targets(self) -> list[str]:
         """Listar todos los destinos disponibles para comandos de voz"""
         targets = []
 

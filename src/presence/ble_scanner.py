@@ -13,14 +13,14 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional, Callable
+from enum import StrEnum
+from typing import Callable
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
 
-class DeviceType(Enum):
+class DeviceType(StrEnum):
     """Tipo de dispositivo BLE detectado"""
     PHONE_IOS = "phone_ios"
     PHONE_ANDROID = "phone_android"
@@ -39,7 +39,7 @@ class DeviceType(Enum):
 class BLEDevice:
     """Dispositivo BLE detectado"""
     address: str                    # MAC address (puede ser random en iOS)
-    name: Optional[str] = None      # Nombre del dispositivo
+    name: str | None = None      # Nombre del dispositivo
     rssi: int = -100                # Señal (dBm), -30=muy cerca, -90=lejos
     device_type: DeviceType = DeviceType.UNKNOWN
     manufacturer_data: dict = field(default_factory=dict)
@@ -51,16 +51,16 @@ class BLEDevice:
     seen_count: int = 0
 
     # Asociación con usuario (si está registrado)
-    user_id: Optional[str] = None
-    friendly_name: Optional[str] = None
+    user_id: str | None = None
+    friendly_name: str | None = None
 
     # Estimación de distancia
-    estimated_distance_m: Optional[float] = None
-    zone_id: Optional[str] = None
+    estimated_distance_m: float | None = None
+    zone_id: str | None = None
 
     # FIX: Para iOS MAC randomization
     is_random_mac: bool = False           # ¿MAC es aleatoria?
-    fingerprint: Optional[str] = None     # Fingerprint para identificar dispositivo
+    fingerprint: str | None = None     # Fingerprint para identificar dispositivo
     previous_macs: list = field(default_factory=list)  # MACs anteriores del mismo dispositivo
 
     def update(self, rssi: int, name: str = None):
@@ -248,10 +248,10 @@ class BLEScanner:
         self._fingerprint_to_current_mac: dict[str, str] = {}  # fingerprint -> MAC actual
 
         # Callbacks
-        self._on_device_detected: Optional[Callable] = None
-        self._on_device_lost: Optional[Callable] = None
-        self._on_registered_device_detected: Optional[Callable] = None
-        self._on_mac_rotation: Optional[Callable] = None  # FIX: Callback para rotación de MAC
+        self._on_device_detected: Callable | None = None
+        self._on_device_lost: Callable | None = None
+        self._on_registered_device_detected: Callable | None = None
+        self._on_mac_rotation: Callable | None = None  # FIX: Callback para rotación de MAC
 
         # Estado
         self._running = False
@@ -333,7 +333,7 @@ class BLEScanner:
         }
         logger.info(f"Dispositivo iOS registrado por fingerprint: {fingerprint[:8]}... -> {friendly_name or user_id}")
 
-    def learn_device_fingerprint(self, address: str) -> Optional[str]:
+    def learn_device_fingerprint(self, address: str) -> str | None:
         """
         FIX: Aprender el fingerprint de un dispositivo actualmente visible.
 
@@ -619,7 +619,7 @@ class BLEScanner:
         """Obtener solo dispositivos registrados que están activos"""
         return [d for d in self._devices.values() if d.user_id and not d.is_stale]
 
-    def get_device_by_user(self, user_id: str) -> Optional[BLEDevice]:
+    def get_device_by_user(self, user_id: str) -> BLEDevice | None:
         """Obtener dispositivo de un usuario específico"""
         for device in self._devices.values():
             if device.user_id == user_id and not device.is_stale:

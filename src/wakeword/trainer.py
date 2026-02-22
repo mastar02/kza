@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,7 @@ class WakeWordTrainer:
         learning_rate: float = 0.001,
         augment_data: bool = True,
         validation_split: float = 0.2,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Entrenar modelo de wake word.
 
@@ -143,7 +142,7 @@ class WakeWordTrainer:
         learning_rate: float,
         augment_data: bool,
         validation_split: float
-    ) -> Optional[str]:
+    ) -> str | None:
         """Entrenar usando la API de OpenWakeWord"""
         try:
             # Crear archivo de configuración temporal
@@ -188,7 +187,7 @@ class WakeWordTrainer:
         positive_dir: Path,
         negative_dir: Path,
         output_path: Path
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Entrenamiento simplificado usando embeddings de audio.
         Este es un fallback si OpenWakeWord training no está disponible.

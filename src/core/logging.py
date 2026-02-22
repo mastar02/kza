@@ -35,14 +35,14 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Any, Optional, Dict
+from enum import StrEnum
+from typing import Any
 
 # Context variables para datos de request
-_request_context: ContextVar[Dict[str, Any]] = ContextVar('request_context', default={})
+_request_context: ContextVar[dict[str, Any]] = ContextVar('request_context', default={})
 
 
-class LogFormat(Enum):
+class LogFormat(StrEnum):
     """Formatos de salida de logs"""
     JSON = "json"       # Para producción, parseable
     COLORED = "colored" # Para desarrollo, legible
@@ -57,7 +57,7 @@ class LogConfig:
     include_timestamp: bool = True
     include_location: bool = True  # file:line
     include_context: bool = True   # user_id, request_id, etc.
-    json_indent: Optional[int] = None  # None = una línea
+    json_indent: int | None = None  # None = una línea
 
 
 # Colores ANSI
@@ -284,7 +284,7 @@ def clear_context():
     _request_context.set({})
 
 
-def get_context() -> Dict[str, Any]:
+def get_context() -> dict[str, Any]:
     """Obtener contexto actual"""
     return _request_context.get()
 
@@ -300,7 +300,7 @@ def configure_logging(
     include_timestamp: bool = True,
     include_location: bool = True,
     include_context: bool = True,
-    json_indent: Optional[int] = None
+    json_indent: int | None = None
 ):
     """
     Configurar el sistema de logging.

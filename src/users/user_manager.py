@@ -16,7 +16,6 @@ import time
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -71,7 +70,7 @@ class User:
     user_id: str
     name: str
     permission_level: PermissionLevel
-    voice_embedding: Optional[np.ndarray] = None
+    voice_embedding: np.ndarray | None = None
     created_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     is_active: bool = True
@@ -180,9 +179,9 @@ class UserManager:
         self,
         name: str,
         permission_level: PermissionLevel,
-        voice_embedding: Optional[np.ndarray] = None,
-        requesting_user: Optional[User] = None
-    ) -> tuple[Optional[User], str]:
+        voice_embedding: np.ndarray | None = None,
+        requesting_user: User | None = None
+    ) -> tuple[User | None, str]:
         """
         Agregar nuevo usuario.
 
@@ -225,7 +224,7 @@ class UserManager:
     def remove_user(
         self,
         user_id: str,
-        requesting_user: Optional[User] = None
+        requesting_user: User | None = None
     ) -> tuple[bool, str]:
         """Eliminar usuario"""
         if requesting_user is not None:
@@ -253,11 +252,11 @@ class UserManager:
         logger.info(f"Usuario eliminado: {user.name}")
         return True, f"Usuario {user.name} eliminado"
 
-    def get_user(self, user_id: str) -> Optional[User]:
+    def get_user(self, user_id: str) -> User | None:
         """Obtener usuario por ID"""
         return self._users.get(user_id)
 
-    def get_user_by_name(self, name: str) -> Optional[User]:
+    def get_user_by_name(self, name: str) -> User | None:
         """Obtener usuario por nombre"""
         name_lower = name.lower()
         for user in self._users.values():

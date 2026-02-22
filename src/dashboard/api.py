@@ -5,7 +5,6 @@ API REST con FastAPI para gestión de rutinas, presencia y configuración
 
 import logging
 from datetime import datetime
-from typing import Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -23,7 +22,7 @@ logger = logging.getLogger(__name__)
 class TriggerModel(BaseModel):
     type: str  # time, presence_enter, presence_leave, sunrise, sunset, device_state
     config: dict = Field(default_factory=dict)
-    description: Optional[str] = ""
+    description: str | None = ""
 
 
 class ConditionModel(BaseModel):
@@ -34,15 +33,15 @@ class ConditionModel(BaseModel):
 class ActionModel(BaseModel):
     type: str = "ha_service"
     entity_id: str
-    domain: Optional[str] = None
+    domain: str | None = None
     service: str = "turn_on"
     data: dict = Field(default_factory=dict)
-    description: Optional[str] = ""
+    description: str | None = ""
 
 
 class RoutineCreateModel(BaseModel):
     name: str
-    description: Optional[str] = ""
+    description: str | None = ""
     triggers: list[TriggerModel]
     conditions: list[ConditionModel] = Field(default_factory=list)
     actions: list[ActionModel]
@@ -52,14 +51,14 @@ class RoutineCreateModel(BaseModel):
 
 
 class RoutineUpdateModel(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    triggers: Optional[list[TriggerModel]] = None
-    conditions: Optional[list[ConditionModel]] = None
-    actions: Optional[list[ActionModel]] = None
-    enabled: Optional[bool] = None
-    cooldown_seconds: Optional[int] = None
-    tags: Optional[list[str]] = None
+    name: str | None = None
+    description: str | None = None
+    triggers: list[TriggerModel] | None = None
+    conditions: list[ConditionModel] | None = None
+    actions: list[ActionModel] | None = None
+    enabled: bool | None = None
+    cooldown_seconds: int | None = None
+    tags: list[str] | None = None
 
 
 class RoutineResponseModel(BaseModel):
@@ -74,7 +73,7 @@ class RoutineResponseModel(BaseModel):
     created_at: str
     created_by: str
     tags: list[str]
-    last_executed: Optional[str] = None
+    last_executed: str | None = None
     execution_count: int = 0
 
 
@@ -86,8 +85,8 @@ class PresenceUserModel(BaseModel):
     user_id: str
     name: str
     is_home: bool
-    current_room: Optional[str] = None
-    last_seen: Optional[str] = None
+    current_room: str | None = None
+    last_seen: str | None = None
     devices: list[dict] = Field(default_factory=list)
 
 
@@ -144,8 +143,8 @@ class DashboardAPI:
 
         @self.app.get("/api/routines", response_model=list[RoutineResponseModel])
         async def list_routines(
-            enabled: Optional[bool] = None,
-            tag: Optional[str] = None
+            enabled: bool | None = None,
+            tag: str | None = None
         ):
             """Listar todas las rutinas"""
             routines = self.scheduler.get_all_routines()
@@ -307,7 +306,7 @@ class DashboardAPI:
         # ==================== Entidades HA ====================
 
         @self.app.get("/api/entities")
-        async def list_entities(domain: Optional[str] = None):
+        async def list_entities(domain: str | None = None):
             """Listar entidades de Home Assistant"""
             if not self.ha:
                 return []

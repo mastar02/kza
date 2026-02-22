@@ -15,14 +15,14 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from queue import Queue, Empty
-from typing import Callable, Generator, Optional
+from typing import Callable, Generator
 
 logger = logging.getLogger(__name__)
 
 
-class BufferStrategy(Enum):
+class BufferStrategy(StrEnum):
     """Estrategias de buffering disponibles"""
     SENTENCE = "sentence"      # Buffer por oraciones completas
     TOKEN_COUNT = "token"      # Buffer por cantidad de tokens
@@ -106,7 +106,7 @@ class BufferedLLMStreamer:
         self._full_response = ""
         self._sentence_queue: Queue[str] = Queue()
         self._stop_event = threading.Event()
-        self._tts_thread: Optional[threading.Thread] = None
+        self._tts_thread: threading.Thread | None = None
 
     def _speak_filler(self):
         """Reproducir frase de relleno mientras el LLM piensa"""

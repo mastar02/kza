@@ -13,7 +13,6 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +23,7 @@ class ConversationTurn:
     timestamp: float
     user_input: str
     assistant_response: str
-    intent: Optional[str] = None
+    intent: str | None = None
     entities_used: list[str] = field(default_factory=list)
 
 
@@ -63,8 +62,8 @@ class ShortTermMemory:
         self,
         user_input: str,
         assistant_response: str,
-        intent: Optional[str] = None,
-        entities_used: Optional[list[str]] = None
+        intent: str | None = None,
+        entities_used: list[str] | None = None
     ):
         """Agregar un turno de conversación"""
         turn = ConversationTurn(
@@ -126,7 +125,7 @@ class LongTermMemory:
         fact: str,
         category: str,
         confidence: float = 0.8,
-        metadata: Optional[dict] = None
+        metadata: dict | None = None
     ) -> str:
         """
         Almacenar un hecho en memoria de largo plazo.
@@ -315,7 +314,7 @@ class PreferencesStore:
         self._save()
         logger.info(f"Preference set: {key}={value} ({source})")
 
-    def get(self, key: str) -> Optional[str]:
+    def get(self, key: str) -> str | None:
         """Obtener valor de preferencia"""
         pref = self._preferences.get(key)
         return pref.value if pref else None
@@ -377,8 +376,8 @@ class MemoryManager:
         self,
         user_input: str,
         assistant_response: str,
-        intent: Optional[str] = None,
-        entities_used: Optional[list[str]] = None
+        intent: str | None = None,
+        entities_used: list[str] | None = None
     ):
         """
         Registrar una interacción en memoria.

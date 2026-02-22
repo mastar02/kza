@@ -24,7 +24,6 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +47,8 @@ class UserProfile:
     user_name: str = "Usuario"
     preferred_temperatures: dict = field(default_factory=dict)  # room -> temp
     preferred_brightness: dict = field(default_factory=dict)    # room -> brightness
-    wake_time: Optional[str] = None      # "07:00"
-    sleep_time: Optional[str] = None     # "23:00"
+    wake_time: str | None = None      # "07:00"
+    sleep_time: str | None = None     # "23:00"
     entity_aliases: dict = field(default_factory=dict)  # alias -> entity_id
     frequent_commands: list = field(default_factory=list)
     room_preferences: dict = field(default_factory=dict)  # time_of_day -> room

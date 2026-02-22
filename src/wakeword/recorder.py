@@ -7,7 +7,7 @@ import logging
 import time
 import wave
 from pathlib import Path
-from typing import Optional
+from typing import Callable
 
 import numpy as np
 
@@ -46,7 +46,7 @@ class WakeWordRecorder:
         self,
         n: int = 50,
         delay_between: float = 1.5,
-        callback: Optional[callable] = None
+        callback: Callable | None = None
     ) -> int:
         """
         Grabar muestras positivas (diciendo el wake word).
@@ -72,7 +72,7 @@ class WakeWordRecorder:
         self,
         n: int = 50,
         delay_between: float = 1.5,
-        callback: Optional[callable] = None
+        callback: Callable | None = None
     ) -> int:
         """
         Grabar muestras negativas (conversación normal SIN el wake word).
@@ -101,7 +101,7 @@ class WakeWordRecorder:
         prefix: str,
         prompt: str,
         delay_between: float,
-        callback: Optional[callable]
+        callback: Callable | None
     ) -> int:
         """Grabar n muestras de audio"""
         import sounddevice as sd

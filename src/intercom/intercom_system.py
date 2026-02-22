@@ -13,14 +13,14 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Callable, Any
-from enum import Enum
+from typing import Callable, Any
+from enum import StrEnum
 import uuid
 
 logger = logging.getLogger(__name__)
 
 
-class AnnouncementPriority(Enum):
+class AnnouncementPriority(StrEnum):
     LOW = "low"           # No interrumpe música
     NORMAL = "normal"     # Baja volumen temporalmente
     HIGH = "high"         # Interrumpe todo
@@ -37,12 +37,12 @@ class Announcement:
 
     # Metadatos
     created_at: datetime = field(default_factory=datetime.now)
-    created_by: Optional[str] = None  # user_id
-    source_zone: Optional[str] = None # Zona de origen
+    created_by: str | None = None  # user_id
+    source_zone: str | None = None # Zona de origen
 
     # Estado
     delivered: bool = False
-    delivered_at: Optional[datetime] = None
+    delivered_at: datetime | None = None
     failed_zones: list[str] = field(default_factory=list)
 
     # Configuración
@@ -124,14 +124,14 @@ class IntercomSystem:
         self._announcement_queue: asyncio.Queue = asyncio.Queue()
         self._announcement_history: list[Announcement] = []
         self._running = False
-        self._process_task: Optional[asyncio.Task] = None
+        self._process_task: asyncio.Task | None = None
 
         # Zonas disponibles
         self._zones: dict[str, dict] = {}  # zone_id -> {name, media_player, speaker}
 
         # Callbacks
-        self._on_announcement_delivered: Optional[Callable] = None
-        self._on_announcement_failed: Optional[Callable] = None
+        self._on_announcement_delivered: Callable | None = None
+        self._on_announcement_failed: Callable | None = None
 
     async def start(self):
         """Iniciar sistema de intercomunicador"""

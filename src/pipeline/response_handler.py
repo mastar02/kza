@@ -5,7 +5,6 @@ Gestiona síntesis de voz, streaming de audio y enrutamiento a zonas.
 
 import logging
 import time
-from typing import Optional
 
 import numpy as np
 
@@ -67,7 +66,7 @@ class ResponseHandler:
         self.llm_use_filler = llm_use_filler
         self.llm_filler_phrases = llm_filler_phrases
 
-        self._llm_streamer: Optional[BufferedLLMStreamer] = None
+        self._llm_streamer: BufferedLLMStreamer | None = None
         self._active_zone_id = None
 
     def set_active_zone(self, zone_id: str):

@@ -11,7 +11,6 @@ Optimizado para latencia mínima:
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Union
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -52,7 +51,7 @@ class FastWhisperSTT:
     
     def transcribe(
         self,
-        audio: Union[np.ndarray, str, Path],
+        audio: np.ndarray | str | Path,
         sample_rate: int = 16000
     ) -> tuple[str, float]:
         """

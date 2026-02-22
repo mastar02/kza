@@ -6,14 +6,13 @@ Verifica el estado de todos los componentes del sistema.
 import logging
 import os
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-class HealthStatus(Enum):
+class HealthStatus(StrEnum):
     """Estado de salud de un componente"""
     HEALTHY = "healthy"
     DEGRADED = "degraded"
@@ -27,7 +26,7 @@ class ComponentHealth:
     name: str
     status: HealthStatus
     message: str
-    details: Optional[dict] = None
+    details: dict | None = None
 
 
 @dataclass

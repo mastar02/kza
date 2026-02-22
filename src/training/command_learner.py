@@ -17,7 +17,6 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +34,8 @@ class LearningState(Enum):
 class LearningSession:
     """Sesión activa de aprendizaje"""
     state: LearningState = LearningState.IDLE
-    trigger_phrase: Optional[str] = None
-    action_description: Optional[str] = None
+    trigger_phrase: str | None = None
+    action_description: str | None = None
     parsed_actions: list = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
 
@@ -49,9 +48,9 @@ class CustomCommand:
     action_description: str
     actions: list[dict]  # Lista de acciones HA
     created_at: float
-    created_by: Optional[str] = None  # Usuario que lo creó
+    created_by: str | None = None  # Usuario que lo creó
     times_used: int = 0
-    last_used: Optional[float] = None
+    last_used: float | None = None
 
 
 class CommandLearner:
@@ -83,7 +82,7 @@ class CommandLearner:
         self.llm = llm_reasoner
         self.commands_file = Path(commands_file)
 
-        self._session: Optional[LearningSession] = None
+        self._session: LearningSession | None = None
         self._commands: dict[str, CustomCommand] = {}
 
         self._load_commands()
@@ -475,7 +474,7 @@ Si no puedes identificar acciones, responde: []
         except Exception as e:
             logger.error(f"Error agregando a vector DB: {e}")
 
-    def _find_similar_command(self, phrase: str) -> Optional[CustomCommand]:
+    def _find_similar_command(self, phrase: str) -> CustomCommand | None:
         """Buscar comando similar existente"""
         phrase_lower = phrase.lower()
 

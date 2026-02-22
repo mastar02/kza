@@ -4,14 +4,12 @@ TTS rápido con Piper y opción de alta calidad con XTTS
 Soporta streaming para menor latencia percibida.
 """
 
-from __future__ import annotations
-
 import logging
 import time
 import threading
 import queue
 from pathlib import Path
-from typing import Optional, Generator, Callable
+from typing import Generator, Callable
 import numpy as np
 import sounddevice as sd
 
@@ -451,7 +449,7 @@ class XTTS:
         self,
         model: str = "tts_models/multilingual/multi-dataset/xtts_v2",
         device: str = "cuda:3",
-        speaker_wav: Optional[str] = None
+        speaker_wav: str | None = None
     ):
         self.model_name = model
         self.device = device
@@ -479,7 +477,7 @@ class XTTS:
         self,
         text: str,
         language: str = "es",
-        speaker_wav: Optional[str] = None
+        speaker_wav: str | None = None
     ) -> tuple[np.ndarray, float]:
         """
         Sintetizar texto a audio
@@ -613,7 +611,7 @@ class Qwen3TTS:
         self,
         model: str = "Qwen/Qwen3-TTS-0.6B",
         device: str = "cuda:3",
-        speaker_wav: Optional[str] = None,
+        speaker_wav: str | None = None,
     ):
         self.model_name = model
         self.device = device

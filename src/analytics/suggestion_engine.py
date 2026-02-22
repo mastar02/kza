@@ -7,8 +7,7 @@ import logging
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 from pathlib import Path
 
 from .pattern_analyzer import Pattern, PatternType, PatternAnalyzer
@@ -17,7 +16,7 @@ from .event_logger import EventLogger
 logger = logging.getLogger(__name__)
 
 
-class SuggestionStatus(Enum):
+class SuggestionStatus(StrEnum):
     """Estado de una sugerencia"""
     PENDING = "pending"       # Esperando respuesta del usuario
     ACCEPTED = "accepted"     # Usuario acepto
@@ -35,8 +34,8 @@ class Suggestion:
     automation_yaml: str            # YAML de Home Assistant
     created_at: float
     status: SuggestionStatus = SuggestionStatus.PENDING
-    user_response: Optional[str] = None
-    snooze_until: Optional[float] = None
+    user_response: str | None = None
+    snooze_until: float | None = None
     
     def to_dict(self) -> dict:
         return {
@@ -171,7 +170,7 @@ class SuggestionEngine:
         
         return new_suggestions
     
-    def _find_existing_suggestion(self, pattern: Pattern) -> Optional[Suggestion]:
+    def _find_existing_suggestion(self, pattern: Pattern) -> Suggestion | None:
         """Buscar si ya existe una sugerencia similar"""
         for suggestion in self._suggestions.values():
             p = suggestion.pattern
@@ -182,7 +181,7 @@ class SuggestionEngine:
                 return suggestion
         return None
     
-    def _create_suggestion(self, pattern: Pattern) -> Optional[Suggestion]:
+    def _create_suggestion(self, pattern: Pattern) -> Suggestion | None:
         """Crear una sugerencia a partir de un patron"""
         import time
         
@@ -464,7 +463,7 @@ mode: single
             "yaml": suggestion.automation_yaml
         }
     
-    def get_suggestion_to_present(self) -> Optional[Suggestion]:
+    def get_suggestion_to_present(self) -> Suggestion | None:
         """
         Obtener la sugerencia mas relevante para presentar al usuario.
         Usado por el pipeline de voz.

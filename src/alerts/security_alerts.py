@@ -24,7 +24,6 @@ Uso:
 """
 
 import asyncio
-from typing import Optional
 
 from src.core.logging import get_logger
 from .alert_manager import Alert, AlertManager, AlertPriority, AlertType
@@ -59,7 +58,7 @@ class SecurityAlerts:
         zone: str,
         is_open: bool,
         expected_open: bool = False,
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Verificar estado de puerta.
 
@@ -104,7 +103,7 @@ class SecurityAlerts:
         zone: str,
         motion_detected: bool,
         expected_occupancy: bool = True,
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Verificar movimiento inusual.
 
@@ -148,7 +147,7 @@ class SecurityAlerts:
         zone: str,
         is_opening: bool,
         sequence_expected: bool = False,
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Detectar secuencias de apertura/cierre anormales.
 
@@ -189,7 +188,7 @@ class SecurityAlerts:
         zone: str,
         user: str,
         reason: str = "unauthorized",
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Alertar sobre acceso denegado.
 

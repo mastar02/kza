@@ -12,7 +12,6 @@ import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -26,7 +25,7 @@ class STTCorrection:
     original_text: str
     corrected_text: str
     timestamp: str
-    user_id: Optional[str] = None
+    user_id: str | None = None
     confidence: float = 0.0
     used: bool = False
 
@@ -54,9 +53,9 @@ class STTCorrectionCollector:
         original_text: str,
         corrected_text: str,
         sample_rate: int = 16000,
-        user_id: Optional[str] = None,
+        user_id: str | None = None,
         confidence: float = 0.0,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Guardar correccion: audio WAV + metadata JSON.
 

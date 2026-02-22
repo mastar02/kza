@@ -7,7 +7,7 @@ import logging
 import threading
 import queue
 import time
-from typing import Dict, List, Optional, Callable, Tuple
+from typing import Callable
 from dataclasses import dataclass
 import numpy as np
 
@@ -52,10 +52,10 @@ class MultiMicCapture:
     
     def __init__(
         self,
-        microphones: List[MicrophoneConfig],
+        microphones: list[MicrophoneConfig],
         buffer_duration_sec: float = 5.0,
         vad_threshold: float = 0.02,
-        on_voice_detected: Optional[Callable[[AudioChunk], None]] = None
+        on_voice_detected: Callable[[AudioChunk], None] | None = None
     ):
         """
         Args:
@@ -70,14 +70,14 @@ class MultiMicCapture:
         self.on_voice_detected = on_voice_detected
         
         # Streams de audio por micrófono
-        self._streams: Dict[str, any] = {}
+        self._streams: dict[str, any] = {}
         
         # Buffers circulares por zona
-        self._buffers: Dict[str, np.ndarray] = {}
-        self._buffer_positions: Dict[str, int] = {}
+        self._buffers: dict[str, np.ndarray] = {}
+        self._buffer_positions: dict[str, int] = {}
         
         # Niveles de audio actuales
-        self._current_levels: Dict[str, float] = {}
+        self._current_levels: dict[str, float] = {}
         
         # Queue para chunks procesados
         self._audio_queue: queue.Queue = queue.Queue(maxsize=100)
@@ -87,7 +87,7 @@ class MultiMicCapture:
         self._lock = threading.Lock()
         
         # Zona con voz detectada
-        self._active_zone: Optional[str] = None
+        self._active_zone: str | None = None
         self._voice_start_time: float = 0
         
         self._init_buffers()
@@ -201,7 +201,7 @@ class MultiMicCapture:
         self._streams.clear()
         logger.info("Captura multi-micrófono detenida")
     
-    def get_loudest_zone(self) -> Optional[Tuple[str, float]]:
+    def get_loudest_zone(self) -> tuple[str, float] | None:
         """
         Obtener la zona con mayor nivel de audio actual.
         
@@ -215,7 +215,7 @@ class MultiMicCapture:
             loudest = max(self._current_levels.items(), key=lambda x: x[1])
             return loudest if loudest[1] > self.vad_threshold else None
     
-    def get_audio_levels(self) -> Dict[str, float]:
+    def get_audio_levels(self) -> dict[str, float]:
         """Obtener niveles de audio de todas las zonas"""
         with self._lock:
             return self._current_levels.copy()
@@ -224,7 +224,7 @@ class MultiMicCapture:
         self,
         zone_id: str,
         duration_sec: float = 3.0
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         """
         Obtener audio reciente de una zona.
         
@@ -256,7 +256,7 @@ class MultiMicCapture:
                 else:
                     return np.concatenate([buffer[start:], buffer[:pos]])
     
-    def get_next_chunk(self, timeout: float = 1.0) -> Optional[AudioChunk]:
+    def get_next_chunk(self, timeout: float = 1.0) -> AudioChunk | None:
         """
         Obtener siguiente chunk de audio de la queue.
         
@@ -280,7 +280,7 @@ class MultiMicCapture:
                 break
     
     @staticmethod
-    def list_devices() -> List[dict]:
+    def list_devices() -> list[dict]:
         """Listar dispositivos de audio disponibles"""
         import sounddevice as sd
         

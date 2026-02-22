@@ -7,7 +7,7 @@ without CUDA hardware.
 
 from unittest.mock import MagicMock, patch
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 import numpy as np
 
 

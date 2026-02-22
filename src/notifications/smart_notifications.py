@@ -12,14 +12,14 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, time
-from typing import Optional, Callable, Any
-from enum import Enum
+from typing import Callable, Any
+from enum import Enum, StrEnum
 import uuid
 
 logger = logging.getLogger(__name__)
 
 
-class NotificationChannel(Enum):
+class NotificationChannel(StrEnum):
     VOICE = "voice"           # TTS en speakers
     PUSH = "push"             # Notificación push móvil
     DISPLAY = "display"       # Mostrar en pantallas/tablets
@@ -43,12 +43,12 @@ class NotificationRule:
     enabled: bool = True
 
     # Condiciones
-    time_start: Optional[time] = None      # Hora inicio (ej: 08:00)
-    time_end: Optional[time] = None        # Hora fin (ej: 22:00)
+    time_start: time | None = None      # Hora inicio (ej: 08:00)
+    time_end: time | None = None        # Hora fin (ej: 22:00)
     days_of_week: list[int] = None         # 0=Lunes, 6=Domingo
-    user_home: Optional[bool] = None       # True=solo en casa, False=solo fuera
-    user_awake: Optional[bool] = None      # True=solo despierto
-    zone_id: Optional[str] = None          # Solo en esta zona
+    user_home: bool | None = None       # True=solo en casa, False=solo fuera
+    user_awake: bool | None = None      # True=solo despierto
+    zone_id: str | None = None          # Solo en esta zona
     min_priority: NotificationPriority = NotificationPriority.NORMAL
 
     # Acciones
@@ -66,20 +66,20 @@ class Notification:
     source: str = "system"                 # Origen: "system", "home_assistant", "calendar", etc.
 
     # Destinatario
-    user_id: Optional[str] = None          # None = broadcast
-    zone_id: Optional[str] = None          # Zona específica
+    user_id: str | None = None          # None = broadcast
+    zone_id: str | None = None          # Zona específica
 
     # Metadatos
     created_at: datetime = field(default_factory=datetime.now)
-    expires_at: Optional[datetime] = None   # Caducidad
+    expires_at: datetime | None = None   # Caducidad
     data: dict = field(default_factory=dict)  # Datos adicionales
 
     # Estado
     delivered: bool = False
-    delivered_at: Optional[datetime] = None
+    delivered_at: datetime | None = None
     channels_used: list[NotificationChannel] = field(default_factory=list)
     suppressed: bool = False
-    suppression_reason: Optional[str] = None
+    suppression_reason: str | None = None
 
 
 class SmartNotificationManager:
@@ -124,7 +124,7 @@ class SmartNotificationManager:
         self._notification_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._notification_history: list[Notification] = []
         self._running = False
-        self._process_task: Optional[asyncio.Task] = None
+        self._process_task: asyncio.Task | None = None
 
         # Configuración por usuario
         self._user_rules: dict[str, list[NotificationRule]] = {}  # user_id -> reglas
@@ -136,7 +136,7 @@ class SmartNotificationManager:
         self._group_timeout: float = 5.0  # Segundos para agrupar
 
         # Callbacks
-        self._on_notification_delivered: Optional[Callable] = None
+        self._on_notification_delivered: Callable | None = None
 
     async def start(self):
         """Iniciar sistema de notificaciones"""

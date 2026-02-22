@@ -7,14 +7,14 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
-from enum import Enum
-from typing import Callable, Optional
+from enum import StrEnum
+from typing import Callable
 import json
 
 logger = logging.getLogger(__name__)
 
 
-class TriggerType(Enum):
+class TriggerType(StrEnum):
     TIME = "time"                    # Hora específica
     TIME_RANGE = "time_range"        # Rango horario
     SUNRISE = "sunrise"
@@ -41,7 +41,7 @@ class ScheduledRoutine:
     conditions: list[dict]
     actions: list[dict]
     enabled: bool = True
-    last_executed: Optional[datetime] = None
+    last_executed: datetime | None = None
     execution_count: int = 0
     cooldown_seconds: int = 60  # Evitar ejecuciones repetidas
 
@@ -52,7 +52,7 @@ class ScheduledRoutine:
 
     # Permisos por usuario
     allowed_users: list[str] = field(default_factory=list)  # Vacío = todos
-    owner_user_id: Optional[str] = None  # Quién creó la rutina
+    owner_user_id: str | None = None  # Quién creó la rutina
     guest_allowed: bool = True  # ¿Invitados pueden ejecutar?
 
 
@@ -77,8 +77,8 @@ class RoutineScheduler:
 
         # Estado
         self._running = False
-        self._scheduler_task: Optional[asyncio.Task] = None
-        self._presence_task: Optional[asyncio.Task] = None
+        self._scheduler_task: asyncio.Task | None = None
+        self._presence_task: asyncio.Task | None = None
 
         # Cache de presencia anterior (para detectar cambios)
         self._last_presence_state: dict[str, bool] = {}
@@ -120,7 +120,7 @@ class RoutineScheduler:
             return True
         return False
 
-    def get_routine(self, routine_id: str) -> Optional[ScheduledRoutine]:
+    def get_routine(self, routine_id: str) -> ScheduledRoutine | None:
         """Obtener una rutina por ID"""
         return self._routines.get(routine_id)
 
@@ -420,7 +420,7 @@ class RoutineScheduler:
         except Exception as e:
             logger.error(f"Error ejecutando rutina {routine.name}: {e}")
 
-    async def execute_by_name(self, name: str, context: dict = None) -> Optional[dict]:
+    async def execute_by_name(self, name: str, context: dict = None) -> dict | None:
         """Ejecutar rutina por nombre (para comandos de voz)"""
         name_lower = name.lower()
 
@@ -436,7 +436,7 @@ class RoutineScheduler:
         logger.warning(f"Rutina no encontrada: {name}")
         return None
 
-    async def execute_by_id(self, routine_id: str, context: dict = None) -> Optional[dict]:
+    async def execute_by_id(self, routine_id: str, context: dict = None) -> dict | None:
         """Ejecutar rutina por ID"""
         routine = self._routines.get(routine_id)
         if routine:
@@ -492,7 +492,7 @@ class RoutineScheduler:
 
     # ==================== Utilidades ====================
 
-    def _parse_time(self, time_str: str) -> Optional[time]:
+    def _parse_time(self, time_str: str) -> time | None:
         """Parsear string de tiempo"""
         if not time_str:
             return None

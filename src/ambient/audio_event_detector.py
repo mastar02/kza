@@ -11,15 +11,15 @@ import logging
 import time
 import numpy as np
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional, Callable, Any
+from enum import StrEnum
+from typing import Callable, Any
 from collections import deque
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
-class AudioEventType(Enum):
+class AudioEventType(StrEnum):
     """Tipos de eventos de audio detectables"""
     # Alertas de seguridad (prioridad alta)
     SMOKE_ALARM = "smoke_alarm"
@@ -66,7 +66,7 @@ class EventConfig:
     cooldown_seconds: float = 5.0  # Evitar detecciones repetidas
     priority: int = 5  # 1-10, mayor = más prioritario
     notify: bool = True
-    action: Optional[str] = None  # Acción automática a ejecutar
+    action: str | None = None  # Acción automática a ejecutar
 
 
 class AudioEventDetector:
@@ -188,8 +188,8 @@ class AudioEventDetector:
         self._audio_buffer = deque(maxlen=int(sample_rate * 5))  # 5 segundos
 
         # Callbacks
-        self._on_event: Optional[Callable[[AudioEvent], None]] = None
-        self._on_security_event: Optional[Callable[[AudioEvent], None]] = None
+        self._on_event: Callable[[AudioEvent], None] | None = None
+        self._on_security_event: Callable[[AudioEvent], None] | None = None
 
         # Estadísticas
         self._stats = {

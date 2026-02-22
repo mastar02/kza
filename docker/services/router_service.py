@@ -5,7 +5,6 @@ Runs on GPU 2 with vLLM
 
 import os
 import logging
-from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -26,7 +25,7 @@ class ClassifyRequest(BaseModel):
 class ClassifyResponse(BaseModel):
     category: str
     confidence: float
-    reasoning: Optional[str] = None
+    reasoning: str | None = None
 
 
 class GenerateRequest(BaseModel):

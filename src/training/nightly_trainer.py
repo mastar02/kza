@@ -57,15 +57,15 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Callable
-from enum import Enum
+from typing import Callable
+from enum import StrEnum
 import threading
 import signal
 
 logger = logging.getLogger(__name__)
 
 
-class TrainingStatus(Enum):
+class TrainingStatus(StrEnum):
     """Estado del entrenamiento"""
     IDLE = "idle"
     COLLECTING = "collecting"
@@ -86,9 +86,9 @@ class TrainingSession:
     epochs_completed: int = 0
     total_epochs: int = 3
     loss_history: list[float] = field(default_factory=list)
-    error_message: Optional[str] = None
-    adapter_path: Optional[str] = None
-    completed_at: Optional[float] = None
+    error_message: str | None = None
+    adapter_path: str | None = None
+    completed_at: float | None = None
     gpu_utilization: dict = field(default_factory=dict)
     training_stats: dict = field(default_factory=dict)
 
@@ -195,12 +195,12 @@ class NightlyTrainer:
         self.stt_collector = stt_correction_collector
 
         # Estado
-        self.current_session: Optional[TrainingSession] = None
+        self.current_session: TrainingSession | None = None
         self.training_history: list[TrainingSession] = []
 
         # Scheduler
         self._scheduler_running = False
-        self._scheduler_thread: Optional[threading.Thread] = None
+        self._scheduler_thread: threading.Thread | None = None
 
         # Crear directorios
         Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
@@ -1286,7 +1286,7 @@ if __name__ == "__main__":
             }
         }
 
-    def get_latest_adapter(self) -> Optional[str]:
+    def get_latest_adapter(self) -> str | None:
         """Obtener path del último adapter entrenado exitosamente"""
         for session in reversed(self.training_history):
             if session.status == TrainingStatus.COMPLETED and session.adapter_path:

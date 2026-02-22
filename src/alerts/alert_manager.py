@@ -36,8 +36,8 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Callable, Optional, Dict, List
+from enum import Enum, StrEnum
+from typing import Callable
 from uuid import uuid4
 
 from src.core.logging import get_logger
@@ -53,7 +53,7 @@ class AlertPriority(Enum):
     LOW = 3
 
 
-class AlertType(Enum):
+class AlertType(StrEnum):
     """Tipos de alertas"""
     SECURITY = "security"       # Seguridad (puertas, movimiento)
     PATTERN = "pattern"         # Patrones anómalos
@@ -69,10 +69,10 @@ class Alert:
     alert_type: AlertType
     priority: AlertPriority
     message: str
-    details: Dict = field(default_factory=dict)
+    details: dict = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.utcnow)
     processed: bool = False
-    processed_at: Optional[datetime] = None
+    processed_at: datetime | None = None
 
     def to_dict(self) -> dict:
         """Convertir alerta a diccionario"""
@@ -101,7 +101,7 @@ class AlertManager:
         self,
         cooldown_seconds: float = 300.0,
         max_history: int = 1000,
-        tts_callback: Optional[Callable[[str], None]] = None,
+        tts_callback: Callable[[str], None] | None = None,
     ):
         """
         Inicializar AlertManager.
@@ -117,13 +117,13 @@ class AlertManager:
         self.tts_callback = tts_callback
 
         # Handlers por tipo de alerta: {AlertType: [callback1, callback2, ...]}
-        self._handlers: Dict[AlertType, List[Callable[[Alert], None]]] = defaultdict(list)
+        self._handlers: dict[AlertType, list[Callable[[Alert], None]]] = defaultdict(list)
 
         # Deduplicación: {alert_key: last_timestamp}
-        self._last_alert_time: Dict[str, float] = {}
+        self._last_alert_time: dict[str, float] = {}
 
         # Historial de alertas (FIFO)
-        self._history: List[Alert] = []
+        self._history: list[Alert] = []
 
         # Lock para operaciones thread-safe
         self._lock = asyncio.Lock()
@@ -168,8 +168,8 @@ class AlertManager:
         alert_type: AlertType,
         priority: AlertPriority,
         message: str,
-        details: Optional[Dict] = None,
-    ) -> Optional[Alert]:
+        details: dict | None = None,
+    ) -> Alert | None:
         """
         Crear una alerta con deduplicación automática.
 
@@ -271,7 +271,7 @@ class AlertManager:
         """Generar clave de deduplicación"""
         return f"{alert_type.value}:{message}"
 
-    def get_history(self, limit: Optional[int] = None) -> List[Alert]:
+    def get_history(self, limit: int | None = None) -> list[Alert]:
         """
         Obtener historial de alertas.
 
@@ -286,7 +286,7 @@ class AlertManager:
             history = history[:limit]
         return history
 
-    def get_pending_summary(self) -> Dict:
+    def get_pending_summary(self) -> dict:
         """
         Obtener resumen de alertas pendientes (no procesadas).
 
@@ -331,7 +331,7 @@ class AlertManager:
                     return True
             return False
 
-    def get_alert(self, alert_id: str) -> Optional[Alert]:
+    def get_alert(self, alert_id: str) -> Alert | None:
         """Obtener alerta por ID"""
         for alert in self._history:
             if alert.alert_id == alert_id:
@@ -348,7 +348,7 @@ class AlertManager:
         self._history.clear()
         logger.debug("Alert history cleared")
 
-    def get_stats(self) -> Dict:
+    def get_stats(self) -> dict:
         """Obtener estadísticas del sistema de alertas"""
         return {
             "total_alerts": len(self._history),

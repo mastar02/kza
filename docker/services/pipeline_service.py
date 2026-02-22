@@ -7,7 +7,6 @@ import os
 import io
 import logging
 import asyncio
-from typing import Optional
 from contextlib import asynccontextmanager
 
 import httpx
@@ -29,7 +28,7 @@ HA_URL = os.getenv("HOME_ASSISTANT_URL")
 HA_TOKEN = os.getenv("HOME_ASSISTANT_TOKEN")
 
 # HTTP client with connection pooling
-http_client: Optional[httpx.AsyncClient] = None
+http_client: httpx.AsyncClient | None = None
 
 
 @asynccontextmanager
@@ -52,14 +51,14 @@ app = FastAPI(
 
 class ProcessRequest(BaseModel):
     text: str
-    user_id: Optional[str] = None
+    user_id: str | None = None
 
 
 class ProcessResponse(BaseModel):
     input_text: str
     category: str
     response_text: str
-    action_taken: Optional[str] = None
+    action_taken: str | None = None
     latency_ms: float
 
 

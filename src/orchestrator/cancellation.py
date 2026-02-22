@@ -25,13 +25,13 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Callable, Optional
+from enum import StrEnum
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
 
-class CancellationReason(Enum):
+class CancellationReason(StrEnum):
     """Razones de cancelacion"""
     USER_NEW_REQUEST = "user_new_request"      # Usuario hizo otra peticion
     HIGHER_PRIORITY = "higher_priority"        # Llego peticion de mayor prioridad
@@ -55,15 +55,15 @@ class CancellationToken:
         cancelled_at: Timestamp de cancelacion
     """
     _cancelled: bool = field(default=False, repr=False)
-    _reason: Optional[CancellationReason] = field(default=None, repr=False)
-    _message: Optional[str] = field(default=None, repr=False)
-    _cancelled_at: Optional[float] = field(default=None, repr=False)
+    _reason: CancellationReason | None = field(default=None, repr=False)
+    _message: str | None = field(default=None, repr=False)
+    _cancelled_at: float | None = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _callbacks: list[Callable] = field(default_factory=list, repr=False)
 
     # Metadata
-    request_id: Optional[str] = None
-    user_id: Optional[str] = None
+    request_id: str | None = None
+    user_id: str | None = None
     created_at: float = field(default_factory=time.time)
 
     @property
@@ -73,19 +73,19 @@ class CancellationToken:
             return self._cancelled
 
     @property
-    def reason(self) -> Optional[CancellationReason]:
+    def reason(self) -> CancellationReason | None:
         """Obtener razon de cancelacion"""
         with self._lock:
             return self._reason
 
     @property
-    def message(self) -> Optional[str]:
+    def message(self) -> str | None:
         """Obtener mensaje de cancelacion"""
         with self._lock:
             return self._message
 
     @property
-    def cancelled_at(self) -> Optional[float]:
+    def cancelled_at(self) -> float | None:
         """Timestamp de cancelacion"""
         with self._lock:
             return self._cancelled_at
@@ -153,7 +153,7 @@ class CancellationToken:
             self._cancelled_at = None
             self._callbacks = []
 
-    def get_elapsed_since_cancel(self) -> Optional[float]:
+    def get_elapsed_since_cancel(self) -> float | None:
         """Tiempo transcurrido desde la cancelacion"""
         with self._lock:
             if self._cancelled_at:
@@ -202,7 +202,7 @@ class CancellationScope:
             request_id=request_id,
             user_id=user_id
         )
-        self._timer: Optional[threading.Timer] = None
+        self._timer: threading.Timer | None = None
 
     def __enter__(self) -> CancellationToken:
         if self.timeout:
@@ -288,7 +288,7 @@ class CancellationManager:
 
             return token
 
-    def get_token(self, user_id: str) -> Optional[CancellationToken]:
+    def get_token(self, user_id: str) -> CancellationToken | None:
         """Obtener token activo de un usuario"""
         with self._lock:
             return self._tokens.get(user_id)

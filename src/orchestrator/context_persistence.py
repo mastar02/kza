@@ -11,7 +11,6 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 from dataclasses import asdict
 
 from .context_manager import ContextManager, UserContext, ConversationTurn
@@ -79,7 +78,7 @@ class PersistentContextManager(ContextManager):
 
         # Thread de auto-guardado
         self._save_running = False
-        self._save_thread: Optional[threading.Thread] = None
+        self._save_thread: threading.Thread | None = None
 
         # Cargar metadata
         self._load_metadata()
@@ -204,7 +203,7 @@ class PersistentContextManager(ContextManager):
             logger.debug(f"Contexto nuevo creado: {user_id}")
             return ctx
 
-    def _load_user_context(self, user_id: str) -> Optional[UserContext]:
+    def _load_user_context(self, user_id: str) -> UserContext | None:
         """Cargar contexto de usuario desde disco"""
         user_file = self._get_user_file(user_id)
 

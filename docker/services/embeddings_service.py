@@ -5,7 +5,6 @@ Runs on GPU 1
 
 import os
 import logging
-from typing import List, Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 import numpy as np
@@ -21,22 +20,22 @@ speaker_model = None
 
 
 class EmbeddingRequest(BaseModel):
-    texts: List[str]
+    texts: list[str]
 
 
 class EmbeddingResponse(BaseModel):
-    embeddings: List[List[float]]
+    embeddings: list[list[float]]
     dimension: int
 
 
 class SpeakerResponse(BaseModel):
-    embedding: List[float]
+    embedding: list[float]
     dimension: int
 
 
 class SimilarityRequest(BaseModel):
-    embedding1: List[float]
-    embedding2: List[float]
+    embedding1: list[float]
+    embedding2: list[float]
 
 
 def get_embeddings_model():

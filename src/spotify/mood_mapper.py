@@ -17,9 +17,7 @@ Audio Features de Spotify:
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
-from enum import Enum
-
+from typing import Any
 logger = logging.getLogger(__name__)
 
 
@@ -29,17 +27,17 @@ class AudioFeatures:
     Audio features para recomendaciones de Spotify.
     Valores None se ignoran en la petición.
     """
-    energy: Optional[float] = None
-    valence: Optional[float] = None
-    danceability: Optional[float] = None
-    acousticness: Optional[float] = None
-    instrumentalness: Optional[float] = None
-    speechiness: Optional[float] = None
-    tempo: Optional[float] = None
-    min_tempo: Optional[float] = None
-    max_tempo: Optional[float] = None
+    energy: float | None = None
+    valence: float | None = None
+    danceability: float | None = None
+    acousticness: float | None = None
+    instrumentalness: float | None = None
+    speechiness: float | None = None
+    tempo: float | None = None
+    min_tempo: float | None = None
+    max_tempo: float | None = None
 
-    def to_recommendation_params(self) -> Dict[str, float]:
+    def to_recommendation_params(self) -> dict[str, float]:
         """Convertir a parámetros para la API de recomendaciones"""
         params = {}
         if self.energy is not None:
@@ -86,10 +84,10 @@ class MoodProfile:
     name: str
     description: str
     features: AudioFeatures
-    genres: List[str] = field(default_factory=list)
-    keywords: List[str] = field(default_factory=list)  # Palabras que activan este mood
+    genres: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)  # Palabras que activan este mood
     shuffle: bool = True
-    min_popularity: Optional[int] = None
+    min_popularity: int | None = None
 
     def matches_query(self, query: str) -> bool:
         """Verificar si el query matchea con este mood"""
@@ -102,7 +100,7 @@ class MoodProfile:
 # =============================================================================
 # Estos mapean contextos comunes a audio features de Spotify
 
-MOOD_PROFILES: Dict[str, MoodProfile] = {
+MOOD_PROFILES: dict[str, MoodProfile] = {
     # -------------------------------------------------------------------------
     # Estados de ánimo
     # -------------------------------------------------------------------------
@@ -264,7 +262,7 @@ class MoodMapper:
         profile = await mapper.interpret_with_llm("música para una cena romántica a la luz de las velas")
     """
 
-    def __init__(self, llm=None, custom_profiles: Optional[Dict[str, MoodProfile]] = None):
+    def __init__(self, llm=None, custom_profiles: dict[str, MoodProfile] | None = None):
         """
         Args:
             llm: LLM para interpretar contextos complejos (opcional)
@@ -276,7 +274,7 @@ class MoodMapper:
         if custom_profiles:
             self.profiles.update(custom_profiles)
 
-    def get_mood_profile(self, query: str) -> Optional[MoodProfile]:
+    def get_mood_profile(self, query: str) -> MoodProfile | None:
         """
         Obtener perfil de mood basado en keywords.
 
@@ -296,15 +294,15 @@ class MoodMapper:
 
         return None
 
-    def get_profile_by_name(self, name: str) -> Optional[MoodProfile]:
+    def get_profile_by_name(self, name: str) -> MoodProfile | None:
         """Obtener perfil por nombre"""
         return self.profiles.get(name.lower())
 
-    def list_available_moods(self) -> List[str]:
+    def list_available_moods(self) -> list[str]:
         """Listar moods disponibles"""
         return list(self.profiles.keys())
 
-    async def interpret_with_llm(self, query: str) -> Optional[MoodProfile]:
+    async def interpret_with_llm(self, query: str) -> MoodProfile | None:
         """
         Usar LLM para interpretar contextos complejos.
 
@@ -385,7 +383,7 @@ summer, techno, trance, trip-hop, work-out, world-music"""
         self.profiles[key] = profile
         logger.info(f"Added custom mood profile: {key}")
 
-    def extract_artist_or_track(self, query: str) -> Dict[str, Optional[str]]:
+    def extract_artist_or_track(self, query: str) -> dict[str, str | None]:
         """
         Extraer mención de artista o canción del query.
 

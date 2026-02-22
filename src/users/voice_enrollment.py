@@ -15,7 +15,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Callable, Optional
+from typing import Callable
 
 import numpy as np
 
@@ -40,9 +40,9 @@ class EnrollmentState(Enum):
 class EnrollmentSession:
     """Sesión activa de enrollment"""
     state: EnrollmentState = EnrollmentState.IDLE
-    requesting_user: Optional[User] = None
-    new_user_name: Optional[str] = None
-    permission_level: Optional[PermissionLevel] = None
+    requesting_user: User | None = None
+    new_user_name: str | None = None
+    permission_level: PermissionLevel | None = None
     voice_samples: list[np.ndarray] = field(default_factory=list)
     required_samples: int = 3
     started_at: float = field(default_factory=time.time)
@@ -95,7 +95,7 @@ class VoiceEnrollment:
         self.speaker_id = speaker_identifier
         self.session_timeout = session_timeout
 
-        self._session: Optional[EnrollmentSession] = None
+        self._session: EnrollmentSession | None = None
 
     @property
     def is_active(self) -> bool:
@@ -117,8 +117,8 @@ class VoiceEnrollment:
     def handle(
         self,
         text: str,
-        audio: Optional[np.ndarray] = None,
-        current_user: Optional[User] = None
+        audio: np.ndarray | None = None,
+        current_user: User | None = None
     ) -> dict:
         """
         Procesar entrada durante enrollment.
@@ -197,7 +197,7 @@ class VoiceEnrollment:
         cancel_phrases = ["cancelar", "cancel", "salir", "exit", "olvídalo", "no importa"]
         return any(phrase in text for phrase in cancel_phrases)
 
-    def _start_enrollment(self, requesting_user: Optional[User]) -> dict:
+    def _start_enrollment(self, requesting_user: User | None) -> dict:
         """Iniciar proceso de enrollment"""
         # Verificar permisos
         if requesting_user is not None:
@@ -310,7 +310,7 @@ class VoiceEnrollment:
             "completed_user": None
         }
 
-    def _handle_voice_sample(self, audio: Optional[np.ndarray]) -> dict:
+    def _handle_voice_sample(self, audio: np.ndarray | None) -> dict:
         """Procesar muestra de voz"""
         if audio is None or len(audio) < 8000:  # Mínimo 0.5 segundos
             return {
@@ -422,7 +422,7 @@ class VoiceEnrollment:
             "completed_user": None
         }
 
-    def get_session_info(self) -> Optional[dict]:
+    def get_session_info(self) -> dict | None:
         """Obtener información de la sesión actual"""
         if self._session is None:
             return None

@@ -27,7 +27,6 @@ Uso:
 """
 
 from datetime import datetime
-from typing import Optional
 
 from src.core.logging import get_logger
 from .alert_manager import Alert, AlertManager, AlertPriority, AlertType
@@ -73,7 +72,7 @@ class PatternAlerts:
         expected_time_utc: str,
         actual_time_utc: str,
         tolerance_minutes: int = 60,
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Detectar desviación de rutina esperada.
 
@@ -132,8 +131,8 @@ class PatternAlerts:
         activity_type: str,
         current_value: float,
         normal_baseline: float,
-        threshold_percent: Optional[float] = None,
-    ) -> Optional[Alert]:
+        threshold_percent: float | None = None,
+    ) -> Alert | None:
         """
         Detectar actividad anómala basada en desviación de baseline.
 
@@ -200,7 +199,7 @@ class PatternAlerts:
         sleep_duration_hours: float,
         expected_hours: float = 8.0,
         deviation_threshold: float = 2.0,
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Detectar anomalías en patrón de sueño.
 
@@ -247,7 +246,7 @@ class PatternAlerts:
         zone: str,
         last_activity_hours_ago: float,
         max_gap_hours: float = 4.0,
-    ) -> Optional[Alert]:
+    ) -> Alert | None:
         """
         Detectar períodos sin actividad esperada en una zona.
 

@@ -5,7 +5,6 @@ Comunicacion con Home Assistant via REST API y WebSocket
 
 import asyncio
 import logging
-from typing import Optional
 import aiohttp
 
 logger = logging.getLogger(__name__)
@@ -22,7 +21,7 @@ class HomeAssistantClient:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
         }
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
         self._ws_connection = None
         self._ws_connected = False
@@ -74,7 +73,7 @@ class HomeAssistantClient:
             logger.error(f"Error obteniendo servicios: {e}")
             return []
 
-    async def get_entity_state(self, entity_id: str) -> Optional[dict]:
+    async def get_entity_state(self, entity_id: str) -> dict | None:
         """Obtener estado de una entidad especifica."""
         try:
             session = await self._ensure_session()
@@ -92,7 +91,7 @@ class HomeAssistantClient:
         domain: str,
         service: str,
         entity_id: str,
-        data: Optional[dict] = None
+        data: dict | None = None
     ) -> bool:
         """Ejecutar un servicio de Home Assistant.
 
@@ -265,7 +264,7 @@ class HomeAssistantClient:
         domain: str,
         service: str,
         entity_id: str,
-        data: Optional[dict] = None
+        data: dict | None = None
     ) -> bool:
         """Llamar servicio via WebSocket (mas rapido que REST).
 

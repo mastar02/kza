@@ -6,7 +6,6 @@ Modelo grande para razonamiento profundo con soporte LoRA.
 import logging
 import time
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +53,7 @@ class LLMReasoner:
     def __init__(
         self,
         model_path: str,
-        lora_path: Optional[str] = None,
+        lora_path: str | None = None,
         lora_scale: float = 1.0,
         n_ctx: int = 32768,
         n_threads: int = 24,
@@ -176,7 +175,7 @@ class LLMReasoner:
         top_p: float = 0.9,
         top_k: int = 40,
         repeat_penalty: float = 1.1,
-        stop: Optional[list[str]] = None
+        stop: list[str] | None = None
     ) -> dict:
         """
         Generar respuesta.
@@ -242,7 +241,7 @@ class LLMReasoner:
         top_p: float = 0.9,
         top_k: int = 40,
         repeat_penalty: float = 1.1,
-        stop: Optional[list[str]] = None
+        stop: list[str] | None = None
     ):
         """
         Generar respuesta en streaming (token por token).
@@ -292,7 +291,7 @@ class LLMReasoner:
         messages: list[dict],
         max_tokens: int = 1024,
         temperature: float = 0.7,
-        system_prompt: Optional[str] = None
+        system_prompt: str | None = None
     ) -> str:
         """
         Chat con formato de mensajes (usa chat template del modelo).
@@ -374,7 +373,7 @@ REGLAS:
         gpu_memory_utilization: float = 0.85,
         enable_prefix_caching: bool = True,
         enable_lora: bool = False,
-        lora_path: Optional[str] = None,
+        lora_path: str | None = None,
         max_lora_rank: int = 32,
     ):
         self.model_name = model

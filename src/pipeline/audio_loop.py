@@ -14,7 +14,7 @@ Handles:
 import asyncio
 import logging
 import time
-from typing import Optional, Callable, Awaitable
+from typing import Callable, Awaitable
 
 import numpy as np
 import sounddevice as sd
@@ -68,8 +68,8 @@ class AudioLoop:
         self.ambient_detector = ambient_detector
 
         self._running = False
-        self._on_command_callback: Optional[Callable[[np.ndarray], Awaitable[dict]]] = None
-        self._on_post_command_callback: Optional[Callable[[dict, np.ndarray], Awaitable[None]]] = None
+        self._on_command_callback: Callable[[np.ndarray], Awaitable[dict]] | None = None
+        self._on_post_command_callback: Callable[[dict, np.ndarray], Awaitable[None]] | None = None
 
     def on_command(self, callback: Callable[[np.ndarray], Awaitable[dict]]):
         """

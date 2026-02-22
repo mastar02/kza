@@ -21,15 +21,15 @@ import asyncio
 import gc
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Optional, Callable
+from typing import Any, Callable
 import time
 
 logger = logging.getLogger(__name__)
 
 
-class ModelState(Enum):
+class ModelState(StrEnum):
     """Estado de un modelo"""
     UNLOADED = "unloaded"
     LOADING = "loading"
@@ -47,7 +47,7 @@ class ModelInfo:
     state: ModelState = ModelState.UNLOADED
     model_instance: Any = None
     load_time: float = 0.0
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 @dataclass
@@ -576,10 +576,10 @@ class ModelManager:
 # Funciones de conveniencia para integración
 # =============================================================================
 
-_global_manager: Optional[ModelManager] = None
+_global_manager: ModelManager | None = None
 
 
-def get_model_manager() -> Optional[ModelManager]:
+def get_model_manager() -> ModelManager | None:
     """Obtener el manager global"""
     return _global_manager
 

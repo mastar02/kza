@@ -15,7 +15,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Any
+from typing import Any
 from pathlib import Path
 from collections import defaultdict
 
@@ -27,7 +27,7 @@ class LearnedUser:
     """Usuario aprendido del sistema"""
     user_id: str
     name: str                          # Nombre como lo dice el usuario
-    voice_profile_id: Optional[str] = None
+    voice_profile_id: str | None = None
     ble_fingerprints: list[str] = field(default_factory=list)
     aliases: list[str] = field(default_factory=list)  # "papá", "mi esposo"
     preferences: dict = field(default_factory=dict)
@@ -41,8 +41,8 @@ class LearnedEntity:
     entity_id: str                     # "light.sala"
     domain: str                        # "light"
     friendly_name: str                 # Nombre de HA: "Luz Sala"
-    area_id: Optional[str] = None      # Área en HA
-    area_name: Optional[str] = None    # "Sala"
+    area_id: str | None = None      # Área en HA
+    area_name: str | None = None    # "Sala"
     aliases: list[str] = field(default_factory=list)  # ["luz del living", "la luz principal"]
     user_aliases: dict[str, list[str]] = field(default_factory=dict)  # Por usuario
 
@@ -383,7 +383,7 @@ class EntityLearner:
         text: str,
         user_id: str = None,
         domain: str = None
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Resolver texto a entity_id.
 
@@ -428,7 +428,7 @@ class EntityLearner:
 
         return None
 
-    def resolve_area(self, text: str) -> Optional[str]:
+    def resolve_area(self, text: str) -> str | None:
         """Resolver texto a area_id"""
         text_lower = text.lower()
 
@@ -443,7 +443,7 @@ class EntityLearner:
 
         return None
 
-    def resolve_user(self, text: str) -> Optional[str]:
+    def resolve_user(self, text: str) -> str | None:
         """Resolver texto a user_id"""
         text_lower = text.lower()
 
@@ -457,7 +457,7 @@ class EntityLearner:
 
         return None
 
-    def get_user_name(self, user_id: str) -> Optional[str]:
+    def get_user_name(self, user_id: str) -> str | None:
         """Obtener nombre de usuario"""
         if user_id in self._users:
             return self._users[user_id].name

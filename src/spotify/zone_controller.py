@@ -12,8 +12,8 @@ Funcionalidades principales:
 import logging
 import asyncio
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any, Callable
-from enum import Enum
+from typing import Any, Callable
+from enum import StrEnum
 
 from .client import SpotifyClient, SpotifyDevice, PlaybackState
 from .speaker_groups import SpeakerGroupManager, Speaker, SpeakerGroup
@@ -21,7 +21,7 @@ from .speaker_groups import SpeakerGroupManager, Speaker, SpeakerGroup
 logger = logging.getLogger(__name__)
 
 
-class PlaybackMode(Enum):
+class PlaybackMode(StrEnum):
     """Modos de reproducción multi-room"""
     SINGLE = "single"           # Un solo speaker
     GROUP = "group"             # Grupo de speakers (sync)
@@ -35,10 +35,10 @@ class ZonePlaybackState:
     speaker_id: str
     speaker_name: str
     is_playing: bool
-    track_name: Optional[str] = None
-    artist: Optional[str] = None
+    track_name: str | None = None
+    artist: str | None = None
     volume: int = 50
-    spotify_device_id: Optional[str] = None
+    spotify_device_id: str | None = None
 
 
 class SpotifyZoneController:
@@ -87,23 +87,23 @@ class SpotifyZoneController:
 
         # Estado actual
         self._current_mode = PlaybackMode.SINGLE
-        self._active_targets: List[str] = []  # IDs de speakers activos
-        self._last_user_location: Optional[str] = None
+        self._active_targets: list[str] = []  # IDs de speakers activos
+        self._last_user_location: str | None = None
 
         # Cache de dispositivos Spotify
-        self._device_cache: Dict[str, SpotifyDevice] = {}
+        self._device_cache: dict[str, SpotifyDevice] = {}
         self._cache_timestamp: float = 0
         self._cache_ttl: float = 30.0  # 30 segundos
 
         # Callbacks
-        self._on_zone_change: Optional[Callable] = None
-        self._on_playback_start: Optional[Callable] = None
+        self._on_zone_change: Callable | None = None
+        self._on_playback_start: Callable | None = None
 
     # =========================================================================
     # Sincronización de Dispositivos
     # =========================================================================
 
-    async def sync_devices(self) -> Dict[str, SpotifyDevice]:
+    async def sync_devices(self) -> dict[str, SpotifyDevice]:
         """
         Sincronizar dispositivos Spotify con speakers configurados.
 
@@ -126,7 +126,7 @@ class SpotifyZoneController:
 
         return self._device_cache
 
-    async def _auto_match_devices(self, devices: List[SpotifyDevice]):
+    async def _auto_match_devices(self, devices: list[SpotifyDevice]):
         """Intentar vincular automáticamente dispositivos con speakers"""
         for device in devices:
             device_name_lower = device.name.lower()
@@ -151,7 +151,7 @@ class SpotifyZoneController:
                         logger.info(f"Auto-vinculado por alias: {speaker.name} -> {device.name}")
                         break
 
-    async def get_available_devices(self) -> List[Dict[str, Any]]:
+    async def get_available_devices(self) -> list[dict[str, Any]]:
         """Obtener lista de dispositivos disponibles con estado"""
         await self.sync_devices()
 
@@ -179,10 +179,10 @@ class SpotifyZoneController:
     async def play_in_zone(
         self,
         zone_query: str,
-        context_uri: Optional[str] = None,
-        uris: Optional[List[str]] = None,
+        context_uri: str | None = None,
+        uris: list[str] | None = None,
         shuffle: bool = False
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Reproducir en una zona específica.
 
@@ -266,10 +266,10 @@ class SpotifyZoneController:
 
     async def play_everywhere(
         self,
-        context_uri: Optional[str] = None,
-        uris: Optional[List[str]] = None,
+        context_uri: str | None = None,
+        uris: list[str] | None = None,
         shuffle: bool = True
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Reproducir en toda la casa.
 
@@ -287,9 +287,9 @@ class SpotifyZoneController:
     async def play_in_group(
         self,
         group_id: str,
-        context_uri: Optional[str] = None,
-        uris: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+        context_uri: str | None = None,
+        uris: list[str] | None = None
+    ) -> dict[str, Any]:
         """Reproducir en un grupo específico por ID"""
         group = self.speakers.get_group(group_id)
         if not group:
@@ -309,7 +309,7 @@ class SpotifyZoneController:
         self,
         zone_query: str,
         keep_playing: bool = True
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Transferir reproducción actual a otra zona.
 
@@ -356,7 +356,7 @@ class SpotifyZoneController:
             "action": "transferred"
         }
 
-    async def stop_in_zone(self, zone_query: str) -> Dict[str, Any]:
+    async def stop_in_zone(self, zone_query: str) -> dict[str, Any]:
         """Detener reproducción en una zona específica"""
         target = self.speakers.resolve_target(zone_query)
 
@@ -416,7 +416,7 @@ class SpotifyZoneController:
     # Control de Volumen por Zona
     # =========================================================================
 
-    async def set_zone_volume(self, zone_query: str, volume: int) -> Dict[str, Any]:
+    async def set_zone_volume(self, zone_query: str, volume: int) -> dict[str, Any]:
         """
         Ajustar volumen de una zona.
 
@@ -451,7 +451,7 @@ class SpotifyZoneController:
             "volume": volume
         }
 
-    async def set_everywhere_volume(self, volume: int) -> Dict[str, Any]:
+    async def set_everywhere_volume(self, volume: int) -> dict[str, Any]:
         """Ajustar volumen en toda la casa"""
         return await self.set_zone_volume("toda la casa", volume)
 
@@ -459,7 +459,7 @@ class SpotifyZoneController:
     # Estado
     # =========================================================================
 
-    async def get_zone_playback_states(self) -> List[ZonePlaybackState]:
+    async def get_zone_playback_states(self) -> list[ZonePlaybackState]:
         """Obtener estado de reproducción de todas las zonas"""
         await self.sync_devices()
 
@@ -486,7 +486,7 @@ class SpotifyZoneController:
 
         return states
 
-    async def get_current_zone(self) -> Optional[str]:
+    async def get_current_zone(self) -> str | None:
         """Obtener la zona donde se está reproduciendo actualmente"""
         state = await self.spotify.get_playback_state()
 
@@ -501,7 +501,7 @@ class SpotifyZoneController:
         # Fallback al nombre del dispositivo Spotify
         return state.device.name
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """Obtener estado del controlador"""
         return {
             "mode": self._current_mode.value,
@@ -529,7 +529,7 @@ class SpotifyZoneController:
     # Utilidades para Comandos de Voz
     # =========================================================================
 
-    def parse_and_resolve_zone(self, text: str) -> tuple[Optional[Dict], str]:
+    def parse_and_resolve_zone(self, text: str) -> tuple[dict | None, str]:
         """
         Parsear zona de un comando de voz y devolver el resto.
 
@@ -543,7 +543,7 @@ class SpotifyZoneController:
         """
         return self.speakers.parse_zone_from_command(text)
 
-    def get_zone_suggestions(self, partial: str) -> List[str]:
+    def get_zone_suggestions(self, partial: str) -> list[str]:
         """
         Sugerir zonas basado en texto parcial (para autocompletado).
 

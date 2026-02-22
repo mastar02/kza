@@ -6,7 +6,6 @@ Procesa comandos: STT, identificación de speaker, clasificación de intent.
 import asyncio
 import logging
 import time
-from typing import Optional, Tuple
 
 import numpy as np
 
@@ -143,7 +142,7 @@ class CommandProcessor:
 
         return result
 
-    async def _process_parallel(self, audio: np.ndarray) -> Tuple[str, float, Optional[dict], Optional[object]]:
+    async def _process_parallel(self, audio: np.ndarray) -> tuple[str, float, dict | None, object | None]:
         """
         Procesar STT, Speaker ID y Emotion en paralelo REAL con asyncio.gather().
 
@@ -227,7 +226,7 @@ class CommandProcessor:
         self._embeddings_cache = {}
         self._embeddings_cache_time = 0
 
-    def _identify_speaker(self, audio: np.ndarray) -> Optional[dict]:
+    def _identify_speaker(self, audio: np.ndarray) -> dict | None:
         """
         Identificar el usuario que está hablando.
 

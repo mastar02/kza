@@ -14,8 +14,8 @@ import logging
 import asyncio
 import re
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Callable, Set
-from enum import Enum
+from typing import Any, Callable
+from enum import StrEnum
 from pathlib import Path
 
 from .client import SpotifyClient, SpotifyDevice
@@ -24,7 +24,7 @@ from .speaker_groups import SpeakerGroupManager, Speaker, SpeakerGroup, GroupTyp
 logger = logging.getLogger(__name__)
 
 
-class EnrollmentIntent(Enum):
+class EnrollmentIntent(StrEnum):
     """Intents para comandos de enrollment"""
     # Naming
     NAME_SPEAKER = "name_speaker"           # "esta bocina se llama cocina"
@@ -67,13 +67,13 @@ class EnrollmentCommand:
     """Comando de enrollment parseado"""
     intent: EnrollmentIntent
     raw_text: str
-    speaker_name: Optional[str] = None
-    new_name: Optional[str] = None
-    room: Optional[str] = None
-    floor: Optional[str] = None
-    group_name: Optional[str] = None
-    speaker_list: List[str] = field(default_factory=list)
-    alias: Optional[str] = None
+    speaker_name: str | None = None
+    new_name: str | None = None
+    room: str | None = None
+    floor: str | None = None
+    group_name: str | None = None
+    speaker_list: list[str] = field(default_factory=list)
+    alias: str | None = None
 
 
 @dataclass
@@ -81,7 +81,7 @@ class PendingDevice:
     """Dispositivo Spotify descubierto pero no configurado"""
     spotify_device: SpotifyDevice
     discovered_at: float
-    suggested_name: Optional[str] = None
+    suggested_name: str | None = None
 
 
 class SpeakerEnrollment:
@@ -105,7 +105,7 @@ class SpeakerEnrollment:
         spotify_client: SpotifyClient,
         speaker_manager: SpeakerGroupManager,
         auto_save: bool = True,
-        config_path: Optional[Path] = None
+        config_path: Path | None = None
     ):
         self.spotify = spotify_client
         self.speakers = speaker_manager
@@ -113,14 +113,14 @@ class SpeakerEnrollment:
         self.config_path = config_path or Path("./data/speaker_groups.json")
 
         # Dispositivos pendientes de configurar
-        self._pending_devices: Dict[str, PendingDevice] = {}
+        self._pending_devices: dict[str, PendingDevice] = {}
 
         # Estado de conversación (para confirmaciones)
-        self._pending_action: Optional[Dict] = None
-        self._last_mentioned_speaker: Optional[str] = None
+        self._pending_action: dict | None = None
+        self._last_mentioned_speaker: str | None = None
 
         # Callback para notificar al usuario
-        self._notify_callback: Optional[Callable[[str], None]] = None
+        self._notify_callback: Callable[[str], None] | None = None
 
         # Keywords para detección
         self._floor_keywords = {
@@ -290,7 +290,7 @@ class SpeakerEnrollment:
 
         return EnrollmentCommand(intent=EnrollmentIntent.UNKNOWN, raw_text=text)
 
-    def _parse_speaker_list(self, text: str) -> List[str]:
+    def _parse_speaker_list(self, text: str) -> list[str]:
         """Parsear lista de speakers: 'cocina, sala y dormitorio'"""
         # Reemplazar "y" por coma
         text = text.replace(" y ", ", ")
@@ -302,7 +302,7 @@ class SpeakerEnrollment:
     # Procesamiento de Comandos
     # =========================================================================
 
-    async def process(self, text: str) -> Dict[str, Any]:
+    async def process(self, text: str) -> dict[str, Any]:
         """
         Procesar comando de enrollment.
 
@@ -385,7 +385,7 @@ class SpeakerEnrollment:
     # Handlers
     # =========================================================================
 
-    async def _handle_name_speaker(self, command: EnrollmentCommand) -> Dict[str, Any]:
+    async def _handle_name_speaker(self, command: EnrollmentCommand) -> dict[str, Any]:
         """Nombrar la bocina activa actual"""
         # Buscar dispositivo activo en Spotify
         devices = await self.spotify.get_devices()
@@ -432,7 +432,7 @@ class SpeakerEnrollment:
             "speaker_id": speaker_id
         }
 
-    async def _handle_rename_speaker(self, command: EnrollmentCommand) -> Dict[str, Any]:
+    async def _handle_rename_speaker(self, command: EnrollmentCommand) -> dict[str, Any]:
         """Renombrar una bocina existente"""
         # Buscar speaker por nombre
         target = self.speakers.resolve_target(command.speaker_name)
@@ -459,7 +459,7 @@ class SpeakerEnrollment:
             "action": "speaker_renamed"
         }
 
-    def _handle_set_room(self, command: EnrollmentCommand) -> Dict[str, Any]:
+    def _handle_set_room(self, command: EnrollmentCommand) -> dict[str, Any]:
         """Asignar habitación a una bocina"""
         speaker_name = command.speaker_name or self._last_mentioned_speaker
         if not speaker_name:
@@ -490,7 +490,7 @@ class SpeakerEnrollment:
             "action": "room_set"
         }
 
-    def _handle_set_floor(self, command: EnrollmentCommand) -> Dict[str, Any]:
+    def _handle_set_floor(self, command: EnrollmentCommand) -> dict[str, Any]:
         """Asignar piso a una bocina"""
         speaker_name = command.speaker_name or self._last_mentioned_speaker
         if not speaker_name:
@@ -530,7 +530,7 @@ class SpeakerEnrollment:
             "action": "floor_set"
         }
 
-    def _handle_create_group(self, command: EnrollmentCommand) -> Dict[str, Any]:
+    def _handle_create_group(self, command: EnrollmentCommand) -> dict[str, Any]:
         """Crear un grupo de bocinas"""
         if not command.group_name:
             return {"success": False, "response": "¿Cómo quieres que se llame el grupo?", "action": "create_group_failed"}
@@ -583,7 +583,7 @@ class SpeakerEnrollment:
             "group_id": group_id
         }
 
-    def _handle_add_to_group(self, command: EnrollmentCommand) -> Dict[str, Any]:
+    def _handle_add_to_group(self, command: EnrollmentCommand) -> dict[str, Any]:
         """Agregar bocina a un grupo"""
         # Buscar speaker
         target = self.speakers.resolve_target(command.speaker_name)
@@ -612,7 +612,7 @@ class SpeakerEnrollment:
             "action": "added_to_group"
         }
 
-    def _handle_remove_from_group(self, command: EnrollmentCommand) -> Dict[str, Any]:
+    def _handle_remove_from_group(self, command: EnrollmentCommand) -> dict[str, Any]:
         """Quitar bocina de un grupo"""
         target = self.speakers.resolve_target(command.speaker_name)
         if not target or target["type"] != "speaker":
@@ -639,7 +639,7 @@ class SpeakerEnrollment:
             "action": "removed_from_group"
         }
 
-    def _handle_delete_group(self, command: EnrollmentCommand) -> Dict[str, Any]:
+    def _handle_delete_group(self, command: EnrollmentCommand) -> dict[str, Any]:
         """Eliminar un grupo"""
         if command.group_name == "everywhere" or command.group_name == "toda la casa":
             return {"success": False, "response": "No puedo eliminar el grupo 'toda la casa'.", "action": "delete_group_failed"}
@@ -667,7 +667,7 @@ class SpeakerEnrollment:
             "needs_confirmation": True
         }
 
-    async def _handle_discover(self) -> Dict[str, Any]:
+    async def _handle_discover(self) -> dict[str, Any]:
         """Buscar dispositivos Spotify nuevos"""
         import time
 
@@ -728,7 +728,7 @@ class SpeakerEnrollment:
             "devices": [{"id": d.id, "name": d.name} for d in new_devices]
         }
 
-    def _suggest_name(self, device_name: str) -> Optional[str]:
+    def _suggest_name(self, device_name: str) -> str | None:
         """Sugerir nombre basado en el nombre del dispositivo"""
         name_lower = device_name.lower()
 
@@ -752,7 +752,7 @@ class SpeakerEnrollment:
 
         return None
 
-    def _handle_list_speakers(self) -> Dict[str, Any]:
+    def _handle_list_speakers(self) -> dict[str, Any]:
         """Listar todas las bocinas"""
         speakers = list(self.speakers.speakers.values())
 
@@ -781,7 +781,7 @@ class SpeakerEnrollment:
             "count": len(speakers)
         }
 
-    def _handle_list_groups(self) -> Dict[str, Any]:
+    def _handle_list_groups(self) -> dict[str, Any]:
         """Listar todos los grupos"""
         groups = [g for g in self.speakers.groups.values() if g.id != "everywhere"]
 
@@ -806,7 +806,7 @@ class SpeakerEnrollment:
             "count": len(groups)
         }
 
-    def _handle_list_pending(self) -> Dict[str, Any]:
+    def _handle_list_pending(self) -> dict[str, Any]:
         """Listar dispositivos pendientes de configurar"""
         if not self._pending_devices:
             return {
@@ -825,7 +825,7 @@ class SpeakerEnrollment:
             "count": len(names)
         }
 
-    def _handle_add_alias(self, command: EnrollmentCommand) -> Dict[str, Any]:
+    def _handle_add_alias(self, command: EnrollmentCommand) -> dict[str, Any]:
         """Agregar alias a una bocina"""
         target = self.speakers.resolve_target(command.speaker_name)
         if not target or target["type"] != "speaker":
@@ -844,7 +844,7 @@ class SpeakerEnrollment:
             "action": "alias_added"
         }
 
-    def _handle_set_default(self, command: EnrollmentCommand) -> Dict[str, Any]:
+    def _handle_set_default(self, command: EnrollmentCommand) -> dict[str, Any]:
         """Establecer bocina por defecto"""
         if not command.speaker_name:
             return {"success": False, "response": "¿Cuál bocina quieres como principal?", "action": "set_default_failed"}
@@ -869,7 +869,7 @@ class SpeakerEnrollment:
             "action": "default_set"
         }
 
-    def _handle_forget_speaker(self, command: EnrollmentCommand) -> Dict[str, Any]:
+    def _handle_forget_speaker(self, command: EnrollmentCommand) -> dict[str, Any]:
         """Olvidar una bocina"""
         target = self.speakers.resolve_target(command.speaker_name)
         if not target or target["type"] != "speaker":
@@ -891,7 +891,7 @@ class SpeakerEnrollment:
             "needs_confirmation": True
         }
 
-    async def _handle_confirm(self) -> Dict[str, Any]:
+    async def _handle_confirm(self) -> dict[str, Any]:
         """Manejar confirmación"""
         if not self._pending_action:
             return {"success": False, "response": "No hay nada pendiente de confirmar.", "action": "confirm_nothing"}
@@ -949,7 +949,7 @@ class SpeakerEnrollment:
 
         return {"success": False, "response": "No pude procesar la confirmación.", "action": "confirm_error"}
 
-    def _handle_cancel(self) -> Dict[str, Any]:
+    def _handle_cancel(self) -> dict[str, Any]:
         """Cancelar acción pendiente"""
         self._pending_action = None
         return {
@@ -962,7 +962,7 @@ class SpeakerEnrollment:
     # Auto-Discovery en Background
     # =========================================================================
 
-    async def check_new_devices(self) -> Optional[str]:
+    async def check_new_devices(self) -> str | None:
         """
         Verificar si hay dispositivos nuevos (llamar periódicamente).
 

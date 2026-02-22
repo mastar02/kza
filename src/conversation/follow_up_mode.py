@@ -7,13 +7,13 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Callable, Any
-from enum import Enum
+from typing import Callable, Any
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
 
-class ConversationState(Enum):
+class ConversationState(StrEnum):
     """Estados de la conversación"""
     IDLE = "idle"                    # Esperando wake word
     ACTIVE = "active"                # Conversación activa (sin need wake word)
@@ -26,11 +26,11 @@ class ConversationState(Enum):
 @dataclass
 class ConversationContext:
     """Contexto de la conversación activa"""
-    user_id: Optional[str] = None
+    user_id: str | None = None
     started_at: float = 0
     last_interaction: float = 0
     turn_count: int = 0
-    topic: Optional[str] = None
+    topic: str | None = None
     entities: dict = field(default_factory=dict)  # Entidades mencionadas
     pending_question: bool = False  # KZA hizo una pregunta
     last_response_type: str = ""    # question, statement, command_result
@@ -73,13 +73,13 @@ class FollowUpMode:
         self.whisper_detection = whisper_detection
 
         self._state = ConversationState.IDLE
-        self._context: Optional[ConversationContext] = None
-        self._timeout_task: Optional[asyncio.Task] = None
+        self._context: ConversationContext | None = None
+        self._timeout_task: asyncio.Task | None = None
 
         # Callbacks
-        self._on_state_change: Optional[Callable] = None
-        self._on_timeout: Optional[Callable] = None
-        self._on_conversation_end: Optional[Callable] = None
+        self._on_state_change: Callable | None = None
+        self._on_timeout: Callable | None = None
+        self._on_conversation_end: Callable | None = None
 
         # Audio level tracking para whisper detection
         self._recent_audio_levels: list[float] = []
@@ -106,7 +106,7 @@ class FollowUpMode:
         return self._state == ConversationState.IDLE
 
     @property
-    def context(self) -> Optional[ConversationContext]:
+    def context(self) -> ConversationContext | None:
         return self._context
 
     def start_conversation(self, user_id: str = None, triggered_by: str = "wake_word"):

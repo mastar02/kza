@@ -15,8 +15,8 @@ import time
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Callable
-from enum import Enum
+from typing import Callable
+from enum import StrEnum
 from collections import deque
 
 import numpy as np
@@ -24,7 +24,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-class SpeakerState(Enum):
+class SpeakerState(StrEnum):
     """Estado del sistema de audio"""
     IDLE = "idle"                    # Nada reproduciéndose
     SPEAKING = "speaking"            # TTS activo
@@ -87,8 +87,8 @@ class EchoSuppressor:
         self._state_lock = threading.Lock()
 
         # Timestamps
-        self._speech_start_time: Optional[float] = None
-        self._speech_end_time: Optional[float] = None
+        self._speech_start_time: float | None = None
+        self._speech_end_time: float | None = None
         self._last_tts_end: float = 0
 
         # Buffer de audio reproducido (para correlación)
@@ -103,7 +103,7 @@ class EchoSuppressor:
         }
 
         # Callbacks
-        self._on_state_change: Optional[Callable] = None
+        self._on_state_change: Callable | None = None
 
     @property
     def state(self) -> SpeakerState:

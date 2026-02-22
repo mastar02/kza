@@ -14,13 +14,12 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
-from enum import Enum
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
 
-class ResponseQuality(Enum):
+class ResponseQuality(StrEnum):
     """Calidad de la respuesta marcada por el usuario"""
     UNMARKED = "unmarked"
     GOOD = "good"      # Respuesta correcta y útil
@@ -34,12 +33,12 @@ class ConversationTurn:
     timestamp: float
     user_input: str
     assistant_response: str
-    intent: Optional[str] = None
+    intent: str | None = None
     entities_used: list[str] = field(default_factory=list)
     quality: ResponseQuality = ResponseQuality.UNMARKED
-    correction: Optional[str] = None  # Si el usuario corrigió
-    user_name: Optional[str] = None
-    latency_ms: Optional[float] = None
+    correction: str | None = None  # Si el usuario corrigió
+    user_name: str | None = None
+    latency_ms: float | None = None
 
 
 @dataclass
@@ -48,7 +47,7 @@ class Conversation:
     id: str
     started_at: float
     turns: list[ConversationTurn] = field(default_factory=list)
-    user_name: Optional[str] = None
+    user_name: str | None = None
     metadata: dict = field(default_factory=dict)
 
 
@@ -76,7 +75,7 @@ class ConversationCollector:
         self.auto_save_interval = auto_save_interval
         self.max_conversations_in_memory = max_conversations_in_memory
 
-        self._current_conversation: Optional[Conversation] = None
+        self._current_conversation: Conversation | None = None
         self._conversations: list[Conversation] = []
         self._turns_since_save = 0
 

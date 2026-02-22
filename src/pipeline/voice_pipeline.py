@@ -12,7 +12,6 @@ Components:
 
 import asyncio
 import logging
-from typing import Optional
 
 import numpy as np
 
@@ -42,9 +41,9 @@ class VoicePipeline:
         request_router: RequestRouter,
         response_handler: ResponseHandler,
         feature_manager: FeatureManager,
-        chroma_sync: Optional[object] = None,
-        memory_manager: Optional[object] = None,
-        orchestrator: Optional[object] = None,
+        chroma_sync: object | None = None,
+        memory_manager: object | None = None,
+        orchestrator: object | None = None,
     ):
         """
         Initialize VoicePipeline with pre-built components.

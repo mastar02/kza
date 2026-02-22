@@ -6,7 +6,7 @@ Detecta palabras de activación usando modelos pre-entrenados o personalizados.
 import logging
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 import numpy as np
 
@@ -61,7 +61,7 @@ class WakeWordDetector:
         self._loaded = False
 
         # Callbacks
-        self._on_detection: Optional[Callable[[str, float], None]] = None
+        self._on_detection: Callable[[str, float], None] | None = None
 
     def load(self):
         """Cargar modelos de wake word"""
@@ -200,7 +200,7 @@ class WakeWordDetector:
 
         return float(outputs[0][0])
 
-    def detect(self, audio_chunk: np.ndarray) -> Optional[tuple[str, float]]:
+    def detect(self, audio_chunk: np.ndarray) -> tuple[str, float] | None:
         """
         Detectar wake word en chunk de audio.
 

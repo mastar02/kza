@@ -32,7 +32,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from src.core.logging import get_logger
 from src.orchestrator.cancellation import (
@@ -117,7 +117,7 @@ class Request:
         return 0
 
     @property
-    def processing_time(self) -> Optional[float]:
+    def processing_time(self) -> float | None:
         """Tiempo de procesamiento (segundos)"""
         if self.completed_at:
             return self.completed_at - self.timestamp
@@ -229,7 +229,7 @@ class PriorityRequestQueue:
         self._user_requests: dict[str, Request] = {}  # user_id -> request activo
 
         # Peticion actualmente en proceso
-        self._current: Optional[Request] = None
+        self._current: Request | None = None
 
         # Estadisticas
         self._stats = {
@@ -317,7 +317,7 @@ class PriorityRequestQueue:
 
         return request
 
-    def dequeue(self, timeout: float = None) -> Optional[Request]:
+    def dequeue(self, timeout: float = None) -> Request | None:
         """
         Obtener siguiente peticion (bloqueante).
 
@@ -343,7 +343,7 @@ class PriorityRequestQueue:
 
             return request
 
-    async def dequeue_async(self, timeout: float = None) -> Optional[Request]:
+    async def dequeue_async(self, timeout: float = None) -> Request | None:
         """
         Obtener siguiente peticion (async).
 
@@ -385,7 +385,7 @@ class PriorityRequestQueue:
                 if timeout and (time.time() - start) >= timeout:
                     return None
 
-    def _get_next_valid(self) -> Optional[Request]:
+    def _get_next_valid(self) -> Request | None:
         """
         Obtener siguiente peticion valida (no cancelada).
 
@@ -449,7 +449,7 @@ class PriorityRequestQueue:
                     request.cancel(CancellationReason.SYSTEM_SHUTDOWN)
             self._queue.clear()
 
-    def get_current(self) -> Optional[Request]:
+    def get_current(self) -> Request | None:
         """Obtener peticion actualmente en proceso"""
         return self._current
 
@@ -462,7 +462,7 @@ class PriorityRequestQueue:
         with self._lock:
             return [r.to_dict() for r in sorted(self._queue) if not r.is_cancelled]
 
-    def get_position(self, request_id: str) -> Optional[int]:
+    def get_position(self, request_id: str) -> int | None:
         """Obtener posicion en la cola de una peticion"""
         with self._lock:
             sorted_queue = sorted(
@@ -473,7 +473,7 @@ class PriorityRequestQueue:
                     return i + 1
             return None
 
-    def get_estimated_wait(self, request_id: str, avg_processing_time: float = 10.0) -> Optional[float]:
+    def get_estimated_wait(self, request_id: str, avg_processing_time: float = 10.0) -> float | None:
         """
         Estimar tiempo de espera para una peticion.
 
@@ -545,7 +545,7 @@ class RequestProcessor:
         self.check_interval = check_interrupt_interval
 
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     async def start(self):
         """Iniciar procesamiento en background"""

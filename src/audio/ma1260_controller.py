@@ -15,7 +15,6 @@ Comandos (hex):
 
 import logging
 import time
-from typing import Optional, List, Tuple
 from enum import IntEnum
 from dataclasses import dataclass
 import threading
@@ -119,7 +118,7 @@ class MA1260Controller:
         self._zone_status: dict[int, ZoneStatus] = {}
         
         # Zona actualmente seleccionada para audio
-        self._selected_zones: List[int] = []
+        self._selected_zones: list[int] = []
         
         # Inicializar conexión
         if connection_type != "simulation":
@@ -379,7 +378,7 @@ class MA1260Controller:
         self.set_source(zone, self.default_source)
         logger.debug(f"Zona seleccionada para output: {zone}")
     
-    def select_zones(self, zones: List[int]):
+    def select_zones(self, zones: list[int]):
         """Seleccionar múltiples zonas para audio output"""
         self._selected_zones = zones
         for zone in zones:
@@ -445,7 +444,7 @@ class MA1260Controller:
     # Estado
     # =========================================================================
     
-    def get_zone_status(self, zone: int) -> Optional[ZoneStatus]:
+    def get_zone_status(self, zone: int) -> ZoneStatus | None:
         """Obtener estado de una zona"""
         return self._zone_status.get(zone)
     

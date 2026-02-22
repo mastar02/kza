@@ -2,7 +2,6 @@
 Mock Home Assistant Client for testing.
 """
 
-from typing import Optional
 from unittest.mock import AsyncMock
 
 
@@ -96,7 +95,7 @@ class MockHomeAssistantClient:
             }
         ]
 
-    async def get_entity_state(self, entity_id: str) -> Optional[dict]:
+    async def get_entity_state(self, entity_id: str) -> dict | None:
         for entity in self._entities:
             if entity["entity_id"] == entity_id:
                 return entity
@@ -107,7 +106,7 @@ class MockHomeAssistantClient:
         domain: str,
         service: str,
         entity_id: str,
-        data: Optional[dict] = None
+        data: dict | None = None
     ) -> bool:
         self._services_called.append({
             "domain": domain,
@@ -148,7 +147,7 @@ class MockHomeAssistantClient:
         domain: str,
         service: str,
         entity_id: str,
-        data: Optional[dict] = None
+        data: dict | None = None
     ) -> bool:
         return await self.call_service(domain, service, entity_id, data)
 

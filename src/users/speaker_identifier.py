@@ -10,7 +10,6 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SpeakerMatch:
     """Resultado de identificación de speaker"""
-    user_id: Optional[str]
+    user_id: str | None
     confidence: float
     embedding: np.ndarray
     is_known: bool

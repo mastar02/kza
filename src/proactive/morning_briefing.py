@@ -11,13 +11,13 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, time as dtime, timedelta
-from typing import Optional, Callable, Any
-from enum import Enum
+from typing import Callable, Any
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
 
-class BriefingSection(Enum):
+class BriefingSection(StrEnum):
     """Secciones del briefing"""
     GREETING = "greeting"
     TIME_DATE = "time_date"
@@ -60,18 +60,18 @@ class UserBriefingData:
     generated_at: datetime = None
 
     # Clima
-    weather_temp: Optional[float] = None
+    weather_temp: float | None = None
     weather_condition: str = ""
     weather_forecast: str = ""
 
     # Calendario
     events_today: list[dict] = field(default_factory=list)
-    next_event: Optional[dict] = None
+    next_event: dict | None = None
 
     # Tráfico
-    commute_time_minutes: Optional[int] = None
+    commute_time_minutes: int | None = None
     traffic_status: str = "normal"  # normal, moderate, heavy
-    suggested_departure: Optional[str] = None
+    suggested_departure: str | None = None
 
     # Tareas
     tasks_due_today: list[str] = field(default_factory=list)
@@ -133,7 +133,7 @@ class MorningBriefing:
         self._delivered_today: dict[str, datetime] = {}
 
         # Callbacks
-        self._on_briefing_ready: Optional[Callable] = None
+        self._on_briefing_ready: Callable | None = None
 
     def configure_user(self, user_id: str, config: BriefingConfig):
         """Configurar briefing para un usuario"""

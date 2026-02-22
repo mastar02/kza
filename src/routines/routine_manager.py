@@ -8,13 +8,12 @@ import logging
 import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
 
-class TriggerType(Enum):
+class TriggerType(StrEnum):
     """Tipos de triggers para automatizaciones"""
     TIME = "time"                    # "a las 7am"
     STATE = "state"                  # "cuando se abra la puerta"
@@ -84,7 +83,7 @@ class RoutineManager:
         self.llm = llm_reasoner
         
         # Estado de conversación
-        self.pending_routine: Optional[dict] = None
+        self.pending_routine: dict | None = None
         self.awaiting_confirmation: bool = False
     
     def detect_intent(self, text: str) -> dict:
@@ -243,7 +242,7 @@ class RoutineManager:
         result["success"] = True
         return result
     
-    def _extract_routine_with_llm(self, text: str, entities: list[dict]) -> Optional[dict]:
+    def _extract_routine_with_llm(self, text: str, entities: list[dict]) -> dict | None:
         """Usar LLM para extraer componentes de la rutina"""
         
         # Resumen de entidades
@@ -387,7 +386,7 @@ Solo JSON:"""
         
         return self.ha_client.create_automation(routine.id, automation_config)
     
-    def _convert_trigger(self, trigger: RoutineTrigger) -> Optional[dict]:
+    def _convert_trigger(self, trigger: RoutineTrigger) -> dict | None:
         """Convertir trigger a formato Home Assistant"""
         
         if trigger.type == TriggerType.TIME:

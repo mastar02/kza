@@ -5,14 +5,13 @@ Comandos de voz para gestión de presencia y dispositivos BLE.
 
 import logging
 import re
-from typing import Optional
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
 
-class PresenceIntent(Enum):
+class PresenceIntent(StrEnum):
     """Intents de comandos de presencia"""
     # Consultas
     WHO_IS_HOME = "who_is_home"
@@ -38,10 +37,10 @@ class PresenceIntent(Enum):
 class PresenceCommand:
     """Comando de presencia parseado"""
     intent: PresenceIntent
-    user_name: Optional[str] = None
-    zone_name: Optional[str] = None
-    device_address: Optional[str] = None
-    device_name: Optional[str] = None
+    user_name: str | None = None
+    zone_name: str | None = None
+    device_address: str | None = None
+    device_name: str | None = None
 
 
 # Patrones de reconocimiento
@@ -388,7 +387,7 @@ class PresenceCommandHandler:
     # Helpers
     # =========================================================================
 
-    def _resolve_user(self, name: str) -> Optional[str]:
+    def _resolve_user(self, name: str) -> str | None:
         """Resolver nombre de usuario a user_id"""
         if not self.user_manager:
             return None
@@ -402,7 +401,7 @@ class PresenceCommandHandler:
 
         return None
 
-    def _resolve_zone(self, name: str) -> Optional[str]:
+    def _resolve_zone(self, name: str) -> str | None:
         """Resolver nombre de zona a zone_id"""
         name_lower = name.lower()
 

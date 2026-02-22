@@ -6,8 +6,8 @@ Motor de ejecución de acciones para rutinas
 import asyncio
 import logging
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Optional
+from enum import StrEnum
+from typing import Any
 import time as time_module
 
 from src.home_assistant.circuit_breaker import HACircuitBreaker, get_ha_circuit_breaker
@@ -15,7 +15,7 @@ from src.home_assistant.circuit_breaker import HACircuitBreaker, get_ha_circuit_
 logger = logging.getLogger(__name__)
 
 
-class ActionType(Enum):
+class ActionType(StrEnum):
     """Tipos de acciones soportadas"""
     # Home Assistant
     HA_SERVICE = "ha_service"        # Llamar servicio de HA
@@ -43,7 +43,7 @@ class ActionResult:
     """Resultado de ejecución de acción"""
     success: bool
     action_type: str
-    entity_id: Optional[str] = None
+    entity_id: str | None = None
     message: str = ""
     elapsed_ms: float = 0
     data: dict = None

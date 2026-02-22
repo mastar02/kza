@@ -14,7 +14,6 @@ import logging
 import webbrowser
 from pathlib import Path
 from dataclasses import dataclass, asdict
-from typing import Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlencode, parse_qs, urlparse
 import threading
@@ -81,7 +80,7 @@ class TokenManager:
     def __init__(self, tokens_path: str = "./data/spotify_tokens.json"):
         self.tokens_path = Path(tokens_path)
         self.tokens_path.parent.mkdir(parents=True, exist_ok=True)
-        self._tokens: Optional[SpotifyTokens] = None
+        self._tokens: SpotifyTokens | None = None
         self._load_tokens()
 
     def _load_tokens(self):
@@ -103,7 +102,7 @@ class TokenManager:
             json.dump(tokens.to_dict(), f, indent=2)
         logger.info("Spotify tokens saved")
 
-    def get_tokens(self) -> Optional[SpotifyTokens]:
+    def get_tokens(self) -> SpotifyTokens | None:
         """Obtener tokens actuales"""
         return self._tokens
 
@@ -171,7 +170,7 @@ class SpotifyAuth:
     def __init__(
         self,
         client_id: str,
-        client_secret: Optional[str] = None,
+        client_secret: str | None = None,
         redirect_port: int = 8888,
         tokens_path: str = "./data/spotify_tokens.json",
     ):
@@ -182,7 +181,7 @@ class SpotifyAuth:
         self.token_manager = TokenManager(tokens_path)
 
         # PKCE
-        self._code_verifier: Optional[str] = None
+        self._code_verifier: str | None = None
 
     @property
     def is_authenticated(self) -> bool:
@@ -339,7 +338,7 @@ class SpotifyAuth:
                 logger.info("Spotify tokens refreshed")
                 return True
 
-    async def get_access_token(self) -> Optional[str]:
+    async def get_access_token(self) -> str | None:
         """
         Obtener token de acceso válido.
         Refresca automáticamente si está expirado.

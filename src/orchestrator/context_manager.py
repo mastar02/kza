@@ -29,7 +29,6 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
 
 from src.core.logging import get_logger
 
@@ -42,7 +41,7 @@ class ConversationTurn:
     role: str  # "user", "assistant", "system"
     content: str
     timestamp: float = field(default_factory=time.time)
-    intent: Optional[str] = None  # "domotics", "conversation", "routine", etc.
+    intent: str | None = None  # "domotics", "conversation", "routine", etc.
     entities: list[str] = field(default_factory=list)  # Entidades mencionadas
 
     def to_dict(self) -> dict:
@@ -65,8 +64,8 @@ class MusicPreferences:
     favorite_genres: list[str] = field(default_factory=list)
     favorite_artists: list[str] = field(default_factory=list)
     disliked_genres: list[str] = field(default_factory=list)
-    default_energy: Optional[float] = None  # 0.0-1.0
-    default_valence: Optional[float] = None  # 0.0-1.0 (positividad)
+    default_energy: float | None = None  # 0.0-1.0
+    default_valence: float | None = None  # 0.0-1.0 (positividad)
 
     def to_dict(self) -> dict:
         return {
@@ -91,7 +90,7 @@ class UserContext:
     """
     user_id: str
     user_name: str
-    zone_id: Optional[str] = None
+    zone_id: str | None = None
 
     # Historial de conversacion
     conversation_history: list[ConversationTurn] = field(default_factory=list)
@@ -106,8 +105,8 @@ class UserContext:
 
     # Estado temporal
     last_active: float = field(default_factory=time.time)
-    last_intent: Optional[str] = None
-    pending_confirmation: Optional[dict] = None  # Para rutinas que requieren confirmacion
+    last_intent: str | None = None
+    pending_confirmation: dict | None = None  # Para rutinas que requieren confirmacion
 
     # Estadisticas de sesion
     session_start: float = field(default_factory=time.time)
@@ -231,7 +230,7 @@ class ContextManager:
 
         # Cleanup thread
         self._cleanup_running = False
-        self._cleanup_thread: Optional[threading.Thread] = None
+        self._cleanup_thread: threading.Thread | None = None
 
         # Estadisticas
         self._total_contexts_created = 0
@@ -324,7 +323,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             logger.debug(f"Contexto creado: {user_id} ({ctx.user_name})")
             return ctx
 
-    def get(self, user_id: str) -> Optional[UserContext]:
+    def get(self, user_id: str) -> UserContext | None:
         """Obtener contexto si existe"""
         with self._lock:
             return self._contexts.get(user_id)
@@ -460,7 +459,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             if ctx:
                 ctx.pending_confirmation = confirmation_data
 
-    def get_pending_confirmation(self, user_id: str) -> Optional[dict]:
+    def get_pending_confirmation(self, user_id: str) -> dict | None:
         """Obtener confirmacion pendiente"""
         with self._lock:
             ctx = self._contexts.get(user_id)
@@ -540,7 +539,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
                 "inactive_timeout": self.inactive_timeout
             }
 
-    def get_user_stats(self, user_id: str) -> Optional[dict]:
+    def get_user_stats(self, user_id: str) -> dict | None:
         """Obtener estadisticas de un usuario"""
         with self._lock:
             ctx = self._contexts.get(user_id)

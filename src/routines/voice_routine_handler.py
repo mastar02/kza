@@ -9,7 +9,7 @@ import logging
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Any
+from typing import Any
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class VoiceRoutineIntent:
     """Intención detectada para rutinas"""
     intent: str  # create, delete, list, execute, enable, disable, edit, none
-    routine_name: Optional[str] = None
+    routine_name: str | None = None
     confidence: float = 0.0
     raw_text: str = ""
     extracted_data: dict = field(default_factory=dict)
@@ -177,10 +177,10 @@ class VoiceRoutineHandler:
         self.fast_mode = fast_mode
 
         # Estado de conversación
-        self._pending_routine: Optional[dict] = None
+        self._pending_routine: dict | None = None
         self._awaiting_confirmation: bool = False
         self._conversation_context: list[dict] = []
-        self._last_intent: Optional[VoiceRoutineIntent] = None
+        self._last_intent: VoiceRoutineIntent | None = None
 
         # Cache de intents recientes para evitar re-clasificar
         self._intent_cache: dict[str, VoiceRoutineIntent] = {}
@@ -221,7 +221,7 @@ class VoiceRoutineHandler:
             raw_text=text
         )
 
-    def _fast_classify(self, text: str) -> Optional[VoiceRoutineIntent]:
+    def _fast_classify(self, text: str) -> VoiceRoutineIntent | None:
         """
         Clasificación rápida para comandos obvios.
         PRIORIDAD: Velocidad - evita latencia de LLM en el 90% de casos.
@@ -302,7 +302,7 @@ class VoiceRoutineHandler:
 
         return None
 
-    def _extract_routine_name(self, text: str) -> Optional[str]:
+    def _extract_routine_name(self, text: str) -> str | None:
         """Extraer nombre de rutina del texto de forma rápida"""
         # Patrones comunes para extraer nombre
         patterns = [
@@ -388,7 +388,7 @@ class VoiceRoutineHandler:
 
         return str(result)
 
-    def _extract_json(self, text: str) -> Optional[dict]:
+    def _extract_json(self, text: str) -> dict | None:
         """Extraer JSON de respuesta de LLM"""
         try:
             # Buscar JSON en el texto
@@ -663,7 +663,7 @@ class VoiceRoutineHandler:
 
         return result
 
-    def _find_routine_by_name(self, name: str, routines: list) -> Optional[Any]:
+    def _find_routine_by_name(self, name: str, routines: list) -> Any | None:
         """Buscar rutina por nombre (exacto o parcial)"""
         name_lower = name.lower()
 
@@ -922,6 +922,6 @@ class VoiceRoutineHandler:
         return self._awaiting_confirmation
 
     @property
-    def pending_routine(self) -> Optional[dict]:
+    def pending_routine(self) -> dict | None:
         """Rutina pendiente de confirmación"""
         return self._pending_routine

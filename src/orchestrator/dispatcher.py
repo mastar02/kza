@@ -34,8 +34,8 @@ Ejemplo:
 import asyncio
 import time
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Callable, Optional
+from enum import StrEnum
+from typing import Any, Callable
 
 from src.core.logging import get_logger, LogContext, generate_request_id
 from src.orchestrator.context_manager import ContextManager
@@ -49,7 +49,7 @@ from src.orchestrator.cancellation import CancellationToken
 logger = get_logger(__name__)
 
 
-class PathType(Enum):
+class PathType(StrEnum):
     """Tipo de path para procesar la peticion"""
     FAST_DOMOTICS = "fast_domotics"       # Vector search + HA
     FAST_ROUTINE = "fast_routine"          # Rutinas predefinidas
@@ -348,7 +348,7 @@ class RequestDispatcher:
         text_lower: str,
         user_id: str,
         ctx
-    ) -> Optional[DispatchResult]:
+    ) -> DispatchResult | None:
         """Verificar comandos especiales"""
 
         # Comando de cancelacion

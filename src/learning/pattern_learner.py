@@ -11,7 +11,7 @@ import logging
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, time as dtime
-from typing import Optional, Callable, Any
+from typing import Callable, Any
 from collections import defaultdict
 from pathlib import Path
 import statistics
@@ -25,7 +25,7 @@ class ActionRecord:
     action_type: str           # "light_on", "light_off", "climate_set", etc.
     entity_id: str             # "light.sala", "climate.casa"
     timestamp: datetime
-    user_id: Optional[str] = None
+    user_id: str | None = None
     day_of_week: int = 0       # 0=lunes, 6=domingo
     hour: int = 0
     minute: int = 0
@@ -48,7 +48,7 @@ class DetectedPattern:
     days_of_week: list[int]    # Días en que ocurre
 
     # Contexto
-    user_id: Optional[str] = None
+    user_id: str | None = None
     typical_data: dict = field(default_factory=dict)
 
     # Estado
@@ -119,8 +119,8 @@ class PatternLearner:
         self._dismissed_patterns: set[str] = set()
 
         # Callbacks
-        self._on_pattern_detected: Optional[Callable] = None
-        self._on_suggestion_ready: Optional[Callable] = None
+        self._on_pattern_detected: Callable | None = None
+        self._on_suggestion_ready: Callable | None = None
 
         # Cargar datos si existen
         self._load_data()
@@ -260,7 +260,7 @@ class PatternLearner:
         entity_id: str,
         user_id: str,
         records: list[ActionRecord]
-    ) -> Optional[DetectedPattern]:
+    ) -> DetectedPattern | None:
         """Analizar patrón temporal en las acciones"""
 
         # Convertir horas a minutos desde medianoche
@@ -445,7 +445,7 @@ class PatternLearner:
 
         return text
 
-    def accept_suggestion(self, suggestion_id: str) -> Optional[dict]:
+    def accept_suggestion(self, suggestion_id: str) -> dict | None:
         """
         Usuario acepta la sugerencia.
 

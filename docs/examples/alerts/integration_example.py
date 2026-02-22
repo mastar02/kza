@@ -12,8 +12,7 @@ Incluye ejemplos de:
 
 import asyncio
 import logging
-from typing import Optional
-
+from typing import Callable
 from src.alerts import (
     AlertManager,
     AlertPriority,
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 def initialize_alert_system(
     config: dict,
-    tts_callback: Optional[callable] = None,
+    tts_callback: Callable | None = None,
 ) -> tuple[AlertManager, AlertScheduler, SecurityAlerts, PatternAlerts, DeviceAlerts]:
     """
     Inicializar todo el sistema de alertas.
@@ -95,7 +94,7 @@ def initialize_alert_system(
 
 def register_alert_handlers(
     alert_manager: AlertManager,
-    ha_client: Optional[HomeAssistantClient] = None,
+    ha_client: HomeAssistantClient | None = None,
 ) -> None:
     """
     Registrar handlers para procesar alertas.
@@ -182,7 +181,7 @@ async def start_alert_scheduler(scheduler: AlertScheduler) -> asyncio.Task:
 async def handle_alert_voice_commands(
     command: str,
     alert_manager: AlertManager,
-) -> Optional[str]:
+) -> str | None:
     """
     Procesar comandos de voz relacionados con alertas.
 
@@ -363,7 +362,7 @@ En tu archivo de rutas de comandos o router, agregar:
 
 # En pipeline/voice_router.py o similar
 
-async def route_alert_commands(self, command: str, intent: str) -> Optional[str]:
+async def route_alert_commands(self, command: str, intent: str) -> str | None:
     '''Procesar comandos relacionados con alertas'''
 
     if intent == "system:alerts" or "alerta" in command.lower():

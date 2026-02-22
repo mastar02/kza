@@ -12,8 +12,8 @@ Procesa peticiones de música y las enruta al handler apropiado:
 import logging
 import time
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from enum import StrEnum
+from typing import Any, TYPE_CHECKING
 
 from .client import SpotifyClient, SpotifyTrack
 from .mood_mapper import MoodMapper, MoodProfile, AudioFeatures
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class MusicIntent(Enum):
+class MusicIntent(StrEnum):
     """Tipos de intent para comandos de música"""
     # Reproducción
     PLAY_ARTIST = "play_artist"          # "Pon música de Taylor Swift"
@@ -61,15 +61,15 @@ class MusicCommand:
     """Comando de música parseado"""
     intent: MusicIntent
     raw_text: str
-    artist: Optional[str] = None
-    track: Optional[str] = None
-    playlist: Optional[str] = None
-    mood_profile: Optional[MoodProfile] = None
-    volume_level: Optional[int] = None
-    shuffle_state: Optional[bool] = None
+    artist: str | None = None
+    track: str | None = None
+    playlist: str | None = None
+    mood_profile: MoodProfile | None = None
+    volume_level: int | None = None
+    shuffle_state: bool | None = None
     # Zona/ubicación objetivo
-    target_zone: Optional[str] = None
-    target_resolved: Optional[Dict] = None  # Resultado de resolve_target()
+    target_zone: str | None = None
+    target_resolved: dict | None = None  # Resultado de resolve_target()
 
 
 @dataclass
@@ -78,9 +78,9 @@ class MusicResult:
     success: bool
     response: str
     intent: MusicIntent
-    tracks_played: List[SpotifyTrack] = field(default_factory=list)
+    tracks_played: list[SpotifyTrack] = field(default_factory=list)
     latency_ms: float = 0
-    details: Dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 class MusicDispatcher:
@@ -281,7 +281,7 @@ class MusicDispatcher:
             target_resolved=target_resolved
         )
 
-    async def process(self, text: str, user_preferences: Optional[Dict] = None) -> MusicResult:
+    async def process(self, text: str, user_preferences: dict | None = None) -> MusicResult:
         """
         Procesar comando de música.
 
@@ -314,7 +314,7 @@ class MusicDispatcher:
     async def _execute_command(
         self,
         command: MusicCommand,
-        user_preferences: Optional[Dict] = None
+        user_preferences: dict | None = None
     ) -> MusicResult:
         """Ejecutar comando de música"""
 
@@ -471,7 +471,7 @@ class MusicDispatcher:
             details={"artist": artist["name"]}
         )
 
-    async def _play_track(self, track_name: str, artist: Optional[str] = None) -> MusicResult:
+    async def _play_track(self, track_name: str, artist: str | None = None) -> MusicResult:
         """Reproducir una canción específica (sin zona)"""
         query = f"{track_name} {artist}" if artist else track_name
         tracks = await self.spotify.search_tracks(query, limit=1)
@@ -577,7 +577,7 @@ class MusicDispatcher:
     async def _play_mood(
         self,
         mood_profile: MoodProfile,
-        user_preferences: Optional[Dict] = None
+        user_preferences: dict | None = None
     ) -> MusicResult:
         """Reproducir música basada en mood"""
         # Obtener parámetros de audio features
@@ -621,7 +621,7 @@ class MusicDispatcher:
     async def _play_mood_with_zone(
         self,
         command: MusicCommand,
-        user_preferences: Optional[Dict] = None
+        user_preferences: dict | None = None
     ) -> MusicResult:
         """Reproducir mood con soporte de zona"""
         if not command.mood_profile:
@@ -675,7 +675,7 @@ class MusicDispatcher:
     async def _play_context(
         self,
         text: str,
-        user_preferences: Optional[Dict] = None
+        user_preferences: dict | None = None
     ) -> MusicResult:
         """Reproducir música interpretando contexto con LLM"""
         # Primero intentar con mood mapper keywords
@@ -729,7 +729,7 @@ class MusicDispatcher:
             tracks_played=tracks[:5]
         )
 
-    async def _play_recommendations(self, user_preferences: Optional[Dict] = None) -> MusicResult:
+    async def _play_recommendations(self, user_preferences: dict | None = None) -> MusicResult:
         """Reproducir recomendaciones personalizadas"""
         # Obtener top artists/tracks del usuario para seeds
         top_tracks = await self.spotify.get_user_top_tracks(time_range="short_term", limit=5)
@@ -767,7 +767,7 @@ class MusicDispatcher:
             tracks_played=tracks[:5]
         )
 
-    def _extract_volume(self, text: str) -> Optional[int]:
+    def _extract_volume(self, text: str) -> int | None:
         """Extraer nivel de volumen del texto"""
         import re
 
@@ -808,7 +808,7 @@ class MusicDispatcher:
 
         return text  # Fallback al texto completo
 
-    def _extract_transfer_destination(self, text: str) -> Optional[str]:
+    def _extract_transfer_destination(self, text: str) -> str | None:
         """Extraer destino de transferencia del texto"""
         import re
 
@@ -832,8 +832,8 @@ class MusicDispatcher:
     async def _play_with_zone(
         self,
         command: MusicCommand,
-        context_uri: Optional[str] = None,
-        uris: Optional[List[str]] = None,
+        context_uri: str | None = None,
+        uris: list[str] | None = None,
         shuffle: bool = False
     ) -> MusicResult:
         """

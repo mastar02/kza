@@ -2,7 +2,6 @@
 Mock LLM Reasoner for testing.
 """
 
-from typing import Optional
 
 
 class MockLLMReasoner:
@@ -21,7 +20,7 @@ class MockLLMReasoner:
         prompt: str,
         max_tokens: int = 1024,
         temperature: float = 0.7,
-        stop: Optional[list[str]] = None
+        stop: list[str] | None = None
     ) -> dict:
         self._call_count += 1
 

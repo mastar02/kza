@@ -8,7 +8,6 @@ import json
 import logging
 import time
 from datetime import datetime
-from typing import Optional
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
@@ -240,7 +239,7 @@ Solo JSON, sin explicaciones:"""
         self,
         query: str,
         threshold: float = 0.65
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Buscar comando más similar
         
@@ -331,7 +330,7 @@ Solo JSON, sin explicaciones:"""
         self,
         query: str,
         threshold: float = 0.5
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Buscar rutina por descripción"""
         query_embedding = self.embedder.encode(query).tolist()
         

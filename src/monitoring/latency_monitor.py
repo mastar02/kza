@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Callable, Optional
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,8 @@ class LatencyRecord:
     components: dict[str, float]  # {component_name: latency_ms}
     target_ms: float
     met_target: bool
-    user: Optional[str] = None
-    intent: Optional[str] = None
+    user: str | None = None
+    intent: str | None = None
 
 
 @dataclass
@@ -104,7 +104,7 @@ class LatencyMonitor:
         self,
         db_path: str = "./data/latency.db",
         target_ms: float = 300.0,
-        alert_callback: Optional[Callable[[LatencyRecord], None]] = None,
+        alert_callback: Callable[[LatencyRecord], None] | None = None,
         window_size: int = 100
     ):
         self.db_path = Path(db_path)

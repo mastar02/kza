@@ -21,7 +21,6 @@ Proporciona:
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 

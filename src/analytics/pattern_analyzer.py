@@ -7,8 +7,7 @@ import logging
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 import math
 
 from .event_logger import EventLogger, Event
@@ -16,7 +15,7 @@ from .event_logger import EventLogger, Event
 logger = logging.getLogger(__name__)
 
 
-class PatternType(Enum):
+class PatternType(StrEnum):
     """Tipos de patrones detectados"""
     DAILY_TIME = "daily_time"           # Mismo horario todos los dias
     WEEKDAY_TIME = "weekday_time"       # Mismo horario dias de semana
@@ -37,19 +36,19 @@ class Pattern:
     description: str               # Descripcion en lenguaje natural
     
     # Detalles especificos del patron
-    hour: Optional[int] = None     # Hora del patron (0-23)
-    minute: Optional[int] = None   # Minuto aproximado
-    hour_std: Optional[float] = None  # Desviacion estandar de hora
+    hour: int | None = None     # Hora del patron (0-23)
+    minute: int | None = None   # Minuto aproximado
+    hour_std: float | None = None  # Desviacion estandar de hora
     weekdays: list[int] = field(default_factory=list)  # Dias aplicables
     
     # Para patrones de secuencia
-    trigger_entity: Optional[str] = None
-    trigger_action: Optional[str] = None
-    delay_seconds: Optional[float] = None
+    trigger_entity: str | None = None
+    trigger_action: str | None = None
+    delay_seconds: float | None = None
     
     # Para patrones de usuario
-    user_id: Optional[str] = None
-    user_name: Optional[str] = None
+    user_id: str | None = None
+    user_name: str | None = None
     
     def to_dict(self) -> dict:
         return {
@@ -168,7 +167,7 @@ class PatternAnalyzer:
         entity_id: str,
         action: str,
         events: list[Event]
-    ) -> Optional[Pattern]:
+    ) -> Pattern | None:
         """Detectar si hay un patron de hora consistente"""
         if len(events) < self.MIN_OCCURRENCES:
             return None
@@ -224,7 +223,7 @@ class PatternAnalyzer:
         entity_id: str,
         action: str,
         events: list[Event]
-    ) -> Optional[Pattern]:
+    ) -> Pattern | None:
         """Detectar patron solo en dias de semana"""
         weekday_events = [e for e in events if not e.is_weekend]
         
@@ -277,7 +276,7 @@ class PatternAnalyzer:
         entity_id: str,
         action: str,
         events: list[Event]
-    ) -> Optional[Pattern]:
+    ) -> Pattern | None:
         """Detectar patron solo en fines de semana"""
         weekend_events = [e for e in events if e.is_weekend]
         

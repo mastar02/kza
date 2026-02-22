@@ -8,15 +8,14 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Optional
 import json
 
 logger = logging.getLogger(__name__)
 
 
-class EventType(Enum):
+class EventType(StrEnum):
     """Tipos de eventos registrados"""
     COMMAND = "command"           # Comando de voz ejecutado
     AUTOMATION = "automation"     # Automatizacion ejecutada
@@ -32,9 +31,9 @@ class Event:
     event_type: EventType
     entity_id: str
     action: str                   # turn_on, turn_off, set_temperature, etc.
-    user_id: Optional[str] = None
-    user_name: Optional[str] = None
-    trigger_phrase: Optional[str] = None  # Frase original del usuario
+    user_id: str | None = None
+    user_name: str | None = None
+    trigger_phrase: str | None = None  # Frase original del usuario
     context: dict = field(default_factory=dict)  # hora, dia, clima, etc.
     
     @property

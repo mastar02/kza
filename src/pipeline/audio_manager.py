@@ -6,7 +6,6 @@ Gestiona la captura de audio, detección de wake word, VAD y detección de zonas
 import asyncio
 import logging
 import time
-from typing import Optional, Tuple
 
 import numpy as np
 import sounddevice as sd
@@ -52,7 +51,7 @@ class AudioManager:
         self.sample_rate = sample_rate
         self.command_duration = command_duration
 
-        self._wake_model: Optional[WakeWordDetector] = None
+        self._wake_model: WakeWordDetector | None = None
 
     def load_wake_word(self):
         """
@@ -74,7 +73,7 @@ class AudioManager:
 
         logger.info(f"Wake word cargado: {self._wake_model.get_active_models()}")
 
-    def detect_wake_word(self, audio_chunk: np.ndarray) -> Optional[Tuple[str, float]]:
+    def detect_wake_word(self, audio_chunk: np.ndarray) -> tuple[str, float] | None:
         """
         Detectar wake word en un chunk de audio.
 
@@ -95,7 +94,7 @@ class AudioManager:
 
         return None
 
-    def detect_source_zone(self, audio: np.ndarray = None) -> Optional[str]:
+    def detect_source_zone(self, audio: np.ndarray = None) -> str | None:
         """
         Detectar qué zona originó el comando de voz.
 
@@ -126,7 +125,7 @@ class AudioManager:
         audio_buffer: list,
         command_start_time: float,
         chunk_size: int = 1280
-    ) -> Tuple[bool, float, np.ndarray]:
+    ) -> tuple[bool, float, np.ndarray]:
         """
         Verificar si se completó la captura de comando.
 
@@ -155,7 +154,7 @@ class AudioManager:
         silence_threshold: float = 0.015,
         silence_duration_ms: int = 300,
         min_speech_ms: int = 300
-    ) -> Tuple[bool, float, np.ndarray, bool]:
+    ) -> tuple[bool, float, np.ndarray, bool]:
         """
         Captura de comando con VAD temprano - termina ANTES si detecta silencio.
 

@@ -18,13 +18,13 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Callable, Tuple
-from enum import Enum
+from typing import Callable
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
 
-class ContextSource(Enum):
+class ContextSource(StrEnum):
     """Fuente de la detección de habitación"""
     MICROPHONE = "microphone"       # Detectado por audio (wake word en mic)
     BLUETOOTH = "bluetooth"         # Detectado por BLE
@@ -41,33 +41,33 @@ class RoomConfig:
     display_name: str  # Para TTS: "el living", "la cocina"
 
     # Hardware USB
-    mic_device_index: Optional[int] = None      # sounddevice index del XVF3800
-    mic_device_name: Optional[str] = None       # Nombre USB para auto-detect
-    bt_adapter: Optional[str] = None            # hci0, hci1, etc.
+    mic_device_index: int | None = None      # sounddevice index del XVF3800
+    mic_device_name: str | None = None       # Nombre USB para auto-detect
+    bt_adapter: str | None = None            # hci0, hci1, etc.
 
     # MA1260 output
-    ma1260_zone: Optional[int] = None          # MA1260 zone number (1-6)
+    ma1260_zone: int | None = None          # MA1260 zone number (1-6)
     output_mode: str = "mono"                  # "stereo" or "mono"
     default_volume: int = 50                   # Default volume (0-100)
     noise_floor: float = 0.01                  # Noise floor for VAD
 
     # Home Assistant entities por defecto de esta habitación
-    default_light: Optional[str] = None         # light.living
-    default_climate: Optional[str] = None       # climate.living
-    default_cover: Optional[str] = None         # cover.living
-    default_media_player: Optional[str] = None  # media_player.living
-    default_fan: Optional[str] = None           # fan.living
+    default_light: str | None = None         # light.living
+    default_climate: str | None = None       # climate.living
+    default_cover: str | None = None         # cover.living
+    default_media_player: str | None = None  # media_player.living
+    default_fan: str | None = None           # fan.living
 
     # Sensores HA
-    motion_sensor: Optional[str] = None         # binary_sensor.motion_living
-    temperature_sensor: Optional[str] = None    # sensor.temp_living
-    humidity_sensor: Optional[str] = None       # sensor.humidity_living
+    motion_sensor: str | None = None         # binary_sensor.motion_living
+    temperature_sensor: str | None = None    # sensor.temp_living
+    humidity_sensor: str | None = None       # sensor.humidity_living
 
     # Aliases para comandos de voz
-    aliases: List[str] = field(default_factory=list)  # ["living", "sala", "salón"]
+    aliases: list[str] = field(default_factory=list)  # ["living", "sala", "salón"]
 
     # Speaker para TTS de esta habitación
-    tts_speaker: Optional[str] = None           # media_player o device de audio
+    tts_speaker: str | None = None           # media_player o device de audio
 
 
 @dataclass
@@ -81,24 +81,24 @@ class RoomContext:
     timestamp: float
 
     # Usuario detectado (si hay BT match)
-    user_id: Optional[str] = None
-    user_name: Optional[str] = None
+    user_id: str | None = None
+    user_name: str | None = None
 
     # Entities de HA para esta habitación
-    entities: Dict[str, str] = field(default_factory=dict)
+    entities: dict[str, str] = field(default_factory=dict)
 
     # Estado actual de la habitación
     is_occupied: bool = False
     people_count: int = 0
-    temperature: Optional[float] = None
-    humidity: Optional[float] = None
+    temperature: float | None = None
+    humidity: float | None = None
 
     @property
     def is_high_confidence(self) -> bool:
         """¿Es alta confianza? (confirmado por mic + BT)"""
         return self.confidence >= 0.8
 
-    def get_entity(self, domain: str) -> Optional[str]:
+    def get_entity(self, domain: str) -> str | None:
         """Obtener entity de HA por dominio (light, climate, etc)"""
         return self.entities.get(domain)
 
@@ -134,7 +134,7 @@ class RoomContextManager:
         presence_detector=None,
         ha_client=None,
         cross_validation: bool = True,
-        fallback_room: Optional[str] = None
+        fallback_room: str | None = None
     ):
         """
         Args:
@@ -149,26 +149,26 @@ class RoomContextManager:
         self.fallback_room = fallback_room
 
         # Habitaciones configuradas
-        self._rooms: Dict[str, RoomConfig] = {}
+        self._rooms: dict[str, RoomConfig] = {}
 
         # Mapeo mic_device_index → room_id
-        self._mic_to_room: Dict[int, str] = {}
+        self._mic_to_room: dict[int, str] = {}
 
         # Mapeo bt_adapter → room_id
-        self._bt_to_room: Dict[str, str] = {}
+        self._bt_to_room: dict[str, str] = {}
 
         # Mapeo alias → room_id
-        self._alias_to_room: Dict[str, str] = {}
+        self._alias_to_room: dict[str, str] = {}
 
         # Último contexto resuelto (cache)
-        self._last_context: Optional[RoomContext] = None
+        self._last_context: RoomContext | None = None
         self._last_context_time: float = 0
 
         # Historial de contextos por usuario
-        self._user_room_history: Dict[str, List[Tuple[str, float]]] = {}
+        self._user_room_history: dict[str, list[tuple[str, float]]] = {}
 
         # Callbacks
-        self._on_room_changed: Optional[Callable] = None
+        self._on_room_changed: Callable | None = None
 
         logger.info("RoomContextManager inicializado")
 
@@ -196,11 +196,11 @@ class RoomContextManager:
 
     def resolve_room(
         self,
-        mic_zone_id: Optional[str] = None,
-        mic_device_index: Optional[int] = None,
-        user_id: Optional[str] = None,
-        spoken_room: Optional[str] = None
-    ) -> Optional[RoomContext]:
+        mic_zone_id: str | None = None,
+        mic_device_index: int | None = None,
+        user_id: str | None = None,
+        spoken_room: str | None = None
+    ) -> RoomContext | None:
         """
         Resolver habitación desde donde se habla.
 
@@ -334,9 +334,9 @@ class RoomContextManager:
     def resolve_entity(
         self,
         domain: str,
-        room_context: Optional[RoomContext] = None,
-        spoken_room: Optional[str] = None
-    ) -> Optional[str]:
+        room_context: RoomContext | None = None,
+        spoken_room: str | None = None
+    ) -> str | None:
         """
         Resolver entity de HA dado un dominio y contexto.
 
@@ -366,33 +366,33 @@ class RoomContextManager:
 
         return None
 
-    def get_room_config(self, room_id: str) -> Optional[RoomConfig]:
+    def get_room_config(self, room_id: str) -> RoomConfig | None:
         """Obtener configuración de una habitación"""
         return self._rooms.get(room_id)
 
-    def get_all_rooms(self) -> Dict[str, RoomConfig]:
+    def get_all_rooms(self) -> dict[str, RoomConfig]:
         """Obtener todas las habitaciones"""
         return self._rooms.copy()
 
-    def get_room_by_alias(self, alias: str) -> Optional[RoomConfig]:
+    def get_room_by_alias(self, alias: str) -> RoomConfig | None:
         """Buscar habitación por alias"""
         room_id = self._resolve_alias(alias)
         if room_id:
             return self._rooms.get(room_id)
         return None
 
-    def get_tts_speaker(self, room_context: RoomContext) -> Optional[str]:
+    def get_tts_speaker(self, room_context: RoomContext) -> str | None:
         """Obtener speaker de TTS para responder en la habitación correcta"""
         config = self._rooms.get(room_context.room_id)
         if config:
             return config.tts_speaker
         return None
 
-    def get_last_context(self) -> Optional[RoomContext]:
+    def get_last_context(self) -> RoomContext | None:
         """Obtener último contexto resuelto"""
         return self._last_context
 
-    def get_user_room(self, user_id: str) -> Optional[str]:
+    def get_user_room(self, user_id: str) -> str | None:
         """Obtener habitación actual de un usuario"""
         # Primero BT
         if self.presence_detector:
@@ -407,7 +407,7 @@ class RoomContextManager:
 
         return None
 
-    def get_room_summary(self) -> Dict[str, dict]:
+    def get_room_summary(self) -> dict[str, dict]:
         """Resumen de todas las habitaciones"""
         summary = {}
         for room_id, config in self._rooms.items():
@@ -426,7 +426,7 @@ class RoomContextManager:
             }
         return summary
 
-    def on_room_changed(self, callback: Callable[[str, str, Optional[str]], None]):
+    def on_room_changed(self, callback: Callable[[str, str, str | None], None]):
         """Callback cuando un usuario cambia de habitación (old_room, new_room, user_id)"""
         self._on_room_changed = callback
 
@@ -434,7 +434,7 @@ class RoomContextManager:
     # Private methods
     # =========================================================================
 
-    def _resolve_alias(self, text: str) -> Optional[str]:
+    def _resolve_alias(self, text: str) -> str | None:
         """Resolver alias de habitación desde texto"""
         text_lower = text.lower().strip()
 
@@ -449,7 +449,7 @@ class RoomContextManager:
 
         return None
 
-    def _get_user_bt_room(self, user_id: str) -> Optional[str]:
+    def _get_user_bt_room(self, user_id: str) -> str | None:
         """Obtener habitación del usuario por BLE"""
         if not self.presence_detector:
             return None
@@ -459,14 +459,14 @@ class RoomContextManager:
             return zone
         return None
 
-    def _get_last_user_room(self, user_id: str) -> Optional[Tuple[str, float]]:
+    def _get_last_user_room(self, user_id: str) -> tuple[str, float] | None:
         """Obtener última habitación conocida del usuario"""
         history = self._user_room_history.get(user_id, [])
         if history:
             return history[-1]
         return None
 
-    def _build_entity_map(self, config: RoomConfig) -> Dict[str, str]:
+    def _build_entity_map(self, config: RoomConfig) -> dict[str, str]:
         """Construir mapa de entities para una habitación"""
         entities = {}
         if config.default_light:
@@ -481,7 +481,7 @@ class RoomContextManager:
             entities["fan"] = config.default_fan
         return entities
 
-    def _get_room_entity(self, config: RoomConfig, domain: str) -> Optional[str]:
+    def _get_room_entity(self, config: RoomConfig, domain: str) -> str | None:
         """Obtener entity de una habitación por dominio"""
         mapping = {
             "light": config.default_light,
@@ -505,7 +505,7 @@ class RoomContextManager:
         # Por ahora se deja None, se puede enriquecer después
 
 
-def create_default_rooms() -> List[RoomConfig]:
+def create_default_rooms() -> list[RoomConfig]:
     """
     Crear configuración por defecto para las 5 habitaciones de KZA.
 
@@ -595,7 +595,7 @@ def create_default_rooms() -> List[RoomConfig]:
     return rooms
 
 
-async def auto_detect_microphones(rooms: List[RoomConfig]) -> List[RoomConfig]:
+async def auto_detect_microphones(rooms: list[RoomConfig]) -> list[RoomConfig]:
     """
     Auto-detectar XVF3800 en los dispositivos USB del sistema.
 
@@ -652,7 +652,7 @@ async def auto_detect_microphones(rooms: List[RoomConfig]) -> List[RoomConfig]:
         return rooms
 
 
-async def auto_detect_bt_adapters(rooms: List[RoomConfig]) -> List[RoomConfig]:
+async def auto_detect_bt_adapters(rooms: list[RoomConfig]) -> list[RoomConfig]:
     """
     Auto-detectar adaptadores Bluetooth del sistema.
 

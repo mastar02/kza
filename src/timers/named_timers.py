@@ -15,14 +15,14 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional, Callable, Any
-from enum import Enum
+from typing import Callable, Any
+from enum import StrEnum
 import uuid
 
 logger = logging.getLogger(__name__)
 
 
-class TimerState(Enum):
+class TimerState(StrEnum):
     RUNNING = "running"
     PAUSED = "paused"
     COMPLETED = "completed"
@@ -37,13 +37,13 @@ class NamedTimer:
     duration_seconds: int              # Duración total
     created_at: datetime
     zone_id: str = "default"           # Zona donde se creó
-    user_id: Optional[str] = None      # Usuario que lo creó
+    user_id: str | None = None      # Usuario que lo creó
 
     # Estado
     state: TimerState = TimerState.RUNNING
     remaining_seconds: float = 0
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
     # Configuración
     announce_at: list[int] = field(default_factory=lambda: [60, 30, 10])  # Anunciar a X segundos
@@ -121,12 +121,12 @@ class NamedTimerManager:
         self._timers: dict[str, NamedTimer] = {}
 
         # Task de actualización
-        self._update_task: Optional[asyncio.Task] = None
+        self._update_task: asyncio.Task | None = None
         self._running = False
 
         # Callbacks
-        self._on_timer_complete: Optional[Callable[[NamedTimer], None]] = None
-        self._on_timer_warning: Optional[Callable[[NamedTimer, int], None]] = None
+        self._on_timer_complete: Callable[[NamedTimer], None] | None = None
+        self._on_timer_warning: Callable[[NamedTimer, int], None] | None = None
 
     async def start(self):
         """Iniciar el manager de timers"""
@@ -503,7 +503,7 @@ class NamedTimerManager:
 
         return name, duration
 
-    def _extract_timer_name(self, text: str) -> Optional[str]:
+    def _extract_timer_name(self, text: str) -> str | None:
         """Extraer nombre de timer del texto"""
         # Patrones para extraer nombre
         patterns = [
@@ -520,7 +520,7 @@ class NamedTimerManager:
 
         return None
 
-    def _find_timer_by_name(self, name: str) -> Optional[NamedTimer]:
+    def _find_timer_by_name(self, name: str) -> NamedTimer | None:
         """Buscar timer por nombre (fuzzy)"""
         name_lower = name.lower()
 
@@ -587,7 +587,7 @@ class NamedTimerManager:
         self._timers[timer.timer_id] = timer
         return timer
 
-    def get_timer(self, timer_id: str) -> Optional[NamedTimer]:
+    def get_timer(self, timer_id: str) -> NamedTimer | None:
         """Obtener timer por ID"""
         return self._timers.get(timer_id)
 

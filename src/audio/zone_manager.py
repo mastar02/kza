@@ -5,15 +5,15 @@ Detecta la zona de origen del comando y enruta la respuesta.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, Dict, List, Callable
-from enum import Enum
+from typing import Callable
+from enum import StrEnum
 import numpy as np
 import time
 
 logger = logging.getLogger(__name__)
 
 
-class ZoneState(Enum):
+class ZoneState(StrEnum):
     """Estado de una zona"""
     IDLE = "idle"
     LISTENING = "listening"
@@ -39,7 +39,7 @@ class Zone:
     detection_threshold: float = 0.05  # Umbral para detectar voz
     
     # Usuarios asociados (opcional)
-    default_users: List[str] = field(default_factory=list)
+    default_users: list[str] = field(default_factory=list)
     
     def to_dict(self) -> dict:
         return {
@@ -65,7 +65,7 @@ class ZoneManager:
     
     def __init__(
         self,
-        zones: List[Zone] = None,
+        zones: list[Zone] = None,
         ma1260_controller = None,
         detection_window_ms: int = 500,
         priority_mode: str = "loudest"  # "loudest", "first", "last_active"
@@ -77,21 +77,21 @@ class ZoneManager:
             detection_window_ms: Ventana para detectar zona de origen
             priority_mode: Cómo resolver conflictos entre zonas
         """
-        self.zones: Dict[str, Zone] = {}
+        self.zones: dict[str, Zone] = {}
         self.ma1260 = ma1260_controller
         self.detection_window_ms = detection_window_ms
         self.priority_mode = priority_mode
         
         # Audio levels por zona (para detección)
-        self._audio_levels: Dict[str, float] = {}
-        self._detection_timestamps: Dict[str, float] = {}
+        self._audio_levels: dict[str, float] = {}
+        self._detection_timestamps: dict[str, float] = {}
         
         # Zona activa actual
-        self._active_zone: Optional[str] = None
+        self._active_zone: str | None = None
         
         # Callbacks
-        self._on_zone_detected: Optional[Callable] = None
-        self._on_zone_speaking: Optional[Callable] = None
+        self._on_zone_detected: Callable | None = None
+        self._on_zone_speaking: Callable | None = None
         
         # Registrar zonas
         if zones:
@@ -114,18 +114,18 @@ class ZoneManager:
             del self._audio_levels[zone_id]
             del self._detection_timestamps[zone_id]
     
-    def get_zone(self, zone_id: str) -> Optional[Zone]:
+    def get_zone(self, zone_id: str) -> Zone | None:
         """Obtener zona por ID"""
         return self.zones.get(zone_id)
     
-    def get_zone_by_mic(self, mic_index: int) -> Optional[Zone]:
+    def get_zone_by_mic(self, mic_index: int) -> Zone | None:
         """Obtener zona por índice de micrófono"""
         for zone in self.zones.values():
             if zone.mic_device_index == mic_index:
                 return zone
         return None
     
-    def get_zone_by_ma1260(self, ma1260_zone: int) -> Optional[Zone]:
+    def get_zone_by_ma1260(self, ma1260_zone: int) -> Zone | None:
         """Obtener zona por número de zona MA1260"""
         for zone in self.zones.values():
             if zone.ma1260_zone == ma1260_zone:
@@ -159,7 +159,7 @@ class ZoneManager:
                 zone.state = ZoneState.LISTENING
                 logger.debug(f"Zona {zone.name}: detectada actividad (RMS: {rms:.4f})")
     
-    def detect_source_zone(self) -> Optional[Zone]:
+    def detect_source_zone(self) -> Zone | None:
         """
         Detectar qué zona originó el comando de voz.
         Usar después de detectar wake word.
@@ -205,7 +205,7 @@ class ZoneManager:
         
         return winner
     
-    def get_active_zone(self) -> Optional[Zone]:
+    def get_active_zone(self) -> Zone | None:
         """Obtener la zona actualmente activa"""
         if self._active_zone:
             return self.zones.get(self._active_zone)

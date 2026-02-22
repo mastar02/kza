@@ -7,13 +7,13 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from enum import Enum
-from typing import Callable, Optional, Any
+from enum import StrEnum
+from typing import Callable, Any
 
 logger = logging.getLogger(__name__)
 
 
-class CircuitState(Enum):
+class CircuitState(StrEnum):
     CLOSED = "closed"      # Normal, permitiendo requests
     OPEN = "open"          # Bloqueando requests (HA caído)
     HALF_OPEN = "half_open"  # Probando si HA se recuperó
@@ -65,8 +65,8 @@ class HACircuitBreaker:
         self._lock = asyncio.Lock()
 
         # Callbacks opcionales
-        self._on_state_change: Optional[Callable] = None
-        self._on_failure: Optional[Callable] = None
+        self._on_state_change: Callable | None = None
+        self._on_failure: Callable | None = None
 
     @property
     def state(self) -> CircuitState:
@@ -241,7 +241,7 @@ class HACircuitBreaker:
 
 
 # Circuit breaker global para Home Assistant
-_ha_circuit_breaker: Optional[HACircuitBreaker] = None
+_ha_circuit_breaker: HACircuitBreaker | None = None
 
 
 def get_ha_circuit_breaker() -> HACircuitBreaker:

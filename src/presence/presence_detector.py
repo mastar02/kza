@@ -14,8 +14,8 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional, Callable
+from enum import StrEnum
+from typing import Callable
 from collections import defaultdict
 
 from src.presence.ble_scanner import BLEScanner, BLEDevice, DeviceType
@@ -23,7 +23,7 @@ from src.presence.ble_scanner import BLEScanner, BLEDevice, DeviceType
 logger = logging.getLogger(__name__)
 
 
-class PresenceState(Enum):
+class PresenceState(StrEnum):
     """Estado de presencia de un usuario"""
     UNKNOWN = "unknown"
     HOME = "home"           # En casa (detectado)
@@ -38,8 +38,8 @@ class UserPresence:
     """Estado de presencia de un usuario"""
     user_id: str
     state: PresenceState = PresenceState.UNKNOWN
-    current_zone: Optional[str] = None
-    last_zone: Optional[str] = None
+    current_zone: str | None = None
+    last_zone: str | None = None
 
     # Dispositivos asociados
     ble_devices: list[str] = field(default_factory=list)  # MAC addresses
@@ -47,8 +47,8 @@ class UserPresence:
     # Timestamps
     last_seen: float = 0
     last_state_change: float = 0
-    arrival_time: Optional[float] = None
-    departure_time: Optional[float] = None
+    arrival_time: float | None = None
+    departure_time: float | None = None
 
     # Confianza
     confidence: float = 0.0
@@ -162,10 +162,10 @@ class PresenceDetector:
         self._device_to_user: dict[str, str] = {}
 
         # Callbacks
-        self._on_user_arrived: Optional[Callable] = None
-        self._on_user_left: Optional[Callable] = None
-        self._on_zone_occupied: Optional[Callable] = None
-        self._on_zone_empty: Optional[Callable] = None
+        self._on_user_arrived: Callable | None = None
+        self._on_user_left: Callable | None = None
+        self._on_zone_occupied: Callable | None = None
+        self._on_zone_empty: Callable | None = None
 
         # Estado
         self._running = False
@@ -478,11 +478,11 @@ class PresenceDetector:
     # Public API
     # =========================================================================
 
-    def get_user_presence(self, user_id: str) -> Optional[UserPresence]:
+    def get_user_presence(self, user_id: str) -> UserPresence | None:
         """Obtener estado de presencia de un usuario"""
         return self._user_presence.get(user_id)
 
-    def get_zone_occupancy(self, zone_id: str) -> Optional[RoomOccupancy]:
+    def get_zone_occupancy(self, zone_id: str) -> RoomOccupancy | None:
         """Obtener ocupación de una zona"""
         return self._zone_occupancy.get(zone_id)
 
@@ -500,7 +500,7 @@ class PresenceDetector:
             return occupancy.known_users
         return []
 
-    def get_user_zone(self, user_id: str) -> Optional[str]:
+    def get_user_zone(self, user_id: str) -> str | None:
         """Obtener zona actual de un usuario"""
         presence = self._user_presence.get(user_id)
         if presence:

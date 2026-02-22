@@ -5,7 +5,6 @@ Runs on CPU with llama-cpp-python (24 cores, ~70GB RAM)
 
 import os
 import logging
-from typing import Optional, List
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -24,10 +23,10 @@ class Message(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    messages: List[Message]
+    messages: list[Message]
     max_tokens: int = 1024
     temperature: float = 0.7
-    stop: Optional[List[str]] = None
+    stop: list[str] | None = None
 
 
 class ChatResponse(BaseModel):
@@ -40,7 +39,7 @@ class GenerateRequest(BaseModel):
     prompt: str
     max_tokens: int = 1024
     temperature: float = 0.7
-    stop: Optional[List[str]] = None
+    stop: list[str] | None = None
 
 
 class GenerateResponse(BaseModel):
