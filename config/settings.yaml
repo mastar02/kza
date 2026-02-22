@@ -523,72 +523,7 @@ logging:
   file: "./logs/voice_assistant.log"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-# =============================================================================
-# Multi-Zone Audio System (Dayton Audio MA1260)
-# =============================================================================
-zones:
-  enabled: true
-
-  # Conexión al amplificador MA1260
-  ma1260:
-    connection_type: "serial"      # "serial", "ip", o "simulation"
-    serial_port: "/dev/ttyUSB0"    # Puerto serial RS-232
-    baudrate: 9600
-    # ip_address: "192.168.1.50"   # Si usa módulo de red
-    # ip_port: 8080
-    audio_output_device: null      # Índice del dispositivo de salida (null = default)
-    default_source: 1              # Fuente de entrada por defecto (1-6)
-
-  # Detección de zona de origen
-  detection:
-    priority_mode: "loudest"       # "loudest", "first", "last_active"
-    detection_window_ms: 500       # Ventana para detectar zona
-    vad_threshold: 0.02            # Umbral de detección de voz
-
-  # Configuración de zonas
-  # Cada zona tiene un micrófono y una salida del MA1260
-  zone_list:
-    - id: "zone_living"
-      name: "Living Room"
-      mic_device_index: 1          # Índice del micrófono USB
-      ma1260_zone: 1               # Salida del amplificador (1-6)
-      default_volume: 60
-      noise_floor: 0.01
-
-    - id: "zone_kitchen"
-      name: "Kitchen"
-      mic_device_index: 2
-      ma1260_zone: 2
-      default_volume: 55
-      noise_floor: 0.015
-
-    - id: "zone_bedroom"
-      name: "Bedroom"
-      mic_device_index: 3
-      ma1260_zone: 3
-      default_volume: 45
-      noise_floor: 0.01
-
-    - id: "zone_office"
-      name: "Office"
-      mic_device_index: 4
-      ma1260_zone: 4
-      default_volume: 50
-      noise_floor: 0.01
-
-    - id: "zone_bathroom"
-      name: "Bathroom"
-      mic_device_index: 5
-      ma1260_zone: 5
-      default_volume: 50
-      noise_floor: 0.02
-
-    - id: "zone_garage"
-      name: "Garage"
-      mic_device_index: 6
-      ma1260_zone: 6
-      default_volume: 65
-      noise_floor: 0.025
+# zones: DEPRECATED — merged into rooms section (see rooms.ma1260 and per-room ma1260_zone)
 
 # =============================================================================
 # Spotify Integration
@@ -723,11 +658,12 @@ spotify:
     detect_by: "voice"  # voice, motion, speaker_id
 
 # =============================================================================
-# Room Context (Micrófono + Bluetooth por habitación)
+# Room Context (Micrófono + Bluetooth + MA1260 por habitación)
 # =============================================================================
 # Cada habitación tiene:
 #   - 1x ReSpeaker XVF3800 (mic USB sobre extensor RJ45)
 #   - 1x Dongle BT 5.0 (USB sobre extensor RJ45)
+#   - 1x Zona MA1260 (salida de amplificador)
 #   - Ambos llegan al servidor como dispositivos USB locales
 #
 # El sistema auto-detecta los dispositivos al iniciar.
@@ -736,15 +672,39 @@ spotify:
 
 rooms:
   enabled: true
-  cross_validation: true   # Usar BT para confirmar habitación del mic
-  fallback_room: "living"  # Habitación por defecto si no se puede determinar
+  cross_validation: true
+  fallback_room: "living"
+  dedup_window_ms: 200
 
-  # Configuración por habitación
+  # MA1260 amplifier connection (moved from zones)
+  ma1260:
+    connection_type: "serial"
+    serial_port: "/dev/ttyUSB0"
+    baudrate: 9600
+    audio_output_device: null
+    default_source: 1
+
+  # Wake word config for all rooms
+  wake_word:
+    model: "hey_jarvis"
+    threshold: 0.5
+
+  # Detection config
+  detection:
+    priority_mode: "loudest"
+    detection_window_ms: 500
+    vad_threshold: 0.02
+
   living:
     name: "Living"
     display_name: "el living"
-    mic_device_name: "XVF3800"    # Auto-detect por nombre USB
+    mic_device_name: "XVF3800"
+    mic_device_index: 1
     bt_adapter: "hci0"
+    ma1260_zone: 1
+    output_mode: "stereo"
+    default_volume: 60
+    noise_floor: 0.01
     default_light: "light.living"
     default_climate: "climate.living_ac"
     default_cover: "cover.living_persiana"
@@ -754,24 +714,16 @@ rooms:
     tts_speaker: "media_player.living_speaker"
     aliases: ["living", "sala", "salón", "el living"]
 
-  escritorio:
-    name: "Escritorio"
-    display_name: "el escritorio"
-    mic_device_name: "XVF3800"
-    bt_adapter: "hci1"
-    default_light: "light.escritorio"
-    default_climate: "climate.escritorio_ac"
-    default_media_player: "media_player.escritorio_monitor"
-    motion_sensor: "binary_sensor.motion_escritorio"
-    temperature_sensor: "sensor.temperature_escritorio"
-    tts_speaker: "media_player.escritorio_speaker"
-    aliases: ["escritorio", "oficina", "estudio", "el escritorio"]
-
   hall:
     name: "Hall"
     display_name: "el hall"
     mic_device_name: "XVF3800"
-    bt_adapter: "hci2"
+    mic_device_index: 2
+    bt_adapter: "hci1"
+    ma1260_zone: 2
+    output_mode: "mono"
+    default_volume: 50
+    noise_floor: 0.01
     default_light: "light.hall"
     motion_sensor: "binary_sensor.motion_hall"
     tts_speaker: "media_player.hall_speaker"
@@ -781,7 +733,12 @@ rooms:
     name: "Cocina"
     display_name: "la cocina"
     mic_device_name: "XVF3800"
-    bt_adapter: "hci3"
+    mic_device_index: 3
+    bt_adapter: "hci2"
+    ma1260_zone: 3
+    output_mode: "mono"
+    default_volume: 55
+    noise_floor: 0.015
     default_light: "light.cocina"
     default_fan: "fan.cocina_extractor"
     motion_sensor: "binary_sensor.motion_cocina"
@@ -790,11 +747,34 @@ rooms:
     tts_speaker: "media_player.cocina_speaker"
     aliases: ["cocina", "la cocina", "kitchen"]
 
+  escritorio:
+    name: "Escritorio"
+    display_name: "el escritorio"
+    mic_device_name: "XVF3800"
+    mic_device_index: 4
+    bt_adapter: "hci3"
+    ma1260_zone: 4
+    output_mode: "mono"
+    default_volume: 50
+    noise_floor: 0.01
+    default_light: "light.escritorio"
+    default_climate: "climate.escritorio_ac"
+    default_media_player: "media_player.escritorio_monitor"
+    motion_sensor: "binary_sensor.motion_escritorio"
+    temperature_sensor: "sensor.temperature_escritorio"
+    tts_speaker: "media_player.escritorio_speaker"
+    aliases: ["escritorio", "oficina", "estudio", "el escritorio"]
+
   bano:
     name: "Baño"
     display_name: "el baño"
     mic_device_name: "XVF3800"
+    mic_device_index: 5
     bt_adapter: "hci4"
+    ma1260_zone: 5
+    output_mode: "stereo"
+    default_volume: 50
+    noise_floor: 0.02
     default_light: "light.bano"
     default_fan: "fan.bano_extractor"
     motion_sensor: "binary_sensor.motion_bano"
