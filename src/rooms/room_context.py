@@ -45,6 +45,12 @@ class RoomConfig:
     mic_device_name: Optional[str] = None       # Nombre USB para auto-detect
     bt_adapter: Optional[str] = None            # hci0, hci1, etc.
 
+    # MA1260 output
+    ma1260_zone: Optional[int] = None          # MA1260 zone number (1-6)
+    output_mode: str = "mono"                  # "stereo" or "mono"
+    default_volume: int = 50                   # Default volume (0-100)
+    noise_floor: float = 0.01                  # Noise floor for VAD
+
     # Home Assistant entities por defecto de esta habitación
     default_light: Optional[str] = None         # light.living
     default_climate: Optional[str] = None       # climate.living

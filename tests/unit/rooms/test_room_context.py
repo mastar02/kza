@@ -356,3 +356,25 @@ class TestSummary:
         assert summary["living"]["mic_active"] is True
         assert summary["living"]["bt_active"] is True
         assert "light" in summary["living"]["entities"]
+
+
+# =========================================================================
+# Tests de MA1260 fields
+# =========================================================================
+
+class TestMA1260Fields:
+    def test_room_config_has_ma1260_fields(self):
+        """RoomConfig should include MA1260 zone and output mode."""
+        config = RoomConfig(
+            room_id="living",
+            name="Living",
+            display_name="el living",
+            ma1260_zone=1,
+            output_mode="stereo",
+            default_volume=60,
+            noise_floor=0.01,
+        )
+        assert config.ma1260_zone == 1
+        assert config.output_mode == "stereo"
+        assert config.default_volume == 60
+        assert config.noise_floor == 0.01
