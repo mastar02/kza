@@ -793,8 +793,8 @@ class NightlyTrainer:
                                 loss = float(parts[i + 1].strip(","))
                                 self.current_session.loss_history.append(loss)
                                 break
-                except Exception:
-                    pass  # Loss parsing is best-effort from stdout
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Failed to parse loss from output: {e}")
 
         await process.wait()
 
