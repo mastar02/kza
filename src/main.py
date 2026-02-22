@@ -48,6 +48,10 @@ from src.alerts.alert_scheduler import AlertScheduler
 from src.training.conversation_collector import ConversationCollector
 from src.training.habit_dataset_generator import HabitDatasetGenerator
 from src.training.nightly_trainer import NightlyTrainer, NightlyConfig
+from src.rooms.room_context import RoomContextManager, RoomConfig
+from src.presence.presence_detector import PresenceDetector
+from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
+from src.wakeword.detector import WakeWordDetector
 
 # Configurar logging
 logging.basicConfig(
@@ -238,7 +242,12 @@ async def main():
         )
         logger.info("Smart automations habilitado")
 
-    # Multi-Zone Audio System (Dayton MA1260)
+    # Multi-room / multi-zone defaults (always defined for DI)
+    room_context_manager = None
+    presence_detector = None
+    multi_room_loop = None
+
+    # Multi-Zone Audio System (Dayton MA1260) — legacy fallback
     zones_config = config.get("zones", {})
     zone_manager = None
 
@@ -278,6 +287,147 @@ async def main():
             priority_mode=detection_config.get("priority_mode", "loudest")
         )
         logger.info(f"Multi-zone audio habilitado ({len(zone_list)} zonas)")
+
+    # ----------------------------------------------------------------
+    # Multi-Room Audio System (rooms-based, replaces legacy zones)
+    # ----------------------------------------------------------------
+    rooms_config = config.get("rooms", {})
+    ROOMS_RESERVED_KEYS = {
+        "enabled", "cross_validation", "fallback_room",
+        "dedup_window_ms", "ma1260", "wake_word", "detection",
+    }
+
+    if rooms_config.get("enabled", False):
+        # Presence detector
+        presence_config = config.get("presence", {})
+        if presence_config.get("enabled", False):
+            presence_detector = PresenceDetector(
+                user_manager=user_manager,
+                ha_client=ha_client,
+                away_timeout=presence_config.get("away_timeout", 300),
+                just_arrived_duration=presence_config.get("just_arrived_duration", 300),
+            )
+            logger.info("Presence detector created")
+
+        # Room context manager
+        room_context_manager = RoomContextManager(
+            presence_detector=presence_detector,
+            ha_client=ha_client,
+            cross_validation=rooms_config.get("cross_validation", True),
+            fallback_room=rooms_config.get("fallback_room"),
+        )
+
+        # Wake word config for per-room detectors
+        room_wake_cfg = rooms_config.get("wake_word", wake_config)
+        room_detection_cfg = rooms_config.get("detection", {})
+
+        # Build per-room configs, streams, and presence zones
+        room_streams: dict[str, RoomStream] = {}
+
+        for room_key, room_dict in rooms_config.items():
+            if room_key in ROOMS_RESERVED_KEYS or not isinstance(room_dict, dict):
+                continue
+
+            # Build RoomConfig
+            rc = RoomConfig(
+                room_id=room_key,
+                name=room_dict.get("name", room_key),
+                display_name=room_dict.get("display_name", room_key),
+                mic_device_index=room_dict.get("mic_device_index"),
+                mic_device_name=room_dict.get("mic_device_name"),
+                bt_adapter=room_dict.get("bt_adapter"),
+                ma1260_zone=room_dict.get("ma1260_zone"),
+                output_mode=room_dict.get("output_mode", "mono"),
+                default_volume=room_dict.get("default_volume", 50),
+                noise_floor=room_dict.get("noise_floor", 0.01),
+                default_light=room_dict.get("default_light"),
+                default_climate=room_dict.get("default_climate"),
+                default_cover=room_dict.get("default_cover"),
+                default_media_player=room_dict.get("default_media_player"),
+                default_fan=room_dict.get("default_fan"),
+                motion_sensor=room_dict.get("motion_sensor"),
+                temperature_sensor=room_dict.get("temperature_sensor"),
+                humidity_sensor=room_dict.get("humidity_sensor"),
+                aliases=room_dict.get("aliases", []),
+                tts_speaker=room_dict.get("tts_speaker"),
+            )
+            room_context_manager.add_room(rc)
+
+            # Build RoomStream if room has a mic
+            if rc.mic_device_index is not None:
+                wake_detector = WakeWordDetector(
+                    models=[room_wake_cfg.get("model", "hey_jarvis")],
+                    threshold=room_wake_cfg.get("threshold", 0.5),
+                )
+                room_echo = EchoSuppressor(sample_rate=16000)
+                room_streams[room_key] = RoomStream(
+                    room_id=room_key,
+                    device_index=rc.mic_device_index,
+                    wake_detector=wake_detector,
+                    echo_suppressor=room_echo,
+                )
+
+            # Register BLE zone for presence
+            if rc.bt_adapter and presence_detector:
+                presence_detector.add_zone(
+                    zone_id=room_key,
+                    zone_name=rc.name,
+                    ble_adapter=rc.bt_adapter,
+                    motion_sensor_entity=rc.motion_sensor,
+                )
+
+        # Build ZoneManager from rooms config if not already built from legacy zones
+        if not zone_manager:
+            ma1260_cfg = rooms_config.get("ma1260", {})
+            ma1260 = MA1260Controller(
+                connection_type=ma1260_cfg.get("connection_type", "simulation"),
+                serial_port=ma1260_cfg.get("serial_port", "/dev/ttyUSB0"),
+                baudrate=ma1260_cfg.get("baudrate", 9600),
+                ip_address=ma1260_cfg.get("ip_address"),
+                ip_port=ma1260_cfg.get("ip_port", 8080),
+                audio_output_device=ma1260_cfg.get("audio_output_device"),
+                default_source=MA1260Source(ma1260_cfg.get("default_source", 1)),
+            )
+
+            zone_list = []
+            for room_key, room_dict in rooms_config.items():
+                if room_key in ROOMS_RESERVED_KEYS or not isinstance(room_dict, dict):
+                    continue
+                ma_zone = room_dict.get("ma1260_zone")
+                if ma_zone is not None:
+                    zone = Zone(
+                        id=room_key,
+                        name=room_dict.get("name", room_key),
+                        mic_device_index=room_dict.get("mic_device_index", 0),
+                        ma1260_zone=ma_zone,
+                        volume=room_dict.get("default_volume", 50),
+                        noise_floor=room_dict.get("noise_floor", 0.01),
+                        detection_threshold=room_detection_cfg.get("vad_threshold", 0.02),
+                    )
+                    zone_list.append(zone)
+
+            if zone_list:
+                zone_manager = ZoneManager(
+                    zones=zone_list,
+                    ma1260_controller=ma1260,
+                    detection_window_ms=room_detection_cfg.get("detection_window_ms", 500),
+                    priority_mode=room_detection_cfg.get("priority_mode", "loudest"),
+                )
+                logger.info(f"ZoneManager built from rooms config ({len(zone_list)} zones)")
+
+        # Build MultiRoomAudioLoop if we have room streams
+        if room_streams:
+            multi_room_loop = MultiRoomAudioLoop(
+                room_streams=room_streams,
+                follow_up=FollowUpMode(follow_up_window=8.0),
+                sample_rate=16000,
+                command_duration=2.0,
+                dedup_window_ms=rooms_config.get("dedup_window_ms", 200),
+            )
+            logger.info(
+                f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "
+                f"{', '.join(room_streams.keys())})"
+            )
 
     # ----------------------------------------------------------------
     # Build pipeline components (DI chain)
@@ -347,6 +497,7 @@ async def main():
         command_processor=command_processor,
         response_handler=response_handler,
         audio_manager=audio_manager,
+        room_context_manager=room_context_manager,
         orchestrator=orchestrator,
         orchestrator_enabled=orchestrator_enabled,
         chroma_sync=chroma,
@@ -466,9 +617,12 @@ async def main():
         nightly_trainer.start_scheduler()
         logger.info("Nightly trainer scheduled")
 
+    # Use MultiRoomAudioLoop if rooms are configured, else fall back to AudioLoop
+    active_audio_loop = multi_room_loop if multi_room_loop else audio_loop
+
     # Assemble the slim VoicePipeline
     pipeline = VoicePipeline(
-        audio_loop=audio_loop,
+        audio_loop=active_audio_loop,
         command_processor=command_processor,
         request_router=request_router,
         response_handler=response_handler,
@@ -478,11 +632,18 @@ async def main():
         orchestrator=orchestrator,
     )
 
+    # Start presence detector before pipeline
+    if presence_detector:
+        await presence_detector.start()
+        logger.info("Presence detector started")
+
     # Ejecutar
     try:
         await pipeline.run()
     except KeyboardInterrupt:
         logger.info("\nDeteniendo...")
+        if presence_detector:
+            await presence_detector.stop()
         await pipeline.stop()
 
 

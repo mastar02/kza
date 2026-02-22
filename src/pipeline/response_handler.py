@@ -82,7 +82,8 @@ class ResponseHandler:
         text: str,
         zone_id: str = None,
         stream: bool = None,
-        emotion_adjustment: dict = None
+        emotion_adjustment: dict = None,
+        room_context=None,
     ):
         """
         Sintetizar y reproducir texto.
@@ -92,9 +93,14 @@ class ResponseHandler:
             zone_id: ID de zona específica (None = usar zona activa)
             stream: Usar streaming (None = usar config, True/False = forzar)
             emotion_adjustment: Ajustes según emoción detectada
+            room_context: RoomContext para resolver zona automáticamente
         """
         if not text:
             return
+
+        # Resolve zone from room context if available
+        if room_context and hasattr(room_context, 'room_id') and not zone_id:
+            zone_id = f"zone_{room_context.room_id}"
 
         # Aplicar ajustes de emoción si están disponibles
         if emotion_adjustment:
@@ -175,7 +181,8 @@ class ResponseHandler:
         max_tokens: int = 512,
         temperature: float = 0.7,
         use_filler: bool = None,
-        emotion_adjustment: dict = None
+        emotion_adjustment: dict = None,
+        room_context=None,
     ) -> str:
         """
         Generar respuesta con LLM y hablar con buffering inteligente.
@@ -190,10 +197,15 @@ class ResponseHandler:
             temperature: Temperatura
             use_filler: Override para usar filler
             emotion_adjustment: Ajustes según emoción
+            room_context: RoomContext para resolver zona automáticamente
 
         Returns:
             Texto completo de la respuesta
         """
+        # Resolve zone from room context if available
+        if room_context and hasattr(room_context, 'room_id') and not zone_id:
+            zone_id = f"zone_{room_context.room_id}"
+
         # Aplicar ajustes de emoción
         if emotion_adjustment:
             self._apply_emotion_adjustment(emotion_adjustment)

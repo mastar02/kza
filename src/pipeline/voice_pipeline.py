@@ -17,6 +17,7 @@ from typing import Optional
 import numpy as np
 
 from src.pipeline.audio_loop import AudioLoop
+from src.pipeline.command_event import CommandEvent
 from src.pipeline.command_processor import CommandProcessor
 from src.pipeline.request_router import RequestRouter
 from src.pipeline.response_handler import ResponseHandler
@@ -125,20 +126,20 @@ class VoicePipeline:
 
         logger.info("Pipeline stopped")
 
-    async def process_command(self, audio: np.ndarray) -> dict:
+    async def process_command(self, audio_or_event) -> dict:
         """
         Process a complete audio command.
 
         Delegates to RequestRouter if configured, otherwise returns an error.
 
         Args:
-            audio: Raw audio data as numpy array.
+            audio_or_event: CommandEvent with room metadata, or raw np.ndarray.
 
         Returns:
             Dict with text, intent, action, response, success, latency_ms, user.
         """
         if self.request_router:
-            return await self.request_router.process_command(audio)
+            return await self.request_router.process_command(audio_or_event)
         return {"text": "", "success": False, "error": "No request router configured"}
 
     async def test_from_text(self, text: str) -> dict:
