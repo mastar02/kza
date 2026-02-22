@@ -457,3 +457,130 @@ class TestScheduler:
         trainer.start_scheduler()
         trainer.start_scheduler()
         trainer.stop_scheduler()
+
+
+# =========================================================================
+# Tests de integración con HabitDatasetGenerator
+# =========================================================================
+
+class TestHabitIntegration:
+    """Tests para la integración de HabitDatasetGenerator en NightlyTrainer"""
+
+    def _make_habit_example(self, instruction="Prende la luz", confidence=0.85):
+        """Helper para crear HabitExample mock"""
+        from src.training.habit_dataset_generator import HabitExample
+        return HabitExample(
+            instruction=instruction,
+            input="Usuario: Mastar",
+            output="Luz encendida",
+            category="preference",
+            source="pattern",
+            confidence=confidence,
+            metadata={"user_id": "mastar"},
+        )
+
+    def test_collect_habit_data(self, config):
+        """Verificar que _collect_habit_data convierte HabitExamples a dicts Alpaca"""
+        mock_generator = MagicMock()
+        mock_generator.generate_dataset.return_value = [
+            self._make_habit_example("Prende la luz", 0.9),
+            self._make_habit_example("Apagá el aire", 0.7),
+        ]
+
+        trainer = NightlyTrainer(config=config, habit_generator=mock_generator)
+        examples, stats = trainer._collect_habit_data()
+
+        assert len(examples) == 2
+        assert examples[0]["instruction"] == "Prende la luz"
+        assert examples[0]["metadata"]["source"] == "habit"
+        assert examples[0]["metadata"]["confidence"] == 0.9
+        assert stats["total_habits"] == 2
+        mock_generator.generate_dataset.assert_called_once_with(
+            days=30, include_synthetic=True
+        )
+
+    def test_collect_habit_data_none_generator(self, trainer):
+        """Sin habit_generator retorna vacío sin error"""
+        assert trainer.habit_generator is None
+        examples, stats = trainer._collect_habit_data()
+        assert examples == []
+        assert stats == {}
+
+    def test_collect_habit_data_error(self, config):
+        """Exception en habit_generator no bloquea el training"""
+        mock_generator = MagicMock()
+        mock_generator.generate_dataset.side_effect = RuntimeError("DB corrupted")
+
+        trainer = NightlyTrainer(config=config, habit_generator=mock_generator)
+        examples, stats = trainer._collect_habit_data()
+
+        assert examples == []
+        assert stats == {}
+
+    @pytest.mark.asyncio
+    async def test_run_training_merges_habits(self, config):
+        """run_training combina conversaciones + hábitos en el dataset"""
+        # Crear conversaciones
+        turns = [
+            {
+                "timestamp": time.time(),
+                "user_input": f"Comando {i}",
+                "assistant_response": f"Respuesta {i}",
+                "quality": "good",
+            }
+            for i in range(5)
+        ]
+        _create_conversation_file(config.conversations_dir, turns)
+
+        # Crear habit generator mock
+        mock_generator = MagicMock()
+        mock_generator.generate_dataset.return_value = [
+            self._make_habit_example(f"Hábito {i}", 0.8)
+            for i in range(5)
+        ]
+
+        trainer = NightlyTrainer(config=config, habit_generator=mock_generator)
+
+        with patch.object(trainer, '_run_training_script', new_callable=AsyncMock) as mock_train:
+            mock_train.return_value = str(Path(config.output_dir) / "test_adapter")
+            session = await trainer.run_training()
+
+        assert session.status == TrainingStatus.COMPLETED
+        assert session.samples_collected == 10  # 5 conv + 5 habit
+        assert session.training_stats["conversation_examples"] == 5
+        assert session.training_stats["habit_examples"] == 5
+
+    @pytest.mark.asyncio
+    async def test_habits_push_over_minimum(self, config):
+        """Hábitos + conversaciones alcanzan min_samples_to_train"""
+        config.min_samples_to_train = 8
+
+        # Solo 3 conversaciones (insuficiente por sí solas)
+        turns = [
+            {
+                "timestamp": time.time(),
+                "user_input": f"Cmd {i}",
+                "assistant_response": f"Resp {i}",
+                "quality": "good",
+            }
+            for i in range(3)
+        ]
+        _create_conversation_file(config.conversations_dir, turns)
+
+        # 6 hábitos que alcanzan el mínimo combinado
+        mock_generator = MagicMock()
+        mock_generator.generate_dataset.return_value = [
+            self._make_habit_example(f"Hab {i}", 0.85)
+            for i in range(6)
+        ]
+
+        trainer = NightlyTrainer(config=config, habit_generator=mock_generator)
+
+        with patch.object(trainer, '_run_training_script', new_callable=AsyncMock) as mock_train:
+            mock_train.return_value = str(Path(config.output_dir) / "adapter")
+            session = await trainer.run_training()
+
+        # Debería haber entrenado (3 + 6 = 9 >= 8)
+        assert session.status == TrainingStatus.COMPLETED
+        assert session.samples_collected == 9
+        assert mock_train.called

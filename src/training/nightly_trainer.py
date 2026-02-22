@@ -90,6 +90,7 @@ class TrainingSession:
     adapter_path: Optional[str] = None
     completed_at: Optional[float] = None
     gpu_utilization: dict = field(default_factory=dict)
+    training_stats: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -181,13 +182,15 @@ class NightlyTrainer:
         alert_callback: Callable[[str, str], None] = None,
         context_manager = None,
         unload_callback: Callable[[], None] = None,  # Para descargar modelos de día
-        reload_callback: Callable[[], None] = None   # Para recargar después
+        reload_callback: Callable[[], None] = None,  # Para recargar después
+        habit_generator = None  # HabitDatasetGenerator para datos enriquecidos
     ):
         self.config = config or NightlyConfig()
         self.alert_callback = alert_callback
         self.context_manager = context_manager
         self.unload_callback = unload_callback
         self.reload_callback = reload_callback
+        self.habit_generator = habit_generator
 
         # Estado
         self.current_session: Optional[TrainingSession] = None
@@ -458,6 +461,58 @@ class NightlyTrainer:
 
         return examples, stats
 
+    def _collect_habit_data(self) -> tuple[list[dict], dict]:
+        """
+        Recopilar datos de hábitos del HabitDatasetGenerator.
+
+        Convierte HabitExample dataclass a formato Alpaca dict compatible
+        con collect_daily_data(). Taguea con source=habit para merge.
+
+        Returns:
+            Tuple de (lista de ejemplos, estadísticas)
+        """
+        if self.habit_generator is None:
+            return [], {}
+
+        try:
+            habit_examples = self.habit_generator.generate_dataset(
+                days=30, include_synthetic=True
+            )
+        except Exception as e:
+            logger.warning(f"Error generating habit dataset: {e}")
+            return [], {}
+
+        examples = []
+        stats = {
+            "total_habits": len(habit_examples),
+            "by_category": {},
+            "by_source": {},
+            "avg_confidence": 0.0,
+        }
+
+        confidence_sum = 0.0
+        for habit in habit_examples:
+            examples.append({
+                "instruction": habit.instruction,
+                "input": habit.input,
+                "output": habit.output,
+                "metadata": {
+                    "source": "habit",
+                    "category": habit.category,
+                    "confidence": habit.confidence,
+                    **habit.metadata,
+                }
+            })
+            confidence_sum += habit.confidence
+            stats["by_category"][habit.category] = stats["by_category"].get(habit.category, 0) + 1
+            stats["by_source"][habit.source] = stats["by_source"].get(habit.source, 0) + 1
+
+        if examples:
+            stats["avg_confidence"] = confidence_sum / len(examples)
+
+        logger.info(f"Habit data collected: {len(examples)} examples")
+        return examples, stats
+
     def prepare_dataset(self, examples: list[dict]) -> str:
         """
         Preparar dataset en formato para entrenamiento.
@@ -511,11 +566,35 @@ class NightlyTrainer:
             logger.info("Recolectando datos del día...")
 
             examples, stats = self.collect_daily_data()
-            self.current_session.samples_collected = len(examples)
 
-            logger.info(f"Recolectados {len(examples)} ejemplos")
+            # Recopilar datos de hábitos
+            habit_examples, habit_stats = self._collect_habit_data()
+
+            logger.info(f"Recolectados {len(examples)} conversaciones + {len(habit_examples)} hábitos")
             logger.info(f"  Usuarios: {len(stats['users_included'])}")
             logger.info(f"  Buenos: {stats['good_turns']}, Corregidos: {stats['corrected_turns']}")
+
+            # Merge con prioridad: marked > habit (por confidence desc) > unmarked
+            marked = [e for e in examples if e["metadata"].get("quality") in ("good", "corrected")]
+            unmarked = [e for e in examples if e["metadata"].get("quality") not in ("good", "corrected")]
+            habit_sorted = sorted(habit_examples, key=lambda e: e["metadata"].get("confidence", 0), reverse=True)
+
+            cap = self.config.max_samples_per_session
+            if len(marked) >= cap:
+                examples = marked[:cap]
+            elif len(marked) + len(habit_sorted) >= cap:
+                examples = marked + habit_sorted[:cap - len(marked)]
+            else:
+                remaining = cap - len(marked) - len(habit_sorted)
+                examples = marked + habit_sorted + unmarked[:remaining]
+
+            self.current_session.samples_collected = len(examples)
+            self.current_session.training_stats = {
+                "conversation_examples": len(marked) + len(unmarked),
+                "habit_examples": len(habit_sorted),
+                "merged_total": len(examples),
+                "habit_stats": habit_stats,
+            }
 
             # Verificar mínimo
             if len(examples) < self.config.min_samples_to_train:
@@ -973,7 +1052,25 @@ if __name__ == "__main__":
 - **Ejemplos recolectados**: {session.samples_collected}
 - **Épocas completadas**: {session.epochs_completed}/{session.total_epochs}
 
-## Métricas
+"""
+
+        if session.training_stats:
+            ts = session.training_stats
+            report += f"""### Desglose de datos
+
+- **Conversaciones**: {ts.get('conversation_examples', 0)}
+- **Hábitos**: {ts.get('habit_examples', 0)}
+- **Total mergeado**: {ts.get('merged_total', 0)}
+
+"""
+            habit_stats = ts.get("habit_stats", {})
+            if habit_stats.get("by_category"):
+                report += "### Hábitos por categoría\n\n"
+                for cat, count in habit_stats["by_category"].items():
+                    report += f"- **{cat}**: {count}\n"
+                report += "\n"
+
+        report += """## Métricas
 
 """
 

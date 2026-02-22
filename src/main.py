@@ -45,6 +45,9 @@ from src.intercom.intercom_system import IntercomSystem
 from src.notifications.smart_notifications import SmartNotificationManager
 from src.alerts.alert_manager import AlertManager
 from src.alerts.alert_scheduler import AlertScheduler
+from src.training.conversation_collector import ConversationCollector
+from src.training.habit_dataset_generator import HabitDatasetGenerator
+from src.training.nightly_trainer import NightlyTrainer, NightlyConfig
 
 # Configurar logging
 logging.basicConfig(
@@ -404,6 +407,64 @@ async def main():
         alert_manager=alert_manager,
         alert_scheduler=alert_scheduler,
     )
+
+    # ----------------------------------------------------------------
+    # Nightly Training (habit learning + QLoRA)
+    # ----------------------------------------------------------------
+    training_config = config.get("training", {})
+    nightly_config_data = training_config.get("nightly", {})
+    nightly_trainer = None
+
+    if nightly_config_data.get("enabled", False):
+        conversation_collector = ConversationCollector(
+            data_dir=training_config.get("conversations_dir", "./data/conversations"),
+            auto_save_interval=training_config.get("auto_save_interval", 10),
+            max_conversations_in_memory=training_config.get("max_conversations_in_memory", 100),
+        )
+
+        habits_config = training_config.get("habits", {})
+        habit_generator = HabitDatasetGenerator(
+            data_dir=habits_config.get("data_dir", "./data/habit_training"),
+            event_logger=event_logger,
+            conversation_collector=conversation_collector,
+            pattern_learner=None,
+            min_confidence=habits_config.get("min_confidence", 0.6),
+            synthetic_multiplier=habits_config.get("synthetic_multiplier", 3),
+        )
+
+        schedule = nightly_config_data.get("schedule", {})
+        lora_cfg = nightly_config_data.get("lora_config", {})
+        nightly_cfg = NightlyConfig(
+            training_hour=schedule.get("hour", 3),
+            training_minute=schedule.get("minute", 0),
+            min_samples_to_train=nightly_config_data.get("min_samples_to_train", 20),
+            include_unmarked=nightly_config_data.get("include_unmarked", False),
+            max_samples_per_session=nightly_config_data.get("max_samples_per_session", 1000),
+            base_model=nightly_config_data.get("base_model", "meta-llama/Llama-3.2-3B-Instruct"),
+            use_qlora=nightly_config_data.get("qlora", {}).get("enabled", True),
+            qlora_bits=nightly_config_data.get("qlora", {}).get("bits", 4),
+            lora_r=lora_cfg.get("r", 16),
+            lora_alpha=lora_cfg.get("alpha", 32),
+            lora_dropout=lora_cfg.get("dropout", 0.05),
+            epochs=nightly_config_data.get("training_params", {}).get("epochs", 3),
+            batch_size=nightly_config_data.get("training_params", {}).get("batch_size", 2),
+            output_dir=nightly_config_data.get("output_dir", "./models/lora_adapters/nightly"),
+            data_dir=nightly_config_data.get("data_dir", "./data/nightly_training"),
+            conversations_dir=training_config.get("conversations_dir", "./data/conversations"),
+        )
+
+        def _nightly_alert_callback(level: str, message: str):
+            """Sync callback for nightly trainer alerts."""
+            log_fn = getattr(logger, level.lower(), logger.info)
+            log_fn(f"[NightlyTrainer] {message}")
+
+        nightly_trainer = NightlyTrainer(
+            config=nightly_cfg,
+            alert_callback=_nightly_alert_callback,
+            habit_generator=habit_generator,
+        )
+        nightly_trainer.start_scheduler()
+        logger.info("Nightly trainer scheduled")
 
     # Assemble the slim VoicePipeline
     pipeline = VoicePipeline(
