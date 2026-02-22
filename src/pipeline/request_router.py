@@ -72,6 +72,7 @@ class RequestRouter:
         command_processor,
         response_handler,
         audio_manager,
+        room_context_manager=None,
         orchestrator=None,
         orchestrator_enabled: bool = True,
         chroma_sync=None,
@@ -101,6 +102,7 @@ class RequestRouter:
             command_processor: CommandProcessor for STT + speaker ID + emotion.
             response_handler: ResponseHandler for TTS output.
             audio_manager: AudioManager for zone detection.
+            room_context_manager: RoomContextManager for room resolution (optional).
             orchestrator: MultiUserOrchestrator (optional).
             orchestrator_enabled: Whether to use orchestrated path.
             chroma_sync: ChromaSync for vector search.
@@ -127,6 +129,7 @@ class RequestRouter:
         self.command_processor = command_processor
         self.response_handler = response_handler
         self.audio_manager = audio_manager
+        self.room_context_manager = room_context_manager
 
         # Orchestrator
         self._orchestrator = orchestrator
@@ -161,26 +164,35 @@ class RequestRouter:
         self._last_response = None
         self._command_count = 0
 
-    async def process_command(self, audio: np.ndarray) -> dict:
+    async def process_command(self, audio_or_event) -> dict:
         """
         Process a complete audio command.
 
         Routes through orchestrated (multi-user) or legacy (single-user) path
-        depending on configuration.
+        depending on configuration. Accepts CommandEvent or raw np.ndarray.
 
         Args:
-            audio: Raw audio data as numpy array.
+            audio_or_event: CommandEvent with room metadata, or raw np.ndarray.
 
         Returns:
             Dict with keys: text, intent, action, response, success,
-            latency_ms, user, timings, and optionally path.
+            latency_ms, user, timings, and optionally path, room.
         """
-        if self.orchestrator_enabled and self._orchestrator:
-            return await self._process_command_orchestrated(audio)
-        else:
-            return await self._process_command_legacy(audio)
+        from src.pipeline.command_event import CommandEvent
 
-    async def _process_command_orchestrated(self, audio: np.ndarray) -> dict:
+        if isinstance(audio_or_event, CommandEvent):
+            audio = audio_or_event.audio
+            room_id = audio_or_event.room_id
+        else:
+            audio = audio_or_event
+            room_id = None
+
+        if self.orchestrator_enabled and self._orchestrator:
+            return await self._process_command_orchestrated(audio, room_id=room_id)
+        else:
+            return await self._process_command_legacy(audio, room_id=room_id)
+
+    async def _process_command_orchestrated(self, audio: np.ndarray, room_id: str = None) -> dict:
         """Process command with multi-user orchestrator."""
         result = {
             "text": "",
@@ -206,16 +218,28 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
-        # 2. Detect source zone
-        zone_id = self.audio_manager.detect_source_zone(audio)
-        if zone_id:
-            self.response_handler.set_active_zone(zone_id)
-
-        # 3. Get user info
+        # 2. Get user info
         user = cmd_result.get("user")
         emotion = cmd_result.get("emotion")
         user_id = user.user_id if user else None
         user_name = user.name if user else None
+
+        # 3. Resolve room context
+        room_context = None
+        if self.room_context_manager and room_id:
+            room_context = self.room_context_manager.resolve_room(
+                mic_zone_id=room_id,
+                user_id=user_id,
+            )
+
+        # 4. Detect source zone (room context overrides audio-based detection)
+        if room_context:
+            zone_id = f"zone_{room_context.room_id}"
+            self.response_handler.set_active_zone(zone_id)
+        else:
+            zone_id = self.audio_manager.detect_source_zone(audio)
+            if zone_id:
+                self.response_handler.set_active_zone(zone_id)
 
         if user:
             result["user"] = {
@@ -228,12 +252,13 @@ class RequestRouter:
             f"Zone={zone_id}, Text={text[:50]}, Emotion={emotion.emotion if emotion else 'none'}"
         )
 
-        # 4. Process with orchestrator
+        # 5. Process with orchestrator
         def on_response(dispatch_result):
             if dispatch_result.was_queued and dispatch_result.queue_position:
                 self.response_handler.speak(
                     dispatch_result.response,
-                    zone_id=zone_id
+                    zone_id=zone_id,
+                    room_context=room_context,
                 )
 
         dispatch_result = await self._orchestrator.process(
@@ -244,7 +269,7 @@ class RequestRouter:
             on_response=on_response
         )
 
-        # 5. Build result
+        # 6. Build result
         result["intent"] = dispatch_result.intent
         result["response"] = dispatch_result.response
         result["success"] = dispatch_result.success
@@ -252,16 +277,26 @@ class RequestRouter:
         result["path"] = dispatch_result.path.value if dispatch_result.path else None
         result["timings"].update(dispatch_result.timings)
 
-        # 6. Speak response
+        # 6b. Attach room context to result
+        if room_context:
+            result["room"] = {
+                "id": room_context.room_id,
+                "name": room_context.room_name,
+                "confidence": room_context.confidence,
+                "source": room_context.source.value,
+            }
+
+        # 7. Speak response
         if dispatch_result.path not in [PathType.SLOW_LLM]:
             emotion_adj = emotion.response_adjustment if emotion else None
             self.response_handler.speak(
                 result["response"],
                 zone_id=zone_id,
-                emotion_adjustment=emotion_adj
+                emotion_adjustment=emotion_adj,
+                room_context=room_context,
             )
 
-        # 7. Logging
+        # 8. Logging
         result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
         self._log_latency(result)
 
@@ -274,7 +309,7 @@ class RequestRouter:
 
         return result
 
-    async def _process_command_legacy(self, audio: np.ndarray) -> dict:
+    async def _process_command_legacy(self, audio: np.ndarray, room_id: str = None) -> dict:
         """Legacy processing (single-user) for backwards compatibility."""
         result = {
             "text": "",
@@ -300,11 +335,27 @@ class RequestRouter:
 
         user = cmd_result.get("user")
         emotion = cmd_result.get("emotion")
+        user_id = user.user_id if user else None
 
         if user:
             result["user"] = {
                 "name": user.name,
                 "permission_level": user.permission_level.name
+            }
+
+        # Resolve room context
+        room_context = None
+        if self.room_context_manager and room_id:
+            room_context = self.room_context_manager.resolve_room(
+                mic_zone_id=room_id,
+                user_id=user_id,
+            )
+        if room_context:
+            result["room"] = {
+                "id": room_context.room_id,
+                "name": room_context.room_name,
+                "confidence": room_context.confidence,
+                "source": room_context.source.value,
             }
 
         logger.info(f"[STT {cmd_result['timings'].get('stt', 0):.0f}ms] {text}")
@@ -490,7 +541,11 @@ class RequestRouter:
 
             # Speak response with emotion adjustments
             emotion_adj = emotion.response_adjustment if emotion else None
-            self.response_handler.speak(result["response"], emotion_adjustment=emotion_adj)
+            self.response_handler.speak(
+                result["response"],
+                emotion_adjustment=emotion_adj,
+                room_context=room_context,
+            )
 
             # Record in memory
             if self.memory:
@@ -544,7 +599,11 @@ class RequestRouter:
             result["response"] = router_response
             result["success"] = True
             emotion_adj = emotion.response_adjustment if emotion else None
-            self.response_handler.speak(result["response"], emotion_adjustment=emotion_adj)
+            self.response_handler.speak(
+                result["response"],
+                emotion_adjustment=emotion_adj,
+                room_context=room_context,
+            )
         else:
             prompt = await self._build_prompt(text)
             emotion_adj = emotion.response_adjustment if emotion else None
