@@ -813,6 +813,8 @@ class MultiUserOrchestrator:
         speaker_identifier=None,
         user_manager=None,
         music_dispatcher=None,
+        list_manager=None,
+        reminder_manager=None,
         max_context_history: int = 10,
         context_timeout: float = 300,
         auto_cancel_previous: bool = True
@@ -849,7 +851,9 @@ class MultiUserOrchestrator:
             tts=tts,
             context_manager=self._context_manager,
             priority_queue=self._queue,
-            music_dispatcher=music_dispatcher
+            music_dispatcher=music_dispatcher,
+            list_manager=list_manager,
+            reminder_manager=reminder_manager,
         )
 
         self._running = False

@@ -52,6 +52,11 @@ from src.rooms.room_context import RoomContextManager, RoomConfig
 from src.presence.presence_detector import PresenceDetector
 from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
 from src.wakeword.detector import WakeWordDetector
+from src.lists.list_store import ListStore
+from src.lists.list_manager import ListManager
+from src.reminders.reminder_store import ReminderStore
+from src.reminders.reminder_manager import ReminderManager
+from src.reminders.reminder_scheduler import ReminderScheduler
 
 # Configurar logging
 logging.basicConfig(
@@ -242,6 +247,19 @@ async def main():
         )
         logger.info("Smart automations habilitado")
 
+    # Lists & Reminders
+    lists_config = config.get("lists", {})
+    reminders_config = config.get("reminders", {})
+    list_store = ListStore(lists_config.get("db_path", "./data/lists.db"))
+    await list_store.initialize()
+    list_manager = ListManager(store=list_store, ha_client=ha_client, config=lists_config)
+
+    reminder_store = ReminderStore(lists_config.get("db_path", "./data/lists.db"))
+    await reminder_store.initialize()
+    reminder_manager = ReminderManager(store=reminder_store, config=reminders_config)
+    reminder_scheduler = None  # Created after presence_detector is ready
+    logger.info("Lists & reminders initialized")
+
     # Multi-room / multi-zone defaults (always defined for DI)
     room_context_manager = None
     presence_detector = None
@@ -308,6 +326,14 @@ async def main():
                 just_arrived_duration=presence_config.get("just_arrived_duration", 300),
             )
             logger.info("Presence detector created")
+
+        # Reminder scheduler (needs presence_detector)
+        if reminder_store:
+            reminder_scheduler = ReminderScheduler(
+                store=reminder_store, tts=tts,
+                presence_detector=presence_detector,
+                ha_client=ha_client, config=reminders_config,
+            )
 
         # Room context manager
         room_context_manager = RoomContextManager(
@@ -490,6 +516,8 @@ async def main():
             tts=tts,
             speaker_identifier=speaker_identifier,
             user_manager=user_manager,
+            list_manager=list_manager,
+            reminder_manager=reminder_manager,
         )
 
     # Request router (command routing: orchestrated + legacy paths)
@@ -636,6 +664,10 @@ async def main():
     if presence_detector:
         await presence_detector.start()
         logger.info("Presence detector started")
+
+    if reminder_scheduler:
+        asyncio.create_task(reminder_scheduler.start())
+        logger.info("Reminder scheduler started")
 
     # Ejecutar
     try:
