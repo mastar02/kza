@@ -60,6 +60,8 @@ class PathType(StrEnum):
     SYNC = "sync"                          # Comandos de sincronizacion
     ENROLLMENT = "enrollment"              # Registro de usuarios
     FEEDBACK = "feedback"                  # Feedback sobre respuestas
+    FAST_LIST = "fast_list"                # List CRUD
+    FAST_REMINDER = "fast_reminder"        # Reminder CRUD
 
 
 @dataclass
@@ -132,6 +134,23 @@ class RequestDispatcher:
         "cancela", "olvida", "para", "detente", "cancel", "stop"
     ]
 
+    LIST_KEYWORDS = [
+        "lista de", "agrega", "agregale", "quita", "quitale",
+        "qué hay en la lista", "vacía la lista", "vaciala",
+        "crea una lista", "borra la lista", "lista compartida",
+    ]
+
+    REMINDER_KEYWORDS = [
+        "recuérdame", "recuerdame", "recordatorio",
+        "avísame", "avisame", "qué tengo pendiente",
+        "que tengo pendiente", "qué recordatorios",
+        "que recordatorios", "todos los lunes",
+        "todos los días", "todos los dias",
+        "cada día", "cada dia", "cada lunes",
+        "cada martes", "de lunes a viernes",
+        "cancela el recordatorio",
+    ]
+
     # Música - Fast path (búsqueda directa)
     MUSIC_DIRECT_KEYWORDS = [
         "pon música de", "música de", "canciones de", "reproduce",
@@ -157,6 +176,8 @@ class RequestDispatcher:
         priority_queue: PriorityRequestQueue = None,
         buffered_streamer=None,
         music_dispatcher=None,
+        list_manager=None,
+        reminder_manager=None,
         vector_threshold: float = 0.65,
         use_router_for_simple: bool = True
     ):
@@ -187,6 +208,8 @@ class RequestDispatcher:
         self.music = music_dispatcher
         self.vector_threshold = vector_threshold
         self.use_router = use_router_for_simple
+        self.list_manager = list_manager
+        self.reminder_manager = reminder_manager
 
         # Estadisticas
         self._stats = {
@@ -273,6 +296,14 @@ class RequestDispatcher:
             )
             self._stats["fast_path"] += 1
 
+        elif path == PathType.FAST_LIST:
+            result = await self._fast_list_path(text, user_id, zone_id)
+            self._stats["fast_path"] += 1
+
+        elif path == PathType.FAST_REMINDER:
+            result = await self._fast_reminder_path(text, user_id, zone_id)
+            self._stats["fast_path"] += 1
+
         else:
             # Slow path - encolar para LLM
             result = await self._slow_path(
@@ -313,6 +344,16 @@ class RequestDispatcher:
             for keyword in self.MUSIC_DIRECT_KEYWORDS:
                 if keyword in text_lower:
                     return PathType.FAST_MUSIC, Priority.HIGH
+
+        # Detect lists
+        for keyword in self.LIST_KEYWORDS:
+            if keyword in text_lower:
+                return PathType.FAST_LIST, Priority.HIGH
+
+        # Detect reminders
+        for keyword in self.REMINDER_KEYWORDS:
+            if keyword in text_lower:
+                return PathType.FAST_REMINDER, Priority.HIGH
 
         # Detectar domotica por keywords
         for keyword in self.DOMOTICS_KEYWORDS:
@@ -666,6 +707,20 @@ class RequestDispatcher:
             intent=f"music_{result.intent.value}",
             action={"interpreted_mood": result.details.get("interpreted_as")},
             timings=timings
+        )
+
+    async def _fast_list_path(self, text: str, user_id: str, zone_id: str = None) -> DispatchResult:
+        """Handle list commands via ListManager."""
+        return DispatchResult(
+            path=PathType.FAST_LIST, priority=Priority.HIGH,
+            success=False, response="Listas no configuradas",
+        )
+
+    async def _fast_reminder_path(self, text: str, user_id: str, zone_id: str = None) -> DispatchResult:
+        """Handle reminder commands via ReminderManager."""
+        return DispatchResult(
+            path=PathType.FAST_REMINDER, priority=Priority.HIGH,
+            success=False, response="Recordatorios no configurados",
         )
 
     async def dispatch_batch(
