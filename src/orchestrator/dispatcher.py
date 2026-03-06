@@ -711,17 +711,149 @@ class RequestDispatcher:
 
     async def _fast_list_path(self, text: str, user_id: str, zone_id: str = None) -> DispatchResult:
         """Handle list commands via ListManager."""
-        return DispatchResult(
-            path=PathType.FAST_LIST, priority=Priority.HIGH,
-            success=False, response="Listas no configuradas",
-        )
+        if not self.list_manager:
+            return DispatchResult(
+                path=PathType.FAST_LIST, priority=Priority.HIGH,
+                success=False, response="Listas no configuradas",
+            )
+
+        text_lower = text.lower()
+        try:
+            if any(w in text_lower for w in ["qué hay", "que hay", "dime la lista", "lee la lista"]):
+                list_name = self._extract_list_name(text_lower)
+                items = await self.list_manager.get_items(user_id, list_name)
+                if not items:
+                    response = "La lista está vacía"
+                else:
+                    item_texts = ", ".join(i.text for i in items)
+                    response = f"En la lista tienes: {item_texts}"
+            elif any(w in text_lower for w in ["vacía", "vacia", "limpia"]):
+                list_name = self._extract_list_name(text_lower)
+                await self.list_manager.clear_list(user_id, list_name)
+                response = "Listo, vacié la lista"
+            elif any(w in text_lower for w in ["borra la lista", "elimina la lista"]):
+                list_name = self._extract_list_name(text_lower)
+                if list_name and await self.list_manager.delete_list(user_id, list_name):
+                    response = f"Borré la lista {list_name}"
+                else:
+                    response = "No encontré esa lista"
+            elif any(w in text_lower for w in ["crea una lista", "nueva lista"]):
+                shared = "compartida" in text_lower
+                list_name = self._extract_list_name(text_lower)
+                if list_name:
+                    await self.list_manager.create_list(user_id, list_name, shared=shared)
+                    response = f"Creé la lista {list_name}"
+                else:
+                    response = "No entendí el nombre de la lista"
+            elif any(w in text_lower for w in ["quita", "quitale", "elimina", "tacha"]):
+                item_text = self._extract_item_text(text_lower, removing=True)
+                list_name = self._extract_list_name(text_lower)
+                if item_text and await self.list_manager.remove_item(user_id, item_text, list_name):
+                    response = f"Quité {item_text}"
+                else:
+                    response = "No encontré ese artículo en la lista"
+            elif any(w in text_lower for w in ["agrega", "agregale", "añade", "pon"]):
+                item_text = self._extract_item_text(text_lower, removing=False)
+                list_name = self._extract_list_name(text_lower)
+                if item_text:
+                    await self.list_manager.add_item(user_id, item_text, list_name)
+                    response = f"Agregué {item_text}"
+                else:
+                    response = "No entendí qué agregar"
+            else:
+                # Fallback: list all lists
+                lists = await self.list_manager.get_all_lists(user_id)
+                if lists:
+                    names = ", ".join(lst.name for lst in lists)
+                    response = f"Tienes estas listas: {names}"
+                else:
+                    response = "No tienes listas creadas"
+
+            return DispatchResult(
+                path=PathType.FAST_LIST, priority=Priority.HIGH,
+                success=True, response=response,
+            )
+        except Exception as e:
+            logger.error("List command error: %s", e)
+            return DispatchResult(
+                path=PathType.FAST_LIST, priority=Priority.HIGH,
+                success=False, response="Hubo un error con la lista",
+            )
 
     async def _fast_reminder_path(self, text: str, user_id: str, zone_id: str = None) -> DispatchResult:
         """Handle reminder commands via ReminderManager."""
-        return DispatchResult(
-            path=PathType.FAST_REMINDER, priority=Priority.HIGH,
-            success=False, response="Recordatorios no configurados",
-        )
+        if not self.reminder_manager:
+            return DispatchResult(
+                path=PathType.FAST_REMINDER, priority=Priority.HIGH,
+                success=False, response="Recordatorios no configurados",
+            )
+
+        text_lower = text.lower()
+        try:
+            if any(w in text_lower for w in ["qué recordatorios", "que recordatorios", "mis recordatorios"]):
+                active = await self.reminder_manager.get_active(user_id)
+                if not active:
+                    response = "No tienes recordatorios activos"
+                else:
+                    lines = [self.reminder_manager.format_for_voice(r) for r in active[:5]]
+                    response = "Tus recordatorios: " + ". ".join(lines)
+            elif any(w in text_lower for w in ["qué tengo pendiente", "que tengo pendiente"]):
+                today = await self.reminder_manager.get_today(user_id)
+                if not today:
+                    response = "No tienes nada pendiente hoy"
+                else:
+                    lines = [self.reminder_manager.format_for_voice(r) for r in today]
+                    response = "Pendiente hoy: " + ". ".join(lines)
+            elif "cancela" in text_lower and "recordatorio" in text_lower:
+                import re
+                match = re.search(r'recordatorio\s+(?:de\s+)?(.+)', text_lower)
+                search_text = match.group(1).strip() if match else text_lower
+                if await self.reminder_manager.cancel_by_text(user_id, search_text):
+                    response = "Recordatorio cancelado"
+                else:
+                    response = "No encontré ese recordatorio"
+            else:
+                response = "Entendido, pero necesito el Router para interpretar la hora. Usa la API por ahora."
+
+            return DispatchResult(
+                path=PathType.FAST_REMINDER, priority=Priority.HIGH,
+                success=True, response=response,
+            )
+        except Exception as e:
+            logger.error("Reminder command error: %s", e)
+            return DispatchResult(
+                path=PathType.FAST_REMINDER, priority=Priority.HIGH,
+                success=False, response="Hubo un error con el recordatorio",
+            )
+
+    def _extract_list_name(self, text: str) -> str | None:
+        """Extract list name from text like 'la lista de compras' or 'la lista del hogar'."""
+        import re
+        # "la lista de X" / "la lista del X" / "a la lista X"
+        match = re.search(r'(?:la lista (?:de(?:l)?|)\s+)(\w[\w\s]*?)(?:\s*$|[,.])', text)
+        if match:
+            return match.group(1).strip()
+        # "lista compartida X"
+        match = re.search(r'lista compartida\s+(?:de(?:l)?\s+)?(\w[\w\s]*?)(?:\s*$|[,.])', text)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _extract_item_text(self, text: str, removing: bool = False) -> str | None:
+        """Extract item text from commands like 'agrega leche a la lista'."""
+        import re
+        if removing:
+            # "quita X de la lista"
+            match = re.search(r'(?:quita|quitale|elimina|tacha)\s+(?:el |la |los |las )?(.+?)(?:\s+de la lista|\s*$)', text)
+        else:
+            # "agrega X a la lista" or just "agrega X"
+            match = re.search(r'(?:agrega|agregale|añade|pon)\s+(.+?)(?:\s+a la lista|\s+en la lista|\s*$)', text)
+        if match:
+            item = match.group(1).strip()
+            # Remove trailing list name reference
+            item = re.sub(r'\s+(?:de|a|en)\s+la\s+lista.*$', '', item)
+            return item if item else None
+        return None
 
     async def dispatch_batch(
         self,

@@ -288,6 +288,7 @@ lists:
   ha_entity_prefix: "todo.kza"
 
 reminders:
+  db_path: "./data/reminders.db"
   max_retries: 3
   retry_interval_seconds: 300
   missed_reminder_on_arrival: true

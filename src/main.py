@@ -254,7 +254,7 @@ async def main():
     await list_store.initialize()
     list_manager = ListManager(store=list_store, ha_client=ha_client, config=lists_config)
 
-    reminder_store = ReminderStore(lists_config.get("db_path", "./data/lists.db"))
+    reminder_store = ReminderStore(reminders_config.get("db_path", "./data/reminders.db"))
     await reminder_store.initialize()
     reminder_manager = ReminderManager(store=reminder_store, config=reminders_config)
     reminder_scheduler = None  # Created after presence_detector is ready

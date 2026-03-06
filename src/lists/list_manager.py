@@ -3,6 +3,7 @@ import logging
 from difflib import SequenceMatcher
 
 from src.lists.list_store import ListStore, UserList, ListItem
+from src.lists.ha_sync import HASyncManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,11 @@ class ListManager:
         self._config = config or {}
         self._default_list_name: str = self._config.get(
             "default_list_name", "compras"
+        )
+        self._ha_sync: HASyncManager | None = (
+            HASyncManager(ha_client, self._config.get("ha_entity_prefix", "todo.kza"))
+            if ha_client and self._config.get("ha_sync_enabled", False)
+            else None
         )
 
     async def create_list(
@@ -93,6 +99,8 @@ class ListManager:
         logger.info(
             "Added item '%s' to list '%s' (user=%s)", item_text, lst.name, user_id
         )
+        if self._ha_sync:
+            await self._ha_sync.sync_add_item(lst.name, item_text)
         return item
 
     async def remove_item(
@@ -121,13 +129,16 @@ class ListManager:
                 "No fuzzy match for '%s' in list '%s'", item_text, lst.name
             )
             return False
+        matched_text = match.text
         await self._store.remove_item(match.id)
         logger.info(
             "Removed item '%s' (matched '%s') from list '%s'",
-            match.text,
+            matched_text,
             item_text,
             lst.name,
         )
+        if self._ha_sync:
+            await self._ha_sync.sync_remove_item(lst.name, matched_text)
         return True
 
     async def get_items(
