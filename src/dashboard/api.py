@@ -90,6 +90,25 @@ class PresenceUserModel(BaseModel):
     devices: list[dict] = Field(default_factory=list)
 
 
+class ListCreateModel(BaseModel):
+    name: str
+    user_id: str
+    shared: bool = False
+
+
+class ListItemCreateModel(BaseModel):
+    text: str
+    user_id: str | None = None
+
+
+class ReminderCreateModel(BaseModel):
+    user_id: str
+    text: str
+    trigger_at: float
+    recurrence: str | None = None
+    ha_actions: list[dict] | None = None
+
+
 # ==================== Dashboard API ====================
 
 class DashboardAPI:
@@ -104,6 +123,8 @@ class DashboardAPI:
         routine_executor=None,
         presence_detector=None,
         ha_client=None,
+        list_manager=None,
+        reminder_manager=None,
         host: str = "0.0.0.0",
         port: int = 8080
     ):
@@ -111,6 +132,8 @@ class DashboardAPI:
         self.executor = routine_executor
         self.presence = presence_detector
         self.ha = ha_client
+        self.list_manager = list_manager
+        self.reminder_manager = reminder_manager
         self.host = host
         self.port = port
 
@@ -490,6 +513,66 @@ class DashboardAPI:
                     }
                 }
             ]
+
+        # ==================== Lists ====================
+
+        @self.app.get("/api/lists")
+        async def get_lists(user_id: str):
+            if not self.list_manager:
+                raise HTTPException(status_code=503, detail="Lists not configured")
+            lists = await self.list_manager.get_all_lists(user_id)
+            return [{"id": l.id, "name": l.name, "owner_type": l.owner_type, "owner_id": l.owner_id} for l in lists]
+
+        @self.app.post("/api/lists")
+        async def create_list(data: ListCreateModel):
+            if not self.list_manager:
+                raise HTTPException(status_code=503, detail="Lists not configured")
+            lst = await self.list_manager.create_list(data.user_id, data.name, data.shared)
+            return {"id": lst.id, "name": lst.name, "owner_type": lst.owner_type, "owner_id": lst.owner_id}
+
+        @self.app.get("/api/lists/{list_id}/items")
+        async def get_list_items(list_id: str):
+            if not self.list_manager:
+                raise HTTPException(status_code=503, detail="Lists not configured")
+            items = await self.list_manager.get_items_by_list_id(list_id)
+            return [{"id": i.id, "text": i.text, "completed": i.completed} for i in items]
+
+        @self.app.post("/api/lists/{list_id}/items")
+        async def add_list_item(list_id: str, data: ListItemCreateModel):
+            if not self.list_manager:
+                raise HTTPException(status_code=503, detail="Lists not configured")
+            item = await self.list_manager.add_item_to_list_id(list_id, data.text, data.user_id)
+            return {"id": item.id, "text": item.text, "completed": item.completed, "list_id": item.list_id}
+
+        @self.app.delete("/api/lists/{list_id}/items/{item_id}")
+        async def delete_list_item(list_id: str, item_id: str):
+            if not self.list_manager:
+                raise HTTPException(status_code=503, detail="Lists not configured")
+            await self.list_manager.remove_item_by_id(item_id)
+            return {"status": "deleted"}
+
+        # ==================== Reminders ====================
+
+        @self.app.get("/api/reminders")
+        async def get_reminders(user_id: str):
+            if not self.reminder_manager:
+                raise HTTPException(status_code=503, detail="Reminders not configured")
+            reminders = await self.reminder_manager.get_active(user_id)
+            return [{"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence, "state": r.state} for r in reminders]
+
+        @self.app.post("/api/reminders")
+        async def create_reminder(data: ReminderCreateModel):
+            if not self.reminder_manager:
+                raise HTTPException(status_code=503, detail="Reminders not configured")
+            r = await self.reminder_manager.create(data.user_id, data.text, data.trigger_at, data.recurrence, data.ha_actions)
+            return {"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence, "state": r.state}
+
+        @self.app.delete("/api/reminders/{reminder_id}")
+        async def delete_reminder(reminder_id: str):
+            if not self.reminder_manager:
+                raise HTTPException(status_code=503, detail="Reminders not configured")
+            await self.reminder_manager.cancel_by_id(reminder_id)
+            return {"status": "cancelled"}
 
         # ==================== WebSocket para tiempo real ====================
 

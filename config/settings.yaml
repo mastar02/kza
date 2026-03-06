@@ -278,6 +278,23 @@ memory:
   short_term_size: 10  # Últimos N turnos de conversación
   long_term_collection: "user_memories"
 
+# =============================================================================
+# Lists & Reminders
+# =============================================================================
+lists:
+  db_path: "./data/lists.db"
+  default_list_name: "compras"
+  ha_sync_enabled: true
+  ha_entity_prefix: "todo.kza"
+
+reminders:
+  db_path: "./data/reminders.db"
+  max_retries: 3
+  retry_interval_seconds: 300
+  missed_reminder_on_arrival: true
+  default_time: "09:00"
+  tts_prefix: "Oye, recuerda"
+
 # Contexto Persistente por Usuario
 # Guarda historial de conversación por persona detectada
 context_persistence:
