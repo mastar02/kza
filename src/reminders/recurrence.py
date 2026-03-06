@@ -38,7 +38,15 @@ def next_trigger(last_trigger: float, recurrence: str) -> float:
         while nxt.weekday() >= 5:
             nxt += timedelta(days=1)
     elif rec_type == RecurrenceType.WEEKLY:
-        nxt = dt + timedelta(days=7)
+        if param is not None:
+            # param: 1=Monday, 2=Tuesday, ..., 7=Sunday
+            target_weekday = (param - 1) % 7  # Convert to Python weekday (0=Mon)
+            days_ahead = (target_weekday - dt.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7  # Next week
+            nxt = dt + timedelta(days=days_ahead)
+        else:
+            nxt = dt + timedelta(days=7)
     elif rec_type == RecurrenceType.MONTHLY:
         month = dt.month + 1
         year = dt.year

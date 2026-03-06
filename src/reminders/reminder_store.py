@@ -4,10 +4,17 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 import aiosqlite
 
 logger = logging.getLogger(__name__)
+
+
+class ReminderState(StrEnum):
+    ACTIVE = "active"
+    FIRED = "fired"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -22,7 +29,7 @@ class Reminder:
     recurrence: str | None = None
     recurrence_end: float | None = None
     ha_actions: list[dict] | None = None
-    state: str = "active"
+    state: ReminderState = ReminderState.ACTIVE
     last_fired_at: float | None = None
     fire_count: int = 0
 
@@ -116,7 +123,8 @@ class ReminderStore:
         logger.debug("Created reminder %s for user %s", reminder.id, user_id)
         return reminder
 
-    def _row_to_reminder(self, row: aiosqlite.Row) -> Reminder:
+    @staticmethod
+    def _row_to_reminder(row: aiosqlite.Row) -> Reminder:
         """Convert a database row to a Reminder dataclass."""
         ha_actions = json.loads(row["ha_actions"]) if row["ha_actions"] else None
         return Reminder(
@@ -128,7 +136,7 @@ class ReminderStore:
             recurrence=row["recurrence"],
             recurrence_end=row["recurrence_end"],
             ha_actions=ha_actions,
-            state=row["state"],
+            state=ReminderState(row["state"]),
             last_fired_at=row["last_fired_at"],
             fire_count=row["fire_count"],
         )
@@ -171,8 +179,8 @@ class ReminderStore:
         """Mark a reminder as fired, increment fire_count."""
         now = time.time()
         await self._db.execute(
-            "UPDATE reminders SET state = 'fired', last_fired_at = ?, fire_count = fire_count + 1 WHERE id = ?",
-            (now, reminder_id),
+            "UPDATE reminders SET state = ?, last_fired_at = ?, fire_count = fire_count + 1 WHERE id = ?",
+            (ReminderState.FIRED, now, reminder_id),
         )
         await self._db.commit()
         logger.debug("Marked reminder %s as fired", reminder_id)
@@ -180,8 +188,8 @@ class ReminderStore:
     async def cancel(self, reminder_id: str) -> None:
         """Cancel a reminder."""
         await self._db.execute(
-            "UPDATE reminders SET state = 'cancelled' WHERE id = ?",
-            (reminder_id,),
+            "UPDATE reminders SET state = ? WHERE id = ?",
+            (ReminderState.CANCELLED, reminder_id),
         )
         await self._db.commit()
         logger.debug("Cancelled reminder %s", reminder_id)
@@ -189,8 +197,8 @@ class ReminderStore:
     async def update_trigger(self, reminder_id: str, new_trigger: float) -> None:
         """Update trigger_at and reset state to active."""
         await self._db.execute(
-            "UPDATE reminders SET trigger_at = ?, state = 'active' WHERE id = ?",
-            (new_trigger, reminder_id),
+            "UPDATE reminders SET trigger_at = ?, state = ? WHERE id = ?",
+            (new_trigger, ReminderState.ACTIVE, reminder_id),
         )
         await self._db.commit()
         logger.debug("Updated trigger for reminder %s to %s", reminder_id, new_trigger)

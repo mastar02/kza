@@ -534,21 +534,21 @@ class DashboardAPI:
         async def get_list_items(list_id: str):
             if not self.list_manager:
                 raise HTTPException(status_code=503, detail="Lists not configured")
-            items = await self.list_manager._store.get_items(list_id)
+            items = await self.list_manager.get_items_by_list_id(list_id)
             return [{"id": i.id, "text": i.text, "completed": i.completed} for i in items]
 
         @self.app.post("/api/lists/{list_id}/items")
         async def add_list_item(list_id: str, data: ListItemCreateModel):
             if not self.list_manager:
                 raise HTTPException(status_code=503, detail="Lists not configured")
-            item = await self.list_manager._store.add_item(list_id, data.text, data.user_id)
+            item = await self.list_manager.add_item_to_list_id(list_id, data.text, data.user_id)
             return {"id": item.id, "text": item.text, "completed": item.completed, "list_id": item.list_id}
 
         @self.app.delete("/api/lists/{list_id}/items/{item_id}")
         async def delete_list_item(list_id: str, item_id: str):
             if not self.list_manager:
                 raise HTTPException(status_code=503, detail="Lists not configured")
-            await self.list_manager._store.remove_item(item_id)
+            await self.list_manager.remove_item_by_id(item_id)
             return {"status": "deleted"}
 
         # ==================== Reminders ====================
@@ -571,7 +571,7 @@ class DashboardAPI:
         async def delete_reminder(reminder_id: str):
             if not self.reminder_manager:
                 raise HTTPException(status_code=503, detail="Reminders not configured")
-            await self.reminder_manager._store.cancel(reminder_id)
+            await self.reminder_manager.cancel_by_id(reminder_id)
             return {"status": "cancelled"}
 
         # ==================== WebSocket para tiempo real ====================

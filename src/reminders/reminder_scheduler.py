@@ -17,6 +17,9 @@ class ReminderScheduler:
     reschedules recurring reminders.
     """
 
+    # TODO: Implement missed_reminder_on_arrival — subscribe to PresenceDetector
+    # user_entered_zone events and deliver missed reminders on arrival
+
     def __init__(
         self,
         store: ReminderStore,
@@ -68,6 +71,14 @@ class ReminderScheduler:
                 due = await self._store.get_due(time.time())
                 for reminder in due:
                     await self._fire_reminder(reminder)
+
+                # Prevent unbounded growth of retry tracking
+                if len(self._retry_counts) > 100:
+                    active_ids = {r.id for r in due}
+                    self._retry_counts = {
+                        k: v for k, v in self._retry_counts.items()
+                        if k in active_ids
+                    }
 
             except asyncio.CancelledError:
                 break

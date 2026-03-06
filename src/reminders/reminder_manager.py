@@ -1,7 +1,7 @@
 """ReminderManager — CRUD, fuzzy cancellation, and voice formatting."""
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from difflib import SequenceMatcher
 
 from src.reminders.reminder_store import ReminderStore, Reminder
@@ -41,6 +41,11 @@ class ReminderManager:
             datetime.fromtimestamp(trigger_at).strftime("%H:%M"),
         )
         return reminder
+
+    async def cancel_by_id(self, reminder_id: str) -> None:
+        """Cancel a specific reminder by ID."""
+        await self._store.cancel(reminder_id)
+        logger.info("Reminder cancelled by ID: %s", reminder_id)
 
     async def cancel_by_text(self, user_id: str, search_text: str) -> bool:
         """Cancel the best fuzzy-matched active reminder. Returns True if cancelled."""

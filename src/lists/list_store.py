@@ -3,10 +3,16 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 import aiosqlite
 
 logger = logging.getLogger(__name__)
+
+
+class OwnerType(StrEnum):
+    USER = "user"
+    SHARED = "shared"
 
 
 @dataclass
@@ -28,7 +34,7 @@ class UserList:
 
     id: str
     name: str
-    owner_type: str
+    owner_type: OwnerType
     owner_id: str | None
     created_at: float = 0.0
     updated_at: float = 0.0
@@ -88,7 +94,7 @@ class ListStore:
             self._db = None
 
     async def create_list(
-        self, name: str, owner_type: str, owner_id: str | None
+        self, name: str, owner_type: OwnerType | str, owner_id: str | None
     ) -> UserList:
         """Create a new list and return it."""
         now = time.time()
@@ -103,7 +109,7 @@ class ListStore:
         return UserList(
             id=list_id,
             name=name,
-            owner_type=owner_type,
+            owner_type=OwnerType(owner_type),
             owner_id=owner_id,
             created_at=now,
             updated_at=now,
@@ -167,8 +173,8 @@ class ListStore:
         await self._db.execute("DELETE FROM list_items WHERE id = ?", (item_id,))
         await self._db.commit()
 
-    async def complete_item(self, item_id: str) -> ListItem:
-        """Mark an item as completed and return the updated item."""
+    async def complete_item(self, item_id: str) -> ListItem | None:
+        """Mark an item as completed. Returns None if item not found."""
         now = time.time()
         await self._db.execute(
             "UPDATE list_items SET completed = 1, completed_at = ? WHERE id = ?",
@@ -179,6 +185,8 @@ class ListStore:
             "SELECT * FROM list_items WHERE id = ?", (item_id,)
         )
         row = await cursor.fetchone()
+        if not row:
+            return None
         return self._row_to_item(row)
 
     async def clear_list(self, list_id: str) -> None:
@@ -203,7 +211,7 @@ class ListStore:
         return UserList(
             id=row["id"],
             name=row["name"],
-            owner_type=row["owner_type"],
+            owner_type=OwnerType(row["owner_type"]),
             owner_id=row["owner_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],

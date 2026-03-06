@@ -2,7 +2,7 @@
 import logging
 from difflib import SequenceMatcher
 
-from src.lists.list_store import ListStore, UserList, ListItem
+from src.lists.list_store import ListStore, UserList, ListItem, OwnerType
 from src.lists.ha_sync import HASyncManager
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class ListManager:
         Returns:
             The newly created UserList.
         """
-        owner_type = "shared" if shared else "user"
+        owner_type = OwnerType.SHARED if shared else OwnerType.USER
         lst = await self._store.create_list(
             name=list_name, owner_type=owner_type, owner_id=user_id
         )
@@ -177,6 +177,20 @@ class ListManager:
         await self._store.clear_list(lst.id)
         logger.info("Cleared list '%s' for user=%s", lst.name, user_id)
 
+    async def get_items_by_list_id(self, list_id: str) -> list[ListItem]:
+        """Get items for a specific list by ID."""
+        return await self._store.get_items(list_id)
+
+    async def add_item_to_list_id(
+        self, list_id: str, item_text: str, user_id: str | None = None
+    ) -> ListItem:
+        """Add item to a specific list by ID."""
+        return await self._store.add_item(list_id, item_text, added_by=user_id)
+
+    async def remove_item_by_id(self, item_id: str) -> None:
+        """Remove a specific item by ID."""
+        await self._store.remove_item(item_id)
+
     async def get_all_lists(self, user_id: str) -> list[UserList]:
         """Get all lists accessible to a user.
 
@@ -208,7 +222,7 @@ class ListManager:
             "Auto-creating list '%s' for user=%s", name, user_id
         )
         return await self._store.create_list(
-            name=name, owner_type="user", owner_id=user_id
+            name=name, owner_type=OwnerType.USER, owner_id=user_id
         )
 
     @staticmethod

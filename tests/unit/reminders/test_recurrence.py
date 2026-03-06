@@ -66,6 +66,22 @@ class TestNextTrigger:
         assert result.month == 4
         assert result.day == 15
 
+    def test_weekly_aligns_to_correct_day(self):
+        # Wednesday -> next Monday (weekly:1)
+        base = datetime(2026, 3, 4, 9, 0).timestamp()  # Wednesday
+        nxt = next_trigger(base, "weekly:1")
+        result = datetime.fromtimestamp(nxt)
+        assert result.weekday() == 0  # Monday
+        assert result.day == 9  # Next Monday
+
+    def test_weekly_thursday_to_friday(self):
+        # Thursday -> next Friday (weekly:5)
+        base = datetime(2026, 3, 5, 9, 0).timestamp()  # Thursday
+        nxt = next_trigger(base, "weekly:5")
+        result = datetime.fromtimestamp(nxt)
+        assert result.weekday() == 4  # Friday
+        assert result.day == 6  # Next day is Friday
+
     def test_monthly_end_of_year(self):
         base = datetime(2026, 12, 15, 9, 0).timestamp()
         nxt = next_trigger(base, "monthly:15")

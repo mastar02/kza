@@ -674,8 +674,13 @@ async def main():
         await pipeline.run()
     except KeyboardInterrupt:
         logger.info("\nDeteniendo...")
+    finally:
         if presence_detector:
             await presence_detector.stop()
+        if reminder_scheduler:
+            await reminder_scheduler.stop()
+        await list_store.close()
+        await reminder_store.close()
         await pipeline.stop()
 
 
