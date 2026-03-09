@@ -9,6 +9,20 @@ import time
 
 import numpy as np
 
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ProcessedCommand:
+    """Typed result from CommandProcessor.process_command()."""
+    text: str
+    user: object | None = None  # User from user_manager or None
+    emotion: object | None = None  # EmotionResult or None
+    speaker_confidence: float = 0.0
+    timings: dict = field(default_factory=dict)
+    success: bool = False
+
+
 logger = logging.getLogger(__name__)
 
 
