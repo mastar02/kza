@@ -53,9 +53,9 @@
 | BL-003 | P0 | Establish supported Python and test baseline | Done |
 | BL-004 | P0 | Restore trustworthy automated verification | Done |
 | BL-005 | P2 | Align Docker and secondary runtimes | Proposed |
-| BL-006 | P1 | Refresh documentation and operational claims | Proposed |
-| BL-007 | P1 | Harden HA integration and failure handling | Proposed |
-| BL-008 | P1 | Multi-room and multi-user hardening | Proposed |
+| BL-006 | P1 | Refresh documentation and operational claims | Done |
+| BL-007 | P1 | Harden HA integration and failure handling | Done |
+| BL-008 | P1 | Multi-room and multi-user hardening | Done |
 | BL-009 | P1 | Integrate observability into runtime (backend API) | Proposed |
 | BL-010 | P1 | Security and configuration hardening | Proposed |
 | BL-011 | P2 | Operator dashboard frontend | Proposed |
