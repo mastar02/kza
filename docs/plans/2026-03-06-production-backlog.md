@@ -52,14 +52,14 @@
 | BL-002 | P0 | Fix command/user contract breakage | Done |
 | BL-003 | P0 | Establish supported Python and test baseline | Done |
 | BL-004 | P0 | Restore trustworthy automated verification | Done |
-| BL-005 | P2 | Align Docker and secondary runtimes | Proposed |
+| BL-005 | P2 | Align Docker and secondary runtimes | Done |
 | BL-006 | P1 | Refresh documentation and operational claims | Done |
 | BL-007 | P1 | Harden HA integration and failure handling | Done |
 | BL-008 | P1 | Multi-room and multi-user hardening | Done |
 | BL-009 | P1 | Integrate observability into runtime (backend API) | Done |
 | BL-010 | P1 | Security and configuration hardening | Done |
-| BL-011 | P2 | Operator dashboard frontend | Proposed |
-| BL-012 | P2 | Packaging and deployment profiles | Proposed |
+| BL-011 | P2 | Operator dashboard frontend | Done |
+| BL-012 | P2 | Packaging and deployment profiles | Done |
 | BL-013 | P3 | Optional worker extraction for heavy models | Proposed |
 
 ---
