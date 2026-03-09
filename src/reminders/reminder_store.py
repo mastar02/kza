@@ -203,6 +203,27 @@ class ReminderStore:
         await self._db.commit()
         logger.debug("Updated trigger for reminder %s to %s", reminder_id, new_trigger)
 
+    async def get_overdue_for_user(self, user_id: str, now: float) -> list[Reminder]:
+        """Return active reminders whose trigger_at has already passed for a user.
+
+        These are reminders that were due but could not be delivered
+        (e.g. user was away). Useful for missed-reminder-on-arrival.
+
+        Args:
+            user_id: The user to query.
+            now: Current timestamp.
+
+        Returns:
+            List of overdue Reminder objects ordered by trigger_at.
+        """
+        async with self._db.execute(
+            "SELECT * FROM reminders WHERE user_id = ? AND state = 'active' "
+            "AND trigger_at <= ? ORDER BY trigger_at ASC",
+            (user_id, now),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [self._row_to_reminder(r) for r in rows]
+
     async def cleanup_old(self, days: int = 30) -> int:
         """Delete old fired/cancelled reminders without recurrence.
 

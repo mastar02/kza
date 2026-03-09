@@ -55,7 +55,7 @@ class MultiRoomAudioLoop:
         silence_threshold: float = 0.015,
         silence_duration_ms: int = 300,
         min_speech_ms: int = 300,
-        dedup_window_ms: int = 200,
+        dedup_window_ms: int = 500,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
