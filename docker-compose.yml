@@ -1,3 +1,8 @@
+# ⚠️ EXPERIMENTAL — Docker services do NOT have full parity with the canonical runtime.
+# For production use: python -m src.main (or ./scripts/start.sh)
+# Docker services are provided for future worker extraction (see BL-005, BL-013).
+# They lack: speaker ID, multi-room, lists/reminders, emotion detection, memory, training.
+
 # Home Assistant Voice Control - Docker Compose
 # Hardware: Threadripper PRO 9965WX + 4x RTX 3070 + 128GB RAM
 

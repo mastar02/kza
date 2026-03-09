@@ -1,6 +1,9 @@
 """
-Voice Pipeline Service - Main Orchestrator
-Connects to all other services via HTTP
+Voice Pipeline Service - Main Orchestrator (EXPERIMENTAL)
+
+WARNING: This service does NOT have full parity with the canonical runtime (src/main.py).
+Missing: speaker ID, multi-room, lists/reminders, emotion detection, memory, training.
+Use src/main.py for production. See BL-005 for Docker alignment scope.
 """
 
 import os
