@@ -26,6 +26,7 @@ import pytest
 import numpy as np
 
 from src.pipeline.request_router import RequestRouter, PermissionResult
+from src.pipeline.command_processor import ProcessedCommand
 
 
 # ============================================================
@@ -34,12 +35,13 @@ from src.pipeline.request_router import RequestRouter, PermissionResult
 
 def _make_cmd_result(text="enciende la luz", user=None, emotion=None, timings=None):
     """Create a mock CommandProcessor result."""
-    return {
-        "text": text,
-        "user": user,
-        "emotion": emotion,
-        "timings": timings or {"stt": 50.0}
-    }
+    return ProcessedCommand(
+        text=text,
+        user=user,
+        emotion=emotion,
+        timings=timings or {"stt": 50.0},
+        success=bool(text.strip()),
+    )
 
 
 def _make_mock_user(user_id="user1", name="Test User", perm_name="ADULT"):

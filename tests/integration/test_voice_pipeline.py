@@ -19,6 +19,8 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 import pytest
 import numpy as np
 
+from src.pipeline.command_processor import ProcessedCommand
+
 
 class TestVoicePipelineIntegration:
     """Integration tests for the voice pipeline"""
@@ -83,12 +85,11 @@ class TestVoicePipelineIntegration:
     async def test_process_domotics_command(self, pipeline, sample_audio):
         """Test processing a domotics command"""
         # Configure mock to return a light command via command_processor
-        pipeline.command_processor.process_command = AsyncMock(return_value={
-            "text": "prende la luz del living",
-            "user": None,
-            "emotion": None,
-            "timings": {"stt": 50.0}
-        })
+        pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
+            text="prende la luz del living",
+            timings={"stt": 50.0},
+            success=True,
+        ))
 
         # Override chroma search to return entity_id matching mock HA client
         pipeline.request_router.chroma.search_command.return_value = {
@@ -109,12 +110,11 @@ class TestVoicePipelineIntegration:
     @pytest.mark.asyncio
     async def test_process_sync_command(self, pipeline, sample_audio):
         """Test processing a sync command"""
-        pipeline.command_processor.process_command = AsyncMock(return_value={
-            "text": "sincroniza los comandos",
-            "user": None,
-            "emotion": None,
-            "timings": {"stt": 40.0}
-        })
+        pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
+            text="sincroniza los comandos",
+            timings={"stt": 40.0},
+            success=True,
+        ))
 
         result = await pipeline.process_command(sample_audio)
 
@@ -124,12 +124,11 @@ class TestVoicePipelineIntegration:
     @pytest.mark.asyncio
     async def test_process_routine_command(self, pipeline, sample_audio):
         """Test processing a routine command"""
-        pipeline.command_processor.process_command = AsyncMock(return_value={
-            "text": "crea una rutina para las 7am",
-            "user": None,
-            "emotion": None,
-            "timings": {"stt": 45.0}
-        })
+        pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
+            text="crea una rutina para las 7am",
+            timings={"stt": 45.0},
+            success=True,
+        ))
         pipeline.request_router.routines.handle = AsyncMock(return_value={
             "handled": True,
             "response": "Rutina creada",
@@ -144,12 +143,11 @@ class TestVoicePipelineIntegration:
     @pytest.mark.asyncio
     async def test_empty_transcription(self, pipeline, sample_audio):
         """Test handling empty transcription"""
-        pipeline.command_processor.process_command = AsyncMock(return_value={
-            "text": "",
-            "user": None,
-            "emotion": None,
-            "timings": {"stt": 30.0}
-        })
+        pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
+            text="",
+            timings={"stt": 30.0},
+            success=False,
+        ))
 
         result = await pipeline.process_command(sample_audio)
 
@@ -159,12 +157,11 @@ class TestVoicePipelineIntegration:
     @pytest.mark.asyncio
     async def test_latency_tracking(self, pipeline, sample_audio):
         """Test that latency is tracked"""
-        pipeline.command_processor.process_command = AsyncMock(return_value={
-            "text": "prende la luz",
-            "user": None,
-            "emotion": None,
-            "timings": {"stt": 50.0}
-        })
+        pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
+            text="prende la luz",
+            timings={"stt": 50.0},
+            success=True,
+        ))
 
         result = await pipeline.process_command(sample_audio)
 
