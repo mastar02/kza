@@ -125,6 +125,8 @@ class DashboardAPI:
         ha_client=None,
         list_manager=None,
         reminder_manager=None,
+        health_aggregator=None,
+        reminder_scheduler=None,
         host: str = "0.0.0.0",
         port: int = 8080
     ):
@@ -134,6 +136,8 @@ class DashboardAPI:
         self.ha = ha_client
         self.list_manager = list_manager
         self.reminder_manager = reminder_manager
+        self.health_aggregator = health_aggregator
+        self.reminder_scheduler = reminder_scheduler
         self.host = host
         self.port = port
 
@@ -605,21 +609,110 @@ class DashboardAPI:
                 self._ws_clients.remove(websocket)
                 logger.info(f"WebSocket client desconectado ({len(self._ws_clients)} restantes)")
 
-        # ==================== Health ====================
+        # ==================== Observability ====================
 
         @self.app.get("/api/health")
         async def health_check():
-            """Estado del sistema"""
+            """Overall system health with all subsystems."""
+            if self.health_aggregator is None:
+                return {
+                    "status": "ok",
+                    "timestamp": datetime.now().isoformat(),
+                    "subsystems": [],
+                }
+
+            report = self.health_aggregator.get_system_health()
             return {
-                "status": "ok",
+                "status": str(report.status),
                 "timestamp": datetime.now().isoformat(),
-                "components": {
-                    "scheduler": self.scheduler is not None,
-                    "presence": self.presence is not None,
-                    "home_assistant": self.ha is not None and await self.ha.test_connection()
-                },
-                "routines_count": len(self.scheduler.get_all_routines()) if self.scheduler else 0
+                "subsystems": [
+                    {
+                        "name": s.name,
+                        "status": str(s.status),
+                        "detail": s.detail,
+                        "extra": s.extra,
+                    }
+                    for s in report.subsystems
+                ],
             }
+
+        @self.app.get("/api/metrics")
+        async def get_metrics():
+            """Latency percentiles, queue depth, and command count."""
+            if self.health_aggregator is None:
+                return {
+                    "latency": {"p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0},
+                    "queue_depth": 0,
+                    "command_count": 0,
+                    "active_zones": 0,
+                }
+            return self.health_aggregator.get_metrics()
+
+        @self.app.get("/api/subsystems")
+        async def get_subsystems():
+            """Per-subsystem health details."""
+            if self.health_aggregator is None:
+                return {"subsystems": []}
+
+            report = self.health_aggregator.get_system_health()
+            return {
+                "subsystems": [
+                    {
+                        "name": s.name,
+                        "status": str(s.status),
+                        "detail": s.detail,
+                        "extra": s.extra,
+                    }
+                    for s in report.subsystems
+                ],
+            }
+
+        @self.app.get("/api/failures")
+        async def get_failures(limit: int = 50):
+            """Recent failures, newest first."""
+            if self.health_aggregator is None:
+                return {"failures": []}
+
+            failures = self.health_aggregator.get_recent_failures(limit=limit)
+            return {"failures": failures}
+
+        @self.app.get("/api/reminders/status")
+        async def get_reminders_status():
+            """Reminder scheduler status: pending count, next trigger, delivery failures."""
+            result = {
+                "pending_count": 0,
+                "next_trigger_at": None,
+                "scheduler_running": False,
+                "delivery_failures": 0,
+            }
+
+            if self.reminder_scheduler is not None:
+                result["scheduler_running"] = getattr(
+                    self.reminder_scheduler, "_running", False
+                )
+                retry_counts = getattr(
+                    self.reminder_scheduler, "_retry_counts", {}
+                )
+                result["delivery_failures"] = sum(retry_counts.values())
+
+            if self.reminder_manager is not None:
+                store = getattr(self.reminder_manager, "_store", None)
+                if store is not None:
+                    next_pending = await store.get_next_pending()
+                    if next_pending is not None:
+                        result["next_trigger_at"] = next_pending.trigger_at
+
+                    # Count all active reminders across users
+                    try:
+                        async with store._db.execute(
+                            "SELECT COUNT(*) as cnt FROM reminders WHERE state = 'active'"
+                        ) as cursor:
+                            row = await cursor.fetchone()
+                            result["pending_count"] = row[0] if row else 0
+                    except Exception:
+                        logger.debug("Could not query pending reminder count")
+
+            return result
 
         # ==================== Static files (Frontend) ====================
 
