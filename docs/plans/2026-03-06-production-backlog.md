@@ -50,7 +50,7 @@
 |---|---|---|---|
 | BL-001 | P0 | Consolidate canonical runtime | Done |
 | BL-002 | P0 | Fix command/user contract breakage | Done |
-| BL-003 | P0 | Establish supported Python and test baseline | Proposed |
+| BL-003 | P0 | Establish supported Python and test baseline | Done |
 | BL-004 | P0 | Restore trustworthy automated verification | Proposed |
 | BL-005 | P2 | Align Docker and secondary runtimes | Proposed |
 | BL-006 | P1 | Refresh documentation and operational claims | Proposed |

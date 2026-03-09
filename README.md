@@ -69,6 +69,8 @@ Sistema de control por voz para Home Assistant con latencia ultra-baja (<300ms) 
 
 ## 🚀 Instalación
 
+**Requiere Python 3.13** (vLLM constraint: < 3.14). Verificar con `python3 --version`.
+
 ### 1. Clonar y configurar
 
 ```bash
@@ -77,9 +79,11 @@ cp .env.example .env
 # Editar .env con tu token de Home Assistant
 ```
 
-### 2. Instalar dependencias
+### 2. Crear entorno virtual e instalar dependencias
 
 ```bash
+python3.13 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 

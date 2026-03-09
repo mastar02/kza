@@ -26,6 +26,7 @@ Sistema de control por voz 100% local para Home Assistant. Latencia <300ms para 
 - Crear archivos de configuración nuevos (todo va en `config/settings.yaml`)
 - Modificar `src/main.py` sin entender la cadena de DI completa
 - Usar `print()` en lugar de `logger`
+- Pedir confirmación para continuar cuando el siguiente paso es obvio. Si hay un plan con pasos secuenciales (BL-001, BL-002, etc.), avanzar al siguiente sin preguntar "¿seguimos?". Solo detenerse si hay una decisión de diseño ambigua, un bloqueante real, o se necesita input del usuario que no se puede inferir
 
 ### Estilo de código
 ```python
