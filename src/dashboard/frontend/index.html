@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KZA Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎤</text></svg>">
+</head>
+<body>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="header-title">
+            <h1>KZA Dashboard</h1>
+            <span class="version">v1.0</span>
+        </div>
+        <div class="header-status">
+            <div class="connection-indicator">
+                <span id="connection-dot" class="connection-dot"></span>
+                <span id="connection-label">Conectando...</span>
+            </div>
+            <span id="last-update" class="last-update">--:--:--</span>
+        </div>
+    </header>
+
+    <!-- Dashboard Grid -->
+    <main class="dashboard">
+
+        <!-- System Health -->
+        <section class="card">
+            <div class="card-header">
+                <h2>Estado del Sistema</h2>
+            </div>
+            <div class="card-body" id="health-content">
+                <div class="state-message">
+                    <div class="spinner"></div>
+                    Cargando...
+                </div>
+            </div>
+        </section>
+
+        <!-- Latency Metrics -->
+        <section class="card">
+            <div class="card-header">
+                <h2>Metricas de Latencia</h2>
+            </div>
+            <div class="card-body" id="metrics-content">
+                <div class="state-message">
+                    <div class="spinner"></div>
+                    Cargando...
+                </div>
+            </div>
+        </section>
+
+        <!-- Subsystems -->
+        <section class="card">
+            <div class="card-header">
+                <h2>Subsistemas</h2>
+            </div>
+            <div class="card-body" id="subsystems-content">
+                <div class="state-message">
+                    <div class="spinner"></div>
+                    Cargando...
+                </div>
+            </div>
+        </section>
+
+        <!-- Reminders -->
+        <section class="card">
+            <div class="card-header">
+                <h2>Recordatorios</h2>
+            </div>
+            <div class="card-body" id="reminders-content">
+                <div class="state-message">
+                    <div class="spinner"></div>
+                    Cargando...
+                </div>
+            </div>
+        </section>
+
+        <!-- Routines -->
+        <section class="card">
+            <div class="card-header">
+                <h2>Rutinas</h2>
+            </div>
+            <div class="card-body" id="routines-content">
+                <div class="state-message">
+                    <div class="spinner"></div>
+                    Cargando...
+                </div>
+            </div>
+        </section>
+
+        <!-- Presence -->
+        <section class="card">
+            <div class="card-header">
+                <h2>Presencia</h2>
+            </div>
+            <div class="card-body" id="presence-content">
+                <div class="state-message">
+                    <div class="spinner"></div>
+                    Cargando...
+                </div>
+            </div>
+        </section>
+
+        <!-- Recent Failures -->
+        <section class="card card-full">
+            <div class="card-header">
+                <h2>Fallos Recientes</h2>
+            </div>
+            <div class="card-body" id="failures-content">
+                <div class="state-message">
+                    <div class="spinner"></div>
+                    Cargando...
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>
