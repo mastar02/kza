@@ -1,6 +1,18 @@
 """
-TTS Service - FastAPI wrapper for Text-to-Speech
+TTS Service - FastAPI wrapper for Text-to-Speech (EXPERIMENTAL)
 Runs on GPU 3 with Piper
+
+WARNING: This is an EXPERIMENTAL Docker service. It does NOT have full parity
+with the canonical runtime (src/main.py). Use src/main.py for production.
+
+PARITY_GAPS vs canonical runtime:
+  - No dual-engine TTS (canonical: Kokoro-82M for fast + Qwen3-TTS for conversational)
+  - No streaming synthesis (canonical: ResponseHandler streams audio chunks as generated)
+  - No multi-zone audio routing (canonical: ZoneManager routes to MA1260 zones)
+  - No per-user voice adaptation (canonical: speaker-specific TTS settings)
+  - Uses Piper only (canonical: dual Kokoro + Qwen3-TTS with automatic selection)
+  - No echo suppression coordination (canonical: EchoSuppressor prevents TTS feedback)
+  - Missing: latency tracking for synthesis stage
 """
 
 import os

@@ -1,9 +1,27 @@
 """
 Voice Pipeline Service - Main Orchestrator (EXPERIMENTAL)
 
-WARNING: This service does NOT have full parity with the canonical runtime (src/main.py).
-Missing: speaker ID, multi-room, lists/reminders, emotion detection, memory, training.
-Use src/main.py for production. See BL-005 for Docker alignment scope.
+WARNING: This is an EXPERIMENTAL Docker service. It does NOT have full parity
+with the canonical runtime (src/main.py). Use src/main.py for production.
+
+PARITY_GAPS vs canonical runtime:
+  - No speaker identification (canonical: per-user context via SpeakerIdentifier)
+  - No emotion detection (canonical: EmotionDetector adjusts response tone)
+  - No multi-user orchestration (canonical: MultiUserOrchestrator with priority queue)
+  - No memory system (canonical: MemoryManager short/long-term per user)
+  - No lists or reminders (canonical: ListManager + ReminderManager + ReminderScheduler)
+  - No multi-room audio (canonical: MultiRoomAudioLoop with per-room wake word)
+  - No Spotify/music routing (canonical: MusicDispatcher + MoodMapper + zone control)
+  - No alerts system (canonical: AlertManager + AlertScheduler for security/patterns)
+  - No nightly training (canonical: NightlyTrainer + QLoRA + HabitDatasetGenerator)
+  - No analytics (canonical: EventLogger + PatternAnalyzer + SuggestionEngine)
+  - No latency monitoring (canonical: LatencyMonitor with per-stage tracking)
+  - No timers, intercom, or notifications (canonical: NamedTimerManager, IntercomSystem)
+  - No presence detection (canonical: PresenceDetector BLE per room)
+  - No routine management (canonical: RoutineManager creates HA automations)
+  - No wake word detection (canonical: WakeWordDetector per room)
+  - HA command execution is a stub — finds nearest vector but does NOT call HA API
+  - No streaming TTS (canonical: ResponseHandler streams audio as tokens arrive)
 """
 
 import os
@@ -129,15 +147,15 @@ async def process_text(request: ProcessRequest):
         
         # Step 2: Route based on category
         if category == "domotica":
-            # Search for command in ChromaDB
+            # Search for matching command in ChromaDB
             embed_resp = await http_client.post(
                 f"{EMBEDDINGS_URL}/embed",
                 json={"texts": [request.text]}
             )
             embed_resp.raise_for_status()
             query_embedding = embed_resp.json()["embeddings"][0]
-            
-            # Query ChromaDB
+
+            # Query ChromaDB for nearest HA command
             chroma_resp = await http_client.post(
                 f"{CHROMADB_URL}/api/v1/collections/home_assistant_commands/query",
                 json={
@@ -145,13 +163,23 @@ async def process_text(request: ProcessRequest):
                     "n_results": 1
                 }
             )
-            
+
             if chroma_resp.status_code == 200:
                 results = chroma_resp.json()
                 if results.get("documents") and results["documents"][0]:
-                    # Execute Home Assistant command
-                    action_taken = "home_assistant_command"
-                    response_text = "Comando ejecutado"
+                    # NOTE: Vector match found but HA execution is NOT implemented.
+                    # The canonical runtime (src/main.py) uses HAClient to call
+                    # the HA REST API. This Docker service only does vector search.
+                    matched_doc = results["documents"][0][0]
+                    action_taken = None
+                    response_text = (
+                        f"[EXPERIMENTAL] Matched command: {matched_doc}. "
+                        "HA execution not implemented in Docker mode."
+                    )
+                    logger.warning(
+                        "Domotica vector match found but HA execution not implemented "
+                        "in Docker pipeline service"
+                    )
                 else:
                     response_text = "No encontre ese comando"
             else:

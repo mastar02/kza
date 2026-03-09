@@ -1,10 +1,40 @@
-# ⚠️ EXPERIMENTAL — Docker services do NOT have full parity with the canonical runtime.
-# For production use: python -m src.main (or ./scripts/start.sh)
-# Docker services are provided for future worker extraction (see BL-005, BL-013).
-# They lack: speaker ID, multi-room, lists/reminders, emotion detection, memory, training.
+# ===========================================================================
+# ⚠️  EXPERIMENTAL — NOT production-ready
+# ===========================================================================
+# Docker services do NOT have full parity with the canonical monolith runtime.
+# For production use: python -m src.main  (or ./scripts/start.sh)
+#
+# What WORKS in Docker mode:
+#   - STT transcription (Whisper on GPU 0)
+#   - Text embeddings (BGE on GPU 1)
+#   - Speaker embedding generation (ECAPA on GPU 1, but NO user identification)
+#   - Intent classification (vLLM on GPU 2, uncalibrated confidence)
+#   - LLM chat/generation (llama-cpp on CPU)
+#   - TTS synthesis (Piper on GPU 3, single engine only)
+#   - Basic text pipeline (classify → route → respond)
+#
+# What is MISSING (see each service's PARITY_GAPS for details):
+#   - Speaker identification & voice enrollment
+#   - Emotion detection
+#   - Multi-user orchestration (priority queue, cancellation)
+#   - Memory system (short/long-term, preferences)
+#   - Lists & reminders
+#   - Multi-room audio (wake word per room, zone routing)
+#   - Spotify / music routing
+#   - Alerts (security, pattern, device monitoring)
+#   - Nightly training (QLoRA, habit learning)
+#   - Analytics (event logging, pattern analysis, suggestions)
+#   - Latency monitoring
+#   - Timers, intercom, notifications
+#   - Presence detection (BLE)
+#   - HA command execution (vector search only, no API call)
+#   - Streaming TTS
+#
+# Future: see BL-013 for planned worker extraction from the monolith.
+# ===========================================================================
 
 # Home Assistant Voice Control - Docker Compose
-# Hardware: Threadripper PRO 9965WX + 4x RTX 3070 + 128GB RAM
+# Hardware: Threadripper PRO 7965WX + 4x RTX 3070 + 128GB RAM
 
 services:
   # =============================================================================
@@ -212,6 +242,11 @@ services:
       - "8081:8081"
     devices:
       - /dev/snd:/dev/snd
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     depends_on:
       chromadb:
         condition: service_healthy

@@ -1,6 +1,19 @@
 """
-LLM Reasoner Service - FastAPI wrapper for deep reasoning
+LLM Reasoner Service - FastAPI wrapper for deep reasoning (EXPERIMENTAL)
 Runs on CPU with llama-cpp-python (24 cores, ~70GB RAM)
+
+WARNING: This is an EXPERIMENTAL Docker service. It does NOT have full parity
+with the canonical runtime (src/main.py). Use src/main.py for production.
+
+PARITY_GAPS vs canonical runtime:
+  - No memory-augmented prompting (canonical: MemoryManager injects user context)
+  - No personality system (canonical: configurable personality via training)
+  - No conversation history tracking (canonical: ContextManager per user)
+  - No streaming token output (canonical: ResponseHandler streams TTS as tokens arrive)
+  - LoRA hot-load via API but no nightly auto-training (canonical: NightlyTrainer + QLoRA)
+  - No routine creation/management integration (canonical: RoutineManager)
+  - No user-specific response adaptation (canonical: UserManager preferences)
+  - Missing: latency tracking, event logging for LLM calls
 """
 
 import os

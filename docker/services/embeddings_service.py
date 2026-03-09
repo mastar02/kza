@@ -1,6 +1,19 @@
 """
-Embeddings Service - FastAPI wrapper for BGE + Speaker ID
+Embeddings Service - FastAPI wrapper for BGE + Speaker ID (EXPERIMENTAL)
 Runs on GPU 1
+
+WARNING: This is an EXPERIMENTAL Docker service. It does NOT have full parity
+with the canonical runtime (src/main.py). Use src/main.py for production.
+
+PARITY_GAPS vs canonical runtime:
+  - Speaker embedding only — no user identification (canonical: SpeakerIdentifier
+    matches against enrolled user profiles with similarity_threshold)
+  - No voice enrollment flow (canonical: VoiceEnrollment with multi-sample enrollment)
+  - No emotion detection (canonical: EmotionDetector wav2vec2 on same GPU)
+  - No user profile management (canonical: UserManager with permissions, preferences)
+  - Embeddings model defaults to bge-small-en (canonical: BGE-M3 multilingual)
+  - No ChromaDB sync integration (canonical: ChromaSync keeps HA entities indexed)
+  - Missing: latency tracking for embedding generation
 """
 
 import os

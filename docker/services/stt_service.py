@@ -1,6 +1,17 @@
 """
-STT Service - FastAPI wrapper for Speech-to-Text
+STT Service - FastAPI wrapper for Speech-to-Text (EXPERIMENTAL)
 Runs on GPU 0
+
+WARNING: This is an EXPERIMENTAL Docker service. It does NOT have full parity
+with the canonical runtime (src/main.py). Use src/main.py for production.
+
+PARITY_GAPS vs canonical runtime:
+  - No wake word detection (canonical: WakeWordDetector per room)
+  - No echo suppression (canonical: EchoSuppressor filters TTS playback)
+  - No VAD-based endpointing (canonical: AudioManager with configurable thresholds)
+  - No multi-room mic routing (canonical: MultiRoomAudioLoop with per-room streams)
+  - No language auto-detection (canonical: uses configured language per room)
+  - Missing: integration with latency monitor for STT stage timing
 """
 
 import io

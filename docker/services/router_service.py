@@ -1,6 +1,18 @@
 """
-Router Service - FastAPI wrapper for Fast Classification
+Router Service - FastAPI wrapper for Fast Classification (EXPERIMENTAL)
 Runs on GPU 2 with vLLM
+
+WARNING: This is an EXPERIMENTAL Docker service. It does NOT have full parity
+with the canonical runtime (src/main.py). Use src/main.py for production.
+
+PARITY_GAPS vs canonical runtime:
+  - No KV-cache prefix caching (canonical: FastRouter with enable_prefix_caching)
+  - No LoRA adapter hot-loading (canonical: nightly-trained adapter auto-loaded)
+  - No music/spotify category routing (canonical: RequestDispatcher handles music path)
+  - No lists/reminders category (canonical: orchestrator routes to ListManager/ReminderManager)
+  - Hardcoded category list (canonical: categories driven by config + registered handlers)
+  - Confidence is synthetic, not calibrated (returns 0.9/0.7 placeholders)
+  - Missing: latency tracking per classification call
 """
 
 import os
@@ -99,9 +111,12 @@ Categoría:"""
                 category = cat
                 break
         
+        # NOTE: confidence is not calibrated — vLLM does not expose token
+        # probabilities in this code path.  We report 0.0 to avoid
+        # downstream code trusting a synthetic number.
         return ClassifyResponse(
             category=category,
-            confidence=0.9 if category in result else 0.7,
+            confidence=0.0,
             reasoning=result
         )
         
