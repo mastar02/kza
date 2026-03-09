@@ -60,7 +60,7 @@
 | BL-010 | P1 | Security and configuration hardening | Done |
 | BL-011 | P2 | Operator dashboard frontend | Done |
 | BL-012 | P2 | Packaging and deployment profiles | Done |
-| BL-013 | P3 | Optional worker extraction for heavy models | Proposed |
+| BL-013 | P3 | Optional worker extraction for heavy models | Done |
 
 ---
 
