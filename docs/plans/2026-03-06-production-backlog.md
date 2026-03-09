@@ -56,8 +56,8 @@
 | BL-006 | P1 | Refresh documentation and operational claims | Done |
 | BL-007 | P1 | Harden HA integration and failure handling | Done |
 | BL-008 | P1 | Multi-room and multi-user hardening | Done |
-| BL-009 | P1 | Integrate observability into runtime (backend API) | Proposed |
-| BL-010 | P1 | Security and configuration hardening | Proposed |
+| BL-009 | P1 | Integrate observability into runtime (backend API) | Done |
+| BL-010 | P1 | Security and configuration hardening | Done |
 | BL-011 | P2 | Operator dashboard frontend | Proposed |
 | BL-012 | P2 | Packaging and deployment profiles | Proposed |
 | BL-013 | P3 | Optional worker extraction for heavy models | Proposed |
