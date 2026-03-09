@@ -594,6 +594,28 @@ dashboard:
     allow_methods: ["GET", "POST", "PUT", "DELETE"]
     allow_headers: ["*"]
 
+# =============================================================================
+# Provider Mode — optional remote workers for heavy models
+# =============================================================================
+# Each service can run "local" (default, in-process on this machine) or
+# "remote" (HTTP call to a worker process / separate machine).
+# Remote mode is opt-in; the monolith remains the default.
+providers:
+  stt:
+    mode: local
+    # url: http://localhost:5001  # Only used when mode=remote
+    # timeout: 30.0
+    # max_retries: 2
+  llm:
+    mode: local
+    # url: http://localhost:5002
+  tts:
+    mode: local
+    # url: http://localhost:5003
+  router:
+    mode: local
+    # url: http://localhost:5004
+
 # Logging
 logging:
   level: "INFO"
