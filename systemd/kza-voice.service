@@ -12,44 +12,64 @@ User=kza
 Group=kza
 WorkingDirectory=/opt/kza
 
-# Entorno
-Environment="PATH=/opt/kza/venv/bin:/usr/local/bin:/usr/bin:/bin"
+# Python 3.13 venv — ensure the venv was created with python3.13
+Environment="PATH=/opt/kza/venv/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONDONTWRITEBYTECODE=1"
 EnvironmentFile=/opt/kza/.env
 
-# GPUs disponibles para el proceso principal
-# Cada componente selecciona su GPU internamente via config
+# All 4 GPUs visible; each component selects its own via config/settings.yaml
+# cuda:0=STT, cuda:1=Embeddings/Speaker, cuda:2=Router, cuda:3=TTS
 Environment="CUDA_VISIBLE_DEVICES=0,1,2,3"
 
-# Límites de recursos
+# CUDA library paths
+Environment="LD_LIBRARY_PATH=/usr/local/cuda/lib64:%h/.local/lib"
+
+# Resource limits — GPU workloads need high file descriptors and unlocked memory
 LimitNOFILE=65535
 LimitMEMLOCK=infinity
+LimitNPROC=4096
+LimitSTACK=67108864
 
-# Audio - acceso a dispositivos de sonido
-SupplementaryGroups=audio
+# Audio — access to sound devices
+SupplementaryGroups=audio video
 
-# Ejecución
-ExecStart=/opt/kza/venv/bin/python -m src.main
+# Execution
+ExecStartPre=/opt/kza/scripts/smoke_test.sh --quick
+ExecStart=/opt/kza/venv/bin/python3.13 -m src.main
 ExecReload=/bin/kill -HUP $MAINPID
 
-# Reinicio automático
+# Restart policy
 Restart=on-failure
-RestartSec=10
+RestartSec=5
+RestartPreventExitStatus=78
 
-# Timeout para shutdown graceful
+# Timeout for graceful shutdown (LLM may need time to unload)
 TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
 
-# Logs
+# Logging — all output to journald
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=kza-voice
 
-# Seguridad (opcional pero recomendado)
+# Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/kza/data /opt/kza/logs
+ReadWritePaths=/opt/kza/data /opt/kza/logs /opt/kza/models/lora_adapters
 PrivateTmp=true
+
+# GPU device access
+DeviceAllow=/dev/nvidia0 rw
+DeviceAllow=/dev/nvidia1 rw
+DeviceAllow=/dev/nvidia2 rw
+DeviceAllow=/dev/nvidia3 rw
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia-uvm rw
+DeviceAllow=/dev/nvidia-uvm-tools rw
+DeviceAllow=/dev/snd/* rw
 
 [Install]
 WantedBy=multi-user.target
