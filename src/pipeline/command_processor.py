@@ -93,7 +93,7 @@ class CommandProcessor:
         self,
         audio: np.ndarray,
         use_parallel: bool = True
-    ) -> dict:
+    ) -> ProcessedCommand:
         """
         Procesar comando completo (STT + Speaker ID + Emotion).
 
@@ -102,61 +102,53 @@ class CommandProcessor:
             use_parallel: Usar procesamiento paralelo para STT + Speaker ID
 
         Returns:
-            {
-                "text": str,
-                "user": User object o None,
-                "emotion": EmotionResult o None,
-                "timings": dict,
-                "success": bool
-            }
+            ProcessedCommand with text, user, emotion, timings, success
         """
-        result = {
-            "text": "",
-            "user": None,
-            "emotion": None,
-            "timings": {},
-            "success": False
-        }
-
+        result = ProcessedCommand(text="")
         pipeline_start = time.perf_counter()
 
-        # Procesamiento paralelo: STT + Speaker ID + Emotion
         if use_parallel and (self.speaker_id or self.emotion_detector):
             text, stt_ms, speaker_result, emotion_result = await self._process_parallel(audio)
-            result["timings"]["stt"] = stt_ms
+            result.timings["stt"] = stt_ms
             if speaker_result:
-                result["user"] = speaker_result
-                result["timings"]["speaker_id"] = speaker_result.get("timing_ms", 0)
+                user, confidence, spk_ms = speaker_result
+                if user is not None:
+                    result.user = user
+                    result.speaker_confidence = confidence
+                result.timings["speaker_id"] = spk_ms
             if emotion_result:
-                result["emotion"] = emotion_result
-                result["timings"]["emotion"] = emotion_result.processing_time_ms
+                result.emotion = emotion_result
+                result.timings["emotion"] = emotion_result.processing_time_ms
         else:
-            # Procesamiento secuencial (fallback)
-            t_stt = time.perf_counter()
             text, stt_ms = self.stt.transcribe(audio, self.sample_rate)
-            result["timings"]["stt"] = stt_ms
+            result.timings["stt"] = stt_ms
 
-            speaker_result = None
-            emotion_result = None
+            # Sequential speaker ID (fallback)
+            if self.speaker_id and self.user_manager:
+                user, confidence, spk_ms = self._identify_speaker(audio)
+                if user is not None:
+                    result.user = user
+                    result.speaker_confidence = confidence
+                result.timings["speaker_id"] = spk_ms
 
-        result["text"] = text
-        result["success"] = bool(text.strip())
+        result.text = text
+        result.success = bool(text.strip())
 
-        if result["success"]:
-            self._current_user = speaker_result
-            self._current_emotion = emotion_result
+        if result.success:
+            self._current_user = result.user
+            self._current_emotion = result.emotion
 
-        result["timings"]["total"] = (time.perf_counter() - pipeline_start) * 1000
+        result.timings["total"] = (time.perf_counter() - pipeline_start) * 1000
 
         logger.info(
             f"[CommandProcessor] Text='{text[:50]}' | "
-            f"User={speaker_result.name if speaker_result else 'unknown'} | "
-            f"Emotion={emotion_result.emotion if emotion_result else 'none'}"
+            f"User={result.user.name if result.user else 'unknown'} | "
+            f"Emotion={result.emotion.emotion if result.emotion else 'none'}"
         )
 
         return result
 
-    async def _process_parallel(self, audio: np.ndarray) -> tuple[str, float, dict | None, object | None]:
+    async def _process_parallel(self, audio: np.ndarray) -> tuple[str, float, tuple | None, object | None]:
         """
         Procesar STT, Speaker ID y Emotion en paralelo REAL con asyncio.gather().
 
@@ -193,11 +185,10 @@ class CommandProcessor:
         stt_result = results[0] if not isinstance(results[0], Exception) else ("", 0)
         text, stt_ms = stt_result if isinstance(stt_result, tuple) else ("", 0)
 
-        speaker_result = (
-            results[1] if self.speaker_id and self.user_manager
-            and not isinstance(results[1], Exception) and results[1] is not None
-            else None
-        )
+        if self.speaker_id and self.user_manager and not isinstance(results[1], Exception):
+            speaker_result = results[1]  # tuple: (User|None, confidence, timing_ms)
+        else:
+            speaker_result = None
 
         emotion_result = (
             results[2] if self.emotion_detector
@@ -240,22 +231,22 @@ class CommandProcessor:
         self._embeddings_cache = {}
         self._embeddings_cache_time = 0
 
-    def _identify_speaker(self, audio: np.ndarray) -> dict | None:
+    def _identify_speaker(self, audio: np.ndarray) -> tuple:
         """
         Identificar el usuario que está hablando.
 
         Returns:
-            User object si se identifica, None si es desconocido
+            Tuple of (User|None, confidence, timing_ms)
         """
         if self.speaker_id is None or self.user_manager is None:
-            return None
+            return None, 0.0, 0.0
 
         # Obtener embeddings con cache (más rápido que fetch cada vez)
         registered_embeddings = self._get_cached_embeddings()
 
         if not registered_embeddings:
             logger.debug("No hay usuarios con voz registrada")
-            return None
+            return None, 0.0, 0.0
 
         # Identificar speaker
         t_start = time.perf_counter()
@@ -267,14 +258,10 @@ class CommandProcessor:
             if user:
                 self.user_manager.update_last_seen(match.user_id)
                 logger.debug(f"Speaker identificado: {user.name} (conf={match.confidence:.2f})")
-                return {
-                    "user": user,
-                    "confidence": match.confidence,
-                    "timing_ms": timing_ms
-                }
+                return user, match.confidence, timing_ms
 
         logger.debug(f"Speaker desconocido (best conf={match.confidence:.2f})")
-        return None
+        return None, 0.0, timing_ms
 
     def get_current_user(self):
         """Obtener usuario actual identificado."""
