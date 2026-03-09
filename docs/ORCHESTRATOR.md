@@ -1,5 +1,7 @@
 # Sistema de Orquestacion Multi-Usuario
 
+> **Actualizado:** 9 de Marzo, 2026 (BL-006).
+
 Sistema para manejar multiples usuarios concurrentes con contexto separado por usuario, cola priorizada y cancelacion inteligente.
 
 ## Arquitectura General
@@ -30,11 +32,20 @@ Sistema para manejar multiples usuarios concurrentes con contexto separado por u
        │  └───────────────────┘  │   │  └───────────────────┘  │   │  └─────────┬─────────┘  │
        │                         │   │                         │   │            │            │
        │  ┌───────────────────┐  │   │  Latencia:              │   │  ┌─────────▼─────────┐  │
-       │  │   Rutinas         │  │   │  • Fast: ~500ms         │   │  │   LLM 32B (CPU)   │  │
+       │  │   Rutinas         │  │   │  • Fast: ~500ms         │   │  │   LLM 72B (CPU)   │  │
        │  │   (Predefinidas)  │  │   │  • Slow: ~3-5s          │   │  │   + Buffered TTS  │  │
        │  └───────────────────┘  │   │                         │   │  └───────────────────┘  │
        │                         │   │                         │   │                         │
-       │  Latencia: < 300ms      │   │  Ver: docs/SPOTIFY.md   │   │  Latencia: 5-30s        │
+       │  ┌───────────────────┐  │   │  Ver: docs/SPOTIFY.md   │   │  Latencia: 5-30s        │
+       │  │   Lists (CRUD)    │  │   │                         │   │                         │
+       │  └───────────────────┘  │   │                         │   │                         │
+       │                         │   │                         │   │                         │
+       │  ┌───────────────────┐  │   │                         │   │                         │
+       │  │   Reminders       │  │   │                         │   │                         │
+       │  │   (CRUD+Schedule) │  │   │                         │   │                         │
+       │  └───────────────────┘  │   │                         │   │                         │
+       │                         │   │                         │   │                         │
+       │  Latencia: < 300ms      │   │                         │   │                         │
        └─────────────────────────┘   └─────────────────────────┘   └─────────────────────────┘
 ```
 
@@ -128,7 +139,25 @@ token.cancel(CancellationReason.USER_NEW_REQUEST)
 
 ### 4. RequestDispatcher (`dispatcher.py`)
 
-Enruta peticiones al path correcto.
+Enruta peticiones al path correcto. Usa `PathType` (StrEnum) para clasificar.
+
+**PathType enum completo:**
+
+| PathType | Prioridad | Descripcion |
+|----------|-----------|-------------|
+| FAST_DOMOTICS | HIGH | Vector search + HA action |
+| FAST_ROUTINE | MEDIUM | Rutinas predefinidas |
+| FAST_ROUTER | MEDIUM | Router 7B para respuestas simples |
+| FAST_MUSIC | HIGH | Spotify busqueda directa |
+| SLOW_MUSIC | LOW | Spotify con LLM + mood mapping |
+| SLOW_LLM | LOW | LLM 72B para razonamiento |
+| SYNC | MEDIUM | Comandos de sincronizacion |
+| ENROLLMENT | MEDIUM | Registro de usuarios |
+| FEEDBACK | LOW | Feedback sobre respuestas |
+| FAST_LIST | HIGH | List CRUD (src/lists/) |
+| FAST_REMINDER | HIGH | Reminder CRUD (src/reminders/) |
+
+**Confirmation ordering fix:** El dispatcher verifica `ctx.pending_confirmation` ANTES de procesar cancel keywords, para que "no cancela" sea tratado como rechazo de confirmacion y no como un comando de cancelacion.
 
 ```python
 from src.orchestrator import RequestDispatcher
@@ -138,7 +167,7 @@ dispatcher = RequestDispatcher(
     ha_client=ha,
     routine_manager=routines,
     router=router_7b,       # Para fast path
-    llm=llm_32b,            # Para slow path
+    llm=llm_72b,            # Para slow path
     context_manager=context_manager,
     priority_queue=queue
 )
@@ -146,13 +175,25 @@ dispatcher = RequestDispatcher(
 # Dispatch automatico al path correcto
 result = await dispatcher.dispatch(
     user_id="juan",
-    text="Prende la luz",     # -> Fast path (domotica)
+    text="Prende la luz",     # -> FAST_DOMOTICS
     zone_id="living"
 )
 
 result = await dispatcher.dispatch(
     user_id="maria",
-    text="Explicame fisica",  # -> Slow path (LLM)
+    text="Agrega leche a la lista de compras",  # -> FAST_LIST
+    zone_id="cocina"
+)
+
+result = await dispatcher.dispatch(
+    user_id="juan",
+    text="Recuerdame regar las plantas a las 8",  # -> FAST_REMINDER
+    zone_id="living"
+)
+
+result = await dispatcher.dispatch(
+    user_id="maria",
+    text="Explicame fisica",  # -> SLOW_LLM
     zone_id="cocina"
 )
 ```
@@ -252,7 +293,7 @@ orchestrator = MultiUserOrchestrator(
     ha_client=ha,
     routine_manager=routines,
     router=router_7b,
-    llm=llm_32b,
+    llm=llm_72b,
     tts=tts,
     speaker_identifier=speaker_id,
     user_manager=user_manager
@@ -293,6 +334,22 @@ stats = orchestrator.get_stats()
 # }
 ```
 
+## Lists y Reminders (Fast Paths)
+
+Desde marzo 2026, el dispatcher soporta dos paths adicionales para listas y recordatorios:
+
+### FAST_LIST (src/lists/)
+- Detecta keywords como "agrega", "quita", "lista", "compras"
+- Enruta a `ListManager` para CRUD de items
+- `ListStore` persiste en JSON con sync a HA via `ha_sync.py`
+- Prioridad HIGH, fast path (<300ms)
+
+### FAST_REMINDER (src/reminders/)
+- Detecta keywords como "recuerdame", "recordatorio", "alarma"
+- Enruta a `ReminderManager` para CRUD + scheduling
+- `ReminderScheduler` ejecuta recordatorios con `recurrence.py` para patrones repetidos
+- Prioridad HIGH, fast path (<300ms)
+
 ## Beneficios
 
 1. **Domotica siempre rapida**: Comandos de luces/clima nunca esperan
@@ -301,3 +358,4 @@ stats = orchestrator.get_stats()
 4. **Interrupciones**: Prioridades altas interrumpen las bajas
 5. **Feedback**: Usuarios saben cuando deben esperar
 6. **Escalable**: Fast path es paralelo, slow path es serializado eficientemente
+7. **Listas y recordatorios**: Operaciones locales rapidas sin necesitar LLM

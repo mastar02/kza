@@ -1,8 +1,10 @@
 # Review de Arquitectura - Home Assistant Voice
 
+> **Actualizado:** 9 de Marzo, 2026 (BL-006). Codebase: 40K LOC src, 16K LOC tests, 975 tests pasando, 32 módulos, Python 3.13.
+
 ## Resumen Ejecutivo
 
-El sistema tiene una arquitectura sólida para uso doméstico (1-4 usuarios) con excelente separación de paths rápidos y lentos. Sin embargo, tiene limitaciones de escalabilidad que deberían abordarse si se planea expandir.
+El sistema tiene una arquitectura sólida para uso doméstico (1-4 usuarios) con excelente separación de paths rápidos y lentos. El pipeline fue refactorizado (VoicePipeline dividido en componentes), se agregó un contrato tipado (ProcessedCommand), y la suite de tests cubre todos los módulos principales.
 
 ## Diagrama de Arquitectura Actual
 
@@ -56,9 +58,12 @@ El sistema tiene una arquitectura sólida para uso doméstico (1-4 usuarios) con
 │  │             │        │   (~3-5s)   │        │   Queue     │             │
 │  │ • Router 7B │        │             │        │   P0>P1>P2  │             │
 │  │   ~200ms    │        │ • Playback  │        │             │             │
-│  │             │        │   Control   │        │ • LLM 70B   │             │
+│  │             │        │   Control   │        │ • LLM 72B   │             │
 │  │ • Rutinas   │        │   ~200ms    │        │   (CPU)     │             │
 │  │   ~100ms    │        │             │        │   ~5-30s    │             │
+│  │             │        │             │        │             │             │
+│  │ • Lists     │        │             │        │             │             │
+│  │ • Reminders │        │             │        │             │             │
 │  │             │        │             │        │             │             │
 │  └──────┬──────┘        └──────┬──────┘        └──────┬──────┘             │
 │         │                      │                      │                     │
@@ -69,7 +74,7 @@ El sistema tiene una arquitectura sólida para uso doméstico (1-4 usuarios) con
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                            TTS (GPU 3)                                       │
-│                    Piper (~80ms) / XTTS (~1.5s)                              │
+│              Kokoro-82M (~30ms) / Qwen3-TTS 0.6B (conversacional)            │
 │                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │              BUFFERED STREAMING                                      │    │
@@ -93,49 +98,45 @@ El sistema tiene una arquitectura sólida para uso doméstico (1-4 usuarios) con
 
 ## Evaluación por Componente
 
-### 1. VoicePipeline (src/pipeline/voice_pipeline.py)
+### 1. Pipeline (src/pipeline/) -- REFACTORIZADO
 
-**Líneas de código:** ~1400
-**Responsabilidades:** Demasiadas
+**Estado:** El "God Object" fue dividido. VoicePipeline ahora es un orquestador ligero de 169 LOC. El módulo completo tiene 11 archivos y 3,459 LOC.
+
+| Componente | LOC | Función |
+|------------|-----|---------|
+| voice_pipeline.py | 169 | Orquestador de alto nivel |
+| command_processor.py | 284 | STT + Speaker ID + ProcessedCommand dataclass |
+| request_router.py | 844 | Consume ProcessedCommand, despacha a paths |
+| response_handler.py | 311 | TTS + streaming + zone routing |
+| audio_manager.py | 244 | Captura de audio |
+| audio_loop.py | 258 | Loop de audio principal |
+| feature_manager.py | 409 | Analytics, memory, training |
+| model_manager.py | 603 | Gestión de modelos GPU |
+| multi_room_audio_loop.py | 269 | Loop multi-room |
+
+**Contrato tipado:** `ProcessedCommand` dataclass (BL-002) es el contrato entre CommandProcessor y RequestRouter. Campos: `text`, `user`, `emotion`, `speaker_confidence`, `timings`, `success`.
 
 | Aspecto | Puntuación | Comentario |
 |---------|------------|------------|
-| Cohesión | ⚠️ 2/5 | Mezcla audio, orquestación, analytics |
-| Acoplamiento | ⚠️ 2/5 | Depende de 15+ componentes |
-| Testabilidad | ⚠️ 2/5 | Difícil de testear en aislamiento |
-| Mantenibilidad | ⚠️ 3/5 | Funciona pero complejo de modificar |
+| Cohesion | 4/5 | Cada componente tiene responsabilidad clara |
+| Acoplamiento | 3/5 | Bien separado, ProcessedCommand como contrato |
+| Testabilidad | 4/5 | Componentes testeables individualmente |
+| Mantenibilidad | 4/5 | Mucho mas facil de modificar |
 
-**Problema:** El pipeline es un "God Object" que conoce demasiado del sistema.
-
-**Solución propuesta:**
-```
-VoicePipeline (actual)
-    │
-    ├── AudioManager (nuevo)
-    │   └── Captura, wake word, VAD
-    │
-    ├── CommandProcessor (nuevo)
-    │   └── STT, Speaker ID, dispatching
-    │
-    ├── ResponseHandler (nuevo)
-    │   └── TTS, streaming, zone routing
-    │
-    └── FeatureManager (nuevo)
-        └── Analytics, memory, training
-```
-
-### 2. Orchestrator (src/orchestrator/)
+### 2. Orchestrator (src/orchestrator/) — 3,265 LOC
 
 **Evaluación:** ★★★★☆ (4/5)
 
-| Componente | Puntuación | Comentario |
+| Componente | Puntuacion | Comentario |
 |------------|------------|------------|
-| dispatcher.py | ★★★★☆ | Bien diseñado, fácil de extender |
-| priority_queue.py | ★★★★★ | Excelente implementación |
-| context_manager.py | ★★★★☆ | Funcional, podría ser más robusto |
-| cancellation.py | ★★★★☆ | Buen patrón cooperativo |
+| dispatcher.py | ★★★★☆ | PathType enum con 12 paths incluyendo FAST_LIST, FAST_REMINDER |
+| priority_queue.py | ★★★★★ | Excelente implementacion |
+| context_manager.py | ★★★★☆ | Funcional, confirmation ordering fix aplicado |
+| cancellation.py | ★★★★☆ | Buen patron cooperativo |
 
-**Fortaleza:** Separación clara de responsabilidades dentro del módulo.
+**PathType enum (actual):** FAST_DOMOTICS, FAST_ROUTINE, FAST_ROUTER, FAST_MUSIC, SLOW_MUSIC, SLOW_LLM, SYNC, ENROLLMENT, FEEDBACK, FAST_LIST, FAST_REMINDER.
+
+**Fortaleza:** Separación clara de responsabilidades. Facil de extender (lists y reminders se agregaron con paths nuevos sin tocar paths existentes).
 
 **Debilidad:** Solo soporta un worker de slow path.
 
@@ -165,7 +166,14 @@ VoicePipeline (actual)
 
 **Debilidad:** Sin batching, cada request es independiente.
 
-## Análisis de Escalabilidad
+### 5. Lists (src/lists/) y Reminders (src/reminders/) -- NUEVO
+
+**Lists:** 4 archivos, 564 LOC. Listas compartidas y por usuario con sync a HA.
+**Reminders:** 5 archivos, 586 LOC. Recordatorios con recurrencia y scheduler.
+
+Ambos se integran con el dispatcher via FAST_LIST y FAST_REMINDER paths (fast path, Priority.HIGH). Tests de integracion incluidos.
+
+## Analisis de Escalabilidad
 
 ### Límites Actuales
 
@@ -227,54 +235,19 @@ VoicePipeline (actual)
 
 ## Recomendaciones
 
-### Prioridad Alta (Refactoring)
+### Completado (desde la revision original)
 
-#### 1. Dividir VoicePipeline
+#### 1. Dividir VoicePipeline -- HECHO
 
-**Antes:**
-```python
-class VoicePipeline:
-    # 1400 líneas, 15+ dependencias
-    def __init__(self, stt, tts, chroma, ha, llm, router, ...):
-        ...
-```
+VoicePipeline fue dividido en AudioManager, CommandProcessor, ResponseHandler, FeatureManager, ModelManager, RequestRouter. El orquestador central es ahora 169 LOC. DI por constructor en `src/main.py`.
 
-**Después:**
-```python
-class AudioCapture:
-    """Solo captura de audio y wake word"""
+#### 2. Inyeccion de Dependencias -- HECHO
 
-class CommandProcessor:
-    """STT + Speaker ID + Dispatching"""
+`src/main.py` es el entry point canonico y crea todos los servicios con DI por constructor. `src/kza_server.py` fue eliminado. Docker services estan marcados como EXPERIMENTAL.
 
-class ResponseHandler:
-    """TTS + Streaming + Zone routing"""
+#### 3. Tests -- HECHO
 
-class VoicePipeline:
-    """Coordinación de alto nivel"""
-    def __init__(self, audio: AudioCapture, processor: CommandProcessor, ...):
-        ...
-```
-
-#### 2. Inyección de Dependencias
-
-**Antes:**
-```python
-# En VoicePipeline.__init__
-if orchestrator_enabled:
-    self._orchestrator = MultiUserOrchestrator(
-        chroma_sync=self.chroma,
-        ha_client=self.ha,
-        ...  # Crea dependencias internamente
-    )
-```
-
-**Después:**
-```python
-# En main.py o factory
-orchestrator = create_orchestrator(config)
-pipeline = VoicePipeline(orchestrator=orchestrator)  # Inyectado
-```
+975 tests pasando (~20.35s). Cubren todos los modulos principales incluyendo orchestrator, pipeline, spotify, alerts, lists, reminders.
 
 ### Prioridad Media (Escalabilidad)
 
@@ -345,60 +318,56 @@ Para escalar a edificio/enterprise:
                     └───────────────────┘
 ```
 
-## Métricas de Calidad
+## Metricas de Calidad
 
-### Complejidad Ciclomática
+### Complejidad Ciclomatica
 
-| Módulo | Complejidad | Evaluación |
+| Modulo | Complejidad | Evaluacion |
 |--------|-------------|------------|
-| voice_pipeline.py | Alta (~25) | ⚠️ Necesita refactoring |
-| dispatcher.py | Media (~12) | ✅ Aceptable |
-| spotify/*.py | Baja (~5) | ✅ Excelente |
-| llm/*.py | Baja (~6) | ✅ Excelente |
+| voice_pipeline.py | Baja (~5) | Orquestador ligero post-refactor |
+| request_router.py | Media-Alta (~15) | 844 LOC, muchos paths (unverified) |
+| dispatcher.py | Media (~12) | Aceptable (unverified) |
+| spotify/*.py | Baja (~5) | Excelente (unverified) |
 
-### Cobertura de Tests (Estimada)
+### Tests
 
-| Módulo | Cobertura | Prioridad |
-|--------|-----------|-----------|
-| orchestrator/ | ~0% | 🔴 Alta |
-| spotify/ | ~0% | 🟡 Media |
-| llm/ | ~0% | 🟡 Media |
-| pipeline/ | ~0% | 🔴 Alta |
+**975 tests pasando** (~20.35s, Python 3.13.9). Todos los modulos principales tienen tests unitarios. Test files: 75 archivos Python en tests/.
 
-### Deuda Técnica
+### Deuda Tecnica
 
-| Área | Severidad | Impacto |
+| Area | Severidad | Impacto |
 |------|-----------|---------|
-| Sin tests | 🔴 Alta | Regresiones frecuentes |
-| VoicePipeline monolítico | 🟡 Media | Mantenimiento difícil |
-| ChromaDB in-process | 🟡 Media | Escalabilidad limitada |
-| Sin circuit breakers | 🟡 Media | Fallas en cascada |
-| Logs inconsistentes | 🟢 Baja | Debug más difícil |
+| ChromaDB in-process | Media | Escalabilidad limitada |
+| request_router.py 844 LOC | Media | Archivo mas grande del pipeline |
+| Coverage % desconocido | Media | No se ejecuta coverage regularmente |
 
-## Conclusión
+## Conclusion
 
-### Lo que está bien
+### Lo que esta bien
 
-1. **Arquitectura dual-path** es la decisión correcta
-2. **Distribución de GPUs** está bien pensada
-3. **Spotify module** es ejemplar en diseño
-4. **Buffered streaming** resuelve el problema de LLM lento
-5. **Priority queue** funciona correctamente
+1. **Arquitectura multi-path** con 12 PathTypes, bien separados
+2. **Pipeline refactorizado** con componentes claros y contrato tipado (ProcessedCommand)
+3. **975 tests** como baseline de calidad
+4. **Distribucion de GPUs** bien pensada
+5. **Spotify module** es ejemplar en diseno
+6. **Buffered streaming** resuelve el problema de LLM lento
+7. **Priority queue** funciona correctamente
+8. **Lists y Reminders** se agregaron limpiamente con paths nuevos
 
 ### Lo que necesita trabajo
 
-1. **VoicePipeline** necesita ser dividido
-2. **Tests** son críticos antes de más cambios
-3. **Inyección de dependencias** mejoraría testabilidad
-4. **ChromaDB** debería ser servicio separado para escalar
+1. **request_router.py** (844 LOC) es el archivo mas grande del pipeline y podria beneficiarse de mas division
+2. **ChromaDB** deberia ser servicio separado para escalar
+3. **Coverage %** no se mide regularmente — agregar al CI
+4. **Docker services** estan marcados EXPERIMENTAL (BL-005)
 
-### Recomendación Final
+### Recomendacion Final
 
-Para uso doméstico (1-4 usuarios): **El sistema está listo para producción.**
+Para uso domestico (1-4 usuarios): **El sistema esta listo para produccion.**
 
-Para escalar más allá: Implementar las recomendaciones de prioridad alta antes de agregar más features.
+Para escalar mas alla: Las recomendaciones de prioridad alta (pipeline, DI, tests) ya fueron implementadas. Las pendientes son de prioridad media (ChromaDB como servicio, pool de workers LLM).
 
 ---
 
-*Documento generado: 2024*
-*Última revisión de arquitectura*
+*Documento original: 2024*
+*Ultima actualizacion: 9 de Marzo, 2026 — BL-006*

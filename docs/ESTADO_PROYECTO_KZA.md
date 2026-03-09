@@ -1,20 +1,21 @@
 # KZA - Reporte de Estado del Proyecto
-**Fecha:** 4 de Febrero, 2026
-**Versión:** 1.0
+**Fecha:** 9 de Marzo, 2026
+**Versión:** 2.0
 
 ---
 
 ## Resumen Ejecutivo
 
-KZA es un ecosistema de control por voz para domótica con latencia ultra-baja (<300ms), diseñado para reemplazar asistentes comerciales como Alexa con control total local y soberano.
+KZA es un ecosistema de control por voz para domótica con latencia ultra-baja (<300ms), diseñado para reemplazar asistentes comerciales como Alexa con control total local y soberano. Python 3.13.
 
 | Métrica | Valor |
 |---------|-------|
-| Líneas de código (src) | 25,599 |
-| Líneas de tests | 10,111 |
-| Tests totales | 612 |
-| Módulos principales | 18 |
-| Archivos de documentación | 11 |
+| Líneas de código (src) | 40,163 |
+| Líneas de tests | 16,074 |
+| Tests totales | 975 (pasando) |
+| Módulos principales | 32 |
+| Archivos de documentación | 13 |
+| Runtime | Python 3.13.9, `src/main.py` es el entry point canónico |
 
 ---
 
@@ -48,24 +49,38 @@ GPUs: 4x NVIDIA RTX 3070 (8GB cada una)
 
 | Módulo | Archivos | Líneas | Función |
 |--------|----------|--------|---------|
-| **spotify** | 8 | 4,568 | Integración Spotify con mood mapping |
-| **orchestrator** | 6 | 3,075 | Multi-usuario y routing |
-| **alerts** | 9 | 3,159 | Alertas de seguridad/patrones |
-| **training** | 5 | 2,600 | Entrenamiento y personalidad |
-| **pipeline** | 6 | 2,492 | Coordinación de voz |
-| **users** | 5 | 1,511 | Identificación y emociones |
-| **analytics** | 3 | 1,453 | Análisis y sugerencias |
-| **audio** | 4 | 1,271 | Captura y zonas |
-| **llm** | 3 | 948 | Razonamiento LLM |
-| **wakeword** | 4 | 857 | Detección palabra clave |
-| **memory** | 3 | 721 | Memoria contextual |
-| **tts** | 2 | 640 | Síntesis de voz |
-| **routines** | 2 | 439 | Rutinas de automatización |
-| **monitoring** | 2 | 409 | Latencia |
-| **vectordb** | 2 | 400 | Base de datos vectorial |
-| **health** | 2 | 378 | Chequeos de salud |
-| **home_assistant** | 2 | 289 | Cliente HA |
-| **stt** | 2 | 188 | Speech-to-Text |
+| **spotify** | 8 | 4,506 | Integración Spotify con mood mapping |
+| **training** | 7 | 3,882 | Entrenamiento LoRA y personalidad |
+| **pipeline** | 11 | 3,459 | Voice pipeline, CommandProcessor, ProcessedCommand |
+| **orchestrator** | 6 | 3,265 | Multi-usuario, routing, FAST_LIST/FAST_REMINDER |
+| **routines** | 5 | 2,526 | Rutinas de automatización |
+| **presence** | 4 | 1,727 | BLE scanning, tracking por zona |
+| **audio** | 5 | 1,723 | Captura y zonas, MA1260 |
+| **users** | 5 | 1,629 | Identificación y emociones |
+| **alerts** | 6 | 1,609 | Alertas de seguridad/patrones |
+| **analytics** | 4 | 1,465 | Análisis y sugerencias |
+| **llm** | 3 | 1,112 | Razonamiento LLM 72B + Router 7B |
+| **learning** | 3 | 1,108 | Aprendizaje continuo |
+| **wakeword** | 4 | 862 | Detección palabra clave |
+| **tts** | 2 | 857 | Dual TTS: Kokoro + Qwen3-TTS |
+| **rooms** | 2 | 766 | Contexto por habitación |
+| **memory** | 3 | 724 | Memoria contextual |
+| **dashboard** | 2 | 680 | API del dashboard |
+| **notifications** | 2 | 653 | Sistema de notificaciones |
+| **timers** | 2 | 648 | Timers nombrados |
+| **integrations** | 2 | 634 | Integraciones HA |
+| **home_assistant** | 3 | 616 | Cliente HA + circuit breaker |
+| **reminders** | 5 | 586 | Recordatorios con recurrencia |
+| **lists** | 4 | 564 | Listas compartidas (compras, etc.) |
+| **ambient** | 2 | 540 | Detección de eventos ambientales |
+| **intercom** | 2 | 530 | Sistema de intercomunicación |
+| **proactive** | 2 | 505 | Morning briefing proactivo |
+| **monitoring** | 2 | 413 | Latencia |
+| **core** | 2 | 410 | Logging centralizado |
+| **vectordb** | 2 | 399 | Base de datos vectorial |
+| **health** | 2 | 381 | Chequeos de salud |
+| **conversation** | 2 | 363 | Follow-up mode |
+| **stt** | 2 | 332 | Speech-to-Text |
 
 ---
 
@@ -121,29 +136,12 @@ GPUs: 4x NVIDIA RTX 3070 (8GB cada una)
 
 ## Cobertura de Tests
 
-### Distribución por Módulo
+**Total: 975 tests pasando** (pytest, ~20.35s runtime, Python 3.13.9)
 
-| Módulo | Tests | Estado |
-|--------|-------|--------|
-| Spotify | 169 | ✅ Pasando |
-| Training | 65 | ✅ Pasando |
-| Orchestrator | 79 | ✅ Pasando |
-| Alerts | 74 | ✅ Pasando |
-| Users | 58 | ✅ Pasando |
-| Safety | 43 | ✅ Pasando |
-| Memory | 38 | ✅ Pasando |
-| Otros | 86 | ✅ Pasando |
-| **TOTAL** | **612** | ✅ |
-
-### Tests de Spotify Detallados
-
-```
-test_mood_mapper.py        → 32 tests ✅
-test_music_dispatcher.py   → 47 tests ✅
-test_speaker_enrollment.py → 53 tests ✅
-test_speaker_groups.py     → 37 tests ✅
-─────────────────────────────────────
-                           169 tests
+Los tests cubren todos los módulos principales. Se ejecutan con:
+```bash
+pytest tests/                              # 975 passed
+pytest tests/ --cov=src --cov-report=html  # Con coverage
 ```
 
 ---
@@ -154,8 +152,10 @@ test_speaker_groups.py     → 37 tests ✅
 - [x] Detección de wake word personalizable
 - [x] STT con Faster-Whisper (GPU 0)
 - [x] Router rápido Qwen2.5 7B (GPU 2)
-- [x] TTS con Piper/XTTS-v2 (GPU 3)
+- [x] Dual TTS: Kokoro-82M (fast) + Qwen3-TTS 0.6B (conversacional) (GPU 3)
 - [x] Latencia <300ms objetivo
+- [x] Pipeline refactorizado: VoicePipeline (169 LOC) orquesta AudioManager, CommandProcessor, ResponseHandler, FeatureManager
+- [x] ProcessedCommand dataclass como contrato tipado entre CommandProcessor y RequestRouter
 
 ### Multi-Usuario
 - [x] Identificación por voz (ECAPA-VOXCELEB)
@@ -177,11 +177,25 @@ test_speaker_groups.py     → 37 tests ✅
 - [x] Alertas de dispositivos (batería)
 - [x] Notificaciones por voz
 
+### Listas y Recordatorios (NUEVO — marzo 2026)
+- [x] Listas compartidas y por usuario (src/lists/)
+- [x] Recordatorios con recurrencia (src/reminders/)
+- [x] Dispatcher paths: FAST_LIST y FAST_REMINDER en RequestDispatcher
+- [x] Sincronización con Home Assistant
+- [x] Tests de integración para ambos módulos
+
 ### Aprendizaje
 - [x] Entrenamiento nocturno LoRA
 - [x] Detección de emociones
 - [x] Sugerencias de automatización
 - [x] Personalidad configurable
+
+### Cambios de Infraestructura (BL-001 a BL-004)
+- [x] `src/kza_server.py` eliminado — `src/main.py` es el runtime canónico
+- [x] Docker services marcados como EXPERIMENTAL (scoped bajo BL-005)
+- [x] ProcessedCommand dataclass como contrato tipado en el pipeline (BL-002)
+- [x] Python 3.13 como baseline (BL-003)
+- [x] 975/975 tests pasando como baseline (BL-004)
 
 ---
 
@@ -190,33 +204,40 @@ test_speaker_groups.py     → 37 tests ✅
 ```
 kza/
 ├── src/
-│   ├── spotify/
-│   │   ├── client.py              # Cliente Spotify API
-│   │   ├── mood_mapper.py         # Mapeo de mood → música
-│   │   ├── music_dispatcher.py    # Routing de comandos
-│   │   ├── speaker_groups.py      # Gestión de bocinas/grupos
-│   │   ├── speaker_enrollment.py  # Enrollment por voz ⭐
-│   │   └── zone_controller.py     # Control multi-zona ⭐
+│   ├── main.py                    # Entry point canónico (kza_server.py fue eliminado)
+│   ├── pipeline/
+│   │   ├── voice_pipeline.py      # Orquestador (169 LOC)
+│   │   ├── command_processor.py   # ProcessedCommand dataclass + STT + Speaker ID
+│   │   ├── request_router.py      # Consume ProcessedCommand, despacha paths
+│   │   ├── response_handler.py    # TTS + streaming + zone routing
+│   │   ├── audio_manager.py       # Captura de audio
+│   │   └── feature_manager.py     # Analytics, memory, training
 │   │
 │   ├── orchestrator/
+│   │   ├── dispatcher.py          # PathType enum (incluye FAST_LIST, FAST_REMINDER)
 │   │   ├── context_manager.py     # Contextos de usuario
-│   │   ├── request_dispatcher.py  # Fast/slow path routing
 │   │   └── priority_queue.py      # Cola de prioridades
 │   │
-│   └── [otros módulos...]
+│   ├── lists/                     # NUEVO: Listas compartidas
+│   │   ├── list_manager.py
+│   │   ├── list_store.py
+│   │   └── ha_sync.py
+│   │
+│   ├── reminders/                 # NUEVO: Recordatorios con recurrencia
+│   │   ├── reminder_manager.py
+│   │   ├── reminder_store.py
+│   │   ├── reminder_scheduler.py
+│   │   └── recurrence.py
+│   │
+│   └── [28 módulos más...]
 │
 ├── config/
 │   └── settings.yaml              # Configuración completa
 │
-├── tests/
-│   └── unit/spotify/
-│       ├── test_speaker_enrollment.py  # 53 tests ⭐
-│       └── test_speaker_groups.py      # 37 tests ⭐
+├── tests/                         # 975 tests, 75 archivos
 │
 └── docs/
-    ├── SPOTIFY.md
-    ├── ORCHESTRATOR.md
-    └── ESTADO_PROYECTO_KZA.md     # Este archivo
+    └── 13 archivos .md
 ```
 
 ---
@@ -233,12 +254,14 @@ kza/
 
 ## Notas de Desarrollo
 
-- Todos los tests pasan: `pytest tests/ → 612 passed`
-- Código en español para comandos de voz
-- Arquitectura modular y extensible
+- Todos los tests pasan: `pytest tests/ → 975 passed` (~20.35s, Python 3.13.9)
+- Runtime canónico: `python -m src.main` (kza_server.py fue eliminado)
+- Docker services son EXPERIMENTAL (bajo BL-005)
+- Código en español para comandos de voz, código/logs en inglés
+- Arquitectura modular y extensible (32 módulos)
 - Configuración centralizada en `settings.yaml`
-- Documentación completa en `/docs`
+- Documentación en `/docs` (13 archivos)
 
 ---
 
-*Generado automáticamente - KZA Project*
+*Última actualización: 9 de Marzo, 2026 — BL-006*
