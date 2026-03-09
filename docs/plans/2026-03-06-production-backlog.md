@@ -102,6 +102,15 @@
 - `tests/unit/pipeline/test_request_router_room.py`
 - `tests/unit/pipeline/test_voice_pipeline_room.py`
 
+**Known bug (discovered 2026-03-09):**
+`CommandProcessor._identify_speaker()` returns `{"user": User, "confidence": float, "timing_ms": float}`,
+but `RequestRouter` (lines 221-224, 335-343) accesses `cmd_result["user"]` as if it were a `User` object
+(`.user_id`, `.name`, `.permission_level`). This is a latent `AttributeError` that only doesn't crash because
+no speakers are enrolled yet. Both `_process_command_orchestrated()` and `_process_command_legacy()` are affected.
+
+**Design decision pending:** Whether `process_command()` should return a typed `@dataclass ProcessedCommand`
+or remain a dict with a fixed shape. Dataclass recommended for compile-time safety.
+
 **Tasks:**
 - Standardize what `CommandProcessor.process_command()` returns for `user`.
 - Remove the mismatch between dict-based speaker results and object-style access in `RequestRouter`.
