@@ -10,6 +10,12 @@ from .logging import (
     get_context,
     generate_request_id,
 )
+from .sanitize import (
+    sanitize_value,
+    sanitize_dict,
+    mask_string,
+    SENSITIVE_KEYS,
+)
 
 __all__ = [
     "get_logger",
@@ -21,4 +27,8 @@ __all__ = [
     "clear_context",
     "get_context",
     "generate_request_id",
+    "sanitize_value",
+    "sanitize_dict",
+    "mask_string",
+    "SENSITIVE_KEYS",
 ]

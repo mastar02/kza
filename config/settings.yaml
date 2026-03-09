@@ -2,8 +2,8 @@
 
 # Home Assistant Connection
 home_assistant:
-  url: "http://192.168.1.100:8123"
-  token: "${HOME_ASSISTANT_TOKEN}"  # Usar variable de entorno
+  url: "${HOME_ASSISTANT_URL}"  # Set via environment variable in .env
+  token: "${HOME_ASSISTANT_TOKEN}"  # Set via environment variable in .env
   timeout: 2.0  # segundos
 
 # Audio Settings
@@ -575,6 +575,24 @@ orchestrator:
     queued: "Hay {count} peticion(es) antes, te respondo enseguida"
     cancelled: "Cancelado"
     timeout: "Lo siento, tarde demasiado. Intenta de nuevo."
+
+# =============================================================================
+# Dashboard API
+# =============================================================================
+dashboard:
+  enabled: true
+  host: "127.0.0.1"       # Default: local-only. Set to "0.0.0.0" to expose to LAN.
+  port: 8080
+
+  # CORS — restrict origins in production
+  cors:
+    # Allowed origins for CORS.  Use ["*"] only during development.
+    allowed_origins:
+      - "http://127.0.0.1:8080"
+      - "http://localhost:8080"
+    allow_credentials: true
+    allow_methods: ["GET", "POST", "PUT", "DELETE"]
+    allow_headers: ["*"]
 
 # Logging
 logging:

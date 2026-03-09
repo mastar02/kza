@@ -27,6 +27,7 @@ Uso:
 
 import json
 import logging
+import re
 import sys
 import time
 import threading
@@ -82,6 +83,9 @@ class Colors:
 class StructuredFormatter(logging.Formatter):
     """
     Formatter que produce logs estructurados en JSON o texto colorido.
+
+    Automatically sanitizes sensitive patterns (Bearer tokens, known secret
+    key names) from log messages to prevent accidental secret leakage.
     """
 
     LEVEL_COLORS = {
@@ -92,17 +96,27 @@ class StructuredFormatter(logging.Formatter):
         logging.CRITICAL: Colors.CRITICAL,
     }
 
+    # Pattern to detect and mask Bearer tokens in log messages
+    _BEARER_RE = re.compile(r"Bearer\s+(\S{8,})")
+
     def __init__(self, config: LogConfig = None):
         super().__init__()
         self.config = config or LogConfig()
+
+    @classmethod
+    def _sanitize_message(cls, message: str) -> str:
+        """Remove secrets that may have leaked into a log message."""
+        return cls._BEARER_RE.sub(
+            lambda m: f"Bearer {m.group(1)[:4]}***", message
+        )
 
     def format(self, record: logging.LogRecord) -> str:
         # Obtener contexto actual
         ctx = _request_context.get()
 
-        # Construir datos del log
+        # Construir datos del log — sanitize the message
         log_data = {
-            "message": record.getMessage(),
+            "message": self._sanitize_message(record.getMessage()),
             "level": record.levelname,
             "logger": record.name,
         }

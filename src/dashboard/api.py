@@ -14,6 +14,8 @@ import asyncio
 import json
 import os
 
+from src.core.sanitize import sanitize_dict
+
 logger = logging.getLogger(__name__)
 
 
@@ -125,8 +127,9 @@ class DashboardAPI:
         ha_client=None,
         list_manager=None,
         reminder_manager=None,
-        host: str = "0.0.0.0",
-        port: int = 8080
+        host: str = "127.0.0.1",
+        port: int = 8080,
+        cors_config: dict | None = None,
     ):
         self.scheduler = routine_scheduler
         self.executor = routine_executor
@@ -144,13 +147,23 @@ class DashboardAPI:
             version="1.0.0"
         )
 
-        # CORS para desarrollo
+        # CORS — use explicit config; default to restrictive same-origin
+        cors = cors_config or {}
+        allowed_origins = cors.get("allowed_origins", [
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+        ])
+        if "*" in allowed_origins:
+            logger.warning(
+                "CORS allow_origins=['*'] is insecure — restrict in production "
+                "via dashboard.cors.allowed_origins in settings.yaml"
+            )
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=["*"],  # En producción, restringir
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
+            allow_origins=allowed_origins,
+            allow_credentials=cors.get("allow_credentials", True),
+            allow_methods=cors.get("allow_methods", ["GET", "POST", "PUT", "DELETE"]),
+            allow_headers=cors.get("allow_headers", ["*"]),
         )
 
         # WebSocket clients
@@ -609,8 +622,12 @@ class DashboardAPI:
 
         @self.app.get("/api/health")
         async def health_check():
-            """Estado del sistema"""
-            return {
+            """Estado del sistema.
+
+            Returns only non-sensitive operational status.  Tokens and
+            credentials are never included.
+            """
+            return sanitize_dict({
                 "status": "ok",
                 "timestamp": datetime.now().isoformat(),
                 "components": {
@@ -619,7 +636,7 @@ class DashboardAPI:
                     "home_assistant": self.ha is not None and await self.ha.test_connection()
                 },
                 "routines_count": len(self.scheduler.get_all_routines()) if self.scheduler else 0
-            }
+            })
 
         # ==================== Static files (Frontend) ====================
 
@@ -660,6 +677,14 @@ class DashboardAPI:
     async def start(self):
         """Iniciar servidor API"""
         import uvicorn
+
+        if self.host == "0.0.0.0":
+            logger.warning(
+                "Dashboard API binding to 0.0.0.0 — accessible from LAN. "
+                "Set dashboard.host to '127.0.0.1' in settings.yaml for local-only access."
+            )
+
+        logger.info(f"Dashboard API starting on {self.host}:{self.port}")
 
         config = uvicorn.Config(
             self.app,
