@@ -93,7 +93,11 @@ chmod +x scripts/download_models.sh
 ### 4. Ejecutar
 
 ```bash
-python src/main.py
+# Recommended (includes environment checks, GPU verification, health check):
+./scripts/start.sh
+
+# Or directly:
+python -m src.main
 ```
 
 ## 🎤 Comandos de Voz
