@@ -204,7 +204,7 @@ class TestPriorityRequestQueue:
 
     def test_dequeue_empty(self):
         queue = PriorityRequestQueue()
-        result = queue.dequeue()
+        result = queue.dequeue(timeout=0.1)
         assert result is None
 
     def test_get_position(self):
@@ -268,8 +268,8 @@ class TestPriorityRequestQueue:
         queue.enqueue("user_1", "Req 1", Priority.HIGH)
         queue.enqueue("user_2", "Req 2", Priority.LOW)
 
-        req3 = queue.enqueue("user_3", "Req 3", Priority.MEDIUM)
-        req3.cancel()
+        queue.enqueue("user_3", "Req 3", Priority.MEDIUM)
+        queue.cancel_user_request("user_3")
 
         stats = queue.get_stats()
         assert stats["queue_size"] == 2  # Excluding cancelled

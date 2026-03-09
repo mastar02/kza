@@ -164,7 +164,7 @@ class SpeakerIdentifier:
         similarity = np.dot(embedding1, embedding2) / (norm1 * norm2)
 
         # Convertir de [-1, 1] a [0, 1]
-        return (similarity + 1) / 2
+        return float((similarity + 1) / 2)
 
     def identify(
         self,
@@ -204,7 +204,7 @@ class SpeakerIdentifier:
                 best_match = user_id
 
         # Verificar si supera el umbral
-        is_known = best_similarity >= self.similarity_threshold
+        is_known = bool(best_similarity >= self.similarity_threshold)
 
         return SpeakerMatch(
             user_id=best_match if is_known else None,
@@ -231,7 +231,7 @@ class SpeakerIdentifier:
         current_embedding = self.get_embedding(audio)
         similarity = self.compute_similarity(current_embedding, claimed_user_embedding)
 
-        is_match = similarity >= self.similarity_threshold
+        is_match = bool(similarity >= self.similarity_threshold)
 
         return is_match, similarity
 

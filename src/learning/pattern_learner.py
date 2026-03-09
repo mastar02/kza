@@ -292,10 +292,15 @@ class PatternLearner:
         # Calcular confianza basada en consistencia
         # Mayor consistencia = mayor confianza
         time_consistency = 1 - (stdev_time / self.max_time_variance)
-        day_consistency = len(common_days) / 7  # Más días = menos específico
-        occurrence_factor = min(len(records) / 20, 1.0)  # Más ocurrencias = más confianza
 
-        confidence = (time_consistency * 0.5 + (1 - day_consistency) * 0.3 + occurrence_factor * 0.2)
+        # Regularidad de días: qué proporción de las ocurrencias caen en días comunes
+        common_day_records = sum(day_counts[d] for d in common_days)
+        day_regularity = common_day_records / len(records) if records else 0
+
+        # Más ocurrencias = más confianza (escala con min_occurrences)
+        occurrence_factor = min(len(records) / (self.min_occurrences * 2), 1.0)
+
+        confidence = (time_consistency * 0.5 + day_regularity * 0.3 + occurrence_factor * 0.2)
 
         # Crear patrón
         typical_hour = int(mean_time // 60)

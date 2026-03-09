@@ -4,6 +4,8 @@ TTS rápido con Piper y opción de alta calidad con XTTS
 Soporta streaming para menor latencia percibida.
 """
 
+from __future__ import annotations
+
 import logging
 import time
 import threading

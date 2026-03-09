@@ -3,6 +3,8 @@ LLM Reasoner Module
 Modelo grande para razonamiento profundo con soporte LoRA.
 """
 
+from __future__ import annotations
+
 import logging
 import time
 from pathlib import Path

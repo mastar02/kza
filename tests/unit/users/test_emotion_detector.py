@@ -447,7 +447,7 @@ class TestEmotionDetectorBatch:
             np.random.rand(16000).astype(np.float32),
         ]
 
-        mock_detector._model.side_effect = [
+        mock_detector._model.return_value = [
             [{"label": "happy", "score": 0.9}],
             [{"label": "sad", "score": 0.85}],
             [{"label": "angry", "score": 0.88}],

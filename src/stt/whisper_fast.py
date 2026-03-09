@@ -8,6 +8,8 @@ Optimizado para latencia mínima:
 - Configuración de beam_size=1 para velocidad
 """
 
+from __future__ import annotations
+
 import logging
 import time
 from pathlib import Path

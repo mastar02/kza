@@ -63,7 +63,15 @@ def mock_pattern_learner():
     pattern_dismissed.action_type = "light_off"
     pattern_dismissed.entity_id = "light.hall"
     pattern_dismissed.confidence = 0.75
+    pattern_dismissed.occurrences = 10
+    pattern_dismissed.typical_time = dtime(23, 0)
+    pattern_dismissed.time_variance_minutes = 15.0
+    pattern_dismissed.days_of_week = [0, 1, 2, 3, 4, 5, 6]
+    pattern_dismissed.user_id = "mastar"
+    pattern_dismissed.typical_data = {}
     pattern_dismissed.dismissed = True  # Rechazado por el usuario
+    pattern_dismissed.suggested = False
+    pattern_dismissed.accepted = False
 
     learner._patterns = {
         "light_on_living_0700": pattern_light,

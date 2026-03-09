@@ -392,6 +392,31 @@ class RequestDispatcher:
     ) -> DispatchResult | None:
         """Verificar comandos especiales"""
 
+        # Confirmacion pendiente - check BEFORE cancel keywords
+        # so "no cancela" is treated as rejection, not as a cancel command
+        if ctx.pending_confirmation:
+            if any(word in text_lower for word in ["si", "confirma", "acepto", "ok"]):
+                # Procesar confirmacion
+                confirmation = ctx.pending_confirmation
+                self.context_manager.clear_pending_confirmation(user_id)
+                return DispatchResult(
+                    path=PathType.FAST_ROUTINE,
+                    priority=Priority.MEDIUM,
+                    success=True,
+                    response="Confirmado",
+                    intent="confirmation",
+                    action=confirmation
+                )
+            elif any(word in text_lower for word in ["no", "cancela", "rechaza"]):
+                self.context_manager.clear_pending_confirmation(user_id)
+                return DispatchResult(
+                    path=PathType.FAST_ROUTINE,
+                    priority=Priority.MEDIUM,
+                    success=True,
+                    response="Cancelado",
+                    intent="rejection"
+                )
+
         # Comando de cancelacion
         for keyword in self.CANCEL_KEYWORDS:
             if keyword in text_lower:
@@ -424,30 +449,6 @@ class RequestDispatcher:
                     success=True,
                     response="Iniciando registro de usuario...",
                     intent="enrollment"
-                )
-
-        # Confirmacion pendiente
-        if ctx.pending_confirmation:
-            if any(word in text_lower for word in ["si", "confirma", "acepto", "ok"]):
-                # Procesar confirmacion
-                confirmation = ctx.pending_confirmation
-                self.context_manager.clear_pending_confirmation(user_id)
-                return DispatchResult(
-                    path=PathType.FAST_ROUTINE,
-                    priority=Priority.MEDIUM,
-                    success=True,
-                    response="Confirmado",
-                    intent="confirmation",
-                    action=confirmation
-                )
-            elif any(word in text_lower for word in ["no", "cancela", "rechaza"]):
-                self.context_manager.clear_pending_confirmation(user_id)
-                return DispatchResult(
-                    path=PathType.FAST_ROUTINE,
-                    priority=Priority.MEDIUM,
-                    success=True,
-                    response="Cancelado",
-                    intent="rejection"
                 )
 
         return None

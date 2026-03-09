@@ -579,7 +579,8 @@ class TestMemoryManager:
             mock_client.get_or_create_collection.return_value = mock_collection
             mock_collection.count.return_value = 5
 
-            mm = MemoryManager(mock_client)
+            prefs_path = str(Path(tmpdir) / "preferences.json")
+            mm = MemoryManager(mock_client, preferences_path=prefs_path)
             mm.short_term.add_turn("Input", "Output")
             mm.preferences.set("pref1", "value1")
 

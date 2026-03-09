@@ -9,20 +9,22 @@ Estrategias:
 4. Streaming continuo: TTS habla mientras LLM genera
 """
 
+from __future__ import annotations
+
 import logging
 import random
 import re
 import threading
 import time
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum
 from queue import Queue, Empty
 from typing import Callable, Generator
 
 logger = logging.getLogger(__name__)
 
 
-class BufferStrategy(StrEnum):
+class BufferStrategy(str, Enum):
     """Estrategias de buffering disponibles"""
     SENTENCE = "sentence"      # Buffer por oraciones completas
     TOKEN_COUNT = "token"      # Buffer por cantidad de tokens
