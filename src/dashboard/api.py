@@ -734,7 +734,7 @@ class DashboardAPI:
         # ==================== Static files (Frontend) ====================
 
         # Servir frontend si existe
-        frontend_path = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+        frontend_path = os.path.join(os.path.dirname(__file__), "frontend")
         if os.path.exists(frontend_path):
             self.app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 
