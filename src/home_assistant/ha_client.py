@@ -1,19 +1,85 @@
 """
 Home Assistant Client
-Comunicacion con Home Assistant via REST API y WebSocket
+Comunicacion con Home Assistant via REST API y WebSocket.
+
+Graceful degradation: all methods return safe defaults when HA is
+unavailable so the voice server keeps running.
 """
 
 import asyncio
 import logging
+import time
+from dataclasses import dataclass, field
+from enum import StrEnum
+
 import aiohttp
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Constants — all timeouts in one place for easy tuning
+# ---------------------------------------------------------------------------
+REST_TIMEOUT_DEFAULT = 5.0      # Standard REST call timeout (seconds)
+REST_TIMEOUT_BULK = 10.0        # Bulk endpoints (/api/states, /api/services)
+REST_TIMEOUT_HEALTH = 5.0       # Health-check / test_connection
+WS_AUTH_TIMEOUT = 5.0           # WebSocket auth handshake timeout
+WS_CALL_TIMEOUT = 2.0           # WebSocket service-call timeout
+AUTOMATION_TIMEOUT = 10.0       # Automation CRUD operations
+RELOAD_TIMEOUT = 5.0            # Automation reload
 
+# User-facing fallback messages (Spanish, per project convention)
+FALLBACK_MSG_UNAVAILABLE = "Home Assistant no está disponible en este momento. Intenta de nuevo en unos segundos."
+FALLBACK_MSG_AUTH = "Error de autenticación con Home Assistant. Verifica el token de acceso."
+FALLBACK_MSG_TIMEOUT = "Home Assistant tardó demasiado en responder."
+
+
+# ---------------------------------------------------------------------------
+# Health status DTO
+# ---------------------------------------------------------------------------
+class HAConnectionState(StrEnum):
+    """Possible connection states for the HA client."""
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    AUTH_ERROR = "auth_error"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class HAHealthStatus:
+    """Structured health information for the HA integration.
+
+    Attributes:
+        state: Current connection state.
+        last_success_ts: Epoch timestamp of the last successful call (0 if never).
+        last_error_ts: Epoch timestamp of the last error (0 if never).
+        error_count: Total errors since client creation.
+        success_count: Total successful calls since client creation.
+        avg_latency_ms: Exponential moving average of REST call latency.
+        ws_connected: Whether the WebSocket transport is connected.
+        last_error_message: Human-readable description of the most recent error.
+    """
+    state: HAConnectionState = HAConnectionState.UNKNOWN
+    last_success_ts: float = 0.0
+    last_error_ts: float = 0.0
+    error_count: int = 0
+    success_count: int = 0
+    avg_latency_ms: float = 0.0
+    ws_connected: bool = False
+    last_error_message: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Client
+# ---------------------------------------------------------------------------
 class HomeAssistantClient:
-    """Cliente para comunicacion con Home Assistant via REST API y WebSocket."""
+    """Cliente para comunicacion con Home Assistant via REST API y WebSocket.
 
-    def __init__(self, url: str, token: str, timeout: float = 2.0):
+    All public methods degrade gracefully: connection errors, timeouts, and
+    auth failures return safe fallback values (empty list, None, False) and
+    log the incident rather than raising exceptions.
+    """
+
+    def __init__(self, url: str, token: str, timeout: float = REST_TIMEOUT_DEFAULT):
         self.url = url.rstrip("/")
         self.token = token
         self.timeout = timeout
@@ -29,6 +95,19 @@ class HomeAssistantClient:
         self._ws_reconnect_attempts = 0
         self._ws_max_reconnect_attempts = 3
 
+        # Health tracking
+        self._error_count = 0
+        self._success_count = 0
+        self._last_success_ts: float = 0.0
+        self._last_error_ts: float = 0.0
+        self._last_error_message: str = ""
+        self._avg_latency_ms: float = 0.0
+        self._has_auth_error: bool = False
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
     async def _ensure_session(self) -> aiohttp.ClientSession:
         """Ensure an aiohttp ClientSession exists, creating one lazily if needed.
 
@@ -43,47 +122,145 @@ class HomeAssistantClient:
                 )
         return self._session
 
+    def _record_success(self, latency_ms: float) -> None:
+        """Record a successful HA call for health tracking."""
+        self._success_count += 1
+        self._last_success_ts = time.time()
+        self._has_auth_error = False
+        # Exponential moving average (alpha=0.3)
+        if self._avg_latency_ms == 0.0:
+            self._avg_latency_ms = latency_ms
+        else:
+            self._avg_latency_ms = 0.7 * self._avg_latency_ms + 0.3 * latency_ms
+
+    def _record_error(self, error: Exception, context: str) -> None:
+        """Record a failed HA call for health tracking."""
+        self._error_count += 1
+        self._last_error_ts = time.time()
+        self._last_error_message = f"{context}: {error}"
+        if isinstance(error, aiohttp.ClientResponseError) and error.status in (401, 403):
+            self._has_auth_error = True
+
     # ==================== REST API ====================
 
     async def get_all_entities(self) -> list[dict]:
         """Obtener todas las entidades de Home Assistant."""
+        t_start = time.perf_counter()
         try:
             session = await self._ensure_session()
             async with session.get(
                 f"{self.url}/api/states",
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT_BULK)
             ) as response:
+                if response.status in (401, 403):
+                    self._has_auth_error = True
+                    logger.error(f"HA auth error {response.status} getting entities")
+                    self._record_error(
+                        aiohttp.ClientResponseError(
+                            request_info=response.request_info,
+                            history=response.history,
+                            status=response.status,
+                        ),
+                        "get_all_entities",
+                    )
+                    return []
                 response.raise_for_status()
-                return await response.json()
+                result = await response.json()
+                elapsed = (time.perf_counter() - t_start) * 1000
+                self._record_success(elapsed)
+                return result
+        except asyncio.TimeoutError:
+            elapsed = (time.perf_counter() - t_start) * 1000
+            logger.error(f"HA timeout getting entities after {elapsed:.0f}ms (limit {REST_TIMEOUT_BULK}s)")
+            self._record_error(asyncio.TimeoutError(), "get_all_entities")
+            return []
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"HA unavailable (get_all_entities): {e}")
+            self._record_error(e, "get_all_entities")
+            return []
         except Exception as e:
             logger.error(f"Error obteniendo entidades: {e}")
+            self._record_error(e, "get_all_entities")
             return []
 
     async def get_all_services(self) -> list[dict]:
         """Obtener todos los servicios disponibles."""
+        t_start = time.perf_counter()
         try:
             session = await self._ensure_session()
             async with session.get(
                 f"{self.url}/api/services",
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT_BULK)
             ) as response:
+                if response.status in (401, 403):
+                    self._has_auth_error = True
+                    logger.error(f"HA auth error {response.status} getting services")
+                    self._record_error(
+                        aiohttp.ClientResponseError(
+                            request_info=response.request_info,
+                            history=response.history,
+                            status=response.status,
+                        ),
+                        "get_all_services",
+                    )
+                    return []
                 response.raise_for_status()
-                return await response.json()
+                result = await response.json()
+                elapsed = (time.perf_counter() - t_start) * 1000
+                self._record_success(elapsed)
+                return result
+        except asyncio.TimeoutError:
+            elapsed = (time.perf_counter() - t_start) * 1000
+            logger.error(f"HA timeout getting services after {elapsed:.0f}ms (limit {REST_TIMEOUT_BULK}s)")
+            self._record_error(asyncio.TimeoutError(), "get_all_services")
+            return []
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"HA unavailable (get_all_services): {e}")
+            self._record_error(e, "get_all_services")
+            return []
         except Exception as e:
             logger.error(f"Error obteniendo servicios: {e}")
+            self._record_error(e, "get_all_services")
             return []
 
     async def get_entity_state(self, entity_id: str) -> dict | None:
         """Obtener estado de una entidad especifica."""
+        t_start = time.perf_counter()
         try:
             session = await self._ensure_session()
             async with session.get(
-                f"{self.url}/api/states/{entity_id}"
+                f"{self.url}/api/states/{entity_id}",
+                timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT_DEFAULT)
             ) as response:
+                if response.status in (401, 403):
+                    self._has_auth_error = True
+                    logger.error(f"HA auth error {response.status} getting state for {entity_id}")
+                    self._record_error(
+                        aiohttp.ClientResponseError(
+                            request_info=response.request_info,
+                            history=response.history,
+                            status=response.status,
+                        ),
+                        f"get_entity_state({entity_id})",
+                    )
+                    return None
                 response.raise_for_status()
-                return await response.json()
+                result = await response.json()
+                elapsed = (time.perf_counter() - t_start) * 1000
+                self._record_success(elapsed)
+                return result
+        except asyncio.TimeoutError:
+            elapsed = (time.perf_counter() - t_start) * 1000
+            logger.error(f"HA timeout getting state for {entity_id} after {elapsed:.0f}ms")
+            self._record_error(asyncio.TimeoutError(), f"get_entity_state({entity_id})")
+            return None
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"HA unavailable (get_entity_state {entity_id}): {e}")
+            self._record_error(e, f"get_entity_state({entity_id})")
+            return None
         except Exception as e:
             logger.error(f"Error obteniendo estado de {entity_id}: {e}")
+            self._record_error(e, f"get_entity_state({entity_id})")
             return None
 
     async def call_service(
@@ -108,20 +285,49 @@ class HomeAssistantClient:
         if data:
             payload.update(data)
 
+        t_start = time.perf_counter()
         try:
             session = await self._ensure_session()
             async with session.post(
                 f"{self.url}/api/services/{domain}/{service}",
-                json=payload
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT_DEFAULT)
             ) as response:
+                elapsed = (time.perf_counter() - t_start) * 1000
+                if response.status in (401, 403):
+                    self._has_auth_error = True
+                    logger.error(f"HA auth error {response.status}: {domain}.{service} on {entity_id}")
+                    self._record_error(
+                        aiohttp.ClientResponseError(
+                            request_info=response.request_info,
+                            history=response.history,
+                            status=response.status,
+                        ),
+                        f"call_service({domain}.{service})",
+                    )
+                    return False
                 success = response.status == 200
                 if success:
-                    logger.info(f"Ejecutado: {domain}.{service} en {entity_id}")
+                    self._record_success(elapsed)
+                    logger.info(f"Ejecutado: {domain}.{service} en {entity_id} ({elapsed:.0f}ms)")
                 else:
-                    logger.warning(f"Error {response.status}: {domain}.{service}")
+                    logger.warning(f"Error {response.status}: {domain}.{service} ({elapsed:.0f}ms)")
                 return success
+        except asyncio.TimeoutError:
+            elapsed = (time.perf_counter() - t_start) * 1000
+            logger.error(
+                f"HA timeout calling {domain}.{service} on {entity_id} "
+                f"after {elapsed:.0f}ms (limit {REST_TIMEOUT_DEFAULT}s)"
+            )
+            self._record_error(asyncio.TimeoutError(), f"call_service({domain}.{service})")
+            return False
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"HA unavailable (call_service {domain}.{service}): {e}")
+            self._record_error(e, f"call_service({domain}.{service})")
+            return False
         except Exception as e:
             logger.error(f"Error llamando servicio: {e}")
+            self._record_error(e, f"call_service({domain}.{service})")
             return False
 
     # ==================== Automatizaciones ====================
@@ -136,42 +342,79 @@ class HomeAssistantClient:
         Returns:
             (success, error_message)
         """
+        t_start = time.perf_counter()
         try:
             session = await self._ensure_session()
             async with session.post(
                 f"{self.url}/api/config/automation/config/{automation_id}",
                 json=config,
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=AUTOMATION_TIMEOUT)
             ) as response:
+                elapsed = (time.perf_counter() - t_start) * 1000
+                if response.status in (401, 403):
+                    self._has_auth_error = True
+                    self._record_error(
+                        aiohttp.ClientResponseError(
+                            request_info=response.request_info,
+                            history=response.history,
+                            status=response.status,
+                        ),
+                        "create_automation",
+                    )
+                    return False, FALLBACK_MSG_AUTH
                 if response.status in [200, 201]:
                     # Recargar automatizaciones
                     await self._reload_automations()
-                    logger.info(f"Automatizacion creada: {automation_id}")
+                    self._record_success(elapsed)
+                    logger.info(f"Automatizacion creada: {automation_id} ({elapsed:.0f}ms)")
                     return True, "OK"
                 else:
                     error = await response.text()
                     logger.error(f"Error creando automatizacion: {error}")
                     return False, error
+        except asyncio.TimeoutError:
+            elapsed = (time.perf_counter() - t_start) * 1000
+            logger.error(f"HA timeout creating automation {automation_id} after {elapsed:.0f}ms")
+            self._record_error(asyncio.TimeoutError(), "create_automation")
+            return False, FALLBACK_MSG_TIMEOUT
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"HA unavailable (create_automation): {e}")
+            self._record_error(e, "create_automation")
+            return False, FALLBACK_MSG_UNAVAILABLE
         except Exception as e:
             logger.error(f"Error creando automatizacion: {e}")
+            self._record_error(e, "create_automation")
             return False, str(e)
 
     async def delete_automation(self, automation_id: str) -> bool:
         """Eliminar una automatizacion."""
+        t_start = time.perf_counter()
         try:
             session = await self._ensure_session()
             async with session.delete(
                 f"{self.url}/api/config/automation/config/{automation_id}",
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=AUTOMATION_TIMEOUT)
             ) as response:
+                elapsed = (time.perf_counter() - t_start) * 1000
                 if response.status in [200, 204]:
                     await self._reload_automations()
-                    logger.info(f"Automatizacion eliminada: {automation_id}")
+                    self._record_success(elapsed)
+                    logger.info(f"Automatizacion eliminada: {automation_id} ({elapsed:.0f}ms)")
                     return True
                 logger.warning(f"Delete automation {automation_id} returned status {response.status}")
                 return False
+        except asyncio.TimeoutError:
+            elapsed = (time.perf_counter() - t_start) * 1000
+            logger.error(f"HA timeout deleting automation {automation_id} after {elapsed:.0f}ms")
+            self._record_error(asyncio.TimeoutError(), "delete_automation")
+            return False
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"HA unavailable (delete_automation): {e}")
+            self._record_error(e, "delete_automation")
+            return False
         except Exception as e:
             logger.error(f"Error eliminando automatizacion: {e}")
+            self._record_error(e, "delete_automation")
             return False
 
     async def get_automations(self) -> list[dict]:
@@ -185,7 +428,7 @@ class HomeAssistantClient:
             session = await self._ensure_session()
             async with session.post(
                 f"{self.url}/api/services/automation/reload",
-                timeout=aiohttp.ClientTimeout(total=5)
+                timeout=aiohttp.ClientTimeout(total=RELOAD_TIMEOUT)
             ) as response:
                 if response.status not in (200, 204):
                     logger.warning(f"Automation reload returned status {response.status}")
@@ -215,7 +458,7 @@ class HomeAssistantClient:
             # Autenticar
             msg = await asyncio.wait_for(
                 self._ws_connection.receive_json(),
-                timeout=5.0
+                timeout=WS_AUTH_TIMEOUT
             )
 
             if msg.get("type") == "auth_required":
@@ -226,7 +469,7 @@ class HomeAssistantClient:
 
                 auth_result = await asyncio.wait_for(
                     self._ws_connection.receive_json(),
-                    timeout=5.0
+                    timeout=WS_AUTH_TIMEOUT
                 )
 
                 if auth_result.get("type") == "auth_ok":
@@ -235,13 +478,25 @@ class HomeAssistantClient:
                     logger.info("WebSocket HA conectado y autenticado")
                     return True
                 else:
+                    self._has_auth_error = True
                     logger.error(f"Auth WebSocket fallo: {auth_result}")
 
             return False
 
+        except asyncio.TimeoutError:
+            logger.error(f"WebSocket auth timeout after {WS_AUTH_TIMEOUT}s")
+            self._ws_connected = False
+            self._record_error(asyncio.TimeoutError(), "connect_websocket")
+            return False
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"HA unavailable (connect_websocket): {e}")
+            self._ws_connected = False
+            self._record_error(e, "connect_websocket")
+            return False
         except Exception as e:
             logger.error(f"Error conectando WebSocket HA: {e}")
             self._ws_connected = False
+            self._record_error(e, "connect_websocket")
             return False
 
     async def ensure_websocket_connected(self) -> bool:
@@ -269,12 +524,14 @@ class HomeAssistantClient:
         """Llamar servicio via WebSocket (mas rapido que REST).
 
         Latencia tipica: 10-20ms vs 50-100ms de REST.
+        Falls back to REST automatically on WS failure.
         """
         # Asegurar conexion WebSocket
         if not await self.ensure_websocket_connected():
             logger.debug("WebSocket no disponible, usando REST")
             return await self.call_service(domain, service, entity_id, data)
 
+        t_start = time.perf_counter()
         try:
             # ID unico para este mensaje
             self._ws_msg_id += 1
@@ -295,21 +552,29 @@ class HomeAssistantClient:
             # Esperar respuesta (con timeout corto para baja latencia)
             response = await asyncio.wait_for(
                 self._ws_connection.receive_json(),
-                timeout=self.timeout
+                timeout=WS_CALL_TIMEOUT
             )
 
+            elapsed = (time.perf_counter() - t_start) * 1000
             success = response.get("success", False)
             if success:
-                logger.debug(f"WS: {domain}.{service} -> {entity_id}")
+                self._record_success(elapsed)
+                logger.debug(f"WS: {domain}.{service} -> {entity_id} ({elapsed:.0f}ms)")
             return success
 
         except asyncio.TimeoutError:
-            logger.warning("Timeout WebSocket, fallback a REST")
+            elapsed = (time.perf_counter() - t_start) * 1000
+            logger.warning(
+                f"WebSocket timeout for {domain}.{service} on {entity_id} "
+                f"after {elapsed:.0f}ms (limit {WS_CALL_TIMEOUT}s), fallback to REST"
+            )
+            self._record_error(asyncio.TimeoutError(), f"call_service_ws({domain}.{service})")
             return await self.call_service(domain, service, entity_id, data)
 
         except Exception as e:
             logger.error(f"Error WebSocket: {e}")
             self._ws_connected = False  # Marcar para reconexion
+            self._record_error(e, f"call_service_ws({domain}.{service})")
             return await self.call_service(domain, service, entity_id, data)
 
     async def close(self) -> None:
@@ -318,6 +583,38 @@ class HomeAssistantClient:
             await self._ws_connection.close()
         if self._session and not self._session.closed:
             await self._session.close()
+
+    # ==================== Health Status ====================
+
+    def get_health_status(self) -> HAHealthStatus:
+        """Return structured health information about the HA connection.
+
+        Returns:
+            HAHealthStatus with current metrics.
+        """
+        if self._has_auth_error:
+            state = HAConnectionState.AUTH_ERROR
+        elif self._last_success_ts > 0 and (
+            self._last_error_ts == 0 or self._last_success_ts > self._last_error_ts
+        ):
+            state = HAConnectionState.CONNECTED
+        elif self._error_count > 0 and (
+            self._last_success_ts == 0 or self._last_error_ts > self._last_success_ts
+        ):
+            state = HAConnectionState.DISCONNECTED
+        else:
+            state = HAConnectionState.UNKNOWN
+
+        return HAHealthStatus(
+            state=state,
+            last_success_ts=self._last_success_ts,
+            last_error_ts=self._last_error_ts,
+            error_count=self._error_count,
+            success_count=self._success_count,
+            avg_latency_ms=round(self._avg_latency_ms, 2),
+            ws_connected=self._ws_connected,
+            last_error_message=self._last_error_message,
+        )
 
     # ==================== Utilidades ====================
 
@@ -345,13 +642,38 @@ class HomeAssistantClient:
 
     async def test_connection(self) -> bool:
         """Verificar conexion con Home Assistant."""
+        t_start = time.perf_counter()
         try:
             session = await self._ensure_session()
             async with session.get(
                 f"{self.url}/api/",
-                timeout=aiohttp.ClientTimeout(total=5)
+                timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT_HEALTH)
             ) as response:
-                return response.status == 200
+                elapsed = (time.perf_counter() - t_start) * 1000
+                if response.status == 200:
+                    self._record_success(elapsed)
+                    return True
+                if response.status in (401, 403):
+                    self._has_auth_error = True
+                    self._record_error(
+                        aiohttp.ClientResponseError(
+                            request_info=response.request_info,
+                            history=response.history,
+                            status=response.status,
+                        ),
+                        "test_connection",
+                    )
+                return False
+        except asyncio.TimeoutError:
+            elapsed = (time.perf_counter() - t_start) * 1000
+            logger.error(f"HA connection test timeout after {elapsed:.0f}ms")
+            self._record_error(asyncio.TimeoutError(), "test_connection")
+            return False
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"HA unavailable (test_connection): {e}")
+            self._record_error(e, "test_connection")
+            return False
         except Exception as e:
             logger.error(f"Error testing HA connection: {e}")
+            self._record_error(e, "test_connection")
             return False
