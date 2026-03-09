@@ -145,13 +145,13 @@ class TestMultiRoomAudioLoopInit:
             room_streams=rooms,
             follow_up=follow_up,
             sample_rate=16000,
-            dedup_window_ms=200,
+            dedup_window_ms=500,
         )
 
         assert loop.room_streams is rooms
         assert loop.follow_up is follow_up
         assert loop.sample_rate == 16000
-        assert loop.dedup_window_ms == 200
+        assert loop.dedup_window_ms == 500
         assert loop._running is False
         assert loop._on_command_callback is None
         assert loop._on_post_command_callback is None
@@ -166,7 +166,7 @@ class TestMultiRoomAudioLoopInit:
         assert loop.silence_threshold == 0.015
         assert loop.silence_duration_ms == 300
         assert loop.min_speech_ms == 300
-        assert loop.dedup_window_ms == 200
+        assert loop.dedup_window_ms == 500
 
 
 class TestDeduplication:
