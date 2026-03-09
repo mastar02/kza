@@ -208,18 +208,18 @@ class RequestRouter:
         pipeline_start = time.perf_counter()
 
         # 1. Process command (STT + Speaker ID + Emotion in parallel)
-        cmd_result = await self.command_processor.process_command(audio, use_parallel=True)
-        text = cmd_result["text"]
+        cmd = await self.command_processor.process_command(audio, use_parallel=True)
+        text = cmd.text
         result["text"] = text
-        result["timings"].update(cmd_result["timings"])
+        result["timings"].update(cmd.timings)
 
         if not text.strip():
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
         # 2. Get user info
-        user = cmd_result.get("user")
-        emotion = cmd_result.get("emotion")
+        user = cmd.user
+        emotion = cmd.emotion
         user_id = user.user_id if user else None
         user_name = user.name if user else None
 
@@ -324,16 +324,16 @@ class RequestRouter:
         pipeline_start = time.perf_counter()
 
         # 1. Process command
-        cmd_result = await self.command_processor.process_command(audio, use_parallel=True)
-        text = cmd_result["text"]
+        cmd = await self.command_processor.process_command(audio, use_parallel=True)
+        text = cmd.text
         result["text"] = text
-        result["timings"].update(cmd_result["timings"])
+        result["timings"].update(cmd.timings)
 
         if not text.strip():
             return result
 
-        user = cmd_result.get("user")
-        emotion = cmd_result.get("emotion")
+        user = cmd.user
+        emotion = cmd.emotion
         user_id = user.user_id if user else None
 
         if user:
@@ -357,7 +357,7 @@ class RequestRouter:
                 "source": room_context.source.value,
             }
 
-        logger.info(f"[STT {cmd_result['timings'].get('stt', 0):.0f}ms] {text}")
+        logger.info(f"[STT {cmd.timings.get('stt', 0):.0f}ms] {text}")
 
         # 2. Check feedback
         feedback_result = self._check_feedback(text)
