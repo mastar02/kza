@@ -172,7 +172,7 @@ embeddings:
 # Router/Clasificador (GPU 2)
 router:
   enabled: true
-  model: "Qwen/Qwen2.5-7B-Instruct"
+  model: "Qwen/Qwen2.5-7B-Instruct-AWQ"
   device: "cuda:2"
   gpu_memory_utilization: 0.85
   # OPTIMIZACIÓN: Prefix caching para system prompt
