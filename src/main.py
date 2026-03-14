@@ -148,8 +148,15 @@ async def main():
     else:
         llm = LLMReasoner(
             model_path=model_path,
-            n_ctx=reasoner_config.get("n_ctx", 8192),
-            n_threads=reasoner_config.get("n_threads", 24)
+            lora_path=reasoner_config.get("lora_path"),
+            lora_scale=reasoner_config.get("lora_scale", 1.0),
+            n_ctx=reasoner_config.get("n_ctx", 32768),
+            n_threads=reasoner_config.get("n_threads", 24),
+            n_batch=reasoner_config.get("n_batch", 512),
+            n_gpu_layers=reasoner_config.get("n_gpu_layers", 0),
+            chat_format=reasoner_config.get("chat_format", "chatml"),
+            rope_freq_base=reasoner_config.get("rope_freq_base", 1000000.0),
+            rope_freq_scale=reasoner_config.get("rope_freq_scale", 1.0),
         )
 
     # Routine Manager
