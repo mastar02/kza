@@ -44,17 +44,17 @@ def check_python_version() -> CheckResult:
     version = sys.version_info
     version_str = f"{version.major}.{version.minor}.{version.micro}"
 
-    if version.major >= 3 and version.minor >= 10:
+    if version.major >= 3 and version.minor >= 13:
         return CheckResult(
             name="Python Version",
             status=Status.OK,
-            message=f"{version_str} (>=3.10 requerido)"
+            message=f"{version_str} (>=3.13 requerido)"
         )
     else:
         return CheckResult(
             name="Python Version",
             status=Status.ERROR,
-            message=f"{version_str} (>=3.10 requerido)"
+            message=f"{version_str} (>=3.13 requerido)"
         )
 
 
@@ -149,7 +149,7 @@ def check_cpu() -> CheckResult:
         psutil = None
 
     cpu_count = os.cpu_count() or 0
-    expected_threads = 48  # Threadripper 9965WX
+    expected_threads = 48  # Threadripper PRO 7965WX
 
     # Intentar obtener info del CPU
     cpu_info = "Unknown"
