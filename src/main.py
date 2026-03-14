@@ -167,10 +167,13 @@ async def main():
     fast_router = None
     if router_config.get("enabled", True):
         fast_router = FastRouter(
-            model=router_config.get("model", "Qwen/Qwen2.5-7B-Instruct"),
+            model=router_config.get("model", "Qwen/Qwen2.5-7B-Instruct-AWQ"),
             device=router_config.get("device", "cuda:2"),
             gpu_memory_utilization=router_config.get("gpu_memory_utilization", 0.85),
-            enable_prefix_caching=router_config.get("enable_prefix_caching", True)
+            enable_prefix_caching=router_config.get("enable_prefix_caching", True),
+            enable_lora=router_config.get("enable_lora", False),
+            lora_path=router_config.get("lora_path"),
+            max_lora_rank=router_config.get("max_lora_rank", 32),
         )
         logger.info(f"Fast router habilitado (prefix_caching={router_config.get('enable_prefix_caching', True)})")
 
