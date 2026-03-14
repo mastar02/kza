@@ -57,6 +57,8 @@ from src.lists.list_manager import ListManager
 from src.reminders.reminder_store import ReminderStore
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_scheduler import ReminderScheduler
+from src.dashboard.api import DashboardAPI
+from src.monitoring.health_aggregator import HealthAggregator
 
 # Configurar logging
 logging.basicConfig(
@@ -598,6 +600,35 @@ async def main():
     )
 
     # ----------------------------------------------------------------
+    # Dashboard API + Health Aggregator
+    # ----------------------------------------------------------------
+    dashboard_config = config.get("dashboard", {})
+    dashboard = None
+
+    if dashboard_config.get("enabled", True):
+        health_aggregator = HealthAggregator(
+            ha_client=ha_client,
+            latency_monitor=latency_monitor,
+            priority_queue=getattr(orchestrator, "_queue", None) if orchestrator else None,
+            reminder_scheduler=reminder_scheduler,
+        )
+
+        dashboard = DashboardAPI(
+            routine_scheduler=None,
+            routine_executor=None,
+            presence_detector=presence_detector,
+            ha_client=ha_client,
+            list_manager=list_manager,
+            reminder_manager=reminder_manager,
+            health_aggregator=health_aggregator,
+            reminder_scheduler=reminder_scheduler,
+            host=dashboard_config.get("host", "127.0.0.1"),
+            port=dashboard_config.get("port", 8080),
+            cors_config=dashboard_config.get("cors"),
+        )
+        logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 8080)}")
+
+    # ----------------------------------------------------------------
     # Nightly Training (habit learning + QLoRA)
     # ----------------------------------------------------------------
     training_config = config.get("training", {})
@@ -681,10 +712,18 @@ async def main():
 
     # Ejecutar
     try:
+        # Start dashboard API as background task
+        dashboard_task = None
+        if dashboard:
+            dashboard_task = asyncio.create_task(dashboard.start())
+            logger.info("Dashboard API started")
+
         await pipeline.run()
     except KeyboardInterrupt:
         logger.info("\nDeteniendo...")
     finally:
+        if dashboard_task:
+            dashboard_task.cancel()
         if presence_detector:
             await presence_detector.stop()
         if reminder_scheduler:
