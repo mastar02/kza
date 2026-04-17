@@ -306,6 +306,11 @@ class ModelManager:
     async def _load_speaker_id(self):
         """Cargar modelo de identificación de hablante"""
         try:
+            # Workaround: torchaudio 2.10 removed list_audio_backends()
+            import torchaudio
+            if not hasattr(torchaudio, "list_audio_backends"):
+                torchaudio.list_audio_backends = lambda: ["ffmpeg"]
+
             from speechbrain.inference.speaker import EncoderClassifier
             device = f"cuda:{self.config.speaker_id_gpu}"
             model = EncoderClassifier.from_hparams(

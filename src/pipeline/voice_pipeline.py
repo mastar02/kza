@@ -92,12 +92,18 @@ class VoicePipeline:
 
         # Start orchestrator
         if self._orchestrator:
-            await self._orchestrator.start()
+            try:
+                await self._orchestrator.start()
+            except Exception as e:
+                logger.warning(f"Orchestrator start failed (non-fatal): {e}")
 
         # Start features (timers, intercom, notifications, alerts, HA)
         if self.features:
-            await self.features.start()
-            logger.info("FeatureManager started")
+            try:
+                await self.features.start()
+                logger.info("FeatureManager started")
+            except Exception as e:
+                logger.warning(f"FeatureManager start failed (non-fatal): {e}")
 
         self._running = True
         logger.info("System ready")
@@ -114,14 +120,16 @@ class VoicePipeline:
         """Stop all components."""
         self._running = False
 
-        if self._orchestrator:
-            await self._orchestrator.stop()
-
-        if self.audio_loop:
-            await self.audio_loop.stop()
-
-        if self.features:
-            await self.features.stop()
+        for name, coro in [
+            ("orchestrator", self._orchestrator.stop() if self._orchestrator else None),
+            ("audio_loop", self.audio_loop.stop() if self.audio_loop else None),
+            ("features", self.features.stop() if self.features else None),
+        ]:
+            if coro:
+                try:
+                    await coro
+                except Exception as e:
+                    logger.warning(f"Error stopping {name}: {e}")
 
         logger.info("Pipeline stopped")
 

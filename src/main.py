@@ -160,6 +160,8 @@ async def main():
             rope_freq_base=reasoner_config.get("rope_freq_base", 1000000.0),
             rope_freq_scale=reasoner_config.get("rope_freq_scale", 1.0),
         )
+        llm.load()
+        logger.info("LLM 72B cargado en RAM")
 
     # Routine Manager
     routine_manager = RoutineManager(ha_client, chroma, llm)
@@ -183,10 +185,14 @@ async def main():
     memory_config = config.get("memory", {})
     memory_manager = None
     if memory_config.get("enabled", True):
+        import chromadb
+        memory_chroma_client = chromadb.PersistentClient(
+            path=memory_config.get("chroma_path", "./data/memory_db")
+        )
         memory_manager = MemoryManager(
-            chroma_path=memory_config.get("chroma_path", "./data/memory_db"),
+            chroma_client=memory_chroma_client,
             preferences_path=memory_config.get("preferences_path", "./data/preferences.json"),
-            short_term_size=memory_config.get("short_term_size", 10)
+            max_short_term_turns=memory_config.get("short_term_size", 10)
         )
         logger.info("Memory manager habilitado")
 
@@ -255,7 +261,6 @@ async def main():
             event_logger=event_logger,
             pattern_analyzer=pattern_analyzer,
             suggestions_path=analytics_config.get("suggestions_path", "./data/suggestions.json"),
-            min_confidence=analytics_config.get("min_confidence", 0.7)
         )
         logger.info("Smart automations habilitado")
 

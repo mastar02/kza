@@ -975,6 +975,10 @@ class MultiUserOrchestrator:
 
         self._cancel_manager = self._queue  # Para acceso desde VoicePipeline
 
+        # Public aliases for start()/stop() methods
+        self.context_manager = self._context_manager
+        self.queue = self._queue
+
         self.dispatcher = RequestDispatcher(
             chroma_sync=chroma_sync,
             ha_client=ha_client,
