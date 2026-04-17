@@ -39,3 +39,10 @@ htmlcov/
 
 # Worktrees
 .worktrees/
+
+# External tooling configs (local)
+opencode.json
+orquester.json
+
+# Local notes / scratch
+sriov-migration-prompt.md
