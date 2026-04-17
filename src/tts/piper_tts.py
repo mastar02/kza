@@ -777,18 +777,23 @@ class DualTTS:
         quality_threshold: int = 50,
     ):
         self.kokoro = KokoroTTS(**(kokoro_config or {}))
-        self.qwen3 = Qwen3TTS(**(qwen3_config or {}))
+        self.qwen3 = Qwen3TTS(**(qwen3_config or {})) if qwen3_config else None
         self.quality_threshold = quality_threshold
         self.sample_rate = 24000  # Both engines use 24kHz
 
     def load(self):
-        """Cargar ambos motores (comparten GPU 3)."""
+        """Cargar motores TTS disponibles."""
         self.kokoro.load()
-        self.qwen3.load()
+        if self.qwen3:
+            try:
+                self.qwen3.load()
+            except Exception as e:
+                logger.warning(f"Qwen3-TTS no disponible, usando solo Kokoro: {e}")
+                self.qwen3 = None
 
     def _select_engine(self, text: str) -> str:
         """Seleccionar motor segun longitud del texto."""
-        if len(text) <= self.quality_threshold:
+        if not self.qwen3 or len(text) <= self.quality_threshold:
             return "kokoro"
         return "qwen3"
 
@@ -801,7 +806,7 @@ class DualTTS:
         Returns:
             (audio, tiempo_ms, motor_usado)
         """
-        if force_quality or self._select_engine(text) == "qwen3":
+        if self.qwen3 and (force_quality or self._select_engine(text) == "qwen3"):
             audio, elapsed = self.qwen3.synthesize(text)
             return audio, elapsed, "qwen3"
 
@@ -811,7 +816,7 @@ class DualTTS:
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         """Streaming delegado al motor seleccionado."""
         engine = self._select_engine(text)
-        if engine == "qwen3":
+        if engine == "qwen3" and self.qwen3:
             yield from self.qwen3.synthesize_stream(text)
         else:
             yield from self.kokoro.synthesize_stream(text)

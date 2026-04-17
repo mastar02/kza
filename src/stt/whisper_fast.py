@@ -43,7 +43,7 @@ class FastWhisperSTT:
         
         self._model = WhisperModel(
             self.model_name,
-            device=self.device.replace("cuda:", "cuda"),
+            device="cuda" if "cuda" in self.device else self.device,
             device_index=int(self.device.split(":")[-1]) if ":" in self.device else 0,
             compute_type=self.compute_type
         )

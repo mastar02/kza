@@ -121,36 +121,32 @@ wake_word:
   threshold: 0.5
   inference_framework: "onnx"
 
-# Speech-to-Text (GPU 0)
+# Speech-to-Text (GPU 0 — compartido con SpeakerID, Emotion, Kokoro TTS)
 stt:
-  model: "marianbasti/distil-whisper-large-v3-es"  # Distilado para ES, WER 5.11%
-  # model: "distil-whisper/distil-small.en"  # Solo inglés (anterior)
-  # model: "openai/whisper-large-v3"  # Mejor calidad, más lento
+  model: "./models/whisper-ct2"  # distil-whisper-large-v3-es convertido a CTranslate2
   device: "cuda:0"
-  compute_type: "float16"  # ~3GB, máxima precisión (sobra VRAM en cuda:0)
+  compute_type: "float16"  # ~1.5GB
   language: "es"
   beam_size: 1  # Más rápido
   vad_filter: true
 
-# Text-to-Speech (GPU 3) — Dual engine
+# Text-to-Speech (GPU 0 — compartido con STT, SpeakerID, Emotion)
+# Solo Kokoro por limitación de 2 GPUs (Qwen3-TTS no cabe)
 tts:
-  engine: "dual"  # "dual" (Kokoro+Qwen3), "piper" (CPU), "xtts" (legacy)
+  engine: "dual"  # DualTTS: Kokoro only (Qwen3-TTS deshabilitado por 2 GPUs)
   kokoro:
     model: "hexgrad/Kokoro-82M"
-    device: "cuda:3"
+    device: "cuda:0"
     default_voice: "af_heart"      # Voz en español
-  qwen3:
-    model: "Qwen/Qwen3-TTS-0.6B"
-    device: "cuda:3"
-    speaker_wav: "./data/speaker_reference.wav"  # 3s de referencia para voice cloning
-  quality_threshold: 50   # Caracteres: <=50 -> Kokoro, >50 -> Qwen3
+  # Qwen3-TTS deshabilitado — requiere 3ra GPU (~4.5GB)
+  # qwen3:
+  #   model: "Qwen/Qwen3-TTS-0.6B"
+  #   device: "cuda:3"
+  #   speaker_wav: "./data/speaker_reference.wav"
+  quality_threshold: 50
   piper:
     model: "es_ES-davefx-medium.onnx"
     sample_rate: 22050
-  xtts:
-    model: "tts_models/multilingual/multi-dataset/xtts_v2"
-    device: "cuda:3"
-    speaker_wav: null
 
   # Streaming audio configuration (para reproducción sin cortes)
   streaming:
@@ -163,18 +159,17 @@ tts:
     # - Mucha latencia: reducir prebuffer_ms (40-50)
     # - Sistema lento: aumentar ambos
 
-# Embeddings (GPU 1)
+# Embeddings (GPU 1 — compartido con Router)
 embeddings:
   model: "BAAI/bge-m3"  # Multilingual (170 idiomas), dim=1024, ~1GB VRAM
-  # model: "BAAI/bge-small-en-v1.5"  # Solo inglés, dim=384 (anterior)
   device: "cuda:1"
 
-# Router/Clasificador (GPU 2)
+# Router/Clasificador (GPU 1 — compartido con Embeddings)
 router:
   enabled: true
   model: "Qwen/Qwen2.5-7B-Instruct-AWQ"
-  device: "cuda:2"
-  gpu_memory_utilization: 0.85
+  device: "cuda:1"
+  gpu_memory_utilization: 0.70  # Reducido para compartir con BGE-M3 (~1GB)
   # OPTIMIZACIÓN: Prefix caching para system prompt
   # El KV-cache del system prompt se reutiliza entre inferencias
   # Ahorro estimado: ~40-80ms por consulta
@@ -195,12 +190,11 @@ reasoner:
   # Mejor modelo open-source para español. Q6_K = 99.84% de calidad FP16.
   # ~64GB modelo + ~5GB KV cache (Q8) + ~2GB overhead = ~71GB total
   # Velocidad estimada: ~3.9 tok/s → preset "balanced"
-  model_path: "./models/Qwen2.5-72B-Instruct-Q6_K.gguf"
+  model_path: "./models/Qwen2.5-72B-Instruct-Q4_K_M.gguf"  # ~46GB, ~5.3 tok/s
 
   # Alternativas:
-  # model_path: "./models/Qwen2.5-72B-Instruct-Q8_0.gguf"     # Máxima calidad (~84GB, ~3.2 tok/s)
+  # model_path: "./models/Qwen2.5-72B-Instruct-Q6_K-00001-of-00002.gguf"  # Split Q6_K (~64GB, ~3.9 tok/s)
   # model_path: "./models/Qwen3-32B-Q8_0.gguf"                # Rápido (~41GB, ~7.2 tok/s, preset "fast")
-  # model_path: "./models/Qwen2.5-72B-Instruct-Q4_K_M.gguf"   # Más ligero (~59GB, ~5.3 tok/s)
   # model_path: "./models/Llama-3.3-70B-Instruct-Q4_K_M.gguf"  # Fallback si Qwen falla
 
   # LoRA adapter personalizado (se carga si existe)
@@ -237,7 +231,7 @@ reasoner:
     # - balanced: Recomendado para 3.5-6 tok/s (Qwen2.5-72B Q6_K)
     # - smooth: Mas buffering, mas latencia inicial
     # - slow_llm: Optimizado para 2-3 tok/s (72B Q8_0)
-    preset: "balanced"
+    preset: "slow_llm"  # 3.1 tok/s medido con Q4_K_M en Threadripper
 
     # Usar frase de relleno mientras el LLM piensa
     # Ej: "Dejame ver...", "Un momento..."
@@ -306,11 +300,11 @@ context_persistence:
   auto_save_interval: 60                # Auto-guardar cada N segundos
   # Con 10 usuarios y 50 turnos c/u = ~500KB total en disco
 
-# Speaker Identification (GPU 1 - compartido con embeddings)
+# Speaker Identification (GPU 0 — compartido con STT, Emotion, Kokoro TTS)
 speaker_id:
   enabled: true
   model: "speechbrain/spkrec-ecapa-voxceleb"  # O "resemblyzer" (más ligero)
-  device: "cuda:1"
+  device: "cuda:0"
   threshold: 0.75  # Similitud mínima para identificar usuario
   users_path: "./data/users.json"
   enrollment_samples: 3  # Muestras de voz para registrar usuario
@@ -441,7 +435,7 @@ training:
       max_samples: 1000      # Máximo por sesión
 
     # GPUs a usar (libres de noche)
-    gpus: [0, 1, 2, 3]       # Las 4x RTX 3070
+    gpus: [0, 1]             # 2x RTX 3070
     use_distributed: true    # Entrenamiento paralelo en múltiples GPUs
 
     # Gestión de VRAM (IMPORTANTE para RTX 3070 de 8GB)
@@ -777,7 +771,7 @@ rooms:
 
   # MA1260 amplifier connection (moved from zones)
   ma1260:
-    connection_type: "serial"
+    connection_type: "simulation"  # "serial" cuando el MA1260 esté conectado
     serial_port: "/dev/ttyUSB0"
     baudrate: 9600
     audio_output_device: null
@@ -885,7 +879,7 @@ rooms:
 # Presence Detection (BLE + Sensors)
 # =============================================================================
 presence:
-  enabled: true
+  enabled: false  # true cuando haya dongles BT conectados
 
   # Timeout para considerar a alguien como ausente (segundos)
   away_timeout: 300  # 5 minutos

@@ -73,6 +73,12 @@ class SpeakerIdentifier:
     def _load_speechbrain(self):
         """Cargar modelo SpeechBrain ECAPA-TDNN"""
         try:
+            # Workaround: torchaudio 2.10 removed list_audio_backends()
+            # which speechbrain 1.0.x calls on import
+            import torchaudio
+            if not hasattr(torchaudio, "list_audio_backends"):
+                torchaudio.list_audio_backends = lambda: ["ffmpeg"]
+
             from speechbrain.inference.speaker import EncoderClassifier
 
             self._model = EncoderClassifier.from_hparams(
