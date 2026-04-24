@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import yaml
@@ -85,6 +86,78 @@ def load_config(config_path: str = "config/settings.yaml") -> dict:
         return obj
 
     return replace_env_vars(config)
+
+
+async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma):
+    """Precalentar modelos con input dummy para evitar cold-start lag.
+
+    CUDA compila kernels la primera vez que se usa un modelo — este warmup
+    hace que todas las compilaciones ocurran al startup en vez de en el
+    primer comando real del usuario. Cada warmup está en try/except
+    individual: si un modelo falla, se loguea y se sigue con el resto.
+
+    Args:
+        stt: Instancia de STT (FastWhisperSTT) con método transcribe.
+        tts: Instancia de TTS con método synthesize.
+        speaker_identifier: Opcional. Instancia con método get_embedding.
+        emotion_detector: Opcional. Instancia con método detect.
+        chroma: Opcional. Instancia de ChromaSync con _embedder interno.
+    """
+    import numpy as np
+    silence = np.zeros(16000, dtype=np.float32)  # 1s @ 16kHz
+
+    timings = {}
+
+    # STT warmup — compila kernels de Whisper
+    if stt is not None:
+        t0 = time.perf_counter()
+        try:
+            stt.transcribe(silence, sample_rate=16000)
+            timings["stt"] = (time.perf_counter() - t0) * 1000
+        except Exception as e:
+            logger.warning(f"Warmup STT skipped: {e}")
+
+    # TTS warmup — compila kernels de Kokoro/Qwen3
+    if tts is not None:
+        t0 = time.perf_counter()
+        try:
+            maybe = tts.synthesize("hola") if hasattr(tts, "synthesize") else None
+            if asyncio.iscoroutine(maybe):
+                await maybe
+            timings["tts"] = (time.perf_counter() - t0) * 1000
+        except Exception as e:
+            logger.warning(f"Warmup TTS skipped: {e}")
+
+    # Speaker ID warmup — compila kernels de ECAPA-TDNN
+    if speaker_identifier is not None:
+        t0 = time.perf_counter()
+        try:
+            speaker_identifier.get_embedding(silence)
+            timings["speaker_id"] = (time.perf_counter() - t0) * 1000
+        except Exception as e:
+            logger.warning(f"Warmup speaker_id skipped: {e}")
+
+    # Emotion detector warmup — compila kernels de wav2vec2
+    if emotion_detector is not None:
+        t0 = time.perf_counter()
+        try:
+            if hasattr(emotion_detector, "detect"):
+                emotion_detector.detect(silence)
+            timings["emotion"] = (time.perf_counter() - t0) * 1000
+        except Exception as e:
+            logger.warning(f"Warmup emotion skipped: {e}")
+
+    # BGE-M3 warmup — compila kernels del embedder usado por ChromaDB
+    if chroma is not None and getattr(chroma, "_embedder", None) is not None:
+        t0 = time.perf_counter()
+        try:
+            chroma._embedder.encode(["warmup"])
+            timings["bge_m3"] = (time.perf_counter() - t0) * 1000
+        except Exception as e:
+            logger.warning(f"Warmup BGE-M3 skipped: {e}")
+
+    summary = " ".join(f"{k}={v:.0f}ms" for k, v in timings.items())
+    logger.info(f"Warmup: {summary}")
 
 
 async def main():
@@ -787,6 +860,11 @@ async def main():
         memory_manager=memory_manager,
         orchestrator=orchestrator,
     )
+
+    # Precalentar modelos para eliminar cold-start del primer comando (~600ms→~200ms)
+    warmup_config = config.get("warmup", {})
+    if warmup_config.get("enabled", True):
+        await _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
 
     # Start presence detector before pipeline
     if presence_detector:

@@ -387,6 +387,12 @@ monitoring:
   db_path: "./data/latency.db"
   alert_on_high_latency: true
 
+# Warmup de modelos al startup. Elimina cold-start de ~600ms en el primer
+# comando post-restart ejecutando una inferencia dummy por modelo al boot.
+# Desactivar solo para debug.
+warmup:
+  enabled: true
+
 # Smart Automations (Pattern-based suggestions)
 analytics:
   enabled: true
