@@ -814,6 +814,16 @@ rooms:
   fallback_room: "escritorio"   # Única habitación con HW real (2026-04-21) — revertir a "living" cuando haya más
   dedup_window_ms: 200
 
+  # Barge-in (S3): interrumpir TTS al detectar voz del user.
+  # Mientras KZA habla, el audio_callback monitorea RMS + VAD. Si detecta
+  # voz sostenida ≥ min_duration_ms, cancela el TTS y abre listening.
+  # rms_threshold debe estar por encima del eco residual típico (0.005-0.015)
+  # para evitar falsos triggers; 0.03 es un umbral conservador.
+  barge_in:
+    enabled: true
+    rms_threshold: 0.03
+    min_duration_ms: 200
+
   # MA1260 amplifier connection (moved from zones)
   ma1260:
     connection_type: "simulation"  # "serial" cuando el MA1260 esté conectado
