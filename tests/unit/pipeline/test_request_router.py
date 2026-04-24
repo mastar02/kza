@@ -265,7 +265,7 @@ class TestProcessCommandLegacy:
         """When orchestrator disabled, uses legacy vector search path."""
         cp = MagicMock()
         cp.process_command = AsyncMock(return_value=_make_cmd_result(
-            text="enciende la luz"
+            text="prende la luz"
         ))
 
         chroma = MagicMock()
