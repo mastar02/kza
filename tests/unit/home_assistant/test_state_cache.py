@@ -343,6 +343,7 @@ class TestSubscribeAndSync:
         # 3) timeout (asyncio.TimeoutError) para salir del loop vía stop
         ha.ensure_websocket_connected = AsyncMock(return_value=True)
         ws_mock = MagicMock()
+        ws_mock.closed = False
         ws_mock.send_json = AsyncMock()
 
         messages = [
@@ -363,7 +364,9 @@ class TestSubscribeAndSync:
             raise asyncio.TimeoutError()
 
         ws_mock.receive_json = AsyncMock(side_effect=receive_json)
-        ha._ws_connection = ws_mock
+        # Seed events channel directly so _subscribe_and_sync skips the
+        # _open_ws_authenticated handshake (dual-WS architecture 2026-04-24).
+        ha._ws_events = ws_mock
         ha._state_sync_running = True
 
         await ha._subscribe_and_sync()

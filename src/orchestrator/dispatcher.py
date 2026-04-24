@@ -511,13 +511,13 @@ class RequestDispatcher:
                 elif service == "turn_off":
                     target_state = "off"
 
-                # DESACTIVADO temporalmente: el cache S6 se desincroniza cuando
-                # el WebSocket de HA tira "Concurrent call to receive()". Resultado:
-                # cache cree "on" aunque la luz esté "off" y skipeamos el dispatch
-                # → el usuario dice "prendé" y no pasa nada. Dispatcha siempre a HA
-                # (es idempotente, overhead ~300ms). Re-habilitar cuando el sync
-                # WS sea confiable.
-                if False and target_state and hasattr(self.ha, "get_entity_state_cached"):
+                # Re-habilitado 2026-04-24: el fix de dual WebSocket (canales
+                # separados _ws_calls / _ws_events en ha_client) elimina el race
+                # "Concurrent call to receive()" que desincronizaba el cache.
+                # Ahora el state sync es confiable, así que el skip idempotente
+                # puede correr sin riesgo de hacer creer al usuario que pasó algo
+                # cuando en realidad la luz estaba en otro estado.
+                if target_state and hasattr(self.ha, "get_entity_state_cached"):
                     cached = self.ha.get_entity_state_cached(entity_id)
                     if cached is not None and cached.get("state") == target_state:
                         timings["home_assistant"] = 0.0
