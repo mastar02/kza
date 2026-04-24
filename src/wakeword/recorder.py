@@ -2,6 +2,7 @@
 Wake Word Recorder
 Graba muestras de audio para entrenar un wake word personalizado.
 """
+from __future__ import annotations
 
 import logging
 import time

@@ -212,6 +212,20 @@ class MultiRoomAudioLoop:
                         self.follow_up.start_conversation()
                         logger.info(f"Wake word in {rs.room_id} ({detection[0]}: {detection[1]:.2f})")
 
+                        # Si el detector es WhisperWake y ya tiene el audio del comando
+                        # inline (la misma utterance del wake word), lo usamos directo.
+                        pop_fn = getattr(rs.wake_detector, "pop_pending_command_audio", None)
+                        if callable(pop_fn):
+                            inline_audio = pop_fn()
+                            if inline_audio is not None and len(inline_audio) > 0:
+                                rs.audio_buffer = list(inline_audio)
+                                # Simular que ya terminó la captura (silencio final)
+                                rs.command_start_time = time.time() - self.min_speech_ms / 1000 - 0.1
+                                logger.info(
+                                    f"Usando audio inline del wake word ({len(inline_audio)/16000:.2f}s) "
+                                    f"— saltando captura post-wake"
+                                )
+
                 elif self.follow_up.is_active:
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
                     if rms > 0.02 and rs.echo_suppressor.is_human_voice(audio_chunk):
@@ -266,4 +280,4 @@ class MultiRoomAudioLoop:
             if self._on_post_command_callback:
                 await self._on_post_command_callback(result, event)
         except Exception as e:
-            logger.error(f"Command dispatch failed for {event.room_id}: {e}")
+            logger.exception(f"Command dispatch failed for {event.room_id}: {e}")

@@ -93,6 +93,7 @@ class RequestRouter:
         latency_target_ms: int = 300,
         suggestion_interval: int = 50,
         cache_max_size: int = 100,
+        action_tracker=None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -162,6 +163,12 @@ class RequestRouter:
         self._pending_suggestion = None
         self._last_response = None
         self._command_count = 0
+
+        # Last-action tracker para comandos ambiguos (Q6: contextual + pregunta fallback)
+        if action_tracker is None:
+            from src.orchestrator.action_context import LastActionTracker
+            action_tracker = LastActionTracker(ttl_seconds=60.0)
+        self.action_tracker = action_tracker
 
     async def process_command(self, audio_or_event) -> dict:
         """
@@ -490,13 +497,56 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
-        # 8. Vector DB search (with cache)
+        # 8. NLU pre-filter (intent léxico + slots) + Vector DB search (with cache)
+        from src.nlu import classify_intent, extract_slots
+
+        intent = classify_intent(text)            # turn_on | turn_off | None
+        query_slots = extract_slots(text)         # {brightness_pct, rgb_color, ...}
+        ambiguous_entity = None                   # Para el caso Q6 (sin verbo, con entity clara)
+
+        # Caso ambiguo (Q6 C+B): la query no tiene verbo reconocible.
+        # Estrategia: 1) Buscar por entity sin filtro de service, 2) mirar LastActionTracker,
+        # 3) toggle si hay contexto reciente, si no → TTS "¿prendo o apago?".
+        if intent is None:
+            probe = self.chroma.search_command(
+                text, threshold=0.55, service_filter=None, query_slots={},
+            )
+            if probe and probe["similarity"] >= 0.60:
+                last = self.action_tracker.get_recent(probe["entity_id"])
+                if last is not None:
+                    intent = self.action_tracker.toggle_service(last.service)
+                    logger.info(
+                        f"Query ambigua sobre {probe['entity_id']} — toggle implícito "
+                        f"(last={last.service}, ahora={intent})"
+                    )
+                else:
+                    ambiguous_entity = probe
+
+        if ambiguous_entity is not None:
+            # Preguntar al usuario (B fallback)
+            area = ambiguous_entity.get("value_label") or ambiguous_entity["entity_id"].split(".")[-1]
+            friendly = area.replace("_", " ")
+            result["intent"] = "clarification_requested"
+            result["response"] = f"¿Prendo o apago la luz del {friendly}?"
+            result["success"] = False
+            self.response_handler.speak(result["response"])
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
+
+        if intent:
+            logger.debug(f"NLU: intent={intent} slots={query_slots}")
+
         t_search = time.perf_counter()
-        cache_key = text.lower().strip()
+        cache_key = f"{intent or 'any'}::{text.lower().strip()}"
         command = self._query_cache.get(cache_key)
 
         if not command:
-            command = self.chroma.search_command(text, self.vector_search_threshold)
+            command = self.chroma.search_command(
+                text,
+                self.vector_search_threshold,
+                service_filter=intent,
+                query_slots=query_slots,
+            )
             if command:
                 self._add_to_cache(cache_key, command)
 
@@ -537,6 +587,12 @@ class RequestRouter:
 
             result["success"] = success
             result["response"] = command["description"] if success else "No pude hacerlo"
+
+            # Registrar en LastActionTracker para toggle implícito en la próxima query ambigua
+            if success:
+                self.action_tracker.record(
+                    command["entity_id"], command["service"], command.get("data"),
+                )
 
             # Speak response with emotion adjustments
             emotion_adj = emotion.response_adjustment if emotion else None
@@ -746,11 +802,12 @@ class RequestRouter:
         if not self.event_logger:
             return
 
+        from src.analytics.event_logger import EventType
         user = self.command_processor.get_current_user()
         self.event_logger.log(
             entity_id=entity_id,
             action=action,
-            event_type="command",
+            event_type=EventType.COMMAND,
             user_id=user.user_id if user else None,
             user_name=user.name if user else None,
             trigger_phrase=trigger_phrase

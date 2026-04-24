@@ -2,6 +2,7 @@
 Wake Word Detector
 Detecta palabras de activación usando modelos pre-entrenados o personalizados.
 """
+from __future__ import annotations
 
 import logging
 import time
@@ -144,7 +145,9 @@ class WakeWordDetector:
         Procesar chunk de audio y detectar wake words.
 
         Args:
-            audio_chunk: Audio como numpy array (float32, 16kHz, mono)
+            audio_chunk: Audio como numpy array (float32, 16kHz, mono).
+                Se acepta tanto float32 normalizado [-1,1] como int16-scale;
+                OpenWakeWord necesita escala int16 internamente.
 
         Returns:
             Dict de {model_name: confidence_score}
@@ -154,9 +157,17 @@ class WakeWordDetector:
 
         results = {}
 
+        # OpenWakeWord espera int16 (o float32 en rango [-32768,32767]).
+        # sounddevice/faster-whisper entregan float32 normalizado [-1,1] → escalar antes.
+        oww_input = audio_chunk
+        if audio_chunk.dtype == np.float32 or audio_chunk.dtype == np.float64:
+            max_abs = float(np.max(np.abs(audio_chunk))) if audio_chunk.size else 0.0
+            if max_abs <= 1.5:  # está normalizado
+                oww_input = (np.clip(audio_chunk, -1.0, 1.0) * 32767).astype(np.int16)
+
         # Predicción con OpenWakeWord
         if self._oww_model:
-            oww_predictions = self._oww_model.predict(audio_chunk)
+            oww_predictions = self._oww_model.predict(oww_input)
             results.update(oww_predictions)
 
         # Predicción con modelos personalizados

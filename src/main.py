@@ -139,29 +139,43 @@ async def main():
         embedder_device=embeddings_config.get("device", "cuda:1")
     )
 
-    # LLM Reasoner
+    # LLM Reasoner — HTTP al kza-72b.service (default) o local GGUF (fallback)
+    from src.llm import HttpReasoner
     reasoner_config = config.get("reasoner", {})
-    model_path = reasoner_config.get("model_path")
+    reasoner_mode = reasoner_config.get("mode", "http")
 
-    if not model_path or not Path(model_path).exists():
-        logger.warning(f"Modelo LLM no encontrado: {model_path}")
-        logger.warning("   Ejecuta: ./scripts/download_models.sh")
-        llm = None
-    else:
-        llm = LLMReasoner(
-            model_path=model_path,
-            lora_path=reasoner_config.get("lora_path"),
-            lora_scale=reasoner_config.get("lora_scale", 1.0),
-            n_ctx=reasoner_config.get("n_ctx", 32768),
-            n_threads=reasoner_config.get("n_threads", 24),
-            n_batch=reasoner_config.get("n_batch", 512),
-            n_gpu_layers=reasoner_config.get("n_gpu_layers", 0),
-            chat_format=reasoner_config.get("chat_format", "chatml"),
-            rope_freq_base=reasoner_config.get("rope_freq_base", 1000000.0),
-            rope_freq_scale=reasoner_config.get("rope_freq_scale", 1.0),
+    if reasoner_mode == "http":
+        llm = HttpReasoner(
+            base_url=reasoner_config.get("http_base_url", "http://127.0.0.1:8200/v1"),
+            model=reasoner_config.get("http_model"),
+            timeout=reasoner_config.get("http_timeout", 120),
         )
-        llm.load()
-        logger.info("LLM 72B cargado en RAM")
+        try:
+            llm.load()
+            logger.info("LLM 72B consumido vía HTTP (kza-72b.service)")
+        except Exception as e:
+            logger.error(f"No pude contactar el 72B HTTP: {e}. llm=None")
+            llm = None
+    else:
+        model_path = reasoner_config.get("model_path")
+        if not model_path or not Path(model_path).exists():
+            logger.warning(f"Modelo LLM local no encontrado: {model_path}")
+            llm = None
+        else:
+            llm = LLMReasoner(
+                model_path=model_path,
+                lora_path=reasoner_config.get("lora_path"),
+                lora_scale=reasoner_config.get("lora_scale", 1.0),
+                n_ctx=reasoner_config.get("n_ctx", 32768),
+                n_threads=reasoner_config.get("n_threads", 24),
+                n_batch=reasoner_config.get("n_batch", 512),
+                n_gpu_layers=reasoner_config.get("n_gpu_layers", 0),
+                chat_format=reasoner_config.get("chat_format", "chatml"),
+                rope_freq_base=reasoner_config.get("rope_freq_base", 1000000.0),
+                rope_freq_scale=reasoner_config.get("rope_freq_scale", 1.0),
+            )
+            llm.load()
+            logger.info("LLM 72B cargado en proceso (mode=local)")
 
     # Routine Manager
     routine_manager = RoutineManager(ha_client, chroma, llm)
@@ -171,15 +185,11 @@ async def main():
     fast_router = None
     if router_config.get("enabled", True):
         fast_router = FastRouter(
-            model=router_config.get("model", "Qwen/Qwen2.5-7B-Instruct-AWQ"),
-            device=router_config.get("device", "cuda:2"),
-            gpu_memory_utilization=router_config.get("gpu_memory_utilization", 0.85),
-            enable_prefix_caching=router_config.get("enable_prefix_caching", True),
-            enable_lora=router_config.get("enable_lora", False),
-            lora_path=router_config.get("lora_path"),
-            max_lora_rank=router_config.get("max_lora_rank", 32),
+            base_url=router_config.get("base_url", "http://127.0.0.1:8100/v1"),
+            model=router_config.get("model", "qwen2.5-7b-awq"),
+            timeout=router_config.get("timeout", 30),
         )
-        logger.info(f"Fast router habilitado (prefix_caching={router_config.get('enable_prefix_caching', True)})")
+        logger.info(f"Fast router (HTTP) → {router_config.get('base_url', 'http://127.0.0.1:8100/v1')}")
 
     # Memory Manager - memoria contextual
     memory_config = config.get("memory", {})
@@ -398,10 +408,67 @@ async def main():
 
             # Build RoomStream if room has a mic
             if rc.mic_device_index is not None:
-                wake_detector = WakeWordDetector(
-                    models=[room_wake_cfg.get("model", "hey_jarvis")],
-                    threshold=room_wake_cfg.get("threshold", 0.5),
-                )
+                wake_engine = room_wake_cfg.get("engine", "openwakeword")
+                if wake_engine == "whisper":
+                    # Speaker filter opcional: carga embedding si existe + enabled.
+                    sf_cfg = room_wake_cfg.get("speaker_filter", {})
+                    spk_emb = None
+                    spk_ref_identifier = None
+                    if sf_cfg.get("enabled", False) and speaker_identifier is not None:
+                        emb_path = Path(sf_cfg.get("embedding_path", ""))
+                        if emb_path.exists():
+                            import numpy as _np
+                            spk_emb = _np.load(str(emb_path))
+                            spk_ref_identifier = speaker_identifier
+                            logger.info(
+                                f"Speaker filter activo para '{room_key}': "
+                                f"embedding={emb_path} shape={spk_emb.shape} "
+                                f"threshold={sf_cfg.get('threshold', 0.65)}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Speaker filter enabled pero falta {emb_path}. "
+                                f"Ejecutar: python -m scripts.enroll_voice --user <id>"
+                            )
+
+                    streaming = room_wake_cfg.get("streaming", False)
+                    wake_language = config.get("stt", {}).get("language", "es")
+                    if streaming:
+                        from src.wakeword.streaming_whisper_wake import (
+                            StreamingWhisperWakeDetector,
+                        )
+                        wake_detector = StreamingWhisperWakeDetector(
+                            whisper_stt=stt,
+                            wake_words=room_wake_cfg.get("words", ["nexa"]),
+                            interval_ms=room_wake_cfg.get("streaming_interval_ms", 200),
+                            window_s=room_wake_cfg.get("streaming_window_s", 2.0),
+                            vad_threshold=room_wake_cfg.get("vad_threshold", 0.7),
+                            min_rms=room_wake_cfg.get("min_rms", 0.025),
+                            language=wake_language,
+                            speaker_identifier=spk_ref_identifier,
+                            speaker_embedding=spk_emb,
+                            speaker_threshold=sf_cfg.get("threshold", 0.65),
+                            speaker_min_audio_s=sf_cfg.get("min_audio_s", 0.8),
+                        )
+                    else:
+                        from src.wakeword.whisper_wake import WhisperWakeDetector
+                        wake_detector = WhisperWakeDetector(
+                            whisper_stt=stt,
+                            wake_words=room_wake_cfg.get("words", ["nexa"]),
+                            silence_end_ms=room_wake_cfg.get("silence_end_ms", 500),
+                            min_utterance_ms=room_wake_cfg.get("min_utterance_ms", 250),
+                            max_utterance_s=room_wake_cfg.get("max_utterance_s", 3.5),
+                            speaker_identifier=spk_ref_identifier,
+                            speaker_embedding=spk_emb,
+                            speaker_threshold=sf_cfg.get("threshold", 0.65),
+                            speaker_min_audio_s=sf_cfg.get("min_audio_s", 0.8),
+                        )
+                    wake_detector.load()
+                else:
+                    wake_detector = WakeWordDetector(
+                        models=[room_wake_cfg.get("model", "hey_jarvis")],
+                        threshold=room_wake_cfg.get("threshold", 0.5),
+                    )
                 room_echo = EchoSuppressor(sample_rate=16000)
                 room_streams[room_key] = RoomStream(
                     room_id=room_key,

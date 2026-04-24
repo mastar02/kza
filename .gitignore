@@ -43,6 +43,7 @@ htmlcov/
 # External tooling configs (local)
 opencode.json
 orquester.json
+.mcp.json
 
 # Local notes / scratch
 sriov-migration-prompt.md

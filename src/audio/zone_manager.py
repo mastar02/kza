@@ -115,8 +115,17 @@ class ZoneManager:
             del self._detection_timestamps[zone_id]
     
     def get_zone(self, zone_id: str) -> Zone | None:
-        """Obtener zona por ID"""
-        return self.zones.get(zone_id)
+        """Obtener zona por ID (soporta prefijo 'zone_' por compatibilidad legacy)."""
+        zone = self.zones.get(zone_id)
+        if zone is None and zone_id.startswith("zone_"):
+            zone = self.zones.get(zone_id[len("zone_"):])
+        if zone is None and not zone_id.startswith("zone_"):
+            zone = self.zones.get(f"zone_{zone_id}")
+        return zone
+
+    def get_all_zones(self) -> dict[str, "Zone"]:
+        """Devuelve todas las zonas como dict {zone_id: Zone}."""
+        return dict(self.zones)
     
     def get_zone_by_mic(self, mic_index: int) -> Zone | None:
         """Obtener zona por índice de micrófono"""

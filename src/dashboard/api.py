@@ -386,7 +386,7 @@ class DashboardAPI:
                 raise HTTPException(status_code=503, detail="Home Assistant no disponible")
 
             domain = entity_id.split(".")[0]
-            success = self.ha.call_service(domain, service, entity_id, data or {})
+            success = await self.ha.call_service(domain, service, entity_id, data or {})
 
             return {"success": success}
 

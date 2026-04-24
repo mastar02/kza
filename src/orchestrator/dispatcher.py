@@ -473,9 +473,9 @@ class RequestDispatcher:
             timings["vector_search"] = (time.perf_counter() - t0) * 1000
 
             if command:
-                # Ejecutar en Home Assistant
+                # Ejecutar en Home Assistant (await obligatorio — call_service es async)
                 t1 = time.perf_counter()
-                success = self.ha.call_service(
+                success = await self.ha.call_service_ws(
                     command["domain"],
                     command["service"],
                     command["entity_id"],

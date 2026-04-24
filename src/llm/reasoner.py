@@ -348,16 +348,100 @@ class LLMReasoner:
         return RECOMMENDED_MODELS
 
 
+class HttpReasoner:
+    """
+    Cliente HTTP al 72B (llama-cpp-python server bajo kza-72b.service, :8200).
+    Drop-in de LLMReasoner con la misma signature de __call__ — retorna dict
+    tipo `{"choices": [{"text": ...}], "usage": {...}}` para backward compat.
+
+    El service es "siempre caliente" (Q1=A). El consumo va por HTTP para
+    evitar doble-carga del modelo en el proceso de KZA.
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:8200/v1",
+        model: str | None = None,           # si None, usa el primero que liste el server
+        timeout: float = 120.0,
+        **_ignored_legacy,
+    ):
+        self.base_url = base_url
+        self.model = model
+        self.timeout = timeout
+        self._client = None
+        self._resolved_model = None
+
+    def load(self):
+        from openai import OpenAI
+        self._client = OpenAI(base_url=self.base_url, api_key="not-used", timeout=self.timeout)
+        try:
+            models = self._client.models.list()
+            ids = [m.id for m in models.data]
+            if self.model and self.model in ids:
+                self._resolved_model = self.model
+            elif ids:
+                self._resolved_model = ids[0]
+                if self.model:
+                    logger.warning(f"72B modelo '{self.model}' no está; uso '{self._resolved_model}'")
+            logger.info(f"HttpReasoner OK → {self.base_url} (modelo: {self._resolved_model})")
+        except Exception as e:
+            logger.error(f"HttpReasoner no pudo contactar {self.base_url}: {e}")
+            raise
+
+    def __call__(
+        self,
+        prompt: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        repeat_penalty: float = 1.1,
+        stop: list[str] | None = None,
+    ) -> dict:
+        """Completions-style: devuelve {choices: [{text: ...}], usage: {...}}."""
+        if self._client is None:
+            self.load()
+        start = time.perf_counter()
+        resp = self._client.completions.create(
+            model=self._resolved_model,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=stop or None,
+        )
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.debug(f"HttpReasoner ({elapsed_ms:.0f}ms) {len(prompt)}chars → {len(resp.choices[0].text)}chars")
+        return {
+            "choices": [{"text": resp.choices[0].text}],
+            "usage": {
+                "prompt_tokens": getattr(resp.usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(resp.usage, "completion_tokens", 0),
+            },
+        }
+
+    # Métodos no aplicables (LoRA, GGUF load) — stubs para backward compat
+    def load_lora(self, *a, **kw):
+        logger.warning("HttpReasoner no carga LoRA (el service es externo, coordinación manual).")
+
+    def unload_lora(self):
+        pass
+
+    def get_info(self) -> dict:
+        return {
+            "mode": "http", "base_url": self.base_url, "model": self._resolved_model,
+        }
+
+
 class FastRouter:
     """
-    Modelo rapido para clasificacion/routing (GPU).
+    Router rápido — cliente HTTP al vLLM compartido (:8100, usuario infra).
 
-    Optimizaciones:
-    - Prefix caching: cachea KV-cache del system prompt (~40-80ms ahorro)
-    - Single inference: classify_and_respond() combina clasificación + respuesta
+    Reemplaza la carga local de Qwen 7B por consumo HTTP del servicio compartido.
+    Interfaz idéntica a la versión local (`FastRouterLocal`) para drop-in.
+    Ver Notion KZA página 8 §4 — catálogo de modelos compartidos.
     """
 
-    # System prompt cacheado (prefijo común para todas las consultas)
     SYSTEM_PROMPT_PREFIX = """Eres KZA, un asistente de hogar inteligente ultra-rápido.
 Tu trabajo es clasificar y responder consultas de domótica de forma eficiente.
 
@@ -370,158 +454,80 @@ REGLAS:
 
     def __init__(
         self,
-        model: str = "Qwen/Qwen2.5-7B-Instruct",
-        device: str = "cuda:2",
-        gpu_memory_utilization: float = 0.85,
-        enable_prefix_caching: bool = True,
-        enable_lora: bool = False,
-        lora_path: str | None = None,
-        max_lora_rank: int = 32,
+        base_url: str = "http://127.0.0.1:8100/v1",
+        model: str = "qwen2.5-7b-awq",
+        timeout: float = 30.0,
+        # Backward-compat: ignorar kwargs de la versión local (device, gpu_*, lora_*).
+        **_ignored,
     ):
+        self.base_url = base_url
         self.model_name = model
-        self.device = device
-        self.gpu_memory_utilization = gpu_memory_utilization
-        self.enable_prefix_caching = enable_prefix_caching
-        self.enable_lora = enable_lora
-        self.max_lora_rank = max_lora_rank
-        self._lora_path = lora_path
-        self._lora_active = False
-        self._llm = None
-        self._original_cuda_visible = None
-        self._prefix_cached = False
-
-    def _get_device_index(self) -> int:
-        """Extraer indice de GPU del string device (e.g., 'cuda:2' -> 2)"""
-        if ":" in self.device:
-            return int(self.device.split(":")[-1])
-        return 0
+        self.timeout = timeout
+        self._client = None
+        self._available = False
+        if _ignored:
+            logger.debug(f"FastRouter (HTTP): ignorando kwargs legacy {list(_ignored.keys())}")
 
     def load(self):
-        """
-        Cargar modelo con vLLM.
+        """Inicializar cliente OpenAI + verificar que el modelo existe en el catálogo."""
+        from openai import OpenAI
 
-        vLLM no acepta parametro 'device' directamente. En su lugar,
-        usa CUDA_VISIBLE_DEVICES para seleccionar la GPU.
+        logger.info(f"Conectando al vLLM compartido en {self.base_url} (modelo: {self.model_name})")
+        self._client = OpenAI(base_url=self.base_url, api_key="not-used", timeout=self.timeout)
 
-        Optimización: enable_prefix_caching=True para cachear KV-cache
-        del system prompt y ahorrar ~40-80ms por inferencia.
-        """
-        import os
-
-        self._original_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-
-        device_idx = self._get_device_index()
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(device_idx)
-
-        logger.info(f"Cargando Router: {self.model_name} en GPU {device_idx}")
-        logger.info(f"  Prefix caching: {self.enable_prefix_caching}")
-        start = time.time()
-
-        from vllm import LLM
-
-        llm_kwargs = {
-            "model": self.model_name,
-            "tensor_parallel_size": 1,
-            "gpu_memory_utilization": self.gpu_memory_utilization,
-            "enable_prefix_caching": self.enable_prefix_caching,
-        }
-
-        if self.enable_lora:
-            llm_kwargs["enable_lora"] = True
-            llm_kwargs["max_lora_rank"] = self.max_lora_rank
-            logger.info(f"  LoRA enabled: max_rank={self.max_lora_rank}")
-
-        self._llm = LLM(**llm_kwargs)
-
-        if self._original_cuda_visible is not None:
-            os.environ["CUDA_VISIBLE_DEVICES"] = self._original_cuda_visible
-        elif "CUDA_VISIBLE_DEVICES" in os.environ:
-            del os.environ["CUDA_VISIBLE_DEVICES"]
-
-        elapsed = time.time() - start
-        logger.info(f"Router cargado en {elapsed:.1f}s")
-
-        # Load LoRA adapter if configured
-        if self.enable_lora and self._lora_path:
-            self.load_lora(self._lora_path)
-
-        # Warmup: pre-cachear el system prompt
-        if self.enable_prefix_caching:
-            self._warmup_prefix_cache()
-
-    def _warmup_prefix_cache(self):
-        """
-        Pre-cachear el system prompt para que inferencias futuras sean más rápidas.
-
-        El primer call con el prefix lo cachea en KV-cache de vLLM.
-        Calls subsecuentes con el mismo prefix reusan el cache (~40-80ms ahorro).
-        """
         try:
-            t_warmup = time.perf_counter()
-
-            # Hacer una inferencia dummy con el system prompt para cachearlo
-            warmup_prompt = self.SYSTEM_PROMPT_PREFIX + "Consulta: hola\nRespuesta:"
-
-            from vllm import SamplingParams
-            params = SamplingParams(max_tokens=5, temperature=0.1)
-            _ = self._llm.generate([warmup_prompt], params)
-
-            self._prefix_cached = True
-            warmup_ms = (time.perf_counter() - t_warmup) * 1000
-            logger.info(f"Router prefix cache warmup: {warmup_ms:.0f}ms")
-
+            models = self._client.models.list()
+            ids = [m.id for m in models.data]
+            if self.model_name not in ids:
+                logger.warning(
+                    f"Modelo '{self.model_name}' no está en el catálogo vLLM. "
+                    f"Disponibles: {ids}. Ver Notion KZA pág 8 §4.4 para pedir uno nuevo."
+                )
+            else:
+                self._available = True
+                logger.info(f"Router HTTP listo — modelo '{self.model_name}' disponible")
         except Exception as e:
-            logger.warning(f"Router prefix warmup falló (no crítico): {e}")
+            logger.error(f"No se pudo contactar vLLM compartido: {e}")
+            self._available = False
 
     def generate(
         self,
         prompts: list[str],
         max_tokens: int = 256,
-        temperature: float = 0.3
+        temperature: float = 0.3,
     ) -> list[str]:
-        """Generar respuestas en batch"""
-        if self._llm is None:
+        """Generar respuestas en batch (secuencial por limitación de API OpenAI)."""
+        if self._client is None:
             self.load()
 
-        from vllm import SamplingParams
-
-        params = SamplingParams(
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
-
         start = time.perf_counter()
-
-        generate_kwargs = {"prompts": prompts, "sampling_params": params}
-
-        if self._lora_active and self._lora_path:
-            from vllm.lora.request import LoRARequest
-            generate_kwargs["lora_request"] = LoRARequest(
-                "nightly_adapter", 1, self._lora_path
-            )
-
-        outputs = self._llm.generate(**generate_kwargs)
-
+        results: list[str] = []
+        for prompt in prompts:
+            try:
+                resp = self._client.completions.create(
+                    model=self.model_name,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                results.append(resp.choices[0].text)
+            except Exception as e:
+                logger.error(f"Router HTTP error: {e}")
+                results.append("")
         elapsed_ms = (time.perf_counter() - start) * 1000
-        lora_tag = " +LoRA" if self._lora_active else ""
-        logger.debug(f"Router{lora_tag} ({elapsed_ms:.0f}ms, {len(prompts)} prompts)")
-
-        return [o.outputs[0].text for o in outputs]
+        logger.debug(f"Router HTTP ({elapsed_ms:.0f}ms, {len(prompts)} prompts)")
+        return results
 
     def load_lora(self, lora_path: str):
-        """Cargar adapter LoRA (hot-swap, no requiere reiniciar vLLM)."""
-        if not Path(lora_path).exists():
-            logger.warning(f"LoRA adapter not found: {lora_path}")
-            return
-
-        self._lora_path = lora_path
-        self._lora_active = True
-        logger.info(f"Router LoRA loaded: {lora_path}")
+        """LoRA no soportado vía HTTP en vLLM compartido. Requiere coordinación con infra (R3)."""
+        logger.warning(
+            "FastRouter HTTP no carga LoRA directamente. El vLLM compartido es de infra; "
+            "para activar un adapter KZA, abrir pedido según Notion pág 8 §4.4."
+        )
 
     def unload_lora(self):
-        """Desactivar adapter LoRA."""
-        self._lora_active = False
-        logger.info("Router LoRA unloaded")
+        """No-op en modo HTTP."""
+        pass
 
     def classify(self, text: str, options: list[str]) -> str:
         """Clasificar texto en una de las opciones (usa prefix cache)"""
@@ -545,11 +551,13 @@ Respuesta:"""
         return "COMPLEJO" in results[0].upper()
 
     def get_cache_stats(self) -> dict:
-        """Obtener estadísticas del prefix cache"""
+        """Stats del cliente. Prefix caching lo maneja vLLM server-side (infra)."""
         return {
-            "prefix_caching_enabled": self.enable_prefix_caching,
-            "prefix_cached": self._prefix_cached,
-            "system_prompt_tokens": len(self.SYSTEM_PROMPT_PREFIX.split())  # Aproximado
+            "mode": "http",
+            "base_url": self.base_url,
+            "model": self.model_name,
+            "available": self._available,
+            "system_prompt_tokens": len(self.SYSTEM_PROMPT_PREFIX.split()),
         }
 
     def classify_and_respond(

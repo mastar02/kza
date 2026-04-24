@@ -2,6 +2,7 @@
 Wake Word Trainer
 Entrena modelos de wake word personalizados usando OpenWakeWord.
 """
+from __future__ import annotations
 
 import json
 import logging

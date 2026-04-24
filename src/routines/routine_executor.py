@@ -198,7 +198,7 @@ class RoutineExecutor:
             if hasattr(self.ha, 'call_service_ws'):
                 return await self.ha.call_service_ws(domain, service, entity_id, data)
             else:
-                return self.ha.call_service(domain, service, entity_id, data)
+                return await self.ha.call_service(domain, service, entity_id, data)
 
         success, result = await self._circuit_breaker.call(
             ha_call,

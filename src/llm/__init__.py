@@ -3,7 +3,7 @@ LLM Module
 Modelos de lenguaje para razonamiento y clasificacion.
 """
 
-from src.llm.reasoner import LLMReasoner, FastRouter
+from src.llm.reasoner import LLMReasoner, FastRouter, HttpReasoner
 from src.llm.buffered_streamer import (
     BufferedLLMStreamer,
     BufferConfig,
@@ -14,6 +14,7 @@ from src.llm.buffered_streamer import (
 
 __all__ = [
     "LLMReasoner",
+    "HttpReasoner",
     "FastRouter",
     "BufferedLLMStreamer",
     "BufferConfig",

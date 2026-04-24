@@ -510,7 +510,7 @@ Si no puedes identificar acciones, responde: []
             for cmd in self._commands.values()
         ]
 
-    def execute_custom_command(self, command_id: str) -> bool:
+    async def execute_custom_command(self, command_id: str) -> bool:
         """Ejecutar un comando personalizado"""
         if command_id not in self._commands:
             return False
@@ -520,7 +520,7 @@ Si no puedes identificar acciones, responde: []
         success = True
         for action in cmd.actions:
             try:
-                result = self.ha.call_service(
+                result = await self.ha.call_service(
                     action["domain"],
                     action["service"],
                     action["entity_id"],

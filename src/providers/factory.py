@@ -157,16 +157,12 @@ def create_router_provider(config: dict) -> RouterProvider:
         logger.info("Router provider: remote (%s)", provider_cfg.get("url"))
         return RemoteRouterProvider(_remote_config(provider_cfg))
 
-    logger.info("Router provider: local (in-process)")
+    logger.info("Router provider: HTTP (vLLM compartido)")
     from src.llm.reasoner import FastRouter
 
     router_cfg = config.get("router", {})
     return FastRouter(
-        model=router_cfg.get("model", "Qwen/Qwen2.5-7B-Instruct"),
-        device=router_cfg.get("device", "cuda:2"),
-        gpu_memory_utilization=router_cfg.get("gpu_memory_utilization", 0.85),
-        enable_prefix_caching=router_cfg.get("enable_prefix_caching", True),
-        enable_lora=router_cfg.get("enable_lora", False),
-        lora_path=router_cfg.get("lora_path"),
-        max_lora_rank=router_cfg.get("max_lora_rank", 32),
+        base_url=router_cfg.get("base_url", "http://127.0.0.1:8100/v1"),
+        model=router_cfg.get("model", "qwen2.5-7b-awq"),
+        timeout=router_cfg.get("timeout", 30),
     )

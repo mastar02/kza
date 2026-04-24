@@ -266,22 +266,60 @@ class FollowUpMode:
         logger.debug(f"Conversation state: {old_state.value} -> {new_state.value}")
 
     def _schedule_timeout(self, window: float = None):
-        """Programar timeout de conversación"""
-        self._cancel_timeout()
+        """Programar timeout de conversación.
 
+        Si se llama desde un thread sin event loop (ej: sounddevice audio callback),
+        usa threading.Timer como fallback sincrónico — el timeout termina la
+        conversación igual, solo sin la integración del task asyncio.
+        """
+        self._cancel_timeout()
         timeout = window or self.get_follow_up_window()
-        self._timeout_task = asyncio.create_task(self._timeout_handler(timeout))
+        self._start_timeout(timeout)
 
     def _extend_timeout(self, extra: float):
-        """Extender el timeout actual"""
+        """Extender el timeout actual."""
         self._cancel_timeout()
         window = self.get_follow_up_window() + extra
-        self._timeout_task = asyncio.create_task(self._timeout_handler(window))
+        self._start_timeout(window)
+
+    def _start_timeout(self, timeout: float):
+        """Intento 1: asyncio.create_task (si hay loop). Intento 2: threading.Timer."""
+        coro = self._timeout_handler(timeout)
+        try:
+            self._timeout_task = asyncio.create_task(coro)
+        except RuntimeError:
+            # Sin event loop en este thread — cerrar la coroutine huérfana (si no se
+            # cierra, Python emite `RuntimeWarning: coroutine was never awaited`) y
+            # caer al fallback síncrono con threading.Timer.
+            coro.close()
+            import threading
+
+            def _timer_cb():
+                if self._context:
+                    duration = time.time() - self._context.started_at
+                    if duration >= self.max_conversation_time:
+                        self.end_conversation("max_time")
+                        return
+                logger.debug(f"Follow-up timeout (thread) después de {timeout}s")
+                self.end_conversation("timeout")
+
+            self._timeout_task = threading.Timer(timeout, _timer_cb)
+            self._timeout_task.daemon = True
+            self._timeout_task.start()
 
     def _cancel_timeout(self):
-        """Cancelar timeout pendiente"""
-        if self._timeout_task and not self._timeout_task.done():
-            self._timeout_task.cancel()
+        """Cancelar timeout pendiente (asyncio.Task o threading.Timer)."""
+        if self._timeout_task is None:
+            return
+        # asyncio.Task tiene .done() y .cancel(); threading.Timer tiene .cancel() y .is_alive()
+        try:
+            if hasattr(self._timeout_task, "done"):
+                if not self._timeout_task.done():
+                    self._timeout_task.cancel()
+            else:  # threading.Timer
+                self._timeout_task.cancel()
+        except Exception:
+            pass
 
     async def _timeout_handler(self, timeout: float):
         """Handler de timeout"""
@@ -306,12 +344,20 @@ class FollowUpMode:
             pass
 
     def _schedule_end_conversation(self, delay: float):
-        """Programar fin de conversación con delay"""
+        """Programar fin de conversación con delay (async o threading fallback)."""
         async def delayed_end():
             await asyncio.sleep(delay)
             self.end_conversation("user_ended")
 
-        asyncio.create_task(delayed_end())
+        coro = delayed_end()
+        try:
+            asyncio.create_task(coro)
+        except RuntimeError:
+            coro.close()
+            import threading
+            threading.Timer(
+                delay, lambda: self.end_conversation("user_ended"),
+            ).start()
 
     def _is_end_phrase(self, text: str) -> bool:
         """Verificar si es frase de despedida"""

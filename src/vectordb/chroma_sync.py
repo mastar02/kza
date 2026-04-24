@@ -238,56 +238,91 @@ Solo JSON, sin explicaciones:"""
     def search_command(
         self,
         query: str,
-        threshold: float = 0.65
+        threshold: float = 0.65,
+        service_filter: str | None = None,
+        query_slots: dict | None = None,
     ) -> dict | None:
         """
-        Buscar comando más similar
-        
+        Buscar comando más similar con filtro de intent + merge de slots.
+
         Args:
-            query: Texto del usuario
-            threshold: Similitud mínima (0-1)
-        
+            query: Texto del usuario (post-STT).
+            threshold: Similitud mínima (0-1).
+            service_filter: Si viene "turn_on" o "turn_off", filtra la búsqueda
+                a ese service (evita que dense retrieval confunda antónimos —
+                ver memoria feedback_dense_retrieval_antonyms.md).
+            query_slots: Slots extraídos por el NLU (brightness_pct, rgb_color,
+                color_temp_kelvin). Sobrescriben el service_data default del preset.
+
         Returns:
-            Comando encontrado o None
+            dict con {entity_id, domain, service, data, matched_phrase,
+                      similarity, capability, value_label} o None.
         """
+        from src.nlu.slot_extractor import merge_service_data
+
         start = time.perf_counter()
-        
-        # Generar embedding
         query_embedding = self.embedder.encode(query).tolist()
-        
-        # Buscar en ChromaDB
+
+        where = {"service": service_filter} if service_filter else None
         results = self.commands.query(
             query_embeddings=[query_embedding],
             n_results=3,
-            include=["metadatas", "distances", "documents"]
+            where=where,
+            include=["metadatas", "distances", "documents"],
         )
-        
+
         elapsed_ms = (time.perf_counter() - start) * 1000
-        
+
         if not results["ids"][0]:
             logger.debug(f"Vector search ({elapsed_ms:.0f}ms): No results")
             return None
-        
-        # Convertir distancia a similitud
+
         best_distance = results["distances"][0][0]
         similarity = 1 - (best_distance / 2)
-        
-        if similarity >= threshold:
-            metadata = results["metadatas"][0][0]
-            result = {
-                "entity_id": metadata["entity_id"],
-                "domain": metadata["domain"],
-                "service": metadata["service"],
-                "description": metadata["description"],
-                "data": json.loads(metadata.get("data", "{}")),
-                "matched_phrase": results["documents"][0][0],
-                "similarity": similarity
-            }
-            logger.debug(f"Vector search ({elapsed_ms:.0f}ms): {result['description']} (sim={similarity:.2f})")
-            return result
-        
-        logger.debug(f"Vector search ({elapsed_ms:.0f}ms): Below threshold (sim={similarity:.2f})")
-        return None
+
+        if similarity < threshold:
+            logger.debug(f"Vector search ({elapsed_ms:.0f}ms): Below threshold (sim={similarity:.2f})")
+            return None
+
+        metadata = results["metadatas"][0][0]
+        # Merge: preset service_data (de la frase indexada) + slots reales del usuario
+        preset_data = {}
+        if metadata.get("service_data"):
+            try:
+                preset_data = json.loads(metadata["service_data"])
+            except (json.JSONDecodeError, TypeError):
+                preset_data = {}
+        # Legacy support: campos viejos ("data")
+        if not preset_data and metadata.get("data"):
+            try:
+                preset_data = json.loads(metadata["data"])
+            except (json.JSONDecodeError, TypeError):
+                preset_data = {}
+        final_data = merge_service_data(preset_data, query_slots or {})
+
+        capability = metadata.get("capability", "onoff")
+        value_label = metadata.get("value_label", "")
+        friendly = metadata.get("friendly_name", metadata["entity_id"])
+        description = f"{metadata['service']} {friendly}"
+        if value_label and value_label not in ("prender", "apagar"):
+            description += f" ({value_label})"
+
+        result = {
+            "entity_id": metadata["entity_id"],
+            "domain": metadata["domain"],
+            "service": metadata["service"],
+            "description": description,
+            "data": final_data,
+            "matched_phrase": results["documents"][0][0],
+            "similarity": similarity,
+            "capability": capability,
+            "value_label": value_label,
+        }
+        logger.debug(
+            f"Vector search ({elapsed_ms:.0f}ms): {description} "
+            f"(sim={similarity:.2f}, cap={capability}, data={final_data})"
+        )
+        return result
     
     # ==================== Rutinas ====================
     
