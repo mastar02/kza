@@ -619,6 +619,7 @@ async def main():
         # Build MultiRoomAudioLoop if we have room streams
         if room_streams:
             early_cfg = rooms_config.get("wake_word", {})
+            endpointing_cfg = rooms_config.get("endpointing", {})
             multi_room_loop = MultiRoomAudioLoop(
                 room_streams=room_streams,
                 follow_up=FollowUpMode(follow_up_window=8.0),
@@ -629,6 +630,10 @@ async def main():
                 early_dispatch_interval_ms=early_cfg.get("early_dispatch_interval_ms", 400),
                 early_dispatch_min_audio_s=early_cfg.get("early_dispatch_min_audio_s", 0.6),
                 stt=stt,
+                endpointing_enabled=endpointing_cfg.get("enabled", True),
+                endpointing_short_ms=endpointing_cfg.get("short_ms", 150),
+                endpointing_medium_ms=endpointing_cfg.get("medium_ms", 300),
+                endpointing_long_ms=endpointing_cfg.get("long_ms", 500),
             )
             logger.info(
                 f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "

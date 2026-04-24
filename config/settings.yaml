@@ -870,6 +870,17 @@ rooms:
       threshold: 0.65
       min_audio_s: 0.8
 
+  # Endpointing adaptativo (S5) — usa señal del parser streaming para decidir
+  # cuánto silencio esperar antes de cerrar captura. Si el parser ya tiene
+  # intent+entity (ready_to_dispatch) cortamos con short_ms. Si solo tiene
+  # señal parcial o ausente, usamos medium_ms (equivalente a silence_duration_ms
+  # clásico). Desactivar → comportamiento pre-S5.
+  endpointing:
+    enabled: true
+    short_ms: 150    # parser ready_to_dispatch → cerrar YA
+    medium_ms: 300   # parser parcial o ausente → wait normal
+    long_ms: 500     # sin señal del parser → esperar más (reserva futura)
+
   # Detection config
   detection:
     priority_mode: "loudest"

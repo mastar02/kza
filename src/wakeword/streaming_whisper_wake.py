@@ -126,19 +126,23 @@ class StreamingWhisperWakeDetector:
     def get_active_models(self) -> list[str]:
         return [f"streaming_whisper:{w}" for w in self.wake_words_norm]
 
-    def _is_speech(self, chunk: np.ndarray) -> bool:
+    def _voice_prob(self, chunk: np.ndarray) -> float:
+        """Devuelve probabilidad [0.0, 1.0] de que el chunk contenga voz."""
         rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
         if rms < self.min_rms:
-            return False
+            return 0.0
         if self._vad is not None:
             try:
                 tensor = self._torch.from_numpy(chunk.astype(np.float32))
                 with self._torch.no_grad():
-                    prob = float(self._vad(tensor, SAMPLE_RATE).item())
-                return prob >= self.vad_threshold
+                    return float(self._vad(tensor, SAMPLE_RATE).item())
             except Exception:
                 pass
-        return rms > self.min_rms
+        return 0.5 if rms > self.min_rms else 0.0
+
+    def _is_speech(self, chunk: np.ndarray) -> bool:
+        """Wrapper binario: True si `_voice_prob >= vad_threshold`."""
+        return self._voice_prob(chunk) >= self.vad_threshold
 
     def _push_chunk(self, chunk: np.ndarray) -> None:
         """Push chunk al ring buffer; mantiene tamaño máximo window_samples."""

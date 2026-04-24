@@ -226,24 +226,37 @@ class WhisperWakeDetector:
     def get_active_models(self) -> list[str]:
         return [f"whisper:{w}" for w in self.wake_words_norm]
 
-    def _is_speech(self, chunk: np.ndarray) -> bool:
+    def _voice_prob(self, chunk: np.ndarray) -> float:
         """
-        True si el chunk tiene voz suficientemente fuerte. Doble gate:
-          - RMS mínimo (filtra voz de TV lejana/atenuada)
-          - Silero-VAD (confirma que es voz humana, no ruido ambiente)
+        Devuelve probabilidad [0.0, 1.0] de que el chunk contenga voz humana.
+
+        Doble gate:
+          - RMS mínimo (filtra voz de TV lejana/atenuada) → 0.0 si debajo.
+          - Silero-VAD (confirma que es voz humana) → probabilidad exacta.
+
+        Preparado para endpointers adaptativos (ver S5): el caller puede usar
+        esta señal continua para decidir thresholds dinámicos en vez del bool
+        binario de `_is_speech`.
         """
         rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
         if rms < self.min_rms:
-            return False
+            return 0.0
         if self._vad is not None:
             try:
                 tensor = self._torch.from_numpy(chunk.astype(np.float32))
                 with self._torch.no_grad():
-                    prob = float(self._vad(tensor, SAMPLE_RATE).item())
-                return prob >= self.vad_threshold
+                    return float(self._vad(tensor, SAMPLE_RATE).item())
             except Exception:
                 pass
-        return rms > self.min_rms  # fallback si VAD falla
+        # Fallback si VAD falla: señal media si hay energía suficiente.
+        return 0.5 if rms > self.min_rms else 0.0
+
+    def _is_speech(self, chunk: np.ndarray) -> bool:
+        """
+        True si el chunk tiene voz suficientemente fuerte. Wrapper binario
+        sobre `_voice_prob` usando `self.vad_threshold` como umbral.
+        """
+        return self._voice_prob(chunk) >= self.vad_threshold
 
     def predict(self, audio_chunk: np.ndarray) -> dict[str, float]:
         """Devuelve {palabra: score} con score 1.0 en trigger, 0.0 en resto."""
