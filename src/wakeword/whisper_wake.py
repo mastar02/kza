@@ -113,6 +113,8 @@ class WhisperWakeDetector:
         speaker_min_audio_s: float = 0.8,
         fuzzy_threshold: float = 0.75,
         fuzzy_start_words: int = 3,
+        beam_size: int = 1,
+        initial_prompt: Optional[str] = None,
     ):
         """
         vad_threshold=0.7 (estricto) filtra voces lejanas/TV a volumen medio.
@@ -139,6 +141,8 @@ class WhisperWakeDetector:
         self.language = language
         self.fuzzy_threshold = fuzzy_threshold
         self.fuzzy_start_words = fuzzy_start_words
+        self.beam_size = beam_size
+        self.initial_prompt = initial_prompt
 
         self.speaker_identifier = speaker_identifier
         self.speaker_embedding = speaker_embedding
@@ -347,7 +351,10 @@ class WhisperWakeDetector:
         try:
             model = getattr(self.whisper, "_model", None) or self.whisper
             segments, _ = model.transcribe(
-                audio, language=self.language, beam_size=1, vad_filter=False,
+                audio, language=self.language,
+                beam_size=self.beam_size,
+                initial_prompt=self.initial_prompt,
+                vad_filter=False,
             )
             text = " ".join(s.text for s in segments).strip()
         except Exception as e:

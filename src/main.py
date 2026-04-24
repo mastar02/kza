@@ -432,7 +432,11 @@ async def main():
                             )
 
                     streaming = room_wake_cfg.get("streaming", False)
-                    wake_language = config.get("stt", {}).get("language", "es")
+                    stt_cfg = config.get("stt", {})
+                    wake_language = stt_cfg.get("language", "es")
+                    # beam_size / initial_prompt: override por room o herencia del stt top.
+                    wake_beam = room_wake_cfg.get("beam_size") or stt_cfg.get("beam_size", 1)
+                    wake_prompt = room_wake_cfg.get("initial_prompt") or stt_cfg.get("initial_prompt")
                     if streaming:
                         from src.wakeword.streaming_whisper_wake import (
                             StreamingWhisperWakeDetector,
@@ -449,6 +453,8 @@ async def main():
                             speaker_embedding=spk_emb,
                             speaker_threshold=sf_cfg.get("threshold", 0.65),
                             speaker_min_audio_s=sf_cfg.get("min_audio_s", 0.8),
+                            beam_size=wake_beam,
+                            initial_prompt=wake_prompt,
                         )
                     else:
                         from src.wakeword.whisper_wake import WhisperWakeDetector
@@ -458,12 +464,14 @@ async def main():
                             silence_end_ms=room_wake_cfg.get("silence_end_ms", 500),
                             min_utterance_ms=room_wake_cfg.get("min_utterance_ms", 250),
                             max_utterance_s=room_wake_cfg.get("max_utterance_s", 3.5),
-                            fuzzy_threshold=room_wake_cfg.get("fuzzy_threshold", 0.7),
+                            fuzzy_threshold=room_wake_cfg.get("fuzzy_threshold", 0.75),
                             fuzzy_start_words=room_wake_cfg.get("fuzzy_start_words", 3),
                             speaker_identifier=spk_ref_identifier,
                             speaker_embedding=spk_emb,
                             speaker_threshold=sf_cfg.get("threshold", 0.65),
                             speaker_min_audio_s=sf_cfg.get("min_audio_s", 0.8),
+                            beam_size=wake_beam,
+                            initial_prompt=wake_prompt,
                         )
                     wake_detector.load()
                 else:

@@ -28,7 +28,7 @@ class _FakeWhisperSTT:
     def __init__(self, text: str):
         self._text = text
 
-    def transcribe(self, audio, language="es", beam_size=1, vad_filter=False):
+    def transcribe(self, audio, **kwargs):
         seg = MagicMock()
         seg.text = self._text
         return [seg], None

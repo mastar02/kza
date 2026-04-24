@@ -129,8 +129,18 @@ stt:
   # Fallback a large-v3 si hace falta máxima precisión:
   # model: "./models/whisper-ct2"
   language: "es"
-  beam_size: 1  # Más rápido
+  beam_size: 5            # 1=greedy (rápido), 5=beam search (+30% latencia, +precisión)
+  best_of: 1
   vad_filter: true
+  # Sesga la decodificación de Whisper para palabras del dominio. Le "enseña"
+  # a reconocer "Nexa" y a favorecer vocabulario de domótica. Sin costo de
+  # latencia — es un token-level prior. Máx ~224 tokens.
+  initial_prompt: >-
+    Esto es un asistente de voz llamado Nexa que controla luces, aire
+    acondicionado, persianas y música en el escritorio, el living, la cocina,
+    el baño y el hall. Comandos típicos: Nexa prendé la luz del living,
+    Nexa apagá la luz del escritorio, Nexa subí el volumen, Nexa poné la
+    luz al cincuenta por ciento, Nexa bajá la temperatura del aire.
 
 # Text-to-Speech (GPU 0 — compartido con STT, SpeakerID, Emotion)
 # Solo Kokoro por limitación de 2 GPUs (Qwen3-TTS no cabe)
@@ -803,6 +813,11 @@ rooms:
     # 0.0 desactiva fuzzy; 1.0 = solo exact. 0.75 balancea recall vs FP.
     fuzzy_threshold: 0.75
     fuzzy_start_words: 3
+    # beam_size / initial_prompt override para el wake detector. Si null,
+    # hereda del stt top-level. beam_size=5 + initial_prompt con "Nexa"
+    # aumenta recall de la wake word en Whisper.
+    beam_size: null
+    initial_prompt: null
     # Streaming mode (Fase 2) — word-synchronous, menor latencia, más GPU
     streaming: false               # true = usa StreamingWhisperWakeDetector
     streaming_interval_ms: 200     # cada N ms re-transcribe ring buffer

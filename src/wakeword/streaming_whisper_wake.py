@@ -63,6 +63,8 @@ class StreamingWhisperWakeDetector:
         speaker_embedding: Optional[np.ndarray] = None,
         speaker_threshold: float = 0.65,
         speaker_min_audio_s: float = 0.8,
+        beam_size: int = 1,
+        initial_prompt: Optional[str] = None,
     ):
         self.whisper = whisper_stt
         self.wake_words_norm = [_normalize(w) for w in wake_words]
@@ -81,6 +83,8 @@ class StreamingWhisperWakeDetector:
         self._speaker_filter_active = (
             speaker_identifier is not None and speaker_embedding is not None
         )
+        self.beam_size = beam_size
+        self.initial_prompt = initial_prompt
 
         self._buffer: deque[np.ndarray] = deque()
         self._buffer_samples = 0
@@ -231,7 +235,9 @@ class StreamingWhisperWakeDetector:
         try:
             model = getattr(self.whisper, "_model", None) or self.whisper
             segments, _ = model.transcribe(
-                audio, language=self.language, beam_size=1,
+                audio, language=self.language,
+                beam_size=self.beam_size,
+                initial_prompt=self.initial_prompt,
                 word_timestamps=True, vad_filter=False,
                 condition_on_previous_text=False,
             )

@@ -20,18 +20,33 @@ logger = logging.getLogger(__name__)
 
 class FastWhisperSTT:
     """Speech-to-Text con Faster-Whisper optimizado para baja latencia"""
-    
+
     def __init__(
         self,
         model: str = "distil-whisper/distil-small.en",
         device: str = "cuda:0",
         compute_type: str = "float16",
-        language: str = "es"
+        language: str = "es",
+        beam_size: int = 1,
+        best_of: int = 1,
+        initial_prompt: str | None = None,
     ):
+        """
+        Args:
+            beam_size: 1 = greedy (rápido, ~200ms turbo). 5 = beam search
+                (+30% latencia, +5-10% precisión en palabras raras).
+            best_of: Muestras paralelas (con temperature>0). 1 = determinístico.
+            initial_prompt: Texto que sesga la decodificación. Útil para
+                enseñarle a Whisper palabras novel ("Nexa") y vocabulario
+                del dominio (verbos y rooms). Máx ~224 tokens.
+        """
         self.model_name = model
         self.device = device
         self.compute_type = compute_type
         self.language = language
+        self.beam_size = beam_size
+        self.best_of = best_of
+        self.initial_prompt = initial_prompt
         self._model = None
     
     def load(self):
@@ -80,19 +95,22 @@ class FastWhisperSTT:
             # Path a archivo - faster-whisper lo maneja internamente
             audio_input = str(audio)
 
-        # Transcribir con configuración optimizada para velocidad
+        # Transcribir con configuración (beam/prompt configurables — defaults
+        # priorizan velocidad, subir beam_size=5 + initial_prompt mejora precisión
+        # para palabras novel como "nexa" a costa de ~30% latencia).
         segments, info = self._model.transcribe(
             audio_input,
             language=self.language,
-            beam_size=1,              # Más rápido (sin beam search)
-            best_of=1,                # Sin sampling múltiple
-            temperature=0,            # Determinístico
-            condition_on_previous_text=False,  # Más rápido para comandos cortos
-            vad_filter=True,          # Filtra silencios
+            beam_size=self.beam_size,
+            best_of=self.best_of,
+            temperature=0,
+            initial_prompt=self.initial_prompt,
+            condition_on_previous_text=False,
+            vad_filter=True,
             vad_parameters={
-                "min_silence_duration_ms": 300,   # Reducido de 500 (más agresivo)
-                "speech_pad_ms": 100,             # Reducido de 200 (menos padding)
-                "threshold": 0.5,                 # Umbral de detección de voz
+                "min_silence_duration_ms": 300,
+                "speech_pad_ms": 100,
+                "threshold": 0.5,
             }
         )
 
@@ -317,7 +335,7 @@ class MoonshineSTT:
 def create_stt(config: dict) -> FastWhisperSTT | MoonshineSTT:
     """Factory para crear el STT según configuración"""
     model = config.get("model", "distil-whisper/distil-small.en")
-    
+
     if "moonshine" in model.lower():
         return MoonshineSTT(
             model=model,
@@ -328,5 +346,8 @@ def create_stt(config: dict) -> FastWhisperSTT | MoonshineSTT:
             model=model,
             device=config.get("device", "cuda:0"),
             compute_type=config.get("compute_type", "float16"),
-            language=config.get("language", "es")
+            language=config.get("language", "es"),
+            beam_size=config.get("beam_size", 1),
+            best_of=config.get("best_of", 1),
+            initial_prompt=config.get("initial_prompt"),
         )
