@@ -787,7 +787,10 @@ rooms:
   # Wake word config for all rooms
   wake_word:
     engine: "whisper"              # "whisper" (STT-based, custom word) | "openwakeword" (legacy)
-    words: ["nexa", "kaza"]        # usado cuando engine=whisper
+    # Aliases: Whisper suele interpretar "nexa" como "alexa" / "nexia" / "neza" /
+    # "nexta" dependiendo del acento y ruido. Aceptar todos estos como wake word
+    # (con require_start=True) da buena recall y false-positive rate bajo en español.
+    words: ["nexa", "kaza", "alexa", "nexia", "neza", "nexta", "nesa"]
     model: "hey_jarvis"            # usado cuando engine=openwakeword
     threshold: 0.35                # usado cuando engine=openwakeword
     # Whisper engine params (opcionales, con defaults razonables)
@@ -799,12 +802,16 @@ rooms:
     streaming_interval_ms: 200     # cada N ms re-transcribe ring buffer
     streaming_window_s: 2.0        # tamaño del ring buffer para análisis incremental
     # Speaker filter (Fase 1) — descarta audio ajeno antes de Whisper STT.
-    # Requiere `python -m scripts.enroll_voice --user gabriel` previo.
+    # DESACTIVADO temporalmente: el enrollment con los WAVs cortos actuales
+    # produce intra_consistency ~0.2 (insuficiente para ECAPA). Para re-activar:
+    #   1. Grabar 20-30 frases de 3-4s con voz continua.
+    #   2. python -m scripts.enroll_voice --user gabriel --vad-trim
+    #   3. Poner enabled: true.
     speaker_filter:
-      enabled: true                # si embedding_path existe, activa filter
+      enabled: false
       embedding_path: "./data/users/gabriel_voice.npy"
-      threshold: 0.65              # cosine sim mínimo para aceptar utterance
-      min_audio_s: 0.8             # dur mínima para aplicar filter (ECAPA degrada <1s)
+      threshold: 0.65
+      min_audio_s: 0.8
 
   # Detection config
   detection:

@@ -241,7 +241,8 @@ def main() -> int:
         "n_skipped_short": skipped_short,
         "min_duration_s": args.min_duration,
         "intra_consistency": round(consistency, 4),
-        "source_dir": str(wav_dir.relative_to(ROOT)),
+        "source_dirs": [str(p.relative_to(ROOT)) for p in wav_dirs],
+        "vad_trim": args.vad_trim,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     meta_path.write_text(json.dumps(metadata, indent=2))
