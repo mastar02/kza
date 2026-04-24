@@ -179,6 +179,12 @@ tts:
     # - Mucha latencia: reducir prebuffer_ms (40-50)
     # - Sistema lento: aumentar ambos
 
+  # Response cache (S2): pre-genera ~24 frases canónicas al startup (~3-5s
+  # extra) para que los acks comunes ("Listo", "Prendo la luz del escritorio")
+  # se sirvan desde RAM en <10ms en vez de ~80ms de Kokoro stream.
+  response_cache:
+    enabled: true
+
 # Embeddings (cuda:0 — junto con STT/TTS/SpeakerID/Emotion; cuda:1 la ocupa vLLM compartido)
 # Ver Notion KZA pág 8 §3 (Catálogo GPU, actualizado 2026-04-21)
 embeddings:
