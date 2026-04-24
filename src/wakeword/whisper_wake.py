@@ -41,6 +41,44 @@ def _normalize(text: str) -> str:
     return t
 
 
+def _phonetic_es(word: str) -> str:
+    """
+    Codifica una palabra a una representación fonética simplificada del
+    español rioplatense. Hace "nexa" y "next" colapsar a /neks.../ mientras
+    "nena" /nena/ queda bien separada.
+
+    Transformaciones:
+      - NFD + quitar acentos
+      - v/w → b (mismo fonema bilabial)
+      - h muda eliminada
+      - qu/q → k
+      - c antes de e/i/y → s (seseo rioplatense), resto → k
+      - g antes de e/i → j
+      - x → ks (explicita el cluster)
+      - z → s (seseo)
+      - ll → y, ñ → ny
+      - colapsa consonantes repetidas
+
+    La palabra clave "nexa" es especialmente discriminable porque /ks/ es raro
+    en ataques o codas del español común. Todas las palabras que no tienen ese
+    cluster van a quedar distantes en Levenshtein sobre esta representación.
+    """
+    t = unicodedata.normalize("NFD", word.lower())
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    t = re.sub(r"[vw]", "b", t)
+    t = re.sub(r"h", "", t)
+    t = re.sub(r"qu", "k", t)
+    t = re.sub(r"q", "k", t)
+    t = re.sub(r"c([eiy])", r"s\1", t)
+    t = re.sub(r"c", "k", t)
+    t = re.sub(r"g([ei])", r"j\1", t)
+    t = re.sub(r"x", "ks", t)
+    t = re.sub(r"z", "s", t)
+    t = t.replace("ll", "y").replace("ñ", "ny")
+    t = re.sub(r"([bdfgjklmnpqrstxy])\1+", r"\1", t)
+    return t
+
+
 class WhisperWakeDetector:
     """
     Wake word detector STT-based.
@@ -73,7 +111,7 @@ class WhisperWakeDetector:
         speaker_embedding: Optional[np.ndarray] = None,
         speaker_threshold: float = 0.65,
         speaker_min_audio_s: float = 0.8,
-        fuzzy_threshold: float = 0.6,
+        fuzzy_threshold: float = 0.75,
         fuzzy_start_words: int = 3,
     ):
         """
@@ -90,6 +128,7 @@ class WhisperWakeDetector:
         """
         self.whisper = whisper_stt
         self.wake_words_norm = [_normalize(w) for w in wake_words]
+        self.wake_words_phon = [_phonetic_es(w) for w in self.wake_words_norm]
         self.silence_end_ms = silence_end_ms
         self.min_utterance_ms = min_utterance_ms
         self.max_utterance_s = max_utterance_s
@@ -330,28 +369,31 @@ class WhisperWakeDetector:
                         continue
                 logger.info(f"🔥 Wake word '{w}' detectado en: {text!r}")
                 return (w, text)
-        # Paso 2: fuzzy match por Levenshtein ratio contra la wake word canónica.
-        # Whisper produce variantes novel ("next", "nexco", "negsa") que no están
-        # en aliases. Comparamos cada palabra de las primeras N contra TODAS las
-        # wake words; si ratio >= fuzzy_threshold, consideramos match y devolvemos
-        # la wake word canónica (primera de la lista).
-        if self.wake_words_norm and self.fuzzy_threshold > 0:
+        # Paso 2: fuzzy match fonético (Levenshtein sobre codificación española).
+        # "nexa" /neksa/ vs "next" /nekst/ ≈ 0.80 (match); vs "nena" /nena/ ≈ 0.67
+        # (rechazado). El cluster /ks/ separa los verdaderos positivos de FPs.
+        if self.wake_words_phon and self.fuzzy_threshold > 0:
             words = norm.split()[:self.fuzzy_start_words]
             best_ratio = 0.0
             best_word = ""
+            best_phon = ""
+            best_target = ""
             for word in words:
                 if len(word) < 3:
                     continue
-                for wake in self.wake_words_norm:
-                    r = SequenceMatcher(None, word, wake).ratio()
+                word_phon = _phonetic_es(word)
+                for wake_phon in self.wake_words_phon:
+                    r = SequenceMatcher(None, word_phon, wake_phon).ratio()
                     if r > best_ratio:
                         best_ratio = r
                         best_word = word
+                        best_phon = word_phon
+                        best_target = wake_phon
             if best_ratio >= self.fuzzy_threshold:
                 canonical = self.wake_words_norm[0]
                 logger.info(
-                    f"🔥 Wake word fuzzy match: '{best_word}' ~ '{canonical}' "
-                    f"(ratio={best_ratio:.2f}) en: {text!r}"
+                    f"🔥 Wake word fuzzy match: '{best_word}' /{best_phon}/ ~ "
+                    f"/{best_target}/ (ratio={best_ratio:.2f}) en: {text!r}"
                 )
                 return (canonical, text)
         return (None, text)

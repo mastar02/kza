@@ -182,37 +182,54 @@ def test_threshold_boundary():
 # -----------------------------------------------------------------
 
 def test_fuzzy_match_next_up():
-    """Whisper oye 'next up apague la luz' → fuzzy debe matchear 'next' ~ 'nexa'."""
+    """Whisper oye 'next up apague la luz' → fuzzy fonético: next /nekst/ ~ /neksa/."""
     det = _make_detector(whisper_text="next up apague la luz")
-    det.fuzzy_threshold = 0.7
+    det.fuzzy_threshold = 0.75
+    # Refresh wake_words_phon (already computed in __init__ from wake_words)
     match, text = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
     assert match == "nexa"
 
 
 def test_fuzzy_match_nexia():
-    """'nexia' ratio contra 'nexa' ~0.89 → match."""
+    """'nexia' /neksia/ ~ /neksa/ ratio ~0.91 → match."""
     det = _make_detector(whisper_text="nexia prendé la luz")
-    det.fuzzy_threshold = 0.7
+    det.fuzzy_threshold = 0.75
     match, _ = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
     assert match == "nexa"
 
 
 def test_fuzzy_match_rejects_far_words():
-    """'milagro' / 'gracias' tienen ratio <0.25 → no matchean."""
+    """'milagro' / 'gracias' tienen ratio fonético <0.3 → no matchean."""
     det = _make_detector(whisper_text="milagro gracias amigos")
-    det.fuzzy_threshold = 0.7
+    det.fuzzy_threshold = 0.75
     match, _ = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
     assert match is None
+
+
+def test_fuzzy_rejects_nena_false_positive():
+    """'nena' /nena/ vs 'nexa' /neksa/ = 0.67 — rechazado. Este es el caso clave
+    que motiva usar fonético en vez de char-level Levenshtein (que daría 0.75)."""
+    det = _make_detector(whisper_text="nena apagá la luz")
+    det.fuzzy_threshold = 0.75
+    match, _ = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
+    assert match is None
+
+
+def test_fuzzy_accepts_necks_better_than_char():
+    """'necks' /neks/ ~ /neksa/ = 0.89 fonético vs 0.44 char-level.
+    Fonético captura mejor este caso."""
+    det = _make_detector(whisper_text="necks apagá la luz")
+    det.fuzzy_threshold = 0.75
+    match, _ = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
+    assert match == "nexa"
 
 
 def test_fuzzy_match_only_first_words():
     """fuzzy_start_words=3 ignora palabras posteriores para evitar FP."""
     det = _make_detector(whisper_text="hola amigos cómo están nexa apagá la luz")
-    det.fuzzy_threshold = 0.7
+    det.fuzzy_threshold = 0.75
     det.fuzzy_start_words = 3
     match, _ = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
-    # 'nexa' no está en primeras 3 palabras → no match (require_start check del paso 1
-    # también falla, y fuzzy solo mira primeras 3)
     assert match is None
 
 
@@ -222,6 +239,19 @@ def test_fuzzy_disabled_when_threshold_zero():
     det.fuzzy_threshold = 0.0
     match, _ = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
     assert match is None  # 'next' no es alias exact + fuzzy off → no match
+
+
+def test_phonetic_encoding():
+    """Sanity check del encoding fonético para casos clave."""
+    from src.wakeword.whisper_wake import _phonetic_es
+    assert _phonetic_es("nexa") == "neksa"
+    assert _phonetic_es("next") == "nekst"
+    assert _phonetic_es("nena") == "nena"
+    assert _phonetic_es("alexa") == "aleksa"
+    assert _phonetic_es("nexia") == "neksia"
+    assert _phonetic_es("necks") == "neks"
+    assert _phonetic_es("café") == "kafe"
+    assert _phonetic_es("zapato") == "sapato"
 
 
 def test_exact_alias_match_beats_fuzzy():

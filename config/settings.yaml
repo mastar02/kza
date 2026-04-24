@@ -797,9 +797,11 @@ rooms:
     silence_end_ms: 500
     min_utterance_ms: 250
     max_utterance_s: 3.5
-    # Fuzzy match para atrapar variantes novel ("negsa", "neko", "nexco", etc).
-    # 0.0 desactiva fuzzy match; 1.0 = solo exact match. 0.7 balancea recall vs FP.
-    fuzzy_threshold: 0.7
+    # Fuzzy match FONÉTICO (español): compara Levenshtein sobre representación
+    # /neksa/ (nexa) vs /nekst/ (next, match ✓) vs /nena/ (nena, reject ✓).
+    # El cluster /ks/ de "nexa" es raro en español común → buen discriminador.
+    # 0.0 desactiva fuzzy; 1.0 = solo exact. 0.75 balancea recall vs FP.
+    fuzzy_threshold: 0.75
     fuzzy_start_words: 3
     # Streaming mode (Fase 2) — word-synchronous, menor latencia, más GPU
     streaming: false               # true = usa StreamingWhisperWakeDetector
