@@ -265,12 +265,12 @@ class WhisperWakeDetector:
         if self._speaker_filter_active:
             passed, sim = self._speaker_match(audio)
             if not passed:
-                logger.debug(
+                logger.info(
                     f"Speaker filter REJECT (sim={sim:.3f} < {self.speaker_threshold}) "
                     f"— skip Whisper ({dur_ms:.0f}ms utterance)"
                 )
                 return None
-            logger.debug(f"Speaker filter PASS (sim={sim:.3f})")
+            logger.info(f"Speaker filter PASS (sim={sim:.3f}) — procede a Whisper")
 
         match, text = self._transcribe_and_match(audio, dur_ms)
         if match and text:

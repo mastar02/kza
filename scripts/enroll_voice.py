@@ -72,6 +72,33 @@ def load_wav(path: Path) -> np.ndarray | None:
     return audio
 
 
+def vad_trim(audio: np.ndarray, vad_model, torch_mod,
+             threshold: float = 0.5, min_speech_s: float = 0.5) -> np.ndarray | None:
+    """
+    Usa silero-vad para extraer solo los samples con voz (skip silencios).
+    Si el audio resultante tiene < min_speech_s, devuelve None.
+
+    Esto es crítico para ECAPA: un WAV de 2s con 400ms de voz + 1.6s silencio
+    produce un embedding donde el silencio domina → alta varianza inter-sample
+    (consistencia intra-user baja). Con VAD trim, el embedding se extrae solo
+    de la porción vocal → mucho más consistente.
+    """
+    chunk_samples = 512  # silero-vad espera ventanas de 512 samples @ 16kHz
+    n = len(audio)
+    speech_mask = np.zeros(n, dtype=bool)
+    for start in range(0, n - chunk_samples, chunk_samples):
+        chunk = audio[start:start + chunk_samples]
+        tensor = torch_mod.from_numpy(chunk.astype(np.float32))
+        with torch_mod.no_grad():
+            prob = float(vad_model(tensor, SAMPLE_RATE).item())
+        if prob >= threshold:
+            speech_mask[start:start + chunk_samples] = True
+    trimmed = audio[speech_mask]
+    if len(trimmed) < int(min_speech_s * SAMPLE_RATE):
+        return None
+    return trimmed
+
+
 def intra_user_consistency(embeddings: list[np.ndarray]) -> float:
     """Promedio de cosine similarity pairwise (excluye diagonal)."""
     if len(embeddings) < 2:
@@ -90,7 +117,7 @@ def main() -> int:
     parser.add_argument("--user", default="gabriel",
                         help="user_id (default: gabriel)")
     parser.add_argument("--dir", default="data/wakeword_training/nexa/positive",
-                        help="Directorio con WAVs del usuario")
+                        help="Directorio(s) con WAVs del usuario (coma-separado)")
     parser.add_argument("--output-dir", default="data/users",
                         help="Directorio destino del embedding (default: data/users)")
     parser.add_argument("--min-duration", type=float, default=1.0,
@@ -101,36 +128,66 @@ def main() -> int:
                         help="cuda:0 | cuda:1 | cpu")
     parser.add_argument("--dry-run", action="store_true",
                         help="Sólo mostrar stats, no guardar embedding")
+    parser.add_argument("--vad-trim", action="store_true",
+                        help="Usa silero-vad para extraer solo la parte con voz de cada WAV "
+                             "(recomendado cuando los samples tienen mucho silencio)")
+    parser.add_argument("--vad-threshold", type=float, default=0.5,
+                        help="Umbral silero-vad (default 0.5)")
+    parser.add_argument("--min-speech-s", type=float, default=0.4,
+                        help="Dur mínima de voz post-VAD para aceptar el sample")
     args = parser.parse_args()
 
-    wav_dir = (ROOT / args.dir).resolve()
-    if not wav_dir.is_dir():
-        logger.error("No existe el directorio: %s", wav_dir)
+    wav_dirs = [(ROOT / d.strip()).resolve() for d in args.dir.split(",")]
+    wavs: list[Path] = []
+    for wd in wav_dirs:
+        if not wd.is_dir():
+            logger.error("No existe el directorio: %s", wd)
+            return 1
+        found = sorted(wd.glob("*.wav"))
+        logger.info("Encontrados %d WAVs en %s", len(found), wd)
+        wavs.extend(found)
+    if not wavs:
+        logger.error("Sin WAVs en ninguno de los dirs: %s", wav_dirs)
         return 1
 
-    wavs = sorted(wav_dir.glob("*.wav"))
-    if not wavs:
-        logger.error("Sin WAVs en %s", wav_dir)
-        return 1
-    logger.info("Encontrados %d WAVs en %s", len(wavs), wav_dir)
+    # Cargar silero-vad si trim activo
+    vad_model = None
+    torch_mod = None
+    if args.vad_trim:
+        logger.info("Cargando silero-vad para trim de silencios...")
+        import torch as torch_mod
+        vad_model, _ = torch_mod.hub.load(
+            repo_or_dir="snakers4/silero-vad",
+            model="silero_vad",
+            trust_repo=True,
+        )
 
     min_samples = int(args.min_duration * SAMPLE_RATE)
     audios: list[np.ndarray] = []
     skipped_short = 0
+    skipped_vad = 0
     for w in wavs:
         audio = load_wav(w)
         if audio is None:
             continue
-        if len(audio) < min_samples:
+        if args.vad_trim and vad_model is not None:
+            trimmed = vad_trim(audio, vad_model, torch_mod,
+                               threshold=args.vad_threshold,
+                               min_speech_s=args.min_speech_s)
+            if trimmed is None:
+                skipped_vad += 1
+                continue
+            audio = trimmed
+        if len(audio) < min_samples and not args.vad_trim:
             skipped_short += 1
             continue
         audios.append(audio)
     if not audios:
-        logger.error("Ningún audio válido después de filtros (min_duration=%.1fs)",
-                     args.min_duration)
+        logger.error("Ningún audio válido (min_duration=%.1fs, vad=%s)",
+                     args.min_duration, args.vad_trim)
         return 1
-    logger.info("Audios válidos: %d (descartados por cortos: %d)",
-                len(audios), skipped_short)
+    logger.info("Audios válidos: %d (skipped_short=%d skipped_vad=%d)",
+                len(audios), skipped_short, skipped_vad)
 
     logger.info("Cargando SpeakerIdentifier (%s @ %s)...", args.model, args.device)
     t0 = time.time()
