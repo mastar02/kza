@@ -68,6 +68,47 @@ def _normalize(text: str) -> str:
     return t
 
 
+# Prefijos coalescidos ↔ forma real. Whisper a veces pega la 'a' final
+# de "nexa" al inicio del verbo siguiente: "nexa prendé" → "nexa aprende".
+# Mapeo conservador — solo prefijos de verbos de domótica conocidos para
+# evitar reinterpretar palabras legítimas.
+_COALESCED_VERB_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("aprend", "prend"),    # nexa aprende → nexa prende
+    ("aencend", "encend"),  # nexa aencendé → nexa encendé
+    ("abaj", "baj"),        # nexa abajá → nexa bajá
+    ("asub", "sub"),        # nexa asubí → nexa subí
+    # Nota: "apag" NO se lista porque ya es verbo válido ("nexa apagá"),
+    # y "abr" tampoco porque "abr" (abrí) es legítimo tras "nexa".
+)
+
+
+def _decoalesce_post_wake(norm_text: str, wake_norm: str) -> str:
+    """Corregir el pegado del wake con el verbo siguiente.
+
+    Whisper ocasionalmente produce 'nexa aprende' cuando el usuario dijo
+    'nexa, prendé' — la 'a' final del wake se pega al inicio del verbo.
+    Detectamos y re-segmentamos las combinaciones conocidas.
+
+    Args:
+        norm_text: texto ya pasado por `_normalize` (lowercase, sin acentos).
+        wake_norm: wake word en forma normalizada (ej: 'nexa').
+
+    Returns:
+        Texto corregido, o el original si no había coalescing detectable.
+    """
+    if not norm_text or not wake_norm:
+        return norm_text
+    words = norm_text.split()
+    if len(words) < 2 or words[0] != wake_norm:
+        return norm_text
+    second = words[1]
+    for coalesced, real in _COALESCED_VERB_PREFIXES:
+        if second.startswith(coalesced):
+            words[1] = real + second[len(coalesced):]
+            return " ".join(words)
+    return norm_text
+
+
 def _phonetic_es(word: str) -> str:
     """
     Codifica una palabra a una representación fonética simplificada del
@@ -460,6 +501,14 @@ class WhisperWakeDetector:
             return (None, "")
 
         norm = _normalize(text)
+        # Fix coalescing Whisper: 'nexa aprende' → 'nexa prende' antes de
+        # aplicar las reglas de TV stop / command verb.
+        for wake_norm in self.wake_words_norm:
+            norm_fixed = _decoalesce_post_wake(norm, wake_norm)
+            if norm_fixed != norm:
+                logger.info(f"Decoalesced post-wake: {norm!r} → {norm_fixed!r}")
+                norm = norm_fixed
+                break
         logger.info(f"WhisperWake [{dur_ms:.0f}ms→{stt_ms:.0f}ms]: {norm!r}")
         # Paso 1: substring match contra los aliases configurados (exact match en norm).
         # TV stop-words: frases que jamás son comandos legítimos.

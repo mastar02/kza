@@ -875,7 +875,7 @@ rooms:
     # hereda del stt top-level. beam_size=5 + initial_prompt con "Nexa"
     # aumenta recall de la wake word en Whisper.
     beam_size: null
-    initial_prompt: null
+    initial_prompt: "Nexa, prendé la luz. Nexa, apagá la tele. Nexa, subí el volumen. Nexa, bajá la persiana. Nexa, encendé el ventilador. Nexa, abrí la cortina."
     # Early dispatch — parser streaming del comando post-wake. Transcribe
     # cada N ms el audio acumulado y dispatcha apenas detecta intent+entity
     # sin esperar el silencio final (ahorra ~400-800ms de latencia percibida).
