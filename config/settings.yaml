@@ -818,6 +818,14 @@ rooms:
     # aumenta recall de la wake word en Whisper.
     beam_size: null
     initial_prompt: null
+    # Early dispatch — parser streaming del comando post-wake. Transcribe
+    # cada N ms el audio acumulado y dispatcha apenas detecta intent+entity
+    # sin esperar el silencio final (ahorra ~400-800ms de latencia percibida).
+    # Costo: Whisper corriendo continuamente en cuda:0 durante el comando.
+    # Con sólo 900 MiB de headroom en VRAM, medir con gpu_thermal.sh antes.
+    early_dispatch: true
+    early_dispatch_interval_ms: 400
+    early_dispatch_min_audio_s: 0.6
     # Streaming mode (Fase 2) — word-synchronous, menor latencia, más GPU
     streaming: false               # true = usa StreamingWhisperWakeDetector
     streaming_interval_ms: 200     # cada N ms re-transcribe ring buffer

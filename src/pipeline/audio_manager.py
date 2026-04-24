@@ -2,6 +2,7 @@
 Audio Manager Module
 Gestiona la captura de audio, detección de wake word, VAD y detección de zonas.
 """
+from __future__ import annotations
 
 import asyncio
 import logging

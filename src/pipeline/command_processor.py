@@ -92,7 +92,8 @@ class CommandProcessor:
     async def process_command(
         self,
         audio: np.ndarray,
-        use_parallel: bool = True
+        use_parallel: bool = True,
+        pretranscribed_text: str | None = None,
     ) -> ProcessedCommand:
         """
         Procesar comando completo (STT + Speaker ID + Emotion).
@@ -100,6 +101,10 @@ class CommandProcessor:
         Args:
             audio: Audio del comando
             use_parallel: Usar procesamiento paralelo para STT + Speaker ID
+            pretranscribed_text: Si viene, saltea el STT y usa este texto.
+                Lo setea el early-dispatch worker (ya transcribió en el loop
+                de streaming del wake). Speaker ID + emotion se hacen igual
+                sobre el audio.
 
         Returns:
             ProcessedCommand with text, user, emotion, timings, success
@@ -107,7 +112,26 @@ class CommandProcessor:
         result = ProcessedCommand(text="")
         pipeline_start = time.perf_counter()
 
-        if use_parallel and (self.speaker_id or self.emotion_detector):
+        if pretranscribed_text is not None:
+            # Shortcut: texto ya venía. Corremos sólo speaker_id + emotion.
+            result.timings["stt"] = 0.0
+            result.timings["stt_skipped"] = 1
+            if self.speaker_id and self.user_manager:
+                user, confidence, spk_ms = self._identify_speaker(audio)
+                if user is not None:
+                    result.user = user
+                    result.speaker_confidence = confidence
+                result.timings["speaker_id"] = spk_ms
+            if self.emotion_detector:
+                try:
+                    emotion = self.emotion_detector.detect(audio, self.sample_rate)
+                    if emotion:
+                        result.emotion = emotion
+                        result.timings["emotion"] = emotion.processing_time_ms
+                except Exception as e:
+                    logger.debug(f"Emotion detection skipped: {e}")
+            text = pretranscribed_text
+        elif use_parallel and (self.speaker_id or self.emotion_detector):
             text, stt_ms, speaker_result, emotion_result = await self._process_parallel(audio)
             result.timings["stt"] = stt_ms
             if speaker_result:

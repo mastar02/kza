@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -18,6 +18,7 @@ from src.pipeline.command_event import CommandEvent
 from src.wakeword.detector import WakeWordDetector
 from src.audio.echo_suppressor import EchoSuppressor
 from src.conversation.follow_up_mode import FollowUpMode
+from src.nlu.command_grammar import PartialCommand, parse_partial_command
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,11 @@ class RoomStream:
     listening: bool = False
     audio_buffer: list = field(default_factory=list)
     command_start_time: float = 0.0
+    # Early dispatch (opt-in vía config): un background task transcribe+parsea
+    # el audio acumulado cada N ms y settea `early_command` apenas el parser
+    # tiene intent+entity. El polling loop dispatcha sin esperar silencio.
+    early_task: Optional[asyncio.Task] = None
+    early_command: Optional[PartialCommand] = None
 
 
 class MultiRoomAudioLoop:
@@ -56,6 +62,10 @@ class MultiRoomAudioLoop:
         silence_duration_ms: int = 300,
         min_speech_ms: int = 300,
         dedup_window_ms: int = 500,
+        early_dispatch_enabled: bool = False,
+        early_dispatch_interval_ms: int = 400,
+        early_dispatch_min_audio_s: float = 0.6,
+        stt=None,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -65,6 +75,11 @@ class MultiRoomAudioLoop:
         self.silence_duration_ms = silence_duration_ms
         self.min_speech_ms = min_speech_ms
         self.dedup_window_ms = dedup_window_ms
+
+        self.early_dispatch_enabled = early_dispatch_enabled
+        self.early_dispatch_interval_ms = early_dispatch_interval_ms
+        self.early_dispatch_min_audio_s = early_dispatch_min_audio_s
+        self._stt = stt  # FastWhisperSTT — usado por el worker early parse
 
         self._running = False
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
@@ -169,6 +184,37 @@ class MultiRoomAudioLoop:
                     if not rs.listening:
                         continue
 
+                    # 1. Start early parse worker si corresponde (una sola vez por captura)
+                    if (
+                        self.early_dispatch_enabled
+                        and self._stt is not None
+                        and rs.early_task is None
+                    ):
+                        rs.early_task = asyncio.create_task(
+                            self._early_parse_worker(rs)
+                        )
+
+                    # 2. Early dispatch si el worker detectó comando completo
+                    if rs.early_command is not None:
+                        audio_data = np.array(rs.audio_buffer, dtype=np.float32)
+                        pc = rs.early_command
+                        logger.info(
+                            f"⚡ Early dispatch in {rs.room_id}: "
+                            f"intent={pc.intent} entity={pc.entity} room={pc.room} "
+                            f"({len(audio_data) / self.sample_rate * 1000:.0f}ms captured)"
+                        )
+                        event = CommandEvent(
+                            audio=audio_data,
+                            room_id=room_id,
+                            mic_device_index=rs.device_index,
+                            partial_command=pc,
+                            early_dispatch=True,
+                        )
+                        asyncio.create_task(self._dispatch_command(event))
+                        self._reset_listening(rs)
+                        continue
+
+                    # 3. Fallback: VAD silencio normal
                     is_complete, audio_data = self._check_vad_completion(rs)
                     if is_complete and audio_data is not None:
                         event = CommandEvent(
@@ -177,8 +223,7 @@ class MultiRoomAudioLoop:
                             mic_device_index=rs.device_index,
                         )
                         asyncio.create_task(self._dispatch_command(event))
-                        rs.listening = False
-                        rs.audio_buffer = []
+                        self._reset_listening(rs)
         finally:
             for stream in streams:
                 stream.stop()
@@ -267,6 +312,56 @@ class MultiRoomAudioLoop:
             return True, audio_data
 
         return False, None
+
+    def _reset_listening(self, rs: RoomStream) -> None:
+        """Cierra el estado de captura y cancela el worker early si está activo."""
+        rs.listening = False
+        rs.audio_buffer = []
+        rs.early_command = None
+        if rs.early_task is not None:
+            rs.early_task.cancel()
+            rs.early_task = None
+
+    async def _early_parse_worker(self, rs: RoomStream) -> None:
+        """
+        Corre mientras `rs.listening`. Cada `early_dispatch_interval_ms`:
+          1. Snapshot del audio acumulado.
+          2. Transcribe con el STT compartido.
+          3. Parsea con `parse_partial_command`.
+          4. Si `ready_to_dispatch()` → setea `rs.early_command` y sale.
+
+        El polling loop principal ve `rs.early_command` y despacha.
+        """
+        interval_s = self.early_dispatch_interval_ms / 1000
+        min_samples = int(self.early_dispatch_min_audio_s * self.sample_rate)
+        try:
+            while rs.listening and self._running:
+                await asyncio.sleep(interval_s)
+                if not rs.listening:
+                    return
+                buf_len = len(rs.audio_buffer)
+                if buf_len < min_samples:
+                    continue
+                audio_snapshot = np.array(rs.audio_buffer, dtype=np.float32)
+                try:
+                    text, _ms = self._stt.transcribe(
+                        audio_snapshot, sample_rate=self.sample_rate,
+                    )
+                except Exception as e:
+                    logger.debug(f"Early transcribe error in {rs.room_id}: {e}")
+                    continue
+                if not text:
+                    continue
+                pc = parse_partial_command(text)
+                logger.debug(
+                    f"Early parse {rs.room_id}: {text!r} → "
+                    f"intent={pc.intent} entity={pc.entity} room={pc.room}"
+                )
+                if pc.ready_to_dispatch():
+                    rs.early_command = pc
+                    return
+        except asyncio.CancelledError:
+            return
 
     async def _dispatch_command(self, event: CommandEvent):
         """Dispatch a captured command via registered callback."""

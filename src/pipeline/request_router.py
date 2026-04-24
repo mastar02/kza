@@ -186,19 +186,30 @@ class RequestRouter:
         """
         from src.pipeline.command_event import CommandEvent
 
+        pretranscribed_text: str | None = None
         if isinstance(audio_or_event, CommandEvent):
             audio = audio_or_event.audio
             room_id = audio_or_event.room_id
+            # Early dispatch: el worker streaming ya transcribió el audio para
+            # decidir ready_to_dispatch(). Usamos ese texto directo y saltamos
+            # la segunda llamada al STT.
+            if audio_or_event.partial_command is not None:
+                pretranscribed_text = audio_or_event.partial_command.raw_text
         else:
             audio = audio_or_event
             room_id = None
 
         if self.orchestrator_enabled and self._orchestrator:
-            return await self._process_command_orchestrated(audio, room_id=room_id)
+            return await self._process_command_orchestrated(
+                audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
+            )
         else:
-            return await self._process_command_legacy(audio, room_id=room_id)
+            return await self._process_command_legacy(
+                audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
+            )
 
-    async def _process_command_orchestrated(self, audio: np.ndarray, room_id: str = None) -> dict:
+    async def _process_command_orchestrated(self, audio: np.ndarray, room_id: str = None,
+                                              pretranscribed_text: str | None = None) -> dict:
         """Process command with multi-user orchestrator."""
         result = {
             "text": "",
@@ -214,8 +225,11 @@ class RequestRouter:
 
         pipeline_start = time.perf_counter()
 
-        # 1. Process command (STT + Speaker ID + Emotion in parallel)
-        cmd = await self.command_processor.process_command(audio, use_parallel=True)
+        # 1. Process command (STT + Speaker ID + Emotion in parallel).
+        #    Si pretranscribed_text viene del early-dispatch, saltamos el STT.
+        cmd = await self.command_processor.process_command(
+            audio, use_parallel=True, pretranscribed_text=pretranscribed_text,
+        )
         text = cmd.text
         result["text"] = text
         result["timings"].update(cmd.timings)
@@ -315,7 +329,8 @@ class RequestRouter:
 
         return result
 
-    async def _process_command_legacy(self, audio: np.ndarray, room_id: str = None) -> dict:
+    async def _process_command_legacy(self, audio: np.ndarray, room_id: str = None,
+                                        pretranscribed_text: str | None = None) -> dict:
         """Legacy processing (single-user) for backwards compatibility."""
         result = {
             "text": "",
@@ -330,8 +345,10 @@ class RequestRouter:
 
         pipeline_start = time.perf_counter()
 
-        # 1. Process command
-        cmd = await self.command_processor.process_command(audio, use_parallel=True)
+        # 1. Process command (salteando STT si viene de early dispatch)
+        cmd = await self.command_processor.process_command(
+            audio, use_parallel=True, pretranscribed_text=pretranscribed_text,
+        )
         text = cmd.text
         result["text"] = text
         result["timings"].update(cmd.timings)
