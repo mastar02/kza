@@ -10,7 +10,9 @@ Owns all command routing logic:
 
 import logging
 import time
+import unicodedata
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 import numpy as np
 
@@ -21,14 +23,21 @@ from src.orchestrator import PathType
 logger = logging.getLogger(__name__)
 
 
-def _texts_diverge(a: str, b: str, min_ratio: float = 0.6) -> bool:
+def _texts_diverge(a: str, b: str, min_ratio: float = 0.95) -> bool:
     """True if two transcriptions differ enough to suspect hallucination.
 
     Uses accent-stripped lowercase SequenceMatcher ratio. Below min_ratio,
     the texts are considered divergent.
+
+    Default 0.95 calibrated so single-word hallucinations (e.g. 'Nexa' → 'Para'
+    in a ~6-word utterance, ratio ≈ 0.917) cross the threshold. Exact matches
+    and near-duplicates caused by e.g. a one-letter insertion (ratio ≥ 0.97)
+    stay silent.
+
+    Returns False if either input is empty (nothing meaningful to compare).
     """
-    from difflib import SequenceMatcher
-    import unicodedata
+    if not a or not b:
+        return False
 
     def _norm(t: str) -> str:
         t = unicodedata.normalize("NFD", t.lower())

@@ -685,3 +685,49 @@ class TestWakeTextPriority:
         )
         await router.process_command(event)
         assert captured["pretranscribed_text"] == "prende la luz"
+
+    @pytest.mark.asyncio
+    async def test_wake_text_divergence_logs_warning(self, caplog):
+        """When wake and partial diverge, a WARNING should be emitted with both texts."""
+        import logging
+        from src.pipeline.command_event import CommandEvent
+        from src.nlu.command_grammar import PartialCommand
+
+        cp = MagicMock()
+
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+            return _make_cmd_result(text=pretranscribed_text or "")
+
+        cp.process_command = AsyncMock(side_effect=fake_process)
+
+        chroma = MagicMock()
+        chroma.search_command.return_value = None
+
+        router = _build_router(
+            command_processor=cp,
+            chroma_sync=chroma,
+            orchestrator_enabled=False,
+        )
+
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32),
+            room_id="escritorio",
+            wake_text="Nexa encender la luz del escritorio.",
+            partial_command=PartialCommand(
+                raw_text="Para encender la luz del escritorio.",
+                intent="turn_on",
+                entity="light",
+            ),
+            early_dispatch=True,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="src.pipeline.request_router"):
+            await router.process_command(event)
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(
+            "mismatch" in r.message.lower()
+            and "nexa" in r.message.lower()
+            and "para" in r.message.lower()
+            for r in warning_records
+        ), f"Expected divergence warning with both texts. Got: {[r.message for r in warning_records]}"
