@@ -241,7 +241,7 @@ class RequestDispatcher:
         zone_id: str = None,
         permission_level: int = 3,
         on_response: Callable[[DispatchResult], None] = None,
-        timeout: float = 60.0
+        timeout: float = 5.0
     ) -> DispatchResult:
         """
         Procesar una peticion, enrutando al path correcto.
@@ -600,7 +600,7 @@ class RequestDispatcher:
             zone_id=zone_id,
             priority=Priority.LOW,
             on_response=None,
-            timeout=60.0
+            timeout=5.0
         )
 
     async def _slow_path(

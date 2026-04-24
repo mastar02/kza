@@ -9,6 +9,7 @@ Owns all command routing logic:
 """
 
 import logging
+import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -21,6 +22,53 @@ from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 
 logger = logging.getLogger(__name__)
+
+
+# Frases que NO son comandos reales aunque llegaron al router — evitan que
+# vayan al slow path del LLM (caro) cuando son ruido de TV, eco del TTS o
+# filler conversacional. Match por substring sobre el texto normalizado
+# (lowercase, sin acentos). Comparado con `_TV_STOP_PHRASES` del wake
+# detector, acá incluimos eco del TTS típico del sistema.
+_NOISE_PHRASES = (
+    # TV/streaming (puede llegar al router si un wake previo abrió el flow)
+    "suscribe", "suscrib", "campanita", "gracias por ver",
+    "dale like", "dale lie", "dale mega like",
+    "canal de youtube", "activa la",
+    # Eco típico del TTS de respuestas/confirmaciones (audio del propio
+    # sistema capturado por el mic cuando el barge-in/echo suppressor
+    # falla puntualmente).
+    "luz encendida", "luz apagada", "luces encendidas", "luces apagadas",
+    "hecho", "perfecto", "listo",
+)
+
+
+def _is_noise_text(text: str) -> str | None:
+    """Chequea si `text` parece ruido/eco, no un comando real.
+
+    Returns:
+        Nombre de la regla que matcheó (para logging), o None si es un
+        comando potencialmente válido.
+    """
+    if not text:
+        return "empty"
+    norm = unicodedata.normalize("NFD", text.lower())
+    norm = "".join(c for c in norm if unicodedata.category(c) != "Mn")
+    norm = re.sub(r"[^\w\s]", " ", norm)
+    norm = re.sub(r"\s+", " ", norm).strip()
+    if not norm:
+        return "empty_after_norm"
+    # Frases conocidas de noise / TV / eco
+    for phrase in _NOISE_PHRASES:
+        if phrase in norm:
+            return f"noise_phrase:{phrase!r}"
+    # Sólo "gracias" (sin verbo/entity) — eco del TTS agradeciendo.
+    if norm in {"gracias", "si", "no", "ok", "bueno", "dale"}:
+        return f"filler_word:{norm!r}"
+    # Repetición extrema: una sola palabra repetida >= 4 veces
+    words = norm.split()
+    if len(words) >= 4 and len(set(words)) == 1:
+        return f"word_repetition:{words[0]!r}"
+    return None
 
 
 def _texts_diverge(a: str, b: str, min_ratio: float = 0.95) -> bool:
@@ -303,6 +351,18 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
+        # 1a. Noise filter: corta antes del orchestrator si el texto es
+        #     claramente ruido (TV, eco del TTS, repetición). Evita que
+        #     esas muestras vayan al slow path LLM (caro + bloquea queue).
+        noise_reason = _is_noise_text(text)
+        if noise_reason:
+            logger.info(f"Noise discard ({noise_reason}): {text!r}")
+            result["intent"] = "noise_discarded"
+            result["success"] = False
+            result["response"] = ""
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
+
         # 1b. Confidence gate — low-confidence sensitive commands pide
         #     confirmación antes de dispatchar al orchestrator.
         self._check_confidence_gate(text, result)
@@ -426,6 +486,16 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
+            return result
+
+        # 1a. Noise filter — mismo corto-circuito que el path orchestrated
+        noise_reason = _is_noise_text(text)
+        if noise_reason:
+            logger.info(f"Noise discard ({noise_reason}): {text!r}")
+            result["intent"] = "noise_discarded"
+            result["success"] = False
+            result["response"] = ""
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
         user = cmd.user
