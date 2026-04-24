@@ -693,6 +693,7 @@ async def main():
         )
 
     # Request router (command routing: orchestrated + legacy paths)
+    confidence_cfg = config.get("orchestrator", {}).get("confidence", {})
     request_router = RequestRouter(
         command_processor=command_processor,
         response_handler=response_handler,
@@ -714,6 +715,7 @@ async def main():
         vector_search_threshold=vectordb_config.get("search_threshold", 0.65),
         latency_target_ms=latency_config.get("total", 300),
         suggestion_interval=analytics_config.get("suggestion_interval", 20),
+        confidence_threshold=confidence_cfg.get("threshold", 0.75),
     )
 
     # Feature subsystems (timers, intercom, notifications, alerts)

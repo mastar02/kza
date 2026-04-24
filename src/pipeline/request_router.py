@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from src.nlu.command_grammar import PartialCommand, parse_partial_command
+from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,7 @@ class RequestRouter:
         suggestion_interval: int = 50,
         cache_max_size: int = 100,
         action_tracker=None,
+        confidence_threshold: float = 0.75,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -124,6 +127,9 @@ class RequestRouter:
             latency_target_ms: Target latency in milliseconds.
             suggestion_interval: Commands between suggestion prompts.
             cache_max_size: Maximum cache entries.
+            confidence_threshold: Below this confidence, sensitive commands
+                ask for explicit confirmation; reversible ones execute with a
+                warning log. Range [0.0, 1.0]. Default 0.75.
         """
         # Core pipeline components
         self.command_processor = command_processor
@@ -156,6 +162,7 @@ class RequestRouter:
         self.vector_search_threshold = vector_search_threshold
         self.latency_target_ms = latency_target_ms
         self.suggestion_interval = suggestion_interval
+        self.confidence_threshold = confidence_threshold
 
         # State
         self._query_cache = {}
@@ -235,6 +242,13 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
+
+        # 1b. Confidence gate — low-confidence sensitive commands pide
+        #     confirmación antes de dispatchar al orchestrator.
+        self._check_confidence_gate(text, result)
+        if result.get("pending_confirmation"):
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
@@ -382,6 +396,14 @@ class RequestRouter:
             }
 
         logger.info(f"[STT {cmd.timings.get('stt', 0):.0f}ms] {text}")
+
+        # 1b. Confidence gate — si confidence baja y combo sensible, pide
+        #     confirmación en vez de ejecutar. Comandos sin intent/entity o
+        #     reversibles con confidence baja siguen de largo (con log).
+        self._check_confidence_gate(text, result)
+        if result.get("pending_confirmation"):
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
 
         # 2. Check feedback
         feedback_result = self._check_feedback(text)
@@ -699,6 +721,95 @@ class RequestRouter:
 
         result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
         return result
+
+    def _build_confirmation_question(self, pc: PartialCommand) -> str:
+        """
+        Construye la pregunta en español pidiendo confirmación de un comando
+        sensible con baja confidence.
+
+        Args:
+            pc: PartialCommand con al menos intent y entity.
+
+        Returns:
+            Pregunta natural tipo "¿Querés apagar el aire del cuarto? Decí sí o no."
+        """
+        action_verb = {
+            "turn_off": "apagar",
+            "turn_on": "prender",
+            "set_cover_position": "mover",
+        }.get(pc.intent or "", "hacer eso con")
+
+        entity_name = {
+            "light": "la luz",
+            "climate": "el aire",
+            "cover": "las persianas",
+            "fan": "el ventilador",
+            "media_player": "la música",
+        }.get(pc.entity or "", "el dispositivo")
+
+        if pc.room:
+            room_name = {
+                "escritorio": "del escritorio",
+                "living": "del living",
+                "cocina": "de la cocina",
+                "bano": "del baño",
+                "hall": "del hall",
+                "cuarto": "del cuarto",
+            }.get(pc.room, "")
+            if room_name:
+                return f"¿Querés {action_verb} {entity_name} {room_name}? Decí sí o no."
+        return f"¿Querés {action_verb} {entity_name}? Decí sí o no."
+
+    def _check_confidence_gate(self, text: str, result: dict) -> PartialCommand | None:
+        """
+        Chequea la confidence del comando y decide si hay que pedir confirmación.
+
+        Si confidence < threshold y el combo (intent, entity) es sensible,
+        habla la pregunta y marca `result["pending_confirmation"] = True`.
+        Si es reversible, sólo logea la incertidumbre y deja seguir.
+
+        Args:
+            text: Transcripción de la query del usuario.
+            result: Dict de resultado del pipeline (mutado in-place si hay
+                confirmación pendiente).
+
+        Returns:
+            PartialCommand parseado, o None si el texto no produjo nada útil.
+            Si `result["pending_confirmation"]` == True, el caller debe
+            retornar inmediatamente sin dispatchar.
+        """
+        pc = parse_partial_command(text)
+        # Si el parser no sacó intent+entity, no aplica gate — que siga el
+        # pipeline normal (vector search, LLM, etc.) decidiendo.
+        if pc.intent is None or pc.entity is None:
+            return pc
+
+        if pc.confidence >= self.confidence_threshold:
+            return pc
+
+        if is_sensitive(pc.intent, pc.entity):
+            question = self._build_confirmation_question(pc)
+            logger.info(
+                f"Low confidence ({pc.confidence:.2f}) + sensitive "
+                f"(intent={pc.intent}, entity={pc.entity}) — pidiendo confirmación"
+            )
+            # TODO(S4-followup): integrar con FollowUpMode para escuchar sí/no
+            # por 5s. Por ahora sólo hablamos la pregunta y NO dispatchamos el
+            # comando — el usuario puede repetirlo con más contexto.
+            self.response_handler.speak(question)
+            result["intent"] = "pending_confirmation"
+            result["response"] = question
+            result["success"] = False
+            result["pending_confirmation"] = True
+            result["pending_pc"] = pc
+            return pc
+
+        # Reversible (ej: light turn_on): ejecutar igual pero dejar traza.
+        logger.warning(
+            f"Low confidence ({pc.confidence:.2f}) on reversible command "
+            f"(intent={pc.intent}, entity={pc.entity}) — ejecutando igual"
+        )
+        return pc
 
     def _check_feedback(self, text: str) -> dict:
         """Detect if text is feedback about the previous response."""

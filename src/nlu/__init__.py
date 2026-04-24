@@ -17,6 +17,10 @@ from src.nlu.command_grammar import (
     ROOM_ALIASES,
     WAKE_TERMS,
 )
+from src.nlu.sensitive_actions import (
+    SENSITIVE_COMBOS,
+    is_sensitive,
+)
 
 __all__ = [
     "classify_intent",
@@ -33,4 +37,6 @@ __all__ = [
     "ENTITY_TERMS",
     "ROOM_ALIASES",
     "WAKE_TERMS",
+    "SENSITIVE_COMBOS",
+    "is_sensitive",
 ]

@@ -593,6 +593,14 @@ orchestrator:
     cancelled: "Cancelado"
     timeout: "Lo siento, tarde demasiado. Intenta de nuevo."
 
+  # Confidence-based confirmation (S4)
+  # Por debajo de este threshold, los comandos sensibles (apagar aire,
+  # mover persianas, cortar media_player) piden confirmación explícita.
+  # Los reversibles (prender/apagar luz) ejecutan igual con un warning log.
+  confidence:
+    threshold: 0.75
+    confirmation_timeout_s: 5   # ventana para capturar sí/no del usuario
+
 # =============================================================================
 # Dashboard API
 # =============================================================================
