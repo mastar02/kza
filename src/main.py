@@ -458,6 +458,8 @@ async def main():
                             silence_end_ms=room_wake_cfg.get("silence_end_ms", 500),
                             min_utterance_ms=room_wake_cfg.get("min_utterance_ms", 250),
                             max_utterance_s=room_wake_cfg.get("max_utterance_s", 3.5),
+                            fuzzy_threshold=room_wake_cfg.get("fuzzy_threshold", 0.7),
+                            fuzzy_start_words=room_wake_cfg.get("fuzzy_start_words", 3),
                             speaker_identifier=spk_ref_identifier,
                             speaker_embedding=spk_emb,
                             speaker_threshold=sf_cfg.get("threshold", 0.65),

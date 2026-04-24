@@ -175,3 +175,64 @@ def test_threshold_boundary():
     passed, sim = det._speaker_match(_audio(1.5))
     assert passed is True
     assert sim == pytest.approx(0.65)
+
+
+# -----------------------------------------------------------------
+# Fuzzy match tests (Whisper produce variantes "next", "nexia", etc)
+# -----------------------------------------------------------------
+
+def test_fuzzy_match_next_up():
+    """Whisper oye 'next up apague la luz' → fuzzy debe matchear 'next' ~ 'nexa'."""
+    det = _make_detector(whisper_text="next up apague la luz")
+    det.fuzzy_threshold = 0.7
+    match, text = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
+    assert match == "nexa"
+
+
+def test_fuzzy_match_nexia():
+    """'nexia' ratio contra 'nexa' ~0.89 → match."""
+    det = _make_detector(whisper_text="nexia prendé la luz")
+    det.fuzzy_threshold = 0.7
+    match, _ = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
+    assert match == "nexa"
+
+
+def test_fuzzy_match_rejects_far_words():
+    """'milagro' / 'gracias' tienen ratio <0.25 → no matchean."""
+    det = _make_detector(whisper_text="milagro gracias amigos")
+    det.fuzzy_threshold = 0.7
+    match, _ = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
+    assert match is None
+
+
+def test_fuzzy_match_only_first_words():
+    """fuzzy_start_words=3 ignora palabras posteriores para evitar FP."""
+    det = _make_detector(whisper_text="hola amigos cómo están nexa apagá la luz")
+    det.fuzzy_threshold = 0.7
+    det.fuzzy_start_words = 3
+    match, _ = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
+    # 'nexa' no está en primeras 3 palabras → no match (require_start check del paso 1
+    # también falla, y fuzzy solo mira primeras 3)
+    assert match is None
+
+
+def test_fuzzy_disabled_when_threshold_zero():
+    """fuzzy_threshold=0 desactiva el paso fuzzy completamente."""
+    det = _make_detector(whisper_text="next up apague la luz")
+    det.fuzzy_threshold = 0.0
+    match, _ = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
+    assert match is None  # 'next' no es alias exact + fuzzy off → no match
+
+
+def test_exact_alias_match_beats_fuzzy():
+    """Si 'alexa' está en aliases, match exact se usa antes que fuzzy."""
+    det = WhisperWakeDetector(
+        whisper_stt=_FakeWhisperSTT("alexa apagá la luz"),
+        wake_words=["nexa", "alexa"],  # alexa es alias
+    )
+    det._loaded = True
+    det._vad = None
+    det._torch = None
+    match, _ = det._transcribe_and_match(_audio(2.0), dur_ms=2000)
+    # El paso 1 matchea 'alexa' (exact substring)
+    assert match == "alexa"

@@ -21,6 +21,7 @@ import re
 import time
 import unicodedata
 from collections import deque
+from difflib import SequenceMatcher
 from typing import Optional
 
 import numpy as np
@@ -72,6 +73,8 @@ class WhisperWakeDetector:
         speaker_embedding: Optional[np.ndarray] = None,
         speaker_threshold: float = 0.65,
         speaker_min_audio_s: float = 0.8,
+        fuzzy_threshold: float = 0.6,
+        fuzzy_start_words: int = 3,
     ):
         """
         vad_threshold=0.7 (estricto) filtra voces lejanas/TV a volumen medio.
@@ -95,6 +98,8 @@ class WhisperWakeDetector:
         self.min_rms = min_rms
         self.require_start = require_start
         self.language = language
+        self.fuzzy_threshold = fuzzy_threshold
+        self.fuzzy_start_words = fuzzy_start_words
 
         self.speaker_identifier = speaker_identifier
         self.speaker_embedding = speaker_embedding
@@ -315,13 +320,38 @@ class WhisperWakeDetector:
 
         norm = _normalize(text)
         logger.info(f"WhisperWake [{dur_ms:.0f}ms→{stt_ms:.0f}ms]: {norm!r}")
+        # Paso 1: substring match contra los aliases configurados (exact match en norm).
         for w in self.wake_words_norm:
             if w in norm:
                 if self.require_start:
-                    first_words = " ".join(norm.split()[:3])
+                    first_words = " ".join(norm.split()[:self.fuzzy_start_words])
                     if w not in first_words:
                         logger.debug(f"Wake word '{w}' encontrada pero no al inicio — skip")
                         continue
                 logger.info(f"🔥 Wake word '{w}' detectado en: {text!r}")
                 return (w, text)
+        # Paso 2: fuzzy match por Levenshtein ratio contra la wake word canónica.
+        # Whisper produce variantes novel ("next", "nexco", "negsa") que no están
+        # en aliases. Comparamos cada palabra de las primeras N contra TODAS las
+        # wake words; si ratio >= fuzzy_threshold, consideramos match y devolvemos
+        # la wake word canónica (primera de la lista).
+        if self.wake_words_norm and self.fuzzy_threshold > 0:
+            words = norm.split()[:self.fuzzy_start_words]
+            best_ratio = 0.0
+            best_word = ""
+            for word in words:
+                if len(word) < 3:
+                    continue
+                for wake in self.wake_words_norm:
+                    r = SequenceMatcher(None, word, wake).ratio()
+                    if r > best_ratio:
+                        best_ratio = r
+                        best_word = word
+            if best_ratio >= self.fuzzy_threshold:
+                canonical = self.wake_words_norm[0]
+                logger.info(
+                    f"🔥 Wake word fuzzy match: '{best_word}' ~ '{canonical}' "
+                    f"(ratio={best_ratio:.2f}) en: {text!r}"
+                )
+                return (canonical, text)
         return (None, text)

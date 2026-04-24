@@ -787,16 +787,20 @@ rooms:
   # Wake word config for all rooms
   wake_word:
     engine: "whisper"              # "whisper" (STT-based, custom word) | "openwakeword" (legacy)
-    # Aliases: Whisper suele interpretar "nexa" como "alexa" / "nexia" / "neza" /
-    # "nexta" dependiendo del acento y ruido. Aceptar todos estos como wake word
-    # (con require_start=True) da buena recall y false-positive rate bajo en español.
-    words: ["nexa", "kaza", "alexa", "nexia", "neza", "nexta", "nesa"]
+    # Aliases: Whisper produce variantes novel cuando oye "nexa" (alexa/nexia/
+    # next/negsa/etc). Los explícitos abajo cubren los más frecuentes en español
+    # rioplatense; lo que no cuadre exact cae al fuzzy match (Levenshtein ratio).
+    words: ["nexa", "kaza", "alexa", "nexia", "neza", "nexta", "nesa", "next", "necks"]
     model: "hey_jarvis"            # usado cuando engine=openwakeword
     threshold: 0.35                # usado cuando engine=openwakeword
     # Whisper engine params (opcionales, con defaults razonables)
     silence_end_ms: 500
     min_utterance_ms: 250
     max_utterance_s: 3.5
+    # Fuzzy match para atrapar variantes novel ("negsa", "neko", "nexco", etc).
+    # 0.0 desactiva fuzzy match; 1.0 = solo exact match. 0.7 balancea recall vs FP.
+    fuzzy_threshold: 0.7
+    fuzzy_start_words: 3
     # Streaming mode (Fase 2) — word-synchronous, menor latencia, más GPU
     streaming: false               # true = usa StreamingWhisperWakeDetector
     streaming_interval_ms: 200     # cada N ms re-transcribe ring buffer
