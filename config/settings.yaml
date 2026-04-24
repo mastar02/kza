@@ -211,6 +211,11 @@ reasoner:
   http_timeout: 120
   http_model: null   # null = usa el primero que liste el server
 
+  # Fallback: si :8200 (72B) no responde al startup, usar el vLLM 7B compartido
+  # (:8100 infra). Mejor respuesta degradada que timeout de 60s en slow path.
+  http_fallback_base_url: "http://127.0.0.1:8100/v1"
+  http_fallback_model: null   # null = primero del listado (qwen2.5-7b-awq)
+
   # Los siguientes campos sólo aplican si mode == "local":
   # ==========================================================================
   # OPTIMIZADO PARA 8x16GB (128GB, 8 canales, ~358 GB/s)

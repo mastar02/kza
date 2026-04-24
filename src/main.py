@@ -246,12 +246,16 @@ async def main():
             base_url=reasoner_config.get("http_base_url", "http://127.0.0.1:8200/v1"),
             model=reasoner_config.get("http_model"),
             timeout=reasoner_config.get("http_timeout", 120),
+            fallback_base_url=reasoner_config.get("http_fallback_base_url"),
+            fallback_model=reasoner_config.get("http_fallback_model"),
         )
         try:
             llm.load()
-            logger.info("LLM 72B consumido vía HTTP (kza-72b.service)")
+            info = llm.get_info()
+            tag = "fallback 7B" if info.get("using_fallback") else "72B"
+            logger.info(f"LLM ({tag}) vía HTTP → {info['base_url']} modelo={info['model']}")
         except Exception as e:
-            logger.error(f"No pude contactar el 72B HTTP: {e}. llm=None")
+            logger.error(f"No pude contactar ningún LLM HTTP: {e}. llm=None")
             llm = None
     else:
         model_path = reasoner_config.get("model_path")

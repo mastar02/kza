@@ -363,29 +363,70 @@ class HttpReasoner:
         base_url: str = "http://127.0.0.1:8200/v1",
         model: str | None = None,           # si None, usa el primero que liste el server
         timeout: float = 120.0,
+        fallback_base_url: str | None = None,
+        fallback_model: str | None = None,
         **_ignored_legacy,
     ):
         self.base_url = base_url
         self.model = model
         self.timeout = timeout
+        self.fallback_base_url = fallback_base_url
+        self.fallback_model = fallback_model
         self._client = None
         self._resolved_model = None
+        self._resolved_base_url = None
+
+    def _try_connect(self, base_url: str, preferred_model: str | None) -> tuple[object, str]:
+        """Conectar a un endpoint OpenAI-compat y resolver el model id.
+
+        Returns (client, resolved_model_id). Raises if endpoint doesn't respond.
+        """
+        from openai import OpenAI
+        client = OpenAI(base_url=base_url, api_key="not-used", timeout=self.timeout)
+        models = client.models.list()
+        ids = [m.id for m in models.data]
+        if preferred_model and preferred_model in ids:
+            return client, preferred_model
+        if ids:
+            if preferred_model:
+                logger.warning(
+                    f"Modelo '{preferred_model}' no está en {base_url}; uso '{ids[0]}'"
+                )
+            return client, ids[0]
+        raise RuntimeError(f"Endpoint {base_url} no lista ningún modelo")
 
     def load(self):
-        from openai import OpenAI
-        self._client = OpenAI(base_url=self.base_url, api_key="not-used", timeout=self.timeout)
+        # 1. Intentar primario
         try:
-            models = self._client.models.list()
-            ids = [m.id for m in models.data]
-            if self.model and self.model in ids:
-                self._resolved_model = self.model
-            elif ids:
-                self._resolved_model = ids[0]
-                if self.model:
-                    logger.warning(f"72B modelo '{self.model}' no está; uso '{self._resolved_model}'")
-            logger.info(f"HttpReasoner OK → {self.base_url} (modelo: {self._resolved_model})")
+            self._client, self._resolved_model = self._try_connect(self.base_url, self.model)
+            self._resolved_base_url = self.base_url
+            logger.info(
+                f"HttpReasoner OK → {self.base_url} (modelo: {self._resolved_model})"
+            )
+            return
         except Exception as e:
-            logger.error(f"HttpReasoner no pudo contactar {self.base_url}: {e}")
+            if not self.fallback_base_url:
+                logger.error(f"HttpReasoner no pudo contactar {self.base_url}: {e}")
+                raise
+            logger.warning(
+                f"HttpReasoner primario {self.base_url} caído ({e}); "
+                f"probando fallback {self.fallback_base_url}"
+            )
+
+        # 2. Fallback
+        try:
+            self._client, self._resolved_model = self._try_connect(
+                self.fallback_base_url, self.fallback_model
+            )
+            self._resolved_base_url = self.fallback_base_url
+            logger.info(
+                f"HttpReasoner OK (fallback) → {self.fallback_base_url} "
+                f"(modelo: {self._resolved_model})"
+            )
+        except Exception as e:
+            logger.error(
+                f"HttpReasoner: primario y fallback caídos. Fallback error: {e}"
+            )
             raise
 
     def __call__(
@@ -429,7 +470,13 @@ class HttpReasoner:
 
     def get_info(self) -> dict:
         return {
-            "mode": "http", "base_url": self.base_url, "model": self._resolved_model,
+            "mode": "http",
+            "base_url": self._resolved_base_url or self.base_url,
+            "model": self._resolved_model,
+            "using_fallback": (
+                self._resolved_base_url is not None
+                and self._resolved_base_url != self.base_url
+            ),
         }
 
 
