@@ -126,7 +126,10 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
                 await maybe
             timings["tts"] = (time.perf_counter() - t0) * 1000
         except Exception as e:
-            logger.warning(f"Warmup TTS skipped: {e}")
+            logger.warning(
+                f"Warmup TTS skipped (non-fatal): {type(e).__name__}: {e}",
+                exc_info=True,
+            )
 
     # Speaker ID warmup — compila kernels de ECAPA-TDNN
     if speaker_identifier is not None:

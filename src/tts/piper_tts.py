@@ -574,6 +574,12 @@ class KokoroTTS:
         except ImportError:
             logger.error("Kokoro no instalado: pip install kokoro")
             raise
+        except Exception as e:
+            logger.error(
+                f"KokoroTTS load failed (non-ImportError): {type(e).__name__}: {e}",
+                exc_info=True,
+            )
+            raise
 
     def synthesize(self, text: str, voice: str = None) -> tuple[np.ndarray, float]:
         """Sintetizar con Kokoro"""
