@@ -156,6 +156,7 @@ class PartialCommand:
     slots: dict = field(default_factory=dict)
     raw_text: str = ""
     has_wake: bool = False
+    confidence: float = 0.0
 
     def ready_to_dispatch(self) -> bool:
         """
@@ -169,6 +170,37 @@ class PartialCommand:
 
     def is_empty(self) -> bool:
         return not (self.intent or self.entity or self.room or self.slots)
+
+    def is_high_confidence(self, threshold: float = 0.75) -> bool:
+        """True si la confidence del comando supera el umbral dado."""
+        return self.confidence >= threshold
+
+
+def _compute_confidence(pc: PartialCommand) -> float:
+    """
+    Heurística de confidence para un PartialCommand.
+
+    Regla:
+      - Si falta intent o entity → 0.0 (el parser no puede dispatchar).
+      - Base = 0.7 con intent + entity presentes.
+      - +0.15 si hay wake word detectada.
+      - +0.10 si hay room detectado.
+      - +0.05 si hay slots extraídos.
+      - Clamp a 1.0.
+
+    Los scores NO son probabilidades calibradas — son señales para decidir
+    cuándo pedir confirmación a acciones sensibles. Ver plan S4.
+    """
+    if pc.intent is None or pc.entity is None:
+        return 0.0
+    score = 0.7
+    if pc.has_wake:
+        score += 0.15
+    if pc.room is not None:
+        score += 0.10
+    if pc.slots:
+        score += 0.05
+    return min(score, 1.0)
 
 
 def parse_partial_command(text: str) -> PartialCommand:
@@ -185,4 +217,5 @@ def parse_partial_command(text: str) -> PartialCommand:
     pc.entity = extract_entity(text)
     pc.room = extract_room(text)
     pc.slots = extract_slots(text)
+    pc.confidence = _compute_confidence(pc)
     return pc
