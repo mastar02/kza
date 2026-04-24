@@ -109,6 +109,48 @@ def _decoalesce_post_wake(norm_text: str, wake_norm: str) -> str:
     return norm_text
 
 
+def _decoalesce_original_text(text: str, wake_norm: str) -> str:
+    """Aplicar decoalesce al texto ORIGINAL (con acentos y puntuación).
+
+    Complemento de `_decoalesce_post_wake`: ese retorna una versión
+    normalizada. Esta versión hace el mismo fix sobre el texto original
+    para poder propagarlo al router como `pretranscribed_text`, de modo
+    que el NLU vea 'prendé' en vez de 'aprendé'.
+
+    Args:
+        text: texto tal cual lo devolvió Whisper.
+        wake_norm: wake word normalizada (ej: 'nexa').
+
+    Returns:
+        Texto original con el verbo post-wake re-segmentado, o igual si
+        no aplicaba ningún mapeo.
+    """
+    if not text or not wake_norm:
+        return text
+    words = text.split()
+    if len(words) < 2:
+        return text
+    first_norm = _normalize(words[0])
+    if first_norm != wake_norm:
+        return text
+    second_norm = _normalize(words[1])
+    for coalesced, real in _COALESCED_VERB_PREFIXES:
+        if coalesced == real:
+            continue
+        if second_norm.startswith(coalesced):
+            # Reemplazar el prefijo en la palabra original preservando el
+            # sufijo (que puede tener acentos: 'aprendé' → 'prendé').
+            words[1] = re.sub(
+                r"^" + re.escape(coalesced),
+                real,
+                words[1],
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            return " ".join(words)
+    return text
+
+
 def _phonetic_es(word: str) -> str:
     """
     Codifica una palabra a una representación fonética simplificada del
@@ -503,11 +545,19 @@ class WhisperWakeDetector:
         norm = _normalize(text)
         # Fix coalescing Whisper: 'nexa aprende' → 'nexa prende' antes de
         # aplicar las reglas de TV stop / command verb.
+        # Aplicamos el mismo fix al `text` original para que el pending_text
+        # que va al router/NLU también esté corregido (el NLU lee el texto
+        # original con acentos, no el norm).
         for wake_norm in self.wake_words_norm:
             norm_fixed = _decoalesce_post_wake(norm, wake_norm)
             if norm_fixed != norm:
-                logger.info(f"Decoalesced post-wake: {norm!r} → {norm_fixed!r}")
+                text_fixed = _decoalesce_original_text(text, wake_norm)
+                logger.info(
+                    f"Decoalesced post-wake: {norm!r} → {norm_fixed!r} "
+                    f"(text: {text!r} → {text_fixed!r})"
+                )
                 norm = norm_fixed
+                text = text_fixed
                 break
         logger.info(f"WhisperWake [{dur_ms:.0f}ms→{stt_ms:.0f}ms]: {norm!r}")
         # Paso 1: substring match contra los aliases configurados (exact match en norm).

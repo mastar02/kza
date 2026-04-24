@@ -1,6 +1,59 @@
 """Tests for WhisperWake helpers — coalescing and normalization."""
 import pytest
-from src.wakeword.whisper_wake import _decoalesce_post_wake, _normalize, _COMMAND_VERB_RE
+from src.wakeword.whisper_wake import (
+    _decoalesce_post_wake,
+    _decoalesce_original_text,
+    _normalize,
+    _COMMAND_VERB_RE,
+)
+
+
+class TestDecoalesceOriginalText:
+    """Decoalesce aplicado al texto con acentos/puntuación (el que va al NLU)."""
+
+    def test_aprende_with_accent_becomes_prende_with_accent(self):
+        fixed = _decoalesce_original_text(
+            "Nexa aprendé la luz del escritorio.", wake_norm="nexa"
+        )
+        assert fixed == "Nexa prendé la luz del escritorio."
+
+    def test_aprende_without_accent(self):
+        fixed = _decoalesce_original_text(
+            "Nexa aprende la luz", wake_norm="nexa"
+        )
+        assert fixed == "Nexa prende la luz"
+
+    def test_apaga_unchanged(self):
+        """'apag' está en la lista pero coalesced==real → no toca."""
+        fixed = _decoalesce_original_text(
+            "Nexa apagá la luz", wake_norm="nexa"
+        )
+        assert fixed == "Nexa apagá la luz"
+
+    def test_abaja_with_accent(self):
+        fixed = _decoalesce_original_text(
+            "Nexa abajá las persianas", wake_norm="nexa"
+        )
+        assert fixed == "Nexa bajá las persianas"
+
+    def test_no_wake_at_start_passthrough(self):
+        assert (
+            _decoalesce_original_text("che aprendé", wake_norm="nexa")
+            == "che aprendé"
+        )
+
+    def test_empty_text(self):
+        assert _decoalesce_original_text("", wake_norm="nexa") == ""
+
+    def test_only_wake_word(self):
+        assert _decoalesce_original_text("Nexa", wake_norm="nexa") == "Nexa"
+
+    def test_preserves_punctuation_after_verb(self):
+        fixed = _decoalesce_original_text(
+            "Nexa, aprendé la luz del escritorio.", wake_norm="nexa"
+        )
+        # 'Nexa,' normaliza a 'nexa' → ok; preserva la coma
+        assert fixed == "Nexa, prendé la luz del escritorio."
 
 
 class TestDecoalescePostWake:
