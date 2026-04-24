@@ -473,6 +473,33 @@ class RequestDispatcher:
             timings["vector_search"] = (time.perf_counter() - t0) * 1000
 
             if command:
+                # S6: Cache-first check. Si el estado ya coincide con el target,
+                # evitamos el round-trip a HA. Solo aplica a turn_on/turn_off.
+                service = command.get("service")
+                entity_id = command.get("entity_id")
+                target_state = None
+                if service == "turn_on":
+                    target_state = "on"
+                elif service == "turn_off":
+                    target_state = "off"
+
+                if target_state and hasattr(self.ha, "get_entity_state_cached"):
+                    cached = self.ha.get_entity_state_cached(entity_id)
+                    if cached is not None and cached.get("state") == target_state:
+                        timings["home_assistant"] = 0.0
+                        logger.debug(
+                            f"Cache hit: {entity_id} ya está en '{target_state}', skip"
+                        )
+                        return DispatchResult(
+                            path=path,
+                            priority=Priority.HIGH,
+                            success=True,
+                            response=command["description"],
+                            intent="domotics",
+                            action={**command, "already_in_state": True},
+                            timings=timings,
+                        )
+
                 # Ejecutar en Home Assistant (await obligatorio — call_service es async)
                 t1 = time.perf_counter()
                 success = await self.ha.call_service_ws(

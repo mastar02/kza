@@ -124,6 +124,14 @@ async def main():
         sys.exit(1)
     logger.info(f"Conectado a Home Assistant: {ha_url}")
 
+    # State prefetch cache (S6): WS subscribe para evitar round-trip REST
+    state_prefetch_cfg = ha_config.get("state_prefetch", {})
+    if state_prefetch_cfg.get("enabled", True):
+        await ha_client.start_state_sync(
+            full_refresh_interval_s=state_prefetch_cfg.get("full_refresh_interval_s", 300),
+        )
+        logger.info("HA state prefetch cache habilitado")
+
     # Speech-to-Text
     stt = create_stt(config.get("stt", {}))
 
@@ -818,6 +826,8 @@ async def main():
         await list_store.close()
         await reminder_store.close()
         await pipeline.stop()
+        # Graceful shutdown del state sync (si fue habilitado)
+        await ha_client.stop_state_sync()
 
 
 if __name__ == "__main__":
