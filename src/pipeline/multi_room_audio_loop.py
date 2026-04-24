@@ -66,6 +66,10 @@ class MultiRoomAudioLoop:
         early_dispatch_interval_ms: int = 400,
         early_dispatch_min_audio_s: float = 0.6,
         stt=None,
+        endpointing_enabled: bool = True,
+        endpointing_short_ms: int = 150,
+        endpointing_medium_ms: int = 300,
+        endpointing_long_ms: int = 500,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -80,6 +84,16 @@ class MultiRoomAudioLoop:
         self.early_dispatch_interval_ms = early_dispatch_interval_ms
         self.early_dispatch_min_audio_s = early_dispatch_min_audio_s
         self._stt = stt  # FastWhisperSTT — usado por el worker early parse
+
+        # Endpointing adaptativo (S5): usa la señal del parser streaming
+        # (`rs.early_command`) para decidir cuánto silencio esperar antes
+        # de cerrar la captura. Con parser ready → corte rápido (short_ms).
+        # Sin parser ready → corte normal (medium_ms). Sin señal alguna del
+        # parser → espera más (long_ms, reservado para futuro uso).
+        self.endpointing_enabled = endpointing_enabled
+        self.endpointing_short_ms = endpointing_short_ms
+        self.endpointing_medium_ms = endpointing_medium_ms
+        self.endpointing_long_ms = endpointing_long_ms
 
         self._running = False
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
@@ -282,6 +296,24 @@ class MultiRoomAudioLoop:
 
         return audio_callback
 
+    def _adaptive_endpoint_threshold(self, rs: RoomStream) -> int:
+        """
+        Decide cuánto silencio esperar antes de cerrar una captura, usando la
+        señal del parser streaming (`rs.early_command`) como heurística.
+
+        - Parser ready_to_dispatch (intent+entity ya capturados) → short_ms
+          (cerrar YA; ganancia ~150ms de latencia percibida en comandos
+          completos).
+        - Parser parcial o sin señal → medium_ms (comportamiento equivalente
+          al silence_duration_ms clásico).
+
+        Returns:
+            Silencio requerido en ms antes de cerrar la captura.
+        """
+        if rs.early_command is not None and rs.early_command.ready_to_dispatch():
+            return self.endpointing_short_ms
+        return self.endpointing_medium_ms
+
     def _check_vad_completion(self, rs: RoomStream) -> tuple[bool, np.ndarray | None]:
         """Check if a room's command capture is complete (VAD or timeout)."""
         elapsed = time.time() - rs.command_start_time
@@ -293,8 +325,28 @@ class MultiRoomAudioLoop:
         if not rs.audio_buffer:
             return False, None
 
-        # Check for silence (VAD early exit)
         samples_per_ms = self.sample_rate // 1000
+
+        # Endpointing adaptativo (S5): intentar cerrar con threshold menor
+        # cuando el parser streaming ya tiene comando completo. Si no logra
+        # cerrar acá, cae al silence check clásico abajo.
+        if self.endpointing_enabled:
+            threshold_ms = self._adaptive_endpoint_threshold(rs)
+            silence_needed = int(threshold_ms * samples_per_ms)
+            if len(rs.audio_buffer) >= silence_needed and silence_needed > 0:
+                recent_adaptive = rs.audio_buffer[-silence_needed:]
+                recent_array = np.array(recent_adaptive, dtype=np.float32)
+                rms_adaptive = float(np.sqrt(np.mean(recent_array ** 2)))
+                if rms_adaptive < self.silence_threshold:
+                    audio_data = np.array(rs.audio_buffer, dtype=np.float32)
+                    logger.debug(
+                        f"Adaptive endpoint in {rs.room_id}: "
+                        f"threshold={threshold_ms}ms rms={rms_adaptive:.3f} "
+                        f"elapsed={elapsed_ms:.0f}ms"
+                    )
+                    return True, audio_data
+
+        # Silence check clásico (fallback si el adaptativo no cortó).
         silence_samples = int(self.silence_duration_ms * samples_per_ms)
         recent = rs.audio_buffer[-silence_samples:] if len(rs.audio_buffer) > silence_samples else rs.audio_buffer
 
