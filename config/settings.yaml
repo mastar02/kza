@@ -6,6 +6,14 @@ home_assistant:
   token: "${HOME_ASSISTANT_TOKEN}"  # Set via environment variable in .env
   timeout: 2.0  # segundos
 
+  # S6: State prefetch cache via WebSocket subscribe_events(state_changed).
+  # Evita ~30-50ms de round-trip REST por comando al tener el state local.
+  state_prefetch:
+    enabled: true
+    # Re-snapshot completo via REST cada N segundos para atrapar drift
+    # si algún event se perdió durante una desconexión.
+    full_refresh_interval_s: 300
+
 # Audio Settings
 audio:
   sample_rate: 16000

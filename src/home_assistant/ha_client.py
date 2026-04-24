@@ -104,6 +104,17 @@ class HomeAssistantClient:
         self._avg_latency_ms: float = 0.0
         self._has_auth_error: bool = False
 
+        # State prefetch cache (S6): entity_id -> state dict
+        # Populated via REST snapshot + updated via WebSocket state_changed events.
+        # Single-writer (_state_sync_loop) / multi-reader model: GIL + atomic dict
+        # operations make read-during-write safe for a single key.
+        self._state_cache: dict[str, dict] = {}
+        self._state_subscribe_task: asyncio.Task | None = None
+        self._state_callbacks: list = []  # observers opcionales
+        self._state_sync_running = False
+        self._state_last_full_refresh: float = 0.0
+        self._state_full_refresh_interval_s: float = 300.0
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -224,7 +235,18 @@ class HomeAssistantClient:
             return []
 
     async def get_entity_state(self, entity_id: str) -> dict | None:
-        """Obtener estado de una entidad especifica."""
+        """Obtener estado de una entidad.
+
+        Cache-first: si el prefetch cache tiene la entidad la devuelve sin I/O.
+        Si no, fallback al REST endpoint.
+        """
+        cached = self.get_entity_state_cached(entity_id)
+        if cached is not None:
+            return cached
+        return await self._get_entity_state_rest(entity_id)
+
+    async def _get_entity_state_rest(self, entity_id: str) -> dict | None:
+        """Obtener estado via REST (sin tocar cache). Usado como fallback."""
         t_start = time.perf_counter()
         try:
             session = await self._ensure_session()
@@ -262,6 +284,20 @@ class HomeAssistantClient:
             logger.error(f"Error obteniendo estado de {entity_id}: {e}")
             self._record_error(e, f"get_entity_state({entity_id})")
             return None
+
+    def get_entity_state_cached(self, entity_id: str) -> dict | None:
+        """Lookup sin I/O contra el prefetch cache.
+
+        Returns:
+            Dict con el state más reciente conocido via WS push o REST snapshot,
+            o None si no hay entry en cache (típicamente porque el sync aún no
+            corrió o la entidad no existe).
+        """
+        return self._state_cache.get(entity_id)
+
+    async def _fetch_all_states_rest(self) -> list[dict]:
+        """Wrapper sobre get_all_entities para claridad en el sync loop."""
+        return await self.get_all_entities()
 
     async def call_service(
         self,
@@ -577,8 +613,186 @@ class HomeAssistantClient:
             self._record_error(e, f"call_service_ws({domain}.{service})")
             return await self.call_service(domain, service, entity_id, data)
 
+    # ==================== State Prefetch Cache (S6) ====================
+
+    async def start_state_sync(
+        self,
+        full_refresh_interval_s: float = 300.0,
+    ) -> None:
+        """Arrancar el loop de prefetch de state cache.
+
+        1. Snapshot inicial REST (/api/states) para poblar el cache.
+        2. Subscribe WS state_changed para updates incrementales.
+        3. Refresh periódico como fallback si el WS se cae en silencio.
+
+        Idempotente: si ya está corriendo, no-op.
+
+        Args:
+            full_refresh_interval_s: Cada cuántos segundos rehacer el snapshot
+                REST completo para atrapar drift si se perdieron events.
+        """
+        if self._state_sync_running and self._state_subscribe_task and not self._state_subscribe_task.done():
+            logger.debug("State sync ya está corriendo")
+            return
+
+        self._state_full_refresh_interval_s = full_refresh_interval_s
+        self._state_sync_running = True
+        self._state_subscribe_task = asyncio.create_task(self._state_sync_loop())
+        logger.info("HA state prefetch cache: sync loop arrancado")
+
+    async def stop_state_sync(self) -> None:
+        """Parar el loop de sync (para shutdown graceful)."""
+        self._state_sync_running = False
+        if self._state_subscribe_task:
+            self._state_subscribe_task.cancel()
+            try:
+                await self._state_subscribe_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._state_subscribe_task = None
+
+    async def _state_sync_loop(self) -> None:
+        """Loop resiliente: reconnect con backoff exponencial si el WS falla.
+
+        Nunca propaga excepciones — si algo sale mal, loguea y reintenta. El
+        servicio de voz debe seguir funcionando aunque HA esté caído.
+        """
+        backoff = 5.0
+        max_backoff = 60.0
+        while self._state_sync_running:
+            try:
+                await self._subscribe_and_sync()
+                # Si salimos limpiamente (WS cerrado por HA), resetear backoff
+                backoff = 5.0
+            except asyncio.CancelledError:
+                logger.info("HA state sync cancelado")
+                return
+            except Exception as e:
+                logger.warning(
+                    f"HA state sync error: {e}, reconnectando en {backoff:.0f}s"
+                )
+                try:
+                    await asyncio.sleep(backoff)
+                except asyncio.CancelledError:
+                    return
+                backoff = min(backoff * 2, max_backoff)
+
+    async def _subscribe_and_sync(self) -> None:
+        """Ciclo de vida: snapshot REST → subscribe WS → consumir events.
+
+        Cada iteración del outer loop (_state_sync_loop) rehace esto para
+        garantizar consistencia después de una reconexión.
+        """
+        # 1. Snapshot inicial REST para poblar cache completo
+        await self._refresh_full_state_snapshot()
+
+        # 2. Asegurar conexión WebSocket
+        if not await self.ensure_websocket_connected():
+            raise RuntimeError("No se pudo conectar al WebSocket de HA")
+
+        # 3. Subscribe al event state_changed
+        self._ws_msg_id += 1
+        subscribe_id = self._ws_msg_id
+        await self._ws_connection.send_json({
+            "id": subscribe_id,
+            "type": "subscribe_events",
+            "event_type": "state_changed",
+        })
+
+        # Esperar confirmación del subscribe (result message)
+        # HA responde con {"id": N, "type": "result", "success": true}
+        try:
+            confirm = await asyncio.wait_for(
+                self._ws_connection.receive_json(),
+                timeout=WS_AUTH_TIMEOUT,
+            )
+        except asyncio.TimeoutError as e:
+            raise RuntimeError("Timeout esperando confirmación de subscribe") from e
+
+        if confirm.get("type") != "result" or not confirm.get("success", False):
+            raise RuntimeError(f"Subscribe no confirmado: {confirm}")
+
+        logger.info("HA state prefetch: suscripto a state_changed")
+
+        # 4. Consumir events hasta que el WS se cierre o nos cancelen
+        last_full = time.time()
+        while self._state_sync_running:
+            try:
+                msg = await asyncio.wait_for(
+                    self._ws_connection.receive_json(),
+                    timeout=30.0,  # timeout largo, solo para no colgar para siempre
+                )
+            except asyncio.TimeoutError:
+                # Sin events por 30s es normal (HA idle). Chequear si toca refresh.
+                if time.time() - last_full > self._state_full_refresh_interval_s:
+                    await self._refresh_full_state_snapshot()
+                    last_full = time.time()
+                continue
+
+            if msg.get("type") == "event":
+                self._handle_state_changed(msg.get("event", {}))
+
+            # Refresh periódico para atrapar events perdidos (por si acaso)
+            if time.time() - last_full > self._state_full_refresh_interval_s:
+                await self._refresh_full_state_snapshot()
+                last_full = time.time()
+
+    async def _refresh_full_state_snapshot(self) -> None:
+        """Repoblar cache completo via REST /api/states."""
+        states = await self._fetch_all_states_rest()
+        if not states:
+            logger.warning("HA state snapshot vacío — posible error de conexión")
+            return
+        # Replace atomically: construimos dict nuevo y lo asignamos
+        new_cache = {st["entity_id"]: st for st in states if "entity_id" in st}
+        self._state_cache = new_cache
+        self._state_last_full_refresh = time.time()
+        logger.info(f"HA state cache snapshot: {len(new_cache)} entities")
+
+    def _handle_state_changed(self, event: dict) -> None:
+        """Aplicar un event state_changed al cache.
+
+        Event payload shape:
+            {
+              "event_type": "state_changed",
+              "data": {
+                "entity_id": "light.escritorio",
+                "new_state": {"state": "on", ...} | None,
+                "old_state": {...} | None,
+              }
+            }
+        """
+        data = event.get("data", {})
+        entity_id = data.get("entity_id")
+        new_state = data.get("new_state")
+
+        if not entity_id:
+            return
+
+        if new_state is None:
+            # Entity removed/unavailable
+            self._state_cache.pop(entity_id, None)
+        else:
+            self._state_cache[entity_id] = new_state
+
+        # Notificar observers sin dejar que un callback roto rompa el loop
+        for cb in self._state_callbacks:
+            try:
+                cb(entity_id, new_state)
+            except Exception as e:
+                logger.debug(f"State callback error: {e}")
+
+    def register_state_callback(self, callback) -> None:
+        """Registrar un callback `(entity_id, new_state) -> None` para cambios.
+
+        Useful para integraciones que quieren reaccionar proactivamente a
+        cambios de state (ej: alerts, analytics).
+        """
+        self._state_callbacks.append(callback)
+
     async def close(self) -> None:
         """Cerrar conexiones."""
+        await self.stop_state_sync()
         if self._ws_connection:
             await self._ws_connection.close()
         if self._session and not self._session.closed:
