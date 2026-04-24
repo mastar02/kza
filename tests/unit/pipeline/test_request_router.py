@@ -566,3 +566,122 @@ class TestBuildPrompt:
         prompt = await router._build_prompt("que hora es")
 
         assert "User likes warm lights" in prompt
+
+
+class TestWakeTextPriority:
+    """Wake text should win over hallucinated partial re-transcriptions."""
+
+    @pytest.mark.asyncio
+    async def test_wake_text_preferred_over_hallucinated_partial(self):
+        """
+        Regresión 2026-04-24: wake detector captó 'Nexa encender la luz…'
+        pero el partial del streaming worker lo alucinó como 'Para encender…'.
+        El router debe preferir el wake_text.
+        """
+        from src.pipeline.command_event import CommandEvent
+        from src.nlu.command_grammar import PartialCommand
+
+        cp = MagicMock()
+        captured = {}
+
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+            captured["pretranscribed_text"] = pretranscribed_text
+            return _make_cmd_result(text=pretranscribed_text or "")
+
+        cp.process_command = AsyncMock(side_effect=fake_process)
+
+        chroma = MagicMock()
+        chroma.search_command.return_value = None  # no match — legacy path aborts cleanly
+
+        router = _build_router(
+            command_processor=cp,
+            chroma_sync=chroma,
+            orchestrator_enabled=False,
+        )
+
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32),
+            room_id="escritorio",
+            wake_text="Nexa encender la luz del escritorio.",
+            partial_command=PartialCommand(
+                raw_text="Para encender la luz del escritorio.",
+                intent="turn_on",
+                entity="light",
+            ),
+            early_dispatch=True,
+        )
+        await router.process_command(event)
+        assert "nexa" in captured["pretranscribed_text"].lower(), (
+            f"Esperaba wake_text, recibí: {captured['pretranscribed_text']!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_wake_text_used_when_partial_absent(self):
+        """Sin partial_command, wake_text es el pretranscribed."""
+        from src.pipeline.command_event import CommandEvent
+
+        cp = MagicMock()
+        captured = {}
+
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+            captured["pretranscribed_text"] = pretranscribed_text
+            return _make_cmd_result(text=pretranscribed_text or "")
+
+        cp.process_command = AsyncMock(side_effect=fake_process)
+
+        chroma = MagicMock()
+        chroma.search_command.return_value = None  # no match — legacy path aborts cleanly
+
+        router = _build_router(
+            command_processor=cp,
+            chroma_sync=chroma,
+            orchestrator_enabled=False,
+        )
+
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32),
+            room_id="escritorio",
+            wake_text="Nexa prende la luz.",
+            partial_command=None,
+            early_dispatch=False,
+        )
+        await router.process_command(event)
+        assert captured["pretranscribed_text"] == "Nexa prende la luz."
+
+    @pytest.mark.asyncio
+    async def test_partial_used_when_wake_text_absent(self):
+        """Sin wake_text, partial_command.raw_text sigue siendo el fallback."""
+        from src.pipeline.command_event import CommandEvent
+        from src.nlu.command_grammar import PartialCommand
+
+        cp = MagicMock()
+        captured = {}
+
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+            captured["pretranscribed_text"] = pretranscribed_text
+            return _make_cmd_result(text=pretranscribed_text or "")
+
+        cp.process_command = AsyncMock(side_effect=fake_process)
+
+        chroma = MagicMock()
+        chroma.search_command.return_value = None  # no match — legacy path aborts cleanly
+
+        router = _build_router(
+            command_processor=cp,
+            chroma_sync=chroma,
+            orchestrator_enabled=False,
+        )
+
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32),
+            room_id="escritorio",
+            wake_text=None,
+            partial_command=PartialCommand(
+                raw_text="prende la luz",
+                intent="turn_on",
+                entity="light",
+            ),
+            early_dispatch=True,
+        )
+        await router.process_command(event)
+        assert captured["pretranscribed_text"] == "prende la luz"

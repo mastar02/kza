@@ -21,6 +21,22 @@ from src.orchestrator import PathType
 logger = logging.getLogger(__name__)
 
 
+def _texts_diverge(a: str, b: str, min_ratio: float = 0.6) -> bool:
+    """True if two transcriptions differ enough to suspect hallucination.
+
+    Uses accent-stripped lowercase SequenceMatcher ratio. Below min_ratio,
+    the texts are considered divergent.
+    """
+    from difflib import SequenceMatcher
+    import unicodedata
+
+    def _norm(t: str) -> str:
+        t = unicodedata.normalize("NFD", t.lower())
+        return "".join(c for c in t if unicodedata.category(c) != "Mn").strip()
+
+    return SequenceMatcher(None, _norm(a), _norm(b)).ratio() < min_ratio
+
+
 @dataclass
 class PermissionResult:
     """Result of a permission check when no UserManager is available."""
@@ -202,21 +218,30 @@ class RequestRouter:
             audio = audio_or_event.audio
             room_id = audio_or_event.room_id
             early_dispatch = audio_or_event.early_dispatch
-            # Early dispatch: el worker streaming ya transcribió el audio para
-            # decidir ready_to_dispatch(). Usamos ese texto directo y saltamos
-            # la segunda llamada al STT.
-            if audio_or_event.partial_command is not None:
-                pretranscribed_text = audio_or_event.partial_command.raw_text
-            elif audio_or_event.wake_text:
-                # Sin early dispatch pero el wake detector ya transcribió la
-                # utterance — usar su texto en vez de re-transcribir con
-                # Whisper (que a veces alucina el mismo audio).
-                pretranscribed_text = audio_or_event.wake_text
+            wake_text = audio_or_event.wake_text
+            partial_text = (
+                audio_or_event.partial_command.raw_text
+                if audio_or_event.partial_command is not None else None
+            )
+            # Preferencia: wake_text > partial_command.raw_text.
+            # Motivo: el wake detector transcribe con initial_prompt sesgado a la
+            # keyword ("nexa"); el partial del streaming worker a veces alucina
+            # la primera palabra ("Nexa" -> "Para"). Si ambos difieren mucho,
+            # log para diagnóstico pero igual elegimos wake_text.
+            if wake_text:
+                pretranscribed_text = wake_text
                 used_wake_text = True
-                logger.info(
-                    f"Using wake-detector text as pretranscribed: "
-                    f"{pretranscribed_text!r}"
-                )
+                if partial_text and _texts_diverge(wake_text, partial_text):
+                    logger.warning(
+                        f"Wake/partial text mismatch — using wake: "
+                        f"wake={wake_text!r} partial={partial_text!r}"
+                    )
+                else:
+                    logger.info(
+                        f"Using wake-detector text as pretranscribed: {wake_text!r}"
+                    )
+            elif partial_text is not None:
+                pretranscribed_text = partial_text
         else:
             audio = audio_or_event
             room_id = None
