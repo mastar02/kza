@@ -28,3 +28,9 @@ class CommandEvent:
     # el STT (ya está el texto) o cruzarlo con el STT canónico como fallback.
     partial_command: "PartialCommand | None" = None
     early_dispatch: bool = False
+    # Texto ya transcripto por el wake detector. Cuando existe, el router lo
+    # usa como `pretranscribed_text` y se saltea el segundo Whisper — ese
+    # segundo pass a veces alucina ("Nexa." / "La luz" / "Esto es un asistente
+    # para el nuevo criterio") aunque el primer Whisper del wake haya salido
+    # bien ("Nexa apagá la luz del escritorio").
+    wake_text: str | None = None

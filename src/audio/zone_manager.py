@@ -246,7 +246,7 @@ class ZoneManager:
             sample_rate: Sample rate del audio
             block: Esperar a que termine la reproducción
         """
-        zone = self.zones.get(zone_id)
+        zone = self.get_zone(zone_id)
         if not zone:
             logger.error(f"Zona no encontrada: {zone_id}")
             return
@@ -320,7 +320,7 @@ class ZoneManager:
             buffer_ms: Tamaño del buffer circular (mayor = más suave)
             prebuffer_ms: Pre-buffer antes de iniciar (latencia inicial)
         """
-        zone = self.zones.get(zone_id)
+        zone = self.get_zone(zone_id)
         if not zone:
             logger.error(f"Zona no encontrada: {zone_id}")
             return
@@ -384,23 +384,23 @@ class ZoneManager:
     
     def set_zone_volume(self, zone_id: str, volume: int):
         """Establecer volumen de una zona (0-100)"""
-        zone = self.zones.get(zone_id)
+        zone = self.get_zone(zone_id)
         if zone:
             zone.volume = max(0, min(100, volume))
             if self.ma1260:
                 self.ma1260.set_volume(zone.ma1260_zone, zone.volume)
-    
+
     def mute_zone(self, zone_id: str):
         """Silenciar una zona"""
-        zone = self.zones.get(zone_id)
+        zone = self.get_zone(zone_id)
         if zone:
             zone.state = ZoneState.MUTED
             if self.ma1260:
                 self.ma1260.mute_zone(zone.ma1260_zone)
-    
+
     def unmute_zone(self, zone_id: str):
         """Quitar silencio de una zona"""
-        zone = self.zones.get(zone_id)
+        zone = self.get_zone(zone_id)
         if zone:
             zone.state = ZoneState.IDLE
             if self.ma1260:

@@ -125,12 +125,22 @@ class ChromaSync:
         
         all_phrases = []
         
+        # Entities excluidas del vector search por ser grupos globales que
+        # generan falsos positivos (ej: light.hogar prende TODA la casa cuando
+        # el user dice "la luz" sin room). El router tiene un path dedicado
+        # para comandos con keywords explícitas "hogar"/"casa"/"todas".
+        excluded_entities = {"light.hogar"}
+
         for i, entity in enumerate(entities[:max_entities]):
             entity_id = entity["entity_id"]
             domain = entity_id.split(".")[0]
             services = services_by_domain.get(domain, [])
-            
+
             if not services:
+                continue
+
+            if entity_id in excluded_entities:
+                logger.info(f"Skip {entity_id} (excluido del vector search)")
                 continue
             
             logger.debug(f"[{i+1}/{len(entities)}] {entity_id}")

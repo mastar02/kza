@@ -31,6 +31,33 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 16000
 CHUNK_MS = 80  # tamaño esperado del chunk del caller
 
+# Verbos/keywords que esperamos en un comando real post-wake. Si el texto
+# matcheó la wake pero no tiene ninguno de estos → probablemente es TV
+# hablando + Whisper transcribió algo que sonó como "Nexa". Rechazar.
+_COMMAND_VERB_RE = re.compile(
+    r"\b("
+    r"prend\w*|encend\w*|apag\w*|enci\w*|"      # on/off (cubre prendé, apagá, encienden…)
+    r"sub\w*|baj\w*|"                            # up/down/dimming (subí, bajá, suban…)
+    r"pon\w*|cambi\w*|"                          # set/change
+    r"abr\w*|cerr\w*|clos\w*|open\w*|"           # cover
+    r"activ\w*|desactiv\w*|"                     # activate
+    r"temperatura|brillo|volumen|"               # properties (sustantivos)
+    r"luz al|luces al|al cincuent|al treint|"    # % dimming (frases)
+    r"por ciento|maximo|minimo"
+    r")\b", re.IGNORECASE,
+)
+
+# Frases típicas de TV/streaming que NUNCA son un comando real.
+# Substring match en el texto normalizado.
+_TV_STOP_PHRASES = (
+    "suscribe", "suscrib",          # suscríbete
+    "campanita",
+    "gracias por ver",
+    "dale like", "dale lie", "dale mega like",
+    "canal de youtube",
+    "activa la",                    # "activa la campanita"
+)
+
 
 def _normalize(text: str) -> str:
     """Lowercase + quitar acentos + colapsar espacios. Para match robusto."""
@@ -115,6 +142,8 @@ class WhisperWakeDetector:
         fuzzy_start_words: int = 3,
         beam_size: int = 1,
         initial_prompt: Optional[str] = None,
+        metrics_emitter=None,
+        room_id: Optional[str] = None,
     ):
         """
         vad_threshold=0.7 (estricto) filtra voces lejanas/TV a volumen medio.
@@ -143,6 +172,8 @@ class WhisperWakeDetector:
         self.fuzzy_start_words = fuzzy_start_words
         self.beam_size = beam_size
         self.initial_prompt = initial_prompt
+        self.metrics_emitter = metrics_emitter
+        self.room_id = room_id or "unknown"
 
         self.speaker_identifier = speaker_identifier
         self.speaker_embedding = speaker_embedding
@@ -166,6 +197,7 @@ class WhisperWakeDetector:
         # Si existe, multi_room_audio_loop lo usa como "command audio" en vez
         # de capturar audio nuevo (que probablemente ya pasó con el wake).
         self._pending_command_audio: Optional[np.ndarray] = None
+        self._pending_text: Optional[str] = None
 
     def load(self):
         if self._loaded:
@@ -239,17 +271,53 @@ class WhisperWakeDetector:
         binario de `_is_speech`.
         """
         rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
-        if rms < self.min_rms:
-            return 0.0
-        if self._vad is not None:
+        prob = 0.0
+        if rms >= self.min_rms and self._vad is not None:
+            # Silero-VAD v4/v5 requiere exactamente 512 samples @16kHz
+            # (chunks del pipeline son 1280 = 80ms → partir en 2-3 sub-chunks
+            # y tomar el max prob).
+            sub_size = 512
+            audio = chunk.astype(np.float32)
+            max_sub = 0.0
             try:
-                tensor = self._torch.from_numpy(chunk.astype(np.float32))
-                with self._torch.no_grad():
-                    return float(self._vad(tensor, SAMPLE_RATE).item())
-            except Exception:
-                pass
-        # Fallback si VAD falla: señal media si hay energía suficiente.
-        return 0.5 if rms > self.min_rms else 0.0
+                for i in range(0, len(audio) - sub_size + 1, sub_size):
+                    sub = audio[i:i + sub_size]
+                    tensor = self._torch.from_numpy(sub)
+                    with self._torch.no_grad():
+                        p = float(self._vad(tensor, SAMPLE_RATE).item())
+                    if p > max_sub:
+                        max_sub = p
+                prob = max_sub
+            except Exception as e:
+                if not hasattr(self, "_dbg_silero_err"):
+                    logger.warning(f"Silero VAD error: {e} — fallback RMS-only")
+                    self._dbg_silero_err = True
+                prob = 0.5 if rms > self.min_rms else 0.0
+        elif rms >= self.min_rms:
+            prob = 0.5
+
+        if not hasattr(self, "_dbg_max_rms"):
+            self._dbg_max_rms = 0.0
+            self._dbg_max_prob = 0.0
+            self._dbg_last_t = time.time()
+            self._dbg_count = 0
+        self._dbg_max_rms = max(self._dbg_max_rms, rms)
+        self._dbg_max_prob = max(self._dbg_max_prob, prob)
+        self._dbg_count += 1
+        now = time.time()
+        if now - self._dbg_last_t >= 2.0:
+            import math
+            dbfs = 20 * math.log10(self._dbg_max_rms + 1e-9)
+            logger.info(
+                f"🎤 DBG[{self._dbg_count}ch/2s] max_rms={self._dbg_max_rms:.4f} "
+                f"({dbfs:.1f}dBFS) max_prob={self._dbg_max_prob:.2f} "
+                f"gates(rms>={self.min_rms} vad>={self.vad_threshold})"
+            )
+            self._dbg_max_rms = 0.0
+            self._dbg_max_prob = 0.0
+            self._dbg_last_t = now
+            self._dbg_count = 0
+        return prob
 
     def _is_speech(self, chunk: np.ndarray) -> bool:
         """
@@ -335,6 +403,9 @@ class WhisperWakeDetector:
 
         match, text = self._transcribe_and_match(audio, dur_ms)
         if match and text:
+            # Guardar texto completo para que el pipeline lo use como
+            # pretranscribed_text (evita 2do Whisper que a veces alucina).
+            self._pending_text = text
             # Recortar el audio desde después del wake word (aprox)
             # El wake word "nexa" pronunciado ocupa ~400-500ms. Asumimos offset conservador.
             # Si el wake fue primera palabra, restamos ~500ms. Si fue en medio, el pipeline
@@ -351,6 +422,17 @@ class WhisperWakeDetector:
                 # Wake al final sin comando inline → mantener todo el audio como backup
                 self._pending_command_audio = audio.copy()
         return match
+
+    def pop_pending_text(self) -> Optional[str]:
+        """Consumir el texto completo transcrito por el wake detector.
+
+        El caller (MultiRoomAudioLoop) lo usa como `pretranscribed_text` en el
+        CommandEvent para evitar que un segundo Whisper re-transcriba el mismo
+        audio (que a veces alucina).
+        """
+        t = self._pending_text
+        self._pending_text = None
+        return t
 
     def pop_pending_command_audio(self) -> Optional[np.ndarray]:
         """Consumir el audio recortado de la utterance del wake. El caller lo pasa al STT."""
@@ -380,6 +462,16 @@ class WhisperWakeDetector:
         norm = _normalize(text)
         logger.info(f"WhisperWake [{dur_ms:.0f}ms→{stt_ms:.0f}ms]: {norm!r}")
         # Paso 1: substring match contra los aliases configurados (exact match en norm).
+        # TV stop-words: frases que jamás son comandos legítimos.
+        for phrase in _TV_STOP_PHRASES:
+            if phrase in norm:
+                logger.info(f"Wake rejected — TV stop phrase {phrase!r} en: {text!r}")
+                self._emit_wake(
+                    False, None, "rejected", text, dur_ms, stt_ms,
+                    rejection_reason="tv_stop_phrase",
+                )
+                return (None, text)
+
         for w in self.wake_words_norm:
             if w in norm:
                 if self.require_start:
@@ -387,14 +479,27 @@ class WhisperWakeDetector:
                     if w not in first_words:
                         logger.debug(f"Wake word '{w}' encontrada pero no al inicio — skip")
                         continue
+                # Exigir verbo de comando post-wake: filtra exact matches
+                # de "Nexa" cuando la TV dice algo que Whisper oyó como Nexa
+                # pero el contenido siguiente no es un comando domótica.
+                if not _COMMAND_VERB_RE.search(norm):
+                    logger.info(
+                        f"Wake rejected — sin verbo de comando post-wake: {text!r}"
+                    )
+                    self._emit_wake(
+                        False, w, "rejected", text, dur_ms, stt_ms,
+                        rejection_reason="no_command_verb",
+                    )
+                    return (None, text)
                 logger.info(f"🔥 Wake word '{w}' detectado en: {text!r}")
+                self._emit_wake(True, w, "exact", text, dur_ms, stt_ms)
                 return (w, text)
         # Paso 2: fuzzy match fonético (Levenshtein sobre codificación española).
         # "nexa" /neksa/ vs "next" /nekst/ ≈ 0.80 (match); vs "nena" /nena/ ≈ 0.67
         # (rechazado). El cluster /ks/ separa los verdaderos positivos de FPs.
+        best_ratio = 0.0
         if self.wake_words_phon and self.fuzzy_threshold > 0:
             words = norm.split()[:self.fuzzy_start_words]
-            best_ratio = 0.0
             best_word = ""
             best_phon = ""
             best_target = ""
@@ -410,10 +515,60 @@ class WhisperWakeDetector:
                         best_phon = word_phon
                         best_target = wake_phon
             if best_ratio >= self.fuzzy_threshold:
+                # Fuzzy match con threshold alto todavía puede agarrar TV
+                # random. Requerir verbo de comando para ejecutar.
+                if not _COMMAND_VERB_RE.search(norm):
+                    logger.info(
+                        f"Fuzzy wake rejected — sin verbo de comando: {text!r} "
+                        f"(best {best_word!r} ratio={best_ratio:.2f})"
+                    )
+                    self._emit_wake(
+                        False, None, "rejected", text, dur_ms, stt_ms,
+                        fuzzy_ratio=best_ratio,
+                        rejection_reason="no_command_verb",
+                    )
+                    return (None, text)
                 canonical = self.wake_words_norm[0]
                 logger.info(
                     f"🔥 Wake word fuzzy match: '{best_word}' /{best_phon}/ ~ "
                     f"/{best_target}/ (ratio={best_ratio:.2f}) en: {text!r}"
                 )
+                self._emit_wake(
+                    True, canonical, "fuzzy", text, dur_ms, stt_ms,
+                    fuzzy_ratio=best_ratio,
+                )
                 return (canonical, text)
+        self._emit_wake(
+            False, None, "rejected", text, dur_ms, stt_ms,
+            fuzzy_ratio=best_ratio if best_ratio > 0 else None,
+            rejection_reason="below_fuzzy_threshold" if best_ratio > 0 else "no_keyword",
+        )
         return (None, text)
+
+    def _emit_wake(
+        self,
+        matched: bool,
+        wake_word: Optional[str],
+        matched_via: str,
+        text: str,
+        dur_ms: float,
+        stt_ms: float,
+        fuzzy_ratio: Optional[float] = None,
+        rejection_reason: Optional[str] = None,
+    ) -> None:
+        if not self.metrics_emitter:
+            return
+        try:
+            self.metrics_emitter.emit_wake(
+                room_id=self.room_id,
+                matched=matched,
+                wake_word=wake_word,
+                matched_via=matched_via,
+                text=text,
+                audio_duration_ms=dur_ms,
+                wake_stt_ms=stt_ms,
+                fuzzy_ratio=fuzzy_ratio,
+                rejection_reason=rejection_reason,
+            )
+        except Exception as e:
+            logger.warning(f"MetricsEmitter emit_wake failed: {e}")

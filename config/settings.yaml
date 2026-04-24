@@ -407,6 +407,19 @@ monitoring:
 warmup:
   enabled: true
 
+# Observability — emite eventos JSONL a archivo para Logstash → ES.
+# Cada request/wake/error genera una línea con timings, entity, path, etc.
+# Habilitar si querés gráficos de latencia, wake precision, tasa de error, etc.
+observability:
+  enabled: true
+  metrics_path: "/home/kza/logs/kza-metrics.jsonl"
+  rotate_bytes: 104857600  # 100 MB → rota a .1
+  # Logstash TCP sink (opcional, además del archivo). Best-effort:
+  # si Logstash no está, se loggea warning y se sigue. El archivo queda
+  # siempre como backup durable.
+  logstash_host: "127.0.0.1"
+  logstash_port: 5515
+
 # Smart Automations (Pattern-based suggestions)
 analytics:
   enabled: true
@@ -835,21 +848,28 @@ rooms:
   # Wake word config for all rooms
   wake_word:
     engine: "whisper"              # "whisper" (STT-based, custom word) | "openwakeword" (legacy)
-    # Aliases: Whisper produce variantes novel cuando oye "nexa" (alexa/nexia/
-    # next/negsa/etc). Los explícitos abajo cubren los más frecuentes en español
-    # rioplatense; lo que no cuadre exact cae al fuzzy match (Levenshtein ratio).
-    words: ["nexa", "kaza", "alexa", "nexia", "neza", "nexta", "nesa", "next", "necks"]
+    # Aliases: Whisper produce variantes cuando oye "nexa" (alexa/nexia/nexta).
+    # Eliminados aliases cortos/comunes (nesa/neza/next/necks) que causaban
+    # muchos FPs fuzzy con palabras de TV como "esa"/"mesa"/"conseguí".
+    words: ["nexa", "alexa", "nexia", "nexta", "kaza"]
     model: "hey_jarvis"            # usado cuando engine=openwakeword
     threshold: 0.35                # usado cuando engine=openwakeword
     # Whisper engine params (opcionales, con defaults razonables)
     silence_end_ms: 500
     min_utterance_ms: 250
     max_utterance_s: 3.5
+    # Gates pre-Whisper. Calibrados para mic XVF3800 montado en cielorraso con
+    # placa de yeso 6mm (atenuación ~8 dB). Medición real (voz.wav 2026-04-24):
+    # voz a ~2m llega -40..-32 dBFS. Gate a -40 dBFS (=0.010) recupera 66% de
+    # frames de voz (vs 3% con 0.025). vad_threshold 0.5 = default Silero.
+    # Si aumentan FP de TV, re-habilitar speaker_filter tras re-enrollment.
+    min_rms: 0.007
+    vad_threshold: 0.3
     # Fuzzy match FONÉTICO (español): compara Levenshtein sobre representación
     # /neksa/ (nexa) vs /nekst/ (next, match ✓) vs /nena/ (nena, reject ✓).
     # El cluster /ks/ de "nexa" es raro en español común → buen discriminador.
     # 0.0 desactiva fuzzy; 1.0 = solo exact. 0.75 balancea recall vs FP.
-    fuzzy_threshold: 0.75
+    fuzzy_threshold: 0.85
     fuzzy_start_words: 3
     # beam_size / initial_prompt override para el wake detector. Si null,
     # hereda del stt top-level. beam_size=5 + initial_prompt con "Nexa"

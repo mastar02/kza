@@ -1,0 +1,69 @@
+{
+  "index_patterns": ["kza-logs-*"],
+  "priority": 800,
+  "template": {
+    "settings": {
+      "index": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+        "refresh_interval": "5s"
+      }
+    },
+    "mappings": {
+      "dynamic": "true",
+      "dynamic_templates": [
+        {
+          "strings_as_keyword": {
+            "match_mapping_type": "string",
+            "mapping": {
+              "type": "keyword",
+              "ignore_above": 1024,
+              "fields": {
+                "text": { "type": "text" }
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "@timestamp":          { "type": "date" },
+        "service":             { "type": "keyword" },
+        "event_type":          { "type": "keyword" },
+        "user_id":             { "type": "keyword" },
+        "zone_id":             { "type": "keyword" },
+        "room_id":             { "type": "keyword" },
+        "intent":              { "type": "keyword" },
+        "path":                { "type": "keyword" },
+        "entity_id":           { "type": "keyword" },
+        "service_call":        { "type": "keyword" },
+        "wake_word":           { "type": "keyword" },
+        "matched_via":         { "type": "keyword" },
+        "rejection_reason":    { "type": "keyword" },
+        "module":              { "type": "keyword" },
+        "success":             { "type": "boolean" },
+        "matched":             { "type": "boolean" },
+        "used_wake_text":      { "type": "boolean" },
+        "early_dispatch":      { "type": "boolean" },
+        "fuzzy_ratio":         { "type": "float" },
+        "audio_duration_ms":   { "type": "long" },
+        "wake_stt_ms":         { "type": "long" },
+        "stt_ms":              { "type": "long" },
+        "speaker_id_ms":       { "type": "long" },
+        "emotion_ms":          { "type": "long" },
+        "vector_search_ms":    { "type": "long" },
+        "home_assistant_ms":   { "type": "long" },
+        "queue_ms":            { "type": "long" },
+        "llm_ms":              { "type": "long" },
+        "total_ms":            { "type": "long" },
+        "text": {
+          "type": "text",
+          "fields": { "keyword": { "type": "keyword", "ignore_above": 512 } }
+        },
+        "error_msg": {
+          "type": "text",
+          "fields": { "keyword": { "type": "keyword", "ignore_above": 512 } }
+        }
+      }
+    }
+  }
+}

@@ -42,6 +42,9 @@ class RoomStream:
     # tiene intent+entity. El polling loop dispatcha sin esperar silencio.
     early_task: Optional[asyncio.Task] = None
     early_command: Optional[PartialCommand] = None
+    # Texto completo transcripto por el wake detector (si está disponible).
+    # Se usa como pretranscribed_text del CommandEvent para evitar 2do Whisper.
+    wake_text: Optional[str] = None
     # Barge-in (S3): acumulador de ms de voz sostenida durante TTS activo.
     # Se incrementa por cada chunk con RMS + is_human_voice==True; decae
     # con silencio. Dispara barge-in cuando supera `barge_in_min_duration_ms`.
@@ -254,6 +257,7 @@ class MultiRoomAudioLoop:
                             mic_device_index=rs.device_index,
                             partial_command=pc,
                             early_dispatch=True,
+                            wake_text=rs.wake_text,
                         )
                         asyncio.create_task(self._dispatch_command(event))
                         self._reset_listening(rs)
@@ -266,6 +270,7 @@ class MultiRoomAudioLoop:
                             audio=audio_data,
                             room_id=room_id,
                             mic_device_index=rs.device_index,
+                            wake_text=rs.wake_text,
                         )
                         asyncio.create_task(self._dispatch_command(event))
                         self._reset_listening(rs)
@@ -351,6 +356,11 @@ class MultiRoomAudioLoop:
                                     f"Usando audio inline del wake word ({len(inline_audio)/16000:.2f}s) "
                                     f"— saltando captura post-wake"
                                 )
+                        # Guardar texto completo del wake detector para usar
+                        # como pretranscribed_text (evita 2do Whisper alucinante).
+                        pop_text_fn = getattr(rs.wake_detector, "pop_pending_text", None)
+                        if callable(pop_text_fn):
+                            rs.wake_text = pop_text_fn()
 
                 elif self.follow_up.is_active:
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
@@ -437,6 +447,7 @@ class MultiRoomAudioLoop:
         rs.listening = False
         rs.audio_buffer = []
         rs.early_command = None
+        rs.wake_text = None
         if rs.early_task is not None:
             rs.early_task.cancel()
             rs.early_task = None

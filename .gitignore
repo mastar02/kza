@@ -47,3 +47,6 @@ orquester.json
 
 # Local notes / scratch
 sriov-migration-prompt.md
+
+# Claude Code local config
+.claude/

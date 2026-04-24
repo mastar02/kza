@@ -115,23 +115,33 @@ class RequestDispatcher:
         └───────────┘    └───────────────┘   └───────────┘
     """
 
-    # Palabras clave para detectar intents rapidos
+    # Palabras clave para detectar intents rapidos.
+    # Incluye variantes voseo rioplatense (prendé/apagá/subí/bajá/abrí/cerrá/
+    # poné/cambiá/activá/desactivá) porque `in text_lower` es substring-match
+    # y la tilde rompe el match contra "prende"/"apaga"/etc.
     DOMOTICS_KEYWORDS = [
-        "prende", "enciende", "apaga", "sube", "baja",
-        "abre", "cierra", "pon", "cambia", "activa", "desactiva"
+        "prende", "prendé", "enciende", "encendé",
+        "apaga", "apagá",
+        "sube", "subí", "baja", "bajá",
+        "abre", "abrí", "cierra", "cerrá",
+        "pon", "poné", "cambia", "cambiá",
+        "activa", "activá", "desactiva", "desactivá",
     ]
 
     SYNC_KEYWORDS = [
-        "sincroniza", "actualiza", "refresca", "sync"
+        "sincroniza", "sincronizá", "actualiza", "actualizá",
+        "refresca", "refrescá", "sync",
     ]
 
     ENROLLMENT_KEYWORDS = [
         "agregar persona", "agregar usuario", "nueva persona",
-        "registrar", "add user"
+        "registrar", "registrá", "add user",
     ]
 
     CANCEL_KEYWORDS = [
-        "cancela", "olvida", "para", "detente", "cancel", "stop"
+        "cancela", "cancelá", "olvida", "olvidá",
+        "para", "pará", "detente", "detené",
+        "cancel", "stop",
     ]
 
     LIST_KEYWORDS = [
@@ -472,6 +482,24 @@ class RequestDispatcher:
             command = self.chroma.search_command(text, self.vector_threshold)
             timings["vector_search"] = (time.perf_counter() - t0) * 1000
 
+            # Path dedicado para comandos globales ("toda la casa", "hogar").
+            # light.hogar fue excluido del vector search (generaba FPs al
+            # matchear cualquier "prendé la luz"), así que lo resolvemos acá
+            # solo cuando el texto tiene keywords explícitas de scope global.
+            tl = text.lower()
+            global_kw = ("toda la casa", "todas las luces", "todo el hogar",
+                         "del hogar", "en toda la", "la casa entera")
+            if any(kw in tl for kw in global_kw):
+                svc = "turn_off" if any(v in tl for v in ("apaga", "apagá", "apagar")) else "turn_on"
+                logger.info(f"Global scope detected → {svc}@light.hogar")
+                command = {
+                    "entity_id": "light.hogar",
+                    "domain": "light",
+                    "service": svc,
+                    "description": "toda la casa",
+                    "data": {},
+                }
+
             if command:
                 # S6: Cache-first check. Si el estado ya coincide con el target,
                 # evitamos el round-trip a HA. Solo aplica a turn_on/turn_off.
@@ -483,7 +511,13 @@ class RequestDispatcher:
                 elif service == "turn_off":
                     target_state = "off"
 
-                if target_state and hasattr(self.ha, "get_entity_state_cached"):
+                # DESACTIVADO temporalmente: el cache S6 se desincroniza cuando
+                # el WebSocket de HA tira "Concurrent call to receive()". Resultado:
+                # cache cree "on" aunque la luz esté "off" y skipeamos el dispatch
+                # → el usuario dice "prendé" y no pasa nada. Dispatcha siempre a HA
+                # (es idempotente, overhead ~300ms). Re-habilitar cuando el sync
+                # WS sea confiable.
+                if False and target_state and hasattr(self.ha, "get_entity_state_cached"):
                     cached = self.ha.get_entity_state_cached(entity_id)
                     if cached is not None and cached.get("state") == target_state:
                         timings["home_assistant"] = 0.0

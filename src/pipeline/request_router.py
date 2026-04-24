@@ -97,6 +97,7 @@ class RequestRouter:
         cache_max_size: int = 100,
         action_tracker=None,
         confidence_threshold: float = 0.75,
+        metrics_emitter=None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -163,6 +164,7 @@ class RequestRouter:
         self.latency_target_ms = latency_target_ms
         self.suggestion_interval = suggestion_interval
         self.confidence_threshold = confidence_threshold
+        self.metrics_emitter = metrics_emitter
 
         # State
         self._query_cache = {}
@@ -194,17 +196,39 @@ class RequestRouter:
         from src.pipeline.command_event import CommandEvent
 
         pretranscribed_text: str | None = None
+        used_wake_text = False
+        early_dispatch = False
         if isinstance(audio_or_event, CommandEvent):
             audio = audio_or_event.audio
             room_id = audio_or_event.room_id
+            early_dispatch = audio_or_event.early_dispatch
             # Early dispatch: el worker streaming ya transcribió el audio para
             # decidir ready_to_dispatch(). Usamos ese texto directo y saltamos
             # la segunda llamada al STT.
             if audio_or_event.partial_command is not None:
                 pretranscribed_text = audio_or_event.partial_command.raw_text
+            elif audio_or_event.wake_text:
+                # Sin early dispatch pero el wake detector ya transcribió la
+                # utterance — usar su texto en vez de re-transcribir con
+                # Whisper (que a veces alucina el mismo audio).
+                pretranscribed_text = audio_or_event.wake_text
+                used_wake_text = True
+                logger.info(
+                    f"Using wake-detector text as pretranscribed: "
+                    f"{pretranscribed_text!r}"
+                )
         else:
             audio = audio_or_event
             room_id = None
+
+        audio_duration_ms = (
+            len(audio) / 16000.0 * 1000.0 if audio is not None and len(audio) else None
+        )
+        self._last_request_meta = {
+            "used_wake_text": used_wake_text,
+            "early_dispatch": early_dispatch,
+            "audio_duration_ms": audio_duration_ms,
+        }
 
         if self.orchestrator_enabled and self._orchestrator:
             return await self._process_command_orchestrated(
@@ -956,6 +980,29 @@ class RequestRouter:
                 user=user_name,
                 intent=result.get("intent")
             )
+
+        if self.metrics_emitter:
+            meta = getattr(self, "_last_request_meta", {}) or {}
+            action = result.get("action") or {}
+            timings = dict(result.get("timings") or {})
+            timings["total"] = total
+            try:
+                self.metrics_emitter.emit_request(
+                    user_id=(result.get("user") or {}).get("name", "unknown"),
+                    zone_id=(result.get("room") or {}).get("id") or None,
+                    text=result.get("text", ""),
+                    intent=result.get("intent"),
+                    path=result.get("path"),
+                    success=bool(result.get("success")),
+                    timings=timings,
+                    audio_duration_ms=meta.get("audio_duration_ms"),
+                    entity_id=action.get("entity_id"),
+                    service=action.get("service"),
+                    used_wake_text=bool(meta.get("used_wake_text")),
+                    early_dispatch=bool(meta.get("early_dispatch")),
+                )
+            except Exception as e:
+                logger.warning(f"MetricsEmitter emit_request failed: {e}")
 
     def _get_conversation_context(self) -> str:
         """Get brief context for the router (optimized for speed)."""

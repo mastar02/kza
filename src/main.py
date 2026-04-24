@@ -171,6 +171,19 @@ async def main():
     logger.info(f"Cargando configuración: {config_path}")
     config = load_config(config_path)
 
+    # Observability — emite JSONL a archivo para Logstash → ES
+    obs_cfg = config.get("observability", {})
+    metrics_emitter = None
+    if obs_cfg.get("enabled", True):
+        from src.obs.metrics_emitter import MetricsEmitter
+        metrics_emitter = MetricsEmitter(
+            path=obs_cfg.get("metrics_path", "/home/kza/logs/kza-metrics.jsonl"),
+            rotate_bytes=obs_cfg.get("rotate_bytes", 100 * 1024 * 1024),
+            logstash_host=obs_cfg.get("logstash_host"),
+            logstash_port=obs_cfg.get("logstash_port", 5515),
+        )
+        logger.info(f"MetricsEmitter habilitado → {metrics_emitter.path}")
+
     # Verificar Home Assistant
     ha_config = config.get("home_assistant", {})
     ha_url = ha_config.get("url")
@@ -545,14 +558,19 @@ async def main():
                             silence_end_ms=room_wake_cfg.get("silence_end_ms", 500),
                             min_utterance_ms=room_wake_cfg.get("min_utterance_ms", 250),
                             max_utterance_s=room_wake_cfg.get("max_utterance_s", 3.5),
+                            vad_threshold=room_wake_cfg.get("vad_threshold", 0.7),
+                            min_rms=room_wake_cfg.get("min_rms", 0.025),
                             fuzzy_threshold=room_wake_cfg.get("fuzzy_threshold", 0.75),
                             fuzzy_start_words=room_wake_cfg.get("fuzzy_start_words", 3),
+                            language=wake_language,
                             speaker_identifier=spk_ref_identifier,
                             speaker_embedding=spk_emb,
                             speaker_threshold=sf_cfg.get("threshold", 0.65),
                             speaker_min_audio_s=sf_cfg.get("min_audio_s", 0.8),
                             beam_size=wake_beam,
                             initial_prompt=wake_prompt,
+                            metrics_emitter=metrics_emitter,
+                            room_id=room_key,
                         )
                     wake_detector.load()
                 else:
@@ -743,6 +761,7 @@ async def main():
         latency_target_ms=latency_config.get("total", 300),
         suggestion_interval=analytics_config.get("suggestion_interval", 20),
         confidence_threshold=confidence_cfg.get("threshold", 0.75),
+        metrics_emitter=metrics_emitter,
     )
 
     # Feature subsystems (timers, intercom, notifications, alerts)
