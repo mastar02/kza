@@ -157,7 +157,8 @@ tts:
   kokoro:
     model: "hexgrad/Kokoro-82M"
     device: "cuda:0"
-    default_voice: "af_heart"      # Voz en español
+    default_voice: "ef_dora"       # Voz española femenina (Kokoro 0.7+)
+    lang_code: "e"                 # 'e' = español (Kokoro requiere lang_code)
   # Qwen3-TTS deshabilitado — requiere 3ra GPU (~4.5GB)
   # qwen3:
   #   model: "Qwen/Qwen3-TTS-0.6B"

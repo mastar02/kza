@@ -553,11 +553,13 @@ class KokoroTTS:
         self,
         model: str = "hexgrad/Kokoro-82M",
         device: str = "cuda:3",
-        default_voice: str = "af_heart",
+        default_voice: str = "ef_dora",
+        lang_code: str = "e",
     ):
         self.model_name = model
         self.device = device
         self.default_voice = default_voice
+        self.lang_code = lang_code
         self._model = None
         self.sample_rate = 24000
 
@@ -566,9 +568,14 @@ class KokoroTTS:
         try:
             import kokoro
 
-            logger.info(f"Cargando Kokoro TTS: {self.model_name}")
+            logger.info(
+                f"Cargando Kokoro TTS: {self.model_name} "
+                f"(lang_code={self.lang_code!r}, voice={self.default_voice!r})"
+            )
             start = time.time()
-            self._model = kokoro.Pipeline(device=self.device)
+            # Kokoro >= 0.7 exige KPipeline(lang_code=..., device=...).
+            # lang_code 'e' = español.
+            self._model = kokoro.KPipeline(lang_code=self.lang_code, device=self.device)
             elapsed = time.time() - start
             logger.info(f"Kokoro cargado en {elapsed:.1f}s")
         except ImportError:
@@ -582,13 +589,32 @@ class KokoroTTS:
             raise
 
     def synthesize(self, text: str, voice: str = None) -> tuple[np.ndarray, float]:
-        """Sintetizar con Kokoro"""
+        """Sintetizar con Kokoro.
+
+        KPipeline.__call__ devuelve un generator de Result (un chunk por
+        segmento según split_pattern). Concatenamos los chunks y pasamos
+        el audio a np.ndarray.
+        """
         if self._model is None:
             self.load()
 
         voice = voice or self.default_voice
         start = time.perf_counter()
-        audio, _ = self._model(text, voice=voice)
+        chunks: list[np.ndarray] = []
+        for result in self._model(text, voice=voice):
+            chunk = result.audio
+            if chunk is None:
+                continue
+            # Result.audio es torch.Tensor (float32). Convertir a np.
+            if hasattr(chunk, "cpu"):
+                chunk = chunk.cpu().numpy()
+            chunks.append(chunk)
+        if not chunks:
+            audio = np.zeros(0, dtype=np.float32)
+        elif len(chunks) == 1:
+            audio = chunks[0]
+        else:
+            audio = np.concatenate(chunks)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         logger.debug(f"Kokoro TTS ({elapsed_ms:.0f}ms): {text[:30]}...")
