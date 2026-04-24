@@ -662,6 +662,8 @@ async def main():
     )
 
     # Response handler (TTS + streaming + zone routing)
+    # El response_cache (S2) se inicializa post-warmup abajo y se inyecta via
+    # attach_response_cache — esto mantiene el orden: DI → warmup → build cache.
     response_handler = ResponseHandler(
         tts=tts,
         zone_manager=zone_manager,
@@ -875,6 +877,25 @@ async def main():
     warmup_config = config.get("warmup", {})
     if warmup_config.get("enabled", True):
         await _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
+
+    # TTS response cache (S2) — pre-genera frases canónicas post-warmup para
+    # que Kokoro ya esté caliente y la síntesis bulk sea rápida.
+    tts_cache_cfg = tts_config.get("response_cache", {}) or {}
+    if tts_cache_cfg.get("enabled", False):
+        from src.tts.response_cache import ResponseCache
+
+        response_cache = ResponseCache(tts)
+        try:
+            await response_cache.build()
+            response_handler._response_cache = response_cache
+            logger.info(
+                f"TTS response cache: {response_cache.size()} frases "
+                f"inyectadas en ResponseHandler"
+            )
+        except Exception as e:
+            logger.warning(
+                f"TTS response cache falló al build — continúo sin cache: {e}"
+            )
 
     # Start presence detector before pipeline
     if presence_detector:

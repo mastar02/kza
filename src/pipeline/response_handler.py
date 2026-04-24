@@ -3,6 +3,8 @@ Response Handler Module
 Gestiona síntesis de voz, streaming de audio y enrutamiento a zonas.
 """
 
+from __future__ import annotations
+
 import logging
 import time
 
@@ -13,6 +15,7 @@ from src.llm.buffered_streamer import (
     BufferConfig,
     create_buffered_streamer
 )
+from src.tts.response_cache import CachedAudio, ResponseCache
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,7 @@ class ResponseHandler:
         llm_buffer_preset: str = "balanced",
         llm_use_filler: bool = True,
         llm_filler_phrases: list = None,
+        response_cache: ResponseCache | None = None,
     ):
         """
         Inicializar ResponseHandler.
@@ -53,6 +57,9 @@ class ResponseHandler:
             llm_buffer_preset: Preset de buffering para LLM
             llm_use_filler: Usar frases de relleno mientras LLM genera
             llm_filler_phrases: Frases de relleno custom
+            response_cache: Cache TTS pre-generado (S2). Si se provee,
+                `speak()` consulta el cache antes del TTS live; hit → playback
+                directo del ndarray (~5-10ms). Miss → camino normal.
         """
         self.tts = tts
         self.zone_manager = zone_manager
@@ -66,6 +73,7 @@ class ResponseHandler:
         self.llm_use_filler = llm_use_filler
         self.llm_filler_phrases = llm_filler_phrases
 
+        self._response_cache = response_cache
         self._llm_streamer: BufferedLLMStreamer | None = None
         self._active_zone_id = None
 
@@ -111,11 +119,53 @@ class ResponseHandler:
         # Enrutar a zona
         target_zone = zone_id or self._active_zone_id
 
+        # Cache hit (S2): playback directo si hay match. No aplicamos emotion
+        # adjustment a respuestas cacheadas (el pitch/rate vive en la síntesis
+        # live); son acks cortos pre-generados, el tradeoff vale la pena.
+        if self._response_cache is not None:
+            cached = self._response_cache.get(text)
+            if cached is not None:
+                t0 = time.perf_counter()
+                self._playback_cached(cached, target_zone)
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                logger.info(
+                    f"TTS cache HIT: {text!r} "
+                    f"(playback={elapsed_ms:.1f}ms, audio={cached.duration_s*1000:.0f}ms)"
+                )
+                return
+
         if self.zone_manager and target_zone:
             self._speak_to_zone(text, target_zone, use_streaming)
         else:
             # Fallback: TTS directo
             self._speak_direct(text, use_streaming)
+
+    def _playback_cached(self, cached: CachedAudio, zone_id: str = None):
+        """Reproducir audio cacheado reutilizando el mismo mecanismo que TTS live.
+
+        Si hay zone_manager + zone_id, va por `play_to_zone` (mismo path que
+        el TTS normal). En fallback directo usa `sounddevice.sd.play`, igual
+        que `PiperTTS.speak`/`KokoroTTS.speak`.
+        """
+        if self.zone_manager and zone_id:
+            self.zone_manager.play_to_zone(
+                zone_id=zone_id,
+                audio_data=cached.audio,
+                sample_rate=cached.sample_rate,
+                block=True,
+            )
+            return
+
+        # Fallback directo: mismo mecanismo que *TTS.speak() — sounddevice.
+        try:
+            import sounddevice as sd
+            sd.play(cached.audio, samplerate=cached.sample_rate)
+            sd.wait()
+        except Exception as e:
+            logger.warning(f"Playback cacheado falló, fallback TTS live: {e}")
+            # Si falla el playback cacheado, caer al TTS normal para no perder
+            # el ack al usuario.
+            self._speak_direct(cached.text, self.streaming_enabled)
 
     def _speak_to_zone(
         self,
