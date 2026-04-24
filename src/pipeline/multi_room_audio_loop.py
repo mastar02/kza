@@ -5,6 +5,8 @@ Each room's stream independently detects wake words and captures commands.
 Concurrent commands from different rooms are processed in parallel.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import time
@@ -40,6 +42,10 @@ class RoomStream:
     # tiene intent+entity. El polling loop dispatcha sin esperar silencio.
     early_task: Optional[asyncio.Task] = None
     early_command: Optional[PartialCommand] = None
+    # Barge-in (S3): acumulador de ms de voz sostenida durante TTS activo.
+    # Se incrementa por cada chunk con RMS + is_human_voice==True; decae
+    # con silencio. Dispara barge-in cuando supera `barge_in_min_duration_ms`.
+    barge_in_accum_ms: float = 0.0
 
 
 class MultiRoomAudioLoop:
@@ -70,6 +76,10 @@ class MultiRoomAudioLoop:
         endpointing_short_ms: int = 150,
         endpointing_medium_ms: int = 300,
         endpointing_long_ms: int = 500,
+        response_handler=None,
+        barge_in_enabled: bool = False,
+        barge_in_rms_threshold: float = 0.03,
+        barge_in_min_duration_ms: int = 200,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -95,14 +105,31 @@ class MultiRoomAudioLoop:
         self.endpointing_medium_ms = endpointing_medium_ms
         self.endpointing_long_ms = endpointing_long_ms
 
+        # Barge-in (S3). `response_handler` puede setearse post-init via
+        # `attach_response_handler()` — útil porque el ResponseHandler se
+        # construye después del loop en main.py.
+        self._response_handler = response_handler
+        self.barge_in_enabled = barge_in_enabled
+        self.barge_in_rms_threshold = barge_in_rms_threshold
+        self.barge_in_min_duration_ms = barge_in_min_duration_ms
+
         self._running = False
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
         self._on_post_command_callback: Callable[[dict, CommandEvent], Awaitable[None]] | None = None
+
+        # Event loop capturado al `run()` — usado desde el audio_callback
+        # (corre en thread del sounddevice, no en asyncio) para schedular
+        # `_trigger_barge_in` via `run_coroutine_threadsafe`.
+        self._loop: asyncio.AbstractEventLoop | None = None
 
         # Deduplication state
         self._last_wakeword_time: float = 0.0
         self._last_wakeword_room: str = ""
         self._last_wakeword_rms: float = 0.0
+
+    def attach_response_handler(self, response_handler) -> None:
+        """Inyectar ResponseHandler post-init (útil por orden de DI en main.py)."""
+        self._response_handler = response_handler
 
     def on_command(self, callback: Callable[[CommandEvent], Awaitable[dict]]):
         """Register callback for when command audio is captured."""
@@ -169,6 +196,10 @@ class MultiRoomAudioLoop:
         Command dispatch happens on the asyncio event loop via create_task.
         """
         self._running = True
+        # Guardamos el event loop para que el audio_callback (thread C del
+        # sounddevice) pueda schedular corrutinas via run_coroutine_threadsafe
+        # cuando detecta barge-in.
+        self._loop = asyncio.get_running_loop()
         streams = []
 
         for room_id, rs in self.room_streams.items():
@@ -252,6 +283,42 @@ class MultiRoomAudioLoop:
 
         def audio_callback(indata, frames, time_info, status):
             audio_chunk = indata[:, 0].copy()
+
+            # Barge-in check (S3) — corre ANTES del echo suppressor porque
+            # `is_safe_to_listen` retorna False mientras TTS está activo, lo
+            # que bloquearía el flujo normal y nos dejaría sin detectar la
+            # interrupción. El threshold + VAD + min_duration_ms filtran los
+            # picos espurios y el eco residual del propio TTS.
+            if (
+                self.barge_in_enabled
+                and self._response_handler is not None
+                and self._response_handler.is_speaking
+            ):
+                rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
+                is_voice = (
+                    rms > self.barge_in_rms_threshold
+                    and rs.echo_suppressor.is_human_voice(audio_chunk)
+                )
+                if is_voice:
+                    chunk_ms = (frames / self.sample_rate) * 1000
+                    rs.barge_in_accum_ms += chunk_ms
+                    if rs.barge_in_accum_ms >= self.barge_in_min_duration_ms:
+                        # Schedular el cancel+listen en el event loop asyncio
+                        # (este callback corre en thread C del sounddevice).
+                        if self._loop is not None:
+                            asyncio.run_coroutine_threadsafe(
+                                self._trigger_barge_in(rs),
+                                self._loop,
+                            )
+                        rs.barge_in_accum_ms = 0.0
+                else:
+                    # Decay en silencio — protege contra picos aislados que
+                    # no forman voz sostenida.
+                    rs.barge_in_accum_ms = max(
+                        0.0, rs.barge_in_accum_ms - 20.0
+                    )
+                # Mientras TTS habla, no procesamos wake word / captura normal.
+                return
 
             # Echo suppression per room
             if not rs.echo_suppressor.is_safe_to_listen:
@@ -428,3 +495,33 @@ class MultiRoomAudioLoop:
                 await self._on_post_command_callback(result, event)
         except Exception as e:
             logger.exception(f"Command dispatch failed for {event.room_id}: {e}")
+
+    async def _trigger_barge_in(self, rs: RoomStream) -> None:
+        """
+        Invocada desde el audio thread via `run_coroutine_threadsafe`.
+
+        Corta el TTS activo y abre el modo listening en el room que detectó
+        la interrupción (simula un wake word trigger). Si el ResponseHandler
+        ya no estaba hablando (race con fin natural del TTS), sale silencioso.
+        """
+        if self._response_handler is None:
+            return
+        try:
+            was_speaking = await self._response_handler.cancel()
+        except Exception as e:
+            logger.warning(f"Barge-in cancel error in {rs.room_id}: {e}")
+            return
+
+        if not was_speaking:
+            # El TTS ya había terminado; no abrir listening para evitar
+            # capturas espurias.
+            return
+
+        logger.info(f"⏹  Barge-in detectado en {rs.room_id}")
+        rs.listening = True
+        rs.command_start_time = time.time()
+        rs.audio_buffer = []
+        try:
+            self.follow_up.start_conversation()
+        except Exception as e:
+            logger.debug(f"follow_up.start_conversation no-op: {e}")

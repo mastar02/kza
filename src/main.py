@@ -620,6 +620,9 @@ async def main():
         if room_streams:
             early_cfg = rooms_config.get("wake_word", {})
             endpointing_cfg = rooms_config.get("endpointing", {})
+            # Barge-in (S3). `response_handler` se inyecta luego con
+            # `attach_response_handler()` porque se construye más abajo.
+            barge_in_cfg = rooms_config.get("barge_in", {}) or {}
             multi_room_loop = MultiRoomAudioLoop(
                 room_streams=room_streams,
                 follow_up=FollowUpMode(follow_up_window=8.0),
@@ -634,6 +637,9 @@ async def main():
                 endpointing_short_ms=endpointing_cfg.get("short_ms", 150),
                 endpointing_medium_ms=endpointing_cfg.get("medium_ms", 300),
                 endpointing_long_ms=endpointing_cfg.get("long_ms", 500),
+                barge_in_enabled=barge_in_cfg.get("enabled", False),
+                barge_in_rms_threshold=barge_in_cfg.get("rms_threshold", 0.03),
+                barge_in_min_duration_ms=barge_in_cfg.get("min_duration_ms", 200),
             )
             logger.info(
                 f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "
@@ -677,6 +683,12 @@ async def main():
         streaming_buffer_ms=streaming_config.get("buffer_ms", 150),
         streaming_prebuffer_ms=streaming_config.get("prebuffer_ms", 80),
     )
+
+    # Inyectar response_handler al MultiRoomAudioLoop para barge-in (S3).
+    # Se construyó arriba sin response_handler por orden de DI; lo attacheamos
+    # ahora que ambos existen.
+    if multi_room_loop is not None:
+        multi_room_loop.attach_response_handler(response_handler)
 
     # Echo suppressor and follow-up mode (needed by AudioLoop)
     echo_suppressor = EchoSuppressor(sample_rate=16000)

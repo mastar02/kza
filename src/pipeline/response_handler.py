@@ -5,6 +5,7 @@ Gestiona síntesis de voz, streaming de audio y enrutamiento a zonas.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -77,6 +78,74 @@ class ResponseHandler:
         self._llm_streamer: BufferedLLMStreamer | None = None
         self._active_zone_id = None
 
+        # Barge-in state (S3). `is_speaking` se consulta desde el audio
+        # callback de MultiRoomAudioLoop. `_current_stream` guarda el handle
+        # de sounddevice (OutputStream o StreamingAudioPlayer) activo para
+        # poder cortarlo en <200ms. `_playback_task` cubre cualquier task
+        # asyncio que envuelva el playback.
+        self._is_speaking: bool = False
+        self._current_stream = None
+        self._playback_task: asyncio.Task | None = None
+
+    @property
+    def is_speaking(self) -> bool:
+        """True si hay un TTS activo. Consultado por barge-in checker."""
+        return self._is_speaking
+
+    async def cancel(self) -> bool:
+        """
+        Interrumpir el TTS actual lo más rápido posible.
+
+        Cierra el stream de sounddevice (si hay uno expuesto en
+        `_current_stream`), cancela `_playback_task` si existe, y como
+        fallback llama `sd.stop()` para cortar cualquier playback inline
+        (`sd.play`) que no esté expuesto como stream.
+
+        Idempotent: llamadas múltiples no fallan; si no hay TTS activo,
+        retorna False sin efectos laterales.
+
+        Returns:
+            True si había algo activo que cancelar, False en caso contrario.
+        """
+        if not self._is_speaking:
+            return False
+
+        logger.info("⏹  TTS cancel (barge-in)")
+        # Marcamos primero para evitar race con otro cancel concurrente.
+        self._is_speaking = False
+
+        # 1. Cerrar el stream explícito (si un método TTS lo registró).
+        stream = self._current_stream
+        if stream is not None:
+            try:
+                # sounddevice OutputStream expone stop/close; el
+                # StreamingAudioPlayer de PiperTTS expone solo stop().
+                if hasattr(stream, "stop"):
+                    stream.stop()
+                if hasattr(stream, "close"):
+                    stream.close()
+            except Exception as e:
+                logger.warning(f"cancel(): error cerrando stream: {e}")
+            finally:
+                self._current_stream = None
+
+        # 2. Cancelar task de playback si hay uno registrado.
+        task = self._playback_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._playback_task = None
+
+        # 3. Fallback: sd.stop() corta cualquier sd.play() inline que no
+        # esté expuesto como stream (e.g. `PiperTTS.speak`, `_playback_cached`
+        # con sd.play). No rompe si sounddevice no está inicializado.
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception as e:
+            logger.debug(f"cancel(): sd.stop() no-op: {e}")
+
+        return True
+
     def set_active_zone(self, zone_id: str):
         """Establecer zona activa para respuestas."""
         self._active_zone_id = zone_id
@@ -119,26 +188,35 @@ class ResponseHandler:
         # Enrutar a zona
         target_zone = zone_id or self._active_zone_id
 
-        # Cache hit (S2): playback directo si hay match. No aplicamos emotion
-        # adjustment a respuestas cacheadas (el pitch/rate vive en la síntesis
-        # live); son acks cortos pre-generados, el tradeoff vale la pena.
-        if self._response_cache is not None:
-            cached = self._response_cache.get(text)
-            if cached is not None:
-                t0 = time.perf_counter()
-                self._playback_cached(cached, target_zone)
-                elapsed_ms = (time.perf_counter() - t0) * 1000
-                logger.info(
-                    f"TTS cache HIT: {text!r} "
-                    f"(playback={elapsed_ms:.1f}ms, audio={cached.duration_s*1000:.0f}ms)"
-                )
-                return
+        # Barge-in state on: desde aquí cualquier consulta a `is_speaking`
+        # devuelve True. Se limpia en `finally` aunque haya excepciones.
+        self._is_speaking = True
+        try:
+            # Cache hit (S2): playback directo si hay match. No aplicamos
+            # emotion adjustment a respuestas cacheadas (el pitch/rate vive en
+            # la síntesis live); son acks cortos pre-generados, el tradeoff
+            # vale la pena.
+            if self._response_cache is not None:
+                cached = self._response_cache.get(text)
+                if cached is not None:
+                    t0 = time.perf_counter()
+                    self._playback_cached(cached, target_zone)
+                    elapsed_ms = (time.perf_counter() - t0) * 1000
+                    logger.info(
+                        f"TTS cache HIT: {text!r} "
+                        f"(playback={elapsed_ms:.1f}ms, audio={cached.duration_s*1000:.0f}ms)"
+                    )
+                    return
 
-        if self.zone_manager and target_zone:
-            self._speak_to_zone(text, target_zone, use_streaming)
-        else:
-            # Fallback: TTS directo
-            self._speak_direct(text, use_streaming)
+            if self.zone_manager and target_zone:
+                self._speak_to_zone(text, target_zone, use_streaming)
+            else:
+                # Fallback: TTS directo
+                self._speak_direct(text, use_streaming)
+        finally:
+            # `cancel()` pudo haberlo apagado antes; idempotent.
+            self._is_speaking = False
+            self._current_stream = None
 
     def _playback_cached(self, cached: CachedAudio, zone_id: str = None):
         """Reproducir audio cacheado reutilizando el mismo mecanismo que TTS live.
@@ -269,21 +347,29 @@ class ResponseHandler:
         if zone_id:
             self.set_active_zone(zone_id)
 
-        # Verificar si el LLM soporta streaming
-        if self.llm and hasattr(self.llm, 'generate_stream'):
-            return self._llm_streamer.stream_and_speak(
-                self.llm,
-                prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                use_filler=filler
-            )
-        else:
-            # Fallback: generar completo y luego hablar
-            logger.warning("LLM no soporta streaming, usando modo normal")
-            response = self.llm.generate(prompt, max_tokens=max_tokens, temperature=temperature)
-            self.speak(response, zone_id=zone_id)
-            return response
+        # Barge-in state on durante todo el streaming del LLM (puede durar
+        # varios segundos). El fallback que llama a `self.speak()` reusa el
+        # mismo flag — idempotent, no problema.
+        self._is_speaking = True
+        try:
+            # Verificar si el LLM soporta streaming
+            if self.llm and hasattr(self.llm, 'generate_stream'):
+                return self._llm_streamer.stream_and_speak(
+                    self.llm,
+                    prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    use_filler=filler
+                )
+            else:
+                # Fallback: generar completo y luego hablar
+                logger.warning("LLM no soporta streaming, usando modo normal")
+                response = self.llm.generate(prompt, max_tokens=max_tokens, temperature=temperature)
+                self.speak(response, zone_id=zone_id)
+                return response
+        finally:
+            self._is_speaking = False
+            self._current_stream = None
 
     def _init_llm_streamer(self):
         """Inicializar el streamer con buffering para el LLM."""
@@ -345,17 +431,22 @@ class ResponseHandler:
             text: Texto a sintetizar
             stream: Usar streaming
         """
-        if not self.zone_manager:
-            self._speak_direct(text, stream if stream is not None else self.streaming_enabled)
-            return
+        self._is_speaking = True
+        try:
+            if not self.zone_manager:
+                self._speak_direct(text, stream if stream is not None else self.streaming_enabled)
+                return
 
-        use_streaming = stream if stream is not None else self.streaming_enabled
+            use_streaming = stream if stream is not None else self.streaming_enabled
 
-        # Para todas las zonas, usar síntesis completa (más simple que streaming)
-        audio_data, _ = self.tts.synthesize(text)
-        if audio_data is not None:
-            self.zone_manager.play_to_all_zones(
-                audio_data=audio_data,
-                sample_rate=self.tts.sample_rate
-            )
-            logger.debug(f"Audio reproducido en todas las zonas")
+            # Para todas las zonas, usar síntesis completa (más simple que streaming)
+            audio_data, _ = self.tts.synthesize(text)
+            if audio_data is not None:
+                self.zone_manager.play_to_all_zones(
+                    audio_data=audio_data,
+                    sample_rate=self.tts.sample_rate
+                )
+                logger.debug(f"Audio reproducido en todas las zonas")
+        finally:
+            self._is_speaking = False
+            self._current_stream = None
