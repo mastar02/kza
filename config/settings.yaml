@@ -202,6 +202,21 @@ router:
   timeout: 30
   # Prefix caching lo maneja vLLM server-side (infra). LoRA requiere pedido §4.4.
 
+# NLU — clasificación de comandos vía LLM (Opción 2 sesión wake-fixes).
+# Cuando enabled=true, todo texto post-wake pasa por el FastRouter del bloque
+# anterior antes de llegar al orchestrator. El LLM decide si es comando real
+# del usuario o ruido/TV/replay y clasifica el intent. Latencia esperada:
+# 150-300ms por validación. Si el LLM falla/timeout → caller decide fallback
+# (hoy: rechazo silencioso).
+nlu:
+  llm_router:
+    enabled: true
+    max_history: 5            # cuántos comandos previos se mandan como contexto
+    history_ttl_s: 120.0      # comandos más viejos no se mandan (relevancia limitada)
+    timeout_s: 1.5            # cap de latencia del LLM call
+    max_tokens: 200           # cap del JSON response
+    temperature: 0.0          # determinismo total para clasificación
+
 # LLM para Razonamiento — 72B Q8_0 siempre caliente vía kza-72b.service (Q1=A)
 # Modo "http" consume por HTTP al systemd service local en :8200 (evita doble carga).
 # Modo "local" carga el GGUF en el proceso (fallback para debug; usa ~64-77GB RAM).

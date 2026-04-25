@@ -186,6 +186,7 @@ class RequestRouter:
         confidence_threshold: float = 0.75,
         metrics_emitter=None,
         wake_words: tuple[str, ...] | list[str] | None = None,
+        llm_command_router=None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -264,6 +265,11 @@ class RequestRouter:
             )
         else:
             self._wake_words = _default_wakes
+
+        # LLM-based command validator. Si está configurado, intercepta el
+        # texto post-wake antes del orchestrator y rechaza alucinaciones
+        # de TV / replays / frases noise. Ver src/nlu/llm_router.py.
+        self.llm_command_router = llm_command_router
 
         # State
         self._query_cache = {}
@@ -389,6 +395,29 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
+        # 1a-bis. LLM-based command validator (Opción 2 de la sesión wake-fixes).
+        # Reemplaza eventualmente el regex+Chroma; por ahora corre en paralelo
+        # como gate adicional contra alucinaciones de TV/replays.
+        if self.llm_command_router is not None:
+            t_llm = time.perf_counter()
+            classification = await self.llm_command_router.classify(text, room_id=room_id)
+            llm_ms = (time.perf_counter() - t_llm) * 1000
+            result["timings"]["llm_router"] = llm_ms
+            logger.info(
+                f"[LLMRouter {llm_ms:.0f}ms] is_command={classification.is_command} "
+                f"intent={classification.intent} reason={classification.rejection_reason} "
+                f"text={text!r}"
+            )
+            if not classification.is_command:
+                result["intent"] = f"llm_rejected:{classification.rejection_reason or 'unknown'}"
+                result["success"] = False
+                result["response"] = ""
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
+            # Resultado válido — guardar para que el caller registre en history
+            # tras dispatch exitoso (line ~480, post-orchestrator).
+            result["llm_classification"] = classification
+
         # 1b. Confidence gate — low-confidence sensitive commands pide
         #     confirmación antes de dispatchar al orchestrator.
         self._check_confidence_gate(text, result)
@@ -484,6 +513,21 @@ class RequestRouter:
                 action=result["action"]["service"] if result["action"] else None,
                 trigger_phrase=text
             )
+
+        # Registrar el comando aceptado en el historial del LLMCommandRouter
+        # para que próximas clasificaciones puedan detectar replays.
+        if (
+            self.llm_command_router is not None
+            and result["success"]
+            and result.get("llm_classification") is not None
+        ):
+            try:
+                self.llm_command_router.record_command(
+                    text=text,
+                    intent=result["llm_classification"].intent or "unknown",
+                )
+            except Exception as e:
+                logger.debug(f"LLMCommandRouter.record_command falló: {e}")
 
         return result
 

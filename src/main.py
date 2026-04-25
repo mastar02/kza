@@ -301,6 +301,32 @@ async def main():
         )
         logger.info(f"Fast router (HTTP) → {router_config.get('base_url', 'http://127.0.0.1:8100/v1')}")
 
+    # LLM Command Router (Opción 2) — clasificador de comandos vía vLLM 7B.
+    # Reemplaza el regex+ChromaDB para validar texto post-wake contra
+    # alucinaciones de TV / replays / frases noise. Hereda el FastRouter
+    # ya configurado contra el vLLM compartido en :8100.
+    llm_command_router = None
+    nlu_cfg = config.get("nlu", {}).get("llm_router", {})
+    if nlu_cfg.get("enabled", False) and fast_router is not None:
+        from src.nlu.llm_router import LLMCommandRouter
+        # Cargar el FastRouter ahora si todavía no se hizo (lazy en su .load()).
+        try:
+            fast_router.load()
+        except Exception as e:
+            logger.warning(f"FastRouter .load() falló pre-LLMCommandRouter: {e}")
+        llm_command_router = LLMCommandRouter(
+            fast_router=fast_router,
+            max_history=nlu_cfg.get("max_history", 5),
+            history_ttl_s=nlu_cfg.get("history_ttl_s", 120.0),
+            timeout_s=nlu_cfg.get("timeout_s", 1.5),
+            max_tokens=nlu_cfg.get("max_tokens", 200),
+            temperature=nlu_cfg.get("temperature", 0.0),
+        )
+        logger.info(
+            f"LLMCommandRouter habilitado (timeout={nlu_cfg.get('timeout_s', 1.5)}s, "
+            f"max_history={nlu_cfg.get('max_history', 5)})"
+        )
+
     # Memory Manager - memoria contextual
     memory_config = config.get("memory", {})
     memory_manager = None
@@ -783,6 +809,7 @@ async def main():
         wake_words=rooms_config.get("wake_word", {}).get(
             "words", wake_config.get("words", ["nexa"])
         ),
+        llm_command_router=llm_command_router,
     )
 
     # Feature subsystems (timers, intercom, notifications, alerts)
