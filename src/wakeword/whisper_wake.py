@@ -34,16 +34,38 @@ CHUNK_MS = 80  # tamaño esperado del chunk del caller
 # Verbos/keywords que esperamos en un comando real post-wake. Si el texto
 # matcheó la wake pero no tiene ninguno de estos → probablemente es TV
 # hablando + Whisper transcribió algo que sonó como "Nexa". Rechazar.
+#
+# Filosofía: preferir tokens específicos (frases compuestas) sobre palabras
+# sueltas para no incrementar FPs de TV. Ej: 'aire acondicionado' antes que
+# 'aire' solo (la TV dice "estás en el aire"). Lista calibrada con misses
+# observados en logs reales del usuario (abr 24-25).
 _COMMAND_VERB_RE = re.compile(
     r"\b("
-    r"prend\w*|encend\w*|apag\w*|enci\w*|"      # on/off (cubre prendé, apagá, encienden…)
-    r"sub\w*|baj\w*|"                            # up/down/dimming (subí, bajá, suban…)
-    r"pon\w*|cambi\w*|"                          # set/change
-    r"abr\w*|cerr\w*|clos\w*|open\w*|"           # cover
-    r"activ\w*|desactiv\w*|"                     # activate
-    r"temperatura|brillo|volumen|"               # properties (sustantivos)
-    r"luz al|luces al|al cincuent|al treint|"    # % dimming (frases)
-    r"por ciento|maximo|minimo"
+    # Verbos de control on/off
+    r"prend\w*|encend\w*|apag\w*|enci\w*|"
+    # Up/down/dimming
+    r"sub\w*|baj\w*|"
+    # Set / change
+    r"pon\w*|cambi\w*|"
+    # Cover (cortinas, persianas como verbo)
+    r"abr\w*|cerr\w*|clos\w*|open\w*|"
+    # Activate / deactivate (escenas, rutinas)
+    r"activ\w*|desactiv\w*|"
+    # Propiedades (sustantivos que solo aparecen en comandos)
+    r"temperatura|brillo|volumen|"
+    # % dimming
+    r"luz al|luces al|al cincuent|al treint|"
+    r"por ciento|maximo|minimo|"
+    # Direccionales (B: 'Nexa para arriba')
+    r"para arriba|para abajo|"
+    # Volumen relativo (B: 'Nexa más fuerte/bajo/alto/suave')
+    r"mas fuerte|mas alto|mas bajo|mas suave|"
+    # Temperatura relativa (B: 'Nexa más calor/frío/caliente/fresco')
+    r"mas calor|mas frio|mas calien|mas fresc|"
+    # AC compuesto (NO 'aire' solo — TV dice 'estás en el aire')
+    r"aire acondicionado|"
+    # Entidades físicas comunes (B: 'Nexa persiana', 'Nexa cortina')
+    r"persiana\w*|cortina\w*"
     r")\b", re.IGNORECASE,
 )
 

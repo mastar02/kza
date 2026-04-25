@@ -116,6 +116,34 @@ class TestDecoalesceIntegrationWithCommandVerbRegex:
         )
         assert _COMMAND_VERB_RE.search(norm) is not None
 
+    def test_para_arriba_matches(self):
+        assert _COMMAND_VERB_RE.search("nexa para arriba") is not None
+
+    def test_para_abajo_matches(self):
+        assert _COMMAND_VERB_RE.search("nexa para abajo") is not None
+
+    def test_mas_fuerte_matches(self):
+        assert _COMMAND_VERB_RE.search("nexa mas fuerte") is not None
+
+    def test_mas_bajo_matches(self):
+        assert _COMMAND_VERB_RE.search("nexa mas bajo") is not None
+
+    def test_aire_acondicionado_matches(self):
+        assert _COMMAND_VERB_RE.search("nexa aire acondicionado") is not None
+
+    def test_aire_solo_no_matches(self):
+        """'aire' solo no es comando — TV dice 'estás en el aire' frecuentemente."""
+        assert _COMMAND_VERB_RE.search("estas en el aire") is None
+
+    def test_persiana_matches(self):
+        assert _COMMAND_VERB_RE.search("nexa persiana") is not None
+
+    def test_cortina_matches(self):
+        assert _COMMAND_VERB_RE.search("nexa cortina") is not None
+
+    def test_mas_calor_matches(self):
+        assert _COMMAND_VERB_RE.search("nexa mas calor") is not None
+
     def test_aprende_español_does_not_trigger_match(self):
         """After decoalesce 'nexa aprende español' becomes 'nexa prende español'.
         This IS matched by the regex, but the domotica flow would fail to find
