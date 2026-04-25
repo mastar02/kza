@@ -691,10 +691,58 @@ class HomeAssistantClient:
             logger.debug("State sync ya está corriendo")
             return
 
+        # Pre-condición: confirmar que el canal WS events handshake-ea OK
+        # antes de marcar el servicio como ready. Mata el ruido de "auth
+        # timeout" en logs cuando el primer ws_connect es lento (HA digiriendo
+        # el snapshot REST recién hecho). Si todos los reintentos fallan,
+        # propaga RuntimeError para que main.py decida (sigue/fail).
+        await self._wait_for_ws_ready(max_attempts=3, backoff_s=2.0)
+
         self._state_full_refresh_interval_s = full_refresh_interval_s
         self._state_sync_running = True
         self._state_subscribe_task = asyncio.create_task(self._state_sync_loop())
         logger.info("HA state prefetch cache: sync loop arrancado")
+
+    async def _wait_for_ws_ready(
+        self,
+        max_attempts: int = 3,
+        backoff_s: float = 2.0,
+    ) -> None:
+        """Pre-conectar el canal events con retries antes del background loop.
+
+        En LAN, el primer ws_connect post-snapshot REST grande (~329 entities)
+        puede demorar 5-7s mientras HA termina de servir el payload. El
+        timeout default de 5s del handshake auth lo dispara aunque HA esté
+        sano. Reintentar 3 veces con backoff resuelve el race sin ocultar
+        fallos reales (un HA caído sigue fallando los 3 intentos en ~10s).
+
+        Args:
+            max_attempts: Cuántos intentos antes de propagar.
+            backoff_s: Espera entre intentos (lineal, no exponencial — el
+                problema es transient ms, no sostenido).
+
+        Raises:
+            RuntimeError: si tras `max_attempts` no se pudo abrir el WS.
+        """
+        for attempt in range(1, max_attempts + 1):
+            try:
+                ws = await self._open_ws_authenticated("events")
+                if ws is not None:
+                    self._ws_events = ws
+                    if attempt > 1:
+                        logger.info(
+                            f"WS events ready en intento {attempt}/{max_attempts}"
+                        )
+                    return
+            except Exception as e:
+                logger.warning(
+                    f"WS warmup intento {attempt}/{max_attempts} excepción: {e}"
+                )
+            if attempt < max_attempts:
+                await asyncio.sleep(backoff_s)
+        raise RuntimeError(
+            f"WS HA events no disponible tras {max_attempts} intentos"
+        )
 
     async def stop_state_sync(self) -> None:
         """Parar el loop de sync (para shutdown graceful)."""

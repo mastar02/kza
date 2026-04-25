@@ -243,6 +243,58 @@ class TestStateCallbacks:
 # ---------------------------------------------------------------------------
 
 
+class TestWaitForWsReady:
+    """Warmup del WS events antes del background loop."""
+
+    @pytest.mark.asyncio
+    async def test_succeeds_first_attempt(self, ha):
+        """Si _open_ws_authenticated funciona al toque → 1 sola llamada."""
+        ws_mock = MagicMock()
+        ws_mock.closed = False
+        ha._open_ws_authenticated = AsyncMock(return_value=ws_mock)
+
+        await ha._wait_for_ws_ready(max_attempts=3, backoff_s=0.0)
+
+        assert ha._open_ws_authenticated.await_count == 1
+        assert ha._ws_events is ws_mock
+
+    @pytest.mark.asyncio
+    async def test_retries_on_none_then_succeeds(self, ha):
+        """Si la primera devuelve None, reintenta hasta success."""
+        ws_mock = MagicMock()
+        ws_mock.closed = False
+        ha._open_ws_authenticated = AsyncMock(side_effect=[None, ws_mock])
+
+        await ha._wait_for_ws_ready(max_attempts=3, backoff_s=0.0)
+
+        assert ha._open_ws_authenticated.await_count == 2
+        assert ha._ws_events is ws_mock
+
+    @pytest.mark.asyncio
+    async def test_raises_after_max_attempts(self, ha):
+        """Si todos los intentos fallan, propaga RuntimeError."""
+        ha._open_ws_authenticated = AsyncMock(return_value=None)
+
+        with pytest.raises(RuntimeError, match="no disponible tras 3 intentos"):
+            await ha._wait_for_ws_ready(max_attempts=3, backoff_s=0.0)
+
+        assert ha._open_ws_authenticated.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_handles_exception_during_attempt(self, ha):
+        """Excepción en _open_ws_authenticated cuenta como intento fallido."""
+        ws_mock = MagicMock()
+        ws_mock.closed = False
+        ha._open_ws_authenticated = AsyncMock(
+            side_effect=[ConnectionError("transient"), ws_mock]
+        )
+
+        await ha._wait_for_ws_ready(max_attempts=3, backoff_s=0.0)
+
+        assert ha._open_ws_authenticated.await_count == 2
+        assert ha._ws_events is ws_mock
+
+
 class TestSyncLoopLifecycle:
     """Arranque, parada y resiliencia del loop de sync."""
 
@@ -255,6 +307,7 @@ class TestSyncLoopLifecycle:
 
         # Stub el subscribe para evitar conexiones reales
         ha._subscribe_and_sync = sleeping
+        ha._wait_for_ws_ready = AsyncMock()  # skip WS warmup en tests
 
         await ha.start_state_sync()
         first_task = ha._state_subscribe_task
@@ -274,6 +327,7 @@ class TestSyncLoopLifecycle:
             await asyncio.sleep(100)
 
         ha._subscribe_and_sync = sleeping
+        ha._wait_for_ws_ready = AsyncMock()
 
         await ha.start_state_sync()
         assert ha._state_subscribe_task is not None
@@ -297,6 +351,7 @@ class TestSyncLoopLifecycle:
             await asyncio.sleep(10)
 
         ha._subscribe_and_sync = flaky
+        ha._wait_for_ws_ready = AsyncMock()
         # Patchear asyncio.sleep dentro del loop para no esperar los 5s de backoff
         original_sleep = asyncio.sleep
 

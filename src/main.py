@@ -213,13 +213,22 @@ async def main():
         sys.exit(1)
     logger.info(f"Conectado a Home Assistant: {ha_url}")
 
-    # State prefetch cache (S6): WS subscribe para evitar round-trip REST
+    # State prefetch cache (S6): WS subscribe para evitar round-trip REST.
+    # El warmup explícito del WS dentro de start_state_sync puede fallar si HA
+    # está degradado momentáneamente — degradamos a REST-only polling en vez
+    # de crashear toda la app.
     state_prefetch_cfg = ha_config.get("state_prefetch", {})
     if state_prefetch_cfg.get("enabled", True):
-        await ha_client.start_state_sync(
-            full_refresh_interval_s=state_prefetch_cfg.get("full_refresh_interval_s", 300),
-        )
-        logger.info("HA state prefetch cache habilitado")
+        try:
+            await ha_client.start_state_sync(
+                full_refresh_interval_s=state_prefetch_cfg.get("full_refresh_interval_s", 300),
+            )
+            logger.info("HA state prefetch cache habilitado")
+        except RuntimeError as e:
+            logger.warning(
+                f"HA state prefetch deshabilitado: {e}. "
+                f"Sigo con REST polling cada 300s."
+            )
 
     # Speech-to-Text
     stt = create_stt(config.get("stt", {}))
