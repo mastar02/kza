@@ -42,8 +42,16 @@ _NOISE_PHRASES = (
 )
 
 
-def _is_noise_text(text: str) -> str | None:
+def _is_noise_text(text: str, wake_words: tuple[str, ...] = ()) -> str | None:
     """Chequea si `text` parece ruido/eco, no un comando real.
+
+    Args:
+        text: Texto a evaluar (transcripción del comando post-wake).
+        wake_words: Wake words configuradas (lowercase, sin acentos). Si
+            ninguna aparece en el texto normalizado, se descarta como
+            ruido — el buffer post-wake siempre debería incluir la palabra
+            de despertar; si no está, la captura es probablemente TV/ruido
+            de un wake disparado en un chunk anterior. Vacío = check off.
 
     Returns:
         Nombre de la regla que matcheó (para logging), o None si es un
@@ -68,6 +76,12 @@ def _is_noise_text(text: str) -> str | None:
     words = norm.split()
     if len(words) >= 4 and len(set(words)) == 1:
         return f"word_repetition:{words[0]!r}"
+    # Wake-word ausente — el comando se capturó pero el texto no contiene
+    # ninguna de las wake words. Análisis de logs 24-25 abr (24 FPs únicos
+    # de TV) mostró 0% de comandos reales sin wake en transcripción.
+    if wake_words:
+        if not any(w in norm for w in wake_words):
+            return f"missing_wake:{wake_words[0]!r}"
     return None
 
 
@@ -171,6 +185,7 @@ class RequestRouter:
         action_tracker=None,
         confidence_threshold: float = 0.75,
         metrics_emitter=None,
+        wake_words: tuple[str, ...] | list[str] | None = None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -238,6 +253,17 @@ class RequestRouter:
         self.suggestion_interval = suggestion_interval
         self.confidence_threshold = confidence_threshold
         self.metrics_emitter = metrics_emitter
+
+        # Wake words (lowercase, sin acentos) usadas por el noise filter
+        # para descartar capturas que no contienen la palabra de despertar.
+        # Default coincide con config base (rooms.wake_word.words).
+        _default_wakes = ("nexa", "kaza")
+        if wake_words:
+            self._wake_words = tuple(
+                w.lower().strip() for w in wake_words if w and w.strip()
+            )
+        else:
+            self._wake_words = _default_wakes
 
         # State
         self._query_cache = {}
@@ -354,7 +380,7 @@ class RequestRouter:
         # 1a. Noise filter: corta antes del orchestrator si el texto es
         #     claramente ruido (TV, eco del TTS, repetición). Evita que
         #     esas muestras vayan al slow path LLM (caro + bloquea queue).
-        noise_reason = _is_noise_text(text)
+        noise_reason = _is_noise_text(text, wake_words=self._wake_words)
         if noise_reason:
             logger.info(f"Noise discard ({noise_reason}): {text!r}")
             result["intent"] = "noise_discarded"
@@ -489,7 +515,7 @@ class RequestRouter:
             return result
 
         # 1a. Noise filter — mismo corto-circuito que el path orchestrated
-        noise_reason = _is_noise_text(text)
+        noise_reason = _is_noise_text(text, wake_words=self._wake_words)
         if noise_reason:
             logger.info(f"Noise discard ({noise_reason}): {text!r}")
             result["intent"] = "noise_discarded"

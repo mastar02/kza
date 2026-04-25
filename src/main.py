@@ -769,6 +769,9 @@ async def main():
         suggestion_interval=analytics_config.get("suggestion_interval", 20),
         confidence_threshold=confidence_cfg.get("threshold", 0.75),
         metrics_emitter=metrics_emitter,
+        wake_words=rooms_config.get("wake_word", {}).get(
+            "words", wake_config.get("words", ["nexa"])
+        ),
     )
 
     # Feature subsystems (timers, intercom, notifications, alerts)

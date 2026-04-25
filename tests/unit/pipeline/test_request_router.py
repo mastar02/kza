@@ -25,7 +25,7 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 import pytest
 import numpy as np
 
-from src.pipeline.request_router import RequestRouter, PermissionResult
+from src.pipeline.request_router import RequestRouter, PermissionResult, _is_noise_text
 from src.pipeline.command_processor import ProcessedCommand
 
 
@@ -210,7 +210,7 @@ class TestProcessCommandOrchestrated:
 
         cp = MagicMock()
         cp.process_command = AsyncMock(return_value=_make_cmd_result(
-            text="enciende la luz",
+            text="nexa enciende la luz",
             user=mock_user,
             emotion=mock_emotion
         ))
@@ -229,7 +229,7 @@ class TestProcessCommandOrchestrated:
         result = await router.process_command(audio)
 
         assert result["success"] is True
-        assert result["text"] == "enciende la luz"
+        assert result["text"] == "nexa enciende la luz"
         assert result["intent"] == "domotics"
         assert result["path"] == "fast"
         orch.process.assert_awaited_once()
@@ -265,7 +265,7 @@ class TestProcessCommandLegacy:
         """When orchestrator disabled, uses legacy vector search path."""
         cp = MagicMock()
         cp.process_command = AsyncMock(return_value=_make_cmd_result(
-            text="prende la luz"
+            text="nexa prende la luz"
         ))
 
         chroma = MagicMock()
@@ -505,6 +505,52 @@ class TestSuggestionHandling:
         router = _build_router()
         result = router._handle_suggestion_response("si")
         assert result["handled"] is False
+
+
+class TestNoiseFilter:
+    """Test _is_noise_text — clasificador de TV/eco/repetición/missing-wake."""
+
+    def test_empty_text(self):
+        assert _is_noise_text("") == "empty"
+
+    def test_filler_word_gracias(self):
+        assert _is_noise_text("¡Gracias!").startswith("filler_word")
+
+    def test_noise_phrase_youtube(self):
+        assert _is_noise_text("Gracias por ver el video.").startswith("noise_phrase")
+
+    def test_word_repetition(self):
+        assert _is_noise_text("no no no no no").startswith("word_repetition")
+
+    def test_missing_wake_with_wake_words_configured(self):
+        """Frase TV sin wake word → discard."""
+        result = _is_noise_text("Se llamaba Ando Miku.", wake_words=("nexa", "kaza"))
+        assert result is not None
+        assert result.startswith("missing_wake")
+
+    def test_wake_word_present_passes(self):
+        """Comando real con 'nexa' al inicio → no es ruido."""
+        assert _is_noise_text(
+            "Nexa prendé la luz del escritorio", wake_words=("nexa", "kaza")
+        ) is None
+
+    def test_wake_alias_present_passes(self):
+        """Alias 'kaza' también pasa."""
+        assert _is_noise_text(
+            "Kaza apaga la cocina", wake_words=("nexa", "kaza")
+        ) is None
+
+    def test_missing_wake_disabled_when_no_wake_words(self):
+        """Sin wake_words pasados, el check missing_wake no se aplica."""
+        # Sin wake_words, una frase de TV pasa el filtro (igual que antes
+        # de la regla); validamos que el check sólo aplica si fue configurado.
+        assert _is_noise_text("Se llamaba Ando Miku.") is None
+
+    def test_accent_insensitive_match(self):
+        """Match es accent-insensitive: 'Néxa' (con acento) ≡ 'nexa'."""
+        assert _is_noise_text(
+            "Néxa prendé la luz", wake_words=("nexa",)
+        ) is None
 
 
 class TestLatencyLogging:

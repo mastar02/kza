@@ -33,7 +33,7 @@ from src.rooms.room_context import ContextSource
 # Helpers
 # ============================================================
 
-def _make_cmd_result(text="enciende la luz", user=None, emotion=None, timings=None):
+def _make_cmd_result(text="nexa enciende la luz", user=None, emotion=None, timings=None):
     """Create a mock CommandProcessor result."""
     return ProcessedCommand(
         text=text,
