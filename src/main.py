@@ -578,6 +578,8 @@ async def main():
                             initial_prompt=wake_prompt,
                             metrics_emitter=metrics_emitter,
                             room_id=room_key,
+                            follow_up_window_s=room_wake_cfg.get("follow_up_window_s", 4.0),
+                            follow_up_max_words=room_wake_cfg.get("follow_up_max_words", 3),
                         )
                     wake_detector.load()
                 else:

@@ -227,6 +227,8 @@ class WhisperWakeDetector:
         initial_prompt: Optional[str] = None,
         metrics_emitter=None,
         room_id: Optional[str] = None,
+        follow_up_window_s: float = 4.0,
+        follow_up_max_words: int = 3,
     ):
         """
         vad_threshold=0.7 (estricto) filtra voces lejanas/TV a volumen medio.
@@ -265,6 +267,15 @@ class WhisperWakeDetector:
         self._speaker_filter_active = (
             speaker_identifier is not None and speaker_embedding is not None
         )
+
+        # Follow-up window: cuando una utterance contiene solo el wake (≤ N
+        # palabras) y no tiene verbo de comando, no rechazamos — armamos una
+        # ventana donde la próxima utterance con verbo se trata como comando
+        # implícito (sin requerir wake repetido). Resuelve el caso clásico
+        # del usuario que dice "Nexa..." con pausa antes del comando.
+        self.follow_up_window_s = follow_up_window_s
+        self.follow_up_max_words = follow_up_max_words
+        self._follow_up_until: float = 0.0
 
         self._vad = None
         self._loaded = False
@@ -560,6 +571,28 @@ class WhisperWakeDetector:
                 text = text_fixed
                 break
         logger.info(f"WhisperWake [{dur_ms:.0f}ms→{stt_ms:.0f}ms]: {norm!r}")
+
+        # Paso 0: si estamos dentro de una ventana de follow-up post-wake-solo,
+        # aceptar comandos sin wake explícito. El usuario dijo "Nexa..." y
+        # ahora completa con el comando real.
+        now = time.time()
+        if now < self._follow_up_until:
+            has_wake = any(w in norm for w in self.wake_words_norm)
+            has_verb = bool(_COMMAND_VERB_RE.search(norm))
+            is_tv = any(p in norm for p in _TV_STOP_PHRASES)
+            if has_verb and not has_wake and not is_tv:
+                self._follow_up_until = 0.0  # consumir
+                canonical = self.wake_words_norm[0]
+                synthesized = f"{canonical} {text}"
+                logger.info(
+                    f"🔥 Follow-up command capturado (ventana {self.follow_up_window_s}s): "
+                    f"{text!r} → {synthesized!r}"
+                )
+                self._emit_wake(
+                    True, canonical, "follow_up", synthesized, dur_ms, stt_ms,
+                )
+                return (canonical, synthesized)
+
         # Paso 1: substring match contra los aliases configurados (exact match en norm).
         # TV stop-words: frases que jamás son comandos legítimos.
         for phrase in _TV_STOP_PHRASES:
@@ -582,6 +615,7 @@ class WhisperWakeDetector:
                 # de "Nexa" cuando la TV dice algo que Whisper oyó como Nexa
                 # pero el contenido siguiente no es un comando domótica.
                 if not _COMMAND_VERB_RE.search(norm):
+                    self._maybe_arm_follow_up(norm, text)
                     logger.info(
                         f"Wake rejected — sin verbo de comando post-wake: {text!r}"
                     )
@@ -617,6 +651,7 @@ class WhisperWakeDetector:
                 # Fuzzy match con threshold alto todavía puede agarrar TV
                 # random. Requerir verbo de comando para ejecutar.
                 if not _COMMAND_VERB_RE.search(norm):
+                    self._maybe_arm_follow_up(norm, text)
                     logger.info(
                         f"Fuzzy wake rejected — sin verbo de comando: {text!r} "
                         f"(best {best_word!r} ratio={best_ratio:.2f})"
@@ -643,6 +678,25 @@ class WhisperWakeDetector:
             rejection_reason="below_fuzzy_threshold" if best_ratio > 0 else "no_keyword",
         )
         return (None, text)
+
+    def _maybe_arm_follow_up(self, norm: str, text: str) -> None:
+        """Si la utterance es solo wake (≤ N palabras) y no tiene verbo,
+        armar la ventana de follow-up para aceptar el comando que viene.
+
+        No arma cuando la utterance es larga (>N palabras): eso suele ser
+        TV o user diciendo algo no-comando ("Nexa, ¿dónde estás?"); abrir
+        la ventana en esos casos invitaría falsos positivos.
+        """
+        if self.follow_up_window_s <= 0:
+            return
+        word_count = len(norm.split())
+        if word_count > self.follow_up_max_words:
+            return
+        self._follow_up_until = time.time() + self.follow_up_window_s
+        logger.info(
+            f"🎤 Follow-up armed por {self.follow_up_window_s}s — "
+            f"esperando comando tras wake-only: {text!r}"
+        )
 
     def _emit_wake(
         self,

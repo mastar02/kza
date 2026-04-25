@@ -898,6 +898,15 @@ rooms:
     streaming: false               # true = usa StreamingWhisperWakeDetector
     streaming_interval_ms: 200     # cada N ms re-transcribe ring buffer
     streaming_window_s: 2.0        # tamaño del ring buffer para análisis incremental
+    # Follow-up window — cuando una utterance contiene solo el wake
+    # ("Nexa", "Nexa Nexa") sin verbo de comando, en vez de rechazar
+    # silenciosamente armamos una ventana donde la próxima utterance con
+    # verbo se trata como comando implícito (sin requerir wake repetido).
+    # Resuelve el caso clásico user dice "Nexa..." (pausa) "prendé luz".
+    # window_s=0 desactiva. max_words limita el "tamaño" de la utterance
+    # wake-only (>3 palabras suele ser TV o pregunta no-comando).
+    follow_up_window_s: 4.0
+    follow_up_max_words: 3
     # Speaker filter (Fase 1) — descarta audio ajeno antes de Whisper STT.
     # DESACTIVADO temporalmente: el enrollment con los WAVs cortos actuales
     # produce intra_consistency ~0.2 (insuficiente para ECAPA). Para re-activar:
