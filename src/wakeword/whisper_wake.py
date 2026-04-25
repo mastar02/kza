@@ -561,11 +561,19 @@ class WhisperWakeDetector:
         t0 = time.time()
         try:
             model = getattr(self.whisper, "_model", None) or self.whisper
+            # condition_on_previous_text=False: corta el sesgo del comando
+            # anterior. Sin esto, faster-whisper alimenta la transcripción
+            # previa como prompt al modelo → utterances de TV se transforman
+            # en versiones del último comando ('Nexa apagá luz' previo, ahora
+            # TV ruidosa transcribe como 'Nexa bajá luz, Nexa bajá luz' →
+            # ejecuta sin que el usuario haya hablado). Bug observado
+            # 2026-04-25 11:45:40 con TV a -8dBFS post 'apagá'.
             segments, _ = model.transcribe(
                 audio, language=self.language,
                 beam_size=self.beam_size,
                 initial_prompt=self.initial_prompt,
                 vad_filter=False,
+                condition_on_previous_text=False,
             )
             text = " ".join(s.text for s in segments).strip()
         except Exception as e:
@@ -593,6 +601,25 @@ class WhisperWakeDetector:
                 text = text_fixed
                 break
         logger.info(f"WhisperWake [{dur_ms:.0f}ms→{stt_ms:.0f}ms]: {norm!r}")
+
+        # Anti-hallucination: utterance con 2+ ocurrencias de wake word es
+        # casi siempre Whisper alucinando (loop sobre el contexto previo) o
+        # TV ruidosa, NO un user real. Un usuario dice 'Nexa' una sola vez
+        # por comando — y para repetir frustrado ya tenemos follow-up window.
+        # Tratamos como wake-only: armamos follow-up y descartamos el comando
+        # potencialmente espurio.
+        wake_count = sum(norm.count(w) for w in self.wake_words_norm)
+        if wake_count >= 2:
+            logger.warning(
+                f"Wake rejected — {wake_count}x wake words en utterance "
+                f"(probable hallucination/TV): {text!r}"
+            )
+            self._maybe_arm_follow_up(norm, text)
+            self._emit_wake(
+                False, None, "rejected", text, dur_ms, stt_ms,
+                rejection_reason="multi_wake_hallucination",
+            )
+            return (None, text)
 
         # Paso 0: si estamos dentro de una ventana de follow-up post-wake-solo,
         # aceptar comandos sin wake explícito. El usuario dijo "Nexa..." y

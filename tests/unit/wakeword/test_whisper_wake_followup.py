@@ -141,6 +141,38 @@ def test_follow_up_requires_command_verb():
     assert det._follow_up_until > time.time()
 
 
+def test_multi_wake_in_utterance_drops_command():
+    """Utterance con 2+ 'nexa' es probable alucinación TV → no dispatch."""
+    det = _make_detector(
+        ["Nexa bajá la luz del escritorio, Nexa bajá la luz al cincuenta por ciento"]
+    )
+    match, _ = det._transcribe_and_match(_audio(2.0), 2000.0)
+    assert match is None
+
+
+def test_short_multi_wake_arms_follow_up():
+    """'Nexa Nexa Nexa' (≤3 palabras) cae a follow-up arming."""
+    det = _make_detector(["Nexa Nexa Nexa"])
+    match, _ = det._transcribe_and_match(_audio(0.6), 600.0)
+    assert match is None
+    # Wake-only repetido frustrado → arma ventana
+    assert det._follow_up_until > time.time()
+
+
+def test_long_multi_wake_does_not_arm():
+    """Utterance larga con 2+ wakes → rechaza pero NO arma (>max_words)."""
+    det = _make_detector(["Nexa bajá luz del escritorio Nexa bajá luz al cincuenta"])
+    det._transcribe_and_match(_audio(2.0), 2000.0)
+    assert det._follow_up_until == 0.0
+
+
+def test_single_wake_normal_passes():
+    """1x 'nexa' + comando válido — no se afecta por la regla multi-wake."""
+    det = _make_detector(["Nexa bajá la luz al cincuenta por ciento"])
+    match, _ = det._transcribe_and_match(_audio(2.0), 2000.0)
+    assert match == "nexa"
+
+
 def test_normal_command_not_affected_by_follow_up_logic():
     """'Nexa prendé luz' funciona normal, sin tocar follow_up state."""
     det = _make_detector(["Nexa prendé la luz"])
