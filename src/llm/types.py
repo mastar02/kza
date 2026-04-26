@@ -66,6 +66,7 @@ class CooldownState:
     last_error_kind: Optional[ErrorKind] = None
 
     def to_dict(self) -> dict:
+        """Serializar a dict, convirtiendo el Enum ErrorKind a su .value string."""
         return {
             "endpoint_id": self.endpoint_id,
             "error_count": self.error_count,
@@ -76,6 +77,7 @@ class CooldownState:
 
     @classmethod
     def from_dict(cls, d: dict) -> CooldownState:
+        """Deserializar desde dict, reconstruyendo el Enum ErrorKind si está presente."""
         kind_raw = d.get("last_error_kind")
         return cls(
             endpoint_id=d["endpoint_id"],

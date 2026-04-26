@@ -96,3 +96,20 @@ class TestRouterResult:
         assert r.endpoint_id == "primary"
         assert r.attempts == 1
         assert r.elapsed_ms == 42.0
+
+    def test_metadata_default_is_independent_dict(self):
+        r1 = RouterResult(text="a", endpoint_id="x", attempts=1, elapsed_ms=1.0)
+        r2 = RouterResult(text="b", endpoint_id="y", attempts=1, elapsed_ms=2.0)
+        # Cada instancia tiene su propio dict (no compartido)
+        assert r1.metadata == {}
+        assert r2.metadata == {}
+        assert r1.metadata is not r2.metadata
+        r1.metadata["key"] = "value"
+        assert r2.metadata == {}  # Mutación en r1 no afecta r2
+
+    def test_metadata_explicit(self):
+        r = RouterResult(
+            text="ok", endpoint_id="x", attempts=1, elapsed_ms=1.0,
+            metadata={"foo": "bar"},
+        )
+        assert r.metadata == {"foo": "bar"}
