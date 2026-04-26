@@ -71,6 +71,11 @@ class LLMRouter:
         self._endpoints = sorted(endpoints, key=lambda e: e.priority)
         self._cd = cooldown_manager
 
+    @property
+    def endpoint_count(self) -> int:
+        """Cantidad de endpoints configurados (para logging/observabilidad)."""
+        return len(self._endpoints)
+
     async def complete(
         self,
         prompt: str,
@@ -95,6 +100,10 @@ class LLMRouter:
 
             try:
                 logger.debug(f"[LLMRouter] try {ep.id} (kind={ep.kind.value})")
+                # TODO: aplicar ep.timeout_s con asyncio.wait_for y ep.idle_timeout_s con
+                # idle_watchdog cuando el adapter exponga streaming. Hoy el adapter es
+                # one-shot (sync→async via to_thread); idle_timeout_s queda como config
+                # para futuro streaming end-to-end. Ver plan §"Limitaciones conocidas".
                 text = await ep.client.complete(prompt, max_tokens=max_tokens, **kwargs)
             except Exception as exc:
                 kind = classify_error(exc)

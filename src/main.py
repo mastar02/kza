@@ -304,7 +304,7 @@ async def main():
             clients["deep"] = HttpReasonerAdapter(llm)
         try:
             llm_router = build_llm_router_from_config(config, clients)
-            logger.info(f"LLM router activo con {len(llm_router._endpoints)} endpoints")
+            logger.info(f"LLM router activo con {llm_router.endpoint_count} endpoints")
         except ValueError as e:
             logger.warning(f"No pude construir LLM router: {e}. Fallback a path legacy.")
             llm_router = None

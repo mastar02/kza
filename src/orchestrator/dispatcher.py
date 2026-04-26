@@ -35,9 +35,10 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from src.core.logging import get_logger, LogContext, generate_request_id
+from src.llm.router import FallbackSummaryError, LLMRouter
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
     Priority,
@@ -190,7 +191,7 @@ class RequestDispatcher:
         reminder_manager=None,
         vector_threshold: float = 0.65,
         use_router_for_simple: bool = True,
-        llm_router=None,
+        llm_router: Optional[LLMRouter] = None,
     ):
         """
         Args:
@@ -584,6 +585,20 @@ class RequestDispatcher:
                     response=response.strip(),
                     intent="simple_query",
                     timings=timings
+                )
+            except FallbackSummaryError as e:
+                # Todos los endpoints LLM fallaron o están en cooldown.
+                # Logueamos detalle estructurado (per-attempt + soonest_retry_at)
+                # antes de caer al slow path.
+                soonest = (
+                    f" (next attempt at epoch {e.soonest_retry_at:.0f})"
+                    if e.soonest_retry_at else ""
+                )
+                attempts_str = "; ".join(
+                    f"{a.endpoint_id}={a.error_kind.value}" for a in e.attempts
+                )
+                logger.warning(
+                    f"LLM router exhausted{soonest}: {attempts_str}. Pasando a slow path."
                 )
             except Exception as e:
                 logger.warning(f"Router fallo, pasando a slow path: {e}")
@@ -1024,7 +1039,7 @@ class MultiUserOrchestrator:
         max_context_history: int = 10,
         context_timeout: float = 300,
         auto_cancel_previous: bool = True,
-        llm_router=None,
+        llm_router: Optional[LLMRouter] = None,
     ):
         # Componentes principales
         self.chroma = chroma_sync
