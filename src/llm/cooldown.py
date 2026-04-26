@@ -112,7 +112,7 @@ class CooldownManager:
                 state = CooldownState.from_dict(entry)
                 self._states[state.endpoint_id] = state
             logger.info(f"[Cooldown] Loaded {len(self._states)} states from disk")
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
+        except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
             logger.warning(f"[Cooldown] Failed to load {self.persistence_path}: {e}")
 
     def _save_to_disk(self) -> None:
