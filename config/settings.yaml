@@ -282,6 +282,40 @@ reasoner:
     # max_buffer_time_ms: 3000        # Flush forzado despues de N ms
     # inter_sentence_pause_ms: 150    # Pausa entre oraciones
 
+# ===========================================================================
+# LLM Failover — candidate chain con cooldown exponencial (1m/5m/25m/1h)
+# Patrón inspirado en OpenClaw model-failover.md.
+# Si vLLM 7B :8100 cae, el router rota al 72B :8200 sin perder el turno.
+# ===========================================================================
+llm:
+  failover:
+    # Persistencia del estado de cooldowns (sobrevive reinicios del proceso).
+    cooldown_persistence_path: "./data/llm_cooldowns.json"
+
+    # Endpoints en orden de prioridad (priority menor = se intenta primero).
+    # `kind` debe coincidir con EndpointKind (fast_router | http_reasoner | local_reasoner | cloud).
+    # `idle_timeout_s`: si es null, sin watchdog. Recomendado para 72B en CPU (lento).
+    endpoints:
+      - id: "fast"
+        kind: "fast_router"
+        priority: 0
+        timeout_s: 30.0
+        idle_timeout_s: null    # vLLM responde rápido — no necesita watchdog
+        max_tokens_default: 128
+
+      - id: "deep"
+        kind: "http_reasoner"
+        priority: 1
+        timeout_s: 120.0
+        idle_timeout_s: 30.0    # 72B en CPU: si no llegan tokens en 30s, abort
+        max_tokens_default: 512
+
+    # Reservado para futuro (cloud fallback, retry policy per-endpoint, etc.)
+    # cloud:
+    #   id: "anthropic"
+    #   kind: "cloud"
+    #   priority: 2
+
 # Vector Database
 vectordb:
   path: "./data/chroma_db"
