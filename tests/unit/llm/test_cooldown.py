@@ -88,3 +88,41 @@ class TestCooldownManagerInMemory:
     def test_backoff_schedule_constants(self):
         # Verifica que los valores documentados no se alteren accidentalmente
         assert BACKOFF_SCHEDULE_S == (60, 300, 1500, 3600)
+
+
+class TestCooldownPersistence:
+    def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
+        path = tmp_path / "cd.json"
+        now = [1000.0]
+        monkeypatch.setattr("src.llm.cooldown.time.time", lambda: now[0])
+
+        mgr1 = CooldownManager(persistence_path=path)
+        mgr1.record_failure("primary", ErrorKind.RATE_LIMIT)
+        mgr1.record_failure("secondary", ErrorKind.BILLING)
+
+        # Nuevo manager lee del mismo path
+        mgr2 = CooldownManager(persistence_path=path)
+        assert mgr2.get_state("primary").error_count == 1
+        assert mgr2.get_state("primary").last_error_kind == ErrorKind.RATE_LIMIT
+        assert mgr2.get_state("secondary").last_error_kind == ErrorKind.BILLING
+
+    def test_corrupt_file_does_not_crash(self, tmp_path):
+        path = tmp_path / "cd.json"
+        path.write_text("not valid json {{{")
+        # Constructor no debe explotar; solo log warning + estado vacío
+        mgr = CooldownManager(persistence_path=path)
+        assert mgr.is_available("anything") is True
+
+    def test_creates_parent_dir(self, tmp_path):
+        path = tmp_path / "deep" / "nested" / "cd.json"
+        mgr = CooldownManager(persistence_path=path)
+        mgr.record_failure("primary", ErrorKind.RATE_LIMIT)
+        assert path.exists()
+
+    def test_atomic_write_via_tmp(self, tmp_path):
+        """Verifica que NO queda un .tmp después de operación exitosa."""
+        path = tmp_path / "cd.json"
+        mgr = CooldownManager(persistence_path=path)
+        mgr.record_failure("primary", ErrorKind.RATE_LIMIT)
+        assert path.exists()
+        assert not path.with_suffix(".tmp").exists()
