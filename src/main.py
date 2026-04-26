@@ -285,6 +285,30 @@ async def main():
         )
         logger.info(f"Fast router (HTTP) → {router_config.get('base_url', 'http://127.0.0.1:8100/v1')}")
 
+    # LLM Router — candidate chain con cooldown/failover.
+    # Si llm.failover.endpoints está definido en config, construye un LLMRouter
+    # que envuelve fast_router (vLLM 7B) y llm (HttpReasoner 72B). Si no está
+    # configurado, queda None y el dispatcher cae al path legacy (fast_router directo).
+    from src.llm import (
+        FastRouterAdapter,
+        HttpReasonerAdapter,
+        build_llm_router_from_config,
+    )
+
+    llm_router = None
+    if config.get("llm", {}).get("failover", {}).get("endpoints"):
+        clients = {}
+        if fast_router is not None:
+            clients["fast"] = FastRouterAdapter(fast_router)
+        if llm is not None:
+            clients["deep"] = HttpReasonerAdapter(llm)
+        try:
+            llm_router = build_llm_router_from_config(config, clients)
+            logger.info(f"LLM router activo con {len(llm_router._endpoints)} endpoints")
+        except ValueError as e:
+            logger.warning(f"No pude construir LLM router: {e}. Fallback a path legacy.")
+            llm_router = None
+
     # Memory Manager - memoria contextual
     memory_config = config.get("memory", {})
     memory_manager = None
@@ -735,6 +759,7 @@ async def main():
             user_manager=user_manager,
             list_manager=list_manager,
             reminder_manager=reminder_manager,
+            llm_router=llm_router,
         )
 
     # Request router (command routing: orchestrated + legacy paths)

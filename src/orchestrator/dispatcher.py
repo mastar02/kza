@@ -189,14 +189,15 @@ class RequestDispatcher:
         list_manager=None,
         reminder_manager=None,
         vector_threshold: float = 0.65,
-        use_router_for_simple: bool = True
+        use_router_for_simple: bool = True,
+        llm_router=None,
     ):
         """
         Args:
             chroma_sync: Sincronizador de ChromaDB
             ha_client: Cliente de Home Assistant
             routine_manager: Gestor de rutinas
-            router: Router 7B (opcional, para respuestas simples)
+            router: Router 7B (opcional, para respuestas simples) — path legacy
             llm: LLM grande para razonamiento
             tts: Motor TTS
             context_manager: Gestor de contextos por usuario
@@ -205,12 +206,14 @@ class RequestDispatcher:
             music_dispatcher: Dispatcher de música/Spotify
             vector_threshold: Umbral de similitud para vector search
             use_router_for_simple: Usar router 7B para preguntas simples
+            llm_router: LLMRouter con candidate chain failover (opcional, preferido sobre router)
         """
         self.chroma = chroma_sync
         self.ha = ha_client
         self.routines = routine_manager
         self.router = router
         self.llm = llm
+        self.llm_router = llm_router
         self.tts = tts
         self.context_manager = context_manager or ContextManager()
         self.queue = priority_queue or PriorityRequestQueue()
@@ -562,8 +565,17 @@ class RequestDispatcher:
             # Usar router para respuesta rapida
             t0 = time.perf_counter()
             try:
-                response = self.router.generate([text], max_tokens=128)[0]
-                timings["router"] = (time.perf_counter() - t0) * 1000
+                if self.llm_router is not None:
+                    # Path nuevo: candidate chain con cooldown/failover
+                    result = await self.llm_router.complete(text, max_tokens=128)
+                    response = result.text
+                    timings["router"] = (time.perf_counter() - t0) * 1000
+                    timings["router_endpoint"] = result.endpoint_id
+                    timings["router_attempts"] = result.attempts
+                else:
+                    # Path legacy: FastRouter directo
+                    response = self.router.generate([text], max_tokens=128)[0]
+                    timings["router"] = (time.perf_counter() - t0) * 1000
 
                 return DispatchResult(
                     path=path,
@@ -1011,7 +1023,8 @@ class MultiUserOrchestrator:
         reminder_manager=None,
         max_context_history: int = 10,
         context_timeout: float = 300,
-        auto_cancel_previous: bool = True
+        auto_cancel_previous: bool = True,
+        llm_router=None,
     ):
         # Componentes principales
         self.chroma = chroma_sync
@@ -1019,6 +1032,7 @@ class MultiUserOrchestrator:
         self.routines = routine_manager
         self.router = router
         self.llm = llm
+        self.llm_router = llm_router
         self.tts = tts
         self.speaker_id = speaker_identifier
         self.user_manager = user_manager
@@ -1052,6 +1066,7 @@ class MultiUserOrchestrator:
             music_dispatcher=music_dispatcher,
             list_manager=list_manager,
             reminder_manager=reminder_manager,
+            llm_router=llm_router,
         )
 
         self._running = False
