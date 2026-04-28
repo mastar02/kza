@@ -23,6 +23,17 @@ Ejemplo:
     # Siguiente turno de A mantiene contexto
     prompt_a2 = manager.build_prompt("user_a", "¿Y para qué sirve?")
     # Incluye el historial previo de A, no de B
+
+Plan #2 OpenClaw: si se inyecta un Compactor, los turnos viejos se compactan
+en background al alcanzar `compaction_threshold` (default 6) — el Compactor
+llama al 30B vía kza-llm-ik :8200 y devuelve un summary que reemplaza el
+prefijo. Si además se inyecta un ContextPersister, el contexto sobrevive a
+reinicios — `cleanup_inactive_async` snapshotea a `data/contexts/<user_id>.json`
+al expirar, y `get_or_create` hidrata desde disco al volver el usuario.
+Conversation history NO se restaura: los turnos literales mueren con la sesión;
+sólo el summary + preserved_ids cruzan sesiones.
+
+Spec: docs/superpowers/specs/2026-04-28-openclaw-context-compaction-design.md
 """
 
 import asyncio
@@ -172,7 +183,13 @@ class UserContext:
         return time.time() - self.session_start
 
     def to_dict(self) -> dict:
-        """Serializar contexto"""
+        """Serializar contexto.
+
+        NOTA: compaction_inflight es transient (mutex flag) y NO se incluye.
+        El persister bypassea to_dict() y construye su propio payload con
+        version + last_seen, pero los demás callsites (debug dump, etc.)
+        usan esto.
+        """
         return {
             "user_id": self.user_id,
             "user_name": self.user_name,
@@ -182,7 +199,11 @@ class UserContext:
             "permission_level": self.permission_level,
             "last_active": self.last_active,
             "session_start": self.session_start,
-            "turns_count": self.turns_count
+            "turns_count": self.turns_count,
+            # Plan #2 OpenClaw
+            "compacted_summary": self.compacted_summary,
+            "preserved_ids": list(self.preserved_ids),
+            "session_count": self.session_count,
         }
 
 
@@ -252,6 +273,15 @@ class ContextManager:
 
         self._total_contexts_created = 0
         self._total_contexts_cleaned = 0
+
+        # Plan #2 OpenClaw — observability + task tracking
+        self._compaction_tasks: set[asyncio.Task] = set()
+        self._compaction_attempts: int = 0
+        self._compaction_failures: int = 0
+        self._compaction_last_error: str | None = None
+        self._persist_failures: int = 0
+        self._persist_load_failures: int = 0  # reserved; persister.load swallows errors
+        self._no_loop_warned: bool = False
 
     def _default_system_prompt(self) -> str:
         """Prompt de sistema predeterminado"""
@@ -399,20 +429,44 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         if should_compact:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(self._compact_background(user_id))
             except RuntimeError:
                 # No event loop (uso desde código sync) — desactivar trigger silenciosamente
-                logger.warning(
-                    f"[ContextManager] no event loop running, skipping compaction for {user_id}"
-                )
+                if not self._no_loop_warned:
+                    logger.warning(
+                        f"[ContextManager] no event loop running — compaction trigger disabled "
+                        f"for this manager. (Won't log this again until restart.)"
+                    )
+                    self._no_loop_warned = True
                 with self._lock:
                     ctx = self._contexts.get(user_id)
                     if ctx:
                         ctx.compaction_inflight = False
+                return
+            # Strong reference to fire-and-forget task: Python 3.11+ event loops
+            # only hold weak refs to running tasks. Without this set, mid-flight
+            # GC can produce "RuntimeWarning: Task was destroyed".
+            task = loop.create_task(self._compact_background(user_id))
+            self._compaction_tasks.add(task)
+            task.add_done_callback(self._compaction_tasks.discard)
 
     async def _compact_background(self, user_id: str) -> None:
-        """Compactación fire-and-forget: copia turnos viejos, llama Compactor,
-        muta el contexto bajo lock. Errores se loguean pero no propagan."""
+        """Compactación fire-and-forget en background.
+
+        Snapshotea los turnos a compactar bajo lock, libera el lock para
+        la llamada al LLM (que tarda ~seg), y re-adquiere para mutar el
+        contexto. Errores se loguean (incrementando _compaction_failures)
+        y limpian compaction_inflight; nunca propagan.
+
+        Race-safe: identifica los turnos compactados por object identity
+        en lugar de slice posicional, así turnos agregados durante el
+        await no se evicean por error si max_history truncó la cabeza.
+
+        Side effects:
+            - ctx.compacted_summary: append nuevo resumen
+            - ctx.preserved_ids: union con result.preserved_ids
+            - ctx.conversation_history: drop sólo los turnos compactados
+            - ctx.compaction_inflight: siempre False al salir
+        """
         with self._lock:
             ctx = self._contexts.get(user_id)
             if ctx is None:
@@ -422,14 +476,18 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
                 ctx.compaction_inflight = False
                 return
             turns_snapshot = list(ctx.conversation_history[:n_compact])
+            compacted_turn_ids = {id(t) for t in turns_snapshot}
             preserved = []
             for t in turns_snapshot:
                 preserved.extend(t.entities or [])
             preserved.extend(ctx.preserved_ids)
 
+        self._compaction_attempts += 1
         try:
             result = await self.compactor.compact(turns_snapshot, preserved_entities=preserved)
         except Exception as e:
+            self._compaction_failures += 1
+            self._compaction_last_error = f"{type(e).__name__}: {e}"
             logger.warning(f"[ContextManager] compaction failed for {user_id}: {e}")
             with self._lock:
                 ctx = self._contexts.get(user_id)
@@ -444,8 +502,11 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             existing = (ctx.compacted_summary + " ") if ctx.compacted_summary else ""
             ctx.compacted_summary = (existing + result.summary).strip()
             ctx.preserved_ids = sorted(set(ctx.preserved_ids) | set(result.preserved_ids))
-            # Drop the compacted prefix; keep tail
-            ctx.conversation_history = ctx.conversation_history[n_compact:]
+            # Race-safe drop: keep only turns NOT in the compacted snapshot
+            # (positional slice would evict recent turns if max_history trimmed head during await)
+            ctx.conversation_history = [
+                t for t in ctx.conversation_history if id(t) not in compacted_turn_ids
+            ]
             ctx.compaction_inflight = False
             logger.info(
                 f"[ContextManager] user={user_id} compacted_turns={n_compact} "
@@ -499,6 +560,16 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             if ctx.zone_id:
                 parts.append(f"Ubicación: {ctx.zone_id}")
 
+            # Plan #2 OpenClaw — inject compacted summary + preserved entity hints.
+            # Without this, enabling compaction REMOVES memory rather than compresses it.
+            if ctx.compacted_summary:
+                parts.append(f"\nResumen de conversación previa:\n{ctx.compacted_summary}")
+            if ctx.preserved_ids:
+                parts.append(
+                    "Entidades del hogar referenciadas previamente: "
+                    + ", ".join(ctx.preserved_ids)
+                )
+
             # Historial de conversacion
             history = ctx.get_history_for_prompt()
             if history:
@@ -539,6 +610,17 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         with self._lock:
             ctx = self._contexts.get(user_id)
             if ctx:
+                # Plan #2 OpenClaw — surface compacted summary as system-side context
+                # before conversation_history. Without this, compaction removes memory
+                # instead of compressing it.
+                if ctx.compacted_summary:
+                    summary_msg = f"Resumen de conversación previa:\n{ctx.compacted_summary}"
+                    if ctx.preserved_ids:
+                        summary_msg += (
+                            "\nEntidades del hogar referenciadas previamente: "
+                            + ", ".join(ctx.preserved_ids)
+                        )
+                    messages.append({"role": "system", "content": summary_msg})
                 # Agregar historial
                 for turn in ctx.conversation_history:
                     messages.append({
@@ -602,6 +684,12 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
 
         Llamar desde main.py: asyncio.create_task(mgr.start_cleanup_loop_async()).
         Detener con stop_cleanup_loop_async().
+
+        ATENCIÓN: no llamar simultáneamente con start_cleanup_thread() — ambos
+        intentarán limpiar el mismo dict y pueden borrar contextos dos veces.
+        MultiUserOrchestrator.start() ya elige uno u otro en función de
+        self._persister; este método sólo debe invocarse manualmente en tests
+        o admin tools.
         """
         self._cleanup_running = True
         logger.info("[ContextManager] async cleanup loop started")
@@ -616,6 +704,11 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         logger.info("[ContextManager] async cleanup loop stopped")
 
     def stop_cleanup_loop_async(self) -> None:
+        """Pedirle al loop async que termine en la próxima iteración.
+
+        No bloquea — el caller debe await la task externa (ver
+        MultiUserOrchestrator.stop()).
+        """
         self._cleanup_running = False
 
     async def _cleanup_inactive_async(self) -> int:
@@ -638,17 +731,26 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         return cleaned
 
     async def _snapshot_and_remove(self, user_id: str) -> None:
-        """Si hay persister: compactar pendiente + persistir. Luego remover."""
-        with self._lock:
-            ctx = self._contexts.get(user_id)
-            if ctx is None:
-                return
+        """Compactar pendiente + persistir snapshot atómico + remover de memoria.
 
-        # Compactar resto si hay turnos pendientes y compactor disponible
+        - Si hay compactor + persister + turnos pendientes: compacta el
+          resto antes de persistir (best-effort, errores logueados +
+          contados en _compaction_failures).
+        - Construye el payload bajo lock para evitar torn reads (otro
+          thread podría mutar UserContext durante el dump JSON).
+        - Persiste outside-of-lock vía asyncio.to_thread sobre el payload
+          inmutable (no el UserContext mutable).
+        - Si persister.save_payload falla, incrementa _persist_failures y
+          deja el contexto en memoria — el próximo cleanup tick reintenta.
+        """
+        # Step 1: optionally compact remaining turns
         if self.compactor is not None and self.persister is not None:
             with self._lock:
-                pending = list(ctx.conversation_history) if ctx else []
-                preserved_seed = list(ctx.preserved_ids) if ctx else []
+                ctx = self._contexts.get(user_id)
+                if ctx is None:
+                    return
+                pending = list(ctx.conversation_history)
+                preserved_seed = list(ctx.preserved_ids)
             if pending:
                 try:
                     extra = []
@@ -667,21 +769,33 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
                             )
                             ctx.conversation_history = []
                 except Exception as e:
+                    self._compaction_failures += 1
+                    self._compaction_last_error = f"{type(e).__name__}: {e}"
                     logger.warning(
                         f"[ContextManager] final compaction failed for {user_id}: {e}"
                     )
 
-        # Persistir si hay persister
+        # Step 2: build immutable payload under lock (or skip persist)
+        payload = None
         if self.persister is not None:
             with self._lock:
                 ctx = self._contexts.get(user_id)
-            if ctx is not None and (ctx.compacted_summary or ctx.conversation_history):
-                try:
-                    await asyncio.to_thread(self.persister.save, ctx)
-                except Exception as e:
-                    logger.warning(f"[ContextManager] snapshot save failed for {user_id}: {e}")
+                if ctx is not None and (ctx.compacted_summary or ctx.conversation_history):
+                    payload = self.persister._build_payload(ctx)
 
-        # Eliminar de memoria
+        # Step 3: persist outside lock; on failure keep ctx in memory
+        if payload is not None:
+            try:
+                await asyncio.to_thread(self.persister.save_payload, payload)
+            except Exception as e:
+                self._persist_failures += 1
+                logger.warning(
+                    f"[ContextManager] snapshot save failed for {user_id}: {e} "
+                    "(keeping context in memory; will retry on next cleanup tick)"
+                )
+                return  # IMPORTANT: do NOT delete from in-memory dict
+
+        # Step 4: remove from memory
         with self._lock:
             if user_id in self._contexts:
                 del self._contexts[user_id]
@@ -725,7 +839,14 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
                 "total_contexts_cleaned": self._total_contexts_cleaned,
                 "total_turns": total_turns,
                 "max_history_per_user": self.max_history,
-                "inactive_timeout": self.inactive_timeout
+                "inactive_timeout": self.inactive_timeout,
+                # Plan #2 OpenClaw — observability
+                "compaction_attempts": self._compaction_attempts,
+                "compaction_failures": self._compaction_failures,
+                "compaction_last_error": self._compaction_last_error,
+                "compaction_tasks_in_flight": len(self._compaction_tasks),
+                "persist_failures": self._persist_failures,
+                "persist_load_failures": self._persist_load_failures,
             }
 
     def get_user_stats(self, user_id: str) -> dict | None:

@@ -79,6 +79,9 @@ class ContextPersister:
         mid-write cannot leave a half-written file. The .tmp is unlinked
         on failure (debug-logged if cleanup fails).
 
+        Delegates to save_payload() — useful when the caller can build
+        an immutable snapshot under lock and release before disk I/O.
+
         Args:
             ctx: UserContext to snapshot. Must have a safe user_id.
 
@@ -86,10 +89,17 @@ class ContextPersister:
             ValueError: if ctx.user_id contains unsafe characters.
             OSError: filesystem errors (caller should log + continue).
         """
-        self._validate_user_id(ctx.user_id)
-        self.base_path.mkdir(parents=True, exist_ok=True)
+        payload = self._build_payload(ctx)
+        self.save_payload(payload)
 
-        payload = {
+    def _build_payload(self, ctx: UserContext) -> dict:
+        """Convert UserContext → persisted JSON shape. Pure, no I/O.
+
+        Exposed (with leading underscore) for ContextManager which builds
+        the snapshot under lock and then calls save_payload outside the
+        lock. Keep in sync with the load() reader contract.
+        """
+        return {
             "version": PERSISTED_VERSION,
             "user_id": ctx.user_id,
             "user_name": ctx.user_name,
@@ -99,15 +109,36 @@ class ContextPersister:
             "preserved_ids": list(ctx.preserved_ids),
         }
 
-        target = self._path(ctx.user_id)
+    def save_payload(self, payload: dict) -> None:
+        """Atomic write of an already-built payload dict.
+
+        Caller is responsible for shape correctness (matching what load()
+        expects). This exists so callers building snapshots under a lock
+        can release the lock before disk I/O.
+
+        Args:
+            payload: dict with at minimum 'user_id'. Must already include
+                'version' and 'last_seen' (use _build_payload to construct).
+
+        Raises:
+            ValueError: if payload['user_id'] is unsafe or missing.
+            OSError: filesystem errors.
+        """
+        user_id = payload.get("user_id")
+        if not isinstance(user_id, str):
+            raise ValueError(f"payload missing string user_id: {user_id!r}")
+        self._validate_user_id(user_id)
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+        target = self._path(user_id)
         tmp = target.with_suffix(".json.tmp")
         try:
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
             os.replace(tmp, target)
             logger.info(
-                f"[ContextPersister] saved user={ctx.user_id} "
-                f"summary_chars={len(ctx.compacted_summary or '')} "
-                f"preserved_ids={len(ctx.preserved_ids)}"
+                f"[ContextPersister] saved user={user_id} "
+                f"summary_chars={len(payload.get('compacted_summary') or '')} "
+                f"preserved_ids={len(payload.get('preserved_ids') or [])}"
             )
         except Exception:
             try:
