@@ -125,17 +125,20 @@ def _alerts_adapter(alert_manager, status: str | None) -> list[dict]:
 
 
 async def _ha_entities_adapter(ha_client) -> list[dict] | None:
-    """HA convención: async/await para I/O. Soporta get_states sync o async."""
+    """HA convención: async/await para I/O.
+
+    Probamos varios method names que HA clients suelen exponer:
+    `get_all_entities` (KZA HomeAssistantClient), `get_states`, `states`.
+    """
     import inspect
-    states_fn = getattr(ha_client, "get_states", None)
-    if not callable(states_fn):
+    fn = (getattr(ha_client, "get_all_entities", None)
+          or getattr(ha_client, "get_states", None)
+          or getattr(ha_client, "states", None))
+    if not callable(fn):
         return None
     try:
-        if inspect.iscoroutinefunction(states_fn):
-            states = await states_fn()
-        else:
-            states = states_fn()
-        if not states:
+        states = await fn() if inspect.iscoroutinefunction(fn) else fn()
+        if states is None:
             return None
         out = []
         for s in states[:200]:
@@ -151,7 +154,7 @@ async def _ha_entities_adapter(ha_client) -> list[dict] | None:
             })
         return out
     except Exception as e:
-        logger.warning(f"ha_client.get_states adapter failed: {e}")
+        logger.warning(f"ha_client adapter failed: {e}")
         return None
 
 
@@ -195,26 +198,27 @@ def register_observability_routes(
         )
 
     def _adapt(adapter_call, mock_data, response):
-        """Devuelve datos reales si `adapter_call` produce algo no-vacío.
+        """Devuelve datos reales si `adapter_call` produce un resultado.
 
         Setea SOURCE_HEADER:
-          - "real" si el adapter devolvió datos no-vacíos
-          - "degraded" si el adapter levantó o devolvió vacío con services inyectados
-          - "mock" si use_mocks=True o no hay services para llamar
+          - "real" si el adapter devolvió un valor (incluso lista vacía — el
+            usuario quiere ver "0 usuarios enrolados", no demos falsos).
+          - "degraded" si el adapter retornó None (no aplicable) o lanzó.
+          - "mock" si use_mocks=True.
         """
         if use_mocks:
             response.headers[SOURCE_HEADER] = "mock"
             return mock_data
         try:
             data = adapter_call()
-            if data:
+            if data is not None:
                 response.headers[SOURCE_HEADER] = "real"
                 return data
             response.headers[SOURCE_HEADER] = "degraded"
-            logger.warning("adapter returned empty, serving mocks (degraded)")
+            logger.warning("adapter returned None, serving mocks (degraded)")
         except Exception as e:
             response.headers[SOURCE_HEADER] = "degraded"
-            logger.warning(f"adapter failed, serving mocks (degraded): {e}")
+            logger.warning(f"adapter raised, serving mocks (degraded): {e}")
         return mock_data
 
     def _set_source(response: Response, real: bool) -> None:
@@ -251,7 +255,7 @@ def register_observability_routes(
         else:
             try:
                 real = await _ha_entities_adapter(ha_client)
-                if real:
+                if real is not None:
                     response.headers[SOURCE_HEADER] = "real"
                     items = real
                 else:
@@ -312,7 +316,7 @@ def register_observability_routes(
             return items
         try:
             real = _alerts_adapter(alert_manager, status)
-            if real:
+            if real is not None:
                 response.headers[SOURCE_HEADER] = "real"
                 return real
             response.headers[SOURCE_HEADER] = "degraded"
