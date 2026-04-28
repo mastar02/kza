@@ -132,7 +132,7 @@ class DashboardAPI:
         health_aggregator=None,
         reminder_scheduler=None,
         host: str = "127.0.0.1",
-        port: int = 8080,
+        port: int = 9500,  # KZA sub-rango 9500-9599 — :8080 reservado a Kibana (Notion pág 14)
         cors_config: dict | None = None,
         event_bus: LiveEventBus | None = None,
         llm_router=None,
@@ -168,8 +168,8 @@ class DashboardAPI:
         # CORS — use explicit config; default to restrictive same-origin
         cors = cors_config or {}
         allowed_origins = cors.get("allowed_origins", [
-            "http://127.0.0.1:8080",
-            "http://localhost:8080",
+            f"http://127.0.0.1:{port}",
+            f"http://localhost:{port}",
         ])
         if "*" in allowed_origins:
             logger.warning(
