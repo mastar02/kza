@@ -24,8 +24,8 @@ env/
 
 # Data (runtime)
 data/
-models/*.gguf
-models/lora_adapters/
+models/
+!models/.gitkeep
 logs/
 
 # OS
