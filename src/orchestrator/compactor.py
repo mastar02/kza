@@ -1,5 +1,6 @@
 """Context Compactor — turns into a summary using a background LLM call."""
 
+import asyncio
 import json
 import logging
 import time
@@ -70,18 +71,26 @@ class Compactor:
             CompactionResult with summary, preserved IDs, and latency.
 
         Raises:
-            CompactionError: If turns is empty.
+            CompactionError: If turns is empty, timeout occurs, or reasoner fails.
         """
         if not turns:
             raise CompactionError("No turns to compact")
 
         prompt = self._build_prompt(turns)
         start = time.perf_counter()
-        text = await self.reasoner.complete(
-            prompt=prompt,
-            max_tokens=self.max_summary_tokens,
-            temperature=0.3,
-        )
+        try:
+            text = await asyncio.wait_for(
+                self.reasoner.complete(
+                    prompt=prompt,
+                    max_tokens=self.max_summary_tokens,
+                    temperature=0.3,
+                ),
+                timeout=self.timeout_s,
+            )
+        except asyncio.TimeoutError as e:
+            raise CompactionError(f"Compactor timeout after {self.timeout_s}s") from e
+        except Exception as e:
+            raise CompactionError(f"Compactor reasoner error: {e}") from e
         latency_ms = (time.perf_counter() - start) * 1000
 
         summary = self._parse_summary(text)

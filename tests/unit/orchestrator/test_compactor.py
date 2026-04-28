@@ -59,3 +59,66 @@ class TestCompactorHappyPath:
 
         kwargs = reasoner.complete.await_args.kwargs
         assert kwargs.get("max_tokens") == 128
+
+
+class TestCompactorErrorPaths:
+    @pytest.mark.asyncio
+    async def test_malformed_json_falls_back_to_text(self):
+        reasoner = AsyncMock()
+        reasoner.complete = AsyncMock(return_value="No JSON here, just text.")
+        compactor = Compactor(reasoner=reasoner)
+
+        result = await compactor.compact(
+            turns=[_turn("user", "x")], preserved_entities=[]
+        )
+        assert "No JSON here" in result.summary
+
+    @pytest.mark.asyncio
+    async def test_extra_text_around_json_recovered(self):
+        reasoner = AsyncMock()
+        reasoner.complete = AsyncMock(
+            return_value='Pensemos... {"summary": "Hola"} fin.'
+        )
+        compactor = Compactor(reasoner=reasoner)
+
+        result = await compactor.compact(
+            turns=[_turn("user", "x")], preserved_entities=[]
+        )
+        assert result.summary == "Hola"
+
+    @pytest.mark.asyncio
+    async def test_empty_turns_raises(self):
+        reasoner = AsyncMock()
+        compactor = Compactor(reasoner=reasoner)
+
+        with pytest.raises(CompactionError):
+            await compactor.compact(turns=[], preserved_entities=[])
+
+    @pytest.mark.asyncio
+    async def test_timeout_wraps_into_compaction_error(self):
+        import asyncio
+
+        async def slow(*_, **__):
+            await asyncio.sleep(10)
+            return '{"summary": "no llega"}'
+
+        reasoner = AsyncMock()
+        reasoner.complete = slow
+        compactor = Compactor(reasoner=reasoner, timeout_s=0.05)
+
+        with pytest.raises(CompactionError) as exc_info:
+            await compactor.compact(
+                turns=[_turn("user", "x")], preserved_entities=[]
+            )
+        assert "timeout" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_reasoner_exception_wraps_into_compaction_error(self):
+        reasoner = AsyncMock()
+        reasoner.complete = AsyncMock(side_effect=ConnectionError("boom"))
+        compactor = Compactor(reasoner=reasoner)
+
+        with pytest.raises(CompactionError):
+            await compactor.compact(
+                turns=[_turn("user", "x")], preserved_entities=[]
+            )
