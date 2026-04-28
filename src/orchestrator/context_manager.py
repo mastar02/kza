@@ -25,6 +25,7 @@ Ejemplo:
     # Incluye el historial previo de A, no de B
 """
 
+import asyncio
 import threading
 import time
 from dataclasses import dataclass, field
@@ -213,9 +214,13 @@ class ContextManager:
     def __init__(
         self,
         max_history: int = 10,
-        inactive_timeout: float = 300,  # 5 minutos
-        cleanup_interval: float = 60,   # Cada minuto
-        system_prompt: str = None
+        inactive_timeout: float = 300,
+        cleanup_interval: float = 60,
+        system_prompt: str = None,
+        compactor=None,  # Compactor | None — plan #2 OpenClaw
+        persister=None,  # ContextPersister | None — plan #2 OpenClaw
+        compaction_threshold: int = 6,
+        keep_recent_turns: int = 3,
     ):
         """
         Args:
@@ -223,22 +228,28 @@ class ContextManager:
             inactive_timeout: Segundos sin actividad antes de limpiar contexto
             cleanup_interval: Intervalo de limpieza automatica
             system_prompt: Prompt de sistema predeterminado
+            compactor: Compactor instance (plan #2 OpenClaw); si None, sin compactación
+            persister: ContextPersister instance; si None, sin persistencia cross-sesión
+            compaction_threshold: turnos al alcanzar los cuales dispara compactación
+            keep_recent_turns: turnos literal preservados al final tras compactar
         """
         self.max_history = max_history
         self.inactive_timeout = inactive_timeout
         self.cleanup_interval = cleanup_interval
-
         self.system_prompt = system_prompt or self._default_system_prompt()
 
-        # Almacen de contextos: user_id -> UserContext
+        # Plan #2 OpenClaw — compaction + persistence
+        self.compactor = compactor
+        self.persister = persister
+        self.compaction_threshold = compaction_threshold
+        self.keep_recent_turns = keep_recent_turns
+
         self._contexts: dict[str, UserContext] = {}
         self._lock = threading.RLock()
 
-        # Cleanup thread
         self._cleanup_running = False
         self._cleanup_thread: threading.Thread | None = None
 
-        # Estadisticas
         self._total_contexts_created = 0
         self._total_contexts_cleaned = 0
 
@@ -340,10 +351,10 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         role: str,
         content: str,
         intent: str = None,
-        entities: list = None
+        entities: list = None,
     ):
-        """
-        Agregar turno al historial de un usuario.
+        """Agregar turno al historial. Si hay compactor y se alcanza el
+        umbral, lanza compactación en background fire-and-forget.
 
         Args:
             user_id: ID del usuario
@@ -352,12 +363,77 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             intent: Tipo de intent detectado
             entities: Entidades mencionadas
         """
+        should_compact = False
         with self._lock:
             ctx = self._contexts.get(user_id)
-            if ctx:
-                ctx.add_turn(role, content, intent, entities)
-            else:
+            if not ctx:
                 logger.warning(f"Contexto no encontrado: {user_id}")
+                return
+            ctx.add_turn(role, content, intent, entities)
+
+            if (
+                self.compactor is not None
+                and not ctx.compaction_inflight
+                and len(ctx.conversation_history) >= self.compaction_threshold
+            ):
+                ctx.compaction_inflight = True
+                should_compact = True
+
+        if should_compact:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._compact_background(user_id))
+            except RuntimeError:
+                # No event loop (uso desde código sync) — desactivar trigger silenciosamente
+                logger.warning(
+                    f"[ContextManager] no event loop running, skipping compaction for {user_id}"
+                )
+                with self._lock:
+                    ctx = self._contexts.get(user_id)
+                    if ctx:
+                        ctx.compaction_inflight = False
+
+    async def _compact_background(self, user_id: str) -> None:
+        """Compactación fire-and-forget: copia turnos viejos, llama Compactor,
+        muta el contexto bajo lock. Errores se loguean pero no propagan."""
+        with self._lock:
+            ctx = self._contexts.get(user_id)
+            if ctx is None:
+                return
+            n_compact = max(0, len(ctx.conversation_history) - self.keep_recent_turns)
+            if n_compact <= 0:
+                ctx.compaction_inflight = False
+                return
+            turns_snapshot = list(ctx.conversation_history[:n_compact])
+            preserved = []
+            for t in turns_snapshot:
+                preserved.extend(t.entities or [])
+            preserved.extend(ctx.preserved_ids)
+
+        try:
+            result = await self.compactor.compact(turns_snapshot, preserved_entities=preserved)
+        except Exception as e:
+            logger.warning(f"[ContextManager] compaction failed for {user_id}: {e}")
+            with self._lock:
+                ctx = self._contexts.get(user_id)
+                if ctx:
+                    ctx.compaction_inflight = False
+            return
+
+        with self._lock:
+            ctx = self._contexts.get(user_id)
+            if ctx is None:
+                return
+            existing = (ctx.compacted_summary + " ") if ctx.compacted_summary else ""
+            ctx.compacted_summary = (existing + result.summary).strip()
+            ctx.preserved_ids = sorted(set(ctx.preserved_ids) | set(result.preserved_ids))
+            # Drop the compacted prefix; keep tail
+            ctx.conversation_history = ctx.conversation_history[n_compact:]
+            ctx.compaction_inflight = False
+            logger.info(
+                f"[ContextManager] user={user_id} compacted_turns={n_compact} "
+                f"summary_chars={len(ctx.compacted_summary)} preserved={len(ctx.preserved_ids)}"
+            )
 
     def build_prompt(
         self,
