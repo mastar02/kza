@@ -905,7 +905,7 @@ async def main():
             health_aggregator=health_aggregator,
             reminder_scheduler=reminder_scheduler,
             host=dashboard_config.get("host", "127.0.0.1"),
-            port=dashboard_config.get("port", 8080),
+            port=dashboard_config.get("port", 9500),
             cors_config=dashboard_config.get("cors"),
             event_bus=live_event_bus,
             llm_router=llm_router,
@@ -914,7 +914,7 @@ async def main():
             zone_manager=zone_manager,
             observability_use_mocks=dashboard_config.get("observability_use_mocks", True),
         )
-        logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 8080)}")
+        logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 9500)}")
 
     # ----------------------------------------------------------------
     # Nightly Training (habit learning + QLoRA)
