@@ -1,22 +1,28 @@
 """
 Observability endpoints — sirven al frontend del dashboard wireframe.
 
-Contrato (README del prototipo):
+Contrato (consumido por src/dashboard/frontend/obs/src/app.jsx hydration):
     GET  /api/zones, /api/conversations, /api/ha/entities, /api/ha/actions,
          /api/llm/endpoints, /api/users, /api/alerts,
          /api/system/gpus, /api/system/services
     POST /api/llm/endpoints/{id}/clear-cooldown
     WS   /ws/live  → frames {type, payload, ts}
 
-Cada endpoint usa el servicio real si está inyectado; si falla o devuelve vacío,
-cae en mocks. Permite al dashboard ser funcional desde el primer arranque y
-mostrar datos reales conforme los servicios se levantan.
+WS frames por type (ver src/dashboard/live_event_bus.py:LiveEventType):
+    turn:     {id, user, zone, stt, intent, tts, latency_ms, success, path}
+    wake:     {zone, confidence}
+    alert:    {id, priority, type, zone, title, body}
+    tts:      {zone, text, duration_ms}
+    cooldown: {endpoint_id, until, step}
+
+Cada endpoint setea header `X-KZA-Source: real|mock|degraded`. Cae en mocks si
+no hay servicio inyectado, falla, o devuelve vacío.
 """
 
 import logging
 import time
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 
 from src.dashboard import observability_mocks as mocks
 from src.dashboard import system_monitor
@@ -24,8 +30,6 @@ from src.dashboard.live_event_bus import LiveEventBus
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------- Adapters real → shape del dashboard ----------------
 
 def _zones_adapter(zone_manager) -> list[dict]:
     zones_dict = zone_manager.get_all_zones()
@@ -120,15 +124,17 @@ def _alerts_adapter(alert_manager, status: str | None) -> list[dict]:
     return out
 
 
-def _ha_entities_adapter(ha_client) -> list[dict] | None:
+async def _ha_entities_adapter(ha_client) -> list[dict] | None:
+    """HA convención: async/await para I/O. Soporta get_states sync o async."""
+    import inspect
     states_fn = getattr(ha_client, "get_states", None)
     if not callable(states_fn):
         return None
     try:
-        import inspect
         if inspect.iscoroutinefunction(states_fn):
-            return None  # caller no es async-aware en este path
-        states = states_fn()
+            states = await states_fn()
+        else:
+            states = states_fn()
         if not states:
             return None
         out = []
@@ -145,11 +151,12 @@ def _ha_entities_adapter(ha_client) -> list[dict] | None:
             })
         return out
     except Exception as e:
-        logger.debug(f"ha_client.get_states failed: {e}")
+        logger.warning(f"ha_client.get_states adapter failed: {e}")
         return None
 
 
-# ---------------- Registro de rutas ----------------
+SOURCE_HEADER = "X-KZA-Source"  # values: "real", "mock", "degraded"
+
 
 def register_observability_routes(
     app: FastAPI,
@@ -162,30 +169,71 @@ def register_observability_routes(
     zone_manager=None,
     use_mocks: bool = True,
 ) -> None:
-    """Registrar todas las rutas observability en `app`. Llamar antes de StaticFiles."""
+    """Registrar todas las rutas observability en `app`.
 
-    def _real_or_mock(adapter_call, mock_data):
+    Importante: llamar ANTES de `app.mount("/", StaticFiles(...))`. FastAPI
+    matchea rutas en orden; un mount catch-all en "/" engulle los /api/*.
+
+    Headers de respuesta: cada endpoint setea `X-KZA-Source` con
+        - "real": datos del manager inyectado
+        - "mock": no había manager o use_mocks=True
+        - "degraded": adapter falló y se cae al mock
+    Esto permite a la UI mostrar un banner "datos simulados" cuando aplica.
+    """
+    real_services = {
+        "ha_client": ha_client, "llm_router": llm_router,
+        "user_manager": user_manager, "alert_manager": alert_manager,
+        "zone_manager": zone_manager,
+    }
+    injected = [k for k, v in real_services.items() if v is not None]
+    if use_mocks and injected:
+        logger.warning(
+            f"observability use_mocks=True con servicios reales inyectados "
+            f"({injected}) — el dashboard servirá mocks. Flippeá "
+            f"dashboard.observability_use_mocks=false en settings.yaml para "
+            f"datos reales."
+        )
+
+    def _adapt(adapter_call, mock_data, response):
+        """Devuelve datos reales si `adapter_call` produce algo no-vacío.
+
+        Setea SOURCE_HEADER:
+          - "real" si el adapter devolvió datos no-vacíos
+          - "degraded" si el adapter levantó o devolvió vacío con services inyectados
+          - "mock" si use_mocks=True o no hay services para llamar
+        """
         if use_mocks:
+            response.headers[SOURCE_HEADER] = "mock"
             return mock_data
         try:
             data = adapter_call()
             if data:
+                response.headers[SOURCE_HEADER] = "real"
                 return data
+            response.headers[SOURCE_HEADER] = "degraded"
+            logger.warning("adapter returned empty, serving mocks (degraded)")
         except Exception as e:
-            logger.warning(f"adapter failed, fallback to mock: {e}")
+            response.headers[SOURCE_HEADER] = "degraded"
+            logger.warning(f"adapter failed, serving mocks (degraded): {e}")
         return mock_data
 
+    def _set_source(response: Response, real: bool) -> None:
+        response.headers[SOURCE_HEADER] = "real" if real else "mock"
+
     @app.get("/api/zones")
-    async def get_zones():
+    async def get_zones(response: Response):
         if zone_manager is None:
+            _set_source(response, real=False)
             return mocks.ZONES
-        return _real_or_mock(lambda: _zones_adapter(zone_manager), mocks.ZONES)
+        return _adapt(lambda: _zones_adapter(zone_manager), mocks.ZONES, response)
 
     @app.get("/api/conversations")
     async def get_conversations(
+        response: Response,
         user: str | None = None, zone: str | None = None,
         from_: str | None = None, to: str | None = None, path: str | None = None,
     ):
+        _set_source(response, real=False)  # conversations no tiene adapter real aún
         items = mocks.CONVERSATIONS
         if user:
             items = [i for i in items if i["user"] == user]
@@ -196,24 +244,38 @@ def register_observability_routes(
         return items
 
     @app.get("/api/ha/entities")
-    async def get_ha_entities(domain: str | None = None):
+    async def get_ha_entities(response: Response, domain: str | None = None):
         if use_mocks or ha_client is None:
+            response.headers[SOURCE_HEADER] = "mock"
             items = mocks.HA_ENTITIES
         else:
-            items = _ha_entities_adapter(ha_client) or mocks.HA_ENTITIES
+            try:
+                real = await _ha_entities_adapter(ha_client)
+                if real:
+                    response.headers[SOURCE_HEADER] = "real"
+                    items = real
+                else:
+                    response.headers[SOURCE_HEADER] = "degraded"
+                    items = mocks.HA_ENTITIES
+            except Exception as e:
+                response.headers[SOURCE_HEADER] = "degraded"
+                logger.warning(f"ha entities adapter raised, fallback: {e}")
+                items = mocks.HA_ENTITIES
         if domain:
             items = [e for e in items if e["domain"] == domain]
         return items
 
     @app.get("/api/ha/actions")
-    async def get_ha_actions():
+    async def get_ha_actions(response: Response):
+        _set_source(response, real=False)
         return mocks.HA_ACTIONS
 
     @app.get("/api/llm/endpoints")
-    async def get_llm_endpoints():
+    async def get_llm_endpoints(response: Response):
         if llm_router is None:
+            _set_source(response, real=False)
             return mocks.LLM_ENDPOINTS
-        return _real_or_mock(lambda: _llm_endpoints_adapter(llm_router), mocks.LLM_ENDPOINTS)
+        return _adapt(lambda: _llm_endpoints_adapter(llm_router), mocks.LLM_ENDPOINTS, response)
 
     @app.post("/api/llm/endpoints/{endpoint_id}/clear-cooldown")
     async def clear_cooldown(endpoint_id: str):
@@ -227,16 +289,21 @@ def register_observability_routes(
             return {"ok": True, "endpoint_id": endpoint_id}
         except KeyError:
             raise HTTPException(status_code=404, detail=f"endpoint {endpoint_id} not found")
+        except Exception as e:
+            logger.error(f"clear_cooldown {endpoint_id} failed: {type(e).__name__}: {e}")
+            raise
 
     @app.get("/api/users")
-    async def get_users():
+    async def get_users(response: Response):
         if user_manager is None:
+            _set_source(response, real=False)
             return mocks.USERS
-        return _real_or_mock(lambda: _users_adapter(user_manager), mocks.USERS)
+        return _adapt(lambda: _users_adapter(user_manager), mocks.USERS, response)
 
     @app.get("/api/alerts")
-    async def get_alerts(status: str | None = None):
+    async def get_alerts(response: Response, status: str | None = None):
         if use_mocks or alert_manager is None:
+            response.headers[SOURCE_HEADER] = "mock"
             items = mocks.ALERTS
             if status == "active":
                 items = [a for a in items if not a["acked"]]
@@ -244,19 +311,27 @@ def register_observability_routes(
                 items = [a for a in items if a["acked"]]
             return items
         try:
-            return _alerts_adapter(alert_manager, status) or mocks.ALERTS
+            real = _alerts_adapter(alert_manager, status)
+            if real:
+                response.headers[SOURCE_HEADER] = "real"
+                return real
+            response.headers[SOURCE_HEADER] = "degraded"
+            return mocks.ALERTS
         except Exception as e:
+            response.headers[SOURCE_HEADER] = "degraded"
             logger.warning(f"alerts adapter failed: {e}")
             return mocks.ALERTS
 
     @app.get("/api/system/gpus")
-    async def get_gpus():
+    async def get_gpus(response: Response):
         real = system_monitor.gpu_snapshot()
+        _set_source(response, real=real is not None)
         return real if real else mocks.GPUS
 
     @app.get("/api/system/services")
-    async def get_services():
+    async def get_services(response: Response):
         real = system_monitor.services_snapshot()
+        _set_source(response, real=real is not None)
         return real if real else mocks.SERVICES
 
     if event_bus is not None:

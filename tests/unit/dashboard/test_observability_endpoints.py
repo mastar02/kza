@@ -4,11 +4,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.dashboard import observability, system_monitor
 from src.dashboard.observability import register_observability_routes
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    # Aislar de la realidad del host: aunque haya nvidia-smi/systemctl en la
+    # dev box, los endpoints /api/system/* deben caer a mocks acá.
+    monkeypatch.setattr(system_monitor, "gpu_snapshot", lambda: None)
+    monkeypatch.setattr(system_monitor, "services_snapshot", lambda: None)
     app = FastAPI()
     register_observability_routes(app, use_mocks=True)
     return TestClient(app)
@@ -64,8 +69,14 @@ def test_alerts_filter_active(client):
 def test_alerts_filter_acked(client):
     r = client.get("/api/alerts", params={"status": "acked"})
     assert r.status_code == 200
-    # mocks tienen 0 acked en el sample reducido — solo verificamos que no 500
-    assert isinstance(r.json(), list)
+    data = r.json()
+    assert len(data) >= 1
+    assert all(a["acked"] is True for a in data)
+
+
+def test_source_header_is_mock_when_no_services(client):
+    r = client.get("/api/zones")
+    assert r.headers.get("X-KZA-Source") == "mock"
 
 
 def test_system_gpus_two_devices(client):

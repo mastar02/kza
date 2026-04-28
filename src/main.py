@@ -908,7 +908,7 @@ async def main():
             port=dashboard_config.get("port", 8080),
             cors_config=dashboard_config.get("cors"),
             event_bus=live_event_bus,
-            llm_router=fast_router,
+            llm_router=llm_router,
             user_manager=user_manager,
             alert_manager=alert_manager,
             zone_manager=zone_manager,

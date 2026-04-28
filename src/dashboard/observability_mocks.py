@@ -99,6 +99,9 @@ ALERTS = [
     {"id": "al_200", "ts": "14:18:21", "priority": "critical", "type": "security", "zone": "patio",
      "title": "Movimiento detectado con todos ausentes",
      "body": "binary_sensor.motion_patio activo.", "acked": False},
+    {"id": "al_198", "ts": "12:41:19", "priority": "warn", "type": "device", "zone": "sala",
+     "title": "Escena 'away' parcialmente fallida",
+     "body": "1 de 8 entidades no respondió.", "acked": True},
 ]
 
 GPUS = [

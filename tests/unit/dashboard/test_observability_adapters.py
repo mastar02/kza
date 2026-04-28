@@ -65,6 +65,7 @@ def test_zones_adapter_returns_real_data(fake_zone_manager):
     c = _client(zone_manager=fake_zone_manager)
     r = c.get("/api/zones")
     assert r.status_code == 200
+    assert r.headers.get("X-KZA-Source") == "real"
     data = r.json()
     assert {z["id"] for z in data} == {"sala", "cocina"}
     sala = next(z for z in data if z["id"] == "sala")
@@ -117,10 +118,21 @@ def test_clear_cooldown_real(fake_llm_router):
     fake_llm_router._cd.record_success.assert_called_once_with("vllm-7b")
 
 
-def test_adapter_failure_falls_back_to_mocks():
+def test_adapter_failure_falls_back_to_mocks_with_degraded_source():
     bad = MagicMock()
     bad.get_all_zones.side_effect = RuntimeError("kaboom")
     c = _client(zone_manager=bad)
     r = c.get("/api/zones")
     assert r.status_code == 200
+    assert r.headers.get("X-KZA-Source") == "degraded"
     assert len(r.json()) == 5  # mocks tienen 5
+
+
+def test_warn_logged_when_use_mocks_with_real_services_injected(caplog):
+    from fastapi import FastAPI
+    from src.dashboard.observability import register_observability_routes
+    from unittest.mock import MagicMock as _M
+    app = FastAPI()
+    with caplog.at_level("WARNING"):
+        register_observability_routes(app, use_mocks=True, zone_manager=_M())
+    assert any("use_mocks=True con servicios reales" in m for m in caplog.messages)
