@@ -1,0 +1,24 @@
+[Unit]
+Description=KZA ik_llama.cpp LLM (Qwen3-30B-A3B Q4_K_M, +36% speedup vs llama-cpp-python) — port 8200
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/kza/ik_llama.cpp/build
+# Args ik_llama.cpp llama-server. KV Q8 ahorra 50% del cache memory; mlock
+# garantiza no-swap; cache-ram 4GB para prefix caching server-side.
+ExecStart=/home/kza/ik_llama.cpp/build/bin/llama-server \
+  -m /home/kza/kza/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf \
+  --host 127.0.0.1 --port 8200 \
+  -t 24 -tb 24 -c 16384 \
+  -ctk q8_0 -ctv q8_0 \
+  --mlock \
+  -cram 4096
+Restart=on-failure
+RestartSec=10s
+StartLimitBurst=3
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=default.target
