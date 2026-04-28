@@ -56,6 +56,12 @@ from src.orchestrator.dispatcher import (
     DispatchResult,
     PathType
 )
+from src.orchestrator.compactor import (
+    Compactor,
+    CompactionResult,
+    CompactionError,
+)
+from src.orchestrator.context_persister import ContextPersister, PERSISTED_VERSION
 
 __all__ = [
     # Context
@@ -76,5 +82,11 @@ __all__ = [
     "RequestDispatcher",
     "MultiUserOrchestrator",
     "DispatchResult",
-    "PathType"
+    "PathType",
+    # Plan #2 OpenClaw
+    "Compactor",
+    "CompactionResult",
+    "CompactionError",
+    "ContextPersister",
+    "PERSISTED_VERSION",
 ]

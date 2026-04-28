@@ -784,6 +784,52 @@ async def main():
         sample_rate=16000,
     )
 
+    # === Plan #2 OpenClaw — Compactor + Persister (opcionales) ===
+    context_cfg = (config.get("orchestrator", {}) or {}).get("context", {}) or {}
+    compaction_cfg = context_cfg.get("compaction", {}) or {}
+    persistence_cfg = context_cfg.get("persistence", {}) or {}
+
+    compactor = None
+    persister = None
+    compaction_threshold = compaction_cfg.get("threshold_turns", 6)
+    keep_recent_turns = compaction_cfg.get("keep_recent_turns", 3)
+
+    if compaction_cfg.get("enabled", False):
+        from src.llm.reasoner import HttpReasoner
+        from src.orchestrator import Compactor
+
+        compaction_reasoner = HttpReasoner(
+            base_url="http://127.0.0.1:8200/v1",
+            timeout=compaction_cfg.get("timeout_s", 30.0),
+        )
+        try:
+            compaction_reasoner.load()
+            compactor = Compactor(
+                reasoner=compaction_reasoner,
+                max_summary_tokens=compaction_cfg.get("max_summary_tokens", 200),
+                timeout_s=compaction_cfg.get("timeout_s", 30.0),
+            )
+            logger.info(
+                f"[main] Compactor habilitado (threshold={compaction_threshold}, "
+                f"keep_recent={keep_recent_turns})"
+            )
+        except Exception as e:
+            logger.warning(f"[main] Compactor disabled — could not load reasoner: {e}")
+            compactor = None
+
+    if persistence_cfg.get("enabled", False):
+        if compactor is None:
+            logger.error(
+                "[main] context.persistence.enabled=true requires compaction.enabled=true. "
+                "Disabling persistence."
+            )
+        else:
+            from src.orchestrator import ContextPersister
+            persister = ContextPersister(
+                base_path=persistence_cfg.get("base_path", "data/contexts"),
+            )
+            logger.info(f"[main] Context persister habilitado en {persister.base_path}")
+
     # Multi-user orchestrator (optional)
     orchestrator = None
     orchestrator_enabled = config.get("orchestrator", {}).get("enabled", True)
@@ -799,6 +845,11 @@ async def main():
             user_manager=user_manager,
             list_manager=list_manager,
             reminder_manager=reminder_manager,
+            # Plan #2 OpenClaw
+            compactor=compactor,
+            persister=persister,
+            compaction_threshold=compaction_threshold,
+            keep_recent_turns=keep_recent_turns,
         )
 
     # Request router (command routing: orchestrated + legacy paths)

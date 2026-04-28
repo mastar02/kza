@@ -637,6 +637,19 @@ orchestrator:
     inactive_timeout: 300        # Segundos antes de limpiar contexto inactivo
     cleanup_interval: 60         # Intervalo de limpieza (segundos)
 
+    # Plan #2 OpenClaw — auto-compaction de contexto
+    compaction:
+      enabled: false             # OFF hasta validar en prod
+      threshold_turns: 6         # disparar al alcanzar este turno
+      keep_recent_turns: 3       # turnos literal preservados al final
+      max_summary_tokens: 200    # cap del resumen del LLM
+      timeout_s: 30.0            # timeout de la llamada al 30B
+
+    # Plan #2 OpenClaw — persistencia cross-sesión
+    persistence:
+      enabled: false             # OFF hasta validar. Requiere compaction.enabled=true.
+      base_path: "data/contexts"
+
   # Cola priorizada
   queue:
     max_size: 100                # Maximo de peticiones en cola
