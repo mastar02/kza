@@ -44,6 +44,7 @@ class VoicePipeline:
         chroma_sync: object | None = None,
         memory_manager: object | None = None,
         orchestrator: object | None = None,
+        event_bus: object | None = None,
     ):
         """
         Initialize VoicePipeline with pre-built components.
@@ -69,6 +70,7 @@ class VoicePipeline:
         self.chroma = chroma_sync
         self.memory = memory_manager
         self._orchestrator = orchestrator
+        self._event_bus = event_bus
 
         # State
         self._running = False
@@ -146,8 +148,32 @@ class VoicePipeline:
             Dict with text, intent, action, response, success, latency_ms, user.
         """
         if self.request_router:
-            return await self.request_router.process_command(audio_or_event)
+            result = await self.request_router.process_command(audio_or_event)
+            await self._publish_turn_event(audio_or_event, result)
+            return result
         return {"text": "", "success": False, "error": "No request router configured"}
+
+    async def _publish_turn_event(self, audio_or_event, result: dict) -> None:
+        """Publica un LiveEvent type=turn al bus si está configurado. Best-effort."""
+        if not self._event_bus:
+            return
+        try:
+            from src.dashboard.live_event_bus import LiveEvent, LiveEventType
+            zone = getattr(audio_or_event, "room_id", None) or getattr(audio_or_event, "zone", None)
+            payload = {
+                "id": result.get("turn_id"),
+                "user": result.get("user"),
+                "zone": zone,
+                "stt": result.get("text"),
+                "intent": result.get("intent"),
+                "tts": result.get("response"),
+                "latency_ms": result.get("latency_ms"),
+                "success": result.get("success", False),
+                "path": result.get("path", "fast"),
+            }
+            await self._event_bus.publish(LiveEvent(type=LiveEventType.TURN, payload=payload))
+        except Exception as e:
+            logger.debug(f"event_bus publish failed (non-fatal): {e}")
 
     async def test_from_text(self, text: str) -> dict:
         """
