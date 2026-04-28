@@ -63,14 +63,20 @@ def build_llm_router(
         raise ValueError("llm.failover.endpoints está vacío")
 
     endpoints = []
+    skipped: list[str] = []
     for ep_cfg in endpoints_cfg:
         ep_id = ep_cfg["id"]
         client = clients.get(ep_id)
         if client is None:
-            raise ValueError(
-                f"No se proveyó cliente para endpoint {ep_id!r}. "
+            # Endpoint listado en config pero sin cliente disponible (ej:
+            # 72B caído al startup). Lo skippeamos en lugar de fallar — el
+            # router queda con menos candidatos pero sigue funcionando.
+            logger.warning(
+                f"[LLMRouter] skip endpoint {ep_id!r} — sin cliente. "
                 f"Clientes disponibles: {list(clients)}"
             )
+            skipped.append(ep_id)
+            continue
         endpoints.append(LLMEndpoint(
             id=ep_id,
             kind=EndpointKind(ep_cfg["kind"]),
@@ -80,6 +86,11 @@ def build_llm_router(
             idle_timeout_s=ep_cfg.get("idle_timeout_s"),
             max_tokens_default=int(ep_cfg.get("max_tokens_default", 256)),
         ))
+
+    if not endpoints:
+        raise ValueError(
+            f"Ningún endpoint disponible — todos skippeados: {skipped}"
+        )
 
     cooldowns_cfg = failover_config.get("cooldowns") or {}
     persist_path = Path(cooldowns_cfg.get("persist_path", DEFAULT_COOLDOWN_PATH))

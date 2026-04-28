@@ -40,10 +40,17 @@ class TestBuildLLMRouter:
         with pytest.raises(ValueError, match="endpoints"):
             build_llm_router({"endpoints": [], "cooldowns": {}}, {})
 
-    def test_raises_when_client_missing(self, cooldown_path):
+    def test_skips_endpoint_when_client_missing(self, cooldown_path):
+        """2026-04-28: en lugar de fallar, skippea endpoints sin cliente.
+        Caso target: 72B caído al startup → router sigue con 7B solo."""
         cfg = _basic_config(cooldown_path)
-        with pytest.raises(ValueError, match="cliente"):
-            build_llm_router(cfg, {"fast": FakeClient()})  # falta "slow"
+        router = build_llm_router(cfg, {"fast": FakeClient()})  # falta "slow"
+        assert [e.id for e in router._endpoints] == ["fast"]
+
+    def test_raises_when_all_clients_missing(self, cooldown_path):
+        cfg = _basic_config(cooldown_path)
+        with pytest.raises(ValueError, match="skippeados"):
+            build_llm_router(cfg, {})
 
     def test_raises_on_invalid_kind(self, cooldown_path):
         cfg = _basic_config(cooldown_path)
