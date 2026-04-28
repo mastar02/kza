@@ -363,11 +363,13 @@ class HttpReasoner:
         base_url: str = "http://127.0.0.1:8200/v1",
         model: str | None = None,           # si None, usa el primero que liste el server
         timeout: float = 120.0,
+        idle_timeout_s: float | None = None,  # watchdog para streams (72B en CPU se cuelga)
         **_ignored_legacy,
     ):
         self.base_url = base_url
         self.model = model
         self.timeout = timeout
+        self.idle_timeout_s = idle_timeout_s
         self._client = None
         self._resolved_model = None
 
@@ -419,6 +421,67 @@ class HttpReasoner:
                 "completion_tokens": getattr(resp.usage, "completion_tokens", 0),
             },
         }
+
+    async def complete(
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        **_ignored,
+    ) -> str:
+        """API unificada para LLMRouter — async, retorna texto plano.
+
+        Si `idle_timeout_s` está configurado, usa stream con watchdog: aborta
+        si el 72B no emite chunks por N segundos. Sin watchdog, hace request
+        no-streaming convencional.
+        """
+        import asyncio
+
+        if self._client is None:
+            self.load()
+
+        if not self.idle_timeout_s:
+            def _call():
+                resp = self._client.completions.create(
+                    model=self._resolved_model,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                return resp.choices[0].text
+            return await asyncio.to_thread(_call)
+
+        # Path con stream + idle_watchdog
+        from src.llm.idle_watchdog import idle_watchdog
+
+        def _open_stream():
+            return self._client.completions.create(
+                model=self._resolved_model,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=True,
+            )
+
+        sync_stream = await asyncio.to_thread(_open_stream)
+
+        async def _async_iter():
+            it = iter(sync_stream)
+            while True:
+                try:
+                    chunk = await asyncio.to_thread(next, it)
+                except StopIteration:
+                    return
+                yield chunk
+
+        text_parts: list[str] = []
+        async for chunk in idle_watchdog(_async_iter(), self.idle_timeout_s):
+            try:
+                delta = chunk.choices[0].text or ""
+            except (AttributeError, IndexError):
+                delta = ""
+            text_parts.append(delta)
+        return "".join(text_parts)
 
     # Métodos no aplicables (LoRA, GGUF load) — stubs para backward compat
     def load_lora(self, *a, **kw):
@@ -489,6 +552,34 @@ REGLAS:
         except Exception as e:
             logger.error(f"No se pudo contactar vLLM compartido: {e}")
             self._available = False
+
+    async def complete(
+        self,
+        prompt: str,
+        max_tokens: int = 256,
+        temperature: float = 0.3,
+        **_ignored,
+    ) -> str:
+        """API unificada para LLMRouter — async, single prompt, retorna texto.
+
+        A diferencia de `generate`, NO swallowea excepciones — las propaga para
+        que el LLMRouter pueda clasificarlas (rate-limit, timeout, etc.) y
+        rotar al siguiente endpoint.
+        """
+        import asyncio
+
+        def _call():
+            if self._client is None:
+                self.load()
+            resp = self._client.completions.create(
+                model=self.model_name,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return resp.choices[0].text
+
+        return await asyncio.to_thread(_call)
 
     def generate(
         self,

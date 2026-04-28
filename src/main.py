@@ -243,6 +243,7 @@ async def main():
             base_url=reasoner_config.get("http_base_url", "http://127.0.0.1:8200/v1"),
             model=reasoner_config.get("http_model"),
             timeout=reasoner_config.get("http_timeout", 120),
+            idle_timeout_s=reasoner_config.get("idle_timeout_s"),
         )
         try:
             llm.load()
@@ -284,6 +285,26 @@ async def main():
             timeout=router_config.get("timeout", 30),
         )
         logger.info(f"Fast router (HTTP) → {router_config.get('base_url', 'http://127.0.0.1:8100/v1')}")
+
+    # LLMRouter — candidate chain con cooldown y failover (plan #1 OpenClaw).
+    # Envuelve fast_router y llm (HttpReasoner 72B) para rotar automáticamente
+    # cuando uno falla. El dispatcher usa router.complete(), no router.generate().
+    llm_router = None
+    failover_cfg = config.get("llm", {}).get("failover")
+    if failover_cfg and fast_router is not None:
+        from src.llm import build_llm_router
+        clients = {"fast_router_7b": fast_router}
+        if llm is not None:
+            clients["reasoner_72b"] = llm
+        try:
+            llm_router = build_llm_router(failover_cfg, clients)
+            logger.info(
+                f"LLMRouter listo con {len(clients)} endpoints "
+                f"({', '.join(clients)})"
+            )
+        except Exception as e:
+            logger.error(f"No se pudo construir LLMRouter, sigo con fast_router suelto: {e}")
+            llm_router = None
 
     # Memory Manager - memoria contextual
     memory_config = config.get("memory", {})
@@ -728,7 +749,7 @@ async def main():
             chroma_sync=chroma,
             ha_client=ha_client,
             routine_manager=routine_manager,
-            router=fast_router,
+            router=llm_router or fast_router,
             llm=llm,
             tts=tts,
             speaker_identifier=speaker_identifier,

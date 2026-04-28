@@ -559,10 +559,17 @@ class RequestDispatcher:
                 path = PathType.FAST_ROUTER
 
         if path == PathType.FAST_ROUTER and self.router:
-            # Usar router para respuesta rapida
+            # Usar router para respuesta rápida. Soporta tanto LLMRouter
+            # (async, candidate chain) como FastRouter suelto (sync, batch).
             t0 = time.perf_counter()
             try:
-                response = self.router.generate([text], max_tokens=128)[0]
+                if hasattr(self.router, "complete"):
+                    result = await self.router.complete(text, max_tokens=128)
+                    response = result.text if hasattr(result, "text") else str(result)
+                    if hasattr(result, "endpoint_id"):
+                        timings["router_endpoint"] = result.endpoint_id
+                else:
+                    response = self.router.generate([text], max_tokens=128)[0]
                 timings["router"] = (time.perf_counter() - t0) * 1000
 
                 return DispatchResult(

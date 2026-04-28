@@ -209,6 +209,36 @@ reasoner:
   http_base_url: "http://127.0.0.1:8200/v1"
   http_timeout: 120
   http_model: null   # null = usa el primero que liste el server
+  # idle_timeout_s: si el stream del 72B no emite chunks por N segundos,
+  # abortamos. Solo aplica con mode=http. El 72B en CPU ocasionalmente se
+  # cuelga durante un decode largo (probable swap pressure o thread thrash).
+  # Sin watchdog el caller espera para siempre. None = sin watchdog.
+  idle_timeout_s: 8.0
+
+# LLM Failover — candidate chain con cooldown y skip automático.
+# Patrón: OpenClaw model-failover.md. Cuando un endpoint falla con error
+# failover-worthy (timeout, idle, rate-limit, billing, format), entra en
+# cooldown exponencial (1m → 5m → 25m → 1h cap) y el router rota al siguiente.
+# Persiste cooldowns en disco para sobrevivir reinicios.
+llm:
+  failover:
+    endpoints:
+      # 7B vía vLLM compartido :8100 — primer intento (más rápido, 8GB VRAM)
+      - id: fast_router_7b
+        kind: fast_router
+        priority: 1
+        timeout_s: 5.0
+        idle_timeout_s: null          # vLLM no se cuelga, no necesita watchdog
+        max_tokens_default: 256
+      # 72B local vía kza-72b.service :8200 — fallback (mejor calidad, CPU)
+      - id: reasoner_72b
+        kind: http_reasoner
+        priority: 2
+        timeout_s: 30.0
+        idle_timeout_s: 8.0           # 72B en CPU se cuelga
+        max_tokens_default: 512
+    cooldowns:
+      persist_path: "./data/llm_cooldowns.json"
 
   # Los siguientes campos sólo aplican si mode == "local":
   # ==========================================================================
