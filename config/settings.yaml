@@ -637,17 +637,23 @@ orchestrator:
     inactive_timeout: 300        # Segundos antes de limpiar contexto inactivo
     cleanup_interval: 60         # Intervalo de limpieza (segundos)
 
-    # Plan #2 OpenClaw — auto-compaction de contexto
+    # Plan #2 OpenClaw — auto-compaction de contexto.
+    # Spec: docs/superpowers/specs/2026-04-28-openclaw-context-compaction-design.md
+    # OFF por defecto — la compactación llama al 30B en background; activar
+    # tras baseline de tok/s con kza-llm-ik bajo carga real (ver Task 10
+    # del plan implementable).
     compaction:
-      enabled: false             # OFF hasta validar en prod
-      threshold_turns: 6         # disparar al alcanzar este turno
-      keep_recent_turns: 3       # turnos literal preservados al final
-      max_summary_tokens: 200    # cap del resumen del LLM
-      timeout_s: 30.0            # timeout de la llamada al 30B
+      enabled: false
+      threshold_turns: 6
+      keep_recent_turns: 3
+      max_summary_tokens: 200
+      timeout_s: 30.0            # 30B tarda ~5s en 200 tokens; 30s es safety margin 6x
 
-    # Plan #2 OpenClaw — persistencia cross-sesión
+    # Plan #2 OpenClaw — persistencia cross-sesión.
+    # OFF por defecto. REQUIERE compaction.enabled=true (sin compactación
+    # los snapshots crecerían sin techo con turnos crudos).
     persistence:
-      enabled: false             # OFF hasta validar. Requiere compaction.enabled=true.
+      enabled: false
       base_path: "data/contexts"
 
   # Cola priorizada
