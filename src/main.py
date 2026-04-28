@@ -934,6 +934,7 @@ async def main():
             user_manager=user_manager,
             alert_manager=alert_manager,
             zone_manager=zone_manager,
+            event_logger=event_logger,
             observability_use_mocks=dashboard_config.get("observability_use_mocks", True),
         )
         logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 9500)}")

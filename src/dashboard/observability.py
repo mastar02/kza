@@ -124,6 +124,86 @@ def _alerts_adapter(alert_manager, status: str | None) -> list[dict]:
     return out
 
 
+def _conversations_adapter(
+    event_logger,
+    *,
+    user: str | None = None,
+    zone: str | None = None,
+    path: str | None = None,
+    limit: int = 50,
+) -> list[dict] | None:
+    """EventLogger.get_events → shape mocks.CONVERSATIONS.
+
+    Cada Event con `trigger_phrase` no-vacío es un turn de voz: lo proyectamos
+    al shape esperado por la vista Conversaciones del dashboard.
+    """
+    try:
+        events = event_logger.get_events(limit=limit * 3)
+    except Exception as e:
+        logger.warning(f"event_logger.get_events failed: {e}")
+        return None
+    out = []
+    for ev in events:
+        if not ev.trigger_phrase:
+            continue  # automaciones/sensores no son charlas
+        ctx = ev.context or {}
+        ev_zone = ctx.get("zone") or ctx.get("room_id")
+        ev_path = ctx.get("path", "fast")
+        if user and (ev.user_name or "").lower() != user.lower():
+            continue
+        if zone and ev_zone != zone:
+            continue
+        if path and ev_path != path:
+            continue
+        domain = ev.entity_id.split(".", 1)[0] if "." in ev.entity_id else "—"
+        out.append({
+            "id": f"turn_{int(ev.timestamp * 1000)}",
+            "ts": ev.datetime.strftime("%H:%M:%S"),
+            "user": ev.user_name or ev.user_id or "—",
+            "zone": ev_zone or "—",
+            "path": ev_path,
+            "stt": ev.trigger_phrase,
+            "intent": f"{domain}.{ev.action}",
+            "target": ev.entity_id,
+            "args": {k: v for k, v in ctx.items() if k not in ("zone", "room_id", "path", "latency_ms", "tts")},
+            "tts": ctx.get("tts", ""),
+            "latency_ms": ctx.get("latency_ms", 0),
+            "success": ctx.get("success", True),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _ha_actions_adapter(event_logger, *, limit: int = 50) -> list[dict] | None:
+    """EventLogger eventos type=COMMAND → log de acciones HA."""
+    try:
+        events = event_logger.get_events(limit=limit * 2)
+    except Exception as e:
+        logger.warning(f"event_logger.get_events failed: {e}")
+        return None
+    out = []
+    for ev in events:
+        if not ev.entity_id or "." not in ev.entity_id:
+            continue
+        domain = ev.entity_id.split(".", 1)[0]
+        ctx = ev.context or {}
+        out.append({
+            "id": f"act_{int(ev.timestamp * 1000)}",
+            "ts": ev.datetime.strftime("%H:%M:%S"),
+            "idem": ctx.get("idem", "—"),
+            "user": ev.user_name or ev.user_id or "—",
+            "service": f"{domain}.{ev.action}",
+            "target": ev.entity_id,
+            "args": str(ctx.get("args", "{}")),
+            "ok": ctx.get("success", True),
+            "lat_ms": ctx.get("latency_ms", 0),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 async def _ha_entities_adapter(ha_client) -> list[dict] | None:
     """HA convención: async/await para I/O.
 
@@ -170,6 +250,7 @@ def register_observability_routes(
     user_manager=None,
     alert_manager=None,
     zone_manager=None,
+    event_logger=None,
     use_mocks: bool = True,
 ) -> None:
     """Registrar todas las rutas observability en `app`.
@@ -186,7 +267,7 @@ def register_observability_routes(
     real_services = {
         "ha_client": ha_client, "llm_router": llm_router,
         "user_manager": user_manager, "alert_manager": alert_manager,
-        "zone_manager": zone_manager,
+        "zone_manager": zone_manager, "event_logger": event_logger,
     }
     injected = [k for k, v in real_services.items() if v is not None]
     if use_mocks and injected:
@@ -237,7 +318,13 @@ def register_observability_routes(
         user: str | None = None, zone: str | None = None,
         from_: str | None = None, to: str | None = None, path: str | None = None,
     ):
-        _set_source(response, real=False)  # conversations no tiene adapter real aún
+        if not use_mocks and event_logger is not None:
+            return _adapt(
+                lambda: _conversations_adapter(
+                    event_logger, user=user, zone=zone, path=path),
+                mocks.CONVERSATIONS, response,
+            )
+        response.headers[SOURCE_HEADER] = "mock"
         items = mocks.CONVERSATIONS
         if user:
             items = [i for i in items if i["user"] == user]
@@ -271,7 +358,10 @@ def register_observability_routes(
 
     @app.get("/api/ha/actions")
     async def get_ha_actions(response: Response):
-        _set_source(response, real=False)
+        if not use_mocks and event_logger is not None:
+            return _adapt(lambda: _ha_actions_adapter(event_logger),
+                          mocks.HA_ACTIONS, response)
+        response.headers[SOURCE_HEADER] = "mock"
         return mocks.HA_ACTIONS
 
     @app.get("/api/llm/endpoints")
