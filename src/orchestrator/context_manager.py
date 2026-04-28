@@ -300,10 +300,15 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         user_name: str = None,
         zone_id: str = None,
         preferences: dict = None,
-        permission_level: int = 0
+        permission_level: int = 0,
     ) -> UserContext:
         """
         Obtener contexto existente o crear uno nuevo.
+
+        Si hay un ContextPersister inyectado y existe snapshot en disco para
+        este user_id, se hidrata el nuevo contexto con compacted_summary,
+        preserved_ids y session_count incrementado. Conversation history NO
+        se restaura (los turnos viejos murieron).
 
         Args:
             user_id: ID unico del usuario
@@ -318,21 +323,33 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         with self._lock:
             if user_id in self._contexts:
                 ctx = self._contexts[user_id]
-                # Actualizar zona si cambio
                 if zone_id:
                     ctx.zone_id = zone_id
                 ctx.last_active = time.time()
                 return ctx
 
-            # Crear nuevo contexto
+            # Plan #2 OpenClaw — hidratar desde disco si hay persister
+            hydrated = None
+            if self.persister is not None:
+                data = self.persister.load(user_id)
+                if data is not None:
+                    hydrated = data
+
             ctx = UserContext(
                 user_id=user_id,
-                user_name=user_name or f"Usuario_{user_id[:8]}",
+                user_name=user_name or (hydrated and hydrated.get("user_name")) or f"Usuario_{user_id[:8]}",
                 zone_id=zone_id,
                 max_history=self.max_history,
                 preferences=preferences or {},
-                permission_level=permission_level
+                permission_level=permission_level,
             )
+            if hydrated:
+                ctx.compacted_summary = hydrated.get("compacted_summary")
+                ctx.preserved_ids = list(hydrated.get("preserved_ids") or [])
+                ctx.session_count = (hydrated.get("session_count") or 1) + 1
+                logger.info(
+                    f"[ContextManager] hydrated user={user_id} session_count={ctx.session_count}"
+                )
 
             self._contexts[user_id] = ctx
             self._total_contexts_created += 1

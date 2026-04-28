@@ -199,3 +199,47 @@ class TestCleanupSnapshot:
         await cleanup_task
 
         assert mgr.get("ghost") is None  # baseline cleanup behavior
+
+
+class TestHydration:
+    def test_hydrates_summary_and_preserved_ids(self, tmp_path):
+        from src.orchestrator.context_persister import ContextPersister
+        from src.orchestrator.context_manager import UserContext
+
+        persister = ContextPersister(base_path=tmp_path / "contexts")
+        prior = UserContext(
+            user_id="returning",
+            user_name="Carla",
+            compacted_summary="Resumen viejo.",
+            preserved_ids=["light.cocina"],
+            session_count=3,
+        )
+        persister.save(prior)
+
+        mgr = ContextManager(persister=persister)
+        ctx = mgr.get_or_create("returning", "Carla")
+
+        assert ctx.compacted_summary == "Resumen viejo."
+        assert ctx.preserved_ids == ["light.cocina"]
+        assert ctx.session_count == 4  # incrementa
+        assert ctx.conversation_history == []  # turnos no se restauran
+
+    def test_no_persister_no_hydration(self, tmp_path):
+        # Aunque exista archivo en disk, sin persister no hidrata
+        mgr = ContextManager(persister=None)
+        ctx = mgr.get_or_create("anyone", "x")
+        assert ctx.compacted_summary is None
+        assert ctx.session_count == 1
+
+    def test_corrupt_file_creates_fresh_context(self, tmp_path, caplog):
+        from src.orchestrator.context_persister import ContextPersister
+        base = tmp_path / "contexts"
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "broken.json").write_text("{ not json")
+        persister = ContextPersister(base_path=base)
+
+        mgr = ContextManager(persister=persister)
+        ctx = mgr.get_or_create("broken", "x")
+
+        assert ctx.compacted_summary is None
+        assert ctx.session_count == 1
