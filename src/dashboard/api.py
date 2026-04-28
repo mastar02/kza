@@ -15,6 +15,8 @@ import json
 import os
 
 from src.core.sanitize import sanitize_dict
+from src.dashboard.live_event_bus import LiveEventBus
+from src.dashboard.observability import register_observability_routes
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +134,12 @@ class DashboardAPI:
         host: str = "127.0.0.1",
         port: int = 8080,
         cors_config: dict | None = None,
+        event_bus: LiveEventBus | None = None,
+        llm_router=None,
+        user_manager=None,
+        alert_manager=None,
+        zone_manager=None,
+        observability_use_mocks: bool = True,
     ):
         self.scheduler = routine_scheduler
         self.executor = routine_executor
@@ -143,6 +151,12 @@ class DashboardAPI:
         self.reminder_scheduler = reminder_scheduler
         self.host = host
         self.port = port
+        self.event_bus = event_bus
+        self.llm_router = llm_router
+        self.user_manager = user_manager
+        self.alert_manager = alert_manager
+        self.zone_manager = zone_manager
+        self.observability_use_mocks = observability_use_mocks
 
         # FastAPI app
         self.app = FastAPI(
@@ -731,9 +745,22 @@ class DashboardAPI:
 
             return result
 
+        # ==================== Observability (KZA Dashboard wireframe) ====================
+
+        register_observability_routes(
+            self.app,
+            event_bus=self.event_bus,
+            ha_client=self.ha,
+            llm_router=self.llm_router,
+            user_manager=self.user_manager,
+            alert_manager=self.alert_manager,
+            zone_manager=self.zone_manager,
+            use_mocks=self.observability_use_mocks,
+        )
+
         # ==================== Static files (Frontend) ====================
 
-        # Servir frontend si existe
+        # Servir frontend si existe (incluye /obs/ con el dashboard wireframe)
         frontend_path = os.path.join(os.path.dirname(__file__), "frontend")
         if os.path.exists(frontend_path):
             self.app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")

@@ -59,6 +59,7 @@ from src.reminders.reminder_store import ReminderStore
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_scheduler import ReminderScheduler
 from src.dashboard.api import DashboardAPI
+from src.dashboard.live_event_bus import LiveEventBus
 from src.monitoring.health_aggregator import HealthAggregator
 
 # Configurar logging
@@ -881,6 +882,11 @@ async def main():
     dashboard_config = config.get("dashboard", {})
     dashboard = None
 
+    live_event_bus = LiveEventBus(
+        queue_size=dashboard_config.get("live_event_queue_size", 256),
+        overflow_policy=dashboard_config.get("live_event_overflow_policy", "drop_oldest"),
+    )
+
     if dashboard_config.get("enabled", True):
         health_aggregator = HealthAggregator(
             ha_client=ha_client,
@@ -901,6 +907,12 @@ async def main():
             host=dashboard_config.get("host", "127.0.0.1"),
             port=dashboard_config.get("port", 8080),
             cors_config=dashboard_config.get("cors"),
+            event_bus=live_event_bus,
+            llm_router=llm_router,
+            user_manager=user_manager,
+            alert_manager=alert_manager,
+            zone_manager=zone_manager,
+            observability_use_mocks=dashboard_config.get("observability_use_mocks", True),
         )
         logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 8080)}")
 
@@ -975,6 +987,7 @@ async def main():
         chroma_sync=chroma,
         memory_manager=memory_manager,
         orchestrator=orchestrator,
+        event_bus=live_event_bus,
     )
 
     # Precalentar modelos para eliminar cold-start del primer comando (~600ms→~200ms)

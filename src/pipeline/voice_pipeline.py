@@ -21,8 +21,10 @@ from src.pipeline.command_processor import CommandProcessor
 from src.pipeline.request_router import RequestRouter
 from src.pipeline.response_handler import ResponseHandler
 from src.pipeline.feature_manager import FeatureManager
+from src.dashboard.live_event_bus import LiveEvent, LiveEventBus, LiveEventType
 
 logger = logging.getLogger(__name__)
+_PUBLISH_FAILURE_LOGGED = False
 
 
 class VoicePipeline:
@@ -44,6 +46,7 @@ class VoicePipeline:
         chroma_sync: object | None = None,
         memory_manager: object | None = None,
         orchestrator: object | None = None,
+        event_bus: LiveEventBus | None = None,
     ):
         """
         Initialize VoicePipeline with pre-built components.
@@ -69,6 +72,7 @@ class VoicePipeline:
         self.chroma = chroma_sync
         self.memory = memory_manager
         self._orchestrator = orchestrator
+        self._event_bus = event_bus
 
         # State
         self._running = False
@@ -146,8 +150,49 @@ class VoicePipeline:
             Dict with text, intent, action, response, success, latency_ms, user.
         """
         if self.request_router:
-            return await self.request_router.process_command(audio_or_event)
+            result = await self.request_router.process_command(audio_or_event)
+            await self._publish_turn_event(audio_or_event, result)
+            return result
         return {"text": "", "success": False, "error": "No request router configured"}
+
+    async def _publish_turn_event(self, audio_or_event, result: dict) -> None:
+        """Publica un LiveEvent type=turn al bus si está configurado.
+
+        Best-effort: errores se loguean a WARN una sola vez por proceso (para no
+        spamear si el bus está roto) y NO propagan, así no se rompe el pipeline
+        de voz si el dashboard cae. `result` se accede defensivamente porque
+        request_router puede no completar todos los campos en paths de error.
+        """
+        if not self._event_bus:
+            return
+        global _PUBLISH_FAILURE_LOGGED
+        try:
+            zone = (
+                getattr(audio_or_event, "room_id", None)
+                if not isinstance(audio_or_event, np.ndarray)
+                else None
+            )
+            if zone is None and not isinstance(audio_or_event, np.ndarray):
+                zone = getattr(audio_or_event, "zone", None)
+            payload = {
+                "id": result.get("turn_id"),
+                "user": result.get("user"),
+                "zone": zone,
+                "stt": result.get("text"),
+                "intent": result.get("intent"),
+                "tts": result.get("response"),
+                "latency_ms": result.get("latency_ms"),
+                "success": result.get("success", False),
+                "path": result.get("path", "fast"),
+            }
+            await self._event_bus.publish(LiveEvent(type=LiveEventType.TURN, payload=payload))
+        except (RuntimeError, AttributeError, TypeError, asyncio.QueueFull) as e:
+            if not _PUBLISH_FAILURE_LOGGED:
+                _PUBLISH_FAILURE_LOGGED = True
+                logger.warning(
+                    f"event_bus publish failed (suppressing future events): "
+                    f"{type(e).__name__}: {e}"
+                )
 
     async def test_from_text(self, text: str) -> dict:
         """
