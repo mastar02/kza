@@ -606,13 +606,19 @@ REGLAS:
         prompts: list[str],
         max_tokens: int = 256,
         temperature: float = 0.3,
+        extra_body: dict | None = None,
     ) -> list[str]:
-        """Generar respuestas en batch (secuencial por limitación de API OpenAI)."""
+        """Generar respuestas en batch (secuencial por limitación de API OpenAI).
+
+        extra_body: dict opcional para parámetros vLLM-specific (ej. guided_json,
+        guided_choice, guided_regex). Se reenvía tal cual al endpoint OpenAI-compat.
+        """
         if self._client is None:
             self.load()
 
         start = time.perf_counter()
         results: list[str] = []
+        kwargs = {"extra_body": extra_body} if extra_body else {}
         for prompt in prompts:
             try:
                 resp = self._client.completions.create(
@@ -620,6 +626,7 @@ REGLAS:
                     prompt=prompt,
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    **kwargs,
                 )
                 results.append(resp.choices[0].text)
             except Exception as e:

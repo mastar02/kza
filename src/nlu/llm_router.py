@@ -55,6 +55,20 @@ KNOWN_INTENTS: tuple[str, ...] = (
 
 
 @dataclass
+class CommandSegment:
+    """Sub-comando dentro de un wake fire.
+
+    El clasificador puede partir un texto en N segments cuando detecta
+    conectores ("y", "también", "y luego") con verbos+entidades distintos.
+    Cada segment se despacha de forma independiente en paralelo.
+    `needs_reasoning=True` indica que el dispatcher fast no resuelve el
+    segment y debe ir al reasoner 72B (timer/alarma/condicional/creativo).
+    """
+    text: str
+    needs_reasoning: bool = False
+
+
+@dataclass
 class CommandClassification:
     """Resultado de clasificar un texto post-wake."""
     is_command: bool
@@ -63,6 +77,10 @@ class CommandClassification:
     intent: Optional[str] = None
     entity_hint: Optional[str] = None
     slots: dict = field(default_factory=dict)
+    # Lista de sub-comandos. Para casos single-intent contiene 1 entry con
+    # text == texto original. Para multi-intent ("apagá X y prendé Y") tiene N.
+    # Consumidores que no la usen siguen funcionando con intent/entity_hint/slots.
+    segments: list[CommandSegment] = field(default_factory=list)
     raw_response: str = ""  # texto crudo del LLM (para debugging)
     elapsed_ms: float = 0.0
 
@@ -74,40 +92,99 @@ class _HistoryEntry:
     timestamp: float
 
 
-# Prompt SYSTEM optimizado para Qwen 7B en español. Pide JSON estricto.
-_SYSTEM_PROMPT = """Sos KZA, un router de comandos para un asistente de domótica en español rioplatense.
+# Prompt SYSTEM ultra-compacto. El shape JSON y los enums de intent /
+# rejection_reason los enforza vLLM vía response_format (ver _GUIDED_JSON_SCHEMA),
+# por eso acá NO repetimos campos ni listas — solo la semántica de rechazo /
+# aceptación que el modelo no puede inferir del schema solo.
+#
+# El cuerpo se mantiene byte-idéntico entre llamadas para maximizar prefix
+# caching de vLLM (cachea bloques de 16 tokens del prefijo estable).
+_SYSTEM_PROMPT = """Sos KZA, router de comandos para un asistente de hogar en español rioplatense. Devolvé JSON.
 
-Recibís un texto transcripto por Whisper de lo que oyó el micrófono y debés decidir:
-1. ¿Es un comando real del usuario, o ruido (TV, eco, alucinación de Whisper, replay)?
-2. Si es comando: ¿qué intent y qué entidad referencia?
+INTENTS soportados:
+turn_on (prendé/encendé), turn_off (apagá/cortá), toggle (cambiá), set_brightness (subí/bajá la luz, al N%), set_color_temp + set_color (cálida/fría/blanca/roja), set_volume, set_temperature, open/close (persianas/garage), scene_activate, media_play/pause/stop/next/previous.
 
-DEVOLVÉ SOLO UN JSON con esta estructura exacta. Sin explicación, sin texto adicional:
-{
-  "is_command": true|false,
-  "confidence": 0.0-1.0,
-  "rejection_reason": null | "tv_replay" | "tv_phrase" | "incomplete" | "noise" | "unknown_intent",
-  "intent": null | "turn_on" | "turn_off" | "toggle" | "set_brightness" | "set_color_temp" | "set_color" | "set_volume" | "set_temperature" | "open" | "close" | "scene_activate" | "media_play" | "media_pause" | "media_stop" | "media_next" | "media_previous",
-  "entity_hint": null | "<frase natural del dispositivo, ej luz del escritorio>",
-  "slots": {
-    "brightness_pct": int|null,
-    "color_temp_kelvin": int|null,
-    "rgb_color": [r,g,b]|null,
-    "value": any|null
-  }
+is_command=TRUE si el texto pide AL MENOS UNA acción ejecutable (domótica directa O algo que requiera razonamiento como timer/alarma/pregunta). Llená intent/entity_hint/slots con el PRIMER comando del texto.
+
+is_command=FALSE solo si:
+- tv_replay: copia casi exacta del historial <30s
+- tv_phrase: tono narrativo de TV ("¡Qué increíble!", "no puedo creer")
+- incomplete: solo wake word, sin verbo ni entidad
+- noise: palabras random sin sentido
+- unknown_intent: el verbo no aplica a domótica ni a reasoning (ej. insultos, idioma extraño)
+
+SEGMENTS: lista de sub-comandos, cada uno {text, needs_reasoning}.
+- Quitá la wake word ("nexa"/"kaza"/"alexa") del text de cada segment.
+- needs_reasoning=true para timers, alarmas, condicionales, preguntas, creatividad. false para domótica directa.
+- Splitteá cuando hay verbos+entidades distintos unidos por "y"/"también"/"y luego".
+- NO splitteás cuando "y" une atributos del MISMO comando ("cálida y suave" = atributos de la misma luz).
+
+EJEMPLOS:
+"apagá la luz" → is_cmd=true, intent=turn_off, segments=[{text:"apagá la luz", needs_reasoning:false}]
+"prendé la luz cálida y suave" → is_cmd=true, intent=turn_on, segments=[{text:"prendé la luz cálida y suave", needs_reasoning:false}]
+"apagá la luz y prendé el aire" → is_cmd=true, intent=turn_off, segments=[{text:"apagá la luz", needs_reasoning:false}, {text:"prendé el aire", needs_reasoning:false}]
+"apagá la luz y poné la alarma a las 6 am" → is_cmd=true, intent=turn_off, segments=[{text:"apagá la luz", needs_reasoning:false}, {text:"poné la alarma a las 6 am", needs_reasoning:true}]
+"decime qué hora es" → is_cmd=true, intent=null, segments=[{text:"decime qué hora es", needs_reasoning:true}]
+"apagá la luz también pausá la música" → is_cmd=true, intent=turn_off, segments=[{text:"apagá la luz", needs_reasoning:false}, {text:"pausá la música", needs_reasoning:false}]
+"qué tal" → is_cmd=false, rejection_reason=incomplete, segments=[]"""
+
+
+# JSON Schema para vLLM guided decoding. Garantiza output válido y corta
+# generación al cerrar el objeto → ahorra ~40% de tokens vs free-form.
+# Diseño:
+# - is_command + confidence required (sin ellos no podemos decidir).
+# - intent / entity_hint / rejection_reason / slots nullable (válidos en rechazos).
+# - intent enum cerrado: el modelo no puede inventar verbos fuera de KNOWN_INTENTS.
+# - slots: additionalProperties=true para que el modelo agregue claves específicas
+#   por intent (brightness_pct, color_temp_kelvin, etc.) sin listarlas todas.
+_GUIDED_JSON_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "is_command": {"type": "boolean"},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "rejection_reason": {
+            "type": ["string", "null"],
+            "enum": [None, "tv_replay", "tv_phrase", "incomplete", "noise", "unknown_intent"],
+        },
+        "intent": {
+            "type": ["string", "null"],
+            "enum": [None, *KNOWN_INTENTS],
+        },
+        "entity_hint": {"type": ["string", "null"]},
+        "slots": {"type": "object", "additionalProperties": True},
+        # Multi-intent split. Para single-intent cuenta con 1 entry; el dispatcher
+        # itera y despacha cada segment en paralelo. needs_reasoning routea al
+        # reasoner 72B en lugar del fast path.
+        "segments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "needs_reasoning": {"type": "boolean"},
+                },
+                "required": ["text", "needs_reasoning"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["is_command", "confidence"],
+    "additionalProperties": False,
 }
 
-REGLAS DE RECHAZO (poné is_command=false):
-- Texto idéntico o casi idéntico a un comando del HISTORIAL hace <30 segundos → "tv_replay" (Whisper alucinó del audio TV)
-- Frases con tono narrativo/dramático/conversacional típico de TV ("¿qué pasa?", "no puedo creer", "¡Salud!", nombres propios random) → "tv_phrase"
-- Texto incompleto ("Nexa..." solo, sin verbo o sin entidad) → "incomplete"
-- Texto sin sentido o palabras random → "noise"
-- Verbo de acción no soportado por la lista de intents → "unknown_intent"
 
-REGLAS DE ACEPTACIÓN (poné is_command=true):
-- Verbo claro de acción + entidad/objeto identificable
-- Aunque sea casual ("apagame eso", "che bajá la luz") si el intent es claro
-- Si pasaron >60s desde el último comando, los replays son menos sospechosos
-"""
+# Body que se reenvía como extra_body al endpoint /v1/completions de vLLM.
+# vLLM compila un FSM por schema único (cache), por eso definimos esto a nivel
+# módulo y no por llamada — primer call ~1s (compile), siguientes ~400-500ms.
+_RESPONSE_FORMAT_BODY: dict = {
+    "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "kza_command_classification",
+            "schema": _GUIDED_JSON_SCHEMA,
+        },
+    }
+}
 
 
 class LLMCommandRouter:
@@ -119,7 +196,7 @@ class LLMCommandRouter:
         max_history: int = 5,
         history_ttl_s: float = 120.0,
         timeout_s: float = 1.5,
-        max_tokens: int = 200,
+        max_tokens: int = 150,
         temperature: float = 0.0,
     ):
         """
@@ -129,7 +206,9 @@ class LLMCommandRouter:
             history_ttl_s: comandos más viejos que esto se descartan del prompt.
             timeout_s: cap de latencia del LLM call. Si excede, devolvemos
                 un resultado de "no decidió" → caller decide fallback.
-            max_tokens: cap del response del LLM. JSON suele caber en ~150.
+            max_tokens: cap del response del LLM. Con guided_json el JSON
+                single-intent cabe en ~50-70 tokens; multi-intent (con segments)
+                puede ir a 100-130. 150 da margen sin desperdicio significativo.
             temperature: 0.0 para máxima determinismo en la clasificación.
         """
         self.router = fast_router
@@ -166,15 +245,22 @@ class LLMCommandRouter:
         return "\n".join(lines)
 
     def _build_prompt(self, text: str, room_id: Optional[str] = None) -> str:
-        """Construir el prompt completo: system + contexto + texto a clasificar."""
-        room_block = f"HABITACIÓN ACTIVA: {room_id}" if room_id else ""
+        """Construir el prompt completo: system (estable) + contexto + texto.
+
+        Orden importa para vLLM prefix cache: el _SYSTEM_PROMPT va PRIMERO y es
+        byte-idéntico entre llamadas (cache hit del prefill). Lo variable
+        (history, room, text) va al final.
+
+        El trailer `JSON:` se omite — response_format ya enforza salida JSON
+        sin necesidad de hint textual y ahorra tokens de prefill.
+        """
+        room_block = f"HABITACIÓN: {room_id}" if room_id else ""
         history_block = self._build_history_block()
         return (
             f"{_SYSTEM_PROMPT}\n\n"
+            f"{history_block}\n"
             f"{room_block}\n"
-            f"{history_block}\n\n"
-            f"TEXTO TRANSCRIPTO: {text!r}\n\n"
-            f"JSON:"
+            f"TEXTO: {text!r}"
         )
 
     async def classify(
@@ -192,6 +278,7 @@ class LLMCommandRouter:
                     [prompt],
                     self.max_tokens,
                     self.temperature,
+                    _RESPONSE_FORMAT_BODY,  # vLLM ≥0.10: response_format json_schema
                 ),
                 timeout=self.timeout_s,
             )
@@ -254,8 +341,10 @@ class LLMCommandRouter:
 
         is_cmd = bool(data.get("is_command", False))
         intent = data.get("intent")
-        # Validar que el intent sea uno conocido (si is_command=True).
-        if is_cmd and intent not in KNOWN_INTENTS:
+        # Si is_command=True con un intent inválido (no en KNOWN_INTENTS y
+        # tampoco null), tratamos como unknown_intent. Permitimos intent=null
+        # cuando el comando va exclusivamente por reasoning (timer/pregunta).
+        if is_cmd and intent is not None and intent not in KNOWN_INTENTS:
             return CommandClassification(
                 is_command=False,
                 confidence=float(data.get("confidence", 0.0)),
@@ -270,6 +359,11 @@ class LLMCommandRouter:
         # Limpiar slots None — solo dejar los que tengan valor.
         slots = {k: v for k, v in slots.items() if v is not None}
 
+        # Parsear segments. Si el modelo no los emitió (caso legacy / rechazo),
+        # construimos un único segment con el texto original — así downstream
+        # no necesita branchear single vs multi.
+        segments = self._parse_segments(data.get("segments"), is_cmd)
+
         return CommandClassification(
             is_command=is_cmd,
             confidence=float(data.get("confidence", 0.0)),
@@ -277,6 +371,29 @@ class LLMCommandRouter:
             intent=intent if is_cmd else None,
             entity_hint=data.get("entity_hint") if is_cmd else None,
             slots=slots if is_cmd else {},
+            segments=segments,
             raw_response=raw,
             elapsed_ms=elapsed_ms,
         )
+
+    def _parse_segments(self, raw_segments, is_cmd: bool) -> list[CommandSegment]:
+        """Convertir el array `segments` del JSON en CommandSegment objects.
+
+        Si is_cmd=False o el array está vacío/inválido, devolvemos []. Para
+        is_cmd=True garantizamos al menos 1 segment (fallback al texto crudo lo
+        maneja el caller, que tiene acceso al texto original).
+        """
+        if not is_cmd or not isinstance(raw_segments, list):
+            return []
+        out: list[CommandSegment] = []
+        for entry in raw_segments:
+            if not isinstance(entry, dict):
+                continue
+            text = entry.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            out.append(CommandSegment(
+                text=text.strip(),
+                needs_reasoning=bool(entry.get("needs_reasoning", False)),
+            ))
+        return out
