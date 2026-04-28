@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.orchestrator.context_manager import ContextManager, ConversationTurn
-from src.orchestrator.compactor import CompactionResult, CompactionError
+from src.orchestrator.compactor import CompactionResult, CompactionError, CompactionErrorKind
 
 
 def _result(summary: str = "ok", ids: list[str] | None = None, count: int = 3) -> CompactionResult:
@@ -78,7 +78,7 @@ class TestCompactionTrigger:
     @pytest.mark.asyncio
     async def test_trigger_failure_leaves_history_intact(self, manager_with_compactor):
         mgr, compactor = manager_with_compactor
-        compactor.compact = AsyncMock(side_effect=CompactionError("boom"))
+        compactor.compact = AsyncMock(side_effect=CompactionError(CompactionErrorKind.REASONER_FAILED, "boom"))
 
         mgr.get_or_create("u1", "Juan")
         for i in range(6):
