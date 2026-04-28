@@ -217,6 +217,11 @@ nlu:
     max_tokens: 200           # cap del JSON response
     temperature: 0.0          # determinismo total para clasificación
 
+  fast_path:
+    enabled: true             # activado tras integración 2026-04-28 (regex + LLM gate)
+    gate_timeout_s: 0.5       # cap de latencia del LLM gate binario
+    gate_max_tokens: 20       # output corto del gate (~5-10 tokens)
+
 # LLM para Razonamiento — 72B Q8_0 siempre caliente vía kza-72b.service (Q1=A)
 # Modo "http" consume por HTTP al systemd service local en :8200 (evita doble carga).
 # Modo "local" carga el GGUF en el proceso (fallback para debug; usa ~64-77GB RAM).
