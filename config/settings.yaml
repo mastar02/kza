@@ -906,14 +906,12 @@ rooms:
     model: "hey_jarvis"            # usado cuando engine=openwakeword
     threshold: 0.35                # usado cuando engine=openwakeword
     # Whisper engine params (opcionales, con defaults razonables)
-    # silence_end_ms 700ms (subido de 500): tolera pausas naturales del usuario
-    # entre 'Nexa' y comando. Sin esto, una pausa >500ms partía la utterance
-    # en dos (wake-only + comando-sin-wake) — el follow-up window igual lo
-    # captura, pero el flujo single-utterance es más limpio. Latencia: para
-    # comandos completos el early_dispatch corta antes (intervalo 400ms), así
-    # que el extra silence wait no afecta el camino feliz. Sólo agrega ~200ms
-    # cuando el parser no detecta intent+entity y caemos al silencio total.
-    silence_end_ms: 700
+    # silence_end_ms 500ms (revertido de 700 el 2026-04-28): el early_dispatch
+    # corta antes para comandos con grammar match (intent+entity), pero cuando
+    # el grammar NO matchea (ej: query libre al LLM), el silence wait es la
+    # única vía. 700ms agregaba ~200ms a esos casos sin beneficio claro — el
+    # follow-up window post-wake-solo (4s) ya cubre pausas naturales >500ms.
+    silence_end_ms: 500
     min_utterance_ms: 250
     max_utterance_s: 3.5
     # Gates pre-Whisper. Calibrados para mic XVF3800 montado en cielorraso con

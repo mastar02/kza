@@ -698,6 +698,14 @@ class HomeAssistantClient:
         # propaga RuntimeError para que main.py decida (sigue/fail).
         await self._wait_for_ws_ready(max_attempts=3, backoff_s=2.0)
 
+        # Pre-conectar canal [calls] al startup. Sin esto, el primer comando
+        # del usuario paga ~90ms de SSL+auth handshake por el lazy connect.
+        # Heartbeat=30s mantiene viva la conexión.
+        try:
+            await self.connect_websocket()
+        except Exception as e:
+            logger.warning(f"WS calls warmup falló (seguirá lazy): {e}")
+
         self._state_full_refresh_interval_s = full_refresh_interval_s
         self._state_sync_running = True
         self._state_subscribe_task = asyncio.create_task(self._state_sync_loop())

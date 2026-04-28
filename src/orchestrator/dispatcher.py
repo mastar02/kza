@@ -188,6 +188,7 @@ class RequestDispatcher:
         music_dispatcher=None,
         list_manager=None,
         reminder_manager=None,
+        response_handler=None,
         vector_threshold: float = 0.65,
         use_router_for_simple: bool = True
     ):
@@ -220,6 +221,7 @@ class RequestDispatcher:
         self.use_router = use_router_for_simple
         self.list_manager = list_manager
         self.reminder_manager = reminder_manager
+        self.response_handler = response_handler
 
         # Estadisticas
         self._stats = {
@@ -501,56 +503,26 @@ class RequestDispatcher:
                 }
 
             if command:
-                # S6: Cache-first check. Si el estado ya coincide con el target,
-                # evitamos el round-trip a HA. Solo aplica a turn_on/turn_off.
-                service = command.get("service")
-                entity_id = command.get("entity_id")
-                target_state = None
-                if service == "turn_on":
-                    target_state = "on"
-                elif service == "turn_off":
-                    target_state = "off"
-
-                # Re-habilitado 2026-04-24: el fix de dual WebSocket (canales
-                # separados _ws_calls / _ws_events en ha_client) elimina el race
-                # "Concurrent call to receive()" que desincronizaba el cache.
-                # Ahora el state sync es confiable, así que el skip idempotente
-                # puede correr sin riesgo de hacer creer al usuario que pasó algo
-                # cuando en realidad la luz estaba en otro estado.
-                if target_state and hasattr(self.ha, "get_entity_state_cached"):
-                    cached = self.ha.get_entity_state_cached(entity_id)
-                    if cached is not None and cached.get("state") == target_state:
-                        timings["home_assistant"] = 0.0
-                        logger.debug(
-                            f"Cache hit: {entity_id} ya está en '{target_state}', skip"
-                        )
-                        return DispatchResult(
-                            path=path,
-                            priority=Priority.HIGH,
-                            success=True,
-                            response=command["description"],
-                            intent="domotics",
-                            action={**command, "already_in_state": True},
-                            timings=timings,
-                        )
-
-                # Ejecutar en Home Assistant (await obligatorio — call_service es async)
-                t1 = time.perf_counter()
-                success = await self.ha.call_service_ws(
-                    command["domain"],
-                    command["service"],
-                    command["entity_id"],
-                    command.get("data")
-                )
-                timings["home_assistant"] = (time.perf_counter() - t1) * 1000
+                # 2026-04-28: removido el skip idempotent por cache. La integración
+                # Hue↔HA tiene lag (a veces segundos) entre el estado real y el cache
+                # vía WS. Con el skip, una luz físicamente prendida pero con cache="off"
+                # ignoraba el "apagá" silenciosamente. La HA call es idempotent
+                # server-side, así que mandarla siempre no tiene costo y garantiza
+                # que el estado real se sincronice.
+                # 2026-04-26: fire-and-forget. El usuario valida visualmente las
+                # acciones de domótica (no quiere TTS ack). El HA call corre en
+                # background; si falla, _fire_and_reconcile_ha habla el error.
+                # Eso baja `home_assistant` de ~155ms a ~0ms en el camino crítico.
+                asyncio.create_task(self._fire_and_reconcile_ha(command))
+                timings["home_assistant"] = 0.0
 
                 return DispatchResult(
                     path=path,
                     priority=Priority.HIGH,
-                    success=success,
-                    response=command["description"] if success else "No pude hacerlo",
+                    success=True,
+                    response=command["description"],
                     intent="domotics",
-                    action=command,
+                    action={**command, "fire_and_forget": True},
                     timings=timings
                 )
 
@@ -971,6 +943,52 @@ class RequestDispatcher:
             # TODO: Enviar a zona especifica
             self.tts.speak(message)
         return message
+
+    async def _fire_and_reconcile_ha(self, command: dict) -> None:
+        """Ejecutar el call a HA en background y reportar solo en caso de error.
+
+        Llamado desde `_fast_path` con `asyncio.create_task` para no bloquear
+        el camino crítico del usuario. La latencia hacia HA + dispositivo
+        sigue existiendo, pero ya no la paga el usuario en el TTS.
+
+        Reconciliación criterio α (sesión 2026-04-26):
+        - Si `call_service_ws` retorna False o lanza excepción → hablar el error
+          usando `command.description`. La integración HA/WS ya tiene su propio
+          timeout y fallback REST, así que llegar acá significa fallo real.
+        - Si retorna True → silencio (el usuario valida visualmente).
+        """
+        domain = command.get("domain")
+        service = command.get("service")
+        entity_id = command.get("entity_id")
+        description = command.get("description") or entity_id or "esa acción"
+        t0 = time.perf_counter()
+        try:
+            success = await self.ha.call_service_ws(
+                domain, service, entity_id, command.get("data"),
+            )
+            dt = (time.perf_counter() - t0) * 1000
+            logger.info(
+                f"[HA-CALL] {domain}.{service}@{entity_id} "
+                f"success={success} took={dt:.0f}ms"
+            )
+        except Exception as e:
+            logger.error(
+                f"Reconcile error en {domain}.{service}@{entity_id}: {e}"
+            )
+            success = False
+        if success:
+            return
+        verb = "apagar" if service == "turn_off" else "prender"
+        if self.response_handler is not None:
+            try:
+                self.response_handler.speak(f"No pude {verb} {description}")
+            except Exception as e:
+                logger.warning(f"No pude hablar error de reconciliación: {e}")
+        else:
+            logger.warning(
+                f"HA fire-and-forget falló en {domain}.{service}@{entity_id} "
+                f"sin response_handler — usuario no fue notificado"
+            )
 
 
 class MultiUserOrchestrator:
