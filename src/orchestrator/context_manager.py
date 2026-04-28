@@ -580,6 +580,96 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
 
         return cleaned
 
+    async def start_cleanup_loop_async(self) -> None:
+        """Loop async de cleanup. Reemplaza al thread daemon cuando hay event loop.
+
+        Llamar desde main.py: asyncio.create_task(mgr.start_cleanup_loop_async()).
+        Detener con stop_cleanup_loop_async().
+        """
+        self._cleanup_running = True
+        logger.info("[ContextManager] async cleanup loop started")
+        while self._cleanup_running:
+            try:
+                await asyncio.sleep(self.cleanup_interval)
+                await self._cleanup_inactive_async()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[ContextManager] cleanup loop error: {e}")
+        logger.info("[ContextManager] async cleanup loop stopped")
+
+    def stop_cleanup_loop_async(self) -> None:
+        self._cleanup_running = False
+
+    async def _cleanup_inactive_async(self) -> int:
+        """Async equivalente de cleanup_inactive: si hay persister, snapshot
+        antes de eliminar el contexto."""
+        now = time.time()
+        with self._lock:
+            inactive_ids = [
+                uid for uid, ctx in self._contexts.items()
+                if (now - ctx.last_active) > self.inactive_timeout
+            ]
+
+        cleaned = 0
+        for uid in inactive_ids:
+            await self._snapshot_and_remove(uid)
+            cleaned += 1
+
+        if cleaned > 0:
+            logger.info(f"[ContextManager] async cleanup removed {cleaned} contexts")
+        return cleaned
+
+    async def _snapshot_and_remove(self, user_id: str) -> None:
+        """Si hay persister: compactar pendiente + persistir. Luego remover."""
+        with self._lock:
+            ctx = self._contexts.get(user_id)
+            if ctx is None:
+                return
+
+        # Compactar resto si hay turnos pendientes y compactor disponible
+        if self.compactor is not None and self.persister is not None:
+            with self._lock:
+                pending = list(ctx.conversation_history) if ctx else []
+                preserved_seed = list(ctx.preserved_ids) if ctx else []
+            if pending:
+                try:
+                    extra = []
+                    for t in pending:
+                        extra.extend(t.entities or [])
+                    result = await self.compactor.compact(
+                        pending, preserved_entities=preserved_seed + extra
+                    )
+                    with self._lock:
+                        ctx = self._contexts.get(user_id)
+                        if ctx:
+                            existing = (ctx.compacted_summary + " ") if ctx.compacted_summary else ""
+                            ctx.compacted_summary = (existing + result.summary).strip()
+                            ctx.preserved_ids = sorted(
+                                set(ctx.preserved_ids) | set(result.preserved_ids)
+                            )
+                            ctx.conversation_history = []
+                except Exception as e:
+                    logger.warning(
+                        f"[ContextManager] final compaction failed for {user_id}: {e}"
+                    )
+
+        # Persistir si hay persister
+        if self.persister is not None:
+            with self._lock:
+                ctx = self._contexts.get(user_id)
+            if ctx is not None and (ctx.compacted_summary or ctx.conversation_history):
+                try:
+                    await asyncio.to_thread(self.persister.save, ctx)
+                except Exception as e:
+                    logger.warning(f"[ContextManager] snapshot save failed for {user_id}: {e}")
+
+        # Eliminar de memoria
+        with self._lock:
+            if user_id in self._contexts:
+                del self._contexts[user_id]
+                self._total_contexts_cleaned += 1
+
     def clear_user_history(self, user_id: str):
         """Limpiar historial de un usuario especifico"""
         with self._lock:

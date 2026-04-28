@@ -127,3 +127,75 @@ class TestCompactionTrigger:
         assert "A." in ctx.compacted_summary
         assert "B." in ctx.compacted_summary
         assert sorted(ctx.preserved_ids) == ["light.a", "light.b"]
+
+
+class TestCleanupSnapshot:
+    @pytest.mark.asyncio
+    async def test_cleanup_persists_expired_context(self, tmp_path):
+        from src.orchestrator.context_persister import ContextPersister
+
+        persister = ContextPersister(base_path=tmp_path / "contexts")
+        compactor = AsyncMock()
+        compactor.compact = AsyncMock(return_value=_result(summary="snap"))
+
+        mgr = ContextManager(
+            inactive_timeout=0.01,  # casi instantáneo
+            cleanup_interval=0.05,
+            compactor=compactor,
+            persister=persister,
+        )
+        mgr.get_or_create("snap_user", "Ana")
+        mgr.add_turn("snap_user", "user", "hola", entities=["light.a"])
+
+        # Iniciar el cleanup loop como asyncio task
+        cleanup_task = asyncio.create_task(mgr.start_cleanup_loop_async())
+
+        # Esperar más que inactive_timeout + cleanup_interval
+        await asyncio.sleep(0.2)
+
+        mgr.stop_cleanup_loop_async()
+        await cleanup_task
+
+        # Verificar persistencia
+        assert persister.exists("snap_user")
+        data = persister.load("snap_user")
+        assert "snap" in (data["compacted_summary"] or "")
+
+        # Y el contexto fue removido de memoria
+        assert mgr.get("snap_user") is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_skips_active_contexts(self, tmp_path):
+        from src.orchestrator.context_persister import ContextPersister
+
+        persister = ContextPersister(base_path=tmp_path / "contexts")
+        mgr = ContextManager(
+            inactive_timeout=10.0,  # nadie expira en este test
+            cleanup_interval=0.02,
+            persister=persister,
+        )
+        mgr.get_or_create("active_user", "Bob")
+
+        cleanup_task = asyncio.create_task(mgr.start_cleanup_loop_async())
+        await asyncio.sleep(0.1)
+        mgr.stop_cleanup_loop_async()
+        await cleanup_task
+
+        assert mgr.get("active_user") is not None
+        assert not persister.exists("active_user")
+
+    @pytest.mark.asyncio
+    async def test_cleanup_without_persister_just_deletes(self):
+        mgr = ContextManager(
+            inactive_timeout=0.01,
+            cleanup_interval=0.02,
+            persister=None,
+        )
+        mgr.get_or_create("ghost", "x")
+
+        cleanup_task = asyncio.create_task(mgr.start_cleanup_loop_async())
+        await asyncio.sleep(0.1)
+        mgr.stop_cleanup_loop_async()
+        await cleanup_task
+
+        assert mgr.get("ghost") is None  # baseline cleanup behavior
