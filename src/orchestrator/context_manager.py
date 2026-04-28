@@ -112,6 +112,12 @@ class UserContext:
     session_start: float = field(default_factory=time.time)
     turns_count: int = 0
 
+    # Compaction state (plan #2 OpenClaw)
+    compacted_summary: str | None = None
+    preserved_ids: list[str] = field(default_factory=list)
+    compaction_inflight: bool = False  # transient, no se serializa
+    session_count: int = 1
+
     def add_turn(self, role: str, content: str, intent: str = None, entities: list = None):
         """Agregar turno al historial"""
         turn = ConversationTurn(
