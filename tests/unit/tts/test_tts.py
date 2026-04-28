@@ -24,12 +24,15 @@ from src.tts.piper_tts import (
 
 @pytest.fixture
 def mock_kokoro():
-    """KokoroTTS con modelo mockeado"""
-    kokoro = KokoroTTS(model="test-kokoro", device="cpu")
-    kokoro._model = MagicMock()
-    # Return 0.5s of audio at 24kHz
+    """KokoroTTS con modelo mockeado (API Kokoro 0.7+: generator de Results)."""
+    kokoro = KokoroTTS(model="test-kokoro", device="cpu", lang_code="e")
+    # Kokoro 0.7+ __call__ es generator que yield Result con .audio (Tensor).
+    # Mockeamos un objeto con .audio = ndarray (el código también maneja ndarray
+    # directo porque solo llama .cpu().numpy() si tiene el método .cpu).
     audio = np.random.randn(12000).astype(np.float32)
-    kokoro._model.return_value = (audio, None)
+    fake_result = MagicMock()
+    fake_result.audio = audio  # ndarray directo; no pasa por .cpu().numpy()
+    kokoro._model = MagicMock(return_value=iter([fake_result]))
     return kokoro
 
 

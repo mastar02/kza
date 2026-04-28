@@ -40,7 +40,14 @@ class Zone:
     
     # Usuarios asociados (opcional)
     default_users: list[str] = field(default_factory=list)
-    
+
+    # Integración con intercom/media — opcionales por zona.
+    # Se llenan solo si la zona está configurada para anunciar o reproducir
+    # media; si son None, IntercomSystem simplemente no rutea a esa zona.
+    media_player_entity: str | None = None
+    speaker_entity: str | None = None
+    tts_target: str | None = None
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -48,7 +55,10 @@ class Zone:
             "mic_device_index": self.mic_device_index,
             "ma1260_zone": self.ma1260_zone,
             "state": self.state.value,
-            "volume": self.volume
+            "volume": self.volume,
+            "media_player_entity": self.media_player_entity,
+            "speaker_entity": self.speaker_entity,
+            "tts_target": self.tts_target,
         }
 
 

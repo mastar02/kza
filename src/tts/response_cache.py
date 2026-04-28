@@ -170,9 +170,10 @@ class ResponseCache:
                 if asyncio.iscoroutine(result):
                     result = await result
             except Exception as e:
-                logger.debug(
+                logger.warning(
                     f"TTS cache: método {method_name!r} falló para "
-                    f"{text!r}: {e}"
+                    f"{text!r}: {type(e).__name__}: {e}",
+                    exc_info=True,
                 )
                 continue
 

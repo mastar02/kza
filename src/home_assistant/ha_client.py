@@ -89,9 +89,16 @@ class HomeAssistantClient:
         }
         self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
-        self._ws_connection = None
-        self._ws_connected = False
-        self._ws_msg_id = 1  # Contador de mensajes WebSocket
+        # Dual WebSocket connections (fix 2026-04-24): aiohttp forbids concurrent
+        # receive() on the same WS. _ws_calls is used by call_service_ws (short
+        # bounded receives), _ws_events is used by the state subscribe loop
+        # (long-lived receive). HA accepts multiple WS with the same token and
+        # scopes message IDs per connection — counters must NOT be shared.
+        self._ws_calls: aiohttp.ClientWebSocketResponse | None = None
+        self._ws_events: aiohttp.ClientWebSocketResponse | None = None
+        self._ws_connected = False  # reflects _ws_calls readiness
+        self._ws_msg_id_calls: int = 1
+        self._ws_msg_id_events: int = 1
         self._ws_reconnect_attempts = 0
         self._ws_max_reconnect_attempts = 3
 
@@ -114,6 +121,24 @@ class HomeAssistantClient:
         self._state_sync_running = False
         self._state_last_full_refresh: float = 0.0
         self._state_full_refresh_interval_s: float = 300.0
+
+    # ------------------------------------------------------------------
+    # Backward-compat alias
+    # ------------------------------------------------------------------
+    @property
+    def _ws_connection(self) -> aiohttp.ClientWebSocketResponse | None:
+        """Backward-compat alias for the calls-channel WebSocket.
+
+        Deprecated: new code should reference self._ws_calls (service calls)
+        or self._ws_events (state subscribe) explicitly.
+        """
+        return self._ws_calls
+
+    @_ws_connection.setter
+    def _ws_connection(self, value: aiohttp.ClientWebSocketResponse | None) -> None:
+        # Legacy setter kept so tests / callers that assigned directly keep
+        # working. Writes go to the calls channel.
+        self._ws_calls = value
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -473,73 +498,104 @@ class HomeAssistantClient:
 
     # ==================== WebSocket (menor latencia) ====================
 
-    async def connect_websocket(self) -> bool:
-        """Conectar via WebSocket para menor latencia (~10-20ms vs ~50-100ms REST).
+    async def _open_ws_authenticated(
+        self, purpose: str
+    ) -> aiohttp.ClientWebSocketResponse | None:
+        """Open a new authenticated WebSocket connection to HA.
 
-        Incluye auto-reconexion en caso de fallo.
+        Each HA WebSocket requires an auth handshake even with a long-lived
+        token:
+            1. Server sends {"type": "auth_required"}.
+            2. Client sends {"type": "auth", "access_token": TOKEN}.
+            3. Server sends {"type": "auth_ok"} on success.
+
+        Args:
+            purpose: "calls" or "events". Used only for log messages.
+
+        Returns:
+            The authenticated aiohttp.ClientWebSocketResponse, or None on
+            failure. The caller decides which attribute to store the result on
+            (self._ws_calls or self._ws_events).
         """
-        if self._ws_connected:
-            return True
-
         ws_url = self.url.replace("http", "ws") + "/api/websocket"
 
         try:
             session = await self._ensure_session()
 
-            self._ws_connection = await session.ws_connect(
+            ws = await session.ws_connect(
                 ws_url,
-                heartbeat=30.0  # Ping cada 30s para mantener conexion
+                heartbeat=30.0,  # Ping cada 30s para mantener conexion
             )
 
-            # Autenticar
+            # Auth handshake
             msg = await asyncio.wait_for(
-                self._ws_connection.receive_json(),
-                timeout=WS_AUTH_TIMEOUT
+                ws.receive_json(),
+                timeout=WS_AUTH_TIMEOUT,
             )
 
-            if msg.get("type") == "auth_required":
-                await self._ws_connection.send_json({
-                    "type": "auth",
-                    "access_token": self.token
-                })
-
-                auth_result = await asyncio.wait_for(
-                    self._ws_connection.receive_json(),
-                    timeout=WS_AUTH_TIMEOUT
+            if msg.get("type") != "auth_required":
+                logger.error(
+                    f"WS[{purpose}] unexpected first frame (expected auth_required): {msg}"
                 )
+                await ws.close()
+                return None
 
-                if auth_result.get("type") == "auth_ok":
-                    self._ws_connected = True
-                    self._ws_reconnect_attempts = 0
-                    logger.info("WebSocket HA conectado y autenticado")
-                    return True
-                else:
-                    self._has_auth_error = True
-                    logger.error(f"Auth WebSocket fallo: {auth_result}")
+            await ws.send_json({
+                "type": "auth",
+                "access_token": self.token,
+            })
 
-            return False
+            auth_result = await asyncio.wait_for(
+                ws.receive_json(),
+                timeout=WS_AUTH_TIMEOUT,
+            )
+
+            if auth_result.get("type") == "auth_ok":
+                logger.info(f"WebSocket HA[{purpose}] conectado y autenticado")
+                return ws
+
+            self._has_auth_error = True
+            logger.error(f"Auth WebSocket[{purpose}] fallo: {auth_result}")
+            await ws.close()
+            return None
 
         except asyncio.TimeoutError:
-            logger.error(f"WebSocket auth timeout after {WS_AUTH_TIMEOUT}s")
-            self._ws_connected = False
-            self._record_error(asyncio.TimeoutError(), "connect_websocket")
-            return False
+            logger.error(f"WebSocket[{purpose}] auth timeout after {WS_AUTH_TIMEOUT}s")
+            self._record_error(asyncio.TimeoutError(), f"open_ws({purpose})")
+            return None
         except aiohttp.ClientConnectorError as e:
-            logger.error(f"HA unavailable (connect_websocket): {e}")
-            self._ws_connected = False
-            self._record_error(e, "connect_websocket")
-            return False
+            logger.error(f"HA unavailable (open_ws[{purpose}]): {e}")
+            self._record_error(e, f"open_ws({purpose})")
+            return None
         except Exception as e:
-            logger.error(f"Error conectando WebSocket HA: {e}")
+            logger.error(f"Error conectando WebSocket HA[{purpose}]: {e}")
+            self._record_error(e, f"open_ws({purpose})")
+            return None
+
+    async def connect_websocket(self) -> bool:
+        """Conectar el canal de calls via WebSocket para menor latencia.
+
+        Incluye auto-reconexion en caso de fallo. Usa _open_ws_authenticated
+        para el handshake. Solo afecta al canal self._ws_calls.
+        """
+        if self._ws_connected and self._ws_calls and not self._ws_calls.closed:
+            return True
+
+        ws = await self._open_ws_authenticated("calls")
+        if ws is None:
             self._ws_connected = False
-            self._record_error(e, "connect_websocket")
             return False
 
+        self._ws_calls = ws
+        self._ws_connected = True
+        self._ws_reconnect_attempts = 0
+        return True
+
     async def ensure_websocket_connected(self) -> bool:
-        """Asegurar que WebSocket esta conectado, reconectar si es necesario."""
-        if self._ws_connected and self._ws_connection:
+        """Asegurar que el canal de calls esta conectado, reconectar si es necesario."""
+        if self._ws_connected and self._ws_calls:
             # Verificar que la conexion sigue viva
-            if self._ws_connection.closed:
+            if self._ws_calls.closed:
                 self._ws_connected = False
 
         if not self._ws_connected:
@@ -569,15 +625,15 @@ class HomeAssistantClient:
 
         t_start = time.perf_counter()
         try:
-            # ID unico para este mensaje
-            self._ws_msg_id += 1
-            msg_id = self._ws_msg_id
+            # ID unico para este mensaje — counter propio del canal de calls.
+            self._ws_msg_id_calls += 1
+            msg_id = self._ws_msg_id_calls
 
             service_data = {"entity_id": entity_id}
             if data:
                 service_data.update(data)
 
-            await self._ws_connection.send_json({
+            await self._ws_calls.send_json({
                 "id": msg_id,
                 "type": "call_service",
                 "domain": domain,
@@ -587,7 +643,7 @@ class HomeAssistantClient:
 
             # Esperar respuesta (con timeout corto para baja latencia)
             response = await asyncio.wait_for(
-                self._ws_connection.receive_json(),
+                self._ws_calls.receive_json(),
                 timeout=WS_CALL_TIMEOUT
             )
 
@@ -635,10 +691,58 @@ class HomeAssistantClient:
             logger.debug("State sync ya está corriendo")
             return
 
+        # Pre-condición: confirmar que el canal WS events handshake-ea OK
+        # antes de marcar el servicio como ready. Mata el ruido de "auth
+        # timeout" en logs cuando el primer ws_connect es lento (HA digiriendo
+        # el snapshot REST recién hecho). Si todos los reintentos fallan,
+        # propaga RuntimeError para que main.py decida (sigue/fail).
+        await self._wait_for_ws_ready(max_attempts=3, backoff_s=2.0)
+
         self._state_full_refresh_interval_s = full_refresh_interval_s
         self._state_sync_running = True
         self._state_subscribe_task = asyncio.create_task(self._state_sync_loop())
         logger.info("HA state prefetch cache: sync loop arrancado")
+
+    async def _wait_for_ws_ready(
+        self,
+        max_attempts: int = 3,
+        backoff_s: float = 2.0,
+    ) -> None:
+        """Pre-conectar el canal events con retries antes del background loop.
+
+        En LAN, el primer ws_connect post-snapshot REST grande (~329 entities)
+        puede demorar 5-7s mientras HA termina de servir el payload. El
+        timeout default de 5s del handshake auth lo dispara aunque HA esté
+        sano. Reintentar 3 veces con backoff resuelve el race sin ocultar
+        fallos reales (un HA caído sigue fallando los 3 intentos en ~10s).
+
+        Args:
+            max_attempts: Cuántos intentos antes de propagar.
+            backoff_s: Espera entre intentos (lineal, no exponencial — el
+                problema es transient ms, no sostenido).
+
+        Raises:
+            RuntimeError: si tras `max_attempts` no se pudo abrir el WS.
+        """
+        for attempt in range(1, max_attempts + 1):
+            try:
+                ws = await self._open_ws_authenticated("events")
+                if ws is not None:
+                    self._ws_events = ws
+                    if attempt > 1:
+                        logger.info(
+                            f"WS events ready en intento {attempt}/{max_attempts}"
+                        )
+                    return
+            except Exception as e:
+                logger.warning(
+                    f"WS warmup intento {attempt}/{max_attempts} excepción: {e}"
+                )
+            if attempt < max_attempts:
+                await asyncio.sleep(backoff_s)
+        raise RuntimeError(
+            f"WS HA events no disponible tras {max_attempts} intentos"
+        )
 
     async def stop_state_sync(self) -> None:
         """Parar el loop de sync (para shutdown graceful)."""
@@ -650,6 +754,14 @@ class HomeAssistantClient:
             except (asyncio.CancelledError, Exception):
                 pass
             self._state_subscribe_task = None
+        # Cerrar la conexión dedicada de events. Se reabrirá cuando start_state_sync
+        # vuelva a correr.
+        if self._ws_events is not None and not self._ws_events.closed:
+            try:
+                await self._ws_events.close()
+            except Exception as e:
+                logger.debug(f"Error cerrando _ws_events: {e}")
+        self._ws_events = None
 
     async def _state_sync_loop(self) -> None:
         """Loop resiliente: reconnect con backoff exponencial si el WS falla.
@@ -682,18 +794,24 @@ class HomeAssistantClient:
 
         Cada iteración del outer loop (_state_sync_loop) rehace esto para
         garantizar consistencia después de una reconexión.
+
+        Usa el canal dedicado self._ws_events — independiente del canal de
+        calls — para evitar el race de aiohttp 'Concurrent call to receive()'.
         """
         # 1. Snapshot inicial REST para poblar cache completo
         await self._refresh_full_state_snapshot()
 
-        # 2. Asegurar conexión WebSocket
-        if not await self.ensure_websocket_connected():
-            raise RuntimeError("No se pudo conectar al WebSocket de HA")
+        # 2. Abrir (o reutilizar) la conexión dedicada de events.
+        if self._ws_events is None or self._ws_events.closed:
+            ws = await self._open_ws_authenticated("events")
+            if ws is None:
+                raise RuntimeError("No se pudo conectar al WebSocket de HA (events)")
+            self._ws_events = ws
 
-        # 3. Subscribe al event state_changed
-        self._ws_msg_id += 1
-        subscribe_id = self._ws_msg_id
-        await self._ws_connection.send_json({
+        # 3. Subscribe al event state_changed (id counter propio del canal).
+        self._ws_msg_id_events += 1
+        subscribe_id = self._ws_msg_id_events
+        await self._ws_events.send_json({
             "id": subscribe_id,
             "type": "subscribe_events",
             "event_type": "state_changed",
@@ -703,7 +821,7 @@ class HomeAssistantClient:
         # HA responde con {"id": N, "type": "result", "success": true}
         try:
             confirm = await asyncio.wait_for(
-                self._ws_connection.receive_json(),
+                self._ws_events.receive_json(),
                 timeout=WS_AUTH_TIMEOUT,
             )
         except asyncio.TimeoutError as e:
@@ -712,14 +830,14 @@ class HomeAssistantClient:
         if confirm.get("type") != "result" or not confirm.get("success", False):
             raise RuntimeError(f"Subscribe no confirmado: {confirm}")
 
-        logger.info("HA state prefetch: suscripto a state_changed")
+        logger.info("HA state prefetch: suscripto a state_changed (canal events)")
 
         # 4. Consumir events hasta que el WS se cierre o nos cancelen
         last_full = time.time()
         while self._state_sync_running:
             try:
                 msg = await asyncio.wait_for(
-                    self._ws_connection.receive_json(),
+                    self._ws_events.receive_json(),
                     timeout=30.0,  # timeout largo, solo para no colgar para siempre
                 )
             except asyncio.TimeoutError:
@@ -791,10 +909,18 @@ class HomeAssistantClient:
         self._state_callbacks.append(callback)
 
     async def close(self) -> None:
-        """Cerrar conexiones."""
+        """Cerrar conexiones (ambos canales WS + session HTTP)."""
         await self.stop_state_sync()
-        if self._ws_connection:
-            await self._ws_connection.close()
+        for attr_name in ("_ws_events", "_ws_calls"):
+            ws = getattr(self, attr_name, None)
+            if ws is not None and not ws.closed:
+                try:
+                    await ws.close()
+                except Exception as e:
+                    logger.debug(f"Error cerrando {attr_name}: {e}")
+        self._ws_events = None
+        self._ws_calls = None
+        self._ws_connected = False
         if self._session and not self._session.closed:
             await self._session.close()
 

@@ -9,8 +9,11 @@ Owns all command routing logic:
 """
 
 import logging
+import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 import numpy as np
 
@@ -19,6 +22,90 @@ from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 
 logger = logging.getLogger(__name__)
+
+
+# Frases que NO son comandos reales aunque llegaron al router — evitan que
+# vayan al slow path del LLM (caro) cuando son ruido de TV, eco del TTS o
+# filler conversacional. Match por substring sobre el texto normalizado
+# (lowercase, sin acentos). Comparado con `_TV_STOP_PHRASES` del wake
+# detector, acá incluimos eco del TTS típico del sistema.
+_NOISE_PHRASES = (
+    # TV/streaming (puede llegar al router si un wake previo abrió el flow)
+    "suscribe", "suscrib", "campanita", "gracias por ver",
+    "dale like", "dale lie", "dale mega like",
+    "canal de youtube", "activa la",
+    # Eco típico del TTS de respuestas/confirmaciones (audio del propio
+    # sistema capturado por el mic cuando el barge-in/echo suppressor
+    # falla puntualmente).
+    "luz encendida", "luz apagada", "luces encendidas", "luces apagadas",
+    "hecho", "perfecto", "listo",
+)
+
+
+def _is_noise_text(text: str, wake_words: tuple[str, ...] = ()) -> str | None:
+    """Chequea si `text` parece ruido/eco, no un comando real.
+
+    Args:
+        text: Texto a evaluar (transcripción del comando post-wake).
+        wake_words: Wake words configuradas (lowercase, sin acentos). Si
+            ninguna aparece en el texto normalizado, se descarta como
+            ruido — el buffer post-wake siempre debería incluir la palabra
+            de despertar; si no está, la captura es probablemente TV/ruido
+            de un wake disparado en un chunk anterior. Vacío = check off.
+
+    Returns:
+        Nombre de la regla que matcheó (para logging), o None si es un
+        comando potencialmente válido.
+    """
+    if not text:
+        return "empty"
+    norm = unicodedata.normalize("NFD", text.lower())
+    norm = "".join(c for c in norm if unicodedata.category(c) != "Mn")
+    norm = re.sub(r"[^\w\s]", " ", norm)
+    norm = re.sub(r"\s+", " ", norm).strip()
+    if not norm:
+        return "empty_after_norm"
+    # Frases conocidas de noise / TV / eco
+    for phrase in _NOISE_PHRASES:
+        if phrase in norm:
+            return f"noise_phrase:{phrase!r}"
+    # Sólo "gracias" (sin verbo/entity) — eco del TTS agradeciendo.
+    if norm in {"gracias", "si", "no", "ok", "bueno", "dale"}:
+        return f"filler_word:{norm!r}"
+    # Repetición extrema: una sola palabra repetida >= 4 veces
+    words = norm.split()
+    if len(words) >= 4 and len(set(words)) == 1:
+        return f"word_repetition:{words[0]!r}"
+    # Wake-word ausente — el comando se capturó pero el texto no contiene
+    # ninguna de las wake words. Análisis de logs 24-25 abr (24 FPs únicos
+    # de TV) mostró 0% de comandos reales sin wake en transcripción.
+    if wake_words:
+        if not any(w in norm for w in wake_words):
+            return f"missing_wake:{wake_words[0]!r}"
+    return None
+
+
+def _texts_diverge(a: str, b: str, min_ratio: float = 0.95) -> bool:
+    """True if two transcriptions differ enough to suspect hallucination.
+
+    Uses accent-stripped lowercase SequenceMatcher ratio. Below min_ratio,
+    the texts are considered divergent.
+
+    Default 0.95 calibrated so single-word hallucinations (e.g. 'Nexa' → 'Para'
+    in a ~6-word utterance, ratio ≈ 0.917) cross the threshold. Exact matches
+    and near-duplicates caused by e.g. a one-letter insertion (ratio ≥ 0.97)
+    stay silent.
+
+    Returns False if either input is empty (nothing meaningful to compare).
+    """
+    if not a or not b:
+        return False
+
+    def _norm(t: str) -> str:
+        t = unicodedata.normalize("NFD", t.lower())
+        return "".join(c for c in t if unicodedata.category(c) != "Mn").strip()
+
+    return SequenceMatcher(None, _norm(a), _norm(b)).ratio() < min_ratio
 
 
 @dataclass
@@ -98,6 +185,8 @@ class RequestRouter:
         action_tracker=None,
         confidence_threshold: float = 0.75,
         metrics_emitter=None,
+        wake_words: tuple[str, ...] | list[str] | None = None,
+        llm_command_router=None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -166,6 +255,22 @@ class RequestRouter:
         self.confidence_threshold = confidence_threshold
         self.metrics_emitter = metrics_emitter
 
+        # Wake words (lowercase, sin acentos) usadas por el noise filter
+        # para descartar capturas que no contienen la palabra de despertar.
+        # Default coincide con config base (rooms.wake_word.words).
+        _default_wakes = ("nexa", "kaza")
+        if wake_words:
+            self._wake_words = tuple(
+                w.lower().strip() for w in wake_words if w and w.strip()
+            )
+        else:
+            self._wake_words = _default_wakes
+
+        # LLM-based command validator. Si está configurado, intercepta el
+        # texto post-wake antes del orchestrator y rechaza alucinaciones
+        # de TV / replays / frases noise. Ver src/nlu/llm_router.py.
+        self.llm_command_router = llm_command_router
+
         # State
         self._query_cache = {}
         self._cache_max_size = cache_max_size
@@ -202,21 +307,30 @@ class RequestRouter:
             audio = audio_or_event.audio
             room_id = audio_or_event.room_id
             early_dispatch = audio_or_event.early_dispatch
-            # Early dispatch: el worker streaming ya transcribió el audio para
-            # decidir ready_to_dispatch(). Usamos ese texto directo y saltamos
-            # la segunda llamada al STT.
-            if audio_or_event.partial_command is not None:
-                pretranscribed_text = audio_or_event.partial_command.raw_text
-            elif audio_or_event.wake_text:
-                # Sin early dispatch pero el wake detector ya transcribió la
-                # utterance — usar su texto en vez de re-transcribir con
-                # Whisper (que a veces alucina el mismo audio).
-                pretranscribed_text = audio_or_event.wake_text
+            wake_text = audio_or_event.wake_text
+            partial_text = (
+                audio_or_event.partial_command.raw_text
+                if audio_or_event.partial_command is not None else None
+            )
+            # Preferencia: wake_text > partial_command.raw_text.
+            # Motivo: el wake detector transcribe con initial_prompt sesgado a la
+            # keyword ("nexa"); el partial del streaming worker a veces alucina
+            # la primera palabra ("Nexa" -> "Para"). Si ambos difieren mucho,
+            # log para diagnóstico pero igual elegimos wake_text.
+            if wake_text:
+                pretranscribed_text = wake_text
                 used_wake_text = True
-                logger.info(
-                    f"Using wake-detector text as pretranscribed: "
-                    f"{pretranscribed_text!r}"
-                )
+                if partial_text and _texts_diverge(wake_text, partial_text):
+                    logger.warning(
+                        f"Wake/partial text mismatch — using wake: "
+                        f"wake={wake_text!r} partial={partial_text!r}"
+                    )
+                else:
+                    logger.info(
+                        f"Using wake-detector text as pretranscribed: {wake_text!r}"
+                    )
+            elif partial_text is not None:
+                pretranscribed_text = partial_text
         else:
             audio = audio_or_event
             room_id = None
@@ -268,6 +382,41 @@ class RequestRouter:
         if not text.strip():
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
+
+        # 1a. Noise filter: corta antes del orchestrator si el texto es
+        #     claramente ruido (TV, eco del TTS, repetición). Evita que
+        #     esas muestras vayan al slow path LLM (caro + bloquea queue).
+        noise_reason = _is_noise_text(text, wake_words=self._wake_words)
+        if noise_reason:
+            logger.info(f"Noise discard ({noise_reason}): {text!r}")
+            result["intent"] = "noise_discarded"
+            result["success"] = False
+            result["response"] = ""
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
+
+        # 1a-bis. LLM-based command validator (Opción 2 de la sesión wake-fixes).
+        # Reemplaza eventualmente el regex+Chroma; por ahora corre en paralelo
+        # como gate adicional contra alucinaciones de TV/replays.
+        if self.llm_command_router is not None:
+            t_llm = time.perf_counter()
+            classification = await self.llm_command_router.classify(text, room_id=room_id)
+            llm_ms = (time.perf_counter() - t_llm) * 1000
+            result["timings"]["llm_router"] = llm_ms
+            logger.info(
+                f"[LLMRouter {llm_ms:.0f}ms] is_command={classification.is_command} "
+                f"intent={classification.intent} reason={classification.rejection_reason} "
+                f"text={text!r}"
+            )
+            if not classification.is_command:
+                result["intent"] = f"llm_rejected:{classification.rejection_reason or 'unknown'}"
+                result["success"] = False
+                result["response"] = ""
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
+            # Resultado válido — guardar para que el caller registre en history
+            # tras dispatch exitoso (line ~480, post-orchestrator).
+            result["llm_classification"] = classification
 
         # 1b. Confidence gate — low-confidence sensitive commands pide
         #     confirmación antes de dispatchar al orchestrator.
@@ -365,6 +514,21 @@ class RequestRouter:
                 trigger_phrase=text
             )
 
+        # Registrar el comando aceptado en el historial del LLMCommandRouter
+        # para que próximas clasificaciones puedan detectar replays.
+        if (
+            self.llm_command_router is not None
+            and result["success"]
+            and result.get("llm_classification") is not None
+        ):
+            try:
+                self.llm_command_router.record_command(
+                    text=text,
+                    intent=result["llm_classification"].intent or "unknown",
+                )
+            except Exception as e:
+                logger.debug(f"LLMCommandRouter.record_command falló: {e}")
+
         return result
 
     async def _process_command_legacy(self, audio: np.ndarray, room_id: str = None,
@@ -392,6 +556,16 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
+            return result
+
+        # 1a. Noise filter — mismo corto-circuito que el path orchestrated
+        noise_reason = _is_noise_text(text, wake_words=self._wake_words)
+        if noise_reason:
+            logger.info(f"Noise discard ({noise_reason}): {text!r}")
+            result["intent"] = "noise_discarded"
+            result["success"] = False
+            result["response"] = ""
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
         user = cmd.user

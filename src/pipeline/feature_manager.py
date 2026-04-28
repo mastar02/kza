@@ -6,6 +6,7 @@ timers, intercom, notifications, alerts, briefings, HA integration.
 Extracted from VoicePipeline to reduce its responsibility.
 """
 
+import asyncio
 import logging
 
 from src.timers import NamedTimerManager, NamedTimer
@@ -51,6 +52,7 @@ class FeatureManager:
         self.ha_integration = ha_integration
         self.briefing = briefing
         self._running = False
+        self._alert_scheduler_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -75,8 +77,13 @@ class FeatureManager:
             logger.info("Notifications started")
 
         if self.alert_scheduler:
-            await self.alert_scheduler.start()
-            logger.info("Alert scheduler started")
+            # AlertScheduler.start() hace `await asyncio.gather(*tasks)` sobre
+            # 3 periodic check loops que corren indefinidamente → bloquea para
+            # siempre. Lo arrancamos como task background y continuamos.
+            self._alert_scheduler_task = asyncio.create_task(
+                self.alert_scheduler.start()
+            )
+            logger.info("Alert scheduler started (background task)")
 
         if self.ha_integration:
             await self.ha_integration.start()
@@ -105,6 +112,14 @@ class FeatureManager:
         if self.alert_scheduler:
             await self.alert_scheduler.stop()
             logger.info("Alert scheduler stopped")
+            # Cancel the background task that ran AlertScheduler.start()
+            if self._alert_scheduler_task and not self._alert_scheduler_task.done():
+                self._alert_scheduler_task.cancel()
+                try:
+                    await self._alert_scheduler_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._alert_scheduler_task = None
 
         if self.ha_integration:
             await self.ha_integration.stop()

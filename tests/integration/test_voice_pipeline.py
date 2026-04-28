@@ -86,7 +86,7 @@ class TestVoicePipelineIntegration:
         """Test processing a domotics command"""
         # Configure mock to return a light command via command_processor
         pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
-            text="prende la luz del living",
+            text="nexa prende la luz del living",
             timings={"stt": 50.0},
             success=True,
         ))
@@ -102,7 +102,7 @@ class TestVoicePipelineIntegration:
 
         result = await pipeline.process_command(sample_audio)
 
-        assert result["text"] == "prende la luz del living"
+        assert result["text"] == "nexa prende la luz del living"
         assert result["intent"] == "domotics"
         assert result["success"] is True
         assert "timings" in result
@@ -111,7 +111,7 @@ class TestVoicePipelineIntegration:
     async def test_process_sync_command(self, pipeline, sample_audio):
         """Test processing a sync command"""
         pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
-            text="sincroniza los comandos",
+            text="nexa sincroniza los comandos",
             timings={"stt": 40.0},
             success=True,
         ))
@@ -125,7 +125,7 @@ class TestVoicePipelineIntegration:
     async def test_process_routine_command(self, pipeline, sample_audio):
         """Test processing a routine command"""
         pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
-            text="crea una rutina para las 7am",
+            text="nexa crea una rutina para las 7am",
             timings={"stt": 45.0},
             success=True,
         ))

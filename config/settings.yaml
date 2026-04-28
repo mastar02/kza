@@ -157,7 +157,8 @@ tts:
   kokoro:
     model: "hexgrad/Kokoro-82M"
     device: "cuda:0"
-    default_voice: "af_heart"      # Voz en español
+    default_voice: "ef_dora"       # Voz española femenina (Kokoro 0.7+)
+    lang_code: "e"                 # 'e' = español (Kokoro requiere lang_code)
   # Qwen3-TTS deshabilitado — requiere 3ra GPU (~4.5GB)
   # qwen3:
   #   model: "Qwen/Qwen3-TTS-0.6B"
@@ -201,6 +202,21 @@ router:
   timeout: 30
   # Prefix caching lo maneja vLLM server-side (infra). LoRA requiere pedido §4.4.
 
+# NLU — clasificación de comandos vía LLM (Opción 2 sesión wake-fixes).
+# Cuando enabled=true, todo texto post-wake pasa por el FastRouter del bloque
+# anterior antes de llegar al orchestrator. El LLM decide si es comando real
+# del usuario o ruido/TV/replay y clasifica el intent. Latencia esperada:
+# 150-300ms por validación. Si el LLM falla/timeout → caller decide fallback
+# (hoy: rechazo silencioso).
+nlu:
+  llm_router:
+    enabled: true
+    max_history: 5            # cuántos comandos previos se mandan como contexto
+    history_ttl_s: 120.0      # comandos más viejos no se mandan (relevancia limitada)
+    timeout_s: 1.5            # cap de latencia del LLM call
+    max_tokens: 200           # cap del JSON response
+    temperature: 0.0          # determinismo total para clasificación
+
 # LLM para Razonamiento — 72B Q8_0 siempre caliente vía kza-72b.service (Q1=A)
 # Modo "http" consume por HTTP al systemd service local en :8200 (evita doble carga).
 # Modo "local" carga el GGUF en el proceso (fallback para debug; usa ~64-77GB RAM).
@@ -239,6 +255,11 @@ llm:
         max_tokens_default: 512
     cooldowns:
       persist_path: "./data/llm_cooldowns.json"
+
+  # Fallback: si :8200 (72B) no responde al startup, usar el vLLM 7B compartido
+  # (:8100 infra). Mejor respuesta degradada que timeout de 60s en slow path.
+  http_fallback_base_url: "http://127.0.0.1:8100/v1"
+  http_fallback_model: null   # null = primero del listado (qwen2.5-7b-awq)
 
   # Los siguientes campos sólo aplican si mode == "local":
   # ==========================================================================
@@ -885,7 +906,14 @@ rooms:
     model: "hey_jarvis"            # usado cuando engine=openwakeword
     threshold: 0.35                # usado cuando engine=openwakeword
     # Whisper engine params (opcionales, con defaults razonables)
-    silence_end_ms: 500
+    # silence_end_ms 700ms (subido de 500): tolera pausas naturales del usuario
+    # entre 'Nexa' y comando. Sin esto, una pausa >500ms partía la utterance
+    # en dos (wake-only + comando-sin-wake) — el follow-up window igual lo
+    # captura, pero el flujo single-utterance es más limpio. Latencia: para
+    # comandos completos el early_dispatch corta antes (intervalo 400ms), así
+    # que el extra silence wait no afecta el camino feliz. Sólo agrega ~200ms
+    # cuando el parser no detecta intent+entity y caemos al silencio total.
+    silence_end_ms: 700
     min_utterance_ms: 250
     max_utterance_s: 3.5
     # Gates pre-Whisper. Calibrados para mic XVF3800 montado en cielorraso con
@@ -905,6 +933,10 @@ rooms:
     # hereda del stt top-level. beam_size=5 + initial_prompt con "Nexa"
     # aumenta recall de la wake word en Whisper.
     beam_size: null
+    # initial_prompt: null — tuvimos alucinaciones de Whisper copiando
+    # literal el prompt ("Nexa, abrí la cortina." se repetía en todas las
+    # transcripciones de audios ambiguos). _decoalesce_post_wake cubre el
+    # caso 'nexa aprende→nexa prende' sin necesidad del prompt sesgo.
     initial_prompt: null
     # Early dispatch — parser streaming del comando post-wake. Transcribe
     # cada N ms el audio acumulado y dispatcha apenas detecta intent+entity
@@ -918,6 +950,15 @@ rooms:
     streaming: false               # true = usa StreamingWhisperWakeDetector
     streaming_interval_ms: 200     # cada N ms re-transcribe ring buffer
     streaming_window_s: 2.0        # tamaño del ring buffer para análisis incremental
+    # Follow-up window — cuando una utterance contiene solo el wake
+    # ("Nexa", "Nexa Nexa") sin verbo de comando, en vez de rechazar
+    # silenciosamente armamos una ventana donde la próxima utterance con
+    # verbo se trata como comando implícito (sin requerir wake repetido).
+    # Resuelve el caso clásico user dice "Nexa..." (pausa) "prendé luz".
+    # window_s=0 desactiva. max_words limita el "tamaño" de la utterance
+    # wake-only (>3 palabras suele ser TV o pregunta no-comando).
+    follow_up_window_s: 4.0
+    follow_up_max_words: 3
     # Speaker filter (Fase 1) — descarta audio ajeno antes de Whisper STT.
     # DESACTIVADO temporalmente: el enrollment con los WAVs cortos actuales
     # produce intra_consistency ~0.2 (insuficiente para ECAPA). Para re-activar:

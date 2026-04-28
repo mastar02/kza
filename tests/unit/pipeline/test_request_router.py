@@ -25,7 +25,7 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 import pytest
 import numpy as np
 
-from src.pipeline.request_router import RequestRouter, PermissionResult
+from src.pipeline.request_router import RequestRouter, PermissionResult, _is_noise_text
 from src.pipeline.command_processor import ProcessedCommand
 
 
@@ -210,7 +210,7 @@ class TestProcessCommandOrchestrated:
 
         cp = MagicMock()
         cp.process_command = AsyncMock(return_value=_make_cmd_result(
-            text="enciende la luz",
+            text="nexa enciende la luz",
             user=mock_user,
             emotion=mock_emotion
         ))
@@ -229,7 +229,7 @@ class TestProcessCommandOrchestrated:
         result = await router.process_command(audio)
 
         assert result["success"] is True
-        assert result["text"] == "enciende la luz"
+        assert result["text"] == "nexa enciende la luz"
         assert result["intent"] == "domotics"
         assert result["path"] == "fast"
         orch.process.assert_awaited_once()
@@ -265,7 +265,7 @@ class TestProcessCommandLegacy:
         """When orchestrator disabled, uses legacy vector search path."""
         cp = MagicMock()
         cp.process_command = AsyncMock(return_value=_make_cmd_result(
-            text="enciende la luz"
+            text="nexa prende la luz"
         ))
 
         chroma = MagicMock()
@@ -507,6 +507,52 @@ class TestSuggestionHandling:
         assert result["handled"] is False
 
 
+class TestNoiseFilter:
+    """Test _is_noise_text — clasificador de TV/eco/repetición/missing-wake."""
+
+    def test_empty_text(self):
+        assert _is_noise_text("") == "empty"
+
+    def test_filler_word_gracias(self):
+        assert _is_noise_text("¡Gracias!").startswith("filler_word")
+
+    def test_noise_phrase_youtube(self):
+        assert _is_noise_text("Gracias por ver el video.").startswith("noise_phrase")
+
+    def test_word_repetition(self):
+        assert _is_noise_text("no no no no no").startswith("word_repetition")
+
+    def test_missing_wake_with_wake_words_configured(self):
+        """Frase TV sin wake word → discard."""
+        result = _is_noise_text("Se llamaba Ando Miku.", wake_words=("nexa", "kaza"))
+        assert result is not None
+        assert result.startswith("missing_wake")
+
+    def test_wake_word_present_passes(self):
+        """Comando real con 'nexa' al inicio → no es ruido."""
+        assert _is_noise_text(
+            "Nexa prendé la luz del escritorio", wake_words=("nexa", "kaza")
+        ) is None
+
+    def test_wake_alias_present_passes(self):
+        """Alias 'kaza' también pasa."""
+        assert _is_noise_text(
+            "Kaza apaga la cocina", wake_words=("nexa", "kaza")
+        ) is None
+
+    def test_missing_wake_disabled_when_no_wake_words(self):
+        """Sin wake_words pasados, el check missing_wake no se aplica."""
+        # Sin wake_words, una frase de TV pasa el filtro (igual que antes
+        # de la regla); validamos que el check sólo aplica si fue configurado.
+        assert _is_noise_text("Se llamaba Ando Miku.") is None
+
+    def test_accent_insensitive_match(self):
+        """Match es accent-insensitive: 'Néxa' (con acento) ≡ 'nexa'."""
+        assert _is_noise_text(
+            "Néxa prendé la luz", wake_words=("nexa",)
+        ) is None
+
+
 class TestLatencyLogging:
     """Test latency logging."""
 
@@ -566,3 +612,168 @@ class TestBuildPrompt:
         prompt = await router._build_prompt("que hora es")
 
         assert "User likes warm lights" in prompt
+
+
+class TestWakeTextPriority:
+    """Wake text should win over hallucinated partial re-transcriptions."""
+
+    @pytest.mark.asyncio
+    async def test_wake_text_preferred_over_hallucinated_partial(self):
+        """
+        Regresión 2026-04-24: wake detector captó 'Nexa encender la luz…'
+        pero el partial del streaming worker lo alucinó como 'Para encender…'.
+        El router debe preferir el wake_text.
+        """
+        from src.pipeline.command_event import CommandEvent
+        from src.nlu.command_grammar import PartialCommand
+
+        cp = MagicMock()
+        captured = {}
+
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+            captured["pretranscribed_text"] = pretranscribed_text
+            return _make_cmd_result(text=pretranscribed_text or "")
+
+        cp.process_command = AsyncMock(side_effect=fake_process)
+
+        chroma = MagicMock()
+        chroma.search_command.return_value = None  # no match — legacy path aborts cleanly
+
+        router = _build_router(
+            command_processor=cp,
+            chroma_sync=chroma,
+            orchestrator_enabled=False,
+        )
+
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32),
+            room_id="escritorio",
+            wake_text="Nexa encender la luz del escritorio.",
+            partial_command=PartialCommand(
+                raw_text="Para encender la luz del escritorio.",
+                intent="turn_on",
+                entity="light",
+            ),
+            early_dispatch=True,
+        )
+        await router.process_command(event)
+        assert "nexa" in captured["pretranscribed_text"].lower(), (
+            f"Esperaba wake_text, recibí: {captured['pretranscribed_text']!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_wake_text_used_when_partial_absent(self):
+        """Sin partial_command, wake_text es el pretranscribed."""
+        from src.pipeline.command_event import CommandEvent
+
+        cp = MagicMock()
+        captured = {}
+
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+            captured["pretranscribed_text"] = pretranscribed_text
+            return _make_cmd_result(text=pretranscribed_text or "")
+
+        cp.process_command = AsyncMock(side_effect=fake_process)
+
+        chroma = MagicMock()
+        chroma.search_command.return_value = None  # no match — legacy path aborts cleanly
+
+        router = _build_router(
+            command_processor=cp,
+            chroma_sync=chroma,
+            orchestrator_enabled=False,
+        )
+
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32),
+            room_id="escritorio",
+            wake_text="Nexa prende la luz.",
+            partial_command=None,
+            early_dispatch=False,
+        )
+        await router.process_command(event)
+        assert captured["pretranscribed_text"] == "Nexa prende la luz."
+
+    @pytest.mark.asyncio
+    async def test_partial_used_when_wake_text_absent(self):
+        """Sin wake_text, partial_command.raw_text sigue siendo el fallback."""
+        from src.pipeline.command_event import CommandEvent
+        from src.nlu.command_grammar import PartialCommand
+
+        cp = MagicMock()
+        captured = {}
+
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+            captured["pretranscribed_text"] = pretranscribed_text
+            return _make_cmd_result(text=pretranscribed_text or "")
+
+        cp.process_command = AsyncMock(side_effect=fake_process)
+
+        chroma = MagicMock()
+        chroma.search_command.return_value = None  # no match — legacy path aborts cleanly
+
+        router = _build_router(
+            command_processor=cp,
+            chroma_sync=chroma,
+            orchestrator_enabled=False,
+        )
+
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32),
+            room_id="escritorio",
+            wake_text=None,
+            partial_command=PartialCommand(
+                raw_text="prende la luz",
+                intent="turn_on",
+                entity="light",
+            ),
+            early_dispatch=True,
+        )
+        await router.process_command(event)
+        assert captured["pretranscribed_text"] == "prende la luz"
+
+    @pytest.mark.asyncio
+    async def test_wake_text_divergence_logs_warning(self, caplog):
+        """When wake and partial diverge, a WARNING should be emitted with both texts."""
+        import logging
+        from src.pipeline.command_event import CommandEvent
+        from src.nlu.command_grammar import PartialCommand
+
+        cp = MagicMock()
+
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+            return _make_cmd_result(text=pretranscribed_text or "")
+
+        cp.process_command = AsyncMock(side_effect=fake_process)
+
+        chroma = MagicMock()
+        chroma.search_command.return_value = None
+
+        router = _build_router(
+            command_processor=cp,
+            chroma_sync=chroma,
+            orchestrator_enabled=False,
+        )
+
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32),
+            room_id="escritorio",
+            wake_text="Nexa encender la luz del escritorio.",
+            partial_command=PartialCommand(
+                raw_text="Para encender la luz del escritorio.",
+                intent="turn_on",
+                entity="light",
+            ),
+            early_dispatch=True,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="src.pipeline.request_router"):
+            await router.process_command(event)
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(
+            "mismatch" in r.message.lower()
+            and "nexa" in r.message.lower()
+            and "para" in r.message.lower()
+            for r in warning_records
+        ), f"Expected divergence warning with both texts. Got: {[r.message for r in warning_records]}"

@@ -126,7 +126,10 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
                 await maybe
             timings["tts"] = (time.perf_counter() - t0) * 1000
         except Exception as e:
-            logger.warning(f"Warmup TTS skipped: {e}")
+            logger.warning(
+                f"Warmup TTS skipped (non-fatal): {type(e).__name__}: {e}",
+                exc_info=True,
+            )
 
     # Speaker ID warmup — compila kernels de ECAPA-TDNN
     if speaker_identifier is not None:
@@ -210,13 +213,22 @@ async def main():
         sys.exit(1)
     logger.info(f"Conectado a Home Assistant: {ha_url}")
 
-    # State prefetch cache (S6): WS subscribe para evitar round-trip REST
+    # State prefetch cache (S6): WS subscribe para evitar round-trip REST.
+    # El warmup explícito del WS dentro de start_state_sync puede fallar si HA
+    # está degradado momentáneamente — degradamos a REST-only polling en vez
+    # de crashear toda la app.
     state_prefetch_cfg = ha_config.get("state_prefetch", {})
     if state_prefetch_cfg.get("enabled", True):
-        await ha_client.start_state_sync(
-            full_refresh_interval_s=state_prefetch_cfg.get("full_refresh_interval_s", 300),
-        )
-        logger.info("HA state prefetch cache habilitado")
+        try:
+            await ha_client.start_state_sync(
+                full_refresh_interval_s=state_prefetch_cfg.get("full_refresh_interval_s", 300),
+            )
+            logger.info("HA state prefetch cache habilitado")
+        except RuntimeError as e:
+            logger.warning(
+                f"HA state prefetch deshabilitado: {e}. "
+                f"Sigo con REST polling cada 300s."
+            )
 
     # Speech-to-Text
     stt = create_stt(config.get("stt", {}))
@@ -247,9 +259,12 @@ async def main():
         )
         try:
             llm.load()
-            logger.info("LLM 72B consumido vía HTTP (kza-72b.service)")
+            info = llm.get_info()
+            logger.info(f"LLM 72B vía HTTP → {info['base_url']} modelo={info['model']}")
         except Exception as e:
-            logger.error(f"No pude contactar el 72B HTTP: {e}. llm=None")
+            # El fallback hacia 7B ahora lo maneja LLMRouter (plan #1 OpenClaw).
+            # Si el 72B no responde, llm queda None — el LLMRouter rota al 7B.
+            logger.error(f"HttpReasoner 72B no contactable: {e}. llm=None — failover via LLMRouter")
             llm = None
     else:
         model_path = reasoner_config.get("model_path")
@@ -286,7 +301,7 @@ async def main():
         )
         logger.info(f"Fast router (HTTP) → {router_config.get('base_url', 'http://127.0.0.1:8100/v1')}")
 
-    # LLMRouter — candidate chain con cooldown y failover (plan #1 OpenClaw).
+    # LLMRouter — candidate chain con cooldown y failover (plan #1 OpenClaw 2026-04-28).
     # Envuelve fast_router y llm (HttpReasoner 72B) para rotar automáticamente
     # cuando uno falla. El dispatcher usa router.complete(), no router.generate().
     llm_router = None
@@ -305,6 +320,32 @@ async def main():
         except Exception as e:
             logger.error(f"No se pudo construir LLMRouter, sigo con fast_router suelto: {e}")
             llm_router = None
+
+    # LLM Command Router (Opción 2 NLU) — clasificador de comandos vía vLLM 7B.
+    # Independiente del LLMRouter: este valida texto post-wake contra
+    # alucinaciones de TV / replays / frases noise. Hereda el FastRouter
+    # ya configurado contra el vLLM compartido en :8100.
+    llm_command_router = None
+    nlu_cfg = config.get("nlu", {}).get("llm_router", {})
+    if nlu_cfg.get("enabled", False) and fast_router is not None:
+        from src.nlu.llm_router import LLMCommandRouter
+        # Cargar el FastRouter ahora si todavía no se hizo (lazy en su .load()).
+        try:
+            fast_router.load()
+        except Exception as e:
+            logger.warning(f"FastRouter .load() falló pre-LLMCommandRouter: {e}")
+        llm_command_router = LLMCommandRouter(
+            fast_router=fast_router,
+            max_history=nlu_cfg.get("max_history", 5),
+            history_ttl_s=nlu_cfg.get("history_ttl_s", 120.0),
+            timeout_s=nlu_cfg.get("timeout_s", 1.5),
+            max_tokens=nlu_cfg.get("max_tokens", 200),
+            temperature=nlu_cfg.get("temperature", 0.0),
+        )
+        logger.info(
+            f"LLMCommandRouter habilitado (timeout={nlu_cfg.get('timeout_s', 1.5)}s, "
+            f"max_history={nlu_cfg.get('max_history', 5)})"
+        )
 
     # Memory Manager - memoria contextual
     memory_config = config.get("memory", {})
@@ -592,6 +633,8 @@ async def main():
                             initial_prompt=wake_prompt,
                             metrics_emitter=metrics_emitter,
                             room_id=room_key,
+                            follow_up_window_s=room_wake_cfg.get("follow_up_window_s", 4.0),
+                            follow_up_max_words=room_wake_cfg.get("follow_up_max_words", 3),
                         )
                     wake_detector.load()
                 else:
@@ -783,6 +826,10 @@ async def main():
         suggestion_interval=analytics_config.get("suggestion_interval", 20),
         confidence_threshold=confidence_cfg.get("threshold", 0.75),
         metrics_emitter=metrics_emitter,
+        wake_words=rooms_config.get("wake_word", {}).get(
+            "words", wake_config.get("words", ["nexa"])
+        ),
+        llm_command_router=llm_command_router,
     )
 
     # Feature subsystems (timers, intercom, notifications, alerts)

@@ -188,15 +188,29 @@ class TestFeatureManagerLifecycle:
 
     @pytest.mark.asyncio
     async def test_start_calls_all_subsystems(self, fm_full, all_deps):
-        """start() should call start on every non-None startable subsystem."""
+        """start() should call start on every non-None startable subsystem.
+
+        Note: alert_scheduler.start() is dispatched as a background task
+        (AlertScheduler.start() contains an awaited asyncio.gather over
+        infinite check loops, so awaiting it directly would block the
+        pipeline forever). The task is created but we don't assert it
+        was awaited — the create_task is enough proof of invocation.
+        """
+        import asyncio
         await fm_full.start()
 
         all_deps["timer_manager"].start.assert_awaited_once()
         all_deps["intercom"].start.assert_awaited_once()
         all_deps["notifications"].start.assert_awaited_once()
-        all_deps["alert_scheduler"].start.assert_awaited_once()
         all_deps["ha_integration"].start.assert_awaited_once()
         assert fm_full._running is True
+
+        # alert_scheduler.start() was scheduled as a background task
+        assert fm_full._alert_scheduler_task is not None
+        assert isinstance(fm_full._alert_scheduler_task, asyncio.Task)
+        # Cancel it to keep the test tidy (AsyncMock yields immediately,
+        # but being explicit avoids warnings if the mock changes).
+        fm_full._alert_scheduler_task.cancel()
 
     @pytest.mark.asyncio
     async def test_start_with_no_deps(self, fm_empty):

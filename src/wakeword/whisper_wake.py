@@ -34,16 +34,38 @@ CHUNK_MS = 80  # tamaño esperado del chunk del caller
 # Verbos/keywords que esperamos en un comando real post-wake. Si el texto
 # matcheó la wake pero no tiene ninguno de estos → probablemente es TV
 # hablando + Whisper transcribió algo que sonó como "Nexa". Rechazar.
+#
+# Filosofía: preferir tokens específicos (frases compuestas) sobre palabras
+# sueltas para no incrementar FPs de TV. Ej: 'aire acondicionado' antes que
+# 'aire' solo (la TV dice "estás en el aire"). Lista calibrada con misses
+# observados en logs reales del usuario (abr 24-25).
 _COMMAND_VERB_RE = re.compile(
     r"\b("
-    r"prend\w*|encend\w*|apag\w*|enci\w*|"      # on/off (cubre prendé, apagá, encienden…)
-    r"sub\w*|baj\w*|"                            # up/down/dimming (subí, bajá, suban…)
-    r"pon\w*|cambi\w*|"                          # set/change
-    r"abr\w*|cerr\w*|clos\w*|open\w*|"           # cover
-    r"activ\w*|desactiv\w*|"                     # activate
-    r"temperatura|brillo|volumen|"               # properties (sustantivos)
-    r"luz al|luces al|al cincuent|al treint|"    # % dimming (frases)
-    r"por ciento|maximo|minimo"
+    # Verbos de control on/off
+    r"prend\w*|encend\w*|apag\w*|enci\w*|"
+    # Up/down/dimming
+    r"sub\w*|baj\w*|"
+    # Set / change
+    r"pon\w*|cambi\w*|"
+    # Cover (cortinas, persianas como verbo)
+    r"abr\w*|cerr\w*|clos\w*|open\w*|"
+    # Activate / deactivate (escenas, rutinas)
+    r"activ\w*|desactiv\w*|"
+    # Propiedades (sustantivos que solo aparecen en comandos)
+    r"temperatura|brillo|volumen|"
+    # % dimming
+    r"luz al|luces al|al cincuent|al treint|"
+    r"por ciento|maximo|minimo|"
+    # Direccionales (B: 'Nexa para arriba')
+    r"para arriba|para abajo|"
+    # Volumen relativo (B: 'Nexa más fuerte/bajo/alto/suave')
+    r"mas fuerte|mas alto|mas bajo|mas suave|"
+    # Temperatura relativa (B: 'Nexa más calor/frío/caliente/fresco')
+    r"mas calor|mas frio|mas calien|mas fresc|"
+    # AC compuesto (NO 'aire' solo — TV dice 'estás en el aire')
+    r"aire acondicionado|"
+    # Entidades físicas comunes (B: 'Nexa persiana', 'Nexa cortina')
+    r"persiana\w*|cortina\w*"
     r")\b", re.IGNORECASE,
 )
 
@@ -66,6 +88,89 @@ def _normalize(text: str) -> str:
     t = re.sub(r"[^\w\s]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
+
+
+# Prefijos coalescidos ↔ forma real. Whisper a veces pega la 'a' final
+# de "nexa" al inicio del verbo siguiente: "nexa prendé" → "nexa aprende".
+# Mapeo conservador — solo prefijos de verbos de domótica conocidos para
+# evitar reinterpretar palabras legítimas.
+_COALESCED_VERB_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("aprend", "prend"),    # nexa aprende → nexa prende
+    ("aencend", "encend"),  # nexa aencendé → nexa encendé
+    ("abaj", "baj"),        # nexa abajá → nexa bajá
+    ("asub", "sub"),        # nexa asubí → nexa subí
+    # Nota: "apag" NO se lista porque ya es verbo válido ("nexa apagá"),
+    # y "abr" tampoco porque "abr" (abrí) es legítimo tras "nexa".
+)
+
+
+def _decoalesce_post_wake(norm_text: str, wake_norm: str) -> str:
+    """Corregir el pegado del wake con el verbo siguiente.
+
+    Whisper ocasionalmente produce 'nexa aprende' cuando el usuario dijo
+    'nexa, prendé' — la 'a' final del wake se pega al inicio del verbo.
+    Detectamos y re-segmentamos las combinaciones conocidas.
+
+    Args:
+        norm_text: texto ya pasado por `_normalize` (lowercase, sin acentos).
+        wake_norm: wake word en forma normalizada (ej: 'nexa').
+
+    Returns:
+        Texto corregido, o el original si no había coalescing detectable.
+    """
+    if not norm_text or not wake_norm:
+        return norm_text
+    words = norm_text.split()
+    if len(words) < 2 or words[0] != wake_norm:
+        return norm_text
+    second = words[1]
+    for coalesced, real in _COALESCED_VERB_PREFIXES:
+        if second.startswith(coalesced):
+            words[1] = real + second[len(coalesced):]
+            return " ".join(words)
+    return norm_text
+
+
+def _decoalesce_original_text(text: str, wake_norm: str) -> str:
+    """Aplicar decoalesce al texto ORIGINAL (con acentos y puntuación).
+
+    Complemento de `_decoalesce_post_wake`: ese retorna una versión
+    normalizada. Esta versión hace el mismo fix sobre el texto original
+    para poder propagarlo al router como `pretranscribed_text`, de modo
+    que el NLU vea 'prendé' en vez de 'aprendé'.
+
+    Args:
+        text: texto tal cual lo devolvió Whisper.
+        wake_norm: wake word normalizada (ej: 'nexa').
+
+    Returns:
+        Texto original con el verbo post-wake re-segmentado, o igual si
+        no aplicaba ningún mapeo.
+    """
+    if not text or not wake_norm:
+        return text
+    words = text.split()
+    if len(words) < 2:
+        return text
+    first_norm = _normalize(words[0])
+    if first_norm != wake_norm:
+        return text
+    second_norm = _normalize(words[1])
+    for coalesced, real in _COALESCED_VERB_PREFIXES:
+        if coalesced == real:
+            continue
+        if second_norm.startswith(coalesced):
+            # Reemplazar el prefijo en la palabra original preservando el
+            # sufijo (que puede tener acentos: 'aprendé' → 'prendé').
+            words[1] = re.sub(
+                r"^" + re.escape(coalesced),
+                real,
+                words[1],
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            return " ".join(words)
+    return text
 
 
 def _phonetic_es(word: str) -> str:
@@ -144,6 +249,8 @@ class WhisperWakeDetector:
         initial_prompt: Optional[str] = None,
         metrics_emitter=None,
         room_id: Optional[str] = None,
+        follow_up_window_s: float = 4.0,
+        follow_up_max_words: int = 3,
     ):
         """
         vad_threshold=0.7 (estricto) filtra voces lejanas/TV a volumen medio.
@@ -182,6 +289,15 @@ class WhisperWakeDetector:
         self._speaker_filter_active = (
             speaker_identifier is not None and speaker_embedding is not None
         )
+
+        # Follow-up window: cuando una utterance contiene solo el wake (≤ N
+        # palabras) y no tiene verbo de comando, no rechazamos — armamos una
+        # ventana donde la próxima utterance con verbo se trata como comando
+        # implícito (sin requerir wake repetido). Resuelve el caso clásico
+        # del usuario que dice "Nexa..." con pausa antes del comando.
+        self.follow_up_window_s = follow_up_window_s
+        self.follow_up_max_words = follow_up_max_words
+        self._follow_up_until: float = 0.0
 
         self._vad = None
         self._loaded = False
@@ -445,11 +561,19 @@ class WhisperWakeDetector:
         t0 = time.time()
         try:
             model = getattr(self.whisper, "_model", None) or self.whisper
+            # condition_on_previous_text=False: corta el sesgo del comando
+            # anterior. Sin esto, faster-whisper alimenta la transcripción
+            # previa como prompt al modelo → utterances de TV se transforman
+            # en versiones del último comando ('Nexa apagá luz' previo, ahora
+            # TV ruidosa transcribe como 'Nexa bajá luz, Nexa bajá luz' →
+            # ejecuta sin que el usuario haya hablado). Bug observado
+            # 2026-04-25 11:45:40 con TV a -8dBFS post 'apagá'.
             segments, _ = model.transcribe(
                 audio, language=self.language,
                 beam_size=self.beam_size,
                 initial_prompt=self.initial_prompt,
                 vad_filter=False,
+                condition_on_previous_text=False,
             )
             text = " ".join(s.text for s in segments).strip()
         except Exception as e:
@@ -460,7 +584,64 @@ class WhisperWakeDetector:
             return (None, "")
 
         norm = _normalize(text)
+        # Fix coalescing Whisper: 'nexa aprende' → 'nexa prende' antes de
+        # aplicar las reglas de TV stop / command verb.
+        # Aplicamos el mismo fix al `text` original para que el pending_text
+        # que va al router/NLU también esté corregido (el NLU lee el texto
+        # original con acentos, no el norm).
+        for wake_norm in self.wake_words_norm:
+            norm_fixed = _decoalesce_post_wake(norm, wake_norm)
+            if norm_fixed != norm:
+                text_fixed = _decoalesce_original_text(text, wake_norm)
+                logger.info(
+                    f"Decoalesced post-wake: {norm!r} → {norm_fixed!r} "
+                    f"(text: {text!r} → {text_fixed!r})"
+                )
+                norm = norm_fixed
+                text = text_fixed
+                break
         logger.info(f"WhisperWake [{dur_ms:.0f}ms→{stt_ms:.0f}ms]: {norm!r}")
+
+        # Anti-hallucination: utterance con 2+ ocurrencias de wake word es
+        # casi siempre Whisper alucinando (loop sobre el contexto previo) o
+        # TV ruidosa, NO un user real. Un usuario dice 'Nexa' una sola vez
+        # por comando — y para repetir frustrado ya tenemos follow-up window.
+        # Tratamos como wake-only: armamos follow-up y descartamos el comando
+        # potencialmente espurio.
+        wake_count = sum(norm.count(w) for w in self.wake_words_norm)
+        if wake_count >= 2:
+            logger.warning(
+                f"Wake rejected — {wake_count}x wake words en utterance "
+                f"(probable hallucination/TV): {text!r}"
+            )
+            self._maybe_arm_follow_up(norm, text)
+            self._emit_wake(
+                False, None, "rejected", text, dur_ms, stt_ms,
+                rejection_reason="multi_wake_hallucination",
+            )
+            return (None, text)
+
+        # Paso 0: si estamos dentro de una ventana de follow-up post-wake-solo,
+        # aceptar comandos sin wake explícito. El usuario dijo "Nexa..." y
+        # ahora completa con el comando real.
+        now = time.time()
+        if now < self._follow_up_until:
+            has_wake = any(w in norm for w in self.wake_words_norm)
+            has_verb = bool(_COMMAND_VERB_RE.search(norm))
+            is_tv = any(p in norm for p in _TV_STOP_PHRASES)
+            if has_verb and not has_wake and not is_tv:
+                self._follow_up_until = 0.0  # consumir
+                canonical = self.wake_words_norm[0]
+                synthesized = f"{canonical} {text}"
+                logger.info(
+                    f"🔥 Follow-up command capturado (ventana {self.follow_up_window_s}s): "
+                    f"{text!r} → {synthesized!r}"
+                )
+                self._emit_wake(
+                    True, canonical, "follow_up", synthesized, dur_ms, stt_ms,
+                )
+                return (canonical, synthesized)
+
         # Paso 1: substring match contra los aliases configurados (exact match en norm).
         # TV stop-words: frases que jamás son comandos legítimos.
         for phrase in _TV_STOP_PHRASES:
@@ -483,6 +664,7 @@ class WhisperWakeDetector:
                 # de "Nexa" cuando la TV dice algo que Whisper oyó como Nexa
                 # pero el contenido siguiente no es un comando domótica.
                 if not _COMMAND_VERB_RE.search(norm):
+                    self._maybe_arm_follow_up(norm, text)
                     logger.info(
                         f"Wake rejected — sin verbo de comando post-wake: {text!r}"
                     )
@@ -518,6 +700,7 @@ class WhisperWakeDetector:
                 # Fuzzy match con threshold alto todavía puede agarrar TV
                 # random. Requerir verbo de comando para ejecutar.
                 if not _COMMAND_VERB_RE.search(norm):
+                    self._maybe_arm_follow_up(norm, text)
                     logger.info(
                         f"Fuzzy wake rejected — sin verbo de comando: {text!r} "
                         f"(best {best_word!r} ratio={best_ratio:.2f})"
@@ -544,6 +727,25 @@ class WhisperWakeDetector:
             rejection_reason="below_fuzzy_threshold" if best_ratio > 0 else "no_keyword",
         )
         return (None, text)
+
+    def _maybe_arm_follow_up(self, norm: str, text: str) -> None:
+        """Si la utterance es solo wake (≤ N palabras) y no tiene verbo,
+        armar la ventana de follow-up para aceptar el comando que viene.
+
+        No arma cuando la utterance es larga (>N palabras): eso suele ser
+        TV o user diciendo algo no-comando ("Nexa, ¿dónde estás?"); abrir
+        la ventana en esos casos invitaría falsos positivos.
+        """
+        if self.follow_up_window_s <= 0:
+            return
+        word_count = len(norm.split())
+        if word_count > self.follow_up_max_words:
+            return
+        self._follow_up_until = time.time() + self.follow_up_window_s
+        logger.info(
+            f"🎤 Follow-up armed por {self.follow_up_window_s}s — "
+            f"esperando comando tras wake-only: {text!r}"
+        )
 
     def _emit_wake(
         self,

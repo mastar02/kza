@@ -135,6 +135,13 @@ def main() -> int:
                         help="Umbral silero-vad (default 0.5)")
     parser.add_argument("--min-speech-s", type=float, default=0.4,
                         help="Dur mínima de voz post-VAD para aceptar el sample")
+    parser.add_argument("--min-consistency", type=float, default=0.50,
+                        help="Mínimo de intra_consistency aceptable (default 0.50). "
+                             "Si el embedding final está por debajo de este valor, "
+                             "rechazar el guardado salvo --force.")
+    parser.add_argument("--force", action="store_true",
+                        help="Guardar el embedding incluso si la consistencia es baja "
+                             "(usar con precaución — el speaker filter puede dar mucho FN).")
     args = parser.parse_args()
 
     wav_dirs = [(ROOT / d.strip()).resolve() for d in args.dir.split(",")]
@@ -212,8 +219,11 @@ def main() -> int:
     consistency = intra_user_consistency(embeddings)
     logger.info("Consistencia intra-user (mean pairwise cos sim): %.3f", consistency)
     if consistency < 0.70:
-        logger.warning("Consistencia baja (<0.70) — verifique que las muestras sean "
-                       "del mismo speaker o considere re-grabar.")
+        msg = ("Consistencia baja (<0.70) — verifique que las muestras sean "
+               "del mismo speaker o considere re-grabar.")
+        if not args.vad_trim:
+            msg += " Probá agregar --vad-trim para descartar el silencio de cada WAV."
+        logger.warning(msg)
 
     mean_emb = np.mean(embeddings, axis=0)
     norm = np.linalg.norm(mean_emb)
@@ -225,6 +235,17 @@ def main() -> int:
     if args.dry_run:
         logger.info("dry-run — no se guarda nada.")
         return 0
+
+    if consistency < args.min_consistency and not args.force:
+        logger.error(
+            "Consistencia %.3f < %.2f — embedding REJECTED. ECAPA con esta "
+            "consistencia produce muchos falsos negativos en el speaker filter. "
+            "Opciones: (1) re-grabar 20-30 frases continuas de 3-4s; "
+            "(2) re-correr con --vad-trim si no se usó; "
+            "(3) bajar --min-consistency o pasar --force si entendés el riesgo.",
+            consistency, args.min_consistency,
+        )
+        return 2
 
     out_dir = (ROOT / args.output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
