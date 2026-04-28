@@ -14,7 +14,7 @@ ExecStart=/home/kza/ik_llama.cpp/build/bin/llama-server \
   -t 24 -tb 24 -c 16384 \
   -ctk q8_0 -ctv q8_0 \
   --mlock \
-  -cram 4096
+  -cram 4096 -crs 0.3 --prompt-cache /home/kza/cache/llm-prompt.bin
 Restart=on-failure
 RestartSec=10s
 StartLimitBurst=3
