@@ -1,0 +1,28 @@
+[Unit]
+Description=KZA LLM (Qwen3-30B-A3B Instruct, MoE Q5_K_M) llama.cpp HTTP server — siempre caliente
+Documentation=file:///home/kza/kza/CLAUDE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/kza/kza
+# OpenAI-compatible API en 127.0.0.1:8200 (mantiene puerto histórico del 72B
+# para no romper el LLMRouter ni el `reasoner.http_base_url` del settings).
+# chat_format=chatml requerido para Qwen3 family.
+# n_gpu_layers=0 → CPU only (GPU 0/1 reservadas a voz/vLLM).
+# Modelo: Qwen3-30B-A3B-Instruct-2507 — MoE 30B totales, 3B activos por token.
+# El bandwidth efectivo de 270 GB/s × 3B ≈ 25-40 tok/s realistas (vs ~2 tok/s
+# del 72B Q8_0 anterior). Calidad ArenaHard 91.0, supera DeepSeek-V3.
+ExecStart=/home/kza/kza/.venv/bin/python -m llama_cpp.server \
+  --model /home/kza/kza/models/Qwen3-30B-A3B-Instruct-2507-Q5_K_M/Qwen3-30B-A3B-Instruct-2507-Q5_K_M.gguf \
+  --n_ctx 16384 --n_threads 24 --n_batch 512 --n_gpu_layers 0 \
+  --chat_format chatml --host 127.0.0.1 --port 8200
+
+Restart=on-failure
+RestartSec=30s
+StartLimitBurst=3
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=default.target
