@@ -1,6 +1,14 @@
 # KZA — Asistente de Voz Local para Domótica
 
-Sistema de control por voz 100% local para Home Assistant. Latencia <300ms para domótica, LLM 72B en CPU para razonamiento complejo. 4x RTX 3070 distribuidas por función. Python 3.13 (vLLM requiere <3.14), async/await, ~38K líneas, 617+ tests.
+Sistema de control por voz 100% local para Home Assistant. Latencia <300ms para domótica, LLM 72B en CPU para razonamiento complejo. 2x RTX 3070 (cuda:0 audio+TTS+BGE-M3, cuda:1 vLLM compartido infra). Python 3.13 (vLLM requiere <3.14), async/await, ~38K líneas, 617+ tests.
+
+## Source of truth cross-project
+
+Este proyecto cubre **solo** el pipeline de voz. Para temas de plataforma (server físico, red, observabilidad, mail, HA), la fuente de verdad es **Notion** (workspace KZA, root page_id `345ab24f-c493-80b2-b6f4-ef917e865f26`), consultable vía MCP `mcp__notion__*`.
+
+- **No** leer la memoria de `~/Documents/homelab-infra/` ni `~/Documents/homelab-services/`.
+- **Sí** ir a Notion: pág 8 (contrato compartido), pág 11 (red), pág 10 (HA), pág 12 (mail), pág 14 (obs).
+- Cuando el código de KZA depende de algo compartido (vLLM compartido :8100, sub-rangos puertos), seguir el contrato de Notion pág 8.
 
 ## Reglas para Claude — LEER SIEMPRE
 
