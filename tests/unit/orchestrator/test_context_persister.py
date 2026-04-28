@@ -93,3 +93,33 @@ class TestContextPersister:
         ctx = _ctx(user_id="../etc/passwd")
         with pytest.raises(ValueError):
             tmp_persister.save(ctx)
+
+    def test_load_version_mismatch_returns_none(self, tmp_persister, caplog):
+        base = tmp_persister.base_path
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "vmismatch.json").write_text(json.dumps({
+            "version": 999,  # future schema
+            "user_id": "vmismatch",
+            "user_name": "X",
+            "last_seen": 0.0,
+            "session_count": 1,
+            "compacted_summary": "ok",
+            "preserved_ids": [],
+        }))
+        result = tmp_persister.load("vmismatch")
+        assert result is None
+        assert any("version mismatch" in rec.message.lower() for rec in caplog.records)
+
+    def test_load_corrupt_quarantines_file(self, tmp_persister):
+        base = tmp_persister.base_path
+        base.mkdir(parents=True, exist_ok=True)
+        target = base / "qcorrupt.json"
+        target.write_text("{ not json")
+
+        result = tmp_persister.load("qcorrupt")
+        assert result is None
+        # Original file should be moved out of the way
+        assert not target.exists()
+        # Quarantine file should exist with .corrupt- prefix
+        quarantines = list(base.glob("qcorrupt.json.corrupt-*"))
+        assert len(quarantines) == 1
