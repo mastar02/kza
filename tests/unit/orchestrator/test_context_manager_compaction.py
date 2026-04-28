@@ -29,7 +29,10 @@ def manager_with_compactor():
         compaction_threshold=6,
         keep_recent_turns=3,
     )
-    return mgr, compactor
+    yield mgr, compactor
+    # Teardown: cancel any in-flight compaction tasks
+    for task in list(getattr(mgr, "_compaction_tasks", set())):
+        task.cancel()
 
 
 class TestCompactionTrigger:
@@ -57,39 +60,50 @@ class TestCompactionTrigger:
         """Si la compactación está corriendo, turnos extra no disparan otra."""
         mgr, compactor = manager_with_compactor
 
-        # Hacer la compactación lenta
+        # Hacer la compactación lenta — usando AsyncMock con side_effect
+        # para preservar el call counter (un plain async def lo pierde).
         gate = asyncio.Event()
-        async def slow(*a, **kw):
+        async def slow_side_effect(*a, **kw):
             await gate.wait()
             return _result(summary="slow")
-        compactor.compact = slow
+        compactor.compact = AsyncMock(side_effect=slow_side_effect)
 
         mgr.get_or_create("u1", "Juan")
-        for i in range(7):  # 7 turnos: trigger en 6, turno 7 no re-dispara
+        # Disparar trigger en turno 6, agregar 1 más mientras inflight=True
+        for i in range(7):
             mgr.add_turn("u1", "user", f"msg {i}")
 
         # Soltar el gate y esperar
         gate.set()
         await asyncio.sleep(0.05)
-        # exact-once via inflight flag (compactor.compact ya no es AsyncMock; chequear estado)
+
+        # EXACT-ONCE invariant
+        assert compactor.compact.await_count == 1, (
+            f"Expected exactly 1 compaction, got {compactor.compact.await_count}"
+        )
         ctx = mgr.get("u1")
         assert ctx.compaction_inflight is False
 
     @pytest.mark.asyncio
-    async def test_trigger_failure_leaves_history_intact(self, manager_with_compactor):
+    async def test_trigger_failure_leaves_history_intact(self, manager_with_compactor, caplog):
+        import logging
         mgr, compactor = manager_with_compactor
-        compactor.compact = AsyncMock(side_effect=CompactionError(CompactionErrorKind.REASONER_FAILED, "boom"))
+        compactor.compact = AsyncMock(side_effect=CompactionError(
+            CompactionErrorKind.REASONER_FAILED, "boom"
+        ))
 
         mgr.get_or_create("u1", "Juan")
-        for i in range(6):
-            mgr.add_turn("u1", "user", f"msg {i}")
-
-        await asyncio.sleep(0.05)
+        with caplog.at_level(logging.WARNING, logger="src.orchestrator.context_manager"):
+            for i in range(6):
+                mgr.add_turn("u1", "user", f"msg {i}")
+            await asyncio.sleep(0.05)
 
         ctx = mgr.get("u1")
         assert ctx.compacted_summary is None
         assert len(ctx.conversation_history) == 6
         assert ctx.compaction_inflight is False
+        # Observability assertion: warning was logged
+        assert any("compaction failed" in rec.message.lower() for rec in caplog.records)
 
     @pytest.mark.asyncio
     async def test_no_compactor_no_trigger(self):
@@ -130,6 +144,40 @@ class TestCompactionTrigger:
 
 
 class TestCleanupSnapshot:
+    @pytest.mark.asyncio
+    async def test_snapshot_save_failure_keeps_context_in_memory(self, tmp_path, monkeypatch):
+        """Si persister.save falla, NO borrar ctx; reintentar próximo tick."""
+        from src.orchestrator.context_persister import ContextPersister
+
+        persister = ContextPersister(base_path=tmp_path / "contexts")
+
+        # Patchear save_payload para que falle siempre
+        def boom(*a, **kw):
+            raise OSError("disk full")
+        monkeypatch.setattr(persister, "save_payload", boom)
+
+        compactor = AsyncMock()
+        compactor.compact = AsyncMock(return_value=_result(summary="snap"))
+
+        mgr = ContextManager(
+            inactive_timeout=0.01,
+            cleanup_interval=0.05,
+            compactor=compactor,
+            persister=persister,
+        )
+        mgr.get_or_create("retain_user", "Ana")
+        mgr.add_turn("retain_user", "user", "hola", entities=["light.a"])
+
+        cleanup_task = asyncio.create_task(mgr.start_cleanup_loop_async())
+        await asyncio.sleep(0.2)
+        mgr.stop_cleanup_loop_async()
+        await cleanup_task
+
+        # Save failed → context still in memory, counter incremented
+        assert mgr.get("retain_user") is not None, "Context dropped despite save failure"
+        stats = mgr.get_stats()
+        assert stats["persist_failures"] >= 1
+
     @pytest.mark.asyncio
     async def test_cleanup_persists_expired_context(self, tmp_path):
         from src.orchestrator.context_persister import ContextPersister
