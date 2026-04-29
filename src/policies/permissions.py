@@ -15,6 +15,16 @@ ADULT_ONLY_DOMAINS: set[str] = {"climate", "lock", "alarm_control_panel"}
 
 @before_ha_action(priority=5)  # priority=5: corre ANTES que safety_alarm (priority=10)
 def chicos_sin_dominios_adultos(call):
+    """Block child users from controlling adult-only HA domains.
+
+    Runs at priority=5 (BEFORE safety_alarm at priority=10) so a child trying
+    to disarm the alarm gets the "no permission" message instead of the
+    quiet-hours one.
+
+    Returns:
+        BlockResult if call.user_id is in CHILD_USER_IDS AND call.domain is
+        in ADULT_ONLY_DOMAINS; None otherwise (pass-through).
+    """
     if call.user_id in CHILD_USER_IDS and call.domain in ADULT_ONLY_DOMAINS:
         return BlockResult(
             reason="No tenés permiso para eso",
