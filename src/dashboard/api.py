@@ -142,6 +142,7 @@ class DashboardAPI:
         zone_manager=None,
         event_logger=None,
         speaker_identifier=None,
+        llm_metrics=None,
         observability_use_mocks: bool = True,
     ):
         self.scheduler = routine_scheduler
@@ -161,6 +162,7 @@ class DashboardAPI:
         self.zone_manager = zone_manager
         self.event_logger = event_logger
         self.speaker_identifier = speaker_identifier
+        self.llm_metrics = llm_metrics
         self.observability_use_mocks = observability_use_mocks
 
         # FastAPI app
@@ -761,6 +763,7 @@ class DashboardAPI:
             alert_manager=self.alert_manager,
             zone_manager=self.zone_manager,
             event_logger=self.event_logger,
+            llm_metrics=self.llm_metrics,
             use_mocks=self.observability_use_mocks,
         )
 

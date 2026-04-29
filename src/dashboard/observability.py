@@ -47,7 +47,7 @@ def _zones_adapter(zone_manager) -> list[dict]:
     return out
 
 
-def _llm_endpoints_adapter(llm_router) -> list[dict]:
+def _llm_endpoints_adapter(llm_router, metrics_tracker=None) -> list[dict]:
     endpoints = getattr(llm_router, "_endpoints", None)
     cd = getattr(llm_router, "_cd", None)
     if not endpoints:
@@ -66,14 +66,23 @@ def _llm_endpoints_adapter(llm_router) -> list[dict]:
                 pass
         kind = getattr(ep, "kind", None)
         kind_val = kind.value if hasattr(kind, "value") else str(kind)
+        # Métricas reales rolling 5min (tps, ttft_ms p50, calls)
+        tps, ttft_ms, calls, last_check_ts = None, None, 0, now
+        if metrics_tracker is not None:
+            snap = metrics_tracker.snapshot(ep_id)
+            if snap:
+                tps = snap.get("tps")
+                ttft_ms = snap.get("ttft_ms")
+                calls = snap.get("calls", 0)
+                last_check_ts = snap.get("last_call_ts", now)
         out.append({
             "id": ep_id, "name": ep_id,
             "url": getattr(getattr(ep, "client", None), "base_url", "local"),
             "priority": getattr(ep, "priority", 0),
             "role": kind_val,
             "state": "cooldown" if in_cd else "healthy",
-            "tps": None, "ttft_ms": None,
-            "last_check": datetime.fromtimestamp(now).strftime("%H:%M:%S"),
+            "tps": tps, "ttft_ms": ttft_ms, "calls_5min": calls,
+            "last_check": datetime.fromtimestamp(last_check_ts).strftime("%H:%M:%S"),
             "failures_7d": {"timeout": 0, "billing": 0, "rate_limit": 0, "idle": 0},
             "cooldown_ends": cooldown_ends,
         })
@@ -251,6 +260,7 @@ def register_observability_routes(
     alert_manager=None,
     zone_manager=None,
     event_logger=None,
+    llm_metrics=None,
     use_mocks: bool = True,
 ) -> None:
     """Registrar todas las rutas observability en `app`.
@@ -369,7 +379,10 @@ def register_observability_routes(
         if llm_router is None:
             _set_source(response, real=False)
             return mocks.LLM_ENDPOINTS
-        return _adapt(lambda: _llm_endpoints_adapter(llm_router), mocks.LLM_ENDPOINTS, response)
+        return _adapt(
+            lambda: _llm_endpoints_adapter(llm_router, llm_metrics),
+            mocks.LLM_ENDPOINTS, response,
+        )
 
     @app.post("/api/llm/endpoints/{endpoint_id}/clear-cooldown")
     async def clear_cooldown(endpoint_id: str):

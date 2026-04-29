@@ -27,6 +27,7 @@ DEFAULT_COOLDOWN_PATH = "./data/llm_cooldowns.json"
 def build_llm_router(
     failover_config: dict,
     clients: dict[str, Any],
+    metrics_tracker=None,
 ) -> LLMRouter:
     """Construir LLMRouter desde config + clientes ya inicializados.
 
@@ -101,4 +102,5 @@ def build_llm_router(
         f"[LLMRouter] inicializado con {len(endpoints)} endpoints: "
         + ", ".join(f"{e.id}(prio={e.priority})" for e in endpoints)
     )
-    return LLMRouter(endpoints=endpoints, cooldown_manager=cd_manager)
+    return LLMRouter(endpoints=endpoints, cooldown_manager=cd_manager,
+                     metrics_tracker=metrics_tracker)
