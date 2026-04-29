@@ -12,6 +12,7 @@ const NAV = [
   { id: 'llm',           label: 'LLM Router',     group: 'Plataforma', icon: '◆', view: 'LLMView',           badge: '!' },
   { id: 'users',         label: 'Usuarios',       group: 'Plataforma', icon: '◐', view: 'UsersView' },
   { id: 'system',        label: 'Sistema',        group: 'Infraestructura', icon: '▦', view: 'SystemView' },
+  { id: 'admin',         label: 'Admin',          group: 'Infraestructura', icon: '⚙', view: 'AdminView' },
 ];
 
 const ACCENTS = {
