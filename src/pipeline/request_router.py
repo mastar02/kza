@@ -189,6 +189,7 @@ class RequestRouter:
         llm_command_router=None,
         regex_extractor=None,
         llm_gate=None,
+        hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -222,6 +223,10 @@ class RequestRouter:
             confidence_threshold: Below this confidence, sensitive commands
                 ask for explicit confirmation; reversible ones execute with a
                 warning log. Range [0.0, 1.0]. Default 0.75.
+            hooks: Optional HookRegistry instance (plan #3 OpenClaw). When set,
+                before_ha_action / before_tts_speak hooks fire on each invocation
+                and after-events emit at pipeline checkpoints. Backward-compat:
+                None → no hook calls, behavior identical to baseline.
         """
         # Core pipeline components
         self.command_processor = command_processor
@@ -281,6 +286,9 @@ class RequestRouter:
         # src/nlu/llm_gate.py.
         self.regex_extractor = regex_extractor
         self.llm_gate = llm_gate
+
+        # Plan #3 OpenClaw — plugin hooks registry (or None)
+        self._hooks = hooks
 
         # State
         self._query_cache = {}
@@ -480,6 +488,31 @@ class RequestRouter:
                 f"intent={classification.intent} reason={classification.rejection_reason} "
                 f"text={text!r}"
             )
+            # Plan #3 OpenClaw — emit after_event(intent) for audit/observability.
+            # C3 fix: derive user_id explicitly here (before the early-return for
+            # non-commands, and before the formal `user_id = ...` assignment in
+            # the user-info block below). locals().get("user_id") was always None.
+            # I7 fix: wrap in try/except so a payload bug never takes down the pipeline.
+            if self._hooks is not None:
+                _emit_user_id = cmd.user.user_id if cmd.user else None
+                try:
+                    import time as _time
+                    from src.hooks import IntentPayload, execute_after_event
+                    execute_after_event(
+                        self._hooks, "intent",
+                        IntentPayload(
+                            timestamp=_time.time(),
+                            text=text,
+                            intent=classification.intent or "unknown",
+                            entities=tuple(),  # IntentPayload.entities: tuple[str, ...]
+                            user_id=_emit_user_id,
+                        ),
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[hooks] failed to emit intent after-event: {e}",
+                        exc_info=True,
+                    )
             if not classification.is_command:
                 result["intent"] = f"llm_rejected:{classification.rejection_reason or 'unknown'}"
                 result["success"] = False
@@ -666,6 +699,31 @@ class RequestRouter:
             }
 
         logger.info(f"[STT {cmd.timings.get('stt', 0):.0f}ms] {text}")
+
+        # Plan #3 OpenClaw — emit after_event(stt) for audit/observability.
+        # C3 fix: user_id and room_id are both already in scope here (user_id
+        # is defined at the top of legacy path; room_id is a method param).
+        # I7 fix: wrap in try/except so a payload bug never takes down the pipeline.
+        if self._hooks is not None:
+            try:
+                import time as _time
+                from src.hooks import SttPayload, execute_after_event
+                execute_after_event(
+                    self._hooks, "stt",
+                    SttPayload(
+                        timestamp=_time.time(),
+                        text=text,
+                        latency_ms=float(cmd.timings.get("stt", 0.0)),
+                        user_id=user_id,
+                        zone_id=room_id,
+                        success=True,
+                    ),
+                )
+            except Exception as e:
+                logger.error(
+                    f"[hooks] failed to emit stt after-event: {e}",
+                    exc_info=True,
+                )
 
         # 1b. Confidence gate — si confidence baja y combo sensible, pide
         #     confirmación en vez de ejecutar. Comandos sin intent/entity o

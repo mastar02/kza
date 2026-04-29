@@ -44,6 +44,8 @@ class ResponseHandler:
         llm_use_filler: bool = True,
         llm_filler_phrases: list = None,
         response_cache: ResponseCache | None = None,
+        hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
+        before_handler_warn_ms: float = 5.0,
     ):
         """
         Inicializar ResponseHandler.
@@ -61,6 +63,12 @@ class ResponseHandler:
             response_cache: Cache TTS pre-generado (S2). Si se provee,
                 `speak()` consulta el cache antes del TTS live; hit → playback
                 directo del ndarray (~5-10ms). Miss → camino normal.
+            hooks: Optional HookRegistry instance (plan #3 OpenClaw). When set,
+                before_ha_action / before_tts_speak hooks fire on each invocation
+                and after-events emit at pipeline checkpoints. Backward-compat:
+                None → no hook calls, behavior identical to baseline.
+            before_handler_warn_ms: Threshold (ms) for logging slow before-handlers
+                in execute_before_chain. Default 5.0ms.
         """
         self.tts = tts
         self.zone_manager = zone_manager
@@ -75,6 +83,8 @@ class ResponseHandler:
         self.llm_filler_phrases = llm_filler_phrases
 
         self._response_cache = response_cache
+        self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
+        self._before_handler_warn_ms = before_handler_warn_ms
         self._llm_streamer: BufferedLLMStreamer | None = None
         self._active_zone_id = None
 
@@ -174,6 +184,36 @@ class ResponseHandler:
         if not text:
             return
 
+        # Plan #3 OpenClaw — before_tts_speak chain
+        _hook_t0 = None
+        if self.hooks is not None:
+            from src.hooks import (
+                BlockResult,
+                TtsCall,
+                execute_before_chain,
+            )
+
+            _hook_t0 = time.perf_counter()
+            tts_call = TtsCall(
+                text=text,
+                voice=None,
+                lang="es",
+                user_id=None,
+                zone_id=zone_id,
+            )
+            result = execute_before_chain(
+                self.hooks, "before_tts_speak", tts_call,
+                warn_ms=self._before_handler_warn_ms,
+            )
+            if isinstance(result, BlockResult):
+                logger.info(
+                    f"[TTS BLOCKED] rule={result.rule_name}: {result.reason}"
+                )
+                return
+            # rewrite chain may have modified text (and possibly other fields)
+            text = result.text
+            zone_id = result.zone_id
+
         # Resolve zone from room context if available
         if room_context and hasattr(room_context, 'room_id') and not zone_id:
             zone_id = f"zone_{room_context.room_id}"
@@ -217,6 +257,30 @@ class ResponseHandler:
             # `cancel()` pudo haberlo apagado antes; idempotent.
             self._is_speaking = False
             self._current_stream = None
+
+        # Plan #3 OpenClaw — emit after-event TTS
+        if self.hooks is not None:
+            try:
+                from src.hooks import TtsPayload, execute_after_event
+
+                latency_ms = (
+                    (time.perf_counter() - _hook_t0) * 1000.0
+                    if _hook_t0 is not None
+                    else 0.0
+                )
+                execute_after_event(
+                    self.hooks,
+                    "tts",
+                    TtsPayload(
+                        timestamp=time.time(),
+                        text=text,
+                        voice=None,
+                        latency_ms=latency_ms,
+                        success=True,
+                    ),
+                )
+            except Exception as e:
+                logger.warning(f"after_event tts emit failed: {e}")
 
     def _playback_cached(self, cached: CachedAudio, zone_id: str = None):
         """Reproducir audio cacheado reutilizando el mismo mecanismo que TTS live.
