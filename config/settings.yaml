@@ -387,7 +387,7 @@ context_persistence:
   auto_save_interval: 60                # Auto-guardar cada N segundos
   # Con 10 usuarios y 50 turnos c/u = ~500KB total en disco
 
-# Speaker Identification (GPU 0 — compartido con STT, Emotion, Kokoro TTS)
+# Speaker Identification (cuda:0 — compartido con STT, Emotion, Kokoro TTS, Embeddings)
 speaker_id:
   enabled: true
   model: "speechbrain/spkrec-ecapa-voxceleb"  # O "resemblyzer" (más ligero)
@@ -395,6 +395,13 @@ speaker_id:
   threshold: 0.75  # Similitud mínima para identificar usuario
   users_path: "./data/users.json"
   enrollment_samples: 3  # Muestras de voz para registrar usuario
+
+# Emotion Detection (cuda:0 — comparte GPU con speaker_id por diseño)
+# wav2vec2 sobre el audio post-STT, paralelo a SpeakerID.
+emotion:
+  model: "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
+  device: "cuda:0"
+  sample_rate: 16000
 
 # Permission Levels (jerárquico)
 # GUEST=0: Solo consultas

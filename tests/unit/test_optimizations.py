@@ -14,6 +14,8 @@ import pytest
 import numpy as np
 from unittest.mock import Mock, MagicMock, patch, AsyncMock
 
+from tests.factories import make_emotion_detector
+
 
 class TestVADStreaming:
     """Tests para VAD streaming en STT"""
@@ -99,7 +101,7 @@ class TestEmotionBatchProcessing:
         """Con un solo sample, debe usar detect() directamente"""
         from src.users.emotion_detector import EmotionDetector, EmotionResult
 
-        detector = EmotionDetector(device="cpu")
+        detector = make_emotion_detector(device="cpu")
         detector._model = Mock()
 
         # Mock detect
@@ -123,7 +125,7 @@ class TestEmotionBatchProcessing:
         """Lista vacía debe retornar lista vacía"""
         from src.users.emotion_detector import EmotionDetector
 
-        detector = EmotionDetector(device="cpu")
+        detector = make_emotion_detector(device="cpu")
         results = detector.batch_detect([])
 
         assert results == []
@@ -132,7 +134,7 @@ class TestEmotionBatchProcessing:
         """Con múltiples samples, debe usar batch processing"""
         from src.users.emotion_detector import EmotionDetector
 
-        detector = EmotionDetector(device="cpu")
+        detector = make_emotion_detector(device="cpu")
 
         # Mock del pipeline
         mock_pipeline = Mock()

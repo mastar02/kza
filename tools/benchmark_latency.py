@@ -207,7 +207,10 @@ class LatencyBenchmark:
         if self._emotion is None:
             try:
                 from src.users.emotion_detector import EmotionDetector
-                self._emotion = EmotionDetector(device="cuda:1")
+                self._emotion = EmotionDetector(
+                    model_name="audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim",
+                    device="cuda:0",
+                )
                 self._emotion.load()
             except Exception as e:
                 print(f"  ⚠️ Emotion no disponible: {e}")

@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from users.emotion_detector import EmotionDetector, EmotionResult
+from tests.factories import make_emotion_detector
 
 
 class TestEmotionResult:
@@ -166,24 +167,34 @@ class TestEmotionResult:
 class TestEmotionDetectorInit:
     """Test suite for EmotionDetector initialization"""
 
-    def test_init_defaults(self):
-        """Test initialization with default parameters"""
-        detector = EmotionDetector()
+    def test_init_requires_device(self):
+        """Constructor must reject missing device — config is the source of truth."""
+        with pytest.raises(TypeError):
+            EmotionDetector(model_name="audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim")
+
+    def test_init_requires_model_name(self):
+        """Constructor must reject missing model_name."""
+        with pytest.raises(TypeError):
+            EmotionDetector(device="cpu")
+
+    def test_init_with_factory_defaults(self):
+        """Factory provides CPU defaults for behavior-focused tests."""
+        detector = make_emotion_detector()
 
         assert detector.model_name == "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
-        assert detector.device == "cuda:1"
+        assert detector.device == "cpu"
         assert detector.sample_rate == 16000
         assert detector._model is None
         assert detector._processor is None
 
     def test_init_custom_device(self):
         """Test initialization with custom device"""
-        detector = EmotionDetector(device="cuda:0")
+        detector = make_emotion_detector(device="cuda:0")
         assert detector.device == "cuda:0"
 
     def test_init_cpu_device(self):
         """Test initialization with CPU device"""
-        detector = EmotionDetector(device="cpu")
+        detector = make_emotion_detector(device="cpu")
         assert detector.device == "cpu"
 
 
@@ -192,7 +203,7 @@ class TestEmotionDetectorLoad:
 
     def test_load_model(self):
         """Test loading the emotion model with mocked pipeline"""
-        detector = EmotionDetector()
+        detector = make_emotion_detector()
 
         with patch.object(detector, "_load_wav2vec2") as mock_load:
             detector.load()
@@ -202,7 +213,7 @@ class TestEmotionDetectorLoad:
 
     def test_load_model_already_loaded(self):
         """Test loading when model is already loaded"""
-        detector = EmotionDetector()
+        detector = make_emotion_detector()
         detector._model = MagicMock()  # Mark as already loaded
 
         with patch.object(detector, "_load_wav2vec2") as mock_load:
@@ -212,7 +223,7 @@ class TestEmotionDetectorLoad:
 
     def test_load_model_import_error(self):
         """Test handling ImportError when loading model"""
-        detector = EmotionDetector()
+        detector = make_emotion_detector()
 
         with patch.object(detector, "_load_wav2vec2") as mock_load:
             mock_load.side_effect = ImportError("transformers not found")
@@ -222,20 +233,20 @@ class TestEmotionDetectorLoad:
 
     def test_get_device_id_cpu(self):
         """Test device ID extraction for CPU"""
-        detector = EmotionDetector(device="cpu")
+        detector = make_emotion_detector(device="cpu")
         assert detector._get_device_id() == -1
 
     def test_get_device_id_cuda(self):
         """Test device ID extraction for CUDA"""
-        detector = EmotionDetector(device="cuda:1")
+        detector = make_emotion_detector(device="cuda:1")
         assert detector._get_device_id() == 1
 
-        detector = EmotionDetector(device="cuda:0")
+        detector = make_emotion_detector(device="cuda:0")
         assert detector._get_device_id() == 0
 
     def test_get_device_id_default(self):
         """Test device ID extraction with invalid format"""
-        detector = EmotionDetector(device="invalid")
+        detector = make_emotion_detector(device="invalid")
         # Should default to 0
         assert detector._get_device_id() == 0
 
@@ -246,7 +257,7 @@ class TestEmotionDetectorDetect:
     @pytest.fixture
     def mock_detector(self):
         """Create a detector with mocked model"""
-        detector = EmotionDetector()
+        detector = make_emotion_detector()
         detector._model = MagicMock()
         detector._model_type = "wav2vec2_pipeline"
         return detector
@@ -366,7 +377,7 @@ class TestEmotionDetectorDetect:
 
     def test_detect_loads_model_if_needed(self, sample_audio):
         """Test that model is loaded on first detect call"""
-        detector = EmotionDetector()
+        detector = make_emotion_detector()
 
         with patch.object(detector, "load") as mock_load:
             detector._model = MagicMock()
@@ -434,7 +445,7 @@ class TestEmotionDetectorBatch:
     @pytest.fixture
     def mock_detector(self):
         """Create a detector with mocked model"""
-        detector = EmotionDetector()
+        detector = make_emotion_detector()
         detector._model = MagicMock()
         detector._model_type = "wav2vec2_pipeline"
         return detector
@@ -471,7 +482,7 @@ class TestEmotionDetectorUtils:
 
     def test_emotion_characteristics(self):
         """Test emotion characteristics mapping"""
-        detector = EmotionDetector()
+        detector = make_emotion_detector()
 
         assert detector.EMOTION_CHARACTERISTICS["happy"]["arousal"] == 0.8
         assert detector.EMOTION_CHARACTERISTICS["happy"]["valence"] == 0.9
@@ -484,7 +495,7 @@ class TestEmotionDetectorUtils:
 
     def test_get_emotion_description(self):
         """Test emotion description translation"""
-        detector = EmotionDetector()
+        detector = make_emotion_detector()
 
         assert detector.get_emotion_description("happy") == "Alegre"
         assert detector.get_emotion_description("sad") == "Triste"
@@ -496,7 +507,7 @@ class TestEmotionDetectorUtils:
 
     def test_create_neutral_result(self):
         """Test creating neutral fallback result"""
-        detector = EmotionDetector()
+        detector = make_emotion_detector()
         import time
 
         start = time.perf_counter()

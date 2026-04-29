@@ -42,8 +42,8 @@ class SpeakerIdentifier:
 
     def __init__(
         self,
-        model_name: str = "speechbrain/spkrec-ecapa-voxceleb",
-        device: str = "cuda:1",
+        model_name: str,
+        device: str,
         similarity_threshold: float = 0.75,
         sample_rate: int = 16000
     ):

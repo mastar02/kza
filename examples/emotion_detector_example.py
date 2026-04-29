@@ -20,10 +20,11 @@ from users.emotion_detector import EmotionDetector
 def example_detect_emotion():
     """Ejemplo básico de detección de emoción"""
 
-    # Inicializar detector con GPU cuda:1 (compartido con speaker_identifier)
+    # Inicializar detector en cuda:0 (pipeline de audio consolidado, comparte
+    # GPU con speaker_identifier por diseño)
     detector = EmotionDetector(
         model_name="audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim",
-        device="cuda:1",
+        device="cuda:0",
         sample_rate=16000
     )
 
@@ -55,7 +56,10 @@ def example_detect_emotion():
 def example_batch_detection():
     """Ejemplo de detección en lote"""
 
-    detector = EmotionDetector(device="cuda:1")
+    detector = EmotionDetector(
+        model_name="audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim",
+        device="cuda:0",
+    )
     detector.load()
 
     # Simular múltiples audios
@@ -75,7 +79,10 @@ def example_batch_detection():
 def example_emotion_description():
     """Ejemplo de descripción de emociones en español"""
 
-    detector = EmotionDetector()
+    detector = EmotionDetector(
+        model_name="audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim",
+        device="cuda:0",
+    )
 
     emotions = ["happy", "sad", "angry", "fearful", "neutral", "surprised"]
 
@@ -89,7 +96,10 @@ def example_emotion_description():
 def example_error_handling():
     """Ejemplo de manejo de errores graceful"""
 
-    detector = EmotionDetector()
+    detector = EmotionDetector(
+        model_name="audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim",
+        device="cuda:0",
+    )
 
     # Audio vacío o corrupto
     empty_audio = np.array([], dtype=np.float32)

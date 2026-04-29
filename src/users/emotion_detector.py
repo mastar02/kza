@@ -121,8 +121,8 @@ class EmotionDetector:
 
     def __init__(
         self,
-        model_name: str = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim",
-        device: str = "cuda:1",
+        model_name: str,
+        device: str,
         sample_rate: int = 16000,
     ):
         """
@@ -130,7 +130,7 @@ class EmotionDetector:
 
         Args:
             model_name: Nombre del modelo en HuggingFace Hub
-            device: Dispositivo CUDA a usar (ej: "cuda:1")
+            device: Dispositivo CUDA a usar (ej: "cuda:0")
             sample_rate: Sample rate del audio esperado (Hz)
         """
         self.model_name = model_name

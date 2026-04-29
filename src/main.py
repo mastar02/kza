@@ -237,13 +237,18 @@ async def main():
     # Text-to-Speech
     tts = create_tts(config.get("tts", {}))
 
-    # Vector Database
+    # Vector Database — embedder_model y embedder_device son obligatorios.
+    # Fuente de verdad: settings.yaml § embeddings (cuda:0, BAAI/bge-m3).
     vectordb_config = config.get("vectordb", {})
     embeddings_config = config.get("embeddings", {})
+    if "model" not in embeddings_config or "device" not in embeddings_config:
+        raise ValueError(
+            "settings.yaml debe declarar embeddings.model y embeddings.device"
+        )
     chroma = ChromaSync(
         chroma_path=vectordb_config.get("path", "./data/chroma_db"),
-        embedder_model=embeddings_config.get("model", "BAAI/bge-small-en-v1.5"),
-        embedder_device=embeddings_config.get("device", "cuda:1")
+        embedder_model=embeddings_config["model"],
+        embedder_device=embeddings_config["device"],
     )
 
     # LLM Reasoner — HTTP al kza-72b.service (default) o local GGUF (fallback)
@@ -383,17 +388,22 @@ async def main():
         )
         logger.info("Memory manager habilitado")
 
-    # Speaker Identification (GPU 1)
+    # Speaker Identification (cuda:0 — pipeline de audio consolidado)
+    # Fuente de verdad: settings.yaml § speaker_id.
     speaker_config = config.get("speaker_id", {})
     speaker_identifier = None
     user_manager = None
     voice_enrollment = None
 
     if speaker_config.get("enabled", True):
+        if "model" not in speaker_config or "device" not in speaker_config:
+            raise ValueError(
+                "settings.yaml debe declarar speaker_id.model y speaker_id.device"
+            )
         speaker_identifier = SpeakerIdentifier(
-            model_name=speaker_config.get("model", "speechbrain/spkrec-ecapa-voxceleb"),
-            device=speaker_config.get("device", "cuda:1"),
-            similarity_threshold=speaker_config.get("threshold", 0.75)
+            model_name=speaker_config["model"],
+            device=speaker_config["device"],
+            similarity_threshold=speaker_config.get("threshold", 0.75),
         )
 
         user_manager = UserManager(
@@ -406,10 +416,23 @@ async def main():
         )
         logger.info("Speaker identification habilitado")
 
-    # Emotion Detection (GPU 1 — shared with speaker ID)
+    # Emotion Detection (cuda:0 — pipeline de audio consolidado)
+    # Fuente de verdad: settings.yaml § emotion. Comparte GPU con speaker_id por
+    # diseño (ambos consumen el mismo audio post-STT). Si difieren, alertamos.
+    emotion_config = config.get("emotion", {})
+    if "model" not in emotion_config or "device" not in emotion_config:
+        raise ValueError(
+            "settings.yaml debe declarar emotion.model y emotion.device"
+        )
+    if speaker_config.get("enabled", True) and emotion_config["device"] != speaker_config.get("device"):
+        logger.warning(
+            f"emotion.device ({emotion_config['device']}) != speaker_id.device "
+            f"({speaker_config.get('device')}); el diseño asume la misma GPU."
+        )
     emotion_detector = EmotionDetector(
-        device=speaker_config.get("device", "cuda:1"),
-        sample_rate=16000,
+        model_name=emotion_config["model"],
+        device=emotion_config["device"],
+        sample_rate=emotion_config.get("sample_rate", 16000),
     )
     logger.info("Emotion detector habilitado")
 

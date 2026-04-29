@@ -21,8 +21,8 @@ class ChromaSync:
     def __init__(
         self,
         chroma_path: str,
-        embedder_model: str = "BAAI/bge-small-en-v1.5",
-        embedder_device: str = "cuda:1",
+        embedder_model: str,
+        embedder_device: str,
         commands_collection: str = "home_assistant_commands",
         routines_collection: str = "home_assistant_routines"
     ):

@@ -7,17 +7,28 @@ import pytest
 import numpy as np
 from unittest.mock import Mock, patch, MagicMock
 from src.users.speaker_identifier import SpeakerIdentifier, SpeakerMatch
+from tests.factories import make_speaker_identifier
 
 
 class TestSpeakerIdentifierInit:
     """Test SpeakerIdentifier initialization"""
 
-    def test_init_default_parameters(self):
-        """Test initialization with default parameters"""
-        identifier = SpeakerIdentifier()
+    def test_init_requires_device(self):
+        """Constructor must reject missing device — config is the source of truth."""
+        with pytest.raises(TypeError):
+            SpeakerIdentifier(model_name="speechbrain/spkrec-ecapa-voxceleb")
+
+    def test_init_requires_model_name(self):
+        """Constructor must reject missing model_name."""
+        with pytest.raises(TypeError):
+            SpeakerIdentifier(device="cpu")
+
+    def test_init_with_factory_defaults(self):
+        """Factory provides CPU defaults for behavior-focused tests."""
+        identifier = make_speaker_identifier()
 
         assert identifier.model_name == "speechbrain/spkrec-ecapa-voxceleb"
-        assert identifier.device == "cuda:1"
+        assert identifier.device == "cpu"
         assert identifier.similarity_threshold == 0.75
         assert identifier.sample_rate == 16000
         assert identifier._model is None
@@ -25,7 +36,7 @@ class TestSpeakerIdentifierInit:
 
     def test_init_custom_parameters(self):
         """Test initialization with custom parameters"""
-        identifier = SpeakerIdentifier(
+        identifier = make_speaker_identifier(
             model_name="resemblyzer",
             device="cpu",
             similarity_threshold=0.8,
@@ -43,7 +54,7 @@ class TestSpeakerIdentifierComputeSimilarity:
 
     def test_compute_similarity_identical_embeddings(self):
         """Test similarity between identical embeddings"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         embedding = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
         similarity = identifier.compute_similarity(embedding, embedding)
@@ -53,7 +64,7 @@ class TestSpeakerIdentifierComputeSimilarity:
 
     def test_compute_similarity_orthogonal_embeddings(self):
         """Test similarity between orthogonal embeddings"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         embedding1 = np.array([1.0, 0.0, 0.0], dtype=np.float32)
         embedding2 = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -65,7 +76,7 @@ class TestSpeakerIdentifierComputeSimilarity:
 
     def test_compute_similarity_opposite_embeddings(self):
         """Test similarity between opposite embeddings"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         embedding1 = np.array([1.0, 0.0, 0.0], dtype=np.float32)
         embedding2 = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
@@ -77,7 +88,7 @@ class TestSpeakerIdentifierComputeSimilarity:
 
     def test_compute_similarity_zero_embeddings(self):
         """Test similarity with zero embeddings"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         embedding1 = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         embedding2 = np.array([1.0, 0.0, 0.0], dtype=np.float32)
@@ -89,7 +100,7 @@ class TestSpeakerIdentifierComputeSimilarity:
 
     def test_compute_similarity_returns_normalized_range(self):
         """Test that similarity is always in [0, 1] range"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         for _ in range(10):
             embedding1 = np.random.randn(256).astype(np.float32)
@@ -105,7 +116,7 @@ class TestSpeakerIdentifierGetEmbedding:
     @patch('src.users.speaker_identifier.SpeakerIdentifier._load_speechbrain')
     def test_get_embedding_audio_normalization(self, mock_load):
         """Test that audio is normalized correctly"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         # Mock the model
         mock_model = MagicMock()
@@ -132,7 +143,7 @@ class TestSpeakerIdentifierGetEmbedding:
     @patch('src.users.speaker_identifier.SpeakerIdentifier._load_speechbrain')
     def test_get_embedding_dtype_conversion(self, mock_load):
         """Test that audio dtype is converted to float32"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         # Mock the model
         mock_model = MagicMock()
@@ -162,7 +173,7 @@ class TestSpeakerIdentifierIdentify:
     @patch('src.users.speaker_identifier.SpeakerIdentifier.get_embedding')
     def test_identify_known_speaker(self, mock_get_embedding):
         """Test identifying a known speaker"""
-        identifier = SpeakerIdentifier(similarity_threshold=0.75)
+        identifier = make_speaker_identifier(similarity_threshold=0.75)
 
         # Mock embeddings
         audio = np.zeros(16000, dtype=np.float32)
@@ -185,7 +196,7 @@ class TestSpeakerIdentifierIdentify:
     @patch('src.users.speaker_identifier.SpeakerIdentifier.get_embedding')
     def test_identify_unknown_speaker(self, mock_get_embedding):
         """Test identifying an unknown speaker"""
-        identifier = SpeakerIdentifier(similarity_threshold=0.75)
+        identifier = make_speaker_identifier(similarity_threshold=0.75)
 
         # Mock embeddings with low similarity
         audio = np.zeros(16000, dtype=np.float32)
@@ -207,7 +218,7 @@ class TestSpeakerIdentifierIdentify:
     @patch('src.users.speaker_identifier.SpeakerIdentifier.get_embedding')
     def test_identify_empty_registered_embeddings(self, mock_get_embedding):
         """Test identifying when no speakers are registered"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         audio = np.zeros(16000, dtype=np.float32)
         current_embedding = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
@@ -223,7 +234,7 @@ class TestSpeakerIdentifierIdentify:
     @patch('src.users.speaker_identifier.SpeakerIdentifier.get_embedding')
     def test_identify_multiple_speakers(self, mock_get_embedding):
         """Test identifying best match from multiple registered speakers"""
-        identifier = SpeakerIdentifier(similarity_threshold=0.75)
+        identifier = make_speaker_identifier(similarity_threshold=0.75)
 
         audio = np.zeros(16000, dtype=np.float32)
         current_embedding = np.array([0.8, 0.2, 0.0, 0.0], dtype=np.float32)
@@ -248,7 +259,7 @@ class TestSpeakerIdentifierVerify:
     @patch('src.users.speaker_identifier.SpeakerIdentifier.get_embedding')
     def test_verify_same_speaker(self, mock_get_embedding):
         """Test verifying the same speaker"""
-        identifier = SpeakerIdentifier(similarity_threshold=0.75)
+        identifier = make_speaker_identifier(similarity_threshold=0.75)
 
         audio = np.zeros(16000, dtype=np.float32)
         embedding = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
@@ -263,7 +274,7 @@ class TestSpeakerIdentifierVerify:
     @patch('src.users.speaker_identifier.SpeakerIdentifier.get_embedding')
     def test_verify_different_speaker(self, mock_get_embedding):
         """Test verifying different speakers"""
-        identifier = SpeakerIdentifier(similarity_threshold=0.75)
+        identifier = make_speaker_identifier(similarity_threshold=0.75)
 
         audio = np.zeros(16000, dtype=np.float32)
         current_embedding = np.array([0.1, 0.0, 0.0, 0.0], dtype=np.float32)
@@ -283,7 +294,7 @@ class TestSpeakerIdentifierCreateEnrollmentEmbedding:
     @patch('src.users.speaker_identifier.SpeakerIdentifier.get_embedding')
     def test_create_enrollment_embedding_single_sample(self, mock_get_embedding):
         """Test enrollment embedding from single sample"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         audio_sample = np.zeros(16000, dtype=np.float32)
         embedding = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
@@ -298,7 +309,7 @@ class TestSpeakerIdentifierCreateEnrollmentEmbedding:
     @patch('src.users.speaker_identifier.SpeakerIdentifier.get_embedding')
     def test_create_enrollment_embedding_multiple_samples(self, mock_get_embedding):
         """Test enrollment embedding from multiple samples"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         audio_samples = [
             np.zeros(16000, dtype=np.float32),
@@ -325,7 +336,7 @@ class TestSpeakerIdentifierCreateEnrollmentEmbedding:
 
     def test_create_enrollment_embedding_empty_list(self):
         """Test enrollment embedding with empty list"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         with pytest.raises(ValueError, match="Se necesita al menos una muestra"):
             identifier.create_enrollment_embedding([])
@@ -369,7 +380,7 @@ class TestSpeakerIdentifierEdgeCases:
 
     def test_similarity_with_large_embeddings(self):
         """Test similarity computation with large embeddings"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         embedding1 = np.random.randn(512).astype(np.float32)
         embedding2 = np.random.randn(512).astype(np.float32)
@@ -381,7 +392,7 @@ class TestSpeakerIdentifierEdgeCases:
     @patch('src.users.speaker_identifier.SpeakerIdentifier.get_embedding')
     def test_identify_with_nan_values(self, mock_get_embedding):
         """Test handling of NaN values in embeddings"""
-        identifier = SpeakerIdentifier()
+        identifier = make_speaker_identifier()
 
         # Embedding with NaN values (edge case)
         audio = np.zeros(16000, dtype=np.float32)
@@ -399,7 +410,7 @@ class TestSpeakerIdentifierEdgeCases:
 
     def test_similarity_threshold_boundary(self):
         """Test behavior at similarity threshold boundaries"""
-        identifier = SpeakerIdentifier(similarity_threshold=0.75)
+        identifier = make_speaker_identifier(similarity_threshold=0.75)
 
         # At threshold
         embedding1 = np.array([0.75, 0.0], dtype=np.float32)
