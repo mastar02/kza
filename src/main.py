@@ -315,6 +315,14 @@ async def main():
         clients = {"fast_router_7b": fast_router}
         if llm is not None:
             clients["reasoner_72b"] = llm
+        # Pegar tracker direct-on-client así captura llamadas que NO pasan por
+        # LLMRouter (ej. el LLMCommandRouter NLU usa fast_router directo).
+        for ep_id, client in clients.items():
+            try:
+                client._metrics_tracker = llm_metrics_tracker
+                client._endpoint_id = ep_id
+            except AttributeError:
+                pass  # cliente no soporta tracker — skip silently
         try:
             llm_router = build_llm_router(failover_cfg, clients, metrics_tracker=llm_metrics_tracker)
             logger.info(
