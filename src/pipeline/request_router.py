@@ -189,6 +189,7 @@ class RequestRouter:
         llm_command_router=None,
         regex_extractor=None,
         llm_gate=None,
+        hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -281,6 +282,9 @@ class RequestRouter:
         # src/nlu/llm_gate.py.
         self.regex_extractor = regex_extractor
         self.llm_gate = llm_gate
+
+        # Plan #3 OpenClaw — plugin hooks registry (or None)
+        self._hooks = hooks
 
         # State
         self._query_cache = {}
@@ -480,6 +484,20 @@ class RequestRouter:
                 f"intent={classification.intent} reason={classification.rejection_reason} "
                 f"text={text!r}"
             )
+            # Plan #3 OpenClaw — emit after_event(intent) for audit/observability
+            if self._hooks is not None:
+                import time as _time
+                from src.hooks import IntentPayload, execute_after_event
+                execute_after_event(
+                    self._hooks, "intent",
+                    IntentPayload(
+                        timestamp=_time.time(),
+                        text=text,
+                        intent=classification.intent or "unknown",
+                        entities=[],
+                        user_id=locals().get("user_id"),
+                    ),
+                )
             if not classification.is_command:
                 result["intent"] = f"llm_rejected:{classification.rejection_reason or 'unknown'}"
                 result["success"] = False
@@ -666,6 +684,22 @@ class RequestRouter:
             }
 
         logger.info(f"[STT {cmd.timings.get('stt', 0):.0f}ms] {text}")
+
+        # Plan #3 OpenClaw — emit after_event(stt) for audit/observability
+        if self._hooks is not None:
+            import time as _time
+            from src.hooks import SttPayload, execute_after_event
+            execute_after_event(
+                self._hooks, "stt",
+                SttPayload(
+                    timestamp=_time.time(),
+                    text=text,
+                    latency_ms=float(cmd.timings.get("stt", 0.0)),
+                    user_id=locals().get("user_id"),
+                    zone_id=locals().get("room_id"),
+                    success=True,
+                ),
+            )
 
         # 1b. Confidence gate — si confidence baja y combo sensible, pide
         #     confirmación en vez de ejecutar. Comandos sin intent/entity o

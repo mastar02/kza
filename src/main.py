@@ -775,6 +775,29 @@ async def main():
         sample_rate=16000,
     )
 
+    # === Plan #3 OpenClaw — Plugin hooks (opcional) ===
+    hooks_cfg = config.get("hooks", {}) or {}
+    hooks = None
+    if hooks_cfg.get("enabled", False):
+        import importlib
+        try:
+            from src.hooks import _global_registry
+            importlib.import_module(hooks_cfg.get("policies_module", "src.policies"))
+            hooks = _global_registry
+            stats = hooks.get_stats()
+            logger.info(
+                f"[main] Plugin hooks enabled — "
+                f"before_ha={stats['before_handler_count']['before_ha_action']} "
+                f"before_tts={stats['before_handler_count']['before_tts_speak']} "
+                f"after_handlers={sum(stats['after_handler_count'].values())}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[main] Hooks disabled — failed to import policies: {e}",
+                exc_info=True,
+            )
+            hooks = None
+
     # Response handler (TTS + streaming + zone routing)
     # El response_cache (S2) se inicializa post-warmup abajo y se inyecta via
     # attach_response_cache — esto mantiene el orden: DI → warmup → build cache.
@@ -785,6 +808,7 @@ async def main():
         streaming_enabled=streaming_config.get("enabled", True),
         streaming_buffer_ms=streaming_config.get("buffer_ms", 150),
         streaming_prebuffer_ms=streaming_config.get("prebuffer_ms", 80),
+        hooks=hooks,
     )
 
     # Inyectar response_handler al MultiRoomAudioLoop para barge-in (S3).
@@ -881,6 +905,7 @@ async def main():
             persister=persister,
             compaction_threshold=compaction_threshold,
             keep_recent_turns=keep_recent_turns,
+            hooks=hooks,
         )
 
     # Request router (command routing: orchestrated + legacy paths)
@@ -914,6 +939,7 @@ async def main():
         llm_command_router=llm_command_router,
         regex_extractor=regex_extractor,
         llm_gate=llm_gate,
+        hooks=hooks,
     )
 
     # Feature subsystems (timers, intercom, notifications, alerts)

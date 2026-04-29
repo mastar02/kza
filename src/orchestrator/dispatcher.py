@@ -1129,6 +1129,8 @@ class MultiUserOrchestrator:
         persister=None,
         compaction_threshold: int = 6,
         keep_recent_turns: int = 3,
+        # Plan #3 OpenClaw — plugin hooks
+        hooks=None,
     ):
         # Componentes principales
         self.chroma = chroma_sync
@@ -1176,6 +1178,7 @@ class MultiUserOrchestrator:
             music_dispatcher=music_dispatcher,
             list_manager=list_manager,
             reminder_manager=reminder_manager,
+            hooks=hooks,
         )
 
         self._running = False

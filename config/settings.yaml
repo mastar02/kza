@@ -1121,3 +1121,15 @@ presence:
     #     user_id: "mastar"
     #     friendly_name: "Celular de Mastar"
     #     device_type: "phone_android"
+
+# =============================================================================
+# Plugin Hooks (plan #3 OpenClaw)
+# =============================================================================
+# Permite a handlers Python en src/policies/ bloquear/reescribir HA actions y
+# TTS speak, y auditar eventos del pipeline. Spec:
+# docs/superpowers/specs/2026-04-29-openclaw-plugin-hooks-design.md
+hooks:
+  enabled: false                   # OFF por default; activar tras validar en prod
+  policies_module: "src.policies"  # Python module path; importarlo dispara los decoradores
+  before_handler_warn_ms: 5.0      # log WARNING si un before_ handler tarda más
+  audit_sqlite_path: "./data/audit.db"   # consumido por audit_sqlite policy
