@@ -378,6 +378,8 @@ class HttpReasoner:
         self._resolved_model = None
         self._resolved_base_url = None
         self._last_metrics: dict | None = None
+        self._metrics_tracker = None
+        self._endpoint_id: str | None = None
 
     def _try_connect(self, base_url: str, preferred_model: str | None) -> tuple[object, str]:
         """Conectar a un endpoint OpenAI-compat y resolver el model id.
@@ -471,10 +473,10 @@ class HttpReasoner:
                 elapsed_ms = (time.perf_counter() - t0) * 1000
                 usage = getattr(resp, "usage", None)
                 if usage is not None:
-                    self._last_metrics = {
-                        "tokens": getattr(usage, "completion_tokens", 0) or 0,
-                        "ms": elapsed_ms,
-                    }
+                    tokens = getattr(usage, "completion_tokens", 0) or 0
+                    self._last_metrics = {"tokens": tokens, "ms": elapsed_ms}
+                    if self._metrics_tracker is not None and self._endpoint_id and tokens > 0:
+                        self._metrics_tracker.record(self._endpoint_id, tokens, elapsed_ms)
                 return resp.choices[0].text
             return await asyncio.to_thread(_call)
 
@@ -558,6 +560,9 @@ REGLAS:
         self._client = None
         self._available = False
         self._last_metrics: dict | None = None
+        # Para metrics tracker (pegados desde main.py post-construcción).
+        self._metrics_tracker = None
+        self._endpoint_id: str | None = None
         if _ignored:
             logger.debug(f"FastRouter (HTTP): ignorando kwargs legacy {list(_ignored.keys())}")
 
@@ -615,10 +620,10 @@ REGLAS:
             elapsed_ms = (time.perf_counter() - t0) * 1000
             usage = getattr(resp, "usage", None)
             if usage is not None:
-                self._last_metrics = {
-                    "tokens": getattr(usage, "completion_tokens", 0) or 0,
-                    "ms": elapsed_ms,
-                }
+                tokens = getattr(usage, "completion_tokens", 0) or 0
+                self._last_metrics = {"tokens": tokens, "ms": elapsed_ms}
+                if self._metrics_tracker is not None and self._endpoint_id and tokens > 0:
+                    self._metrics_tracker.record(self._endpoint_id, tokens, elapsed_ms)
             return resp.choices[0].text
 
         return await asyncio.to_thread(_call)
