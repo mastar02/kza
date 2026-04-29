@@ -15,6 +15,7 @@ import json
 import os
 
 from src.core.sanitize import sanitize_dict
+from src.dashboard.admin import register_admin_routes
 from src.dashboard.live_event_bus import LiveEventBus
 from src.dashboard.observability import register_observability_routes
 
@@ -140,6 +141,7 @@ class DashboardAPI:
         alert_manager=None,
         zone_manager=None,
         event_logger=None,
+        speaker_identifier=None,
         observability_use_mocks: bool = True,
     ):
         self.scheduler = routine_scheduler
@@ -158,6 +160,7 @@ class DashboardAPI:
         self.alert_manager = alert_manager
         self.zone_manager = zone_manager
         self.event_logger = event_logger
+        self.speaker_identifier = speaker_identifier
         self.observability_use_mocks = observability_use_mocks
 
         # FastAPI app
@@ -759,6 +762,15 @@ class DashboardAPI:
             zone_manager=self.zone_manager,
             event_logger=self.event_logger,
             use_mocks=self.observability_use_mocks,
+        )
+
+        # ==================== Admin (mutativos, auth required) ============
+
+        register_admin_routes(
+            self.app,
+            user_manager=self.user_manager,
+            speaker_identifier=self.speaker_identifier,
+            alert_manager=self.alert_manager,
         )
 
         # ==================== Static files (Frontend) ====================
