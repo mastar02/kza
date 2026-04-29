@@ -42,8 +42,7 @@ def execute_before_chain(
         try:
             result = fn(current)
         except Exception as e:
-            registry._handler_failures += 1
-            registry._handler_last_error = f"{type(e).__name__}: {e}"
+            registry._record_failure(f"{type(e).__name__}: {e}")
             logger.warning(
                 f"[HookRunner] handler error in {hook_name} ({fn.__name__}): {e}"
             )
@@ -51,6 +50,7 @@ def execute_before_chain(
         finally:
             elapsed_ms = (time.perf_counter() - t0) * 1000
             if elapsed_ms > warn_ms:
+                registry._slow_handler_count += 1
                 logger.warning(
                     f"[HookRunner] slow handler {fn.__name__} for {hook_name}: "
                     f"{elapsed_ms:.1f}ms (threshold {warn_ms}ms)"
@@ -119,8 +119,7 @@ def execute_after_event(
             try:
                 fn(payload)
             except Exception as e:
-                registry._handler_failures += 1
-                registry._handler_last_error = f"{type(e).__name__}: {e}"
+                registry._record_failure(f"{type(e).__name__}: {e}")
                 logger.warning(
                     f"[HookRunner] after-event handler error in {event_name} "
                     f"({fn.__name__}): {e}"
@@ -135,8 +134,7 @@ def _make_after_done_callback(registry: HookRegistry, fn: Callable, event_name: 
             return
         exc = task.exception()
         if exc is not None:
-            registry._handler_failures += 1
-            registry._handler_last_error = f"{type(exc).__name__}: {exc}"
+            registry._record_failure(f"{type(exc).__name__}: {exc}")
             logger.warning(
                 f"[HookRunner] async after-event handler error in {event_name} "
                 f"({fn.__name__}): {exc}"
