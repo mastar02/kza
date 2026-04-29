@@ -119,7 +119,9 @@ class Compactor:
             CompactionResult with summary, preserved IDs, and latency.
 
         Raises:
-            CompactionError: If turns is empty, timeout occurs, or reasoner fails.
+            CompactionError: If turns is empty, timeout occurs, reasoner fails,
+                or LLM output is unparseable / produces invalid summary
+                (PARSE_FAILED).
         """
         if not turns:
             raise CompactionError(
@@ -160,13 +162,20 @@ class Compactor:
             f"preserved_ids={len(preserved_ids)} latency={latency_ms:.0f}ms"
         )
 
-        return CompactionResult(
-            summary=summary,
-            preserved_ids=preserved_ids,
-            compacted_turns_count=len(turns),
-            model=model,
-            latency_ms=latency_ms,
-        )
+        try:
+            return CompactionResult(
+                summary=summary,
+                preserved_ids=preserved_ids,
+                compacted_turns_count=len(turns),
+                model=model,
+                latency_ms=latency_ms,
+            )
+        except ValueError as e:
+            raise CompactionError(
+                CompactionErrorKind.PARSE_FAILED,
+                f"Compactor produced invalid result: {e}",
+                original=e,
+            ) from e
 
     def _build_prompt(self, turns: list[ConversationTurn]) -> str:
         """Build the LLM prompt from turn contents only.

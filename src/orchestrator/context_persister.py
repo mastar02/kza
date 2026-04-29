@@ -79,8 +79,9 @@ class ContextPersister:
         mid-write cannot leave a half-written file. The .tmp is unlinked
         on failure (debug-logged if cleanup fails).
 
-        Delegates to save_payload() — useful when the caller can build
-        an immutable snapshot under lock and release before disk I/O.
+        Delegates to build_payload() + save_payload() — useful when the
+        caller can build an immutable snapshot under lock and release
+        before disk I/O.
 
         Args:
             ctx: UserContext to snapshot. Must have a safe user_id.
@@ -89,15 +90,15 @@ class ContextPersister:
             ValueError: if ctx.user_id contains unsafe characters.
             OSError: filesystem errors (caller should log + continue).
         """
-        payload = self._build_payload(ctx)
+        payload = self.build_payload(ctx)
         self.save_payload(payload)
 
-    def _build_payload(self, ctx: UserContext) -> dict:
+    def build_payload(self, ctx: UserContext) -> dict:
         """Convert UserContext → persisted JSON shape. Pure, no I/O.
 
-        Exposed (with leading underscore) for ContextManager which builds
-        the snapshot under lock and then calls save_payload outside the
-        lock. Keep in sync with the load() reader contract.
+        Public API for cross-module callers (e.g., ContextManager) that
+        need to build a snapshot under lock and then call save_payload
+        outside the lock. Keep in sync with the load() reader contract.
         """
         return {
             "version": PERSISTED_VERSION,
@@ -118,7 +119,7 @@ class ContextPersister:
 
         Args:
             payload: dict with at minimum 'user_id'. Must already include
-                'version' and 'last_seen' (use _build_payload to construct).
+                'version' and 'last_seen' (use build_payload to construct).
 
         Raises:
             ValueError: if payload['user_id'] is unsafe or missing.

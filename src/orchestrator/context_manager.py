@@ -47,6 +47,26 @@ from src.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+MAX_SUMMARY_CHARS = 4000  # cap on compacted_summary to prevent prompt blowout
+
+
+def _truncate_summary_head(text: str, cap: int | None = None) -> str:
+    """If text exceeds cap, drop the head and prefix with elision marker.
+
+    The tail is preserved (more recent compactions are more relevant).
+    `cap` defaults to the module-level MAX_SUMMARY_CHARS at call time
+    (so tests can monkeypatch it).
+    """
+    if cap is None:
+        cap = MAX_SUMMARY_CHARS
+    if len(text) <= cap:
+        return text
+    keep = cap - 32  # leave room for the marker
+    if keep <= 0:
+        return text[-cap:]  # cap is too tight; just take tail
+    return "[…anteriores omitidos] " + text[-keep:]
+
+
 @dataclass
 class ConversationTurn:
     """Un turno en la conversacion"""
@@ -282,6 +302,8 @@ class ContextManager:
         self._persist_failures: int = 0
         self._persist_load_failures: int = 0  # reserved; persister.load swallows errors
         self._no_loop_warned: bool = False
+        self._cleanup_iteration_count: int = 0
+        self._stats_log_every_n: int = 60  # log stats every N cleanup ticks
 
     def _default_system_prompt(self) -> str:
         """Prompt de sistema predeterminado"""
@@ -500,7 +522,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             if ctx is None:
                 return
             existing = (ctx.compacted_summary + " ") if ctx.compacted_summary else ""
-            ctx.compacted_summary = (existing + result.summary).strip()
+            ctx.compacted_summary = _truncate_summary_head((existing + result.summary).strip())
             ctx.preserved_ids = sorted(set(ctx.preserved_ids) | set(result.preserved_ids))
             # Race-safe drop: keep only turns NOT in the compacted snapshot
             # (positional slice would evict recent turns if max_history trimmed head during await)
@@ -728,6 +750,19 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
 
         if cleaned > 0:
             logger.info(f"[ContextManager] async cleanup removed {cleaned} contexts")
+
+        self._cleanup_iteration_count += 1
+        if self._cleanup_iteration_count % self._stats_log_every_n == 0:
+            stats = self.get_stats()
+            # Only log Plan #2 counters (the rest are noisy / unchanged most of the time)
+            logger.info(
+                f"[ContextManager] stats tick: "
+                f"compaction_attempts={stats['compaction_attempts']} "
+                f"compaction_failures={stats['compaction_failures']} "
+                f"persist_failures={stats['persist_failures']} "
+                f"in_flight={stats['compaction_tasks_in_flight']} "
+                f"last_error={stats['compaction_last_error']!r}"
+            )
         return cleaned
 
     async def _snapshot_and_remove(self, user_id: str) -> None:
@@ -763,7 +798,9 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
                         ctx = self._contexts.get(user_id)
                         if ctx:
                             existing = (ctx.compacted_summary + " ") if ctx.compacted_summary else ""
-                            ctx.compacted_summary = (existing + result.summary).strip()
+                            ctx.compacted_summary = _truncate_summary_head(
+                                (existing + result.summary).strip()
+                            )
                             ctx.preserved_ids = sorted(
                                 set(ctx.preserved_ids) | set(result.preserved_ids)
                             )
@@ -781,7 +818,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             with self._lock:
                 ctx = self._contexts.get(user_id)
                 if ctx is not None and (ctx.compacted_summary or ctx.conversation_history):
-                    payload = self.persister._build_payload(ctx)
+                    payload = self.persister.build_payload(ctx)
 
         # Step 3: persist outside lock; on failure keep ctx in memory
         if payload is not None:

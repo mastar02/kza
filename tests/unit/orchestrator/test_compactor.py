@@ -126,6 +126,17 @@ class TestCompactorErrorPaths:
             )
         assert exc_info.value.kind == CompactionErrorKind.REASONER_FAILED
 
+    @pytest.mark.asyncio
+    async def test_empty_summary_wraps_to_compaction_error(self):
+        """LLM returning {"summary": "   "} should produce CompactionError(PARSE_FAILED), not raw ValueError."""
+        reasoner = AsyncMock()
+        reasoner.complete = AsyncMock(return_value='{"summary": "   "}')
+        compactor = Compactor(reasoner=reasoner)
+
+        with pytest.raises(CompactionError) as exc_info:
+            await compactor.compact(turns=[_turn("user", "x")], preserved_entities=[])
+        assert exc_info.value.kind == CompactionErrorKind.PARSE_FAILED
+
 
 class TestCompactionResultInvariants:
     def test_negative_count_raises(self):

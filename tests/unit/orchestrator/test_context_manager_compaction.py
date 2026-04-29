@@ -370,6 +370,104 @@ class TestRaceSafeCompaction:
         assert "old-1" not in contents
         assert "old-2" not in contents
 
+    @pytest.mark.asyncio
+    async def test_concurrent_add_turn_with_max_history_trim_during_await(self):
+        """Race test that actually exercises max_history trim during compaction await.
+
+        The id-based filter is the difference: with positional slice, the trim
+        would shift indices and the post-await drop would evict wrong turns.
+        With id-based, only the literal compacted turns are dropped.
+        """
+        compactor = AsyncMock()
+        gate = asyncio.Event()
+        result_obj = _result(summary="done", count=2)
+
+        async def slow_side_effect(*a, **kw):
+            await gate.wait()
+            return result_obj
+        compactor.compact = AsyncMock(side_effect=slow_side_effect)
+
+        mgr = ContextManager(
+            max_history=5,           # tight — trim WILL fire
+            compactor=compactor,
+            compaction_threshold=4,
+            keep_recent_turns=2,
+        )
+        mgr.get_or_create("u1", "Juan")
+        # 4 turns → trigger compaction (n_compact = 4 - 2 = 2; head turns 0,1 selected)
+        for i in range(4):
+            mgr.add_turn("u1", "user", f"old-{i}")
+
+        # Yield once so the compaction task starts and is awaiting the gate
+        await asyncio.sleep(0.01)
+
+        # Now add 4 more turns — each trims the head as max_history=5 saturates.
+        for i in range(4):
+            mgr.add_turn("u1", "user", f"new-{i}")
+
+        # Release the gate. The compaction now mutates history.
+        # With id-based filter: drop turns whose id was in compacted_turn_ids = {id(t0), id(t1)}.
+        # But t0 and t1 are no longer in the live history (max_history evicted them).
+        # So the filter is a no-op against the live list — keeps everything.
+        gate.set()
+        await asyncio.sleep(0.05)
+
+        ctx = mgr.get("u1")
+        contents = [t.content for t in ctx.conversation_history]
+        # The new turns must all be present
+        assert "new-0" in contents
+        assert "new-1" in contents
+        assert "new-2" in contents
+        assert "new-3" in contents
+        # old-3 is the only "old" turn that survived the trim AND was not in the snapshot
+        assert "old-3" in contents
+        # old-0 and old-1 (the snapshot targets) — should NOT be in the live list
+        assert "old-0" not in contents
+        assert "old-1" not in contents
+        # Length should match max_history (5)
+        assert len(ctx.conversation_history) == 5
+
+
+class TestSummaryCap:
+    """R2-C3: compacted_summary must be capped to prevent prompt blowout."""
+
+    @pytest.mark.asyncio
+    async def test_summary_truncates_when_exceeds_cap(self, monkeypatch):
+        from src.orchestrator import context_manager as cm_mod
+        monkeypatch.setattr(cm_mod, "MAX_SUMMARY_CHARS", 200)
+
+        compactor = AsyncMock()
+        compactor.compact = AsyncMock(side_effect=[
+            _result(summary="A" * 100),
+            _result(summary="B" * 100),
+            _result(summary="C" * 100),
+        ])
+        mgr = ContextManager(
+            max_history=20,
+            compactor=compactor,
+            compaction_threshold=6,
+            keep_recent_turns=3,
+        )
+
+        mgr.get_or_create("u1", "Juan")
+        # Three rounds: each fills to threshold and triggers compaction
+        for round_num in range(3):
+            for i in range(6):
+                mgr.add_turn("u1", "user", f"r{round_num}-{i}")
+            await asyncio.sleep(0.05)
+
+        ctx = mgr.get("u1")
+        assert len(ctx.compacted_summary) <= 200, (
+            f"Summary not truncated; len={len(ctx.compacted_summary)}"
+        )
+        # The most recent compaction's content should be preserved (tail kept)
+        assert "C" in ctx.compacted_summary
+        # The oldest should be dropped or marker present
+        assert (
+            "[…anteriores omitidos]" in ctx.compacted_summary
+            or "A" * 100 not in ctx.compacted_summary
+        )
+
 
 class TestStatsCounters:
     """I8: get_stats() exposes compaction observability."""

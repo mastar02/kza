@@ -1,7 +1,7 @@
 """Tests for MultiUserOrchestrator cleanup-mode routing (plan #2 OpenClaw)."""
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -10,76 +10,119 @@ from src.orchestrator.context_persister import ContextPersister
 
 
 def _make_orchestrator(persister=None):
-    """Construct MUO with all heavy deps mocked. Only context cleanup matters here."""
-    chroma = MagicMock()
-    ha = MagicMock()
-    routines = MagicMock()
+    """Construct MUO with all heavy deps mocked."""
     return MultiUserOrchestrator(
-        chroma_sync=chroma,
-        ha_client=ha,
-        routine_manager=routines,
+        chroma_sync=MagicMock(),
+        ha_client=MagicMock(),
+        routine_manager=MagicMock(),
         persister=persister,
     )
 
 
+async def _idle_processor():
+    """Fake _process_queue that idles forever (cancelled on stop)."""
+    try:
+        await asyncio.Future()
+    except asyncio.CancelledError:
+        raise
+
+
+async def _idle_async_loop():
+    """Fake start_cleanup_loop_async that idles until cancelled."""
+    try:
+        await asyncio.Future()
+    except asyncio.CancelledError:
+        # mimic the real implementation which catches CancelledError to exit cleanly
+        return
+
+
 class TestCleanupModeRouting:
-    def test_routing_thread_when_no_persister(self):
-        """With no persister, mode routing selects thread cleanup."""
-        mgr = _make_orchestrator(persister=None)
-        # Before start: verify the decision path by checking _persister
-        assert mgr._persister is None
-        # This proves that start() will pick the thread path (line 1126)
-
-    def test_routing_async_when_persister_set(self, tmp_path):
-        """With persister, mode routing selects async cleanup."""
-        persister = ContextPersister(base_path=tmp_path / "ctx")
-        mgr = _make_orchestrator(persister=persister)
-        # Before start: verify the decision path by checking _persister
-        assert mgr._persister is not None
-        # This proves that start() will pick the async path (line 1122)
-
     @pytest.mark.asyncio
-    async def test_start_thread_initialization(self):
-        """Verify thread initialization without running the full orchestrator."""
+    async def test_start_calls_thread_cleanup_when_no_persister(self):
+        """Without persister, start() must use start_cleanup_thread() (legacy)."""
         mgr = _make_orchestrator(persister=None)
-
-        # Manually do what start() does for thread mode
-        # (without starting the processor task which blocks forever)
-        mgr.context_manager.start_cleanup_thread()
-
-        try:
-            # Thread mode: context_manager._cleanup_running flag should be True
-            assert mgr.context_manager._cleanup_running is True
+        with patch.object(
+            mgr.context_manager, "start_cleanup_thread"
+        ) as mock_thread, patch.object(
+            mgr.context_manager, "start_cleanup_loop_async"
+        ) as mock_async, patch.object(
+            mgr, "_process_queue", side_effect=_idle_processor
+        ):
+            await mgr.start()
+            mock_thread.assert_called_once()
+            mock_async.assert_not_called()
             assert mgr._async_cleanup_task is None
-        finally:
-            mgr.context_manager.stop_cleanup_thread()
+        await mgr.stop()
 
     @pytest.mark.asyncio
-    async def test_start_async_initialization(self, tmp_path):
-        """Verify async cleanup initialization without running the full orchestrator."""
+    async def test_start_calls_async_cleanup_when_persister_set(self, tmp_path):
+        """With persister, start() must use start_cleanup_loop_async()."""
         persister = ContextPersister(base_path=tmp_path / "ctx")
         mgr = _make_orchestrator(persister=persister)
 
-        # Manually do what start() does for async mode
-        # (without starting the processor task which blocks forever)
-        mgr._async_cleanup_task = asyncio.create_task(
-            mgr.context_manager.start_cleanup_loop_async()
-        )
+        async_called = asyncio.Event()
 
-        try:
-            # Give the async task a moment to start
-            await asyncio.sleep(0.01)
+        async def fake_async_loop():
+            async_called.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                return
 
-            # Async mode: task should be running, thread should not be started
+        with patch.object(
+            mgr.context_manager, "start_cleanup_thread"
+        ) as mock_thread, patch.object(
+            mgr.context_manager, "start_cleanup_loop_async", side_effect=fake_async_loop
+        ) as mock_async, patch.object(
+            mgr, "_process_queue", side_effect=_idle_processor
+        ):
+            await mgr.start()
+            await asyncio.wait_for(async_called.wait(), timeout=1.0)
+
+            mock_async.assert_called_once()
+            mock_thread.assert_not_called()
             assert mgr._async_cleanup_task is not None
             assert not mgr._async_cleanup_task.done()
-            assert (
-                mgr.context_manager._cleanup_thread is None
-                or not mgr.context_manager._cleanup_thread.is_alive()
-            )
-        finally:
-            mgr.context_manager.stop_cleanup_loop_async()
+
+            # Cleanup: cancel the cleanup task before stop() to avoid deadlock,
+            # since we're patching stop_cleanup_loop_async would interfere.
+            mgr._async_cleanup_task.cancel()
             try:
-                await asyncio.wait_for(mgr._async_cleanup_task, timeout=1.0)
+                await mgr._async_cleanup_task
             except asyncio.CancelledError:
                 pass
+            mgr._processor_task.cancel()
+            try:
+                await mgr._processor_task
+            except asyncio.CancelledError:
+                pass
+            mgr._running = False
+
+    @pytest.mark.asyncio
+    async def test_stop_awaits_async_task_when_persister(self, tmp_path):
+        """stop() with persister must signal stop_cleanup_loop_async + await the task."""
+        persister = ContextPersister(base_path=tmp_path / "ctx")
+        mgr = _make_orchestrator(persister=persister)
+
+        # Track that stop was signalled. Also cancel the cleanup task so the
+        # awaiting `await self._async_cleanup_task` in stop() unblocks
+        # (the real stop_cleanup_loop_async sets _cleanup_running=False which
+        # the real loop polls; here our fake loop only exits on cancel).
+        stop_called = []
+
+        def fake_stop():
+            stop_called.append(True)
+            if mgr._async_cleanup_task is not None:
+                mgr._async_cleanup_task.cancel()
+
+        with patch.object(
+            mgr.context_manager, "stop_cleanup_loop_async", side_effect=fake_stop
+        ), patch.object(
+            mgr.context_manager, "start_cleanup_loop_async", side_effect=_idle_async_loop
+        ), patch.object(
+            mgr, "_process_queue", side_effect=_idle_processor
+        ):
+            await mgr.start()
+            await asyncio.sleep(0.02)
+            await mgr.stop()
+            assert stop_called == [True]
