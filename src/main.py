@@ -775,28 +775,74 @@ async def main():
         sample_rate=16000,
     )
 
-    # === Plan #3 OpenClaw — Plugin hooks (opcional) ===
+    # === Plan #3 OpenClaw — Plugin hooks (optional) ===
     hooks_cfg = config.get("hooks", {}) or {}
     hooks = None
+    self_warn_ms = float(hooks_cfg.get("before_handler_warn_ms", 5.0))
     if hooks_cfg.get("enabled", False):
+        import pkgutil
         import importlib
+
         try:
             from src.hooks import _global_registry
-            importlib.import_module(hooks_cfg.get("policies_module", "src.policies"))
-            hooks = _global_registry
-            stats = hooks.get_stats()
-            logger.info(
-                f"[main] Plugin hooks enabled — "
-                f"before_ha={stats['before_handler_count']['before_ha_action']} "
-                f"before_tts={stats['before_handler_count']['before_tts_speak']} "
-                f"after_handlers={sum(stats['after_handler_count'].values())}"
-            )
         except Exception as e:
             logger.error(
-                f"[main] Hooks disabled — failed to import policies: {e}",
+                f"[main] Hooks disabled — failed to import src.hooks: {e}",
                 exc_info=True,
             )
             hooks = None
+        else:
+            # Per-policy iteration: a single broken policy must NOT disable the
+            # entire hook system. We log each failure individually and continue.
+            policies_module_path = hooks_cfg.get("policies_module", "src.policies")
+            try:
+                pkg = importlib.import_module(policies_module_path)
+            except Exception as e:
+                logger.error(
+                    f"[main] Hooks disabled — failed to import policies package "
+                    f"'{policies_module_path}': {e}",
+                    exc_info=True,
+                )
+                hooks = None
+            else:
+                loaded, failed = [], []
+                for mod_info in pkgutil.iter_modules(pkg.__path__):
+                    mod_name = f"{policies_module_path}.{mod_info.name}"
+                    try:
+                        importlib.import_module(mod_name)
+                        loaded.append(mod_info.name)
+                    except Exception as e:
+                        failed.append((mod_info.name, str(e)))
+                        logger.error(
+                            f"[main] Policy '{mod_name}' failed to load: {e}",
+                            exc_info=True,
+                        )
+                if failed:
+                    logger.error(
+                        f"[main] Hooks PARTIAL: {len(failed)} policy(ies) failed: "
+                        f"{[n for n, _ in failed]}; loaded: {loaded}"
+                    )
+                stats = _global_registry.get_stats()
+                total_handlers = (
+                    sum(stats["before_handler_count"].values())
+                    + sum(stats["after_handler_count"].values())
+                )
+                if total_handlers == 0:
+                    logger.error(
+                        f"[main] Hooks ENABLED but zero handlers registered "
+                        f"(loaded: {loaded}). Check policy files for errors. "
+                        "Disabling hooks to avoid masquerade."
+                    )
+                    hooks = None
+                else:
+                    hooks = _global_registry
+                    logger.info(
+                        f"[main] Plugin hooks enabled — "
+                        f"before_ha={stats['before_handler_count']['before_ha_action']} "
+                        f"before_tts={stats['before_handler_count']['before_tts_speak']} "
+                        f"after_handlers={sum(stats['after_handler_count'].values())} "
+                        f"loaded={loaded}"
+                    )
 
     # Response handler (TTS + streaming + zone routing)
     # El response_cache (S2) se inicializa post-warmup abajo y se inyecta via
@@ -809,6 +855,7 @@ async def main():
         streaming_buffer_ms=streaming_config.get("buffer_ms", 150),
         streaming_prebuffer_ms=streaming_config.get("prebuffer_ms", 80),
         hooks=hooks,
+        before_handler_warn_ms=self_warn_ms,
     )
 
     # Inyectar response_handler al MultiRoomAudioLoop para barge-in (S3).
@@ -906,6 +953,7 @@ async def main():
             compaction_threshold=compaction_threshold,
             keep_recent_turns=keep_recent_turns,
             hooks=hooks,
+            before_handler_warn_ms=self_warn_ms,
         )
 
     # Request router (command routing: orchestrated + legacy paths)

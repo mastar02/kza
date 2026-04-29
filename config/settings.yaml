@@ -1131,5 +1131,7 @@ presence:
 hooks:
   enabled: false                   # OFF por default; activar tras validar en prod
   policies_module: "src.policies"  # Python module path; importarlo dispara los decoradores
-  before_handler_warn_ms: 5.0      # log WARNING si un before_ handler tarda más
+  before_handler_warn_ms: 5.0      # warn si un handler sync se come >5ms del
+                                    # budget de 300ms del fast path. Plumbed
+                                    # vía main.py → dispatcher / response_handler.
   audit_sqlite_path: "./data/audit.db"   # consumido por audit_sqlite policy

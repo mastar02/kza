@@ -45,6 +45,7 @@ class ResponseHandler:
         llm_filler_phrases: list = None,
         response_cache: ResponseCache | None = None,
         hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
+        before_handler_warn_ms: float = 5.0,
     ):
         """
         Inicializar ResponseHandler.
@@ -62,6 +63,12 @@ class ResponseHandler:
             response_cache: Cache TTS pre-generado (S2). Si se provee,
                 `speak()` consulta el cache antes del TTS live; hit → playback
                 directo del ndarray (~5-10ms). Miss → camino normal.
+            hooks: Optional HookRegistry instance (plan #3 OpenClaw). When set,
+                before_ha_action / before_tts_speak hooks fire on each invocation
+                and after-events emit at pipeline checkpoints. Backward-compat:
+                None → no hook calls, behavior identical to baseline.
+            before_handler_warn_ms: Threshold (ms) for logging slow before-handlers
+                in execute_before_chain. Default 5.0ms.
         """
         self.tts = tts
         self.zone_manager = zone_manager
@@ -77,6 +84,7 @@ class ResponseHandler:
 
         self._response_cache = response_cache
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
+        self._before_handler_warn_ms = before_handler_warn_ms
         self._llm_streamer: BufferedLLMStreamer | None = None
         self._active_zone_id = None
 
@@ -193,7 +201,10 @@ class ResponseHandler:
                 user_id=None,
                 zone_id=zone_id,
             )
-            result = execute_before_chain(self.hooks, "before_tts_speak", tts_call)
+            result = execute_before_chain(
+                self.hooks, "before_tts_speak", tts_call,
+                warn_ms=self._before_handler_warn_ms,
+            )
             if isinstance(result, BlockResult):
                 logger.info(
                     f"[TTS BLOCKED] rule={result.rule_name}: {result.reason}"

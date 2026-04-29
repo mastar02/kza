@@ -49,6 +49,23 @@ from src.orchestrator.cancellation import CancellationToken
 logger = get_logger(__name__)
 
 
+def _log_fire_and_reconcile_exception(task: "asyncio.Task") -> None:
+    """Done-callback for the fire-and-forget HA dispatch task.
+
+    Logs any exception so it doesn't disappear into 'Task exception was
+    never retrieved' at GC time.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            f"[Dispatcher] _fire_and_reconcile_ha task failed: "
+            f"{type(exc).__name__}: {exc}",
+            exc_info=exc,
+        )
+
+
 class PathType(StrEnum):
     """Tipo de path para procesar la peticion"""
     FAST_DOMOTICS = "fast_domotics"       # Vector search + HA
@@ -192,6 +209,7 @@ class RequestDispatcher:
         vector_threshold: float = 0.65,
         use_router_for_simple: bool = True,
         hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
+        before_handler_warn_ms: float = 5.0,
     ):
         """
         Args:
@@ -207,6 +225,13 @@ class RequestDispatcher:
             music_dispatcher: Dispatcher de música/Spotify
             vector_threshold: Umbral de similitud para vector search
             use_router_for_simple: Usar router 7B para preguntas simples
+            hooks: Optional HookRegistry instance (plan #3 OpenClaw). When set,
+                before_ha_action / before_tts_speak hooks fire on each invocation
+                and after-events emit at pipeline checkpoints. Backward-compat:
+                None → no hook calls, behavior identical to baseline.
+            before_handler_warn_ms: Threshold (ms) for logging slow before-handlers
+                in execute_before_chain. Default 5.0ms — anything above eats into
+                the 300ms fast path budget.
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -224,6 +249,7 @@ class RequestDispatcher:
         self.reminder_manager = reminder_manager
         self.response_handler = response_handler
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
+        self._before_handler_warn_ms = before_handler_warn_ms
 
         # Estadisticas
         self._stats = {
@@ -515,7 +541,8 @@ class RequestDispatcher:
                 # acciones de domótica (no quiere TTS ack). El HA call corre en
                 # background; si falla, _fire_and_reconcile_ha habla el error.
                 # Eso baja `home_assistant` de ~155ms a ~0ms en el camino crítico.
-                asyncio.create_task(self._fire_and_reconcile_ha(command))
+                _ha_task = asyncio.create_task(self._fire_and_reconcile_ha(command))
+                _ha_task.add_done_callback(_log_fire_and_reconcile_exception)
                 timings["home_assistant"] = 0.0
 
                 return DispatchResult(
@@ -986,7 +1013,10 @@ class RequestDispatcher:
                 zone_id=command.get("zone_id"),
                 timestamp=time.time(),
             )
-            result = execute_before_chain(self.hooks, "before_ha_action", call)
+            result = execute_before_chain(
+                self.hooks, "before_ha_action", call,
+                warn_ms=self._before_handler_warn_ms,
+            )
             if isinstance(result, BlockResult):
                 logger.info(
                     f"[HA-CALL BLOCKED] {domain}.{service}@{entity_id} "
@@ -1131,7 +1161,19 @@ class MultiUserOrchestrator:
         keep_recent_turns: int = 3,
         # Plan #3 OpenClaw — plugin hooks
         hooks=None,
+        before_handler_warn_ms: float = 5.0,
     ):
+        """Initialize the multi-user orchestrator.
+
+        Args:
+            hooks: Optional HookRegistry instance (plan #3 OpenClaw). When set,
+                before_ha_action / before_tts_speak hooks fire on each invocation
+                and after-events emit at pipeline checkpoints. Backward-compat:
+                None → no hook calls, behavior identical to baseline.
+            before_handler_warn_ms: Threshold (ms) for logging slow before-handlers.
+                Forwarded to RequestDispatcher.
+        """
+        self._hooks = hooks  # plan #3 OpenClaw — exposed for log_hook_stats()
         # Componentes principales
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -1179,6 +1221,7 @@ class MultiUserOrchestrator:
             list_manager=list_manager,
             reminder_manager=reminder_manager,
             hooks=hooks,
+            before_handler_warn_ms=before_handler_warn_ms,
         )
 
         self._running = False
@@ -1415,3 +1458,22 @@ class MultiUserOrchestrator:
     def get_stats(self) -> dict:
         """Obtener estadisticas completas"""
         return self.dispatcher.get_stats()
+
+    def log_hook_stats(self) -> None:
+        """Log a one-line HookRegistry stats dump. Intended for periodic
+        invocation from a cleanup loop or HealthAggregator integration.
+
+        Plan #3 OpenClaw I6 — counters are otherwise dead-end. Wiring this
+        method to a periodic schedule (e.g. piggybacking on the context
+        cleanup loop) is a follow-up task; today it's only callable on demand.
+        """
+        if self._hooks is None:
+            return
+        stats = self._hooks.get_stats()
+        if stats["handler_failures"] > 0 or stats["slow_handler_count"] > 0:
+            logger.info(
+                f"[HookRegistry] handler_failures={stats['handler_failures']} "
+                f"slow_handler_count={stats['slow_handler_count']} "
+                f"after_in_flight={stats['after_tasks_in_flight']} "
+                f"recent_errors={stats['handler_recent_errors']}"
+            )
