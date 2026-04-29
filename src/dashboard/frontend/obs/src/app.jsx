@@ -103,6 +103,7 @@ function App() {
     users:         window.UsersView,
     alerts:        window.AlertsView,
     system:        window.SystemView,
+    admin:         window.AdminView,
   };
   const ViewComp = Views[active];
 
