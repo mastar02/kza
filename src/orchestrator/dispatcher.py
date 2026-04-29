@@ -1019,6 +1019,15 @@ class MultiUserOrchestrator:
             text="Explícame la relatividad",
             zone_id="living"
         )
+
+    Plan #2 OpenClaw kwargs (opcionales):
+    - compactor: Compactor instance — si presente, dispara compactación
+      en background al alcanzar `compaction_threshold` turnos
+    - persister: ContextPersister — si presente, snapshot a disk al
+      expirar contextos + hidratación al volver el usuario
+    - compaction_threshold, keep_recent_turns: parámetros de la heurística
+    Pasar `persister=...` también cambia start() del thread daemon legacy
+    al async cleanup loop.
     """
 
     def __init__(
@@ -1036,7 +1045,12 @@ class MultiUserOrchestrator:
         reminder_manager=None,
         max_context_history: int = 10,
         context_timeout: float = 300,
-        auto_cancel_previous: bool = True
+        auto_cancel_previous: bool = True,
+        # Plan #2 OpenClaw
+        compactor=None,
+        persister=None,
+        compaction_threshold: int = 6,
+        keep_recent_turns: int = 3,
     ):
         # Componentes principales
         self.chroma = chroma_sync
@@ -1049,10 +1063,17 @@ class MultiUserOrchestrator:
         self.user_manager = user_manager
         self.music = music_dispatcher
 
+        # Plan #2 OpenClaw — track persister so start/stop can pick the right cleanup
+        self._persister = persister
+
         # Inicializar subsistemas
         self._context_manager = ContextManager(
             max_history=max_context_history,
-            inactive_timeout=context_timeout
+            inactive_timeout=context_timeout,
+            compactor=compactor,
+            persister=persister,
+            compaction_threshold=compaction_threshold,
+            keep_recent_turns=keep_recent_turns,
         )
 
         self._queue = PriorityRequestQueue(
@@ -1081,16 +1102,28 @@ class MultiUserOrchestrator:
 
         self._running = False
         self._processor_task = None
+        # Plan #2: track async cleanup task if persister is set
+        self._async_cleanup_task = None
 
     async def start(self):
-        """Iniciar el orquestador"""
+        """Iniciar el orquestador.
+
+        Si fue construido con persister != None, el cleanup corre como
+        asyncio task (necesario para snapshot de contextos al expirar).
+        Si no, usa el thread daemon legacy (sin snapshot persistido).
+        """
         if self._running:
             return
 
         self._running = True
 
-        # Iniciar limpieza de contextos
-        self.context_manager.start_cleanup_thread()
+        # Iniciar limpieza de contextos: async loop si hay persister, thread si no
+        if self._persister is not None:
+            self._async_cleanup_task = asyncio.create_task(
+                self.context_manager.start_cleanup_loop_async()
+            )
+        else:
+            self.context_manager.start_cleanup_thread()
 
         # Iniciar procesador de cola
         self._processor_task = asyncio.create_task(self._process_queue())
@@ -1098,14 +1131,36 @@ class MultiUserOrchestrator:
         logger.info("MultiUserOrchestrator iniciado")
 
     async def stop(self):
-        """Detener el orquestador"""
+        """Detener el orquestador.
+
+        Cancela peticiones pendientes y detiene el cleanup. Si el cleanup
+        es async (persister != None), espera a que termine la última
+        iteración. Si es thread, lo detiene cooperativamente.
+
+        Excepciones del cleanup task durante stop se loguean (ERROR) pero
+        no propagan — la parada del orquestador no debe fallar por
+        problemas terminales.
+        """
         self._running = False
 
         # Cancelar peticiones pendientes
         self.queue.cancel_all()
 
-        # Detener cleanup
-        self.context_manager.stop_cleanup_thread()
+        # Detener cleanup (async si hay persister, thread en otro caso)
+        if self._persister is not None:
+            self.context_manager.stop_cleanup_loop_async()
+            if self._async_cleanup_task:
+                try:
+                    await self._async_cleanup_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(
+                        f"[Orchestrator] cleanup task failed during stop: {e}",
+                        exc_info=True,
+                    )
+        else:
+            self.context_manager.stop_cleanup_thread()
 
         # Detener procesador
         if self._processor_task:

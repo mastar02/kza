@@ -251,6 +251,7 @@ Solo JSON, sin explicaciones:"""
         threshold: float = 0.65,
         service_filter: str | None = None,
         query_slots: dict | None = None,
+        hint_entities: list[str] | None = None,
     ) -> dict | None:
         """
         Buscar comando más similar con filtro de intent + merge de slots.
@@ -263,12 +264,21 @@ Solo JSON, sin explicaciones:"""
                 ver memoria feedback_dense_retrieval_antonyms.md).
             query_slots: Slots extraídos por el NLU (brightness_pct, rgb_color,
                 color_temp_kelvin). Sobrescriben el service_data default del preset.
+            hint_entities: Lista opcional de entity_ids preservados del
+                contexto previo del usuario (plan #2 OpenClaw). Hoy solo
+                se loguea; el consumo real (boost de score) queda para un
+                follow-up cuando haya señal empírica de mejora.
 
         Returns:
             dict con {entity_id, domain, service, data, matched_phrase,
                       similarity, capability, value_label} o None.
         """
         from src.nlu.slot_extractor import merge_service_data
+
+        if hint_entities:
+            logger.debug(
+                f"[VectorSearch] hint_entities count={len(hint_entities)}"
+            )
 
         start = time.perf_counter()
         query_embedding = self.embedder.encode(query).tolist()
