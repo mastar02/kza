@@ -1,9 +1,9 @@
 // =============================================================
 // Admin view — centro de administración
 // CRUD usuarios + voice enrollment + alerts ack + service restart
+// Card/Pill son globals (declarados en primitives.jsx — Babel inline scripts
+// comparten scope global). No destructuro de window.* para no shadowearlos.
 // =============================================================
-
-const { Card, Pill } = window.KZA_PRIMS || {};
 
 const PERMISSION_LEVELS = ["guest", "child", "teen", "adult", "admin"];
 const RESTARTABLE = ["kza-voice", "kza-llm-ik"];
