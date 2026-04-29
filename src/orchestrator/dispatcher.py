@@ -190,7 +190,8 @@ class RequestDispatcher:
         reminder_manager=None,
         response_handler=None,
         vector_threshold: float = 0.65,
-        use_router_for_simple: bool = True
+        use_router_for_simple: bool = True,
+        hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
     ):
         """
         Args:
@@ -222,6 +223,7 @@ class RequestDispatcher:
         self.list_manager = list_manager
         self.reminder_manager = reminder_manager
         self.response_handler = response_handler
+        self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
 
         # Estadisticas
         self._stats = {
@@ -961,10 +963,59 @@ class RequestDispatcher:
         service = command.get("service")
         entity_id = command.get("entity_id")
         description = command.get("description") or entity_id or "esa acción"
+
+        # Plan #3 OpenClaw — before_ha_action chain (block / rewrite)
+        call = None
+        rewritten_data = command.get("data")
+        if self.hooks is not None:
+            from src.hooks import (
+                HaActionCall,
+                BlockResult,
+                HaActionDispatchedPayload,
+                HaActionBlockedPayload,
+                execute_before_chain,
+                execute_after_event,
+            )
+            call = HaActionCall(
+                entity_id=entity_id or "",
+                domain=domain or "",
+                service=service or "",
+                service_data=rewritten_data or {},
+                user_id=command.get("user_id"),
+                user_name=command.get("user_name"),
+                zone_id=command.get("zone_id"),
+                timestamp=time.time(),
+            )
+            result = execute_before_chain(self.hooks, "before_ha_action", call)
+            if isinstance(result, BlockResult):
+                logger.info(
+                    f"[HA-CALL BLOCKED] {domain}.{service}@{entity_id} "
+                    f"by rule={result.rule_name}: {result.reason}"
+                )
+                if self.response_handler is not None:
+                    try:
+                        self.response_handler.speak(result.reason or "No puedo hacer eso")
+                    except Exception as e:
+                        logger.warning(f"No pude hablar block reason: {e}")
+                execute_after_event(
+                    self.hooks,
+                    "ha_action_blocked",
+                    HaActionBlockedPayload(
+                        timestamp=time.time(), call=call, block=result,
+                    ),
+                )
+                return
+            # Apply rewrite (if any) back to local vars
+            domain = result.domain
+            service = result.service
+            entity_id = result.entity_id
+            rewritten_data = result.service_data
+
         t0 = time.perf_counter()
+        err: str | None = None
         try:
             success = await self.ha.call_service_ws(
-                domain, service, entity_id, command.get("data"),
+                domain, service, entity_id, rewritten_data,
             )
             dt = (time.perf_counter() - t0) * 1000
             logger.info(
@@ -972,10 +1023,37 @@ class RequestDispatcher:
                 f"success={success} took={dt:.0f}ms"
             )
         except Exception as e:
+            err = str(e)
             logger.error(
                 f"Reconcile error en {domain}.{service}@{entity_id}: {e}"
             )
             success = False
+
+        # Plan #3 OpenClaw — emit after_event with dispatch result
+        if self.hooks is not None and call is not None:
+            from dataclasses import replace
+            from src.hooks import (
+                HaActionDispatchedPayload,
+                execute_after_event,
+            )
+            final_call = replace(
+                call,
+                domain=domain or "",
+                service=service or "",
+                entity_id=entity_id or "",
+                service_data=rewritten_data or {},
+            )
+            execute_after_event(
+                self.hooks,
+                "ha_action_dispatched",
+                HaActionDispatchedPayload(
+                    timestamp=time.time(),
+                    call=final_call,
+                    success=success,
+                    error=err,
+                ),
+            )
+
         if success:
             return
         verb = "apagar" if service == "turn_off" else "prender"
