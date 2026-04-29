@@ -178,7 +178,24 @@ async function hydrateMocks() {
       const r = await fetch(API_BASE + path);
       if (!r.ok) return;
       const data = await r.json();
-      if (Array.isArray(data) ? data.length > 0 : !!data) {
+      // El header X-KZA-Source nos dice si el server tiene datos reales.
+      // - "real": usar data tal cual (incluso lista vacía → "0 usuarios").
+      // - "mock"/"degraded": el server ya cayó al mock; mantenemos el literal
+      //   de mocks.jsx que es idéntico, sin sobrescribir.
+      const source = (r.headers.get('x-kza-source') || '').toLowerCase();
+      if (source !== 'real' || data === null || data === undefined) return;
+      // Mutar in-place: las views hacen `const { X } = window.MOCKS;` al cargar
+      // el script, capturando la referencia. Reasignar `window.MOCKS[key] = data`
+      // dejaría la referencia vieja apuntando al mock. Mutamos el array/objeto
+      // existente para que la referencia capturada vea los datos nuevos.
+      const target = window.MOCKS[key];
+      if (Array.isArray(target) && Array.isArray(data)) {
+        target.length = 0;
+        target.push(...data);
+      } else if (target && typeof target === 'object' && !Array.isArray(data)) {
+        for (const k of Object.keys(target)) delete target[k];
+        Object.assign(target, data);
+      } else {
         window.MOCKS[key] = data;
       }
     } catch (e) {
