@@ -1,47 +1,58 @@
 """
-Snapshots de GPUs y servicios systemd. Detecta plataforma:
-- Linux con nvidia-smi → datos reales
-- Resto → datos vacíos (caller decide fallback a mocks)
+Snapshots de GPUs y servicios para el dashboard.
 
-Distingue tipos de fallo:
-- "no instalado" / "no estamos en el server" → INFO/None silencioso
-- "tool present pero falló" (timeout, exit≠0, parseo) → ERROR con causa
+Servicios: registry mixto. Cada servicio define su método de probe:
+- "systemctl_user": `systemctl --user show <name>` (servicios bajo `kza`)
+- "http": GET a una URL → 200 == active. Para servicios fuera de la sesión
+  systemd del user (HA root, vLLM bajo usuario infra, containers).
+- "in_process": siempre activo si el código del dashboard está corriendo
+  (chromadb se carga in-process en kza-voice).
+
+GPUs: nvidia-smi parsing con narrow excepts (timeout = driver wedged, etc).
 """
 
 import logging
+import os
 import shutil
+import socket
 import subprocess
+import urllib.error
+import urllib.request
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Servicios systemd --user que monitoreamos. Ver MEMORY KZA — sub-rango 9500-9599.
-KZA_SERVICES = ["kza-voice", "kza-llm-ik", "vllm-shared", "chromadb",
-                "home-assistant", "ma1260-bridge"]
-
 # cuda:0 = STT/TTS/SpeakerID/Emotion/Embeddings; cuda:1 = vLLM 7B compartido.
-# Idx >= 2 intencionalmente "—" — el server actual tiene 2 GPUs.
 GPU_ROLES = {
     0: "STT • TTS • SpeakerID • Emotion • Embeddings",
     1: "vLLM Qwen 7B AWQ (compartido)",
 }
 
 
-def _have_nvidia_smi() -> bool:
-    return shutil.which("nvidia-smi") is not None
-
-
-def _have_systemctl() -> bool:
-    return shutil.which("systemctl") is not None
+# Service probe registry. Cada entry: (probe_kind, probe_args)
+# Las URLs pueden venir de env vars en runtime para reflejar el deploy real.
+def _service_probes() -> list[dict]:
+    ha_url = os.environ.get("HOME_ASSISTANT_URL", "http://192.168.1.100:8123")
+    return [
+        {"name": "kza-voice", "kind": "systemctl_user"},
+        {"name": "kza-llm-ik", "kind": "systemctl_user",
+         "http_probe": "http://127.0.0.1:8200/v1/models"},
+        {"name": "vllm-shared", "kind": "http",
+         "url": "http://127.0.0.1:8100/v1/models",
+         "role": "vLLM Qwen 7B AWQ — compartido (usuario infra)"},
+        {"name": "home-assistant", "kind": "http",
+         "url": f"{ha_url.rstrip('/')}/api/",
+         "role": "Home Assistant — control de domótica"},
+        {"name": "chromadb", "kind": "in_process",
+         "role": "ChromaDB — vector store (in-process en kza-voice)"},
+        {"name": "ma1260-bridge", "kind": "systemctl_user",
+         "role": "Amplificador MA1260 (serial bridge)"},
+    ]
 
 
 def gpu_snapshot() -> Optional[list[dict]]:
-    """Parsea nvidia-smi. None si no instalado o falla irrecuperable.
-
-    Distingue: no-instalado (None silencioso), timeout (ERROR — driver wedged),
-    rc≠0 (ERROR con stderr), parse error (ERROR — version mismatch?).
-    """
-    if not _have_nvidia_smi():
+    """Parsea nvidia-smi. None si no instalado o falla irrecuperable."""
+    if not shutil.which("nvidia-smi"):
         return None
     q = "index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw"
     try:
@@ -92,13 +103,7 @@ def _gpu_procs(gpu_index: int) -> list[dict]:
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=2.0, check=True,
         )
-    except subprocess.TimeoutExpired:
-        logger.warning(f"nvidia-smi --query-compute-apps id={gpu_index} timeout")
-        return []
-    except subprocess.CalledProcessError as e:
-        logger.warning(f"nvidia-smi compute-apps rc={e.returncode}")
-        return []
-    except OSError:
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError):
         return []
     procs = []
     for line in proc.stdout.strip().splitlines():
@@ -113,37 +118,65 @@ def _gpu_procs(gpu_index: int) -> list[dict]:
 
 
 def services_snapshot() -> Optional[list[dict]]:
-    """systemctl --user show de cada servicio KZA.
-
-    Detecta "fuera del server" via `systemctl --user list-units` ejecutado UNA
-    vez (no via primer servicio). Servicios faltantes individuales no abortan
-    el snapshot — devuelven entries con status=missing.
-    """
-    if not _have_systemctl():
-        return None
-    if not _systemctl_user_works():
-        return None
+    """Probe registry mixto. None si no estamos en server (no systemctl ni HTTP)."""
+    have_systemctl = bool(shutil.which("systemctl"))
     out = []
-    for svc in KZA_SERVICES:
-        info = _systemctl_show(svc)
-        if info is None:
-            out.append({
-                "name": svc, "status": "missing", "uptime": "—",
-                "mem": "—", "cpu": "—", "pid": 0,
-            })
-        else:
-            out.append(info)
+    for probe in _service_probes():
+        info = _probe_service(probe, have_systemctl)
+        out.append(info)
+    # Si NINGÚN probe externo (systemctl/HTTP) responde activo, asumimos dev box.
+    # `in_process` no cuenta — siempre da activo y no aporta signal.
+    external = [s for s in out if s.get("mem") != "in-process"]
+    if external and all(s["status"] in ("missing", "unreachable") for s in external):
+        return None
     return out
 
 
-def _systemctl_user_works() -> bool:
+def _probe_service(probe: dict, have_systemctl: bool) -> dict:
+    name = probe["name"]
+    kind = probe["kind"]
+    role = probe.get("role", "")
+
+    if kind == "in_process":
+        return {"name": name, "status": "active", "uptime": "—",
+                "mem": "in-process", "cpu": "—", "pid": 0, "role": role}
+
+    if kind == "systemctl_user" and have_systemctl:
+        info = _systemctl_show(name)
+        if info is not None:
+            info["role"] = role or info.get("role", "")
+            # Probe HTTP secundario si está definido (ej. kza-llm-ik :8200)
+            http = probe.get("http_probe")
+            if http and info["status"] == "active":
+                info["http_ok"] = _http_ok(http)
+            return info
+        # systemctl no encontró el servicio → puede ser que no esté en este host
+        return {"name": name, "status": "missing", "uptime": "—",
+                "mem": "—", "cpu": "—", "pid": 0, "role": role}
+
+    if kind == "http":
+        ok = _http_ok(probe["url"])
+        return {
+            "name": name,
+            "status": "active" if ok else "unreachable",
+            "uptime": "—", "mem": "—", "cpu": "—", "pid": 0,
+            "role": role, "http_ok": ok, "url": probe["url"],
+        }
+
+    return {"name": name, "status": "missing", "uptime": "—",
+            "mem": "—", "cpu": "—", "pid": 0, "role": role}
+
+
+def _http_ok(url: str, timeout: float = 1.5) -> bool:
     try:
-        r = subprocess.run(
-            ["systemctl", "--user", "list-units", "--no-pager", "--no-legend"],
-            capture_output=True, text=True, timeout=1.5,
-        )
-        return r.returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            # 2xx + algunos 4xx (HA devuelve 401 sin token, está vivo)
+            return r.status < 500
+    except urllib.error.HTTPError as e:
+        # 401/403 = el servicio responde, está vivo
+        return 400 <= e.code < 500
+    except (urllib.error.URLError, socket.timeout, ConnectionError, OSError):
         return False
 
 

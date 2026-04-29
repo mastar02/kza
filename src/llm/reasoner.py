@@ -377,6 +377,7 @@ class HttpReasoner:
         self._client = None
         self._resolved_model = None
         self._resolved_base_url = None
+        self._last_metrics: dict | None = None
 
     def _try_connect(self, base_url: str, preferred_model: str | None) -> tuple[object, str]:
         """Conectar a un endpoint OpenAI-compat y resolver el model id.
@@ -460,12 +461,20 @@ class HttpReasoner:
 
         if not self.idle_timeout_s:
             def _call():
+                t0 = time.perf_counter()
                 resp = self._client.completions.create(
                     model=self._resolved_model,
                     prompt=prompt,
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                usage = getattr(resp, "usage", None)
+                if usage is not None:
+                    self._last_metrics = {
+                        "tokens": getattr(usage, "completion_tokens", 0) or 0,
+                        "ms": elapsed_ms,
+                    }
                 return resp.choices[0].text
             return await asyncio.to_thread(_call)
 
@@ -548,6 +557,7 @@ REGLAS:
         self.timeout = timeout
         self._client = None
         self._available = False
+        self._last_metrics: dict | None = None
         if _ignored:
             logger.debug(f"FastRouter (HTTP): ignorando kwargs legacy {list(_ignored.keys())}")
 
@@ -585,18 +595,30 @@ REGLAS:
         A diferencia de `generate`, NO swallowea excepciones — las propaga para
         que el LLMRouter pueda clasificarlas (rate-limit, timeout, etc.) y
         rotar al siguiente endpoint.
+
+        Side effect: setea `self._last_metrics = {"tokens": int, "ms": float}`
+        tras cada call exitosa para que el LLMRouter pueda samplearlo y forwardar
+        a un MetricsTracker. No-op si el endpoint no devuelve `usage`.
         """
         import asyncio
 
         def _call():
             if self._client is None:
                 self.load()
+            t0 = time.perf_counter()
             resp = self._client.completions.create(
                 model=self.model_name,
                 prompt=prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            usage = getattr(resp, "usage", None)
+            if usage is not None:
+                self._last_metrics = {
+                    "tokens": getattr(usage, "completion_tokens", 0) or 0,
+                    "ms": elapsed_ms,
+                }
             return resp.choices[0].text
 
         return await asyncio.to_thread(_call)

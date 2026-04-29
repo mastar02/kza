@@ -306,14 +306,17 @@ async def main():
     # Envuelve fast_router y llm (HttpReasoner 72B) para rotar automáticamente
     # cuando uno falla. El dispatcher usa router.complete(), no router.generate().
     llm_router = None
+    llm_metrics_tracker = None
     failover_cfg = config.get("llm", {}).get("failover")
     if failover_cfg and fast_router is not None:
         from src.llm import build_llm_router
+        from src.llm.metrics import LLMMetricsTracker
+        llm_metrics_tracker = LLMMetricsTracker(window_s=300.0)
         clients = {"fast_router_7b": fast_router}
         if llm is not None:
             clients["reasoner_72b"] = llm
         try:
-            llm_router = build_llm_router(failover_cfg, clients)
+            llm_router = build_llm_router(failover_cfg, clients, metrics_tracker=llm_metrics_tracker)
             logger.info(
                 f"LLMRouter listo con {len(clients)} endpoints "
                 f"({', '.join(clients)})"
@@ -914,6 +917,7 @@ async def main():
             zone_manager=zone_manager,
             event_logger=event_logger,
             speaker_identifier=speaker_identifier,
+            llm_metrics=llm_metrics_tracker,
             observability_use_mocks=dashboard_config.get("observability_use_mocks", True),
         )
         logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 9500)}")

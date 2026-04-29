@@ -64,12 +64,14 @@ class LLMRouter:
         self,
         endpoints: list[LLMEndpoint],
         cooldown_manager: CooldownManager,
+        metrics_tracker=None,
     ):
         if not endpoints:
             raise ValueError("LLMRouter requires at least one endpoint")
         # Orden estable por priority asc
         self._endpoints = sorted(endpoints, key=lambda e: e.priority)
         self._cd = cooldown_manager
+        self._metrics = metrics_tracker
 
     async def complete(
         self,
@@ -118,6 +120,13 @@ class LLMRouter:
             # Éxito
             self._cd.record_success(ep.id)
             elapsed_ms = (time.perf_counter() - start) * 1000
+
+            # Sample metrics si el cliente las dejó en _last_metrics tras la call.
+            if self._metrics is not None:
+                lm = getattr(ep.client, "_last_metrics", None)
+                if lm and lm.get("tokens", 0) > 0:
+                    self._metrics.record(ep.id, lm["tokens"], lm["ms"])
+
             return RouterResult(
                 text=text,
                 endpoint_id=ep.id,
