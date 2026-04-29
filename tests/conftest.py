@@ -6,6 +6,7 @@ This file provides:
 - Mock Home Assistant client
 - Sample data fixtures
 - Configuration fixtures
+- Global hook registry cleanup (Plan #3 OpenClaw)
 
 Run tests with: pytest tests/ -v
 Run safety tests only: pytest tests/safety/ -v
@@ -51,6 +52,31 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "gpu" in item.keywords and not has_cuda:
             item.add_marker(skip_gpu)
+
+
+# ==================== Hook Cleanup (Plan #3 OpenClaw) ====================
+
+@pytest.fixture(autouse=True)
+def _clear_global_hook_registry():
+    """Plan #3 OpenClaw — clear the global hook registry between tests.
+
+    Decorators in src/policies/* register handlers into _global_registry at
+    import time (which only happens once per process). Without this fixture,
+    tests that import policy modules pollute global state for tests that run
+    afterwards. This autouse fixture clears registrations (but NOT in-flight
+    asyncio tasks, which are intentionally preserved per registry.clear()
+    contract).
+    """
+    try:
+        from src.hooks.registry import _global_registry
+    except ImportError:
+        # src.hooks not on path for some test environments — fine
+        yield
+        return
+
+    _global_registry.clear()
+    yield
+    _global_registry.clear()
 
 
 # ==================== Mock Fixtures ====================
