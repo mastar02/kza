@@ -6,10 +6,51 @@ Modelo grande para razonamiento profundo con soporte LoRA.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_api_key(base_url: str) -> str:
+    """Pick the bearer token env var matching the endpoint's port.
+
+    :8100 → vLLM (VLLM_API_KEY). :8200 → llama-server (LLAMA_API_KEY).
+    Unknown/unparseable port → tries VLLM_API_KEY then LLAMA_API_KEY (covers
+    proxied deploys without an explicit port). When no env var is set at all,
+    falls back to "not-used" so local-dev against unauthenticated endpoints
+    keeps working — but logs a warning so a misconfigured prod deploy (missing
+    EnvironmentFile, wrong systemd User=) is visible at startup instead of
+    surfacing later as an opaque 401.
+    """
+    port = urlparse(base_url).port
+    if port == 8100:
+        key = os.getenv("VLLM_API_KEY")
+        if key:
+            return key
+    elif port == 8200:
+        key = os.getenv("LLAMA_API_KEY")
+        if key:
+            return key
+    else:
+        key = os.getenv("VLLM_API_KEY") or os.getenv("LLAMA_API_KEY")
+        if key:
+            return key
+        logger.warning(
+            "API key resolution: could not determine endpoint kind from base_url=%r "
+            "(port=%s) and no VLLM_API_KEY/LLAMA_API_KEY in env; using 'not-used' sentinel",
+            base_url, port,
+        )
+        return "not-used"
+    logger.warning(
+        "API key resolution: %s env var not set for %s; using 'not-used' sentinel — "
+        "requests will fail if endpoint enforces auth",
+        "VLLM_API_KEY" if port == 8100 else "LLAMA_API_KEY",
+        base_url,
+    )
+    return "not-used"
 
 
 # Modelos recomendados para 128GB RAM
@@ -387,7 +428,7 @@ class HttpReasoner:
         Returns (client, resolved_model_id). Raises if endpoint doesn't respond.
         """
         from openai import OpenAI
-        client = OpenAI(base_url=base_url, api_key="not-used", timeout=self.timeout)
+        client = OpenAI(base_url=base_url, api_key=_resolve_api_key(base_url), timeout=self.timeout)
         models = client.models.list()
         ids = [m.id for m in models.data]
         if preferred_model and preferred_model in ids:
@@ -571,7 +612,7 @@ REGLAS:
         from openai import OpenAI
 
         logger.info(f"Conectando al vLLM compartido en {self.base_url} (modelo: {self.model_name})")
-        self._client = OpenAI(base_url=self.base_url, api_key="not-used", timeout=self.timeout)
+        self._client = OpenAI(base_url=self.base_url, api_key=_resolve_api_key(self.base_url), timeout=self.timeout)
 
         try:
             models = self._client.models.list()
