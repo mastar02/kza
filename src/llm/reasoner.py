@@ -6,10 +6,27 @@ Modelo grande para razonamiento profundo con soporte LoRA.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_api_key(base_url: str) -> str:
+    """Pick the bearer token env var matching the endpoint's port.
+
+    :8100 → vLLM (VLLM_API_KEY). :8200 → llama-server (LLAMA_API_KEY).
+    Falls back to "not-used" so local-dev against unauthenticated endpoints
+    keeps working.
+    """
+    port = urlparse(base_url).port
+    if port == 8100:
+        return os.getenv("VLLM_API_KEY") or "not-used"
+    if port == 8200:
+        return os.getenv("LLAMA_API_KEY") or "not-used"
+    return os.getenv("VLLM_API_KEY") or os.getenv("LLAMA_API_KEY") or "not-used"
 
 
 # Modelos recomendados para 128GB RAM
@@ -387,7 +404,7 @@ class HttpReasoner:
         Returns (client, resolved_model_id). Raises if endpoint doesn't respond.
         """
         from openai import OpenAI
-        client = OpenAI(base_url=base_url, api_key="not-used", timeout=self.timeout)
+        client = OpenAI(base_url=base_url, api_key=_resolve_api_key(base_url), timeout=self.timeout)
         models = client.models.list()
         ids = [m.id for m in models.data]
         if preferred_model and preferred_model in ids:
@@ -571,7 +588,7 @@ REGLAS:
         from openai import OpenAI
 
         logger.info(f"Conectando al vLLM compartido en {self.base_url} (modelo: {self.model_name})")
-        self._client = OpenAI(base_url=self.base_url, api_key="not-used", timeout=self.timeout)
+        self._client = OpenAI(base_url=self.base_url, api_key=_resolve_api_key(self.base_url), timeout=self.timeout)
 
         try:
             models = self._client.models.list()
