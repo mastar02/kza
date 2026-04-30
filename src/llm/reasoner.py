@@ -18,15 +18,39 @@ def _resolve_api_key(base_url: str) -> str:
     """Pick the bearer token env var matching the endpoint's port.
 
     :8100 → vLLM (VLLM_API_KEY). :8200 → llama-server (LLAMA_API_KEY).
-    Falls back to "not-used" so local-dev against unauthenticated endpoints
-    keeps working.
+    Unknown/unparseable port → tries VLLM_API_KEY then LLAMA_API_KEY (covers
+    proxied deploys without an explicit port). When no env var is set at all,
+    falls back to "not-used" so local-dev against unauthenticated endpoints
+    keeps working — but logs a warning so a misconfigured prod deploy (missing
+    EnvironmentFile, wrong systemd User=) is visible at startup instead of
+    surfacing later as an opaque 401.
     """
     port = urlparse(base_url).port
     if port == 8100:
-        return os.getenv("VLLM_API_KEY") or "not-used"
-    if port == 8200:
-        return os.getenv("LLAMA_API_KEY") or "not-used"
-    return os.getenv("VLLM_API_KEY") or os.getenv("LLAMA_API_KEY") or "not-used"
+        key = os.getenv("VLLM_API_KEY")
+        if key:
+            return key
+    elif port == 8200:
+        key = os.getenv("LLAMA_API_KEY")
+        if key:
+            return key
+    else:
+        key = os.getenv("VLLM_API_KEY") or os.getenv("LLAMA_API_KEY")
+        if key:
+            return key
+        logger.warning(
+            "API key resolution: could not determine endpoint kind from base_url=%r "
+            "(port=%s) and no VLLM_API_KEY/LLAMA_API_KEY in env; using 'not-used' sentinel",
+            base_url, port,
+        )
+        return "not-used"
+    logger.warning(
+        "API key resolution: %s env var not set for %s; using 'not-used' sentinel — "
+        "requests will fail if endpoint enforces auth",
+        "VLLM_API_KEY" if port == 8100 else "LLAMA_API_KEY",
+        base_url,
+    )
+    return "not-used"
 
 
 # Modelos recomendados para 128GB RAM
