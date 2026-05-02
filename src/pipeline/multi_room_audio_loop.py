@@ -18,6 +18,7 @@ import sounddevice as sd
 
 from src.pipeline.command_event import CommandEvent
 from src.wakeword.detector import WakeWordDetector
+from src.wakeword.whisper_wake import _text_likely_truncated
 from src.audio.echo_suppressor import EchoSuppressor
 from src.conversation.follow_up_mode import FollowUpMode
 from src.nlu.command_grammar import PartialCommand, parse_partial_command
@@ -343,6 +344,16 @@ class MultiRoomAudioLoop:
                         self.follow_up.start_conversation()
                         logger.info(f"Wake word in {rs.room_id} ({detection[0]}: {detection[1]:.2f})")
 
+                        # Peek wake text first to decide if it was truncated.
+                        # Si el wake terminó con preposición/artículo/elipsis,
+                        # NO saltamos la captura post-wake — el comando real
+                        # probablemente sigue. (Fix 1A — visto 2026-05-02 06:36:51:
+                        # 'Nexa prendé la luz del...' → light.bano por adivinanza
+                        # del LLM con texto cortado.)
+                        peek_text_fn = getattr(rs.wake_detector, "peek_pending_text", None)
+                        wake_text_peek = peek_text_fn() if callable(peek_text_fn) else None
+                        wake_was_truncated = _text_likely_truncated(wake_text_peek or "")
+
                         # Si el detector es WhisperWake y ya tiene el audio del comando
                         # inline (la misma utterance del wake word), lo usamos directo.
                         pop_fn = getattr(rs.wake_detector, "pop_pending_command_audio", None)
@@ -350,17 +361,27 @@ class MultiRoomAudioLoop:
                             inline_audio = pop_fn()
                             if inline_audio is not None and len(inline_audio) > 0:
                                 rs.audio_buffer = list(inline_audio)
-                                # Simular que ya terminó la captura (silencio final)
-                                rs.command_start_time = time.time() - self.min_speech_ms / 1000 - 0.1
-                                logger.info(
-                                    f"Usando audio inline del wake word ({len(inline_audio)/16000:.2f}s) "
-                                    f"— saltando captura post-wake"
-                                )
-                        # Guardar texto completo del wake detector para usar
-                        # como pretranscribed_text (evita 2do Whisper alucinante).
+                                if wake_was_truncated:
+                                    logger.info(
+                                        f"Audio inline ({len(inline_audio)/16000:.2f}s) "
+                                        f"+ continuando captura post-wake — "
+                                        f"texto truncado: {wake_text_peek!r}"
+                                    )
+                                    # No simulamos fin de captura → sigue capturando audio.
+                                else:
+                                    rs.command_start_time = time.time() - self.min_speech_ms / 1000 - 0.1
+                                    logger.info(
+                                        f"Usando audio inline del wake word ({len(inline_audio)/16000:.2f}s) "
+                                        f"— saltando captura post-wake"
+                                    )
+                        # Guardar texto del wake como `pretranscribed_text` SOLO
+                        # si no estaba truncado. Si estaba truncado, dejamos que
+                        # el STT post-wake re-transcriba el audio completo
+                        # (inline + continuación) y obtenga el comando entero.
                         pop_text_fn = getattr(rs.wake_detector, "pop_pending_text", None)
                         if callable(pop_text_fn):
-                            rs.wake_text = pop_text_fn()
+                            popped = pop_text_fn()
+                            rs.wake_text = popped if not wake_was_truncated else None
 
                 elif self.follow_up.is_active:
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))

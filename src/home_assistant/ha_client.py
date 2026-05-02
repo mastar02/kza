@@ -320,6 +320,22 @@ class HomeAssistantClient:
         """
         return self._state_cache.get(entity_id)
 
+    def has_domain(self, domain: str) -> bool:
+        """¿Hay al menos una entidad del dominio en el cache?
+
+        Permite al pipeline rechazar intents que requieren un dominio inexistente
+        (ej: `set_temperature` sin entidad `climate.*`) en vez de hacer fallback
+        a un dominio similar por embedding.
+
+        Args:
+            domain: dominio HA (sin punto). Ej: "climate", "media_player", "light".
+
+        Returns:
+            True si hay ≥1 entidad cacheada con `entity_id` que empieza con `domain.`
+        """
+        prefix = f"{domain}."
+        return any(eid.startswith(prefix) for eid in self._state_cache)
+
     async def _fetch_all_states_rest(self) -> list[dict]:
         """Wrapper sobre get_all_entities para claridad en el sync loop."""
         return await self.get_all_entities()

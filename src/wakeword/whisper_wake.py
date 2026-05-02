@@ -80,6 +80,110 @@ _TV_STOP_PHRASES = (
     "activa la",                    # "activa la campanita"
 )
 
+# Stopwords ignoradas por `_has_pathological_repeat` — pueden aparecer 3+ veces
+# en oraciones legítimas sin ser señal de loop alucinatorio. Lista mínima en
+# español rioplatense.
+_LOOP_DETECT_STOPWORDS = frozenset({
+    "el", "la", "los", "las", "un", "una", "unos", "unas",
+    "de", "del", "en", "y", "o", "u", "a", "al",
+    "que", "se", "no", "si", "lo", "le", "me", "te", "es", "son",
+    "por",
+})
+
+# TV-mode: si en la ventana móvil hubo ≥ TV_MODE_ENTRY_REJECTS rejects, el
+# entorno se considera "TV-like" durante TV_MODE_DURATION_S segundos. En ese
+# estado las accepted-wakes se logean con WARNING extra y la métrica lleva
+# `tv_mode=True` para análisis posterior. No bloquea acción todavía — primera
+# fase de instrumentación; futuras iteraciones pueden añadir doble-confirmación
+# si la telemetría muestra fantasmas residuales.
+TV_MODE_ENTRY_REJECTS = 4
+TV_MODE_ENTRY_WINDOW_S = 300.0
+TV_MODE_DURATION_S = 300.0
+
+# Palabras que NO terminan una oración bien formada en español. Si la
+# transcripción del wake termina con una de éstas, el silencio que cerró la
+# utterance probablemente fue una pausa intra-frase y el comando real continúa
+# después. El caller (`multi_room_audio_loop`) usa esta señal para no saltar
+# la captura post-wake.
+_TRUNCATING_TAILS = frozenset({
+    # preposiciones
+    "de", "del", "a", "al", "en", "con", "por", "para", "sin", "sobre",
+    "tras", "hacia", "desde",
+    # artículos solos al final
+    "el", "la", "los", "las", "un", "una", "unos", "unas",
+    # demostrativos (raramente cierran oración)
+    "este", "esta", "esto", "ese", "esa", "eso", "aquel", "aquella",
+    # conjunciones
+    "y", "o", "u", "pero", "ni", "que",
+    # adverbios/intensificadores que esperan un complemento
+    "como", "muy", "tan", "mas", "mucho", "poco",
+})
+
+
+def _text_likely_truncated(text: str) -> bool:
+    """Heurística: ¿la transcripción del wake fue cortada antes de tiempo?
+
+    Whisper cierra la utterance por silencio breve mientras el usuario aún
+    está hablando. El resultado es texto que termina con preposición ('del'),
+    artículo ('la'), conjunción ('y') o elipsis. Cuando esto ocurre, el caller
+    debe NO saltar la captura post-wake — debe seguir capturando audio para
+    completar el comando.
+
+    Args:
+        text: texto original (con acentos/puntuación) del wake.
+
+    Returns:
+        True si el texto luce cortado a media frase.
+    """
+    if not text:
+        return False
+    raw = text.strip()
+    if raw.endswith(("...", "…")):
+        return True
+    stripped = raw.rstrip(",.;:!?¡¿\"' ")
+    if not stripped:
+        return False
+    norm = _normalize(stripped)
+    parts = norm.split()
+    if not parts:
+        return False
+    return parts[-1] in _TRUNCATING_TAILS
+
+
+def _has_pathological_repeat(norm: str) -> Optional[str]:
+    """Detect Whisper transcript loops on non-wake tokens.
+
+    Whisper occasionally produces text loops when fed ambiguous TV audio. The
+    `wake_count >= 2` pre-filter catches loops on the wake word itself; this
+    catches loops on other tokens like "el baño y el baño y el baño..." or
+    "por cincuenta por cincuenta por cincuenta...".
+
+    Heuristic: a single non-stopword content token (≥3 chars) appears ≥3 times
+    AND accounts for ≥40% of content tokens. The dominance ratio is what
+    distinguishes a Whisper loop from a legitimate multi-entity command like
+    "prendé la luz del cuarto, la luz del living, la luz del comedor", where
+    'luz' is repeated but doesn't dominate.
+
+    Args:
+        norm: text already normalized (lowercase, no accents, no punctuation).
+
+    Returns:
+        The dominant repeated token if a loop is detected, else None.
+    """
+    content_words = [
+        w for w in norm.split()
+        if len(w) >= 3 and w not in _LOOP_DETECT_STOPWORDS
+    ]
+    if len(content_words) < 6:
+        return None
+    counts: dict[str, int] = {}
+    for w in content_words:
+        counts[w] = counts.get(w, 0) + 1
+    top_word, top_count = max(counts.items(), key=lambda kv: kv[1])
+    if top_count >= 3 and top_count / len(content_words) >= 0.4:
+        return top_word
+    return None
+
 
 def _normalize(text: str) -> str:
     """Lowercase + quitar acentos + colapsar espacios. Para match robusto."""
@@ -314,6 +418,10 @@ class WhisperWakeDetector:
         # de capturar audio nuevo (que probablemente ya pasó con el wake).
         self._pending_command_audio: Optional[np.ndarray] = None
         self._pending_text: Optional[str] = None
+
+        # TV-mode tracking — ver `TV_MODE_*` constantes arriba.
+        self._reject_timestamps: deque[float] = deque(maxlen=20)
+        self._tv_mode_until: float = 0.0
 
     def load(self):
         if self._loaded:
@@ -550,6 +658,13 @@ class WhisperWakeDetector:
         self._pending_text = None
         return t
 
+    def peek_pending_text(self) -> Optional[str]:
+        """Leer el texto pendiente SIN consumirlo.
+
+        El caller usa esto para decidir si saltar o no la captura post-wake.
+        """
+        return self._pending_text
+
     def pop_pending_command_audio(self) -> Optional[np.ndarray]:
         """Consumir el audio recortado de la utterance del wake. El caller lo pasa al STT."""
         audio = self._pending_command_audio
@@ -618,6 +733,24 @@ class WhisperWakeDetector:
             self._emit_wake(
                 False, None, "rejected", text, dur_ms, stt_ms,
                 rejection_reason="multi_wake_hallucination",
+            )
+            return (None, text)
+
+        # Anti-loop sobre tokens NO-wake. El check anterior solo cuenta el wake
+        # word; Whisper también loopea sobre otros tokens cuando recibe audio de
+        # TV ambiguo (ej: "el baño y el baño y el baño..."). Calibrado contra
+        # logs reales del 2026-05-01 18-22hs (~25 fantasmas con TV encendida).
+        loop_word = _has_pathological_repeat(norm)
+        if loop_word is not None:
+            occurrences = norm.split().count(loop_word)
+            logger.warning(
+                f"Wake rejected — loop patológico ({loop_word!r} ×{occurrences}) "
+                f"(probable hallucination/TV): {text!r}"
+            )
+            self._maybe_arm_follow_up(norm, text)
+            self._emit_wake(
+                False, None, "rejected", text, dur_ms, stt_ms,
+                rejection_reason="pathological_repeat",
             )
             return (None, text)
 
@@ -747,6 +880,31 @@ class WhisperWakeDetector:
             f"esperando comando tras wake-only: {text!r}"
         )
 
+    def _record_reject(self, reason: str) -> None:
+        """Registra un reject y activa/extiende TV-mode si supera el threshold.
+
+        Args:
+            reason: motivo del reject (solo para el log de activación).
+        """
+        now = time.time()
+        self._reject_timestamps.append(now)
+        # Purgar entradas fuera de la ventana móvil.
+        while self._reject_timestamps and now - self._reject_timestamps[0] > TV_MODE_ENTRY_WINDOW_S:
+            self._reject_timestamps.popleft()
+        if len(self._reject_timestamps) >= TV_MODE_ENTRY_REJECTS:
+            was_active = now < self._tv_mode_until
+            self._tv_mode_until = now + TV_MODE_DURATION_S
+            if not was_active:
+                logger.warning(
+                    f"📺 TV-mode ACTIVATED — {len(self._reject_timestamps)} wake-rejects "
+                    f"en {TV_MODE_ENTRY_WINDOW_S:.0f}s (último: {reason}). "
+                    f"Wakes aceptados loggearán flag 'tv_mode' por {TV_MODE_DURATION_S:.0f}s."
+                )
+
+    def _is_tv_mode_active(self) -> bool:
+        """True si TV-mode está activo (rolling window)."""
+        return time.time() < self._tv_mode_until
+
     def _emit_wake(
         self,
         matched: bool,
@@ -758,6 +916,17 @@ class WhisperWakeDetector:
         fuzzy_ratio: Optional[float] = None,
         rejection_reason: Optional[str] = None,
     ) -> None:
+        # Telemetría TV-mode: en cada reject acumulamos timestamp; en accept
+        # con tv_mode activo agregamos warning para que el operador vea
+        # contexto en logs.
+        tv_mode_active = self._is_tv_mode_active()
+        if not matched and rejection_reason:
+            self._record_reject(rejection_reason)
+        elif matched and tv_mode_active:
+            logger.warning(
+                f"⚠️  Wake ACCEPTED en TV-mode (probable false-positive del entorno): {text!r}"
+            )
+
         if not self.metrics_emitter:
             return
         try:
@@ -771,6 +940,23 @@ class WhisperWakeDetector:
                 wake_stt_ms=stt_ms,
                 fuzzy_ratio=fuzzy_ratio,
                 rejection_reason=rejection_reason,
+                tv_mode=tv_mode_active,
             )
+        except TypeError:
+            # MetricsEmitter sin soporte de tv_mode (fallback: emite sin el flag).
+            try:
+                self.metrics_emitter.emit_wake(
+                    room_id=self.room_id,
+                    matched=matched,
+                    wake_word=wake_word,
+                    matched_via=matched_via,
+                    text=text,
+                    audio_duration_ms=dur_ms,
+                    wake_stt_ms=stt_ms,
+                    fuzzy_ratio=fuzzy_ratio,
+                    rejection_reason=rejection_reason,
+                )
+            except Exception as e:
+                logger.warning(f"MetricsEmitter emit_wake failed: {e}")
         except Exception as e:
             logger.warning(f"MetricsEmitter emit_wake failed: {e}")

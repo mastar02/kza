@@ -24,6 +24,34 @@ from src.orchestrator import PathType
 logger = logging.getLogger(__name__)
 
 
+# Mapeo intent → dominio HA requerido. Usado por el guard previo al NLU
+# pre-filter (Fix 1B): si el LLMRouter clasificó un intent que requiere un
+# dominio específico (climate, media_player, cover) y HA no tiene ninguna
+# entidad de ese dominio, rechazar con mensaje amistoso en vez de hacer
+# fallback a una luz random vía vector similarity.
+_INTENT_REQUIRED_DOMAINS: dict[str, str] = {
+    "set_temperature": "climate",
+    "set_volume": "media_player",
+    "media_play": "media_player",
+    "media_pause": "media_player",
+    "media_stop": "media_player",
+    "media_next": "media_player",
+    "media_previous": "media_player",
+}
+
+# Mensajes de respuesta cuando el dominio no existe en HA. En español
+# rioplatense neutro, brevemente — no queremos sermonear al usuario.
+_UNSUPPORTED_INTENT_MESSAGES: dict[str, str] = {
+    "set_temperature": "Todavía no tengo climatización configurada.",
+    "set_volume": "Todavía no tengo control de audio configurado.",
+    "media_play": "No tengo reproductor configurado.",
+    "media_pause": "No tengo reproductor configurado.",
+    "media_stop": "No tengo reproductor configurado.",
+    "media_next": "No tengo reproductor configurado.",
+    "media_previous": "No tengo reproductor configurado.",
+}
+
+
 # Frases que NO son comandos reales aunque llegaron al router — evitan que
 # vayan al slow path del LLM (caro) cuando son ruido de TV, eco del TTS o
 # filler conversacional. Match por substring sobre el texto normalizado
@@ -863,6 +891,30 @@ class RequestRouter:
             self.response_handler.speak(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
+
+        # 7b. Guard de intents que requieren dominio HA específico ausente.
+        # Sin esto, el probe ambiguo de luces más abajo puede mapear (por
+        # similitud de embedding) un `set_temperature` a `light.balcon` o un
+        # `set_volume` a una luz random — visto en logs 2026-05-02 06:57:02:
+        # 'Nexa bajá la temperatura del aire' → light.turn_off@light.balcon.
+        _llm_classification = result.get("llm_classification")
+        if _llm_classification is not None and _llm_classification.intent in _INTENT_REQUIRED_DOMAINS:
+            required_domain = _INTENT_REQUIRED_DOMAINS[_llm_classification.intent]
+            if not self.ha.has_domain(required_domain):
+                msg = _UNSUPPORTED_INTENT_MESSAGES.get(
+                    _llm_classification.intent,
+                    "Eso no lo manejo todavía.",
+                )
+                logger.info(
+                    f"[INTENT_REJECT] intent={_llm_classification.intent} "
+                    f"required_domain={required_domain} no presente en HA — {msg!r}"
+                )
+                result["intent"] = _llm_classification.intent
+                result["response"] = msg
+                result["success"] = False
+                self.response_handler.speak(result["response"])
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
 
         # 8. NLU pre-filter (intent léxico + slots) + Vector DB search (with cache)
         from src.nlu import classify_intent, extract_slots
