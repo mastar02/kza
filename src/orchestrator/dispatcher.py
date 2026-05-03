@@ -49,6 +49,66 @@ from src.orchestrator.cancellation import CancellationToken
 logger = get_logger(__name__)
 
 
+# Mapeo zone_id (ej: "zone_escritorio") → metadata.area en Chroma (ej:
+# "Escritorio"). Acoplado a `home_assistant.area` de HA: si agregás un room
+# nuevo allá, agregalo acá. Mantener sincronizado con
+# src/rooms/room_context.create_default_rooms().
+_ZONE_TO_AREA: dict[str, str] = {
+    "zone_living": "Living",
+    "zone_escritorio": "Escritorio",
+    "zone_hall": "Hall",
+    "zone_cocina": "Cocina",
+    "zone_bano": "Baño",
+    "zone_cuarto": "Cuarto",
+}
+
+# Aliases de room reconocidos para detección literal en el texto del usuario
+# (decisión 1-B: room hablado pisa al mic). Cada key es el alias normalizado
+# (lowercase + sin acentos) → area canónica. Mantener sincronizado con
+# RoomConfig.aliases en src/rooms/room_context.create_default_rooms().
+_ROOM_ALIASES_TO_AREA: dict[str, str] = {
+    # Living
+    "living": "Living", "sala": "Living", "salon": "Living",
+    # Escritorio
+    "escritorio": "Escritorio", "oficina": "Escritorio", "estudio": "Escritorio",
+    # Hall
+    "hall": "Hall", "pasillo": "Hall", "entrada": "Hall",
+    # Cocina
+    "cocina": "Cocina", "kitchen": "Cocina",
+    # Baño
+    "bano": "Baño", "bathroom": "Baño",
+    # Cuarto / Dormitorio
+    "cuarto": "Cuarto", "dormitorio": "Cuarto", "habitacion": "Cuarto",
+}
+
+
+def _resolve_prefer_area(text: str, zone_id: str | None) -> str | None:
+    """Decidir qué area pasar como prefer_area al vector search.
+
+    Prioridad:
+        1. Si el texto menciona como token literal un alias conocido
+           (regex con word-boundaries, accent-insensitive) → ese area.
+        2. Si no, traducir zone_id del mic via _ZONE_TO_AREA.
+        3. Si tampoco, None (sin restricción).
+
+    El check de alias usa regex con \\b para no matchear substrings
+    accidentales (ej: 'baño' en 'rebañar'). Es deliberadamente conservador:
+    solo aliases enumerados, no embeddings — implementa el trade-off "B"
+    discutido en sesión 2026-05-03.
+    """
+    if text:
+        import re as _re
+        import unicodedata as _ud
+        norm = _ud.normalize("NFD", text.lower())
+        norm = "".join(c for c in norm if _ud.category(c) != "Mn")
+        for alias, area in _ROOM_ALIASES_TO_AREA.items():
+            if _re.search(rf"\b{_re.escape(alias)}\b", norm):
+                return area
+    if zone_id:
+        return _ZONE_TO_AREA.get(zone_id)
+    return None
+
+
 def _log_fire_and_reconcile_exception(task: "asyncio.Task") -> None:
     """Done-callback for the fire-and-forget HA dispatch task.
 
@@ -271,7 +331,9 @@ class RequestDispatcher:
         zone_id: str = None,
         permission_level: int = 3,
         on_response: Callable[[DispatchResult], None] = None,
-        timeout: float = 5.0
+        timeout: float = 5.0,
+        service_filter: str | None = None,
+        query_slots: dict | None = None,
     ) -> DispatchResult:
         """
         Procesar una peticion, enrutando al path correcto.
@@ -280,13 +342,18 @@ class RequestDispatcher:
             user_id: ID del usuario
             text: Texto de la peticion
             user_name: Nombre del usuario
-            zone_id: Zona de origen
+            zone_id: Zona de origen (ej: "zone_escritorio")
             permission_level: Nivel de permisos
             on_response: Callback cuando hay respuesta (para slow path)
             timeout: Timeout maximo
-
-        Returns:
-            DispatchResult con la respuesta
+            service_filter: Service HA del intent (ej: "turn_off",
+                "set_brightness"). Si viene, se propaga al vector search
+                para evitar matches por antónimos. Migración del path
+                legacy → orchestrated (bug 2026-05-03 — el orchestrated
+                descartaba el intent del LLMRouter).
+            query_slots: Slots NLU (brightness_pct, rgb_color, etc.) que
+                sobrescriben el preset del comando matcheado. También
+                portado desde el legacy.
         """
         start_time = time.perf_counter()
         self._stats["total_requests"] += 1
@@ -332,7 +399,9 @@ class RequestDispatcher:
                 path=path,
                 user_id=user_id,
                 zone_id=zone_id,
-                permission_level=permission_level
+                permission_level=permission_level,
+                service_filter=service_filter,
+                query_slots=query_slots,
             )
             self._stats["fast_path"] += 1
 
@@ -499,7 +568,9 @@ class RequestDispatcher:
         path: PathType,
         user_id: str,
         zone_id: str,
-        permission_level: int
+        permission_level: int,
+        service_filter: str | None = None,
+        query_slots: dict | None = None,
     ) -> DispatchResult:
         """
         Procesar peticion por fast path (paralelo, sin cola).
@@ -507,9 +578,22 @@ class RequestDispatcher:
         timings = {}
 
         if path == PathType.FAST_DOMOTICS:
+            # Resolver prefer_area: 1) si el texto menciona literal un alias
+            # de room conocido, ese gana (decisión 1-B); 2) si no, derivar
+            # del zone_id del mic. Bug 2026-05-03: sin esto, el text-only
+            # vector search elegía light.cuarto para queries genéricas
+            # desde el escritorio.
+            prefer_area = _resolve_prefer_area(text, zone_id)
+
             # Buscar comando en vector DB
             t0 = time.perf_counter()
-            command = self.chroma.search_command(text, self.vector_threshold)
+            command = self.chroma.search_command(
+                text,
+                self.vector_threshold,
+                service_filter=service_filter,
+                query_slots=query_slots,
+                prefer_area=prefer_area,
+            )
             timings["vector_search"] = (time.perf_counter() - t0) * 1000
 
             # Path dedicado para comandos globales ("toda la casa", "hogar").
@@ -1302,7 +1386,9 @@ class MultiUserOrchestrator:
         text: str,
         audio: any = None,
         zone_id: str = None,
-        on_response: Callable = None
+        on_response: Callable = None,
+        service_filter: str | None = None,
+        query_slots: dict | None = None,
     ) -> DispatchResult:
         """
         Procesar una peticion de usuario.
@@ -1313,9 +1399,11 @@ class MultiUserOrchestrator:
             audio: Audio original (para speaker ID si user_id es None)
             zone_id: Zona de origen
             on_response: Callback para respuestas
-
-        Returns:
-            DispatchResult
+            service_filter: Service HA del intent clasificado por el
+                LLMRouter (turn_on, turn_off, set_brightness, etc.).
+                Se propaga al dispatcher para filtrar el vector search.
+            query_slots: Slots NLU del LLMRouter (brightness_pct,
+                rgb_color, color_temp_kelvin). Sobrescriben preset.
         """
         # Identificar usuario si no se proporciono
         if user_id is None and audio is not None and self.speaker_id:
@@ -1342,7 +1430,9 @@ class MultiUserOrchestrator:
             user_name=user_name,
             zone_id=zone_id,
             permission_level=permission_level,
-            on_response=on_response
+            on_response=on_response,
+            service_filter=service_filter,
+            query_slots=query_slots,
         )
 
     async def _identify_speaker(self, audio) -> tuple[str, str]:

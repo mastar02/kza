@@ -588,6 +588,19 @@ async def main():
         # Build per-room configs, streams, and presence zones
         room_streams: dict[str, RoomStream] = {}
 
+        # Recolectar TODOS los aliases de rooms (room_id + RoomConfig.aliases)
+        # para inyectarlos al WhisperWakeDetector como known_room_aliases.
+        # Usado por el TV-mode soft-reject (decisión 2-C, 2026-05-03): un wake
+        # en TV-mode con audio degradado y SIN mención literal de room/entity
+        # se rechaza como probable fantasma.
+        _all_room_aliases: list[str] = []
+        for _rk, _rd in rooms_config.items():
+            if _rk in ROOMS_RESERVED_KEYS or not isinstance(_rd, dict):
+                continue
+            _all_room_aliases.append(_rk)
+            _all_room_aliases.extend(_rd.get("aliases", []))
+        _all_room_aliases_t = tuple(set(_all_room_aliases))
+
         for room_key, room_dict in rooms_config.items():
             if room_key in ROOMS_RESERVED_KEYS or not isinstance(room_dict, dict):
                 continue
@@ -690,6 +703,9 @@ async def main():
                             room_id=room_key,
                             follow_up_window_s=room_wake_cfg.get("follow_up_window_s", 4.0),
                             follow_up_max_words=room_wake_cfg.get("follow_up_max_words", 3),
+                            known_room_aliases=_all_room_aliases_t,
+                            tv_mode_min_rms=room_wake_cfg.get("tv_mode_min_rms", 0.04),
+                            tv_mode_min_audio_s=room_wake_cfg.get("tv_mode_min_audio_s", 1.0),
                         )
                     wake_detector.load()
                 else:

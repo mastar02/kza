@@ -601,12 +601,31 @@ class RequestRouter:
                     room_context=room_context,
                 )
 
+        # Propagar intent + slots del LLMRouter al orchestrator. Migración del
+        # patrón ya existente en el path legacy (líneas 962-968 abajo). Sin
+        # esto, el dispatcher hacía vector search puro y descartaba el intent
+        # clasificado (bug 2026-05-03 — el intent set_brightness con slot 50%
+        # se perdía y la acción terminaba como turn_on).
+        _llm_classification = result.get("llm_classification")
+        _service_filter = None
+        _query_slots = None
+        if _llm_classification is not None:
+            _intent = _llm_classification.intent
+            # Solo propagar intents que el chroma_sync conoce como `service`
+            # de HA. Intents de alto nivel (set_brightness, set_temperature)
+            # no son services HA — el chroma_sync los rechazaría.
+            if _intent in ("turn_on", "turn_off"):
+                _service_filter = _intent
+            _query_slots = dict(_llm_classification.slots or {}) or None
+
         dispatch_result = await self._orchestrator.process(
             user_id=user_id,
             text=text,
             audio=audio if not user_id else None,
             zone_id=zone_id,
-            on_response=on_response
+            on_response=on_response,
+            service_filter=_service_filter,
+            query_slots=_query_slots,
         )
 
         # 6. Build result

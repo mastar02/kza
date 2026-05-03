@@ -150,6 +150,65 @@ def _text_likely_truncated(text: str) -> bool:
     return parts[-1] in _TRUNCATING_TAILS
 
 
+# Velocidad máxima de habla humana sostenida (palabras/segundo). Voz rápida
+# normal ~5-6 wps; sostener >8 wps es físicamente difícil incluso para
+# rappers o pregoneros. Usamos 8.5 como cutoff conservador.
+# Bug 2026-05-03 08:08:49: '"Nexa bajá la luz al cincuenta por ciento"' (9
+# palabras) en 0.8s = 11.25 wps. Whisper alucinó la frase canónica.
+_MAX_PLAUSIBLE_WPS: float = 8.5
+
+
+def _is_implausible_speech_rate(text: str, audio_duration_s: float) -> bool:
+    """True si la velocidad palabras/segundo excede lo humanamente posible.
+
+    Pure helper, sin estado. Se usa como hard-reject antes de aceptar un
+    wake: ningún humano puede pronunciar 9 palabras en 0.8s, así que es
+    100% una alucinación de Whisper sobre audio corto/débil.
+
+    Args:
+        text: transcripción del wake (sin normalizar — solo cuenta tokens).
+        audio_duration_s: duración del buffer de audio que generó el texto.
+
+    Returns:
+        True si wps > _MAX_PLAUSIBLE_WPS. False si text vacío o
+        audio_duration_s ≤ 0 (defensivo, no rechazamos por bug ascendente).
+    """
+    if not text or audio_duration_s <= 0:
+        return False
+    word_count = len(text.split())
+    if word_count == 0:
+        return False
+    wps = word_count / audio_duration_s
+    return wps > _MAX_PLAUSIBLE_WPS
+
+
+def _has_explicit_entity_or_room(text: str, known_aliases: tuple) -> bool:
+    """True si el texto menciona como token literal algún alias conocido.
+
+    Usa word-boundary regex (no substring) para evitar falsos matches
+    como 'baño' en 'rebañar'. Accent-insensitive: 'baño' en el alias
+    matchea 'bano' en el texto y viceversa.
+
+    Args:
+        text: transcripción a evaluar.
+        known_aliases: tupla de aliases ya normalizados (lowercase, sin
+            acentos). Tipicamente alias de rooms o entity friendly_names
+            del sistema.
+
+    Returns:
+        True si encontramos al menos un alias como token literal.
+    """
+    if not text or not known_aliases:
+        return False
+    norm = _normalize(text)
+    for alias in known_aliases:
+        if not alias:
+            continue
+        if re.search(rf"\b{re.escape(alias)}\b", norm):
+            return True
+    return False
+
+
 def _has_pathological_repeat(norm: str) -> Optional[str]:
     """Detect Whisper transcript loops on non-wake tokens.
 
@@ -355,6 +414,9 @@ class WhisperWakeDetector:
         room_id: Optional[str] = None,
         follow_up_window_s: float = 4.0,
         follow_up_max_words: int = 3,
+        known_room_aliases: tuple = (),
+        tv_mode_min_rms: float = 0.04,
+        tv_mode_min_audio_s: float = 1.0,
     ):
         """
         vad_threshold=0.7 (estricto) filtra voces lejanas/TV a volumen medio.
@@ -422,6 +484,17 @@ class WhisperWakeDetector:
         # TV-mode tracking — ver `TV_MODE_*` constantes arriba.
         self._reject_timestamps: deque[float] = deque(maxlen=20)
         self._tv_mode_until: float = 0.0
+
+        # Soft-reject signals para TV-mode enforcement (decisión 2-C, sesión
+        # 2026-05-03). known_room_aliases se usa para detectar si el wake
+        # tiene mención literal de room/entity — si NO la tiene Y estamos en
+        # TV-mode con audio degradado, alta probabilidad de fantasma. Si vacía,
+        # el soft-reject queda desactivado (backward compat).
+        self._known_room_aliases = tuple(
+            _normalize(a) for a in (known_room_aliases or ()) if a
+        )
+        self._tv_mode_min_rms = tv_mode_min_rms
+        self._tv_mode_min_audio_s = tv_mode_min_audio_s
 
     def load(self):
         if self._loaded:
@@ -717,6 +790,21 @@ class WhisperWakeDetector:
                 break
         logger.info(f"WhisperWake [{dur_ms:.0f}ms→{stt_ms:.0f}ms]: {norm!r}")
 
+        # Hard reject: velocidad palabras/segundo físicamente imposible.
+        # Independiente de TV-mode — si Whisper produjo 9 palabras en 0.8s
+        # de audio, ningún humano lo dijo. Bug 2026-05-03 08:08:49.
+        if _is_implausible_speech_rate(text, dur_ms / 1000.0):
+            wps = len(text.split()) / max(dur_ms / 1000.0, 1e-6)
+            logger.warning(
+                f"Wake rejected — speech rate imposible ({wps:.1f} wps > "
+                f"{_MAX_PLAUSIBLE_WPS} wps): {text!r}"
+            )
+            self._emit_wake(
+                False, None, "rejected", text, dur_ms, stt_ms,
+                rejection_reason="implausible_speech_rate",
+            )
+            return (None, text)
+
         # Anti-hallucination: utterance con 2+ ocurrencias de wake word es
         # casi siempre Whisper alucinando (loop sobre el contexto previo) o
         # TV ruidosa, NO un user real. Un usuario dice 'Nexa' una sola vez
@@ -806,6 +894,17 @@ class WhisperWakeDetector:
                         rejection_reason="no_command_verb",
                     )
                     return (None, text)
+                phantom_reason = self._is_phantom_in_tv_mode(text, audio, dur_ms)
+                if phantom_reason:
+                    logger.warning(
+                        f"Wake rejected — TV-mode + signal degradado "
+                        f"({phantom_reason}) + sin entity/room: {text!r}"
+                    )
+                    self._emit_wake(
+                        False, w, "rejected", text, dur_ms, stt_ms,
+                        rejection_reason=f"tv_mode_phantom:{phantom_reason}",
+                    )
+                    return (None, text)
                 logger.info(f"🔥 Wake word '{w}' detectado en: {text!r}")
                 self._emit_wake(True, w, "exact", text, dur_ms, stt_ms)
                 return (w, text)
@@ -842,6 +941,18 @@ class WhisperWakeDetector:
                         False, None, "rejected", text, dur_ms, stt_ms,
                         fuzzy_ratio=best_ratio,
                         rejection_reason="no_command_verb",
+                    )
+                    return (None, text)
+                phantom_reason = self._is_phantom_in_tv_mode(text, audio, dur_ms)
+                if phantom_reason:
+                    logger.warning(
+                        f"Fuzzy wake rejected — TV-mode + signal degradado "
+                        f"({phantom_reason}) + sin entity/room: {text!r}"
+                    )
+                    self._emit_wake(
+                        False, None, "rejected", text, dur_ms, stt_ms,
+                        fuzzy_ratio=best_ratio,
+                        rejection_reason=f"tv_mode_phantom:{phantom_reason}",
                     )
                     return (None, text)
                 canonical = self.wake_words_norm[0]
@@ -904,6 +1015,39 @@ class WhisperWakeDetector:
     def _is_tv_mode_active(self) -> bool:
         """True si TV-mode está activo (rolling window)."""
         return time.time() < self._tv_mode_until
+
+    def _is_phantom_in_tv_mode(
+        self, text: str, audio: np.ndarray, dur_ms: float,
+    ) -> Optional[str]:
+        """Soft-reject combinado para wakes durante TV-mode.
+
+        Decisión 2-C (sesión 2026-05-03): bloquear sólo cuando confluyen
+        múltiples señales de baja calidad — TV-mode activo, audio corto o
+        débil, Y el texto NO menciona literal una entity/room conocida.
+        Esto evita FPs en comandos legítimos durante TV-mode (vos
+        pedís algo durante una película) sin dejar pasar fantasmas como
+        "Nexa bajá la luz al cincuenta por ciento" sin referente.
+
+        Returns:
+            String con el motivo del reject (para log/telemetry) si la
+            heurística dispara, None si el wake debe aceptarse.
+        """
+        # Backward compat: si el caller no inyectó aliases, soft-reject off.
+        if not self._known_room_aliases:
+            return None
+        if not self._is_tv_mode_active():
+            return None
+        # Si el texto SÍ menciona algo concreto, no es fantasma.
+        if _has_explicit_entity_or_room(text, self._known_room_aliases):
+            return None
+        # Señales de baja calidad — basta una para que dispare en TV-mode.
+        dur_s = dur_ms / 1000.0
+        rms = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2))) if len(audio) else 0.0
+        if dur_s < self._tv_mode_min_audio_s:
+            return f"tv_mode_short_audio({dur_s:.2f}s)"
+        if rms < self._tv_mode_min_rms:
+            return f"tv_mode_low_rms({rms:.4f})"
+        return None
 
     def _emit_wake(
         self,

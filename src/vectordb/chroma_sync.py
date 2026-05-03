@@ -17,7 +17,15 @@ logger = logging.getLogger(__name__)
 
 class ChromaSync:
     """Sincronización de Home Assistant con ChromaDB"""
-    
+
+    # Bonus aplicado a la similarity cuando metadata.area matchea prefer_area.
+    # Calibrado para que un candidato con area-match supere por margen claro a
+    # otros con base_sim hasta ~0.10 más alta, pero no rescate candidatos con
+    # base_sim mucho menor. Valor 0.15 ≈ 7.5% del rango cosine [0,2] mapeado a
+    # similarity. Ver bug 2026-05-03 (light.cuarto vs light.escritorio,
+    # diferencia de distancias 0.34 vs 0.30 → similarities 0.83 vs 0.85).
+    PREFER_AREA_BOOST: float = 0.15
+
     def __init__(
         self,
         chroma_path: str,
@@ -252,6 +260,7 @@ Solo JSON, sin explicaciones:"""
         service_filter: str | None = None,
         query_slots: dict | None = None,
         hint_entities: list[str] | None = None,
+        prefer_area: str | None = None,
     ) -> dict | None:
         """
         Buscar comando más similar con filtro de intent + merge de slots.
@@ -268,6 +277,13 @@ Solo JSON, sin explicaciones:"""
                 contexto previo del usuario (plan #2 OpenClaw). Hoy solo
                 se loguea; el consumo real (boost de score) queda para un
                 follow-up cuando haya señal empírica de mejora.
+            prefer_area: Area preferida (matchea metadata.area en Chroma).
+                Cuando viene, traemos N=10 candidatos y aplicamos un bonus
+                de +PREFER_AREA_BOOST a la similarity de los que matchean
+                el area. NO excluye candidatos sin match — solo re-puntúa.
+                Crítico para el caso 'bajá la luz al cincuenta por ciento'
+                desde el escritorio: sin esto, docs contaminados sin room
+                de otras entities ganan por similitud pura. Bug 2026-05-03.
 
         Returns:
             dict con {entity_id, domain, service, data, matched_phrase,
@@ -284,9 +300,12 @@ Solo JSON, sin explicaciones:"""
         query_embedding = self.embedder.encode(query).tolist()
 
         where = {"service": service_filter} if service_filter else None
+        # Con prefer_area traemos más candidatos para tener pool real para
+        # re-puntuar; sin él, mantenemos N=3 como antes (sin overhead).
+        n_results = 10 if prefer_area else 3
         results = self.commands.query(
             query_embeddings=[query_embedding],
-            n_results=3,
+            n_results=n_results,
             where=where,
             include=["metadatas", "distances", "documents"],
         )
@@ -297,14 +316,47 @@ Solo JSON, sin explicaciones:"""
             logger.debug(f"Vector search ({elapsed_ms:.0f}ms): No results")
             return None
 
-        best_distance = results["distances"][0][0]
+        # Re-ranking por prefer_area. El gate de threshold se aplica sobre la
+        # similarity ORIGINAL (no boosteada) — el bonus solo desempata, no
+        # rescata candidatos que están realmente lejos del query.
+        best_idx = 0
+        if prefer_area:
+            distances = results["distances"][0]
+            metadatas = results["metadatas"][0]
+            best_score = -1.0
+            for i, (dist, meta) in enumerate(zip(distances, metadatas)):
+                base_sim = 1 - (dist / 2)
+                # Threshold gate sobre similarity base — protege contra rescue
+                # artificial. Si no pasa, no es candidato para ningún ranking.
+                if base_sim < threshold:
+                    continue
+                area_bonus = (
+                    self.PREFER_AREA_BOOST
+                    if (meta or {}).get("area") == prefer_area
+                    else 0.0
+                )
+                score = base_sim + area_bonus
+                if score > best_score:
+                    best_score = score
+                    best_idx = i
+            # Si NINGÚN candidato pasa threshold, retornar None
+            base_sim_top = 1 - (results["distances"][0][best_idx] / 2)
+            if base_sim_top < threshold:
+                logger.debug(
+                    f"Vector search ({elapsed_ms:.0f}ms): no candidates above "
+                    f"threshold (top base_sim={base_sim_top:.2f}, "
+                    f"prefer_area={prefer_area!r})"
+                )
+                return None
+
+        best_distance = results["distances"][0][best_idx]
         similarity = 1 - (best_distance / 2)
 
         if similarity < threshold:
             logger.debug(f"Vector search ({elapsed_ms:.0f}ms): Below threshold (sim={similarity:.2f})")
             return None
 
-        metadata = results["metadatas"][0][0]
+        metadata = results["metadatas"][0][best_idx]
         # Merge: preset service_data (de la frase indexada) + slots reales del usuario
         preset_data = {}
         if metadata.get("service_data"):
@@ -333,7 +385,7 @@ Solo JSON, sin explicaciones:"""
             "service": metadata["service"],
             "description": description,
             "data": final_data,
-            "matched_phrase": results["documents"][0][0],
+            "matched_phrase": results["documents"][0][best_idx],
             "similarity": similarity,
             "capability": capability,
             "value_label": value_label,
