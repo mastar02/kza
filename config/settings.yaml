@@ -655,7 +655,7 @@ orchestrator:
     # tras baseline de tok/s con kza-llm-ik bajo carga real (ver Task 10
     # del plan implementable).
     compaction:
-      enabled: false
+      enabled: true
       threshold_turns: 6
       keep_recent_turns: 3
       max_summary_tokens: 200
@@ -715,8 +715,9 @@ orchestrator:
 # =============================================================================
 dashboard:
   enabled: true
-  host: "127.0.0.1"       # Default: local-only. Set to "0.0.0.0" to expose to LAN.
-  port: 8080
+  host: "0.0.0.0"       # Default: local-only. Set to "0.0.0.0" to expose to LAN.
+  port: 9500
+  observability_use_mocks: false
 
   # CORS — restrict origins in production
   cors:
