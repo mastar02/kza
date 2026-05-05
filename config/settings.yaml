@@ -1023,7 +1023,7 @@ rooms:
     display_name: "el living"
     mic_device_name: "XVF3800"
     mic_device_index: null   # HW pendiente — cambiar al indice real cuando se instale el mic
-    bt_adapter: null
+    bt_adapter: "F4:4E:FC:CF:BF:3F"   # UGREEN BT 5.3 living (instalado 2026-05-04). Resuelve a hciN al iniciar.
     ma1260_zone: 1
     output_mode: "stereo"
     default_volume: 60
@@ -1076,7 +1076,7 @@ rooms:
     # ReSpeaker Mic Array v2.0 (XMOS XVF-3000, USB 2886:0018) — única habitación con HW real (2026-04-21)
     mic_device_name: "ReSpeaker"
     mic_device_index: 9
-    bt_adapter: "hci0"
+    bt_adapter: "F4:4E:FC:21:0D:66"   # UGREEN BT 5.3 escritorio (resuelve a hciN al iniciar — antes hardcoded "hci0")
     ma1260_zone: 4
     output_mode: "mono"
     default_volume: 50
