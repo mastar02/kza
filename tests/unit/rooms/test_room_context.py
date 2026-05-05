@@ -14,6 +14,7 @@ from src.rooms.room_context import (
     create_default_rooms,
     list_bt_adapters,
     resolve_bt_adapter,
+    _list_bt_adapters_sysfs,
 )
 
 
@@ -381,14 +382,19 @@ class TestBTAdapterResolution:
             "hci0": "F4:4E:FC:21:0D:66",
             "hci1": "f4:4e:fc:cf:bf:3f",  # MAC en minúsculas
         })
-        result = list_bt_adapters(bt_root)
+        # Probamos el path sysfs directamente — la función pública hace fallback
+        # a hciconfig si sysfs viene vacío, lo cual rompe tests en hosts con BT real.
+        result = _list_bt_adapters_sysfs(bt_root)
         assert result == {
             "hci0": "F4:4E:FC:21:0D:66",
             "hci1": "F4:4E:FC:CF:BF:3F",
         }
+        # list_bt_adapters() debe devolver lo mismo cuando sysfs tiene datos
+        # (no toca el fallback porque sysfs ya respondió).
+        assert list_bt_adapters(bt_root) == result
 
-    def test_list_bt_adapters_missing_root_returns_empty(self, tmp_path):
-        assert list_bt_adapters(str(tmp_path / "no-existe")) == {}
+    def test_list_bt_adapters_sysfs_missing_root_returns_empty(self, tmp_path):
+        assert _list_bt_adapters_sysfs(str(tmp_path / "no-existe")) == {}
 
     def test_resolve_mac_to_hci(self, tmp_path):
         bt_root = self._make_sysfs(tmp_path, {
