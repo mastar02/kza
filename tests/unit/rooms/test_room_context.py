@@ -12,6 +12,8 @@ from src.rooms.room_context import (
     RoomContextManager,
     ContextSource,
     create_default_rooms,
+    list_bt_adapters,
+    resolve_bt_adapter,
 )
 
 
@@ -361,6 +363,57 @@ class TestSummary:
 # =========================================================================
 # Tests de MA1260 fields
 # =========================================================================
+
+class TestBTAdapterResolution:
+    """Resolución MAC → hciN para que la asignación BT sea inmune al orden USB."""
+
+    @staticmethod
+    def _make_sysfs(tmp_path, mapping):
+        """Crear estructura fake /sys/class/bluetooth/{hciN}/address."""
+        for hci, mac in mapping.items():
+            d = tmp_path / hci
+            d.mkdir()
+            (d / "address").write_text(mac + "\n")
+        return str(tmp_path)
+
+    def test_list_bt_adapters_reads_sysfs(self, tmp_path):
+        bt_root = self._make_sysfs(tmp_path, {
+            "hci0": "F4:4E:FC:21:0D:66",
+            "hci1": "f4:4e:fc:cf:bf:3f",  # MAC en minúsculas
+        })
+        result = list_bt_adapters(bt_root)
+        assert result == {
+            "hci0": "F4:4E:FC:21:0D:66",
+            "hci1": "F4:4E:FC:CF:BF:3F",
+        }
+
+    def test_list_bt_adapters_missing_root_returns_empty(self, tmp_path):
+        assert list_bt_adapters(str(tmp_path / "no-existe")) == {}
+
+    def test_resolve_mac_to_hci(self, tmp_path):
+        bt_root = self._make_sysfs(tmp_path, {
+            "hci0": "F4:4E:FC:21:0D:66",
+            "hci1": "F4:4E:FC:CF:BF:3F",
+        })
+        assert resolve_bt_adapter("F4:4E:FC:CF:BF:3F", bt_root) == "hci1"
+        assert resolve_bt_adapter("f4:4e:fc:21:0d:66", bt_root) == "hci0"
+
+    def test_resolve_mac_not_found_returns_none(self, tmp_path):
+        bt_root = self._make_sysfs(tmp_path, {"hci0": "AA:AA:AA:AA:AA:AA"})
+        assert resolve_bt_adapter("BB:BB:BB:BB:BB:BB", bt_root) is None
+
+    def test_resolve_hci_literal_passthrough(self, tmp_path):
+        # No hace falta sysfs cuando ya es hciN
+        assert resolve_bt_adapter("hci0", str(tmp_path)) == "hci0"
+        assert resolve_bt_adapter("hci42", str(tmp_path)) == "hci42"
+
+    def test_resolve_none_or_empty(self):
+        assert resolve_bt_adapter(None) is None
+        assert resolve_bt_adapter("") is None
+
+    def test_resolve_garbage_returns_none(self, tmp_path):
+        assert resolve_bt_adapter("not-a-mac", str(tmp_path)) is None
+
 
 class TestMA1260Fields:
     def test_room_config_has_ma1260_fields(self):

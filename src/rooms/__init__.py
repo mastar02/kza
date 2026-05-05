@@ -11,6 +11,8 @@ from src.rooms.room_context import (
     create_default_rooms,
     auto_detect_microphones,
     auto_detect_bt_adapters,
+    list_bt_adapters,
+    resolve_bt_adapter,
 )
 
 __all__ = [
@@ -21,4 +23,6 @@ __all__ = [
     "create_default_rooms",
     "auto_detect_microphones",
     "auto_detect_bt_adapters",
+    "list_bt_adapters",
+    "resolve_bt_adapter",
 ]

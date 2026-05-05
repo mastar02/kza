@@ -16,6 +16,7 @@ El módulo resuelve automáticamente:
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -43,7 +44,8 @@ class RoomConfig:
     # Hardware USB
     mic_device_index: int | None = None      # sounddevice index del XVF3800
     mic_device_name: str | None = None       # Nombre USB para auto-detect
-    bt_adapter: str | None = None            # hci0, hci1, etc.
+    bt_adapter: str | None = None            # MAC del adaptador BT (estable). Acepta también "hciN" como override explícito.
+    bt_hci: str | None = None                # hciN resuelto al iniciar (no setear manualmente; lo llena el manager).
 
     # MA1260 output
     ma1260_zone: int | None = None          # MA1260 zone number (1-6)
@@ -173,17 +175,22 @@ class RoomContextManager:
         logger.info("RoomContextManager inicializado")
 
     def add_room(self, config: RoomConfig):
-        """Agregar una habitación al sistema"""
+        """Agregar una habitación al sistema.
+
+        Si bt_adapter es una MAC, intenta resolverla a hciN leyendo sysfs.
+        El hciN resuelto queda en config.bt_hci para que el BLE scanner lo use.
+        """
         self._rooms[config.room_id] = config
 
-        # Mapeos
         if config.mic_device_index is not None:
             self._mic_to_room[config.mic_device_index] = config.room_id
 
-        if config.bt_adapter:
-            self._bt_to_room[config.bt_adapter] = config.room_id
+        if config.bt_adapter and not config.bt_hci:
+            config.bt_hci = resolve_bt_adapter(config.bt_adapter)
 
-        # Aliases
+        if config.bt_hci:
+            self._bt_to_room[config.bt_hci] = config.room_id
+
         for alias in config.aliases:
             self._alias_to_room[alias.lower()] = config.room_id
         self._alias_to_room[config.room_id.lower()] = config.room_id
@@ -191,7 +198,7 @@ class RoomContextManager:
 
         logger.info(
             f"Habitación agregada: {config.name} "
-            f"(mic: {config.mic_device_index}, bt: {config.bt_adapter})"
+            f"(mic: {config.mic_device_index}, bt: {config.bt_adapter} → {config.bt_hci})"
         )
 
     def resolve_room(
@@ -514,9 +521,9 @@ def create_default_rooms() -> list[RoomConfig]:
     - 1x Dongle BT 5.0 (USB sobre extensor RJ45)
     - Ambos llegan al servidor como dispositivos USB
 
-    Los device_index y hci adapters se deben ajustar según
-    el orden en que Linux detecta los USB al bootear.
-    Ejecutar `python -m src.rooms.room_context --detect` para auto-detectar.
+    bt_adapter es la MAC del dongle BT de cada habitación (estable por hardware).
+    El sistema resuelve MAC → hciN al iniciar leyendo /sys/class/bluetooth/.
+    Ejecutar `python -m src.rooms.room_context --detect` para listar MACs disponibles.
     """
     rooms = [
         RoomConfig(
@@ -525,7 +532,7 @@ def create_default_rooms() -> list[RoomConfig]:
             display_name="el living",
             mic_device_index=None,      # Auto-detect al iniciar
             mic_device_name="XVF3800",  # Buscar por nombre USB
-            bt_adapter="hci0",
+            bt_adapter="F4:4E:FC:CF:BF:3F",  # UGREEN BT 5.3 living (instalado 2026-05-04)
             default_light="light.living",
             default_climate="climate.living_ac",
             default_cover="cover.living_persiana",
@@ -541,7 +548,7 @@ def create_default_rooms() -> list[RoomConfig]:
             display_name="el escritorio",
             mic_device_index=None,
             mic_device_name="XVF3800",
-            bt_adapter="hci1",
+            bt_adapter="F4:4E:FC:21:0D:66",  # UGREEN BT 5.3 escritorio
             default_light="light.escritorio",
             default_climate="climate.escritorio_ac",
             default_media_player="media_player.escritorio_monitor",
@@ -556,7 +563,7 @@ def create_default_rooms() -> list[RoomConfig]:
             display_name="el hall",
             mic_device_index=None,
             mic_device_name="XVF3800",
-            bt_adapter="hci2",
+            bt_adapter=None,  # TODO: setear MAC cuando se instale el dongle BT
             default_light="light.hall",
             motion_sensor="binary_sensor.motion_hall",
             aliases=["hall", "pasillo", "entrada", "el hall"],
@@ -568,7 +575,7 @@ def create_default_rooms() -> list[RoomConfig]:
             display_name="la cocina",
             mic_device_index=None,
             mic_device_name="XVF3800",
-            bt_adapter="hci3",
+            bt_adapter=None,  # TODO: setear MAC cuando se instale el dongle BT
             default_light="light.cocina",
             default_fan="fan.cocina_extractor",
             motion_sensor="binary_sensor.motion_cocina",
@@ -583,7 +590,7 @@ def create_default_rooms() -> list[RoomConfig]:
             display_name="el baño",
             mic_device_index=None,
             mic_device_name="XVF3800",
-            bt_adapter="hci4",
+            bt_adapter=None,  # TODO: setear MAC cuando se instale el dongle BT
             default_light="light.bano",
             default_fan="fan.bano_extractor",
             motion_sensor="binary_sensor.motion_bano",
@@ -652,32 +659,140 @@ async def auto_detect_microphones(rooms: list[RoomConfig]) -> list[RoomConfig]:
         return rooms
 
 
+_MAC_RE = re.compile(r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
+
+
+def _looks_like_mac(value: str) -> bool:
+    return bool(_MAC_RE.match(value))
+
+
+def _list_bt_adapters_sysfs(bt_root: str) -> dict[str, str]:
+    """Leer MACs desde /sys/class/bluetooth/hciN/address (kernels que lo exponen)."""
+    import os
+
+    if not os.path.exists(bt_root):
+        return {}
+    result: dict[str, str] = {}
+    for entry in sorted(os.listdir(bt_root)):
+        if not entry.startswith("hci"):
+            continue
+        addr_path = os.path.join(bt_root, entry, "address")
+        if not os.path.exists(addr_path):
+            continue
+        with open(addr_path) as f:
+            mac = f.read().strip().upper()
+        if mac:
+            result[entry] = mac
+    return result
+
+
+def _list_bt_adapters_hciconfig() -> dict[str, str]:
+    """Fallback: parsear `hciconfig` cuando sysfs no expone address (BlueZ moderno)."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["hciconfig"], capture_output=True, text=True, timeout=5, check=False
+        ).stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {}
+
+    result: dict[str, str] = {}
+    current_hci: str | None = None
+    for line in out.splitlines():
+        m = re.match(r"^(hci\d+):", line)
+        if m:
+            current_hci = m.group(1)
+            continue
+        if current_hci:
+            mac_match = re.search(r"BD Address:\s*([0-9A-Fa-f:]{17})", line)
+            if mac_match:
+                result[current_hci] = mac_match.group(1).upper()
+                current_hci = None
+    return result
+
+
+def list_bt_adapters(bt_root: str = "/sys/class/bluetooth") -> dict[str, str]:
+    """
+    Listar adaptadores BT del sistema como mapping hciN → MAC (uppercase).
+
+    Intenta primero sysfs (`/sys/class/bluetooth/hciN/address`), después fallback
+    a `hciconfig`. Tests inyectan un `bt_root` con archivos `address` simulados.
+
+    Returns:
+        {"hci0": "F4:4E:FC:21:0D:66", ...}. Vacío si no hay forma de leerlo.
+    """
+    result = _list_bt_adapters_sysfs(bt_root)
+    if result:
+        return result
+    return _list_bt_adapters_hciconfig()
+
+
+def resolve_bt_adapter(
+    value: str | None,
+    bt_root: str = "/sys/class/bluetooth"
+) -> str | None:
+    """
+    Resolver una referencia de adaptador BT a un nombre hciN.
+
+    Acepta:
+    - MAC ("F4:4E:FC:21:0D:66"): busca en sysfs y devuelve el hciN correspondiente.
+    - "hciN" literal: se devuelve tal cual (override explícito).
+    - None / vacío: devuelve None.
+
+    Si la MAC no matchea ningún adaptador presente, devuelve None y loguea warning
+    (el caller decide si seguir o abortar).
+    """
+    if not value:
+        return None
+
+    if value.startswith("hci"):
+        return value
+
+    if _looks_like_mac(value):
+        target = value.upper()
+        adapters = list_bt_adapters(bt_root)
+        for hci, mac in adapters.items():
+            if mac == target:
+                return hci
+        logger.warning(
+            f"BT adapter MAC {value} no encontrada en {bt_root} "
+            f"(disponibles: {adapters or 'ninguno'})"
+        )
+        return None
+
+    logger.warning(f"bt_adapter '{value}' no es ni MAC ni hciN — ignorado")
+    return None
+
+
 async def auto_detect_bt_adapters(rooms: list[RoomConfig]) -> list[RoomConfig]:
     """
     Auto-detectar adaptadores Bluetooth del sistema.
 
-    Busca /sys/class/bluetooth/hciN y asigna en orden.
+    Para rooms sin bt_adapter asignado, asigna la MAC de un hciN libre (en orden).
+    Después resuelve bt_hci para todos los rooms con bt_adapter definido.
     """
-    import os
-
-    bt_path = "/sys/class/bluetooth"
-    if not os.path.exists(bt_path):
-        logger.warning("No se encontró /sys/class/bluetooth")
+    adapters = list_bt_adapters()
+    if not adapters:
+        logger.warning("No se encontraron adaptadores Bluetooth en /sys/class/bluetooth")
         return rooms
 
-    adapters = sorted([
-        d for d in os.listdir(bt_path)
-        if d.startswith("hci")
-    ])
+    used_macs = {r.bt_adapter.upper() for r in rooms if r.bt_adapter and _looks_like_mac(r.bt_adapter)}
+    free = [(hci, mac) for hci, mac in adapters.items() if mac not in used_macs]
 
     rooms_needing_bt = [r for r in rooms if r.bt_adapter is None]
+    for room, (hci, mac) in zip(rooms_needing_bt, free):
+        room.bt_adapter = mac
+        room.bt_hci = hci
+        logger.info(f"Auto-detect: {room.name} → {hci} ({mac})")
 
-    for i, room in enumerate(rooms_needing_bt):
-        if i < len(adapters):
-            room.bt_adapter = adapters[i]
-            logger.info(f"Auto-detect: {room.name} → BT adapter {adapters[i]}")
-        else:
-            logger.warning(f"No hay BT adapter disponible para {room.name}")
+    leftover = len(rooms_needing_bt) - len(free)
+    if leftover > 0:
+        logger.warning(f"{leftover} habitaciones sin BT adapter disponible")
+
+    for room in rooms:
+        if room.bt_adapter and not room.bt_hci:
+            room.bt_hci = resolve_bt_adapter(room.bt_adapter)
 
     return rooms
 
@@ -711,30 +826,30 @@ if __name__ == "__main__":
 
         # Detectar BT adapters
         print("\n--- Adaptadores Bluetooth detectados ---")
-        import os
-        bt_path = "/sys/class/bluetooth"
-        if os.path.exists(bt_path):
-            for adapter in sorted(os.listdir(bt_path)):
-                if adapter.startswith("hci"):
-                    addr_path = os.path.join(bt_path, adapter, "address")
-                    addr = "unknown"
-                    if os.path.exists(addr_path):
-                        with open(addr_path) as f:
-                            addr = f.read().strip()
-                    print(f"  {adapter}: {addr}")
+        adapters = list_bt_adapters()
+        if adapters:
+            for hci, mac in adapters.items():
+                print(f"  {hci}: {mac}")
         else:
             print("  ⚠ No se encontraron adaptadores Bluetooth")
 
-        # Generar config sugerida
-        print("\n--- Configuración sugerida ---")
+        # Validar mapeo MAC → hci de la config actual
+        print("\n--- Validación config actual ---")
         rooms = create_default_rooms()
         rooms = await auto_detect_microphones(rooms)
         rooms = await auto_detect_bt_adapters(rooms)
 
         for room in rooms:
+            mic = room.mic_device_index if room.mic_device_index is not None else "—"
+            mac = room.bt_adapter or "—"
+            hci = room.bt_hci or "—"
+            status = "OK" if (room.bt_adapter and room.bt_hci) else (
+                "sin BT" if not room.bt_adapter else "MAC no encontrada"
+            )
             print(f"\n  {room.name}:")
-            print(f"    mic_device_index: {room.mic_device_index}")
-            print(f"    bt_adapter: {room.bt_adapter}")
+            print(f"    mic_device_index: {mic}")
+            print(f"    bt_adapter (MAC): {mac}")
+            print(f"    bt_hci (resuelto): {hci}  [{status}]")
 
     if "--detect" in sys.argv:
         asyncio.run(detect())
