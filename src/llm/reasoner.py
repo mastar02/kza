@@ -675,11 +675,17 @@ REGLAS:
         max_tokens: int = 256,
         temperature: float = 0.3,
         extra_body: dict | None = None,
+        stop: list[str] | None = None,
     ) -> list[str]:
         """Generar respuestas en batch (secuencial por limitación de API OpenAI).
 
         extra_body: dict opcional para parámetros vLLM-specific (ej. guided_json,
         guided_choice, guided_regex). Se reenvía tal cual al endpoint OpenAI-compat.
+
+        stop: secuencias que cortan la generación. Sin esto, modelos chat-tuned
+        invocados con /completions tienden a continuar inventando vueltas del
+        prompt ("Texto: ...\nCategoría: ..."), lo que ensucia el output. Medido
+        +18 puntos accuracy en classify (benchmarks/router/REPORT.md).
         """
         if self._client is None:
             self.load()
@@ -687,6 +693,8 @@ REGLAS:
         start = time.perf_counter()
         results: list[str] = []
         kwargs = {"extra_body": extra_body} if extra_body else {}
+        if stop:
+            kwargs["stop"] = stop
         for prompt in prompts:
             try:
                 resp = self._client.completions.create(
@@ -715,6 +723,11 @@ REGLAS:
         """No-op en modo HTTP."""
         pass
 
+    # Patrones que un modelo chat-tuned tiende a regenerar tras cumplir la
+    # tarea. Sin estos stops el output se contamina con vueltas inventadas
+    # del prompt. Comparten estructura, los listo una sola vez.
+    _ROUTER_STOP = ["\n\n", "Texto:", "Pregunta:", "Consulta:", "Categoría:"]
+
     def classify(self, text: str, options: list[str]) -> str:
         """Clasificar texto en una de las opciones (usa prefix cache)"""
         options_str = ", ".join(options)
@@ -724,7 +737,7 @@ REGLAS:
 Texto: {text}
 Categoría:"""
 
-        results = self.generate([prompt], max_tokens=20)
+        results = self.generate([prompt], max_tokens=20, stop=self._ROUTER_STOP)
         return results[0].strip()
 
     def should_use_deep_reasoning(self, text: str) -> bool:
@@ -733,7 +746,7 @@ Categoría:"""
 Pregunta: {text}
 Respuesta:"""
 
-        results = self.generate([prompt], max_tokens=10)
+        results = self.generate([prompt], max_tokens=10, stop=self._ROUTER_STOP)
         return "COMPLEJO" in results[0].upper()
 
     def get_cache_stats(self) -> dict:
@@ -776,7 +789,15 @@ Respuesta:"""
 {context_line}
 Si requiere razonamiento complejo responde [DEEP], si no responde directamente:"""
 
-        results = self.generate([prompt], max_tokens=max_tokens, temperature=0.7)
+        # Acá NO usamos los stops de classify/reasoning porque la respuesta
+        # libre puede contener "Pregunta:" o cambios de línea legítimos.
+        # Solo cortamos en patrones que indican que el modelo regenera prompt.
+        results = self.generate(
+            [prompt],
+            max_tokens=max_tokens,
+            temperature=0.7,
+            stop=["\n\nConsulta:", "\n\nTexto:"],
+        )
         response = results[0].strip()
 
         if response.startswith("[DEEP]") or "[DEEP]" in response[:20]:
