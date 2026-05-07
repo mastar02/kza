@@ -1,0 +1,239 @@
+# Golden set para benchmark del router KZA.
+#
+# Cada item se evalúa contra 3 tareas reales del FastRouter
+# (src/llm/reasoner.py):
+#   1. classify(text, classify_options) -> debe devolver classify_expected
+#   2. should_use_deep_reasoning(text)  -> SIMPLE | COMPLEJO == reasoning_expected
+#   3. classify_and_respond(text)       -> [DEEP] o respuesta corta;
+#                                          respond_should_be_deep es true cuando
+#                                          el output esperado es [DEEP]
+#
+# Pre-cargo 5 ejemplos como referencia. Agregá 15-25 más con utterances reales
+# de tu casa. El benchmark vale lo que vale este archivo.
+
+# Categorías reales que usa tu router. Si en producción usás más/otras, cambialas.
+default_classify_options:
+  - domotica       # luces, clima, persianas, alarma
+  - musica         # spotify, volumen, zonas
+  - pregunta       # info corta (clima, hora, estado)
+  - conversacion   # charla casual / razonamiento
+
+cases:
+  - id: dom-001
+    utterance: "prendé la luz del living"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: dom-002
+    utterance: "subí la temperatura a 22 grados"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: mus-001
+    utterance: "poné jazz en la cocina"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: musica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: prg-001
+    utterance: "qué hora es"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: pregunta
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: cnv-001
+    # Corrección post-bench: 6/6 modelos dicen "pregunta". Una explicación de
+    # conocimiento es semánticamente más pregunta que conversación casual.
+    utterance: "explicame cómo funciona la fotosíntesis para un chico de 8 años"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: pregunta
+    reasoning_expected: COMPLEJO
+    respond_should_be_deep: true
+
+  # ---- Domótica simple (sin wake word, como la recibe el router en prod) ----
+
+  - id: dom-003
+    utterance: "apagá las luces de afuera"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: dom-004
+    utterance: "bajá la persiana del cuarto"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: dom-005
+    utterance: "prendé el aire del living"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: dom-006
+    utterance: "abrí la puerta del garage"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: dom-007
+    utterance: "poné la luz del comedor al 30 por ciento"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  # ---- Música ----
+
+  - id: mus-002
+    utterance: "subí el volumen"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: musica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: mus-003
+    utterance: "pasá a la próxima"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: musica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  # ---- Preguntas SIMPLE (estado / clima / hora — no deben ir a [DEEP]) ----
+
+  - id: prg-002
+    utterance: "qué tiempo hace"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: pregunta
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: prg-003
+    # Corrección: 6/6 dicen "domotica". Sin "?" explícito y mencionando entidad
+    # HA, es comando de chequeo de estado, no pregunta general.
+    utterance: "está prendida la luz del cuarto"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: prg-004
+    utterance: "cuánto está la temperatura adentro"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: pregunta
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  # ---- Conversación trivial (chistes, charla corta) — el usuario las considera
+  # ---- SIMPLE: el router chico debería poder responderlas, no escalar a [DEEP] ----
+
+  - id: cnv-002
+    utterance: "contame un chiste"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: conversacion
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: cnv-003
+    utterance: "cómo te llamás"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: conversacion
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: cnv-004
+    utterance: "decime una frase motivadora corta"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: conversacion
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  # ---- COMPLEJO real (sí debe ir a [DEEP] / 30B) ----
+  # Decisión del usuario: agendar alarmas con parsing de fechas relativas → deep.
+
+  - id: cmp-001
+    utterance: "agendame una alarma para mañana a las 7 de la mañana"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: COMPLEJO
+    respond_should_be_deep: true
+
+  - id: cmp-002
+    utterance: "armá una rutina de mañana para los chicos del colegio"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: conversacion
+    reasoning_expected: COMPLEJO
+    respond_should_be_deep: true
+
+  - id: cmp-003
+    # Corrección: 4/6 modelos dicen "pregunta" (es un pedido de ayuda).
+    utterance: "ayudame a redactar un mail breve al colegio avisando que falta hoy"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: pregunta
+    reasoning_expected: COMPLEJO
+    respond_should_be_deep: true
+
+  - id: cmp-004
+    utterance: "explicame qué diferencia hay entre un motor diésel y uno nafta"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: pregunta
+    reasoning_expected: COMPLEJO
+    respond_should_be_deep: true
+
+  # ---- Casos borde: rompen modelos chicos hoy ----
+
+  - id: bdr-001  # wake word artifact que el STT no limpió
+    utterance: "nexa prendé la luz del living"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: bdr-002  # negación — modelo chico tiende a ejecutar la acción positiva
+    utterance: "no prendas las luces de afuera"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: bdr-003  # multi-paso (dos acciones en una utterance) → mejor a [DEEP]
+    utterance: "apagá todo y poné música suave"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: COMPLEJO
+    respond_should_be_deep: true
+
+  - id: bdr-004
+    # Corrección: 6/6 interpretan como pedido implícito de calefacción.
+    # En KZA real esto debería disparar acción de domótica.
+    utterance: "hace frío"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: bdr-005  # nombre propio de playlist / spanglish suave
+    utterance: "poné la playlist de cumbia 2000 en el comedor"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: musica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
+
+  - id: bdr-006
+    # Corrección: 6/6 dicen "domotica". Sin "?" suena a chequeo de estado
+    # del hogar (puerta/ventanas/persianas).
+    utterance: "todo cerrado abajo"
+    classify_options: [domotica, musica, pregunta, conversacion]
+    classify_expected: domotica
+    reasoning_expected: SIMPLE
+    respond_should_be_deep: false
