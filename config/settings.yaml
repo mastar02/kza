@@ -228,13 +228,17 @@ nlu:
     enabled: true
     max_history: 5            # cuántos comandos previos se mandan como contexto
     history_ttl_s: 120.0      # comandos más viejos no se mandan (relevancia limitada)
-    timeout_s: 1.5            # cap de latencia del LLM call
+    # 2026-05-08: 1.5 → 2.5. El 7B en :8101 corre con -ngl 20 (parcial GPU)
+    # post-reorg, latencia warm ~250ms pero cold cache + carga concurrente
+    # con el slow path lo lleva a 1.5-2s. Comando real perdido por 1ms.
+    timeout_s: 2.5
     max_tokens: 200           # cap del JSON response
     temperature: 0.0          # determinismo total para clasificación
 
   fast_path:
     enabled: true             # activado tras integración 2026-04-28 (regex + LLM gate)
-    gate_timeout_s: 0.5       # cap de latencia del LLM gate binario
+    # 2026-05-08: 0.5 → 0.8. Mismo motivo que llm_router.timeout_s.
+    gate_timeout_s: 0.8
     gate_max_tokens: 20       # output corto del gate (~5-10 tokens)
 
 # LLM para Razonamiento — 72B Q8_0 siempre caliente vía kza-72b.service (Q1=A)
