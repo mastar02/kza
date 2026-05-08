@@ -17,38 +17,40 @@ logger = logging.getLogger(__name__)
 def _resolve_api_key(base_url: str) -> str:
     """Pick the bearer token env var matching the endpoint's port.
 
-    :8100 → vLLM (VLLM_API_KEY). :8200 → llama-server (LLAMA_API_KEY).
-    Unknown/unparseable port → tries VLLM_API_KEY then LLAMA_API_KEY (covers
-    proxied deploys without an explicit port). When no env var is set at all,
-    falls back to "not-used" so local-dev against unauthenticated endpoints
-    keeps working — but logs a warning so a misconfigured prod deploy (missing
-    EnvironmentFile, wrong systemd User=) is visible at startup instead of
-    surfacing later as an opaque 401.
+    :8100 → vLLM (VLLM_API_KEY, legacy/disabled).
+    :8101 → ik_llama fast (LLAMA_API_KEY, shared bearer post 2026-05-07 reorg).
+    :8200 → ik_llama slow GLM-Air (LLAMA_API_KEY).
+    Unknown port → tries LLAMA_API_KEY then VLLM_API_KEY. When no env var is
+    set at all falls back to "not-used" so local-dev against unauthenticated
+    endpoints keeps working — but logs a warning so a misconfigured prod
+    deploy (missing EnvironmentFile, wrong systemd User=) is visible at
+    startup instead of surfacing later as an opaque 401.
     """
     port = urlparse(base_url).port
     if port == 8100:
         key = os.getenv("VLLM_API_KEY")
         if key:
             return key
-    elif port == 8200:
+        env_name = "VLLM_API_KEY"
+    elif port in (8101, 8200):
         key = os.getenv("LLAMA_API_KEY")
         if key:
             return key
+        env_name = "LLAMA_API_KEY"
     else:
-        key = os.getenv("VLLM_API_KEY") or os.getenv("LLAMA_API_KEY")
+        key = os.getenv("LLAMA_API_KEY") or os.getenv("VLLM_API_KEY")
         if key:
             return key
         logger.warning(
             "API key resolution: could not determine endpoint kind from base_url=%r "
-            "(port=%s) and no VLLM_API_KEY/LLAMA_API_KEY in env; using 'not-used' sentinel",
+            "(port=%s) and no LLAMA_API_KEY/VLLM_API_KEY in env; using 'not-used' sentinel",
             base_url, port,
         )
         return "not-used"
     logger.warning(
         "API key resolution: %s env var not set for %s; using 'not-used' sentinel — "
         "requests will fail if endpoint enforces auth",
-        "VLLM_API_KEY" if port == 8100 else "LLAMA_API_KEY",
-        base_url,
+        env_name, base_url,
     )
     return "not-used"
 
@@ -570,11 +572,12 @@ class HttpReasoner:
 
 class FastRouter:
     """
-    Router rápido — cliente HTTP al vLLM compartido (:8100, usuario infra).
+    Router rápido — cliente HTTP al fast LLM (:8101, kza-llm-fast.service,
+    Qwen2.5-7B-Instruct Q4_K_M en ik_llama.cpp).
 
-    Reemplaza la carga local de Qwen 7B por consumo HTTP del servicio compartido.
-    Interfaz idéntica a la versión local (`FastRouterLocal`) para drop-in.
-    Ver Notion KZA página 8 §4 — catálogo de modelos compartidos.
+    Post 2026-05-07: el vLLM 7B AWQ de :8100 fue eliminado y reemplazado por
+    el GGUF Q4_K_M en :8101 (mismo modelo, calidad equivalente, mismo bearer
+    LLAMA_API_KEY que :8200).
     """
 
     SYSTEM_PROMPT_PREFIX = """Eres KZA, un asistente de hogar inteligente ultra-rápido.
@@ -589,8 +592,8 @@ REGLAS:
 
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:8100/v1",
-        model: str = "qwen2.5-7b-awq",
+        base_url: str = "http://127.0.0.1:8101/v1",
+        model: str = "qwen2.5-7b-instruct",
         timeout: float = 30.0,
         # Backward-compat: ignorar kwargs de la versión local (device, gpu_*, lora_*).
         **_ignored,

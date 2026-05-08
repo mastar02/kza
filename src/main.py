@@ -301,11 +301,11 @@ async def main():
     fast_router = None
     if router_config.get("enabled", True):
         fast_router = FastRouter(
-            base_url=router_config.get("base_url", "http://127.0.0.1:8100/v1"),
-            model=router_config.get("model", "qwen2.5-7b-awq"),
+            base_url=router_config.get("base_url", "http://127.0.0.1:8101/v1"),
+            model=router_config.get("model", "qwen2.5-7b-instruct"),
             timeout=router_config.get("timeout", 30),
         )
-        logger.info(f"Fast router (HTTP) → {router_config.get('base_url', 'http://127.0.0.1:8100/v1')}")
+        logger.info(f"Fast router (HTTP) → {router_config.get('base_url', 'http://127.0.0.1:8101/v1')}")
 
     # LLMRouter — candidate chain con cooldown y failover (plan #1 OpenClaw 2026-04-28).
     # Envuelve fast_router y llm (HttpReasoner 72B) para rotar automáticamente
@@ -431,21 +431,25 @@ async def main():
     # Fuente de verdad: settings.yaml § emotion. Comparte GPU con speaker_id por
     # diseño (ambos consumen el mismo audio post-STT). Si difieren, alertamos.
     emotion_config = config.get("emotion", {})
-    if "model" not in emotion_config or "device" not in emotion_config:
-        raise ValueError(
-            "settings.yaml debe declarar emotion.model y emotion.device"
+    if not emotion_config.get("enabled", True):
+        emotion_detector = None
+        logger.info("Emotion detector deshabilitado por config (emotion.enabled=false)")
+    else:
+        if "model" not in emotion_config or "device" not in emotion_config:
+            raise ValueError(
+                "settings.yaml debe declarar emotion.model y emotion.device"
+            )
+        if speaker_config.get("enabled", True) and emotion_config["device"] != speaker_config.get("device"):
+            logger.warning(
+                f"emotion.device ({emotion_config['device']}) != speaker_id.device "
+                f"({speaker_config.get('device')}); el diseño asume la misma GPU."
+            )
+        emotion_detector = EmotionDetector(
+            model_name=emotion_config["model"],
+            device=emotion_config["device"],
+            sample_rate=emotion_config.get("sample_rate", 16000),
         )
-    if speaker_config.get("enabled", True) and emotion_config["device"] != speaker_config.get("device"):
-        logger.warning(
-            f"emotion.device ({emotion_config['device']}) != speaker_id.device "
-            f"({speaker_config.get('device')}); el diseño asume la misma GPU."
-        )
-    emotion_detector = EmotionDetector(
-        model_name=emotion_config["model"],
-        device=emotion_config["device"],
-        sample_rate=emotion_config.get("sample_rate", 16000),
-    )
-    logger.info("Emotion detector habilitado")
+        logger.info("Emotion detector habilitado")
 
     # Voice Pipeline config
     wake_config = config.get("wake_word", {})
