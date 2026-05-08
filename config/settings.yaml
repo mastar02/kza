@@ -960,7 +960,9 @@ rooms:
     # Aliases: Whisper produce variantes cuando oye "nexa" (alexa/nexia/nexta).
     # Eliminados aliases cortos/comunes (nesa/neza/next/necks) que causaban
     # muchos FPs fuzzy con palabras de TV como "esa"/"mesa"/"conseguí".
-    words: ["nexa", "alexa", "nexia", "nexta", "kaza"]
+    # 2026-05-08: agregadas neska/nexca (variantes con consonante extra, no
+    # son palabras comunes en español rioplatense → riesgo bajo de FP).
+    words: ["nexa", "alexa", "nexia", "nexta", "kaza", "neska", "nexca"]
     model: "hey_jarvis"            # usado cuando engine=openwakeword
     threshold: 0.35                # usado cuando engine=openwakeword
     # Whisper engine params (opcionales, con defaults razonables)
@@ -983,7 +985,10 @@ rooms:
     # /neksa/ (nexa) vs /nekst/ (next, match ✓) vs /nena/ (nena, reject ✓).
     # El cluster /ks/ de "nexa" es raro en español común → buen discriminador.
     # 0.0 desactiva fuzzy; 1.0 = solo exact. 0.75 balancea recall vs FP.
-    fuzzy_threshold: 0.85
+    # 2026-05-08: 0.85 → 0.72. A 0.85 el recall caía con pronunciación no
+    # estándar (ej: rioplatense con "x" suavizada). A 0.72 capta variantes
+    # fonéticas reales sin disparar con palabras de TV (validar FPs por logs).
+    fuzzy_threshold: 0.72
     fuzzy_start_words: 3
     # beam_size / initial_prompt override para el wake detector. Si null,
     # hereda del stt top-level. beam_size=5 + initial_prompt con "Nexa"
