@@ -135,7 +135,11 @@ wake_word:
 stt:
   model: "./models/whisper-v3-turbo"  # faster-whisper-large-v3-turbo-ct2 (~800MB, 8× más rápido que large-v3)
   device: "cuda:1"
-  compute_type: "float16"  # ~800MB VRAM
+  # 2026-05-07: float16 → int8_float16. FP16 + workspaces cuBLAS de
+  # ctranslate2 superaban 4.8 GB libres en GPU1 (compartida con fast 7B
+  # :8101). int8_float16 mantiene la calidad de transcripción y baja
+  # ocupación a ~800-1100 MiB.
+  compute_type: "int8_float16"
   # Fallback a large-v3 si hace falta máxima precisión:
   # model: "./models/whisper-ct2"
   language: "es"
