@@ -1100,8 +1100,12 @@ rooms:
     name: "Escritorio"
     display_name: "el escritorio"
     # ReSpeaker Mic Array v2.0 (XMOS XVF-3000, USB 2886:0018) — única habitación con HW real (2026-04-21)
+    # 2026-05-07: index 9 → 4 tras re-enumerate USB.
+    # Device 9 era ALC1220 onboard (default 44.1kHz, rechazaba 16kHz). Device 4
+    # es el ReSpeaker real (hw:1,0, 6 ch, sr nativa 16000 Hz). Verificar con:
+    #   /home/kza/app/.venv/bin/python -c "import sounddevice; print(sounddevice.query_devices())"
     mic_device_name: "ReSpeaker"
-    mic_device_index: 9
+    mic_device_index: 4
     bt_adapter: "F4:4E:FC:21:0D:66"   # UGREEN BT 5.3 escritorio (resuelve a hciN al iniciar — antes hardcoded "hci0")
     ma1260_zone: 4
     output_mode: "mono"
