@@ -157,12 +157,12 @@ def create_router_provider(config: dict) -> RouterProvider:
         logger.info("Router provider: remote (%s)", provider_cfg.get("url"))
         return RemoteRouterProvider(_remote_config(provider_cfg))
 
-    logger.info("Router provider: HTTP (vLLM compartido)")
+    logger.info("Router provider: HTTP (kza-llm-fast :8101)")
     from src.llm.reasoner import FastRouter
 
     router_cfg = config.get("router", {})
     return FastRouter(
-        base_url=router_cfg.get("base_url", "http://127.0.0.1:8100/v1"),
-        model=router_cfg.get("model", "qwen2.5-7b-awq"),
+        base_url=router_cfg.get("base_url", "http://127.0.0.1:8101/v1"),
+        model=router_cfg.get("model", "qwen2.5-7b-instruct"),
         timeout=router_cfg.get("timeout", 30),
     )

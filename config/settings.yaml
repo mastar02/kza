@@ -129,10 +129,12 @@ wake_word:
   threshold: 0.35      # 0.5 era muy estricto para acento rioplatense; 0.35 capta variantes
   inference_framework: "onnx"
 
-# Speech-to-Text (GPU 0 — compartido con SpeakerID, Emotion, Kokoro TTS)
+# Speech-to-Text (GPU 1 — junto con SpeakerID, Kokoro TTS y kza-llm-fast :8101)
+# 2026-05-07: movido cuda:0 → cuda:1. GLM-Air consolidó en cuda:0 (6.7 GB);
+# cuda:1 quedó libre y absorbe fast 7B Q4 (~5 GB) + audio (~1.9 GB) con ~1.4 GB margen.
 stt:
   model: "./models/whisper-v3-turbo"  # faster-whisper-large-v3-turbo-ct2 (~800MB, 8× más rápido que large-v3)
-  device: "cuda:0"
+  device: "cuda:1"
   compute_type: "float16"  # ~800MB VRAM
   # Fallback a large-v3 si hace falta máxima precisión:
   # model: "./models/whisper-ct2"
@@ -150,13 +152,13 @@ stt:
     Nexa apagá la luz del escritorio, Nexa subí el volumen, Nexa poné la
     luz al cincuenta por ciento, Nexa bajá la temperatura del aire.
 
-# Text-to-Speech (GPU 0 — compartido con STT, SpeakerID, Emotion)
-# Solo Kokoro por limitación de 2 GPUs (Qwen3-TTS no cabe)
+# Text-to-Speech (GPU 1 — junto con STT, SpeakerID y kza-llm-fast :8101)
+# 2026-05-07: movido cuda:0 → cuda:1 (ver nota en stt.device).
 tts:
   engine: "dual"  # DualTTS: Kokoro only (Qwen3-TTS deshabilitado por 2 GPUs)
   kokoro:
     model: "hexgrad/Kokoro-82M"
-    device: "cuda:0"
+    device: "cuda:1"
     default_voice: "ef_dora"       # Voz española femenina (Kokoro 0.7+)
     lang_code: "e"                 # 'e' = español (Kokoro requiere lang_code)
   # Qwen3-TTS deshabilitado — requiere 3ra GPU (~4.5GB)
@@ -189,18 +191,27 @@ tts:
 # Embeddings (cuda:0 — junto con STT/TTS/SpeakerID/Emotion; cuda:1 la ocupa vLLM compartido)
 # Ver Notion KZA pág 8 §3 (Catálogo GPU, actualizado 2026-04-21)
 embeddings:
-  model: "BAAI/bge-m3"  # Multilingual (170 idiomas), dim=1024, ~1.5GB VRAM
-  device: "cuda:0"
+  model: "BAAI/bge-m3"  # Multilingual (170 idiomas), dim=1024
+  # 2026-05-07: pasado a CPU para liberar ~2.3 GB GPU0 (necesario para el
+  # MoE nuevo en :8200). Bench server: 48ms p50 / 50ms p95 single query
+  # (vs ~5ms en GPU). Fast path target 300ms aguanta — pero p95 queda
+  # ajustado. Volver a "cuda:0" si la latencia rompe SLA.
+  device: "cpu"
 
 # Router/Clasificador — cliente HTTP al vLLM compartido (infra, :8100)
 # R1: prohibido duplicar; consumo por HTTP contra el servicio compartido.
 # Ver Notion KZA pág 8 §4 para catálogo y política.
 router:
   enabled: true
-  base_url: "http://127.0.0.1:8100/v1"  # host.containers.internal:8100 si es desde container
-  model: "qwen2.5-7b-awq"
+  # 2026-05-07 (deploy LLM endpoints reorg): el fast router ahora apunta a
+  # kza-llm-fast.service en :8101 (Qwen2.5-7B-Instruct Q4_K_M, ik_llama.cpp).
+  # Reemplaza al vLLM 7B AWQ que vivía en :8100 (deshabilitado).
+  # Latencia warm medida: 245-272ms para JSON intent (cumple <300ms target).
+  base_url: "http://127.0.0.1:8101/v1"
+  # ik_llama.cpp expone como model id el path completo del .gguf cargado.
+  # Match exacto requerido por el cliente OpenAI.
+  model: "/home/kza/kza/models/Qwen2.5-7B-Instruct-Q4_K_M/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
   timeout: 30
-  # Prefix caching lo maneja vLLM server-side (infra). LoRA requiere pedido §4.4.
 
 # NLU — clasificación de comandos vía LLM (Opción 2 sesión wake-fixes).
 # Cuando enabled=true, todo texto post-wake pasa por el FastRouter del bloque
@@ -244,27 +255,31 @@ reasoner:
 llm:
   failover:
     endpoints:
-      # 7B vía vLLM compartido :8100 — primer intento (más rápido, 8GB VRAM)
-      - id: fast_router_7b
+      # 2026-05-07 reorg: dos endpoints separados por velocidad.
+      # priority=1 fast (Qwen 7B Q4 full GPU :8101) — usado por dispatcher
+      # cuando el query es clasificable / one-shot JSON / fast path.
+      # priority=2 slow (GLM-4.5-Air Q4_K_M hybrid CPU+GPU :8200) — usado
+      # cuando el fast endpoint falla o el caller pide reasoning.
+      - id: fast_router_q4
         kind: fast_router
         priority: 1
         timeout_s: 5.0
-        idle_timeout_s: null          # vLLM no se cuelga, no necesita watchdog
+        idle_timeout_s: 3.0
         max_tokens_default: 256
-      # 72B local vía kza-72b.service :8200 — fallback (mejor calidad, CPU)
-      - id: reasoner_72b
+      - id: reasoner_glm
         kind: http_reasoner
         priority: 2
         timeout_s: 30.0
-        idle_timeout_s: 8.0           # 72B en CPU se cuelga
+        idle_timeout_s: 8.0
         max_tokens_default: 512
     cooldowns:
       persist_path: "./data/llm_cooldowns.json"
 
-  # Fallback: si :8200 (72B) no responde al startup, usar el vLLM 7B compartido
-  # (:8100 infra). Mejor respuesta degradada que timeout de 60s en slow path.
-  http_fallback_base_url: "http://127.0.0.1:8100/v1"
-  http_fallback_model: null   # null = primero del listado (qwen2.5-7b-awq)
+  # Fallback de startup: el dispatcher arranca contra el fast endpoint :8101.
+  # Si :8101 está caído al boot, el LLMRouter rota al :8200 (GLM-Air) tras
+  # primer error. Si ambos caen, KZA degrada a regex+ChromaDB.
+  http_fallback_base_url: "http://127.0.0.1:8101/v1"
+  http_fallback_model: null
 
   # Los siguientes campos sólo aplican si mode == "local":
   # ==========================================================================
@@ -387,11 +402,12 @@ context_persistence:
   auto_save_interval: 60                # Auto-guardar cada N segundos
   # Con 10 usuarios y 50 turnos c/u = ~500KB total en disco
 
-# Speaker Identification (cuda:0 — compartido con STT, Emotion, Kokoro TTS, Embeddings)
+# Speaker Identification (cuda:1 — junto con STT, Kokoro TTS y kza-llm-fast :8101)
+# 2026-05-07: movido cuda:0 → cuda:1 (ver nota en stt.device).
 speaker_id:
   enabled: true
   model: "speechbrain/spkrec-ecapa-voxceleb"  # O "resemblyzer" (más ligero)
-  device: "cuda:0"
+  device: "cuda:1"
   threshold: 0.75  # Similitud mínima para identificar usuario
   users_path: "./data/users.json"
   enrollment_samples: 3  # Muestras de voz para registrar usuario
@@ -399,6 +415,10 @@ speaker_id:
 # Emotion Detection (cuda:0 — comparte GPU con speaker_id por diseño)
 # wav2vec2 sobre el audio post-STT, paralelo a SpeakerID.
 emotion:
+  # Deshabilitado 2026-05-07: libera ~0.5 GB GPU0 para hacer espacio al MoE
+  # nuevo en :8200. CommandProcessor + response_handler ya toleran None.
+  # Reversible flippeando enabled a true.
+  enabled: false
   model: "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
   device: "cuda:0"
   sample_rate: 16000
