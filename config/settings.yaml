@@ -264,13 +264,15 @@ llm:
       # cuando el query es clasificable / one-shot JSON / fast path.
       # priority=2 slow (GLM-4.5-Air Q4_K_M hybrid CPU+GPU :8200) — usado
       # cuando el fast endpoint falla o el caller pide reasoning.
-      - id: fast_router_q4
+      # IDs canónicos que main.py registra al dict clients (NO renombrar
+      # sin actualizar también main.py:320-322).
+      - id: fast_router_7b
         kind: fast_router
         priority: 1
         timeout_s: 5.0
         idle_timeout_s: 3.0
         max_tokens_default: 256
-      - id: reasoner_glm
+      - id: reasoner_72b
         kind: http_reasoner
         priority: 2
         timeout_s: 30.0
