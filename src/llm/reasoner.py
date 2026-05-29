@@ -630,10 +630,10 @@ class HttpReasoner:
 
         async def _async_iter():
             it = iter(sync_stream)
+            sentinel = object()
             while True:
-                try:
-                    chunk = await asyncio.to_thread(next, it)
-                except StopIteration:
+                chunk = await asyncio.to_thread(next, it, sentinel)
+                if chunk is sentinel:
                     return
                 yield chunk
 

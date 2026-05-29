@@ -157,3 +157,45 @@ async def test_complete_stream_chat_style_extracts_delta_content():
     assert kwargs["messages"] == [{"role": "user", "content": "hola?"}]
     # top_p must NOT be in kwargs when called from complete() (no top_p arg)
     assert "top_p" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_complete_stream_no_runtimeerror_on_exhausted_iterator():
+    """Regression: _async_iter must NOT raise RuntimeError when iterator is exhausted.
+
+    On Python 3.13, PEP-479 causes asyncio.to_thread(next, it) to convert
+    StopIteration into RuntimeError when the old `except StopIteration` pattern
+    is used.  The sentinel-next form avoids raising StopIteration at all.
+
+    This test exercises the REAL _async_iter code path (no patch) by using a
+    plain Python list as the sync_stream returned by chat.completions.create().
+    It MUST fail (RuntimeError) on the old code and PASS on the fixed code.
+    """
+    pieces = ["ho", "la", " mundo"]
+    chunks = []
+    for piece in pieces:
+        ch = MagicMock()
+        ch.choices = [MagicMock()]
+        ch.choices[0].delta.content = piece
+        chunks.append(ch)
+
+    r = HttpReasoner(
+        base_url="https://api.minimax.io/v1",
+        model="MiniMax-M2.7-highspeed",
+        api_style="chat",
+        idle_timeout_s=5.0,
+    )
+    client = MagicMock()
+    # Return a plain list — iter(list) raises StopIteration when exhausted,
+    # which triggers the PEP-479/Future RuntimeError on Python 3.13 in the
+    # old next(it) + except StopIteration pattern.
+    client.chat.completions.create.return_value = iter(chunks)
+    r._client = client
+    r._resolved_model = "MiniMax-M2.7-highspeed"
+
+    # No patching of _async_iter — exercises the real implementation.
+    out = await r.complete("hola?", max_tokens=32)
+
+    assert out == "hola mundo"
+    _, kwargs = client.chat.completions.create.call_args
+    assert kwargs["stream"] is True
