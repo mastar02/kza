@@ -419,12 +419,8 @@ class RequestRouter:
 
         # 1. Process command (STT + Speaker ID + Emotion in parallel).
         #    Si pretranscribed_text viene del early-dispatch, saltamos el STT.
-        #    await_speaker_id=False: speaker ID se difiere al background para
-        #    no bloquear el fast path. El slow path lo espera más abajo via
-        #    ensure_speaker_resolved().
         cmd = await self.command_processor.process_command(
             audio, use_parallel=True, pretranscribed_text=pretranscribed_text,
-            await_speaker_id=False,
         )
         text = cmd.text
         result["text"] = text
@@ -561,19 +557,6 @@ class RequestRouter:
         if result.get("pending_confirmation"):
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
-
-        # 1c. Slow path: necesitamos identidad para el contexto del orchestrator.
-        #     El speaker se difirió en process_command (fast path no la necesita);
-        #     acá la esperamos — ~60ms es ruido frente a los 5-30s del LLM.
-        #     Si el orchestrator deriva a FAST_PATH, user=None es aceptable
-        #     (HA action no requiere identidad). La espera sólo paga si el
-        #     orchestrator acaba eligiendo SLOW_LLM, pero no sabemos el path
-        #     aún: esperamos siempre para no llegar al reasoner sin identidad.
-        if cmd.user is None:
-            resolved_user = await self.command_processor.ensure_speaker_resolved(timeout_s=1.0)
-            if resolved_user is not None:
-                cmd.user = resolved_user
-                result["user"] = resolved_user
 
         # 2. Get user info
         user = cmd.user
@@ -717,12 +700,8 @@ class RequestRouter:
         pipeline_start = time.perf_counter()
 
         # 1. Process command (salteando STT si viene de early dispatch)
-        #    await_speaker_id=False: speaker ID se difiere al background para
-        #    no bloquear el fast path. El slow path lo espera más abajo via
-        #    ensure_speaker_resolved().
         cmd = await self.command_processor.process_command(
             audio, use_parallel=True, pretranscribed_text=pretranscribed_text,
-            await_speaker_id=False,
         )
         text = cmd.text
         result["text"] = text
@@ -1091,20 +1070,6 @@ class RequestRouter:
 
         # 9. Conversation with LLM/Router
         result["intent"] = "conversation"
-
-        # 9a. Slow path: necesitamos identidad para el contexto del reasoner.
-        #     El speaker se difirió en process_command (fast path no la necesita);
-        #     acá la esperamos — ~60ms es ruido frente a los 5-30s del LLM.
-        if cmd.user is None:
-            resolved_user = await self.command_processor.ensure_speaker_resolved(timeout_s=1.0)
-            if resolved_user is not None:
-                cmd.user = resolved_user
-                user = resolved_user
-                user_id = resolved_user.user_id
-                result["user"] = {
-                    "name": resolved_user.name,
-                    "permission_level": resolved_user.permission_level.name,
-                }
 
         use_deep = True
         router_response = ""
