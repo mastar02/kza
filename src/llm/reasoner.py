@@ -597,6 +597,13 @@ class HttpReasoner:
         if self._client is None:
             self.load()
 
+        from src.llm.cloud_consent import is_cloud_endpoint
+        if self.api_style == "chat" and is_cloud_endpoint(self.base_url):
+            logger.info(
+                "Cloud reasoning: enviando ~%d chars a %s (modelo=%s)",
+                len(prompt), urlparse(self.base_url).hostname, self._resolved_model,
+            )
+
         if not self.idle_timeout_s:
             def _call():
                 t0 = time.perf_counter()

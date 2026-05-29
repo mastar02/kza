@@ -246,3 +246,19 @@ class TestLogFormatterSanitization:
         output = formatter.format(record)
         assert "light.turn_on" in output
         assert "42ms" in output
+
+    def test_sanitizes_bearer_token(self):
+        from src.core.logging import StructuredFormatter
+
+        out = StructuredFormatter._sanitize_message("auth Bearer sk-abcdef123456 done")
+        assert "sk-abcdef123456" not in out
+        assert "Bearer sk-a***" in out
+
+    def test_sanitizes_query_param_api_key(self):
+        from src.core.logging import StructuredFormatter
+
+        out = StructuredFormatter._sanitize_message(
+            "GET https://api.minimax.io/v1/chat?api_key=mm-secret-999&x=1"
+        )
+        assert "mm-secret-999" not in out
+        assert "api_key=" in out

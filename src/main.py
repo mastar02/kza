@@ -257,24 +257,32 @@ async def main():
     reasoner_mode = reasoner_config.get("mode", "http")
 
     if reasoner_mode == "http":
-        llm = HttpReasoner(
-            base_url=reasoner_config.get("http_base_url", "http://127.0.0.1:8200/v1"),
-            model=reasoner_config.get("http_model"),
-            timeout=reasoner_config.get("http_timeout", 120),
-            idle_timeout_s=reasoner_config.get("idle_timeout_s"),
-            api_style=reasoner_config.get("api_style", "completions"),
-            api_key_env=reasoner_config.get("api_key_env"),
-            verify_ssl=reasoner_config.get("verify_ssl", True),
-        )
-        try:
-            llm.load()
-            info = llm.get_info()
-            logger.info(f"LLM reasoner (cloud) vía HTTP → {info['base_url']} modelo={info['model']}")
-        except Exception as e:
-            # El fallback hacia 7B ahora lo maneja LLMRouter (plan #1 OpenClaw).
-            # Si el reasoner cloud no responde, llm queda None — el LLMRouter rota al 7B.
-            logger.error(f"HttpReasoner cloud no contactable: {e}. llm=None — failover via LLMRouter")
+        from src.llm.cloud_consent import cloud_reasoner_allowed
+        if not cloud_reasoner_allowed(reasoner_config):
+            logger.warning(
+                "Reasoner cloud bloqueado por falta de consent — slow path sin reasoner. "
+                "Setear reasoner.cloud.consent=true en settings.yaml para activarlo."
+            )
             llm = None
+        else:
+            llm = HttpReasoner(
+                base_url=reasoner_config.get("http_base_url", "http://127.0.0.1:8200/v1"),
+                model=reasoner_config.get("http_model"),
+                timeout=reasoner_config.get("http_timeout", 120),
+                idle_timeout_s=reasoner_config.get("idle_timeout_s"),
+                api_style=reasoner_config.get("api_style", "completions"),
+                api_key_env=reasoner_config.get("api_key_env"),
+                verify_ssl=reasoner_config.get("verify_ssl", True),
+            )
+            try:
+                llm.load()
+                info = llm.get_info()
+                logger.info(f"LLM reasoner (cloud) vía HTTP → {info['base_url']} modelo={info['model']}")
+            except Exception as e:
+                # El fallback hacia 7B ahora lo maneja LLMRouter (plan #1 OpenClaw).
+                # Si el reasoner cloud no responde, llm queda None — el LLMRouter rota al 7B.
+                logger.error(f"HttpReasoner cloud no contactable: {e}. llm=None — failover via LLMRouter")
+                llm = None
     else:
         model_path = reasoner_config.get("model_path")
         if not model_path or not Path(model_path).exists():

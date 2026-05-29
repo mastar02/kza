@@ -255,6 +255,12 @@ reasoner:
   api_key_env: "MINIMAX_API_KEY"
   # Cloud cold puede tardar 10-20s al primer token → watchdog generoso.
   idle_timeout_s: 25.0
+  # Privacidad: el reasoner cloud manda datos del usuario a MiniMax (tercero).
+  # consent=false bloquea el cliente cloud (slow path sin reasoner). Cambiar a
+  # true es una decisión informada de enviar transcripciones/contexto afuera.
+  cloud:
+    consent: true
+    strip_home_state: false   # true = no enviar estado del hogar al cloud (follow-up)
   # --- Rollback de emergencia (GLM-Air local :8200) ---
   # http_base_url: "http://127.0.0.1:8200/v1"
   # http_model: null

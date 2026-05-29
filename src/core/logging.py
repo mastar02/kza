@@ -99,6 +99,11 @@ class StructuredFormatter(logging.Formatter):
     # Pattern to detect and mask Bearer tokens in log messages
     _BEARER_RE = re.compile(r"Bearer\s+(\S{8,})")
 
+    # Mask de valores de query params de auth (?api_key=..., &token=..., &key=...)
+    _QUERY_SECRET_RE = re.compile(
+        r"((?:api_key|apikey|token|key|access_token)=)([^&\s]+)", re.IGNORECASE
+    )
+
     def __init__(self, config: LogConfig = None):
         super().__init__()
         self.config = config or LogConfig()
@@ -106,9 +111,9 @@ class StructuredFormatter(logging.Formatter):
     @classmethod
     def _sanitize_message(cls, message: str) -> str:
         """Remove secrets that may have leaked into a log message."""
-        return cls._BEARER_RE.sub(
-            lambda m: f"Bearer {m.group(1)[:4]}***", message
-        )
+        message = cls._BEARER_RE.sub(lambda m: f"Bearer {m.group(1)[:4]}***", message)
+        message = cls._QUERY_SECRET_RE.sub(lambda m: f"{m.group(1)}***", message)
+        return message
 
     def format(self, record: logging.LogRecord) -> str:
         # Obtener contexto actual
