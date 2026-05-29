@@ -63,6 +63,9 @@ def test_warmup_calls_each_model(warmup_fn):
     emotion_detector.detect = MagicMock(return_value=MagicMock())
 
     chroma = MagicMock()
+    # warmup_embedder() devuelve la latencia (float ms); el mock necesita un
+    # valor formateable porque _warmup_models hace f"{v:.0f}ms" en el summary.
+    chroma.warmup_embedder.return_value = 5.0
 
     asyncio.run(warmup_fn(stt, tts, speaker_identifier, emotion_detector, chroma))
 
@@ -102,6 +105,7 @@ def test_warmup_continues_on_model_failure(warmup_fn):
     emotion_detector.detect = MagicMock(return_value=MagicMock())
 
     chroma = MagicMock()
+    chroma.warmup_embedder.return_value = 5.0
 
     # No debe raisear
     asyncio.run(warmup_fn(stt, tts, speaker_identifier, emotion_detector, chroma))
