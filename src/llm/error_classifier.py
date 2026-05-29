@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
+import ssl
 
 from src.llm.idle_watchdog import IdleTimeoutError
 from src.llm.types import ErrorKind
@@ -63,6 +65,24 @@ _FORMAT_PATTERNS = (
     "unexpected token",
 )
 
+# Patrones transitorios de red/TLS/DNS/5xx (failover-worthy)
+_TRANSIENT_PATTERNS = (
+    "timed out",
+    "timeout",
+    "connection error",
+    "connection reset",
+    "temporarily unavailable",
+    "name resolution",
+    "getaddrinfo",
+    "ssl",
+    "502",
+    "503",
+    "504",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+)
+
 
 def classify_error(exc: BaseException) -> ErrorKind:
     """Clasificar una exception en un ErrorKind."""
@@ -75,6 +95,10 @@ def classify_error(exc: BaseException) -> ErrorKind:
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError)):
         return ErrorKind.TIMEOUT
 
+    # Errores de red/TLS/DNS — siempre transitorio (failover-worthy)
+    if isinstance(exc, (ssl.SSLError, socket.gaierror)):
+        return ErrorKind.TIMEOUT
+
     # Texto del error para matchear patrones
     msg = str(exc).lower()
 
@@ -83,6 +107,10 @@ def classify_error(exc: BaseException) -> ErrorKind:
 
     if any(p in msg for p in _BILLING_PATTERNS):
         return ErrorKind.BILLING
+
+    # Patrones transitorios de red/TLS/DNS/5xx (ANTES de AUTH: 401/403 no están aquí)
+    if any(p in msg for p in _TRANSIENT_PATTERNS):
+        return ErrorKind.TIMEOUT
 
     if any(p in msg for p in _AUTH_PATTERNS):
         return ErrorKind.AUTH

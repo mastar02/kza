@@ -17,6 +17,7 @@ propio retry interno). Aquí solo rotamos entre endpoints.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -97,7 +98,13 @@ class LLMRouter:
 
             try:
                 logger.debug(f"[LLMRouter] try {ep.id} (kind={ep.kind.value})")
-                text = await ep.client.complete(prompt, max_tokens=max_tokens, **kwargs)
+                if ep.timeout_s and ep.timeout_s > 0:
+                    text = await asyncio.wait_for(
+                        ep.client.complete(prompt, max_tokens=max_tokens, **kwargs),
+                        timeout=ep.timeout_s,
+                    )
+                else:
+                    text = await ep.client.complete(prompt, max_tokens=max_tokens, **kwargs)
             except Exception as exc:
                 kind = classify_error(exc)
                 logger.warning(
