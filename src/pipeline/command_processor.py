@@ -94,6 +94,7 @@ class CommandProcessor:
         audio: np.ndarray,
         use_parallel: bool = True,
         pretranscribed_text: str | None = None,
+        await_speaker_id: bool = True,
     ) -> ProcessedCommand:
         """
         Procesar comando completo (STT + Speaker ID + Emotion).
@@ -105,6 +106,10 @@ class CommandProcessor:
                 Lo setea el early-dispatch worker (ya transcribió en el loop
                 de streaming del wake). Speaker ID + emotion se hacen igual
                 sobre el audio.
+            await_speaker_id: Si False (fast path domótica), NO espera el
+                speaker ID — transcribe, retorna con user=None, y corre el
+                speaker en background populando _current_user al terminar.
+                La acción HA no necesita identidad. voice_auth lo espera aparte.
 
         Returns:
             ProcessedCommand with text, user, emotion, timings, success
@@ -132,7 +137,9 @@ class CommandProcessor:
                     logger.debug(f"Emotion detection skipped: {e}")
             text = pretranscribed_text
         elif use_parallel and (self.speaker_id or self.emotion_detector):
-            text, stt_ms, speaker_result, emotion_result = await self._process_parallel(audio)
+            text, stt_ms, speaker_result, emotion_result = await self._process_parallel(
+                audio, await_speaker_id=await_speaker_id
+            )
             result.timings["stt"] = stt_ms
             if speaker_result:
                 user, confidence, spk_ms = speaker_result
@@ -172,9 +179,16 @@ class CommandProcessor:
 
         return result
 
-    async def _process_parallel(self, audio: np.ndarray) -> tuple[str, float, tuple | None, object | None]:
+    async def _process_parallel(
+        self, audio: np.ndarray, await_speaker_id: bool = True
+    ) -> tuple[str, float, tuple | None, object | None]:
         """
         Procesar STT, Speaker ID y Emotion en paralelo REAL con asyncio.gather().
+
+        Args:
+            audio: Audio del comando
+            await_speaker_id: Si False, el speaker ID se lanza en background
+                (deferred) y no bloquea el retorno. Ver _spawn_deferred_speaker_id.
 
         Returns:
             Tuple[text, stt_ms, speaker_result, emotion_result]
@@ -182,34 +196,34 @@ class CommandProcessor:
         loop = asyncio.get_running_loop()
         t_parallel = time.perf_counter()
 
-        # Crear todas las tasks
         stt_task = loop.run_in_executor(None, self.stt.transcribe, audio, self.sample_rate)
+
+        defer_speaker = (
+            not await_speaker_id and self.speaker_id is not None and self.user_manager is not None
+        )
 
         speaker_task = (
             loop.run_in_executor(None, self._identify_speaker, audio)
-            if self.speaker_id and self.user_manager
-            else asyncio.sleep(0)  # Placeholder que completa inmediatamente
+            if self.speaker_id and self.user_manager and not defer_speaker
+            else asyncio.sleep(0)
         )
 
         emotion_task = (
             loop.run_in_executor(None, self.emotion_detector.detect, audio)
             if self.emotion_detector
-            else asyncio.sleep(0)  # Placeholder que completa inmediatamente
+            else asyncio.sleep(0)
         )
 
-        # Ejecutar TODAS en paralelo con gather (no secuencial)
-        results = await asyncio.gather(
-            stt_task, speaker_task, emotion_task,
-            return_exceptions=True
-        )
-
+        results = await asyncio.gather(stt_task, speaker_task, emotion_task, return_exceptions=True)
         parallel_ms = (time.perf_counter() - t_parallel) * 1000
 
-        # Procesar resultados
         stt_result = results[0] if not isinstance(results[0], Exception) else ("", 0)
         text, stt_ms = stt_result if isinstance(stt_result, tuple) else ("", 0)
 
-        if self.speaker_id and self.user_manager and not isinstance(results[1], Exception):
+        if defer_speaker:
+            self._spawn_deferred_speaker_id(audio)
+            speaker_result = None
+        elif self.speaker_id and self.user_manager and not isinstance(results[1], Exception):
             speaker_result = results[1]  # tuple: (User|None, confidence, timing_ms)
         else:
             speaker_result = None
@@ -220,9 +234,34 @@ class CommandProcessor:
             else None
         )
 
-        logger.debug(f"[Parallel GATHER {parallel_ms:.0f}ms] STT + Speaker ID + Emotion completed")
+        logger.debug(
+            f"[Parallel GATHER {parallel_ms:.0f}ms] STT + "
+            f"{'Speaker(deferred) + ' if defer_speaker else 'Speaker ID + '}Emotion"
+        )
 
         return text, stt_ms, speaker_result, emotion_result
+
+    def _spawn_deferred_speaker_id(self, audio: np.ndarray) -> None:
+        """Resolver speaker ID en background (fast path domótica).
+
+        No bloquea el retorno de process_command. Cuando termina, popula
+        self._current_user para el siguiente turno. Excepciones se loguean.
+        """
+        loop = asyncio.get_running_loop()
+
+        async def _runner():
+            try:
+                result = await loop.run_in_executor(None, self._identify_speaker, audio)
+                user, confidence, _ = result
+                if user is not None:
+                    self._current_user = user
+            except Exception as e:
+                logger.debug(f"Deferred speaker ID skipped: {e}")
+
+        task = loop.create_task(_runner())
+        self._deferred_speaker_tasks = getattr(self, "_deferred_speaker_tasks", set())
+        self._deferred_speaker_tasks.add(task)
+        task.add_done_callback(self._deferred_speaker_tasks.discard)
 
     def _get_cached_embeddings(self) -> dict[str, np.ndarray]:
         """
