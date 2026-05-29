@@ -579,6 +579,58 @@ class HttpReasoner:
             },
         }
 
+    def generate(self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7) -> str:
+        """Generar sólo el texto (drop-in de LLMReasoner.generate). Sync.
+
+        Lo usa el worker del slow path (MultiUserOrchestrator._process_llm_request)
+        cuando self.llm no expone generate_stream o como fallback.
+
+        Args:
+            prompt: Texto de entrada.
+            max_tokens: Tokens máximos a generar.
+            temperature: Temperatura de muestreo.
+
+        Returns:
+            Texto generado como string.
+        """
+        return self(prompt, max_tokens=max_tokens, temperature=temperature)["choices"][0]["text"]
+
+    def generate_stream(self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7, **_ignored):
+        """Streaming sync token-por-token (drop-in de LLMReasoner.generate_stream).
+
+        Yields dicts {"token", "text", "token_count"} para compat con
+        _process_llm_request (lee chunk.get("token","")). El consumo es síncrono
+        igual que con el LLMReasoner local — el slow path tolera el bloqueo
+        (request encolado, usuario esperando). NOTA: para un endpoint cloud este
+        loop bloquea el event loop durante el stream (limitación heredada del
+        diseño del worker; refactor async es follow-up aparte).
+
+        Args:
+            prompt: Texto de entrada.
+            max_tokens: Tokens máximos a generar.
+            temperature: Temperatura de muestreo.
+            **_ignored: Kwargs extra ignorados (top_p, top_k, etc.) para compat
+                con la firma completa de LLMReasoner.generate_stream.
+
+        Yields:
+            dict con claves "token" (fragmento actual), "text" (acumulado),
+            "token_count" (número de tokens emitidos hasta ahora).
+        """
+        if self._client is None:
+            self.load()
+        resp = self._create_completion(
+            prompt, max_tokens=max_tokens, temperature=temperature, stream=True
+        )
+        accumulated = ""
+        count = 0
+        for chunk in resp:
+            tok = self._extract_stream_delta(chunk)
+            if not tok:
+                continue
+            accumulated += tok
+            count += 1
+            yield {"token": tok, "text": accumulated, "token_count": count}
+
     async def complete(
         self,
         prompt: str,
