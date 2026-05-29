@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -71,6 +72,39 @@ def _resolve_api_key(base_url: str, api_key_env: str | None = None) -> str:
         env_name, base_url,
     )
     return "not-used"
+
+
+# Bloque de razonamiento que emiten los modelos thinking (MiniMax-M2.x) inline
+# en content. Para TTS necesitamos solo la respuesta final.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Quitar bloques <think>...</think> del texto del modelo.
+
+    MiniMax-M2.7 emite chain-of-thought inline en message.content (no hay
+    parámetro para desactivarlo ni campo reasoning_content separado — verificado
+    contra la API 2026-05-29). El slow-path lo manda a TTS, así que hay que
+    dejar solo la respuesta. No-op si no hay tags <think> (modelos no-reasoning
+    como GLM-Air/Qwen local → no se ven afectados).
+
+    Args:
+        text: Texto crudo del modelo (puede contener bloques de razonamiento).
+
+    Returns:
+        Texto sin los bloques de razonamiento. Si hay un <think> abierto sin
+        cerrar (reasoning truncado, sin respuesta todavía), devuelve vacío.
+    """
+    cleaned = _THINK_BLOCK_RE.sub("", text)
+    idx = cleaned.find("<think>")
+    if idx != -1:
+        cleaned = cleaned[:idx]
+    return cleaned
+
+
+# Tamaño del tail que generate_stream retiene antes de emitir, para no mandar
+# un tag <think>/</think> partido a mitad de borde de chunk. len("</think>")=8.
+_THINK_HOLDBACK = 8
 
 
 # Modelos recomendados para 128GB RAM
@@ -530,8 +564,10 @@ class HttpReasoner:
             Texto extraído del primer choice.
         """
         if self.api_style == "chat":
-            return resp.choices[0].message.content or ""
-        return resp.choices[0].text or ""
+            raw = resp.choices[0].message.content or ""
+        else:
+            raw = resp.choices[0].text or ""
+        return _strip_reasoning(raw).strip()
 
     def _extract_stream_delta(self, chunk) -> str:
         """Delta de texto de un chunk streaming, según api_style.
@@ -623,15 +659,32 @@ class HttpReasoner:
         resp = self._create_completion(
             prompt, max_tokens=max_tokens, temperature=temperature, stream=True
         )
-        accumulated = ""
+        # Filtrado incremental del <think>: acumulamos el crudo y solo emitimos
+        # la porción de RESPUESTA (post-</think>). Retenemos un tail de
+        # _THINK_HOLDBACK chars para no emitir un tag partido en el borde de un
+        # chunk; al final se hace flush del resto. Sum de tokens emitidos ==
+        # _strip_reasoning(crudo completo) → el worker del slow-path recibe la
+        # respuesta limpia (sin chain-of-thought que el TTS hablaría).
+        raw = ""
+        emitted = ""
         count = 0
         for chunk in resp:
             tok = self._extract_stream_delta(chunk)
             if not tok:
                 continue
-            accumulated += tok
+            raw += tok
+            answer = _strip_reasoning(raw)
+            safe = answer[:-_THINK_HOLDBACK] if len(answer) > _THINK_HOLDBACK else ""
+            if len(safe) > len(emitted):
+                new = safe[len(emitted):]
+                emitted = safe
+                count += 1
+                yield {"token": new, "text": emitted, "token_count": count}
+        # Flush: emitir el resto de la respuesta final (incluye el tail retenido).
+        final = _strip_reasoning(raw)
+        if len(final) > len(emitted):
             count += 1
-            yield {"token": tok, "text": accumulated, "token_count": count}
+            yield {"token": final[len(emitted):], "text": final, "token_count": count}
 
     async def complete(
         self,
@@ -700,7 +753,7 @@ class HttpReasoner:
         text_parts: list[str] = []
         async for chunk in idle_watchdog(_async_iter(), self.idle_timeout_s):
             text_parts.append(self._extract_stream_delta(chunk))
-        return "".join(text_parts)
+        return _strip_reasoning("".join(text_parts)).strip()
 
     # Métodos no aplicables (LoRA, GGUF load) — stubs para backward compat
     def load_lora(self, *a, **kw):

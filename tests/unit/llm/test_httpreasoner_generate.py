@@ -47,9 +47,11 @@ def test_generate_stream_yields_token_dicts():
     r._resolved_model = "MiniMax-M2.7-highspeed"
 
     out = list(r.generate_stream("hi"))
-    assert [c["token"] for c in out] == ["ho", "la"]
+    # La concatenación de tokens es la respuesta (la granularidad exacta puede
+    # variar por el holdback del filtro <think>; el worker concatena igual).
+    assert "".join(c["token"] for c in out) == "hola"
     assert out[-1]["text"] == "hola"
-    assert out[-1]["token_count"] == 2
+    assert all({"token", "text", "token_count"} <= set(c) for c in out)
     # confirm it streamed via chat with stream=True
     _, kwargs = client.chat.completions.create.call_args
     assert kwargs["stream"] is True
