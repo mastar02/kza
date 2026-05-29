@@ -22,3 +22,7 @@ def test_is_cloud_endpoint():
     assert is_cloud_endpoint("https://api.minimax.io/v1") is True
     assert is_cloud_endpoint("http://127.0.0.1:8200/v1") is False
     assert is_cloud_endpoint("http://localhost:8101/v1") is False
+    # IPv6 loopback: urlparse("http://[::1]:8200/v1").hostname == "::1"
+    assert is_cloud_endpoint("http://[::1]:8200/v1") is False
+    # Bind-all address also treated as local
+    assert is_cloud_endpoint("http://0.0.0.0:8200/v1") is False

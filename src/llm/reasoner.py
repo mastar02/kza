@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+from src.llm.cloud_consent import is_cloud_endpoint
+
 logger = logging.getLogger(__name__)
 
 
@@ -649,10 +651,9 @@ class HttpReasoner:
         if self._client is None:
             self.load()
 
-        from src.llm.cloud_consent import is_cloud_endpoint
         if self.api_style == "chat" and is_cloud_endpoint(self.base_url):
             logger.info(
-                "Cloud reasoning: enviando ~%d chars a %s (modelo=%s)",
+                "Cloud reasoning: sending ~%d chars to %s (model=%s)",
                 len(prompt), urlparse(self.base_url).hostname, self._resolved_model,
             )
 
