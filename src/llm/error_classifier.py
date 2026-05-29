@@ -109,12 +109,16 @@ def classify_error(exc: BaseException) -> ErrorKind:
     if any(p in msg for p in _BILLING_PATTERNS):
         return ErrorKind.BILLING
 
-    # Patrones transitorios de red/TLS/DNS/5xx (ANTES de AUTH: 401/403 no están aquí)
-    if any(p in msg for p in _TRANSIENT_PATTERNS):
-        return ErrorKind.TIMEOUT
-
+    # AUTH (401/403) ANTES de TRANSIENT: un error de auth nunca debe ser
+    # failover-worthy, ni siquiera si el mensaje también contiene un patrón
+    # transitorio (ej "401 Unauthorized: ssl error"). Auth-first hace que se
+    # propague para acción humana en vez de rotar/cooldown silenciosamente.
     if any(p in msg for p in _AUTH_PATTERNS):
         return ErrorKind.AUTH
+
+    # Patrones transitorios de red/TLS/DNS/5xx (failover-worthy)
+    if any(p in msg for p in _TRANSIENT_PATTERNS):
+        return ErrorKind.TIMEOUT
 
     if any(p in msg for p in _FORMAT_PATTERNS):
         return ErrorKind.FORMAT

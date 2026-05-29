@@ -19,6 +19,23 @@ def test_dns_error_is_failover_worthy():
     assert kind.is_failover_worthy()
 
 
+def test_auth_wins_over_transient_substring():
+    # Regresión: un error de auth que ADEMÁS contiene un patrón transitorio
+    # ("ssl error") NO debe clasificarse TIMEOUT — AUTH no es failover-worthy.
+    for m in ("401 Unauthorized: ssl error",
+              "403 Forbidden: ssl error in handshake",
+              "401 unauthorized - connection error"):
+        kind = classify_error(Exception(m))
+        assert kind == ErrorKind.AUTH, f"{m!r} → {kind} (esperado AUTH)"
+        assert not kind.is_failover_worthy()
+
+
+def test_pure_transient_still_timeout():
+    # Sin substring de auth, los transitorios siguen siendo TIMEOUT.
+    for m in ("503 Service Unavailable", "SSLError: handshake failure", "request timed out"):
+        assert classify_error(Exception(m)) == ErrorKind.TIMEOUT, m
+
+
 def test_openai_timeout_message_is_failover_worthy():
     assert classify_error(Exception("Request timed out.")) == ErrorKind.TIMEOUT
 
