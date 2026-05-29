@@ -68,6 +68,7 @@ def _make_router(room_context_manager=None, orchestrator=None, orchestrator_enab
     """Create a RequestRouter with mocked dependencies."""
     command_processor = MagicMock()
     command_processor.process_command = AsyncMock(return_value=_make_cmd_result())
+    command_processor.ensure_speaker_resolved = AsyncMock(return_value=None)
 
     response_handler = MagicMock()
     response_handler.speak = MagicMock()

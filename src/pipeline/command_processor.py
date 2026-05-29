@@ -247,6 +247,29 @@ class CommandProcessor:
 
         return text, stt_ms, speaker_result, emotion_result
 
+    async def ensure_speaker_resolved(self, timeout_s: float = 1.0) -> object | None:
+        """Esperar a que las tasks de speaker ID diferidas terminen.
+
+        Lo usa el slow path (y un futuro voice_auth) cuando necesita identidad
+        confirmada tras un process_command(await_speaker_id=False). Devuelve el
+        usuario actual (o None si no se identificó o hubo timeout).
+
+        Args:
+            timeout_s: Tiempo máximo de espera en segundos.
+
+        Returns:
+            Usuario identificado o None.
+        """
+        tasks = getattr(self, "_deferred_speaker_tasks", set())
+        if tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=timeout_s
+                )
+            except asyncio.TimeoutError:
+                logger.warning("ensure_speaker_resolved: timeout esperando speaker ID")
+        return self._current_user
+
     def _spawn_deferred_speaker_id(self, audio: np.ndarray) -> None:
         """Resolver speaker ID en background (fast path domótica).
 

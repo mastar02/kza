@@ -121,6 +121,14 @@ def _build_router(**overrides):
             return_value=_make_cmd_result()
         )
 
+    # ensure_speaker_resolved is awaited on the slow path; return None by default.
+    if not isinstance(
+        defaults["command_processor"].ensure_speaker_resolved, AsyncMock
+    ):
+        defaults["command_processor"].ensure_speaker_resolved = AsyncMock(
+            return_value=None
+        )
+
     # Make routine_manager.handle async by default
     if defaults["routine_manager"] and not isinstance(
         defaults["routine_manager"].handle, AsyncMock
@@ -630,11 +638,13 @@ class TestWakeTextPriority:
         cp = MagicMock()
         captured = {}
 
-        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None,
+                               await_speaker_id=True):
             captured["pretranscribed_text"] = pretranscribed_text
             return _make_cmd_result(text=pretranscribed_text or "")
 
         cp.process_command = AsyncMock(side_effect=fake_process)
+        cp.ensure_speaker_resolved = AsyncMock(return_value=None)
 
         chroma = MagicMock()
         chroma.search_command.return_value = None  # no match — legacy path aborts cleanly
@@ -669,11 +679,13 @@ class TestWakeTextPriority:
         cp = MagicMock()
         captured = {}
 
-        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None,
+                               await_speaker_id=True):
             captured["pretranscribed_text"] = pretranscribed_text
             return _make_cmd_result(text=pretranscribed_text or "")
 
         cp.process_command = AsyncMock(side_effect=fake_process)
+        cp.ensure_speaker_resolved = AsyncMock(return_value=None)
 
         chroma = MagicMock()
         chroma.search_command.return_value = None  # no match — legacy path aborts cleanly
@@ -703,11 +715,13 @@ class TestWakeTextPriority:
         cp = MagicMock()
         captured = {}
 
-        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None,
+                               await_speaker_id=True):
             captured["pretranscribed_text"] = pretranscribed_text
             return _make_cmd_result(text=pretranscribed_text or "")
 
         cp.process_command = AsyncMock(side_effect=fake_process)
+        cp.ensure_speaker_resolved = AsyncMock(return_value=None)
 
         chroma = MagicMock()
         chroma.search_command.return_value = None  # no match — legacy path aborts cleanly
@@ -741,10 +755,12 @@ class TestWakeTextPriority:
 
         cp = MagicMock()
 
-        async def fake_process(audio, use_parallel=True, pretranscribed_text=None):
+        async def fake_process(audio, use_parallel=True, pretranscribed_text=None,
+                               await_speaker_id=True):
             return _make_cmd_result(text=pretranscribed_text or "")
 
         cp.process_command = AsyncMock(side_effect=fake_process)
+        cp.ensure_speaker_resolved = AsyncMock(return_value=None)
 
         chroma = MagicMock()
         chroma.search_command.return_value = None
