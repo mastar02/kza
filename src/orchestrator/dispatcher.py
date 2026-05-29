@@ -82,6 +82,72 @@ _ROOM_ALIASES_TO_AREA: dict[str, str] = {
 }
 
 
+# Sustantivos que indican un dominio NO-luz explícito. Si el vector search
+# devuelve una entidad `light.*` pero el texto pide uno de estos dominios, es
+# un misfire (típicamente light.escritorio como fallback de la zona del mic):
+# rechazamos el match de luz y dejamos que caiga al router/slow path. Bug
+# fantasma 2026-05-29 (ver project_escritorio_light_phantom_toggles_2026-05-29).
+_NON_LIGHT_DOMAIN_NOUNS: dict[str, str] = {
+    "volumen": "media_player",
+    "volume": "media_player",
+    "temperatura": "climate",
+    "termostato": "climate",
+    "calefaccion": "climate",
+    "aire": "climate",
+    "clima": "climate",
+    "grados": "climate",
+}
+
+# Sustantivos de luz: si aparecen, confiamos en el match light.* aunque haya
+# un sustantivo no-luz (ej: 'poné la luz' nunca debe ser rechazado).
+# Nota: el match se hace sobre texto normalizado SIN acentos → entradas sin tilde.
+_LIGHT_NOUNS: tuple[str, ...] = (
+    "luz", "luces", "lampara", "foco", "luminaria", "veladora",
+)
+
+# Respuesta inmediata y honesta cuando se rechaza un match de luz por conflicto
+# de dominio. NO se rerutea al slow path: ese camino no resuelve el dominio
+# (no hay entidad climate; el LLM del slow path no tiene tool-calling a HA) y,
+# ante un fallo del reasoner, cuelga 5s y miente con un timeout falso (la cola
+# no notifica el fail — issue C). Devolvemos feedback accionable al instante.
+_DOMAIN_CONFLICT_RESPONSE: dict[str, str] = {
+    "climate": "Todavía no tengo control de temperatura configurado.",
+    "media_player": "No tengo cómo cambiar el volumen en esta zona todavía.",
+}
+_DOMAIN_CONFLICT_DEFAULT = "Ese comando no es para una luz, no pude ejecutarlo."
+
+
+def _conflicting_domain(text: str, matched_domain: str) -> str | None:
+    """Detectar misfire de dominio en el fast path.
+
+    Devuelve el dominio en conflicto (para logging) o None si no hay conflicto.
+    Conservador: solo dispara cuando el match es ``light.*``, el texto contiene
+    un sustantivo no-luz explícito (volumen/temperatura/...) y NO contiene
+    ningún sustantivo de luz (si el usuario dijo 'luz', confiamos en el match).
+    El match es accent-insensitive con word-boundaries para no pegar substrings.
+
+    Args:
+        text: Texto del usuario (post-STT).
+        matched_domain: Dominio de la entidad devuelta por el vector search.
+
+    Returns:
+        El dominio esperado por el texto (ej: "climate") si hay conflicto, o None.
+    """
+    if matched_domain != "light" or not text:
+        return None
+    import re as _re
+    import unicodedata as _ud
+
+    norm = _ud.normalize("NFD", text.lower())
+    norm = "".join(c for c in norm if _ud.category(c) != "Mn")
+    if any(_re.search(rf"\b{_re.escape(noun)}\b", norm) for noun in _LIGHT_NOUNS):
+        return None
+    for noun, domain in _NON_LIGHT_DOMAIN_NOUNS.items():
+        if _re.search(rf"\b{_re.escape(noun)}\b", norm):
+            return domain
+    return None
+
+
 def _resolve_prefer_area(text: str, zone_id: str | None) -> str | None:
     """Decidir qué area pasar como prefer_area al vector search.
 
@@ -613,6 +679,33 @@ class RequestDispatcher:
                     "description": "toda la casa",
                     "data": {},
                 }
+
+            # Guarda de conflicto de dominio (bug fantasma 2026-05-29): si el
+            # vector search devolvió una luz pero el texto pide explícitamente
+            # otro dominio (volumen→media_player, temperatura→climate), es un
+            # misfire — light.escritorio es el fallback de la zona del mic. NO
+            # disparamos la luz y devolvemos una respuesta inmediata y honesta
+            # (no se rerutea al slow path: no resolvería el dominio y, si el
+            # reasoner falla, cuelga 5s con un timeout falso — ver nota en
+            # _DOMAIN_CONFLICT_RESPONSE).
+            if command and command.get("domain") == "light":
+                conflict = _conflicting_domain(text, "light")
+                if conflict:
+                    logger.info(
+                        f"[Dispatcher] Domain conflict: text requests {conflict!r} "
+                        f"but vector match is {command.get('entity_id')!r}; rejecting "
+                        f"light action, returning immediate response"
+                    )
+                    return DispatchResult(
+                        path=path,
+                        priority=Priority.HIGH,
+                        success=False,
+                        response=_DOMAIN_CONFLICT_RESPONSE.get(
+                            conflict, _DOMAIN_CONFLICT_DEFAULT
+                        ),
+                        intent="domain_conflict",
+                        timings=timings,
+                    )
 
             if command:
                 # 2026-04-28: removido el skip idempotent por cache. La integración

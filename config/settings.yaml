@@ -149,12 +149,15 @@ stt:
   # Sesga la decodificación de Whisper para palabras del dominio. Le "enseña"
   # a reconocer "Nexa" y a favorecer vocabulario de domótica. Sin costo de
   # latencia — es un token-level prior. Máx ~224 tokens.
+  # 2026-05-29: REMOVIDAS las frases de comando verbatim ("Comandos típicos:
+  # Nexa subí el volumen, ...") — Whisper las regurgitaba de audio ambiente
+  # (TV/voz), disparando acciones fantasma (la luz del escritorio prendía sola).
+  # Dejamos solo vocabulario de dominio: da el prior léxico sin el motor de
+  # alucinación. Ver project_escritorio_light_phantom_toggles_2026-05-29.
   initial_prompt: >-
     Esto es un asistente de voz llamado Nexa que controla luces, aire
     acondicionado, persianas y música en el escritorio, el living, la cocina,
-    el baño y el hall. Comandos típicos: Nexa prendé la luz del living,
-    Nexa apagá la luz del escritorio, Nexa subí el volumen, Nexa poné la
-    luz al cincuenta por ciento, Nexa bajá la temperatura del aire.
+    el baño y el hall.
 
 # Text-to-Speech (GPU 1 — junto con STT, SpeakerID y kza-llm-fast :8101)
 # 2026-05-07: movido cuda:0 → cuda:1 (ver nota en stt.device).
