@@ -217,14 +217,14 @@ class LlmCallPayload:
 
     Attributes:
         timestamp: Unix epoch seconds (`time.time()`).
-        path: "fast" (router 7B) or "slow" (reasoner 72B).
-        endpoint_id: Stable endpoint id ("fast_router_7b" | "reasoner_72b").
+        path: "fast" (router 7B) or "slow" (cloud reasoner).
+        endpoint_id: Stable endpoint id ("fast_router_7b" | "reasoner_cloud").
         latency_ms: End-to-end LLM call latency in milliseconds.
         success: True if the call returned a usable response.
     """
     timestamp: float
     path: Literal["fast", "slow"]
-    endpoint_id: str  # "fast_router_7b" | "reasoner_72b"
+    endpoint_id: str  # "fast_router_7b" | "reasoner_cloud"
     latency_ms: float
     success: bool
 
