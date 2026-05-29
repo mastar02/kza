@@ -119,6 +119,7 @@ class CommandProcessor:
 
         if pretranscribed_text is not None:
             # Shortcut: texto ya venía. Corremos sólo speaker_id + emotion.
+            speaker_deferred = False
             result.timings["stt"] = 0.0
             result.timings["stt_skipped"] = 1
             if self.speaker_id and self.user_manager:
@@ -137,6 +138,11 @@ class CommandProcessor:
                     logger.debug(f"Emotion detection skipped: {e}")
             text = pretranscribed_text
         elif use_parallel and (self.speaker_id or self.emotion_detector):
+            speaker_deferred = (
+                not await_speaker_id
+                and self.speaker_id is not None
+                and self.user_manager is not None
+            )
             text, stt_ms, speaker_result, emotion_result = await self._process_parallel(
                 audio, await_speaker_id=await_speaker_id
             )
@@ -151,6 +157,7 @@ class CommandProcessor:
                 result.emotion = emotion_result
                 result.timings["emotion"] = emotion_result.processing_time_ms
         else:
+            speaker_deferred = False
             text, stt_ms = self.stt.transcribe(audio, self.sample_rate)
             result.timings["stt"] = stt_ms
 
@@ -166,7 +173,8 @@ class CommandProcessor:
         result.success = bool(text.strip())
 
         if result.success:
-            self._current_user = result.user
+            if not speaker_deferred:
+                self._current_user = result.user
             self._current_emotion = result.emotion
 
         result.timings["total"] = (time.perf_counter() - pipeline_start) * 1000

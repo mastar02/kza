@@ -56,3 +56,15 @@ async def test_await_speaker_id_true_keeps_blocking_behavior():
     result = await cp.process_command(np.zeros(16000, dtype=np.float32), await_speaker_id=True)
     assert result.user is not None
     assert result.user.name == "Gabriel"
+
+
+@pytest.mark.asyncio
+async def test_defer_does_not_clobber_prior_user():
+    cp = CommandProcessor(stt=_FastSTT(), speaker_identifier=_SlowSpeakerID(),
+                          user_manager=_UserMgr(), emotion_detector=None)
+    prior = type("U", (), {"name": "PriorUser"})()
+    cp._current_user = prior
+    result = await cp.process_command(np.zeros(16000, dtype=np.float32), await_speaker_id=False)
+    assert result.user is None
+    # El speaker todavía no resolvió (60ms): no debe haberse pisado a None.
+    assert cp.get_current_user() is prior
