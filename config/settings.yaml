@@ -250,7 +250,7 @@ reasoner:
   mode: "http"
   http_base_url: "https://api.minimax.io/v1"
   http_timeout: 60
-  http_model: "MiniMax-M2.7-highspeed"
+  http_model: "MiniMax-M2.7"   # base (validado, con cuota); -highspeed requiere otra suscripción
   api_style: "chat"            # MiniMax solo soporta /v1/chat/completions
   api_key_env: "MINIMAX_API_KEY"
   # Cloud cold puede tardar 10-20s al primer token → watchdog generoso.
