@@ -482,42 +482,41 @@ class HttpReasoner:
         *,
         max_tokens: int,
         temperature: float,
-        top_p: float = 0.9,
+        top_p: float | None = None,
         stop=None,
         stream: bool = False,
     ):
         """Llamar al endpoint según api_style. Devuelve el objeto resp del SDK.
 
+        top_p sólo se envía si viene explícito (None = no mandarlo, para no
+        alterar el wire-call del path legacy completions que no lo enviaba).
+
         Args:
             prompt: Texto de entrada.
             max_tokens: Tokens máximos de respuesta.
             temperature: Temperatura de muestreo.
-            top_p: Top-p para nucleus sampling.
+            top_p: Top-p para nucleus sampling. None = no enviar al API.
             stop: Secuencias de parada opcionales.
             stream: Si True, activa streaming.
 
         Returns:
             Objeto respuesta del SDK (o iterador si stream=True).
         """
+        kwargs = {
+            "model": self._resolved_model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": stream,
+        }
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        if stop:
+            kwargs["stop"] = stop
         if self.api_style == "chat":
             return self._client.chat.completions.create(
-                model=self._resolved_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stop=stop or None,
-                stream=stream,
+                messages=[{"role": "user", "content": prompt}], **kwargs
             )
-        return self._client.completions.create(
-            model=self._resolved_model,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stop=stop or None,
-            stream=stream,
-        )
+        return self._client.completions.create(prompt=prompt, **kwargs)
 
     def _extract_text(self, resp) -> str:
         """Texto de una respuesta no-streaming, según api_style.
