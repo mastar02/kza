@@ -262,15 +262,18 @@ async def main():
             model=reasoner_config.get("http_model"),
             timeout=reasoner_config.get("http_timeout", 120),
             idle_timeout_s=reasoner_config.get("idle_timeout_s"),
+            api_style=reasoner_config.get("api_style", "completions"),
+            api_key_env=reasoner_config.get("api_key_env"),
+            verify_ssl=reasoner_config.get("verify_ssl", True),
         )
         try:
             llm.load()
             info = llm.get_info()
-            logger.info(f"LLM 72B vía HTTP → {info['base_url']} modelo={info['model']}")
+            logger.info(f"LLM reasoner (cloud) vía HTTP → {info['base_url']} modelo={info['model']}")
         except Exception as e:
             # El fallback hacia 7B ahora lo maneja LLMRouter (plan #1 OpenClaw).
-            # Si el 72B no responde, llm queda None — el LLMRouter rota al 7B.
-            logger.error(f"HttpReasoner 72B no contactable: {e}. llm=None — failover via LLMRouter")
+            # Si el reasoner cloud no responde, llm queda None — el LLMRouter rota al 7B.
+            logger.error(f"HttpReasoner cloud no contactable: {e}. llm=None — failover via LLMRouter")
             llm = None
     else:
         model_path = reasoner_config.get("model_path")
@@ -319,7 +322,7 @@ async def main():
         llm_metrics_tracker = LLMMetricsTracker(window_s=300.0)
         clients = {"fast_router_7b": fast_router}
         if llm is not None:
-            clients["reasoner_72b"] = llm
+            clients["reasoner_cloud"] = llm
         # Pegar tracker direct-on-client así captura llamadas que NO pasan por
         # LLMRouter (ej. el LLMCommandRouter NLU usa fast_router directo).
         for ep_id, client in clients.items():
