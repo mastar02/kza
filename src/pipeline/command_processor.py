@@ -64,6 +64,7 @@ class CommandProcessor:
 
         self._current_user = None
         self._current_emotion = None
+        self._deferred_speaker_tasks: set[asyncio.Task] = set()
 
         # Cache de embeddings para speaker ID (evita fetch repetido)
         self._embeddings_cache: dict[str, np.ndarray] = {}
@@ -144,7 +145,7 @@ class CommandProcessor:
                 and self.user_manager is not None
             )
             text, stt_ms, speaker_result, emotion_result = await self._process_parallel(
-                audio, await_speaker_id=await_speaker_id
+                audio, defer_speaker=speaker_deferred
             )
             result.timings["stt"] = stt_ms
             if speaker_result:
@@ -188,15 +189,16 @@ class CommandProcessor:
         return result
 
     async def _process_parallel(
-        self, audio: np.ndarray, await_speaker_id: bool = True
+        self, audio: np.ndarray, defer_speaker: bool = False
     ) -> tuple[str, float, tuple | None, object | None]:
         """
         Procesar STT, Speaker ID y Emotion en paralelo REAL con asyncio.gather().
 
         Args:
             audio: Audio del comando
-            await_speaker_id: Si False, el speaker ID se lanza en background
+            defer_speaker: Si True, el speaker ID se lanza en background
                 (deferred) y no bloquea el retorno. Ver _spawn_deferred_speaker_id.
+                El llamador ya habrá computado este flag.
 
         Returns:
             Tuple[text, stt_ms, speaker_result, emotion_result]
@@ -205,10 +207,6 @@ class CommandProcessor:
         t_parallel = time.perf_counter()
 
         stt_task = loop.run_in_executor(None, self.stt.transcribe, audio, self.sample_rate)
-
-        defer_speaker = (
-            not await_speaker_id and self.speaker_id is not None and self.user_manager is not None
-        )
 
         speaker_task = (
             loop.run_in_executor(None, self._identify_speaker, audio)
@@ -267,7 +265,6 @@ class CommandProcessor:
                 logger.debug(f"Deferred speaker ID skipped: {e}")
 
         task = loop.create_task(_runner())
-        self._deferred_speaker_tasks = getattr(self, "_deferred_speaker_tasks", set())
         self._deferred_speaker_tasks.add(task)
         task.add_done_callback(self._deferred_speaker_tasks.discard)
 
