@@ -476,6 +476,78 @@ class HttpReasoner:
             logger.error(f"HttpReasoner no pudo contactar {self.base_url}: {e}")
             raise
 
+    def _create_completion(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        top_p: float = 0.9,
+        stop=None,
+        stream: bool = False,
+    ):
+        """Llamar al endpoint según api_style. Devuelve el objeto resp del SDK.
+
+        Args:
+            prompt: Texto de entrada.
+            max_tokens: Tokens máximos de respuesta.
+            temperature: Temperatura de muestreo.
+            top_p: Top-p para nucleus sampling.
+            stop: Secuencias de parada opcionales.
+            stream: Si True, activa streaming.
+
+        Returns:
+            Objeto respuesta del SDK (o iterador si stream=True).
+        """
+        if self.api_style == "chat":
+            return self._client.chat.completions.create(
+                model=self._resolved_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop or None,
+                stream=stream,
+            )
+        return self._client.completions.create(
+            model=self._resolved_model,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=stop or None,
+            stream=stream,
+        )
+
+    def _extract_text(self, resp) -> str:
+        """Texto de una respuesta no-streaming, según api_style.
+
+        Args:
+            resp: Objeto respuesta del SDK.
+
+        Returns:
+            Texto extraído del primer choice.
+        """
+        if self.api_style == "chat":
+            return resp.choices[0].message.content or ""
+        return resp.choices[0].text or ""
+
+    def _extract_stream_delta(self, chunk) -> str:
+        """Delta de texto de un chunk streaming, según api_style.
+
+        Args:
+            chunk: Chunk de respuesta streaming del SDK.
+
+        Returns:
+            Texto delta del chunk, o cadena vacía si no disponible.
+        """
+        try:
+            if self.api_style == "chat":
+                return chunk.choices[0].delta.content or ""
+            return chunk.choices[0].text or ""
+        except (AttributeError, IndexError):
+            return ""
+
     def __call__(
         self,
         prompt: str,
@@ -490,18 +562,18 @@ class HttpReasoner:
         if self._client is None:
             self.load()
         start = time.perf_counter()
-        resp = self._client.completions.create(
-            model=self._resolved_model,
-            prompt=prompt,
+        resp = self._create_completion(
+            prompt,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            stop=stop or None,
+            stop=stop,
         )
+        text = self._extract_text(resp)
         elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.debug(f"HttpReasoner ({elapsed_ms:.0f}ms) {len(prompt)}chars → {len(resp.choices[0].text)}chars")
+        logger.debug(f"HttpReasoner ({elapsed_ms:.0f}ms) {len(prompt)}chars → {len(text)}chars")
         return {
-            "choices": [{"text": resp.choices[0].text}],
+            "choices": [{"text": text}],
             "usage": {
                 "prompt_tokens": getattr(resp.usage, "prompt_tokens", 0),
                 "completion_tokens": getattr(resp.usage, "completion_tokens", 0),
@@ -529,9 +601,8 @@ class HttpReasoner:
         if not self.idle_timeout_s:
             def _call():
                 t0 = time.perf_counter()
-                resp = self._client.completions.create(
-                    model=self._resolved_model,
-                    prompt=prompt,
+                resp = self._create_completion(
+                    prompt,
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
@@ -542,16 +613,15 @@ class HttpReasoner:
                     self._last_metrics = {"tokens": tokens, "ms": elapsed_ms}
                     if self._metrics_tracker is not None and self._endpoint_id and tokens > 0:
                         self._metrics_tracker.record(self._endpoint_id, tokens, elapsed_ms)
-                return resp.choices[0].text
+                return self._extract_text(resp)
             return await asyncio.to_thread(_call)
 
         # Path con stream + idle_watchdog
         from src.llm.idle_watchdog import idle_watchdog
 
         def _open_stream():
-            return self._client.completions.create(
-                model=self._resolved_model,
-                prompt=prompt,
+            return self._create_completion(
+                prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 stream=True,
@@ -570,11 +640,7 @@ class HttpReasoner:
 
         text_parts: list[str] = []
         async for chunk in idle_watchdog(_async_iter(), self.idle_timeout_s):
-            try:
-                delta = chunk.choices[0].text or ""
-            except (AttributeError, IndexError):
-                delta = ""
-            text_parts.append(delta)
+            text_parts.append(self._extract_stream_delta(chunk))
         return "".join(text_parts)
 
     # Métodos no aplicables (LoRA, GGUF load) — stubs para backward compat
