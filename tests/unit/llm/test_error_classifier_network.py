@@ -30,3 +30,16 @@ def test_5xx_is_failover_worthy():
 def test_auth_still_wins_over_transient():
     # 401 must still be AUTH (not failover-worthy), not misclassified as transient.
     assert classify_error(Exception("401 Unauthorized")) == ErrorKind.AUTH
+
+
+def test_auth_message_mentioning_ssl_is_not_misclassified():
+    # "ssl" substring must not shadow AUTH — 401 wins.
+    from src.llm.error_classifier import classify_error
+    from src.llm.types import ErrorKind
+    assert classify_error(Exception("401 Unauthorized: ssl client cert required")) == ErrorKind.AUTH
+
+
+def test_stringified_ssl_error_still_transient():
+    from src.llm.error_classifier import classify_error
+    from src.llm.types import ErrorKind
+    assert classify_error(Exception("SSLError: handshake failure")) == ErrorKind.TIMEOUT
