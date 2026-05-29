@@ -14,9 +14,16 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 
-def _resolve_api_key(base_url: str) -> str:
-    """Pick the bearer token env var matching the endpoint's port.
+def _resolve_api_key(base_url: str, api_key_env: str | None = None) -> str:
+    """Pick the bearer token for an OpenAI-compatible endpoint.
 
+    If ``api_key_env`` is given, that env var is read directly — this is the
+    required path for cloud endpoints (e.g. MiniMax, Together, OpenRouter)
+    whose URL has no port to heuristically identify them. Fails loudly when
+    the var is absent so a misconfigured prod deploy surfaces at startup
+    instead of as an opaque 401.
+
+    Without ``api_key_env``, falls back to the port-based heuristic:
     :8100 → vLLM (VLLM_API_KEY, legacy/disabled).
     :8101 → ik_llama fast (LLAMA_API_KEY, shared bearer post 2026-05-07 reorg).
     :8200 → ik_llama slow GLM-Air (LLAMA_API_KEY).
@@ -26,6 +33,15 @@ def _resolve_api_key(base_url: str) -> str:
     deploy (missing EnvironmentFile, wrong systemd User=) is visible at
     startup instead of surfacing later as an opaque 401.
     """
+    if api_key_env is not None:
+        key = os.getenv(api_key_env)
+        if not key:
+            raise RuntimeError(
+                f"API key env var {api_key_env!r} no está seteada para {base_url} — "
+                f"endpoint cloud requiere auth. Configurar en /home/kza/secrets/.env "
+                f"(chmod 600) y cargar vía systemd EnvironmentFile."
+            )
+        return key
     port = urlparse(base_url).port
     if port == 8100:
         key = os.getenv("VLLM_API_KEY")
@@ -407,6 +423,9 @@ class HttpReasoner:
         model: str | None = None,           # si None, usa el primero que liste el server
         timeout: float = 120.0,
         idle_timeout_s: float | None = None,  # watchdog para streams (72B en CPU se cuelga)
+        api_key_env: str | None = None,       # env var explícito para cloud endpoints
+        api_style: str = "completions",       # "completions" | "chat" (tarea B1)
+        verify_ssl: bool = True,              # desactivar para proxies locales (tarea B5)
         **_ignored_legacy,
     ):
         # Nota: el fallback simple base_url→fallback_base_url (commit 074160b)
@@ -417,6 +436,9 @@ class HttpReasoner:
         self.model = model
         self.timeout = timeout
         self.idle_timeout_s = idle_timeout_s
+        self.api_key_env = api_key_env
+        self.api_style = api_style
+        self.verify_ssl = verify_ssl
         self._client = None
         self._resolved_model = None
         self._resolved_base_url = None
@@ -430,7 +452,7 @@ class HttpReasoner:
         Returns (client, resolved_model_id). Raises if endpoint doesn't respond.
         """
         from openai import OpenAI
-        client = OpenAI(base_url=base_url, api_key=_resolve_api_key(base_url), timeout=self.timeout)
+        client = OpenAI(base_url=base_url, api_key=_resolve_api_key(base_url, self.api_key_env), timeout=self.timeout)
         models = client.models.list()
         ids = [m.id for m in models.data]
         if preferred_model and preferred_model in ids:
@@ -595,12 +617,14 @@ REGLAS:
         base_url: str = "http://127.0.0.1:8101/v1",
         model: str = "qwen2.5-7b-instruct",
         timeout: float = 30.0,
+        api_key_env: str | None = None,  # env var explícito para cloud endpoints
         # Backward-compat: ignorar kwargs de la versión local (device, gpu_*, lora_*).
         **_ignored,
     ):
         self.base_url = base_url
         self.model_name = model
         self.timeout = timeout
+        self.api_key_env = api_key_env
         self._client = None
         self._available = False
         self._last_metrics: dict | None = None
@@ -615,7 +639,7 @@ REGLAS:
         from openai import OpenAI
 
         logger.info(f"Conectando al vLLM compartido en {self.base_url} (modelo: {self.model_name})")
-        self._client = OpenAI(base_url=self.base_url, api_key=_resolve_api_key(self.base_url), timeout=self.timeout)
+        self._client = OpenAI(base_url=self.base_url, api_key=_resolve_api_key(self.base_url, self.api_key_env), timeout=self.timeout)
 
         try:
             models = self._client.models.list()
