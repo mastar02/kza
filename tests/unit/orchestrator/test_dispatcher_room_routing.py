@@ -94,7 +94,7 @@ class TestDispatcherPropagatesRoomToSearch:
             zone_id="zone_escritorio",
         )
         assert chroma_with_search.asearch_command.called, (
-            "search_command should have been called for FAST_DOMOTICS path"
+            "asearch_command should have been called for FAST_DOMOTICS path"
         )
         kwargs = chroma_with_search.asearch_command.call_args.kwargs
         assert kwargs.get("prefer_area") == "Escritorio", (
