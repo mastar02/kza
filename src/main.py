@@ -102,7 +102,7 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
         tts: Instancia de TTS con método synthesize.
         speaker_identifier: Opcional. Instancia con método get_embedding.
         emotion_detector: Opcional. Instancia con método detect.
-        chroma: Opcional. Instancia de ChromaSync con _embedder interno.
+        chroma: Opcional. Instancia de ChromaSync con método warmup_embedder().
     """
     import numpy as np
     silence = np.zeros(16000, dtype=np.float32)  # 1s @ 16kHz

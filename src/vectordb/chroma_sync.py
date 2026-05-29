@@ -3,8 +3,6 @@ Vector Database Sync Module
 Sincronización de comandos de Home Assistant con ChromaDB
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
@@ -106,8 +104,6 @@ class ChromaSync:
         Returns:
             Latencia del encode dummy en ms (para logging del warmup).
         """
-        import time
-
         start = time.perf_counter()
         self.embedder.encode(["warmup"])
         return (time.perf_counter() - start) * 1000

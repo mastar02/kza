@@ -63,9 +63,6 @@ def test_warmup_calls_each_model(warmup_fn):
     emotion_detector.detect = MagicMock(return_value=MagicMock())
 
     chroma = MagicMock()
-    embedder = MagicMock()
-    embedder.encode = MagicMock(return_value=np.zeros((1, 1024)))
-    chroma._embedder = embedder
 
     asyncio.run(warmup_fn(stt, tts, speaker_identifier, emotion_detector, chroma))
 
@@ -73,7 +70,7 @@ def test_warmup_calls_each_model(warmup_fn):
     tts.synthesize.assert_called_once_with("hola")
     speaker_identifier.get_embedding.assert_called_once()
     emotion_detector.detect.assert_called_once()
-    embedder.encode.assert_called_once_with(["warmup"])
+    chroma.warmup_embedder.assert_called_once()
 
 
 def test_warmup_skips_none_optional_models(warmup_fn):
@@ -105,9 +102,6 @@ def test_warmup_continues_on_model_failure(warmup_fn):
     emotion_detector.detect = MagicMock(return_value=MagicMock())
 
     chroma = MagicMock()
-    embedder = MagicMock()
-    embedder.encode = MagicMock(return_value=np.zeros((1, 1024)))
-    chroma._embedder = embedder
 
     # No debe raisear
     asyncio.run(warmup_fn(stt, tts, speaker_identifier, emotion_detector, chroma))
@@ -116,7 +110,7 @@ def test_warmup_continues_on_model_failure(warmup_fn):
     tts.synthesize.assert_called_once()
     speaker_identifier.get_embedding.assert_called_once()
     emotion_detector.detect.assert_called_once()
-    embedder.encode.assert_called_once()
+    chroma.warmup_embedder.assert_called_once()
 
 
 def test_warmup_handles_async_tts(warmup_fn):
@@ -134,18 +128,16 @@ def test_warmup_handles_async_tts(warmup_fn):
     stt.transcribe.assert_called_once()
 
 
-def test_warmup_skips_chroma_without_embedder(warmup_fn):
-    """ChromaSync sin _embedder inicializado no debe causar error."""
+def test_warmup_skips_chroma_when_none(warmup_fn):
+    """Cuando chroma es None, warmup_embedder no debe ser llamado ni causar error."""
     stt = MagicMock()
     stt.transcribe = MagicMock(return_value=("", 0.0))
 
     tts = MagicMock()
     tts.synthesize = MagicMock(return_value=(np.zeros(100), 0.0, "kokoro"))
 
-    chroma = MagicMock()
-    chroma._embedder = None
-
-    asyncio.run(warmup_fn(stt, tts, None, None, chroma))
+    # chroma=None → la rama BGE-M3 se salta completamente
+    asyncio.run(warmup_fn(stt, tts, None, None, None))
 
     stt.transcribe.assert_called_once()
     tts.synthesize.assert_called_once()
