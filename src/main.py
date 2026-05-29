@@ -151,12 +151,12 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
         except Exception as e:
             logger.warning(f"Warmup emotion skipped: {e}")
 
-    # BGE-M3 warmup — compila kernels del embedder usado por ChromaDB
-    if chroma is not None and getattr(chroma, "_embedder", None) is not None:
-        t0 = time.perf_counter()
+    # BGE-M3 warmup — compila kernels del embedder usado por ChromaDB.
+    # Usa warmup_embedder() (vía property) en vez del guard lazy `_embedder`,
+    # que daba False y salteaba el warmup → el primer comando pagaba ~48ms cold.
+    if chroma is not None:
         try:
-            chroma._embedder.encode(["warmup"])
-            timings["bge_m3"] = (time.perf_counter() - t0) * 1000
+            timings["bge_m3"] = chroma.warmup_embedder()
         except Exception as e:
             logger.warning(f"Warmup BGE-M3 skipped: {e}")
 

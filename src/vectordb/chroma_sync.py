@@ -3,6 +3,8 @@ Vector Database Sync Module
 Sincronización de comandos de Home Assistant con ChromaDB
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -92,7 +94,24 @@ class ChromaSync:
         if self._embedder is None:
             self.initialize()
         return self._embedder
-    
+
+    def warmup_embedder(self) -> float:
+        """Forzar la inicialización lazy del embedder y compilar kernels.
+
+        Usa la property `embedder` (que llama initialize() si hace falta) en
+        vez de leer `_embedder` directo — así el warmup NO se saltea cuando el
+        embedder todavía no fue materializado (bug 2026-05-29: el guard lazy en
+        main.py daba False y el primer comando pagaba el cold start de ~48ms).
+
+        Returns:
+            Latencia del encode dummy en ms (para logging del warmup).
+        """
+        import time
+
+        start = time.perf_counter()
+        self.embedder.encode(["warmup"])
+        return (time.perf_counter() - start) * 1000
+
     # ==================== Sincronización de Comandos ====================
     
     def sync_commands(
