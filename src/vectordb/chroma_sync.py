@@ -395,7 +395,33 @@ Solo JSON, sin explicaciones:"""
             f"(sim={similarity:.2f}, cap={capability}, data={final_data})"
         )
         return result
-    
+
+    async def asearch_command(
+        self,
+        query: str,
+        threshold: float = 0.65,
+        service_filter: str | None = None,
+        query_slots: dict | None = None,
+        hint_entities: list[str] | None = None,
+        prefer_area: str | None = None,
+    ) -> dict | None:
+        """Variante async de search_command para el fast path.
+
+        Delega el trabajo síncrono (encode BGE-M3 en CPU + query a Chroma) a un
+        thread vía asyncio.to_thread para no bloquear el event loop. Misma
+        firma y retorno que search_command. Usar en contextos async calientes
+        (dispatcher fast path); los callers sync siguen usando search_command.
+        """
+        return await asyncio.to_thread(
+            self.search_command,
+            query,
+            threshold,
+            service_filter=service_filter,
+            query_slots=query_slots,
+            hint_entities=hint_entities,
+            prefer_area=prefer_area,
+        )
+
     # ==================== Rutinas ====================
     
     def save_routine(self, routine: dict):

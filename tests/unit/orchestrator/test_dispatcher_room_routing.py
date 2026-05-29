@@ -29,8 +29,7 @@ KNOWN_AREAS = ("Cuarto", "Escritorio", "Living", "Cocina", "Baño", "Hall")
 
 @pytest.fixture
 def chroma_with_search():
-    cs = MagicMock()
-    cs.search_command = MagicMock(return_value={
+    _result = {
         "domain": "light",
         "service": "turn_on",
         "entity_id": "light.escritorio",
@@ -39,7 +38,10 @@ def chroma_with_search():
         "data": {},
         "capability": "onoff",
         "value_label": "prender",
-    })
+    }
+    cs = MagicMock()
+    cs.search_command = MagicMock(return_value=_result)
+    cs.asearch_command = AsyncMock(return_value=_result)
     return cs
 
 
@@ -91,10 +93,10 @@ class TestDispatcherPropagatesRoomToSearch:
             text="Nexa bajá la luz al cincuenta por ciento",
             zone_id="zone_escritorio",
         )
-        assert chroma_with_search.search_command.called, (
+        assert chroma_with_search.asearch_command.called, (
             "search_command should have been called for FAST_DOMOTICS path"
         )
-        kwargs = chroma_with_search.search_command.call_args.kwargs
+        kwargs = chroma_with_search.asearch_command.call_args.kwargs
         assert kwargs.get("prefer_area") == "Escritorio", (
             f"Expected prefer_area='Escritorio' (derived from zone_escritorio), "
             f"got {kwargs.get('prefer_area')!r}"
@@ -114,7 +116,7 @@ class TestDispatcherPropagatesRoomToSearch:
             text="prendé la luz del living",
             zone_id="zone_escritorio",
         )
-        kwargs = chroma_with_search.search_command.call_args.kwargs
+        kwargs = chroma_with_search.asearch_command.call_args.kwargs
         assert kwargs.get("prefer_area") == "Living", (
             f"Literal 'living' in text must win over mic zone. "
             f"Got prefer_area={kwargs.get('prefer_area')!r}"
@@ -130,7 +132,7 @@ class TestDispatcherPropagatesRoomToSearch:
             text="prendé la luz",
             zone_id=None,
         )
-        kwargs = chroma_with_search.search_command.call_args.kwargs
+        kwargs = chroma_with_search.asearch_command.call_args.kwargs
         assert kwargs.get("prefer_area") is None
 
     @pytest.mark.asyncio
@@ -147,7 +149,7 @@ class TestDispatcherPropagatesRoomToSearch:
             text="prendé la luz",
             zone_id="zone_inexistente",
         )
-        kwargs = chroma_with_search.search_command.call_args.kwargs
+        kwargs = chroma_with_search.asearch_command.call_args.kwargs
         assert kwargs.get("prefer_area") is None
 
 
@@ -170,7 +172,7 @@ class TestDispatcherPassesIntentAsServiceFilter:
             zone_id="zone_escritorio",
             service_filter="turn_off",
         )
-        kwargs = chroma_with_search.search_command.call_args.kwargs
+        kwargs = chroma_with_search.asearch_command.call_args.kwargs
         assert kwargs.get("service_filter") == "turn_off"
 
     @pytest.mark.asyncio
@@ -185,5 +187,5 @@ class TestDispatcherPassesIntentAsServiceFilter:
             service_filter="set_brightness",
             query_slots={"brightness_pct": 50},
         )
-        kwargs = chroma_with_search.search_command.call_args.kwargs
+        kwargs = chroma_with_search.asearch_command.call_args.kwargs
         assert kwargs.get("query_slots") == {"brightness_pct": 50}

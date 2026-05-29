@@ -18,14 +18,16 @@ from src.orchestrator.context_manager import ContextManager
 @pytest.fixture
 def mock_chroma():
     """Mock ChromaDB sync"""
-    chroma = MagicMock()
-    chroma.search_command = MagicMock(return_value={
+    _result = {
         "domain": "light",
         "service": "turn_on",
         "entity_id": "light.living",
         "description": "Luz del living encendida",
         "similarity": 0.92
-    })
+    }
+    chroma = MagicMock()
+    chroma.search_command = MagicMock(return_value=_result)
+    chroma.asearch_command = AsyncMock(return_value=_result)
     return chroma
 
 
@@ -206,6 +208,7 @@ class TestDispatchFastPath:
     @pytest.mark.asyncio
     async def test_dispatch_domotics_not_found(self, dispatcher, mock_chroma):
         mock_chroma.search_command.return_value = None
+        mock_chroma.asearch_command.return_value = None
 
         result = await dispatcher.dispatch(
             user_id="user_1",
@@ -219,6 +222,7 @@ class TestDispatchFastPath:
     @pytest.mark.asyncio
     async def test_dispatch_router_simple(self, dispatcher, mock_chroma, mock_router):
         mock_chroma.search_command.return_value = None
+        mock_chroma.asearch_command.return_value = None
 
         result = await dispatcher.dispatch(
             user_id="user_1",

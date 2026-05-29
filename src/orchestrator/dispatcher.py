@@ -587,7 +587,7 @@ class RequestDispatcher:
 
             # Buscar comando en vector DB
             t0 = time.perf_counter()
-            command = self.chroma.search_command(
+            command = await self.chroma.asearch_command(
                 text,
                 self.vector_threshold,
                 service_filter=service_filter,
