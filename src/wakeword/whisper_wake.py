@@ -111,6 +111,23 @@ _NON_TV_MODE_REJECT_REASONS = frozenset({
     "no_speech_hallucination",   # (futuro) low-confidence acustica
 })
 
+# Alucinaciones de Whisper sobre silencio que son frases CORTAS y COMPLETAS
+# (no substrings): saludos/cierres que el modelo inventa. Se matchean solo
+# cuando son la utterance entera, para no false-rejectar "...gracias" real.
+# Evidencia métricas 2026-05-30 (top de below_fuzzy_threshold).
+# Formas normalizadas (_normalize): sin acentos, sin puntuación, lowercase.
+_FULL_UTTERANCE_HALLUCINATIONS = frozenset({
+    "gracias",
+    "muchas gracias",
+    "amen",
+    "adios",
+    "verdad",
+    "vamos",
+    "gracias por ver el video",
+    "suscribete al canal",
+    "suscribete",
+})
+
 # Palabras que NO terminan una oración bien formada en español. Si la
 # transcripción del wake termina con una de éstas, el silencio que cerró la
 # utterance probablemente fue una pausa intra-frase y el comando real continúa
@@ -812,6 +829,20 @@ class WhisperWakeDetector:
             f"avg_logprob={None if avg_logprob is None else round(avg_logprob, 2)})"
         )
 
+        # Hard reject: utterance completa es una alucinación conocida de Whisper
+        # (saludos/cierres de YouTube). Match exacto (no substring) — no false-rejecta
+        # comandos que incluyen esas palabras en medio del texto.
+        # Evidencia métricas 2026-05-30 (top of below_fuzzy_threshold).
+        hallu_reason = self._full_utterance_hallucination_reason(norm)
+        if hallu_reason:
+            logger.info(f"Wake rejected — alucinación de utterance completa: {text!r}")
+            self._emit_wake(
+                False, None, "rejected", text, dur_ms, stt_ms,
+                rejection_reason=hallu_reason,
+                no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
+            )
+            return (None, text)
+
         # Hard reject: velocidad palabras/segundo físicamente imposible.
         # Independiente de TV-mode — si Whisper produjo 9 palabras en 0.8s
         # de audio, ningún humano lo dijo. Bug 2026-05-03 08:08:49.
@@ -1024,6 +1055,23 @@ class WhisperWakeDetector:
             f"🎤 Follow-up armed por {self.follow_up_window_s}s — "
             f"esperando comando tras wake-only: {text!r}"
         )
+
+    def _full_utterance_hallucination_reason(self, norm: str) -> "Optional[str]":
+        """Si la utterance COMPLETA es una alucinación conocida de Whisper,
+        devuelve la reason de reject; None si no.
+
+        Match EXACTO contra norm (no substring) para no false-rejectar
+        comandos que terminan en '...gracias'.
+
+        Args:
+            norm: texto normalizado (lowercase, sin acentos ni puntuación).
+
+        Returns:
+            "no_speech_hallucination" si es alucinación completa, None si no.
+        """
+        if norm in _FULL_UTTERANCE_HALLUCINATIONS:
+            return "no_speech_hallucination"
+        return None
 
     def _record_reject(self, reason: str) -> None:
         """Registra un reject y activa/extiende TV-mode si supera el threshold.

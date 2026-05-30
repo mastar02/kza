@@ -379,3 +379,22 @@ def test_transcribe_captures_confidence(wake_detector, monkeypatch):
     wake_detector._transcribe_and_match(audio, 1000.0)
     assert captured.get("no_speech_prob") == 0.92
     assert captured.get("avg_logprob") == -0.3
+
+
+# ---------------------------------------------------------------------------
+# Task F2: denylist de alucinaciones de utterance-completa
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "¡Gracias!", "Gracias.", "Amén.", "Adiós.", "¿Verdad?",
+])
+def test_full_utterance_hallucinations_rejected_as_such(wake_detector, text):
+    """Alucinaciones de saludo/cierre deben mapear a la reason no_speech_hallucination."""
+    reason = wake_detector._full_utterance_hallucination_reason(_normalize(text))
+    assert reason == "no_speech_hallucination"
+
+
+def test_real_command_with_gracias_not_rejected(wake_detector):
+    """gracias DENTRO de un comando real no debe matchear (no es utterance completa)."""
+    assert wake_detector._full_utterance_hallucination_reason(
+        _normalize("nexa prendé la luz gracias")) is None
