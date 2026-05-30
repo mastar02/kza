@@ -835,7 +835,7 @@ class WhisperWakeDetector:
         # Evidencia métricas 2026-05-30 (top of below_fuzzy_threshold).
         hallu_reason = self._full_utterance_hallucination_reason(norm)
         if hallu_reason:
-            logger.info(f"Wake rejected — alucinación de utterance completa: {text!r}")
+            logger.info(f"Wake rejected — full-utterance hallucination: {text!r}")
             self._emit_wake(
                 False, None, "rejected", text, dur_ms, stt_ms,
                 rejection_reason=hallu_reason,

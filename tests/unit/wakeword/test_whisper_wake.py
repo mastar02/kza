@@ -398,3 +398,19 @@ def test_real_command_with_gracias_not_rejected(wake_detector):
     """gracias DENTRO de un comando real no debe matchear (no es utterance completa)."""
     assert wake_detector._full_utterance_hallucination_reason(
         _normalize("nexa prendé la luz gracias")) is None
+
+
+def test_full_utterance_hallucination_rejected_via_transcribe(wake_detector, monkeypatch):
+    """Wiring: una alucinación de utterance-completa transcrita se rechaza en _transcribe_and_match."""
+    import numpy as np
+    class FakeSeg:
+        def __init__(self, text, nsp=0.9, lp=-0.4):
+            self.text, self.no_speech_prob, self.avg_logprob = text, nsp, lp
+    wake_detector.whisper._model = None
+    monkeypatch.setattr(wake_detector.whisper, "transcribe",
+                        lambda *a, **k: (iter([FakeSeg("Gracias.")]), None))
+    emitted = {}
+    monkeypatch.setattr(wake_detector, "_emit_wake", lambda *a, **k: emitted.update(k))
+    matched, text = wake_detector._transcribe_and_match(np.zeros(16000, dtype=np.float32), 1000.0)
+    assert matched is None
+    assert emitted.get("rejection_reason") == "no_speech_hallucination"
