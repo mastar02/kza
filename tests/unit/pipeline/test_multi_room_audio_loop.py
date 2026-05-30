@@ -29,6 +29,7 @@ from src.pipeline.multi_room_audio_loop import (
     MultiRoomAudioLoop,
     RoomStream,
     CHUNK_SIZE,
+    _resolve_capture_channels,
 )
 from src.pipeline.command_event import CommandEvent
 
@@ -387,3 +388,16 @@ class TestStop:
         await loop.stop()
 
         assert loop._running is False
+
+
+class TestResolveCapturChannels:
+    """Test _resolve_capture_channels pure function."""
+
+    @pytest.mark.parametrize("reported,expected", [
+        (0, 1),
+        (1, 1),
+        (2, 2),
+        (6, 6),
+    ])
+    def test_resolve_capture_channels(self, reported, expected):
+        assert _resolve_capture_channels(reported) == expected

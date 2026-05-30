@@ -28,6 +28,24 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 1280
 
 
+def _resolve_capture_channels(max_input_channels: int) -> int:
+    """Channels to open for the InputStream capture.
+
+    Some mics (UAC1.0 ReSpeaker legacy) report max_input_channels=0 in
+    PortAudio and require forcing 1. Others (XVF3800, 2ch) must be opened
+    with their native count: opening a 2ch device as 1ch reads interleaved
+    data into a 1ch buffer and garbles the audio, causing Whisper to
+    hallucinate. Channel 0 (indata[:, 0]) is always consumed downstream.
+
+    Args:
+        max_input_channels: Value from sd.query_devices(index)['max_input_channels'].
+
+    Returns:
+        Number of channels to pass to sd.InputStream.
+    """
+    return max_input_channels if max_input_channels and max_input_channels >= 1 else 1
+
+
 @dataclass
 class RoomStream:
     """Per-room audio capture state."""
@@ -209,17 +227,24 @@ class MultiRoomAudioLoop:
         for room_id, rs in self.room_streams.items():
             callback = self._make_audio_callback(rs)
             try:
+                dev_info = sd.query_devices(rs.device_index)
+                capture_channels = _resolve_capture_channels(
+                    int(dev_info.get("max_input_channels", 0))
+                )
                 stream = sd.InputStream(
                     device=rs.device_index,
                     samplerate=self.sample_rate,
-                    channels=1,
+                    channels=capture_channels,
                     dtype="float32",
                     blocksize=CHUNK_SIZE,
                     callback=callback,
                 )
                 stream.start()
                 streams.append(stream)
-                logger.info(f"Room {room_id}: audio stream started (device={rs.device_index})")
+                logger.info(
+                    f"Room {room_id}: audio stream started "
+                    f"(device={rs.device_index}, channels={capture_channels})"
+                )
             except sd.PortAudioError as e:
                 logger.error(f"Room {room_id}: failed to open device {rs.device_index}: {e}")
 
