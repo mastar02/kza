@@ -50,9 +50,21 @@ class FastWhisperSTT:
         self._model = None
     
     def load(self):
-        """Cargar modelo en GPU"""
+        """Cargar modelo en GPU (idempotente).
+
+        Idempotencia crítica: `load()` se invoca desde más de un sitio sobre
+        la MISMA instancia compartida (warmup vía transcribe() lazy, y
+        CommandProcessor.__init__ explícito). Sin este guard, la 2da llamada
+        construía un segundo WhisperModel mientras el primero seguía
+        referenciado en self._model → pico 2× VRAM → `CUDA out of memory` en
+        cuda:1 al reiniciar el service (2026-05-29). Con el guard, la 2da
+        llamada es no-op.
+        """
+        if self._model is not None:
+            return
+
         from faster_whisper import WhisperModel
-        
+
         logger.info(f"Cargando Whisper: {self.model_name} en {self.device}")
         start = time.time()
         
