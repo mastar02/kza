@@ -42,8 +42,11 @@ class RoomConfig:
     display_name: str  # Para TTS: "el living", "la cocina"
 
     # Hardware USB
-    mic_device_index: int | None = None      # sounddevice index del XVF3800
+    mic_device_index: int | None = None      # sounddevice index del XVF3800 (inestable: driftea al re-enumerar USB)
     mic_device_name: str | None = None       # Nombre USB para auto-detect
+    mic_usb_port: str | None = None          # Puerto USB físico estable ("3-1.1"). Análogo a bt_adapter (MAC):
+                                             # resuelve a mic_device_index al iniciar leyendo sysfs + PortAudio.
+                                             # Único discriminador fiable entre dos ReSpeakers idénticos.
     bt_adapter: str | None = None            # MAC del adaptador BT (estable). Acepta también "hciN" como override explícito.
     bt_hci: str | None = None                # hciN resuelto al iniciar (no setear manualmente; lo llena el manager).
 
@@ -174,13 +177,44 @@ class RoomContextManager:
 
         logger.info("RoomContextManager inicializado")
 
-    def add_room(self, config: RoomConfig):
+    def add_room(
+        self,
+        config: RoomConfig,
+        usb_root: str = "/sys/bus/usb/devices",
+        mic_devices=None,
+    ):
         """Agregar una habitación al sistema.
 
         Si bt_adapter es una MAC, intenta resolverla a hciN leyendo sysfs.
         El hciN resuelto queda en config.bt_hci para que el BLE scanner lo use.
+
+        Si mic_usb_port está seteado y mic_device_index no, resuelve el puerto
+        USB físico al índice de PortAudio (estable ante re-enumeraciones y único
+        discriminador entre dos ReSpeakers idénticos). Un mic_device_index
+        explícito siempre gana sobre mic_usb_port.
+
+        Args:
+            usb_root: raíz sysfs de dispositivos USB (inyectable para tests).
+            mic_devices: lista de devices estilo sounddevice.query_devices()
+                (inyectable para tests; None → consulta PortAudio real).
         """
         self._rooms[config.room_id] = config
+
+        if config.mic_device_index is None and config.mic_usb_port:
+            resolved = resolve_mic_usb_port(
+                config.mic_usb_port, usb_root=usb_root, devices=mic_devices
+            )
+            if resolved is not None:
+                config.mic_device_index = resolved
+                logger.info(
+                    f"Mic USB port {config.mic_usb_port} → device index "
+                    f"{resolved} ({config.name})"
+                )
+            else:
+                logger.warning(
+                    f"Mic USB port {config.mic_usb_port} no resuelto a un device "
+                    f"de PortAudio ({config.name}); el room queda sin mic"
+                )
 
         if config.mic_device_index is not None:
             self._mic_to_room[config.mic_device_index] = config.room_id
@@ -763,6 +797,100 @@ def resolve_bt_adapter(
 
     logger.warning(f"bt_adapter '{value}' no es ni MAC ni hciN — ignorado")
     return None
+
+
+def usb_port_to_alsa_card(
+    usb_port: str,
+    usb_root: str = "/sys/bus/usb/devices",
+) -> int | None:
+    """Mapear un puerto USB físico ("3-1.1") al número de tarjeta ALSA.
+
+    El nodo de sonido cuelga de una interfaz del device: por ejemplo
+    `/sys/bus/usb/devices/3-1.1:1.0/sound/card1`. Busca en las interfaces del
+    puerto el primer `sound/cardN` y devuelve N.
+
+    Returns:
+        Número de card ALSA, o None si el puerto no expone audio.
+    """
+    import glob
+    import os
+
+    if not usb_port:
+        return None
+
+    pattern = os.path.join(usb_root, f"{usb_port}:*", "sound", "card*")
+    for path in sorted(glob.glob(pattern)):
+        name = os.path.basename(path)  # "card1"
+        if name.startswith("card") and name[4:].isdigit():
+            return int(name[4:])
+    return None
+
+
+def alsa_card_to_device_index(card: int, devices=None) -> int | None:
+    """Mapear un número de card ALSA al índice de device de PortAudio.
+
+    Matchea por el sufijo `(hw:<card>,` que PortAudio incluye en el nombre del
+    device (ej: "ReSpeaker 4 Mic Array (UAC1.0): USB Audio (hw:1,0)"). La coma
+    evita confundir card 1 con card 10/11.
+
+    No filtra por canales de entrada: el ReSpeaker UAC1.0 reporta in=0 en la
+    enumeración default de PortAudio (solo abre captura a 16kHz/6ch), pero el
+    índice es válido para abrirlo explícitamente.
+
+    Args:
+        devices: lista estilo sounddevice.query_devices() (inyectable en tests).
+            None → consulta PortAudio real.
+
+    Returns:
+        Índice de device de PortAudio, o None si la card no aparece.
+    """
+    if devices is None:
+        try:
+            import sounddevice as sd
+            devices = sd.query_devices()
+        except Exception as exc:  # ImportError, PortAudioError, etc.
+            logger.error(f"No se pudo consultar PortAudio: {exc}")
+            return None
+
+    needle = f"(hw:{card},"
+    for i, dev in enumerate(devices):
+        if needle in dev["name"]:
+            return i
+    return None
+
+
+def resolve_mic_usb_port(
+    usb_port: str | None,
+    usb_root: str = "/sys/bus/usb/devices",
+    devices=None,
+) -> int | None:
+    """Resolver un puerto USB físico al índice de device de PortAudio.
+
+    Encadena usb_port → card ALSA (sysfs) → índice PortAudio. Es el análogo
+    para micrófonos de `resolve_bt_adapter` (MAC → hciN): da un binding estable
+    inmune al orden de enumeración USB y capaz de distinguir dos ReSpeakers
+    idénticos por el puerto físico al que están conectados.
+
+    Returns:
+        Índice de device de PortAudio, o None si no se puede resolver.
+    """
+    if not usb_port:
+        return None
+
+    card = usb_port_to_alsa_card(usb_port, usb_root)
+    if card is None:
+        logger.warning(
+            f"Mic USB port {usb_port} no expone tarjeta de audio en {usb_root}"
+        )
+        return None
+
+    index = alsa_card_to_device_index(card, devices=devices)
+    if index is None:
+        logger.warning(
+            f"Mic USB port {usb_port} → ALSA card {card}, pero PortAudio no "
+            f"lista esa card"
+        )
+    return index
 
 
 async def auto_detect_bt_adapters(rooms: list[RoomConfig]) -> list[RoomConfig]:

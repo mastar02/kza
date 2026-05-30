@@ -662,6 +662,7 @@ async def main():
                 display_name=room_dict.get("display_name", room_key),
                 mic_device_index=room_dict.get("mic_device_index"),
                 mic_device_name=room_dict.get("mic_device_name"),
+                mic_usb_port=room_dict.get("mic_usb_port"),
                 bt_adapter=room_dict.get("bt_adapter"),
                 ma1260_zone=room_dict.get("ma1260_zone"),
                 output_mode=room_dict.get("output_mode", "mono"),

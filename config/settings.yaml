@@ -969,7 +969,7 @@ spotify:
 rooms:
   enabled: true
   cross_validation: true
-  fallback_room: "escritorio"   # Única habitación con HW real (2026-04-21) — revertir a "living" cuando haya más
+  fallback_room: "living"   # 2026-05-30: el mic real ahora está en el living (puerto USB 3-1.1)
   dedup_window_ms: 200
 
   # Barge-in (S3): interrumpir TTS al detectar voz del user.
@@ -1088,8 +1088,16 @@ rooms:
   living:
     name: "Living"
     display_name: "el living"
+    # reSpeaker XVF3800 4-Mic Array (USB 2886:001a, serial 101991441260500742) —
+    # instalado 2026-05-30 (el mic NUEVO del living). Modelo distinto al del escritorio.
+    # Bindeo por PUERTO USB físico (no por index, que driftea al re-enumerar: ya pasó
+    # 9→4). Puerto 1-2.2 (PCI e3:00.4) → ALSA card4 → PortAudio index 10.
+    # NOTA: glitch de enumeración (error -71) al conectar, recuperó al reintentar —
+    # extensor Cat5e marginal, vigilar caídas intermitentes.
+    # Re-derivar puerto con: readlink -f /sys/class/sound/card<N>  (segmento "<bus>-<port>")
     mic_device_name: "XVF3800"
-    mic_device_index: null   # HW pendiente — cambiar al indice real cuando se instale el mic
+    mic_usb_port: "1-2.2"
+    mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
     bt_adapter: "F4:4E:FC:CF:BF:3F"   # UGREEN BT 5.3 living (instalado 2026-05-04). Resuelve a hciN al iniciar.
     ma1260_zone: 1
     output_mode: "stereo"
@@ -1140,13 +1148,14 @@ rooms:
   escritorio:
     name: "Escritorio"
     display_name: "el escritorio"
-    # ReSpeaker Mic Array v2.0 (XMOS XVF-3000, USB 2886:0018) — única habitación con HW real (2026-04-21)
-    # 2026-05-07: index 9 → 4 tras re-enumerate USB.
-    # Device 9 era ALC1220 onboard (default 44.1kHz, rechazaba 16kHz). Device 4
-    # es el ReSpeaker real (hw:1,0, 6 ch, sr nativa 16000 Hz). Verificar con:
-    #   /home/kza/app/.venv/bin/python -c "import sounddevice; print(sounddevice.query_devices())"
+    # ReSpeaker 4 Mic Array (UAC1.0, USB 2886:0018) — el mic que YA EXISTÍA
+    # (única habitación con HW real desde 2026-04-21). Puerto 3-1.1 (PCI 03:00.4)
+    # → ALSA card1 → PortAudio index 4. UAC1.0 reporta in=0 en PortAudio (solo
+    # captura 16kHz/6ch) pero abre OK explícito a 16kHz. Bindeo por puerto USB.
+    # Re-derivar puerto con: readlink -f /sys/class/sound/card<N>  (segmento "<bus>-<port>")
     mic_device_name: "ReSpeaker"
-    mic_device_index: 4
+    mic_usb_port: "3-1.1"
+    mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
     bt_adapter: "F4:4E:FC:21:0D:66"   # UGREEN BT 5.3 escritorio (resuelve a hciN al iniciar — antes hardcoded "hci0")
     ma1260_zone: 4
     output_mode: "mono"

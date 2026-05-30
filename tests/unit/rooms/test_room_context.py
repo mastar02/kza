@@ -15,6 +15,9 @@ from src.rooms.room_context import (
     list_bt_adapters,
     resolve_bt_adapter,
     _list_bt_adapters_sysfs,
+    usb_port_to_alsa_card,
+    alsa_card_to_device_index,
+    resolve_mic_usb_port,
 )
 
 
@@ -419,6 +422,98 @@ class TestBTAdapterResolution:
 
     def test_resolve_garbage_returns_none(self, tmp_path):
         assert resolve_bt_adapter("not-a-mac", str(tmp_path)) is None
+
+
+class TestMicUSBResolution:
+    """Resolución puerto-USB → índice PortAudio.
+
+    Análogo a MAC → hciN para BT: dos ReSpeakers idénticos solo se distinguen
+    por el puerto físico, no por nombre ni por índice (que driftea al
+    re-enumerar USB). Bindeamos cada room a su puerto USB estable.
+    """
+
+    @staticmethod
+    def _make_usb_sysfs(tmp_path, port, card_num):
+        """Crear fake /sys/bus/usb/devices/{port}:1.0/sound/card{N}."""
+        d = tmp_path / f"{port}:1.0" / "sound" / f"card{card_num}"
+        d.mkdir(parents=True)
+        return str(tmp_path)
+
+    # Lista de devices fake al estilo sounddevice.query_devices()
+    FAKE_DEVICES = [
+        {"name": "HDA NVidia: HDMI 0 (hw:0,3)"},
+        {"name": "ReSpeaker 4 Mic Array (UAC1.0): USB Audio (hw:1,0)"},
+        {"name": "Otro ReSpeaker (UAC1.0): USB Audio (hw:10,0)"},
+        {"name": "HD-Audio Generic: ALC1220 Analog (hw:3,0)"},
+    ]
+
+    def test_usb_port_to_alsa_card(self, tmp_path):
+        usb_root = self._make_usb_sysfs(tmp_path, "3-1.1", 1)
+        assert usb_port_to_alsa_card("3-1.1", usb_root) == 1
+
+    def test_usb_port_to_alsa_card_missing_returns_none(self, tmp_path):
+        # Puerto sin nodo sound/ → None
+        (tmp_path / "3-1.4:1.0").mkdir(parents=True)
+        assert usb_port_to_alsa_card("3-1.4", str(tmp_path)) is None
+        assert usb_port_to_alsa_card("9-9.9", str(tmp_path)) is None
+
+    def test_alsa_card_to_device_index(self):
+        # card 1 → índice 1 (nombre con "(hw:1,0)"), no confundir con card 10
+        assert alsa_card_to_device_index(1, devices=self.FAKE_DEVICES) == 1
+        assert alsa_card_to_device_index(10, devices=self.FAKE_DEVICES) == 2
+
+    def test_alsa_card_to_device_index_not_found(self):
+        assert alsa_card_to_device_index(7, devices=self.FAKE_DEVICES) is None
+
+    def test_resolve_mic_usb_port_end_to_end(self, tmp_path):
+        usb_root = self._make_usb_sysfs(tmp_path, "3-1.1", 1)
+        assert resolve_mic_usb_port(
+            "3-1.1", usb_root=usb_root, devices=self.FAKE_DEVICES
+        ) == 1
+
+    def test_resolve_mic_usb_port_none_or_empty(self):
+        assert resolve_mic_usb_port(None) is None
+        assert resolve_mic_usb_port("", devices=self.FAKE_DEVICES) is None
+
+    def test_resolve_mic_usb_port_card_not_in_portaudio(self, tmp_path):
+        # Puerto mapea a card 5 pero PortAudio no la lista → None
+        usb_root = self._make_usb_sysfs(tmp_path, "3-1.2", 5)
+        assert resolve_mic_usb_port(
+            "3-1.2", usb_root=usb_root, devices=self.FAKE_DEVICES
+        ) is None
+
+    def test_add_room_resolves_usb_port_to_index(self, tmp_path):
+        """add_room() debe poblar mic_device_index desde mic_usb_port."""
+        usb_root = self._make_usb_sysfs(tmp_path, "3-1.1", 1)
+        manager = RoomContextManager()
+        cfg = RoomConfig(
+            room_id="living",
+            name="Living",
+            display_name="el living",
+            mic_usb_port="3-1.1",
+        )
+        manager.add_room(
+            cfg, usb_root=usb_root, mic_devices=self.FAKE_DEVICES
+        )
+        assert cfg.mic_device_index == 1
+        # y el mapeo índice → room quedó registrado
+        assert manager._mic_to_room[1] == "living"
+
+    def test_add_room_explicit_index_wins_over_usb_port(self, tmp_path):
+        """Si mic_device_index ya está seteado, no se sobreescribe."""
+        usb_root = self._make_usb_sysfs(tmp_path, "3-1.1", 1)
+        manager = RoomContextManager()
+        cfg = RoomConfig(
+            room_id="living",
+            name="Living",
+            display_name="el living",
+            mic_device_index=4,
+            mic_usb_port="3-1.1",
+        )
+        manager.add_room(
+            cfg, usb_root=usb_root, mic_devices=self.FAKE_DEVICES
+        )
+        assert cfg.mic_device_index == 4
 
 
 class TestMA1260Fields:
