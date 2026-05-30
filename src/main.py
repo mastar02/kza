@@ -61,6 +61,7 @@ from src.reminders.reminder_scheduler import ReminderScheduler
 from src.dashboard.api import DashboardAPI
 from src.dashboard.live_event_bus import LiveEventBus
 from src.monitoring.health_aggregator import HealthAggregator
+from src.nlu.command_gate import CommandAcceptanceGate
 
 # Configurar logging
 logging.basicConfig(
@@ -1060,6 +1061,16 @@ async def main():
 
     # Request router (command routing: orchestrated + legacy paths)
     confidence_cfg = config.get("orchestrator", {}).get("confidence", {})
+    _gate_cfg = config.get("command_gate", {})
+    _resolved_wake_words = rooms_config.get("wake_word", {}).get(
+        "words", wake_config.get("words", ["nexa"])
+    )
+    command_gate = CommandAcceptanceGate(
+        wake_words=_resolved_wake_words,
+        enforce_confidence=_gate_cfg.get("enforce_confidence", False),
+        max_no_speech_prob=_gate_cfg.get("max_no_speech_prob", 0.60),
+        min_avg_logprob=_gate_cfg.get("min_avg_logprob", -1.20),
+    )
     request_router = RequestRouter(
         command_processor=command_processor,
         response_handler=response_handler,
@@ -1083,13 +1094,12 @@ async def main():
         suggestion_interval=analytics_config.get("suggestion_interval", 20),
         confidence_threshold=confidence_cfg.get("threshold", 0.75),
         metrics_emitter=metrics_emitter,
-        wake_words=rooms_config.get("wake_word", {}).get(
-            "words", wake_config.get("words", ["nexa"])
-        ),
+        wake_words=_resolved_wake_words,
         llm_command_router=llm_command_router,
         regex_extractor=regex_extractor,
         llm_gate=llm_gate,
         hooks=hooks,
+        command_gate=command_gate,
     )
 
     # Feature subsystems (timers, intercom, notifications, alerts)

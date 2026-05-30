@@ -244,6 +244,13 @@ nlu:
     gate_timeout_s: 0.8
     gate_max_tokens: 20       # output corto del gate (~5-10 tokens)
 
+command_gate:
+  # Hard rules (noise phrases, filler, repetition, missing wake) always enforce.
+  # Confidence rules run in SHADOW until calibrated via the [CommandGate] logs.
+  enforce_confidence: false
+  max_no_speech_prob: 0.60   # > this = suspicious (conservative, to calibrate)
+  min_avg_logprob: -1.20     # < this = suspicious (conservative, to calibrate)
+
 # LLM para Razonamiento — REEMPLAZO TOTAL 2026-05-29: GLM-4.5-Air local (:8200)
 # → MiniMax-M2.7-highspeed en el cloud de MiniMax (OpenAI-compat).
 # Riesgo aceptado: si cae internet/MiniMax, el slow path queda sin reasoner
