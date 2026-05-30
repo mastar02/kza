@@ -100,6 +100,17 @@ TV_MODE_ENTRY_REJECTS = 4
 TV_MODE_ENTRY_WINDOW_S = 300.0
 TV_MODE_DURATION_S = 300.0
 
+# Reasons de reject que NO son evidencia de un entorno "TV-like" real, sino
+# alucinaciones de Whisper sobre silencio/ruido. NO deben alimentar TV-mode
+# (evidencia metricas 2026-05-30: estas reasons disparaban TV-mode espurio).
+_NON_TV_MODE_REJECT_REASONS = frozenset({
+    "tv_stop_phrase",            # denylist de alucinaciones YouTube conocidas
+    "multi_wake_hallucination",  # loop alucinatorio sobre wake word
+    "pathological_repeat",       # loop repetitivo
+    "implausible_speech_rate",   # >N palabras/seg fisicamente imposible
+    "no_speech_hallucination",   # (futuro) low-confidence acustica
+})
+
 # Palabras que NO terminan una oración bien formada en español. Si la
 # transcripción del wake termina con una de éstas, el silencio que cerró la
 # utterance probablemente fue una pausa intra-frase y el comando real continúa
@@ -997,6 +1008,10 @@ class WhisperWakeDetector:
         Args:
             reason: motivo del reject (solo para el log de activación).
         """
+        # Las alucinaciones conocidas no cuentan como entorno TV.
+        if reason in _NON_TV_MODE_REJECT_REASONS:
+            return
+
         now = time.time()
         self._reject_timestamps.append(now)
         # Purgar entradas fuera de la ventana móvil.

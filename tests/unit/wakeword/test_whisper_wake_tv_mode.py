@@ -39,19 +39,19 @@ def _make_detector() -> WhisperWakeDetector:
 class TestRejectAccumulation:
     def test_single_reject_no_tv_mode(self):
         det = _make_detector()
-        det._record_reject("multi_wake_hallucination")
+        det._record_reject("no_command_verb")
         assert det._is_tv_mode_active() is False
 
     def test_threshold_minus_one_no_tv_mode(self):
         det = _make_detector()
         for _ in range(TV_MODE_ENTRY_REJECTS - 1):
-            det._record_reject("tv_stop_phrase")
+            det._record_reject("no_command_verb")
         assert det._is_tv_mode_active() is False
 
     def test_threshold_reached_activates_tv_mode(self):
         det = _make_detector()
         for _ in range(TV_MODE_ENTRY_REJECTS):
-            det._record_reject("tv_stop_phrase")
+            det._record_reject("no_command_verb")
         assert det._is_tv_mode_active() is True
 
 
@@ -63,7 +63,7 @@ class TestWindowPurging:
         for _ in range(TV_MODE_ENTRY_REJECTS):
             det._reject_timestamps.append(old_ts)
         # Un reject nuevo purga los viejos.
-        det._record_reject("multi_wake_hallucination")
+        det._record_reject("no_command_verb")
         # Solo queda 1 reject vivo → no activa TV-mode.
         assert det._is_tv_mode_active() is False
         assert len(det._reject_timestamps) == 1
@@ -73,7 +73,7 @@ class TestTvModeExpiration:
     def test_tv_mode_expires_after_duration(self, monkeypatch):
         det = _make_detector()
         for _ in range(TV_MODE_ENTRY_REJECTS):
-            det._record_reject("tv_stop_phrase")
+            det._record_reject("no_command_verb")
         assert det._is_tv_mode_active() is True
 
         # Simular que pasó TV_MODE_DURATION_S + 1.
@@ -85,13 +85,13 @@ class TestTvModeExpiration:
         """Un reject dentro de la ventana renueva el `_tv_mode_until`."""
         det = _make_detector()
         for _ in range(TV_MODE_ENTRY_REJECTS):
-            det._record_reject("tv_stop_phrase")
+            det._record_reject("no_command_verb")
         first_until = det._tv_mode_until
 
         # Avanzar 100s (dentro del rolling window) y agregar otro reject.
         future = time.time() + 100.0
         monkeypatch.setattr(time, "time", lambda: future)
-        det._record_reject("multi_wake_hallucination")
+        det._record_reject("no_command_verb")
         # Nuevo until > anterior.
         assert det._tv_mode_until > first_until
 
@@ -104,7 +104,7 @@ class TestEmitWakeIntegration:
             det._emit_wake(
                 matched=False, wake_word=None, matched_via="rejected",
                 text="ruido", dur_ms=500, stt_ms=100,
-                rejection_reason="tv_stop_phrase",
+                rejection_reason="no_command_verb",
             )
         assert det._is_tv_mode_active() is True
 
@@ -139,7 +139,7 @@ class TestMetricsEmitterTvModeFlag:
 
         # Activar TV-mode.
         for _ in range(TV_MODE_ENTRY_REJECTS):
-            det._record_reject("tv_stop_phrase")
+            det._record_reject("no_command_verb")
 
         # Aceptar wake en TV-mode.
         det._emit_wake(

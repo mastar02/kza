@@ -316,3 +316,41 @@ class TestTextLikelyTruncated:
         # 'más' en español es ambigua — la incluimos porque "X más" suele cortar
         # ("subí más" sí termina, pero "subí más fuerte" no — el peor caso).
         assert _text_likely_truncated("Nexa subí más") is True
+
+
+# ---------------------------------------------------------------------------
+# Fixture + tests for TV-mode / _record_reject behavior
+# ---------------------------------------------------------------------------
+from unittest.mock import Mock
+from src.wakeword.whisper_wake import WhisperWakeDetector
+
+
+@pytest.fixture
+def wake_detector():
+    """Instancia mínima de WhisperWakeDetector para tests de TV-mode.
+
+    Se inicializa sin GPU real: whisper_stt es un Mock() y el VAD nunca
+    se ejercita — solo probamos métodos internos de conteo.
+    """
+    return WhisperWakeDetector(whisper_stt=Mock(), wake_words=["nexa"])
+
+
+class TestRecordRejectTvMode:
+    """_record_reject solo debe acumular reasons de audio real, no alucinaciones."""
+
+    def test_record_reject_ignores_hallucination_reasons(self, wake_detector):
+        """Las reasons de alucinación NO deben acumular hacia TV-mode."""
+        det = wake_detector
+        for _ in range(10):
+            det._record_reject("tv_stop_phrase")
+        assert not det._is_tv_mode_active()
+        for _ in range(10):
+            det._record_reject("multi_wake_hallucination")
+        assert not det._is_tv_mode_active()
+
+    def test_record_reject_counts_real_audio_reasons(self, wake_detector):
+        """Reasons de audio real (no_command_verb) sí cuentan hacia TV-mode."""
+        det = wake_detector
+        for _ in range(4):  # == TV_MODE_ENTRY_REJECTS
+            det._record_reject("no_command_verb")
+        assert det._is_tv_mode_active()
