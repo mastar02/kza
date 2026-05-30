@@ -97,6 +97,7 @@ class Request:
     # Callbacks
     on_complete: Callable = field(compare=False, default=None, repr=False)
     on_cancel: Callable = field(compare=False, default=None, repr=False)
+    on_fail: Callable = field(compare=False, default=None, repr=False)
 
     def __post_init__(self):
         if self.cancellation_token is None:
@@ -145,10 +146,24 @@ class Request:
                 logger.error(f"Error en on_complete callback: {e}")
 
     def fail(self, error: str):
-        """Marcar como fallida"""
+        """Marcar como fallida y NOTIFICAR al llamador.
+
+        Issue C (2026-05-29): antes `fail()` solo seteaba estado sin invocar
+        ningún callback (a diferencia de `complete()`/`cancel()`), así que el
+        waiter de `_slow_path` nunca despertaba → colgaba el timeout completo
+        (5s) y devolvía un "tardé demasiado" FALSO ante cualquier fallo del
+        reasoner. Ahora invocamos `on_fail` (o `on_complete` como fallback)
+        para despertar al llamador de inmediato con un error accionable.
+        """
         self.error = error
         self.status = RequestStatus.FAILED
         self.completed_at = time.time()
+        cb = self.on_fail or self.on_complete
+        if cb:
+            try:
+                cb(self)
+            except Exception as e:
+                logger.error(f"Error en on_fail callback: {e}")
 
     def to_dict(self) -> dict:
         return {
@@ -249,7 +264,8 @@ class PriorityRequestQueue:
         zone_id: str = None,
         intent: str = None,
         on_complete: Callable = None,
-        on_cancel: Callable = None
+        on_cancel: Callable = None,
+        on_fail: Callable = None
     ) -> Request:
         """
         Agregar peticion a la cola.
@@ -275,7 +291,8 @@ class PriorityRequestQueue:
             text=text,
             intent=intent,
             on_complete=on_complete,
-            on_cancel=on_cancel
+            on_cancel=on_cancel,
+            on_fail=on_fail
         )
 
         with self._lock:

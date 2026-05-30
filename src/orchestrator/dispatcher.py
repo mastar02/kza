@@ -821,6 +821,16 @@ class RequestDispatcher:
             except RuntimeError:
                 pass
 
+        def on_fail(request: Request):
+            # Issue C: despertar al waiter ante un fallo del reasoner en vez de
+            # dejarlo colgado hasta el timeout (que mentía con "tardé demasiado").
+            result_holder["failed"] = True
+            result_holder["error"] = request.error
+            try:
+                response_event.set()
+            except RuntimeError:
+                pass
+
         # Encolar peticion
         t0 = time.perf_counter()
         request = self.queue.enqueue(
@@ -830,7 +840,8 @@ class RequestDispatcher:
             user_name=user_name,
             zone_id=zone_id,
             on_complete=on_complete,
-            on_cancel=on_cancel
+            on_cancel=on_cancel,
+            on_fail=on_fail
         )
         timings["queue"] = (time.perf_counter() - t0) * 1000
 
@@ -865,8 +876,29 @@ class RequestDispatcher:
                 timings=timings
             )
 
-        response = result_holder["result"]
         timings["llm"] = request.processing_time * 1000 if request.processing_time else 0
+
+        # Issue C: el reasoner falló (red/cloud caído/excepción). Despertamos por
+        # on_fail (no por timeout), así que respondemos un error accionable de
+        # inmediato en vez del falso "tardé demasiado".
+        if result_holder.get("failed"):
+            logger.warning(
+                f"[Dispatcher] Slow path falló (reasoner): "
+                f"{result_holder.get('error')}"
+            )
+            return DispatchResult(
+                path=PathType.SLOW_LLM,
+                priority=priority,
+                success=False,
+                response="No pude procesar eso ahora mismo, probá de nuevo.",
+                intent="error",
+                error=result_holder.get("error"),
+                was_queued=True,
+                queue_position=position,
+                timings=timings
+            )
+
+        response = result_holder["result"]
 
         return DispatchResult(
             path=PathType.SLOW_LLM,
