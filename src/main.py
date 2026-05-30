@@ -164,6 +164,37 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
     logger.info(f"Warmup: {summary}")
 
 
+def _preflight_vram(threshold_mib: int = 1500) -> None:
+    """Avisa (no bloquea) si la VRAM libre en algún device CUDA está al límite.
+
+    Motivado por el OOM de 2026-05-29: reiniciar kza-voice con poca VRAM libre
+    en cuda:1 daba un 'CUDA out of memory' críptico a mitad de la carga de
+    modelos. Este preflight loguea un WARNING accionable ANTES de cargar, para
+    que el operador libere VRAM o entienda el riesgo. No-op si torch no tiene
+    CUDA (ej: dev en macOS). Ver project_stt_double_load_oom_2026-05-29.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        for i in range(torch.cuda.device_count()):
+            free_b, _total_b = torch.cuda.mem_get_info(i)
+            free_mib = free_b / (1024 * 1024)
+            if free_mib < threshold_mib:
+                logger.warning(
+                    f"⚠️  VRAM ajustada en cuda:{i}: {free_mib:.0f} MiB libres "
+                    f"(< {threshold_mib} MiB). Cargar los modelos de voz puede "
+                    f"OOM-ear en este restart — liberá VRAM si el arranque falla."
+                )
+            else:
+                logger.info(
+                    f"Preflight VRAM cuda:{i}: {free_mib:.0f} MiB libres (OK)"
+                )
+    except Exception as e:
+        logger.debug(f"Preflight VRAM skipped: {e}")
+
+
 async def main():
     """Entry point principal"""
 
@@ -230,6 +261,9 @@ async def main():
                 f"HA state prefetch deshabilitado: {e}. "
                 f"Sigo con REST polling cada 300s."
             )
+
+    # Preflight de VRAM antes de cargar modelos pesados (aviso, no bloquea).
+    _preflight_vram()
 
     # Speech-to-Text
     stt = create_stt(config.get("stt", {}))
