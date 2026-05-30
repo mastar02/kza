@@ -12,10 +12,26 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class STTResult:
+    """Resultado de transcripción con confianza del STT.
+
+    no_speech_prob / avg_logprob son None cuando no hay segmentos (audio
+    vacío) o el motor no los expone (Moonshine). El gate trata None como
+    'sin penalizar'.
+    """
+
+    text: str
+    elapsed_ms: float
+    no_speech_prob: float | None = None
+    avg_logprob: float | None = None
 
 
 class FastWhisperSTT:
@@ -78,34 +94,23 @@ class FastWhisperSTT:
         elapsed = time.time() - start
         logger.info(f"Whisper cargado en {elapsed:.1f}s")
     
-    def transcribe(
-        self,
-        audio: np.ndarray | str | Path,
-        sample_rate: int = 16000
-    ) -> tuple[str, float]:
-        """
-        Transcribir audio a texto - 100% en RAM
+    def _transcribe_impl(self, audio_input: "np.ndarray | str") -> STTResult:
+        """Transcribe y agrega la confianza de los segmentos.
 
         Args:
-            audio: Array de audio (float32/int16) o path al archivo
-            sample_rate: Sample rate del audio (16000 recomendado)
+            audio_input: Array numpy float32 normalizado [-1, 1] o path de
+                archivo de audio como string. Preparado por
+                ``transcribe_with_confidence`` antes de llegar aquí.
 
         Returns:
-            (texto, tiempo_ms)
+            STTResult con text, elapsed_ms, no_speech_prob y avg_logprob
+            agregados a partir de todos los segmentos detectados. no_speech_prob
+            y avg_logprob son None cuando no hay segmentos (audio vacío).
         """
-        if self._model is None:
-            self.load()
-
         start = time.perf_counter()
 
-        # Preparar audio para faster-whisper
-        if isinstance(audio, np.ndarray):
-            # Faster-whisper acepta numpy arrays directamente
-            # Debe ser float32 normalizado entre -1.0 y 1.0
-            audio_input = self._prepare_audio(audio)
-        else:
-            # Path a archivo - faster-whisper lo maneja internamente
-            audio_input = str(audio)
+        # sample_rate no se reenvía: faster-whisper infiere la tasa desde el
+        # array numpy (asume 16 kHz, que es el formato que siempre recibe).
 
         # Transcribir con configuración (beam/prompt configurables — defaults
         # priorizan velocidad, subir beam_size=5 + initial_prompt mejora precisión
@@ -123,16 +128,72 @@ class FastWhisperSTT:
                 "min_silence_duration_ms": 300,
                 "speech_pad_ms": 100,
                 "threshold": 0.5,
-            }
+            },
         )
 
-        # Concatenar segmentos
-        text = " ".join([s.text.strip() for s in segments])
+        seg_list = list(segments)
+        text = " ".join(s.text.strip() for s in seg_list)
+        if seg_list:
+            no_speech = sum(s.no_speech_prob for s in seg_list) / len(seg_list)
+            avg_lp = sum(s.avg_logprob for s in seg_list) / len(seg_list)
+        else:
+            no_speech = None
+            avg_lp = None
 
         elapsed_ms = (time.perf_counter() - start) * 1000
         logger.debug(f"STT ({elapsed_ms:.0f}ms): {text[:50]}...")
 
-        return text, elapsed_ms
+        return STTResult(
+            text=text,
+            elapsed_ms=elapsed_ms,
+            no_speech_prob=no_speech,
+            avg_logprob=avg_lp,
+        )
+
+    def transcribe(
+        self,
+        audio: np.ndarray | str | Path,
+        sample_rate: int = 16000,
+    ) -> tuple[str, float]:
+        """Transcribir audio a texto. Firma compat (text, elapsed_ms).
+
+        Args:
+            audio: Array de audio (float32/int16) o path al archivo
+            sample_rate: Sample rate del audio (16000 recomendado)
+
+        Returns:
+            (texto, tiempo_ms)
+        """
+        r = self.transcribe_with_confidence(audio, sample_rate)
+        return r.text, r.elapsed_ms
+
+    def transcribe_with_confidence(
+        self,
+        audio: np.ndarray | str | Path,
+        sample_rate: int = 16000,
+    ) -> STTResult:
+        """Transcribir devolviendo también la confianza del STT.
+
+        Args:
+            audio: Array de audio (float32/int16) o path al archivo
+            sample_rate: Sample rate del audio (16000 recomendado)
+
+        Returns:
+            STTResult con text, elapsed_ms, no_speech_prob y avg_logprob.
+        """
+        if self._model is None:
+            self.load()
+
+        # Preparar audio para faster-whisper
+        if isinstance(audio, np.ndarray):
+            # Faster-whisper acepta numpy arrays directamente
+            # Debe ser float32 normalizado entre -1.0 y 1.0
+            audio_input = self._prepare_audio(audio)
+        else:
+            # Path a archivo - faster-whisper lo maneja internamente
+            audio_input = str(audio)
+
+        return self._transcribe_impl(audio_input)
 
     def _prepare_audio(self, audio: np.ndarray) -> np.ndarray:
         """
@@ -322,26 +383,35 @@ class MoonshineSTT:
     def transcribe(
         self,
         audio: np.ndarray,
-        sample_rate: int = 16000
+        sample_rate: int = 16000,
     ) -> tuple[str, float]:
         """Transcribir con Moonshine (muy rápido)"""
         if self._model is None:
             self.load()
-        
+
         start = time.perf_counter()
-        
+
         # Moonshine espera audio float32 normalizado
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
         if np.abs(audio).max() > 1.0:
             audio = audio / 32768.0
-        
+
         text = self._model.transcribe(audio, sample_rate)
-        
+
         elapsed_ms = (time.perf_counter() - start) * 1000
         logger.debug(f"Moonshine STT ({elapsed_ms:.0f}ms): {text[:50]}...")
-        
+
         return text, elapsed_ms
+
+    def transcribe_with_confidence(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+    ) -> STTResult:
+        """Transcribir devolviendo STTResult (confianza no disponible en Moonshine)."""
+        text, ms = self.transcribe(audio, sample_rate)
+        return STTResult(text=text, elapsed_ms=ms, no_speech_prob=None, avg_logprob=None)
 
 
 def create_stt(config: dict) -> FastWhisperSTT | MoonshineSTT:
