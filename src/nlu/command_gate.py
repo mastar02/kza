@@ -47,7 +47,7 @@ class AcceptanceDecision:
 
 
 class CommandAcceptanceGate:
-    """Gate de aceptación de comandos. Hard rules (enforce) + confidence (shadow)."""
+    """Command acceptance gate. Hard rules (enforce) + confidence (shadow)."""
 
     def __init__(
         self,
@@ -61,8 +61,9 @@ class CommandAcceptanceGate:
         Args:
             wake_words: Normalised wake words; if non-empty, transcriptions
                 not containing any of them are rejected as noise.
-            enforce_confidence: When True, STT confidence thresholds reject
-                low-quality captures (added in a later task). Shadow-only today.
+            enforce_confidence: When True, low STT-confidence captures are
+                rejected; when False, they are accepted but flagged in signals
+                (shadow mode).
             max_no_speech_prob: Whisper no_speech_prob ceiling (0-1).
             min_avg_logprob: Whisper avg_logprob floor (negative).
         """
@@ -77,7 +78,7 @@ class CommandAcceptanceGate:
         """Evaluate a capture. Fail-open: on internal error, accept."""
         try:
             return self._evaluate(text, stt_confidence)
-        except Exception as e:  # fail-open: nunca tumbar el control de voz
+        except Exception as e:  # fail-open: never drop voice control on an internal bug
             logger.error(f"CommandAcceptanceGate error (fail-open accept): {e}")
             return AcceptanceDecision(True, "gate_error", {"error": str(e)})
 
@@ -100,9 +101,43 @@ class CommandAcceptanceGate:
             return f"missing_wake:{self._wake_words[0]!r}"
         return None
 
-    def _evaluate(self, text: str, stt_confidence) -> AcceptanceDecision:
-        # stt_confidence is intentionally unused until the confidence-rules task.
+    def _confidence_reason(self, stt_confidence: "STTResult | None") -> tuple[str | None, dict]:
+        """Evaluate confidence rules. Returns (reason|None, signals)."""
+        if stt_confidence is None:
+            return None, {"no_speech_prob": None, "avg_logprob": None}
+        nsp = stt_confidence.no_speech_prob
+        alp = stt_confidence.avg_logprob
+        signals = {"no_speech_prob": nsp, "avg_logprob": alp}
+        bad = []
+        if nsp is not None and nsp > self._max_no_speech_prob:
+            bad.append(f"no_speech>{self._max_no_speech_prob}")
+        if alp is not None and alp < self._min_avg_logprob:
+            bad.append(f"avg_logprob<{self._min_avg_logprob}")
+        reason = f"low_confidence:{','.join(bad)}" if bad else None
+        return reason, signals
+
+    def _evaluate(self, text: str, stt_confidence: "STTResult | None") -> AcceptanceDecision:
         hard = self._hard_reason(text)
+        conf_reason, signals = self._confidence_reason(stt_confidence)
+
         if hard is not None:
-            return AcceptanceDecision(False, hard, {})
-        return AcceptanceDecision(True, "ok", {})
+            decision = AcceptanceDecision(False, hard, signals)
+        elif conf_reason is not None and self._enforce_confidence:
+            decision = AcceptanceDecision(False, conf_reason, signals)
+        elif conf_reason is not None:
+            # shadow: accept but record what we WOULD reject
+            decision = AcceptanceDecision(
+                True, "ok", {**signals, "would_reject": conf_reason}
+            )
+        else:
+            decision = AcceptanceDecision(True, "ok", signals)
+
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                f"[CommandGate] accept={decision.accept} reason={decision.reason} "
+                f"no_speech={signals.get('no_speech_prob')} "
+                f"avg_logprob={signals.get('avg_logprob')} "
+                f"would_reject={decision.signals.get('would_reject')} "
+                f"text={text[:60]!r}"
+            )
+        return decision
