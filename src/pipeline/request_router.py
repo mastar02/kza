@@ -9,7 +9,6 @@ Owns all command routing logic:
 """
 
 import logging
-import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -17,6 +16,7 @@ from difflib import SequenceMatcher
 
 import numpy as np
 
+from src.nlu.command_gate import CommandAcceptanceGate
 from src.nlu.command_grammar import PartialCommand, parse_partial_command
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
@@ -50,67 +50,6 @@ _UNSUPPORTED_INTENT_MESSAGES: dict[str, str] = {
     "media_next": "No tengo reproductor configurado.",
     "media_previous": "No tengo reproductor configurado.",
 }
-
-
-# Frases que NO son comandos reales aunque llegaron al router — evitan que
-# vayan al slow path del LLM (caro) cuando son ruido de TV, eco del TTS o
-# filler conversacional. Match por substring sobre el texto normalizado
-# (lowercase, sin acentos). Comparado con `_TV_STOP_PHRASES` del wake
-# detector, acá incluimos eco del TTS típico del sistema.
-_NOISE_PHRASES = (
-    # TV/streaming (puede llegar al router si un wake previo abrió el flow)
-    "suscribe", "suscrib", "campanita", "gracias por ver",
-    "dale like", "dale lie", "dale mega like",
-    "canal de youtube", "activa la",
-    # Eco típico del TTS de respuestas/confirmaciones (audio del propio
-    # sistema capturado por el mic cuando el barge-in/echo suppressor
-    # falla puntualmente).
-    "luz encendida", "luz apagada", "luces encendidas", "luces apagadas",
-    "hecho", "perfecto", "listo",
-)
-
-
-def _is_noise_text(text: str, wake_words: tuple[str, ...] = ()) -> str | None:
-    """Chequea si `text` parece ruido/eco, no un comando real.
-
-    Args:
-        text: Texto a evaluar (transcripción del comando post-wake).
-        wake_words: Wake words configuradas (lowercase, sin acentos). Si
-            ninguna aparece en el texto normalizado, se descarta como
-            ruido — el buffer post-wake siempre debería incluir la palabra
-            de despertar; si no está, la captura es probablemente TV/ruido
-            de un wake disparado en un chunk anterior. Vacío = check off.
-
-    Returns:
-        Nombre de la regla que matcheó (para logging), o None si es un
-        comando potencialmente válido.
-    """
-    if not text:
-        return "empty"
-    norm = unicodedata.normalize("NFD", text.lower())
-    norm = "".join(c for c in norm if unicodedata.category(c) != "Mn")
-    norm = re.sub(r"[^\w\s]", " ", norm)
-    norm = re.sub(r"\s+", " ", norm).strip()
-    if not norm:
-        return "empty_after_norm"
-    # Frases conocidas de noise / TV / eco
-    for phrase in _NOISE_PHRASES:
-        if phrase in norm:
-            return f"noise_phrase:{phrase!r}"
-    # Sólo "gracias" (sin verbo/entity) — eco del TTS agradeciendo.
-    if norm in {"gracias", "si", "no", "ok", "bueno", "dale"}:
-        return f"filler_word:{norm!r}"
-    # Repetición extrema: una sola palabra repetida >= 4 veces
-    words = norm.split()
-    if len(words) >= 4 and len(set(words)) == 1:
-        return f"word_repetition:{words[0]!r}"
-    # Wake-word ausente — el comando se capturó pero el texto no contiene
-    # ninguna de las wake words. Análisis de logs 24-25 abr (24 FPs únicos
-    # de TV) mostró 0% de comandos reales sin wake en transcripción.
-    if wake_words:
-        if not any(w in norm for w in wake_words):
-            return f"missing_wake:{wake_words[0]!r}"
-    return None
 
 
 def _texts_diverge(a: str, b: str, min_ratio: float = 0.95) -> bool:
@@ -218,6 +157,7 @@ class RequestRouter:
         regex_extractor=None,
         llm_gate=None,
         hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
+        command_gate: CommandAcceptanceGate | None = None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -300,6 +240,11 @@ class RequestRouter:
             )
         else:
             self._wake_words = _default_wakes
+
+        # Command acceptance gate (consolidates _is_noise_text + STT confidence).
+        self.command_gate = command_gate or CommandAcceptanceGate(
+            wake_words=self._wake_words
+        )
 
         # LLM-based command validator. Si está configurado, intercepta el
         # texto post-wake antes del orchestrator y rechaza alucinaciones
@@ -430,13 +375,15 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
-        # 1a. Noise filter: corta antes del orchestrator si el texto es
-        #     claramente ruido (TV, eco del TTS, repetición). Evita que
-        #     esas muestras vayan al slow path LLM (caro + bloquea queue).
-        noise_reason = _is_noise_text(text, wake_words=self._wake_words)
-        if noise_reason:
-            logger.info(f"Noise discard ({noise_reason}): {text!r}")
-            result["intent"] = "noise_discarded"
+        # 1a. Command acceptance gate: corta antes del orchestrator si el texto
+        #     es claramente ruido (TV, eco del TTS, repetición) o confianza baja.
+        #     Evita que esas muestras vayan al slow path LLM (caro + bloquea queue).
+        gate_decision = self.command_gate.evaluate(
+            text, stt_confidence=getattr(cmd, "stt_confidence", None)
+        )
+        if not gate_decision.accept:
+            logger.info(f"Gate reject ({gate_decision.reason}): {text!r}")
+            result["intent"] = "gate_rejected"
             result["success"] = False
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
@@ -710,11 +657,13 @@ class RequestRouter:
         if not text.strip():
             return result
 
-        # 1a. Noise filter — mismo corto-circuito que el path orchestrated
-        noise_reason = _is_noise_text(text, wake_words=self._wake_words)
-        if noise_reason:
-            logger.info(f"Noise discard ({noise_reason}): {text!r}")
-            result["intent"] = "noise_discarded"
+        # 1a. Command acceptance gate — mismo corto-circuito que el path orchestrated
+        gate_decision = self.command_gate.evaluate(
+            text, stt_confidence=getattr(cmd, "stt_confidence", None)
+        )
+        if not gate_decision.accept:
+            logger.info(f"Gate reject ({gate_decision.reason}): {text!r}")
+            result["intent"] = "gate_rejected"
             result["success"] = False
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000

@@ -25,8 +25,9 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 import pytest
 import numpy as np
 
-from src.pipeline.request_router import RequestRouter, PermissionResult, _is_noise_text
+from src.pipeline.request_router import RequestRouter, PermissionResult
 from src.pipeline.command_processor import ProcessedCommand
+from src.nlu.command_gate import CommandAcceptanceGate
 
 
 # ============================================================
@@ -508,49 +509,61 @@ class TestSuggestionHandling:
 
 
 class TestNoiseFilter:
-    """Test _is_noise_text — clasificador de TV/eco/repetición/missing-wake."""
+    """Test CommandAcceptanceGate hard rules — clasificador de TV/eco/repetición/missing-wake.
+
+    Migrated from _is_noise_text (now removed) to CommandAcceptanceGate.evaluate().
+    """
+
+    def _gate(self, wake_words=()):
+        return CommandAcceptanceGate(wake_words=wake_words)
 
     def test_empty_text(self):
-        assert _is_noise_text("") == "empty"
+        d = self._gate().evaluate("")
+        assert not d.accept
+        assert d.reason == "empty"
 
     def test_filler_word_gracias(self):
-        assert _is_noise_text("¡Gracias!").startswith("filler_word")
+        d = self._gate().evaluate("¡Gracias!")
+        assert not d.accept
+        assert d.reason.startswith("filler_word")
 
     def test_noise_phrase_youtube(self):
-        assert _is_noise_text("Gracias por ver el video.").startswith("noise_phrase")
+        d = self._gate().evaluate("Gracias por ver el video.")
+        assert not d.accept
+        assert d.reason.startswith("noise_phrase")
 
     def test_word_repetition(self):
-        assert _is_noise_text("no no no no no").startswith("word_repetition")
+        d = self._gate().evaluate("no no no no no")
+        assert not d.accept
+        assert d.reason.startswith("word_repetition")
 
     def test_missing_wake_with_wake_words_configured(self):
         """Frase TV sin wake word → discard."""
-        result = _is_noise_text("Se llamaba Ando Miku.", wake_words=("nexa", "kaza"))
-        assert result is not None
-        assert result.startswith("missing_wake")
+        d = self._gate(wake_words=("nexa", "kaza")).evaluate("Se llamaba Ando Miku.")
+        assert not d.accept
+        assert d.reason.startswith("missing_wake")
 
     def test_wake_word_present_passes(self):
         """Comando real con 'nexa' al inicio → no es ruido."""
-        assert _is_noise_text(
-            "Nexa prendé la luz del escritorio", wake_words=("nexa", "kaza")
-        ) is None
+        d = self._gate(wake_words=("nexa", "kaza")).evaluate(
+            "Nexa prendé la luz del escritorio"
+        )
+        assert d.accept
 
     def test_wake_alias_present_passes(self):
         """Alias 'kaza' también pasa."""
-        assert _is_noise_text(
-            "Kaza apaga la cocina", wake_words=("nexa", "kaza")
-        ) is None
+        d = self._gate(wake_words=("nexa", "kaza")).evaluate("Kaza apaga la cocina")
+        assert d.accept
 
     def test_missing_wake_disabled_when_no_wake_words(self):
         """Sin wake_words pasados, el check missing_wake no se aplica."""
-        # Sin wake_words, una frase de TV pasa el filtro (igual que antes
-        # de la regla); validamos que el check sólo aplica si fue configurado.
-        assert _is_noise_text("Se llamaba Ando Miku.") is None
+        d = self._gate().evaluate("Se llamaba Ando Miku.")
+        assert d.accept
 
     def test_accent_insensitive_match(self):
         """Match es accent-insensitive: 'Néxa' (con acento) ≡ 'nexa'."""
-        assert _is_noise_text(
-            "Néxa prendé la luz", wake_words=("nexa",)
-        ) is None
+        d = self._gate(wake_words=("nexa",)).evaluate("Néxa prendé la luz")
+        assert d.accept
 
 
 class TestLatencyLogging:
