@@ -322,7 +322,7 @@ class TestTextLikelyTruncated:
 # Fixture + tests for TV-mode / _record_reject behavior
 # ---------------------------------------------------------------------------
 from unittest.mock import Mock
-from src.wakeword.whisper_wake import WhisperWakeDetector
+from src.wakeword.whisper_wake import WhisperWakeDetector, TV_MODE_ENTRY_REJECTS
 
 
 @pytest.fixture
@@ -351,6 +351,6 @@ class TestRecordRejectTvMode:
     def test_record_reject_counts_real_audio_reasons(self, wake_detector):
         """Reasons de audio real (no_command_verb) sí cuentan hacia TV-mode."""
         det = wake_detector
-        for _ in range(4):  # == TV_MODE_ENTRY_REJECTS
+        for _ in range(TV_MODE_ENTRY_REJECTS):
             det._record_reject("no_command_verb")
         assert det._is_tv_mode_active()
