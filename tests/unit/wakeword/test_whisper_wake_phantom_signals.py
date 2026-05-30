@@ -116,7 +116,7 @@ class TestPhantomDetectionIntegration:
         phantom_text = "Nexa bajá la luz al cincuenta por ciento,"
 
         class FakeSeg:
-            def __init__(self, t): self.text = t
+            def __init__(self, t): self.text = t; self.no_speech_prob = 0.1; self.avg_logprob = -0.5
         class FakeModel:
             def transcribe(self, audio, **kw):
                 return ([FakeSeg(phantom_text)], None)
@@ -139,7 +139,7 @@ class TestPhantomDetectionIntegration:
         phantom_text = "Nexa bajá la luz al cincuenta por ciento,"
 
         class FakeSeg:
-            def __init__(self, t): self.text = t
+            def __init__(self, t): self.text = t; self.no_speech_prob = 0.1; self.avg_logprob = -0.5
         class FakeModel:
             def transcribe(self, audio, **kw):
                 return ([FakeSeg(phantom_text)], None)
@@ -166,7 +166,7 @@ class TestPhantomDetectionIntegration:
         legit_text = "Nexa prendé la luz del escritorio"
 
         class FakeSeg:
-            def __init__(self, t): self.text = t
+            def __init__(self, t): self.text = t; self.no_speech_prob = 0.1; self.avg_logprob = -0.5
         class FakeModel:
             def transcribe(self, audio, **kw):
                 return ([FakeSeg(legit_text)], None)
@@ -193,7 +193,7 @@ class TestPhantomDetectionIntegration:
         phantom_text = "Nexa bajá la luz"
 
         class FakeSeg:
-            def __init__(self, t): self.text = t
+            def __init__(self, t): self.text = t; self.no_speech_prob = 0.1; self.avg_logprob = -0.5
         class FakeModel:
             def transcribe(self, audio, **kw):
                 return ([FakeSeg(phantom_text)], None)

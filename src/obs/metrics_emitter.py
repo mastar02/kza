@@ -180,6 +180,8 @@ class MetricsEmitter:
         wake_stt_ms: float,
         fuzzy_ratio: float | None = None,
         rejection_reason: str | None = None,
+        no_speech_prob: float | None = None,
+        avg_logprob: float | None = None,
     ) -> None:
         """Emite un evento por cada transcripción de wake (matcheado o rechazado)."""
         doc: dict[str, Any] = {
@@ -197,6 +199,10 @@ class MetricsEmitter:
             doc["fuzzy_ratio"] = float(fuzzy_ratio)
         if rejection_reason:
             doc["rejection_reason"] = rejection_reason
+        if no_speech_prob is not None:
+            doc["no_speech_prob"] = float(no_speech_prob)
+        if avg_logprob is not None:
+            doc["avg_logprob"] = float(avg_logprob)
         self._write(doc)
 
     def emit_error(

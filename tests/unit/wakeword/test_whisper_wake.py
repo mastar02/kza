@@ -354,3 +354,28 @@ class TestRecordRejectTvMode:
         for _ in range(TV_MODE_ENTRY_REJECTS):
             det._record_reject("no_command_verb")
         assert det._is_tv_mode_active()
+
+
+# ---------------------------------------------------------------------------
+# Task 1.2: captura de confianza acústica (no_speech_prob / avg_logprob)
+# ---------------------------------------------------------------------------
+
+def test_transcribe_captures_confidence(wake_detector, monkeypatch):
+    """no_speech_prob/avg_logprob se extraen de los segments y se propagan a _emit_wake."""
+    import numpy as np
+    class FakeSeg:
+        def __init__(self, text, nsp, lp):
+            self.text, self.no_speech_prob, self.avg_logprob = text, nsp, lp
+    segs = [FakeSeg("gracias", 0.92, -0.3)]
+    # Anulamos la indirección _model (ver gotcha en la spec):
+    # getattr(self.whisper, "_model", None) devuelve Mock truthy -> anulamos con None.
+    wake_detector.whisper._model = None
+    monkeypatch.setattr(wake_detector.whisper, "transcribe",
+                        lambda *a, **k: (iter(segs), None))
+    captured = {}
+    monkeypatch.setattr(wake_detector, "_emit_wake",
+                        lambda *a, **k: captured.update(k))
+    audio = np.zeros(16000, dtype=np.float32)  # 1s de silencio
+    wake_detector._transcribe_and_match(audio, 1000.0)
+    assert captured.get("no_speech_prob") == 0.92
+    assert captured.get("avg_logprob") == -0.3

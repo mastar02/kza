@@ -774,7 +774,14 @@ class WhisperWakeDetector:
                 vad_filter=False,
                 condition_on_previous_text=False,
             )
-            text = " ".join(s.text for s in segments).strip()
+            seg_list = list(segments)
+            text = " ".join(s.text for s in seg_list).strip()
+            # Acoustic confidence signals to classify hallucination-vs-speech (instrumentation;
+            # a future gate will use these). faster-whisper exposes these fields per segment.
+            no_speech_prob = (max((s.no_speech_prob for s in seg_list), default=None)
+                              if seg_list else None)
+            avg_logprob = (min((s.avg_logprob for s in seg_list), default=None)
+                           if seg_list else None)
         except Exception as e:
             logger.error(f"WhisperWake transcribe error: {e}")
             return (None, "")
@@ -799,7 +806,11 @@ class WhisperWakeDetector:
                 norm = norm_fixed
                 text = text_fixed
                 break
-        logger.info(f"WhisperWake [{dur_ms:.0f}ms→{stt_ms:.0f}ms]: {norm!r}")
+        logger.info(
+            f"WhisperWake [{dur_ms:.0f}ms→{stt_ms:.0f}ms]: {norm!r} "
+            f"(no_speech={None if no_speech_prob is None else round(no_speech_prob, 2)}, "
+            f"avg_logprob={None if avg_logprob is None else round(avg_logprob, 2)})"
+        )
 
         # Hard reject: velocidad palabras/segundo físicamente imposible.
         # Independiente de TV-mode — si Whisper produjo 9 palabras en 0.8s
@@ -813,6 +824,7 @@ class WhisperWakeDetector:
             self._emit_wake(
                 False, None, "rejected", text, dur_ms, stt_ms,
                 rejection_reason="implausible_speech_rate",
+                no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
             )
             return (None, text)
 
@@ -832,6 +844,7 @@ class WhisperWakeDetector:
             self._emit_wake(
                 False, None, "rejected", text, dur_ms, stt_ms,
                 rejection_reason="multi_wake_hallucination",
+                no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
             )
             return (None, text)
 
@@ -850,6 +863,7 @@ class WhisperWakeDetector:
             self._emit_wake(
                 False, None, "rejected", text, dur_ms, stt_ms,
                 rejection_reason="pathological_repeat",
+                no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
             )
             return (None, text)
 
@@ -871,6 +885,7 @@ class WhisperWakeDetector:
                 )
                 self._emit_wake(
                     True, canonical, "follow_up", synthesized, dur_ms, stt_ms,
+                    no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
                 )
                 return (canonical, synthesized)
 
@@ -882,6 +897,7 @@ class WhisperWakeDetector:
                 self._emit_wake(
                     False, None, "rejected", text, dur_ms, stt_ms,
                     rejection_reason="tv_stop_phrase",
+                    no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
                 )
                 return (None, text)
 
@@ -903,6 +919,7 @@ class WhisperWakeDetector:
                     self._emit_wake(
                         False, w, "rejected", text, dur_ms, stt_ms,
                         rejection_reason="no_command_verb",
+                        no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
                     )
                     return (None, text)
                 phantom_reason = self._is_phantom_in_tv_mode(text, audio, dur_ms)
@@ -914,10 +931,12 @@ class WhisperWakeDetector:
                     self._emit_wake(
                         False, w, "rejected", text, dur_ms, stt_ms,
                         rejection_reason=f"tv_mode_phantom:{phantom_reason}",
+                        no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
                     )
                     return (None, text)
                 logger.info(f"🔥 Wake word '{w}' detectado en: {text!r}")
-                self._emit_wake(True, w, "exact", text, dur_ms, stt_ms)
+                self._emit_wake(True, w, "exact", text, dur_ms, stt_ms,
+                                no_speech_prob=no_speech_prob, avg_logprob=avg_logprob)
                 return (w, text)
         # Paso 2: fuzzy match fonético (Levenshtein sobre codificación española).
         # "nexa" /neksa/ vs "next" /nekst/ ≈ 0.80 (match); vs "nena" /nena/ ≈ 0.67
@@ -952,6 +971,7 @@ class WhisperWakeDetector:
                         False, None, "rejected", text, dur_ms, stt_ms,
                         fuzzy_ratio=best_ratio,
                         rejection_reason="no_command_verb",
+                        no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
                     )
                     return (None, text)
                 phantom_reason = self._is_phantom_in_tv_mode(text, audio, dur_ms)
@@ -964,6 +984,7 @@ class WhisperWakeDetector:
                         False, None, "rejected", text, dur_ms, stt_ms,
                         fuzzy_ratio=best_ratio,
                         rejection_reason=f"tv_mode_phantom:{phantom_reason}",
+                        no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
                     )
                     return (None, text)
                 canonical = self.wake_words_norm[0]
@@ -974,12 +995,14 @@ class WhisperWakeDetector:
                 self._emit_wake(
                     True, canonical, "fuzzy", text, dur_ms, stt_ms,
                     fuzzy_ratio=best_ratio,
+                    no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
                 )
                 return (canonical, text)
         self._emit_wake(
             False, None, "rejected", text, dur_ms, stt_ms,
             fuzzy_ratio=best_ratio if best_ratio > 0 else None,
             rejection_reason="below_fuzzy_threshold" if best_ratio > 0 else "no_keyword",
+            no_speech_prob=no_speech_prob, avg_logprob=avg_logprob,
         )
         return (None, text)
 
@@ -1074,6 +1097,8 @@ class WhisperWakeDetector:
         stt_ms: float,
         fuzzy_ratio: Optional[float] = None,
         rejection_reason: Optional[str] = None,
+        no_speech_prob: Optional[float] = None,
+        avg_logprob: Optional[float] = None,
     ) -> None:
         # Telemetría TV-mode: en cada reject acumulamos timestamp; en accept
         # con tv_mode activo agregamos warning para que el operador vea
@@ -1100,6 +1125,8 @@ class WhisperWakeDetector:
                 fuzzy_ratio=fuzzy_ratio,
                 rejection_reason=rejection_reason,
                 tv_mode=tv_mode_active,
+                no_speech_prob=no_speech_prob,
+                avg_logprob=avg_logprob,
             )
         except TypeError:
             # MetricsEmitter sin soporte de tv_mode (fallback: emite sin el flag).
@@ -1114,6 +1141,8 @@ class WhisperWakeDetector:
                     wake_stt_ms=stt_ms,
                     fuzzy_ratio=fuzzy_ratio,
                     rejection_reason=rejection_reason,
+                    no_speech_prob=no_speech_prob,
+                    avg_logprob=avg_logprob,
                 )
             except Exception as e:
                 logger.warning(f"MetricsEmitter emit_wake failed: {e}")
