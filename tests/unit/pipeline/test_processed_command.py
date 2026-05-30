@@ -42,8 +42,12 @@ class TestProcessedCommand:
 class TestCommandProcessorReturnsProcessedCommand:
     @pytest.mark.asyncio
     async def test_returns_processed_command_type(self):
+        from src.stt.whisper_fast import STTResult
         stt = MagicMock()
         stt.transcribe = MagicMock(return_value=("hola mundo", 50.0))
+        stt.transcribe_with_confidence = MagicMock(
+            return_value=STTResult("hola mundo", 50.0)
+        )
         cp = CommandProcessor(stt=stt)
         audio = np.zeros(16000, dtype=np.float32)
 
@@ -55,8 +59,12 @@ class TestCommandProcessorReturnsProcessedCommand:
 
     @pytest.mark.asyncio
     async def test_with_identified_speaker(self):
+        from src.stt.whisper_fast import STTResult
         stt = MagicMock()
         stt.transcribe = MagicMock(return_value=("prende la luz", 50.0))
+        stt.transcribe_with_confidence = MagicMock(
+            return_value=STTResult("prende la luz", 50.0)
+        )
 
         mock_user = MagicMock()
         mock_user.user_id = "u1"
@@ -90,8 +98,12 @@ class TestCommandProcessorReturnsProcessedCommand:
 
     @pytest.mark.asyncio
     async def test_empty_text_is_not_success(self):
+        from src.stt.whisper_fast import STTResult
         stt = MagicMock()
         stt.transcribe = MagicMock(return_value=("   ", 50.0))
+        stt.transcribe_with_confidence = MagicMock(
+            return_value=STTResult("   ", 50.0)
+        )
         cp = CommandProcessor(stt=stt)
         audio = np.zeros(16000, dtype=np.float32)
 

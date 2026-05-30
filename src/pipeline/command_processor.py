@@ -11,6 +11,8 @@ import numpy as np
 
 from dataclasses import dataclass, field
 
+from src.stt.whisper_fast import STTResult
+
 
 @dataclass
 class ProcessedCommand:
@@ -19,6 +21,7 @@ class ProcessedCommand:
     user: object | None = None  # User from user_manager or None
     emotion: object | None = None  # EmotionResult or None
     speaker_confidence: float = 0.0
+    stt_confidence: STTResult | None = None  # confianza del STT (None = desconocida)
     timings: dict = field(default_factory=dict)
     success: bool = False
 
@@ -132,8 +135,9 @@ class CommandProcessor:
                     logger.debug(f"Emotion detection skipped: {e}")
             text = pretranscribed_text
         elif use_parallel and (self.speaker_id or self.emotion_detector):
-            text, stt_ms, speaker_result, emotion_result = await self._process_parallel(audio)
+            text, stt_ms, speaker_result, emotion_result, stt_res = await self._process_parallel(audio)
             result.timings["stt"] = stt_ms
+            result.stt_confidence = stt_res
             if speaker_result:
                 user, confidence, spk_ms = speaker_result
                 if user is not None:
@@ -144,8 +148,10 @@ class CommandProcessor:
                 result.emotion = emotion_result
                 result.timings["emotion"] = emotion_result.processing_time_ms
         else:
-            text, stt_ms = self.stt.transcribe(audio, self.sample_rate)
-            result.timings["stt"] = stt_ms
+            stt_res = self.stt.transcribe_with_confidence(audio, self.sample_rate)
+            text = stt_res.text
+            result.stt_confidence = stt_res
+            result.timings["stt"] = stt_res.elapsed_ms
 
             # Sequential speaker ID (fallback)
             if self.speaker_id and self.user_manager:
@@ -172,18 +178,20 @@ class CommandProcessor:
 
         return result
 
-    async def _process_parallel(self, audio: np.ndarray) -> tuple[str, float, tuple | None, object | None]:
+    async def _process_parallel(self, audio: np.ndarray) -> tuple[str, float, tuple | None, object | None, STTResult | None]:
         """
         Procesar STT, Speaker ID y Emotion en paralelo REAL con asyncio.gather().
 
         Returns:
-            Tuple[text, stt_ms, speaker_result, emotion_result]
+            Tuple[text, stt_ms, speaker_result, emotion_result, stt_res]
         """
         loop = asyncio.get_running_loop()
         t_parallel = time.perf_counter()
 
         # Crear todas las tasks
-        stt_task = loop.run_in_executor(None, self.stt.transcribe, audio, self.sample_rate)
+        stt_task = loop.run_in_executor(
+            None, self.stt.transcribe_with_confidence, audio, self.sample_rate
+        )
 
         speaker_task = (
             loop.run_in_executor(None, self._identify_speaker, audio)
@@ -206,8 +214,11 @@ class CommandProcessor:
         parallel_ms = (time.perf_counter() - t_parallel) * 1000
 
         # Procesar resultados
-        stt_result = results[0] if not isinstance(results[0], Exception) else ("", 0)
-        text, stt_ms = stt_result if isinstance(stt_result, tuple) else ("", 0)
+        stt_res = results[0] if not isinstance(results[0], Exception) else None
+        if stt_res is not None:
+            text, stt_ms = stt_res.text, stt_res.elapsed_ms
+        else:
+            text, stt_ms = "", 0
 
         if self.speaker_id and self.user_manager and not isinstance(results[1], Exception):
             speaker_result = results[1]  # tuple: (User|None, confidence, timing_ms)
@@ -222,7 +233,7 @@ class CommandProcessor:
 
         logger.debug(f"[Parallel GATHER {parallel_ms:.0f}ms] STT + Speaker ID + Emotion completed")
 
-        return text, stt_ms, speaker_result, emotion_result
+        return text, stt_ms, speaker_result, emotion_result, stt_res
 
     def _get_cached_embeddings(self) -> dict[str, np.ndarray]:
         """

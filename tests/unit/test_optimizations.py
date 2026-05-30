@@ -233,10 +233,14 @@ class TestAsyncGatherParallel:
     async def test_process_parallel_uses_gather(self):
         """_process_parallel debe usar asyncio.gather"""
         from src.pipeline.command_processor import CommandProcessor
+        from src.stt.whisper_fast import STTResult
 
         # Mocks
         mock_stt = Mock()
         mock_stt.transcribe = Mock(return_value=("hola mundo", 50.0))
+        mock_stt.transcribe_with_confidence = Mock(
+            return_value=STTResult("hola mundo", 50.0, no_speech_prob=0.1, avg_logprob=-0.3)
+        )
 
         mock_speaker_id = Mock()
         mock_user_manager = Mock()
@@ -254,11 +258,12 @@ class TestAsyncGatherParallel:
         audio = np.random.randn(16000).astype(np.float32)
 
         # Ejecutar
-        text, stt_ms, speaker_result, emotion_result = await processor._process_parallel(audio)
+        text, stt_ms, speaker_result, emotion_result, stt_res = await processor._process_parallel(audio)
 
         assert text == "hola mundo"
         assert stt_ms == 50.0
         assert speaker_result is not None
+        assert stt_res is not None
 
     @pytest.mark.asyncio
     async def test_process_parallel_handles_exceptions(self):
@@ -267,6 +272,7 @@ class TestAsyncGatherParallel:
 
         mock_stt = Mock()
         mock_stt.transcribe = Mock(side_effect=Exception("STT Error"))
+        mock_stt.transcribe_with_confidence = Mock(side_effect=Exception("STT Error"))
 
         processor = CommandProcessor(
             stt=mock_stt,
@@ -278,11 +284,12 @@ class TestAsyncGatherParallel:
         audio = np.random.randn(16000).astype(np.float32)
 
         # No debe crashear
-        text, stt_ms, speaker_result, emotion_result = await processor._process_parallel(audio)
+        text, stt_ms, speaker_result, emotion_result, stt_res = await processor._process_parallel(audio)
 
         # Debe retornar valores por defecto
         assert text == ""
         assert stt_ms == 0
+        assert stt_res is None
 
 
 class TestAudioManagerVAD:
