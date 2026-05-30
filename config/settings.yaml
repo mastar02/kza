@@ -457,6 +457,14 @@ emotion:
 # ADULT=3: + seguridad (cerraduras, cámaras)
 # ADMIN=4: Control total (agregar usuarios, config)
 
+security:
+  # Voice-auth opcional. Si true, una acción de domótica (prender/apagar/etc.)
+  # SOLO se ejecuta si el speaker está enrolado (user_id != "unknown"). Todos
+  # los disparos fantasma de la luz del escritorio (2026-05-29) eran
+  # User=unknown, así que activarlo los corta — PERO también bloquea invitados
+  # no enrolados, y depende de que speaker_id sea confiable. Default OFF.
+  require_known_speaker_for_actions: false
+
 # Domótica - Device Mappings (fallback si no hay match en vectordb)
 device_aliases:
   luz: "light"

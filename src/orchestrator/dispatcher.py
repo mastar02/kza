@@ -336,6 +336,7 @@ class RequestDispatcher:
         use_router_for_simple: bool = True,
         hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
         before_handler_warn_ms: float = 5.0,
+        require_known_speaker_for_actions: bool = False,
     ):
         """
         Args:
@@ -376,6 +377,11 @@ class RequestDispatcher:
         self.response_handler = response_handler
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
+        # Voice-auth opcional (default OFF): exige speaker enrolado para ejecutar
+        # acciones de domótica. Todos los disparos fantasma son User=unknown, así
+        # que activarlo los corta — pero también bloquea invitados no enrolados.
+        # Requiere speaker ID confiable. Ver project_escritorio_light_phantom_toggles.
+        self._require_known_for_actions = require_known_speaker_for_actions
 
         # Estadisticas
         self._stats = {
@@ -706,6 +712,27 @@ class RequestDispatcher:
                         intent="domain_conflict",
                         timings=timings,
                     )
+
+            # Voice-auth opcional (default OFF): si está activo y el speaker no
+            # está enrolado, NO ejecutamos la acción de domótica (todos los
+            # disparos fantasma son User=unknown). Defensa adicional, complementa
+            # el fix del initial_prompt + la guarda de dominio.
+            if command and self._require_known_for_actions and (
+                not user_id or user_id == "unknown"
+            ):
+                logger.info(
+                    f"[Dispatcher] Speaker desconocido (user_id={user_id!r}) + "
+                    f"require_known_speaker_for_actions → acción {command.get('service')!r}"
+                    f"@{command.get('entity_id')!r} rechazada"
+                )
+                return DispatchResult(
+                    path=path,
+                    priority=Priority.HIGH,
+                    success=False,
+                    response="No te reconozco, no puedo hacer eso.",
+                    intent="speaker_auth",
+                    timings=timings,
+                )
 
             if command:
                 # 2026-04-28: removido el skip idempotent por cache. La integración
@@ -1371,6 +1398,7 @@ class MultiUserOrchestrator:
         # Plan #3 OpenClaw — plugin hooks
         hooks=None,
         before_handler_warn_ms: float = 5.0,
+        require_known_speaker_for_actions: bool = False,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -1431,6 +1459,7 @@ class MultiUserOrchestrator:
             reminder_manager=reminder_manager,
             hooks=hooks,
             before_handler_warn_ms=before_handler_warn_ms,
+            require_known_speaker_for_actions=require_known_speaker_for_actions,
         )
 
         self._running = False

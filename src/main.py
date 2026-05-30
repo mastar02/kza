@@ -1053,6 +1053,9 @@ async def main():
             keep_recent_turns=keep_recent_turns,
             hooks=hooks,
             before_handler_warn_ms=self_warn_ms,
+            require_known_speaker_for_actions=config.get("security", {}).get(
+                "require_known_speaker_for_actions", False
+            ),
         )
 
     # Request router (command routing: orchestrated + legacy paths)
