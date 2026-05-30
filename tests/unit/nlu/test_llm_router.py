@@ -232,3 +232,29 @@ def test_command_classification_dataclass_defaults():
     assert c.confidence == 0.0
     assert c.intent is None
     assert c.slots == {}
+
+
+# ---------------- _extract_command_json ----------------
+
+from src.nlu.llm_router import _extract_command_json
+
+
+def test_extract_json_skips_pseudo_object_preamble():
+    raw = 'is_command=TRUE, intent=turn_on, segments=[{text:"poner", needs_reasoning:false}] {"is_command": true, "intent": "turn_on", "entity_hint": "escritorio"}'
+    obj = _extract_command_json(raw)
+    assert obj is not None and obj["is_command"] is True and obj["intent"] == "turn_on"
+
+
+def test_extract_json_clean():
+    obj = _extract_command_json('{"is_command": false, "intent": null}')
+    assert obj == {"is_command": False, "intent": None}
+
+
+def test_extract_json_none_when_no_json():
+    assert _extract_command_json("no hay json aca") is None
+
+
+def test_extract_json_prefers_object_with_is_command():
+    raw = '{"foo": 1} {"is_command": true, "intent": "turn_off"}'
+    obj = _extract_command_json(raw)
+    assert obj["is_command"] is True

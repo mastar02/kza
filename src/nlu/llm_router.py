@@ -32,6 +32,45 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _extract_command_json(raw: str) -> Optional[dict]:
+    """Extrae el objeto JSON de clasificación de la respuesta del LLM.
+
+    El modelo puede anteponer prosa o pseudo-objetos (ej.
+    'segments=[{text:"x"}] {"is_command": true}'), por eso un regex greedy
+    falla: hay que escanear objetos {...} balanceados y validar cada uno.
+    Devuelve el primer objeto parseable que contenga "is_command"; si ninguno
+    lo tiene, el primer objeto parseable; None si no hay JSON válido.
+
+    Args:
+        raw: Texto crudo de la respuesta del LLM.
+
+    Returns:
+        Diccionario parseado con la clasificación, o None si no hay JSON válido.
+    """
+    candidates: list[dict] = []
+    depth = 0
+    start = None
+    for i, ch in enumerate(raw):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    obj = json.loads(raw[start : i + 1])
+                    if isinstance(obj, dict):
+                        candidates.append(obj)
+                except json.JSONDecodeError:
+                    pass
+                start = None
+    for obj in candidates:
+        if "is_command" in obj:
+            return obj
+    return candidates[0] if candidates else None
+
+
 # Lista cerrada de intents que el sistema sabe ejecutar. Si el LLM responde
 # algo fuera de esta lista, lo tratamos como is_command=False.
 KNOWN_INTENTS: tuple[str, ...] = (
@@ -316,22 +355,11 @@ class LLMCommandRouter:
                 elapsed_ms=elapsed_ms,
             )
 
-        # Buscar el primer bloque JSON {...} en el response. Qwen a veces
-        # mete texto preámbulo aunque le pidamos solo JSON.
-        match = re.search(r"\{[\s\S]*\}", raw)
-        if not match:
-            logger.warning(f"LLMCommandRouter: sin JSON en response: {raw[:200]!r}")
-            return CommandClassification(
-                is_command=False,
-                rejection_reason="noise",
-                raw_response=raw,
-                elapsed_ms=elapsed_ms,
-            )
-
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError as e:
-            logger.warning(f"LLMCommandRouter JSON inválido ({e}): {raw[:200]!r}")
+        # Escanear objetos JSON {...} balanceados; el modelo puede anteponer
+        # prosa o pseudo-objetos con claves sin comillas antes del JSON real.
+        data = _extract_command_json(raw)
+        if data is None:
+            logger.warning(f"LLMCommandRouter: sin JSON válido en response: {raw[:200]!r}")
             return CommandClassification(
                 is_command=False,
                 rejection_reason="noise",
