@@ -281,6 +281,33 @@ def _normalize(text: str) -> str:
     return t
 
 
+def _canonicalize_wake(text: str, fuzzy_word: str, canonical: str) -> str:
+    """Replace the first occurrence (case-insensitive, whole word) of a fuzzy
+    wake variant with the canonical form.
+
+    The wake detector accepts phonetic variants (e.g. 'dexa' ~ 'nexa') but the
+    CommandGate downstream does an EXACT substring match against the wake word.
+    Canonicalising the pre-transcribed text prevents a false 'missing_wake' in
+    the gate.
+
+    Args:
+        text: Original transcribed text that may contain a fuzzy wake variant.
+        fuzzy_word: The normalised fuzzy token that was matched (e.g. 'dexa').
+        canonical: The canonical wake word to substitute in (e.g. 'Nexa').
+
+    Returns:
+        Text with the first whole-word occurrence of fuzzy_word replaced by
+        canonical, preserving the rest of the string unchanged.
+    """
+    return re.sub(
+        rf"\b{re.escape(fuzzy_word)}\b",
+        canonical,
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+
 # Prefijos coalescidos ↔ forma real. Whisper a veces pega la 'a' final
 # de "nexa" al inicio del verbo siguiente: "nexa prendé" → "nexa aprende".
 # Mapeo conservador — solo prefijos de verbos de domótica conocidos para
@@ -1019,9 +1046,11 @@ class WhisperWakeDetector:
                     )
                     return (None, text)
                 canonical = self.wake_words_norm[0]
+                text = _canonicalize_wake(text, best_word, canonical.capitalize())
                 logger.info(
                     f"🔥 Wake word fuzzy match: '{best_word}' /{best_phon}/ ~ "
-                    f"/{best_target}/ (ratio={best_ratio:.2f}) en: {text!r}"
+                    f"/{best_target}/ (ratio={best_ratio:.2f}) "
+                    f"→ canonicalized: {text!r}"
                 )
                 self._emit_wake(
                     True, canonical, "fuzzy", text, dur_ms, stt_ms,

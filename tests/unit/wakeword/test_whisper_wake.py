@@ -414,3 +414,26 @@ def test_full_utterance_hallucination_rejected_via_transcribe(wake_detector, mon
     matched, text = wake_detector._transcribe_and_match(np.zeros(16000, dtype=np.float32), 1000.0)
     assert matched is None
     assert emitted.get("rejection_reason") == "no_speech_hallucination"
+
+
+# --- _canonicalize_wake ---
+
+class TestCanonicalizeWake:
+    """Reemplaza la variante fuzzy del wake por la forma canónica (word boundary, case-insensitive, solo primera)."""
+
+    def test_canonicalize_wake_replaces_fuzzy_variant(self):
+        from src.wakeword.whisper_wake import _canonicalize_wake
+        assert _canonicalize_wake("Dexa, prender la luz", "dexa", "Nexa") == "Nexa, prender la luz"
+
+    def test_canonicalize_wake_case_insensitive_first_only(self):
+        from src.wakeword.whisper_wake import _canonicalize_wake
+        assert _canonicalize_wake("dexa dexa luz", "dexa", "Nexa") == "Nexa dexa luz"
+
+    def test_canonicalize_wake_no_match_returns_unchanged(self):
+        from src.wakeword.whisper_wake import _canonicalize_wake
+        assert _canonicalize_wake("prender la luz", "dexa", "Nexa") == "prender la luz"
+
+    def test_canonicalize_wake_word_boundary(self):
+        from src.wakeword.whisper_wake import _canonicalize_wake
+        # no debe tocar substrings dentro de otra palabra
+        assert _canonicalize_wake("indexar algo", "dexa", "Nexa") == "indexar algo"
