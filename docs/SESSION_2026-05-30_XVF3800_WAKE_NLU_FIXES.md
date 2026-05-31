@@ -38,13 +38,13 @@ El usuario reportó que los comandos de la luz del escritorio "no tenían efecto
 
 ## PENDIENTE para la próxima sesión
 
-1. **`config/settings.yaml` tiene WIP sin commitear** (intencional, NO commiteado en esta sesión): tres cosas mezcladas:
-   - `reasoner.http_base_url` → `http://192.168.1.2:8200/v1` (gateway LiteLLM). **El gateway está ROTO**: `127.0.0.1:8200` devuelve `400 "No connected db"` → slow-path/reasoner degradado + compactor disabled. **Reconciliar/arreglar el gateway.**
-   - Mic rebind escritorio → `mic_usb_port: "3-1.4"` (XVF3800), living `mic_usb_port: null`.
-   - `rooms.wake_word.use_silero_vad: false`.
-   - Backups: `settings.yaml.bak.pre-gateway-2026-05-30`, `settings.yaml.bak.pre-micbind-20260530-191236`.
-   - **Decidir qué de esto commitear** (el rebind + use_silero_vad son estables; el gateway está roto).
-2. **Push a `origin/main`**: el merge fue local; origin quedó 10 commits atrás. `git push origin main` cuando se decida.
+1. ~~**`config/settings.yaml` tiene WIP sin commitear**~~ **✅ RESUELTO 2026-05-30 (sesión siguiente, commits `87e4315` + `61a8e3c`).** El WIP de settings se commiteó separado por concern. **CORRECCIÓN al diagnóstico de esta sesión:** el gateway **NO estaba roto**.
+   - `reasoner.http_base_url` → `http://192.168.1.2:8200/v1`: **es la arquitectura nueva correcta**, no un WIP a revertir. Cutover documentado en Notion pág 8: `:8200` es un **gateway LiteLLM centralizado bajo `infra`** que proxya a MiniMax-M2.7 (auditoría + egress central; el modelo local gpt-oss-120b fue borrado, `kza-llm-ik` quedó `.disabled`). El `400 "No connected db"` era **key incorrecta del consumer** (LiteLLM con master_key estática trata una key distinta como virtual key y la busca en DB inexistente), **NO gateway/DB caído**. El reasoner principal de KZA siempre conectó `200 OK` (su `MINIMAX_API_KEY` ya == `LITELLM_MASTER_KEY`).
+   - **El único bug real era el compactor**: `main.py` construía el compaction reasoner hardcodeado a `127.0.0.1:8200` SIN api_key → 400 → `Compactor disabled`. Fix (`87e4315`): reusa el gateway autenticado del reasoner principal (`base_url`+`api_style`+`api_key_env` de config). Verificado: `[main] Compactor enabled`.
+   - Mic rebind escritorio (`mic_usb_port: "3-1.4"`, XVF3800) + living `null` + `use_silero_vad: false` → commiteados en `61a8e3c`.
+   - Backups `settings.yaml.bak.*` quedaron como untracked (no commiteados, intencional).
+   - Ver memoria `project_litellm_gateway_cutover_2026-05-30.md`.
+2. ~~**Push a `origin/main`**~~ **✅ RESUELTO 2026-05-30**: `git push origin main` (fast-forward limpio, origin estaba 13 commits atrás, sin divergencia).
 3. **Notion desactualizado** (stack LLM): pág "2.5 LLM y razonamiento" (2026-04-17) y "7.3 LLM stack overhaul" (2026-04-28) describen vLLM AWQ :8100 + ik_llama :8200. **Realidad actual**: fast_router = Qwen-7B **Q4_K_M en :8101** (reemplazó vLLM :8100 deshabilitado), reasoner = gateway/MiniMax :8200. No hay página del gateway. Actualizar cuando el stack esté estable.
 4. **LLMRouter Q4_K_M débil**: el grammar fast-path lo evita para domótica, pero para queries conversacionales/no-domótica el router sigue siendo poco fiable. Considerar revertir a vLLM AWQ o subir quant.
 5. **7 tests pre-existentes rotos** en `tests/unit/nlu/test_llm_router.py` (`fake_generate()` signature mismatch — el mock no matchea la firma real de `classify`) + 1 en `test_endpointing.py`. Ajenos a esta sesión, pero conviene arreglar el mock.
