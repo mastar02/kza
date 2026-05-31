@@ -39,6 +39,68 @@ def _norm(text: str) -> str:
 
 
 # ============================================================
+# IntentRule — tabla declarativa de intents.
+# ============================================================
+
+@dataclass(frozen=True)
+class IntentRule:
+    """Regla declarativa de intent. Datos, no código."""
+    intent: str
+    verb_patterns: tuple[str, ...]   # regex (con \b alrededor al compilar)
+    domains: frozenset[str]          # dominios HA donde aplica
+    target: str = "domotics"         # "domotics" | "music"
+    requires_slot: str | None = None # "any" | "volume" | None
+
+
+# Orden = prioridad cuando varias reglas matchean el verbo. turn_on/off antes
+# que open/close para que 'subí la luz' (light) caiga en turn_on, no open.
+INTENT_RULES: tuple[IntentRule, ...] = (
+    IntentRule("turn_on",  (r"prend\w*", r"encend\w*", r"ilumin\w*", r"activ\w*", r"enciend\w*", r"sub\w*"),
+               frozenset({"light", "fan", "climate", "switch"})),
+    IntentRule("turn_off", (r"apag\w*", r"cort\w*", r"desactiv\w*", r"apaguen"),
+               frozenset({"light", "fan", "climate", "switch"})),
+    IntentRule("set",      (),  frozenset({"light"}), requires_slot="any"),
+    IntentRule("open",     (r"sub\w*", r"abr\w*", r"levant\w*"),
+               frozenset({"cover"})),
+    IntentRule("close",    (r"baj\w*", r"cerr\w*"),
+               frozenset({"cover"})),
+    IntentRule("media_play",  (r"pon\w*", r"reproduc\w*", r"dale", r"segu\w*"),
+               frozenset({"media_player"}), target="music"),
+    IntentRule("media_pause", (r"paus\w*", r"par\w*", r"fren\w*", r"callate", r"silenci\w*"),
+               frozenset({"media_player"}), target="music"),
+    IntentRule("media_next",  (r"siguiente", r"proxim\w*", r"cambi\w*", r"salt\w*"),
+               frozenset({"media_player"}), target="music"),
+    IntentRule("volume_set",  (r"volumen", r"fuerte", r"bajito"),
+               frozenset({"media_player"}), target="music", requires_slot="volume"),
+)
+
+
+def _rule_verb_matches(rule: IntentRule, norm_text: str) -> bool:
+    for pat in rule.verb_patterns:
+        if re.search(rf"\b{pat}\b", norm_text):
+            return True
+    return False
+
+
+def match_intent_rules(text: str, domain: str | None) -> IntentRule | None:
+    """Devuelve la primera IntentRule cuyo verbo matchea Y es compatible con
+    el dominio. Si domain es None, no se puede validar compat → None salvo que
+    la regla aplique a cualquier dominio (no hay tales reglas hoy)."""
+    if domain is None:
+        return None
+    t = _norm(text)
+    for rule in INTENT_RULES:
+        if domain not in rule.domains:
+            continue
+        if rule.intent == "set":
+            # 'set' no tiene verbo; lo decide el motor por presencia de slots.
+            continue
+        if _rule_verb_matches(rule, t):
+            return rule
+    return None
+
+
+# ============================================================
 # Entity lexicon — mapa de palabra → dominio HA.
 # ============================================================
 ENTITY_TERMS: dict[str, list[str]] = {

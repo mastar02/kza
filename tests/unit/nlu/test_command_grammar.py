@@ -178,3 +178,34 @@ def test_whisper_variant_alexa_still_works():
     pc = parse_partial_command("alexa apagá la luz del escritorio")
     assert pc.has_wake is True
     assert pc.ready_to_dispatch()
+
+
+# -----------------------------------------------------------------
+# IntentRule + INTENT_RULES + match_intent_rules
+# -----------------------------------------------------------------
+
+from src.nlu.command_grammar import IntentRule, INTENT_RULES, match_intent_rules
+
+
+def test_intent_rules_cover_expected_intents():
+    intents = {r.intent for r in INTENT_RULES}
+    assert intents == {
+        "turn_on", "turn_off", "set", "open", "close",
+        "media_play", "media_pause", "media_next", "volume_set",
+    }
+
+
+@pytest.mark.parametrize("text,domain,expected_intent", [
+    ("prendé la luz", "light", "turn_on"),
+    ("apagá la luz", "light", "turn_off"),
+    ("subí la persiana", "cover", "open"),
+    ("bajá la persiana", "cover", "close"),
+    ("subí el volumen", "media_player", "volume_set"),
+    ("pausá la música", "media_player", "media_pause"),
+    ("poné música", "media_player", "media_play"),
+    ("abrí la luz", "light", None),       # open no aplica a light → sin match
+    ("subí la luz", "light", "turn_on"),  # 'subí' con light → turn_on gana por compat
+])
+def test_match_intent_rules_respects_domain(text, domain, expected_intent):
+    rule = match_intent_rules(text, domain)
+    assert (rule.intent if rule else None) == expected_intent
