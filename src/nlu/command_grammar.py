@@ -123,6 +123,7 @@ ENTITY_TERMS: dict[str, list[str]] = {
     "media_player": [
         "tele", "tv", "television", "televisor", "musica", "parlante",
         "parlantes", "bocina", "bocinas", "altavoz", "altavoces", "radio",
+        "volumen",
     ],
 }
 
@@ -280,4 +281,99 @@ def parse_partial_command(text: str) -> PartialCommand:
     pc.room = extract_room(text)
     pc.slots = extract_slots(text)
     pc.confidence = _compute_confidence(pc)
+    return pc
+
+
+# ============================================================
+# ParsedCommand — motor autoritativo con quality/target.
+# ============================================================
+
+@dataclass
+class ParsedCommand:
+    """Resultado del parser autoritativo. Determinístico, idempotente, sin I/O.
+
+    A diferencia de PartialCommand (orientado a streaming), ParsedCommand produce
+    intent + domain + target + quality cuando el utterance está completo.
+    """
+    intent: str | None = None
+    domain: str | None = None
+    room: str | None = None
+    slots: dict = field(default_factory=dict)
+    target: str = "domotics"
+    confidence: float = 0.0
+    quality: str = "none"        # "full" | "partial" | "none"
+    raw_text: str = ""
+    has_wake: bool = False
+
+    def ready_to_dispatch(self) -> bool:
+        """True si intent + domain están presentes (quality == 'full')."""
+        return self.quality == "full"
+
+    def is_high_confidence(self, threshold: float = 0.75) -> bool:
+        """True si la confidence del comando supera el umbral dado."""
+        return self.confidence >= threshold
+
+
+def _parsed_confidence(pc: "ParsedCommand") -> float:
+    """Heurística de confidence para un ParsedCommand.
+
+    Scores son señales orientativas, no probabilidades calibradas.
+    """
+    if pc.quality != "full":
+        return 0.0
+    score = 0.7
+    if pc.has_wake:
+        score += 0.15
+    if pc.room is not None:
+        score += 0.10
+    if pc.slots:
+        score += 0.05
+    return min(score, 1.0)
+
+
+def _has_any_onoff_verb(text: str) -> bool:
+    """True si el texto contiene algún verbo de encendido/apagado."""
+    t = _norm(text)
+    for rule in INTENT_RULES:
+        if rule.intent in ("turn_on", "turn_off") and _rule_verb_matches(rule, t):
+            return True
+    return False
+
+
+def parse_command(text: str) -> ParsedCommand:
+    """Parser autoritativo para domótica simple. Determinístico, idempotente,
+    sin I/O. Produce intent + domain + target + quality.
+
+    Casos cubiertos:
+    - Comandos directos: "prendé la luz" → turn_on / light / domotics / full
+    - Comandos de media: "pausá la música" → media_pause / media_player / music / full
+    - Set implícito: "poné la luz al 70%" → set / light / domotics / full
+    - Incompatibles: "abrí la luz" → None / light / domotics / partial
+    - Sin domótica: "hola qué tal" → None / None / domotics / none
+    """
+    if not text:
+        return ParsedCommand()
+    pc = ParsedCommand(raw_text=text)
+    pc.has_wake = has_wake_word(text)
+    pc.domain = extract_entity(text)
+    pc.room = extract_room(text)
+    pc.slots = extract_slots(text)
+
+    rule = match_intent_rules(text, pc.domain)
+    if rule is not None:
+        pc.intent = rule.intent
+        pc.target = rule.target
+    elif pc.domain == "light" and pc.slots and not _has_any_onoff_verb(text):
+        # 'set' implícito: slots de luz (brillo/color/temp) sin verbo on/off.
+        pc.intent = "set"
+        pc.target = "domotics"
+
+    if pc.intent is not None and pc.domain is not None:
+        pc.quality = "full"
+    elif pc.intent is not None or pc.domain is not None:
+        pc.quality = "partial"
+    else:
+        pc.quality = "none"
+
+    pc.confidence = _parsed_confidence(pc)
     return pc

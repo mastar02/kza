@@ -209,3 +209,39 @@ def test_intent_rules_cover_expected_intents():
 def test_match_intent_rules_respects_domain(text, domain, expected_intent):
     rule = match_intent_rules(text, domain)
     assert (rule.intent if rule else None) == expected_intent
+
+
+# -----------------------------------------------------------------
+# ParsedCommand + parse_command
+# -----------------------------------------------------------------
+
+from src.nlu.command_grammar import ParsedCommand, parse_command
+
+
+@pytest.mark.parametrize("text,intent,domain,target,quality", [
+    ("nexa prendé la luz del escritorio", "turn_on", "light", "domotics", "full"),
+    ("apagá la luz", "turn_off", "light", "domotics", "full"),
+    ("subí la persiana del cuarto", "open", "cover", "domotics", "full"),
+    ("subí el volumen", "volume_set", "media_player", "music", "full"),
+    ("pausá la música", "media_pause", "media_player", "music", "full"),
+    ("poné la luz al 70%", "set", "light", "domotics", "full"),       # set por slot, sin on/off
+    ("abrí la luz", None, "light", "domotics", "partial"),            # incompat → no full
+    ("hola qué tal", None, None, "domotics", "none"),                 # no domótica
+])
+def test_parse_command(text, intent, domain, target, quality):
+    pc = parse_command(text)
+    assert pc.intent == intent
+    assert pc.domain == domain
+    assert pc.target == target
+    assert pc.quality == quality
+
+
+def test_parse_command_set_includes_slot():
+    pc = parse_command("poné la luz al 70%")
+    assert pc.intent == "set"
+    assert pc.slots.get("brightness_pct") == 70
+
+
+def test_parse_command_ready_to_dispatch():
+    assert parse_command("prendé la luz").ready_to_dispatch() is True
+    assert parse_command("abrí la luz").ready_to_dispatch() is False
