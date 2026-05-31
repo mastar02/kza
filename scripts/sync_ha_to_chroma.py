@@ -97,6 +97,11 @@ KNOWN_GROUPS = {
     "light.living", "light.cocina", "light.escritorio", "light.bano",
     "light.pasillo", "light.cuarto", "light.balcon", "light.hogar",
     "light.escalera", "light.escaleras",
+    # Z2M 2026-05-31: el grupo del escritorio quedó como light.escritorio_2
+    # (el slug light.escritorio sigue reservado por el huérfano viejo de Hue
+    # en el registro de HA). Ver project_lights_zigbee2mqtt_migration_2026-05-31.
+    # Cuando se libere el slug, renombrar a light.escritorio y quitar esto.
+    "light.escritorio_2",
 }
 INDIVIDUAL_RE = re.compile(r"^([a-z]{1,2})(\d+)(?:_\d+)?$", re.IGNORECASE)
 

@@ -1170,7 +1170,7 @@ rooms:
     output_mode: "mono"
     default_volume: 50
     noise_floor: 0.01
-    default_light: "light.escritorio"
+    default_light: "light.escritorio_2"   # grupo Z2M 2026-05-31 (slug light.escritorio reservado por huérfano Hue; volver a light.escritorio al liberarlo)
     default_climate: "climate.escritorio_ac"
     default_media_player: "media_player.escritorio_monitor"
     motion_sensor: "binary_sensor.motion_escritorio"
