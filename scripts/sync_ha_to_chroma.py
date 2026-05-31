@@ -279,7 +279,17 @@ class VLLMClient:
         self.model = model
         self.timeout = timeout
         from openai import OpenAI
-        self.client = OpenAI(base_url=base_url, api_key="not-used", timeout=timeout)
+        # Los endpoints LLM ahora exigen auth (:8101 llama-server, :8100 vLLM,
+        # :8200 gateway). Tomar la key del entorno (sourcear el EnvironmentFile
+        # correspondiente al correr el script); fallback "not-used" para
+        # endpoints abiertos. Ver project_llm_bearer_auth_deployed.
+        api_key = (
+            os.environ.get("VLLM_API_KEY")
+            or os.environ.get("LLAMA_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or "not-used"
+        )
+        self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
         models = [m.id for m in self.client.models.list().data]
         if model not in models:
             raise RuntimeError(f"Modelo {model} no disponible. Catálogo: {models}")
