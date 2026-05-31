@@ -20,6 +20,7 @@ SLOT_BRIGHTNESS = "brightness_pct"
 SLOT_COLOR = "rgb_color"
 SLOT_COLOR_TEMP = "color_temp_kelvin"
 SLOT_EFFECT = "effect"
+SLOT_VOLUME = "volume_pct"
 
 
 # ============================================================
@@ -135,6 +136,60 @@ def extract_color_temp(text: str) -> int | None:
 
 
 # ============================================================
+# Volume (media_player)
+# ============================================================
+_RE_VOLUME_NUM = re.compile(
+    r"\bvolumen\s+(?:al\s+|en\s+)?(\d{1,3})\b|"
+    r"\b(?:ponelo|pon[eé]|subilo|bajalo)\s+(?:\w+\s+)*?(?:al\s+|en\s+)?(\d{1,3})\s*(?:%|por\s*ciento)?\b",
+    re.IGNORECASE,
+)
+
+# Words that always imply volume (no volume-context verb needed)
+_VOLUME_WORDS_INHERENT = {
+    "bajito": 20,
+    "fortísimo": 100, "fortisimo": 100,
+}
+
+# Words that imply volume ONLY when there's a volume-context verb/noun
+_VOLUME_WORDS_CONTEXT = {
+    "fuerte": 90, "alto": 90, "alta": 90,
+    "bajo": 20, "baja": 20, "suave": 30,
+    "medio": 50, "media": 50,
+}
+
+# Verbs / nouns that establish volume context
+# "más"/"menos" establish volume context because Spanish voice commands use
+# "más fuerte/alto" for louder (not "más brillante" for brightness).
+_VOLUME_CONTEXT_WORDS = ("volumen", "subilo", "bajalo", "ponelo", "más", "menos")
+
+
+def extract_volume(text: str) -> int | None:
+    """Extrae volume_pct (0-100) SOLO si hay contexto de volumen. None si no."""
+    t = text.lower()
+
+    # Check for inherent volume words first (no context needed)
+    for word, val in _VOLUME_WORDS_INHERENT.items():
+        if re.search(rf"\b{re.escape(word)}\b", t):
+            return val
+
+    has_volume_context = any(w in t for w in _VOLUME_CONTEXT_WORDS)
+
+    if has_volume_context:
+        m = _RE_VOLUME_NUM.search(t)
+        if m:
+            num = next((g for g in m.groups() if g), None)
+            if num is not None:
+                v = int(num)
+                if 0 <= v <= 100:
+                    return v
+        for word, val in _VOLUME_WORDS_CONTEXT.items():
+            if re.search(rf"\b{re.escape(word)}\b", t):
+                return val
+
+    return None
+
+
+# ============================================================
 # Slot extraction (agregador)
 # ============================================================
 def extract_slots(text: str) -> dict:
@@ -152,6 +207,9 @@ def extract_slots(text: str) -> dict:
     k = extract_color_temp(text)
     if k is not None:
         slots[SLOT_COLOR_TEMP] = k
+    vol = extract_volume(text)
+    if vol is not None:
+        slots[SLOT_VOLUME] = vol
     return slots
 
 
