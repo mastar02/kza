@@ -1017,6 +1017,7 @@ rooms:
     # Si aumentan FP de TV, re-habilitar speaker_filter tras re-enrollment.
     min_rms: 0.007
     vad_threshold: 0.3
+    use_silero_vad: false   # XVF3800 hace su propio DSP; Silero VAD lo rechaza (prob~0). Gate por RMS. 2026-05-30
     # Fuzzy match FONÉTICO (español): compara Levenshtein sobre representación
     # /neksa/ (nexa) vs /nekst/ (next, match ✓) vs /nena/ (nena, reject ✓).
     # El cluster /ks/ de "nexa" es raro en español común → buen discriminador.
@@ -1096,7 +1097,7 @@ rooms:
     # extensor Cat5e marginal, vigilar caídas intermitentes.
     # Re-derivar puerto con: readlink -f /sys/class/sound/card<N>  (segmento "<bus>-<port>")
     mic_device_name: "XVF3800"
-    mic_usb_port: "1-2.2"
+    mic_usb_port: null   # XVF3800 reubicado al escritorio 2026-05-30; living sin mic (temporal)
     mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
     bt_adapter: "F4:4E:FC:CF:BF:3F"   # UGREEN BT 5.3 living (instalado 2026-05-04). Resuelve a hciN al iniciar.
     ma1260_zone: 1
@@ -1153,8 +1154,8 @@ rooms:
     # → ALSA card1 → PortAudio index 4. UAC1.0 reporta in=0 en PortAudio (solo
     # captura 16kHz/6ch) pero abre OK explícito a 16kHz. Bindeo por puerto USB.
     # Re-derivar puerto con: readlink -f /sys/class/sound/card<N>  (segmento "<bus>-<port>")
-    mic_device_name: "ReSpeaker"
-    mic_usb_port: "3-1.1"
+    mic_device_name: "XVF3800"
+    mic_usb_port: "3-1.4"   # XVF3800 reubicado al escritorio 2026-05-30 (port real 3-1.4, card1; era UAC1.0 en 3-1.1)
     mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
     bt_adapter: "F4:4E:FC:21:0D:66"   # UGREEN BT 5.3 escritorio (resuelve a hciN al iniciar — antes hardcoded "hci0")
     ma1260_zone: 4
