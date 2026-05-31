@@ -48,3 +48,19 @@ def test_real_garbles_and_noise_not_dispatchable(text):
     pc = parse_command(text)
     assert pc.quality != "full", f"{text!r} no debería ser dispatchable (es garble/ruido)"
     assert pc.ready_to_dispatch() is False
+
+
+# --- Media noun commands: deben resolverse a full sin tocar el LLM ---
+@pytest.mark.parametrize("text,intent", [
+    ("nexa siguiente canción", "media_next"),
+    ("nexa próxima canción", "media_next"),
+    ("nexa cambiá de canción", "media_next"),
+    ("nexa reproducí la playlist", "media_play"),
+    ("nexa poné la playlist", "media_play"),
+])
+def test_media_noun_commands_are_full(text, intent):
+    pc = parse_command(text)
+    assert pc.domain == "media_player"
+    assert pc.intent == intent
+    assert pc.quality == "full"
+    assert pc.target == "music"

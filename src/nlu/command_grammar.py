@@ -23,7 +23,6 @@ import unicodedata
 from dataclasses import dataclass, field
 
 from src.nlu.slot_extractor import (
-    classify_intent,
     extract_slots,
 )
 
@@ -49,7 +48,6 @@ class IntentRule:
     verb_patterns: tuple[str, ...]   # regex (con \b alrededor al compilar)
     domains: frozenset[str]          # dominios HA donde aplica
     target: str = "domotics"         # "domotics" | "music"
-    requires_slot: str | None = None # "any" | "volume" | None
 
 
 # Orden = prioridad cuando varias reglas matchean el verbo. turn_on/off antes
@@ -59,7 +57,7 @@ INTENT_RULES: tuple[IntentRule, ...] = (
                frozenset({"light", "fan", "climate", "switch"})),
     IntentRule("turn_off", (r"apag\w*", r"cort\w*", r"desactiv\w*", r"apaguen"),
                frozenset({"light", "fan", "climate", "switch"})),
-    IntentRule("set",      (),  frozenset({"light"}), requires_slot="any"),
+    IntentRule("set",      (),  frozenset({"light"})),
     IntentRule("open",     (r"sub\w*", r"abr\w*", r"levant\w*"),
                frozenset({"cover"})),
     IntentRule("close",    (r"baj\w*", r"cerr\w*"),
@@ -71,7 +69,7 @@ INTENT_RULES: tuple[IntentRule, ...] = (
     IntentRule("media_next",  (r"siguiente", r"proxim\w*", r"cambi\w*", r"salt\w*"),
                frozenset({"media_player"}), target="music"),
     IntentRule("volume_set",  (r"volumen", r"fuerte", r"bajito"),
-               frozenset({"media_player"}), target="music", requires_slot="volume"),
+               frozenset({"media_player"}), target="music"),
 )
 
 
@@ -123,7 +121,7 @@ ENTITY_TERMS: dict[str, list[str]] = {
     "media_player": [
         "tele", "tv", "television", "televisor", "musica", "parlante",
         "parlantes", "bocina", "bocinas", "altavoz", "altavoces", "radio",
-        "volumen",
+        "volumen", "cancion", "canción", "tema", "temas", "playlist", "lista",
     ],
 }
 
