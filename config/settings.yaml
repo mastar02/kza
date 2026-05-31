@@ -389,6 +389,18 @@ vectordb:
   commands_collection: "home_assistant_commands"
   routines_collection: "home_assistant_routines"
   search_threshold: 0.65  # Similitud mínima para match
+  # Entidades que NO se indexan en el vector search (no resolubles por voz).
+  # - exclude_entities: lista de entity_id exactos. Default interno: light.hogar
+  #   (grupo global; "la luz" sin room prendería toda la casa). Si declarás la
+  #   lista acá, REEMPLAZA el default → incluí light.hogar si lo querés seguir
+  #   excluyendo.
+  # - exclude_patterns: regex sobre entity_id. Patrón Z2M grupo-por-habitación:
+  #   ocultar las bombillas miembro (light.<hab><dígito>) y dejar solo el grupo
+  #   (light.<hab>). Ver project_lights_zigbee2mqtt_migration_2026-05-31.
+  exclude_entities:
+    - "light.hogar"
+  exclude_patterns:
+    - "^light\\.escritorio[0-9]+$"   # miembros Z2M escritorio; el grupo light.escritorio se mantiene
 
 # Sync Settings
 sync:

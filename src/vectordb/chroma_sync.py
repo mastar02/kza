@@ -6,6 +6,7 @@ Sincronización de comandos de Home Assistant con ChromaDB
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime
 import chromadb
@@ -32,19 +33,44 @@ class ChromaSync:
         embedder_model: str,
         embedder_device: str,
         commands_collection: str = "home_assistant_commands",
-        routines_collection: str = "home_assistant_routines"
+        routines_collection: str = "home_assistant_routines",
+        excluded_entities: list[str] | None = None,
+        excluded_patterns: list[str] | None = None,
     ):
         self.chroma_path = chroma_path
         self.embedder_model = embedder_model
         self.embedder_device = embedder_device
         self.commands_collection_name = commands_collection
         self.routines_collection_name = routines_collection
-        
+
+        # Entidades excluidas del vector search. Default: light.hogar (grupo
+        # global que prendería TODA la casa con "la luz" sin room). Configurable
+        # desde settings.yaml (vectordb.exclude_entities / exclude_patterns) —
+        # ej. ocultar bombillas miembro de un grupo Z2M (light.escritorio\d+)
+        # dejando solo el grupo (light.escritorio). Ver memoria
+        # project_lights_zigbee2mqtt_migration_2026-05-31.
+        self._excluded_entities = set(
+            excluded_entities if excluded_entities is not None else ["light.hogar"]
+        )
+        self._excluded_patterns = []
+        for pat in (excluded_patterns or []):
+            try:
+                self._excluded_patterns.append(re.compile(pat))
+            except re.error as e:
+                logger.warning(f"Patrón de exclusión inválido, ignorado: {pat!r} ({e})")
+
         self._client = None
         self._commands_collection = None
         self._routines_collection = None
         self._embedder = None
-    
+
+    def _is_excluded(self, entity_id: str) -> bool:
+        """True si la entidad no debe indexarse en el vector search (lista
+        explícita o algún patrón regex de exclusión)."""
+        if entity_id in self._excluded_entities:
+            return True
+        return any(p.search(entity_id) for p in self._excluded_patterns)
+
     def initialize(self):
         """Inicializar ChromaDB y embedder"""
         logger.info("Inicializando ChromaDB...")
@@ -147,12 +173,6 @@ class ChromaSync:
         logger.info("Generando descripciones con LLM...")
         
         all_phrases = []
-        
-        # Entities excluidas del vector search por ser grupos globales que
-        # generan falsos positivos (ej: light.hogar prende TODA la casa cuando
-        # el user dice "la luz" sin room). El router tiene un path dedicado
-        # para comandos con keywords explícitas "hogar"/"casa"/"todas".
-        excluded_entities = {"light.hogar"}
 
         for i, entity in enumerate(entities[:max_entities]):
             entity_id = entity["entity_id"]
@@ -162,7 +182,9 @@ class ChromaSync:
             if not services:
                 continue
 
-            if entity_id in excluded_entities:
+            # Excluidas por config (lista + patrones). Default light.hogar
+            # (grupo global). Ver _is_excluded / settings.yaml vectordb.
+            if self._is_excluded(entity_id):
                 logger.info(f"Skip {entity_id} (excluido del vector search)")
                 continue
             

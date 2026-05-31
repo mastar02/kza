@@ -284,6 +284,8 @@ async def main():
         chroma_path=vectordb_config.get("path", "./data/chroma_db"),
         embedder_model=embeddings_config["model"],
         embedder_device=embeddings_config["device"],
+        excluded_entities=vectordb_config.get("exclude_entities"),
+        excluded_patterns=vectordb_config.get("exclude_patterns"),
     )
 
     # LLM Reasoner — HTTP al kza-72b.service (default) o local GGUF (fallback)
