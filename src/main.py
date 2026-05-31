@@ -993,12 +993,19 @@ async def main():
         from src.llm.reasoner import HttpReasoner
         from src.orchestrator import Compactor
 
-        # Apuntamos al service local kza-llm-ik (Qwen3-30B-A3B en :8200,
-        # ver memoria project_ik_llama_deployed). NO reusamos el reasoner
-        # principal porque la compactación tolera latencia alta y no debe
-        # competir con el slow path de razonamiento (cache pool aparte).
+        # Cutover 2026-05-30 (Notion pág 8): el modelo local kza-llm-ik (:8200)
+        # fue reemplazado por el gateway LiteLLM → MiniMax, que exige la virtual
+        # key (api_key_env). Antes :8200 era local sin auth y este reasoner se
+        # construía sin key → tras el cutover daba 400 "No connected db" y el
+        # compactor quedaba disabled. Reusamos el gateway autenticado del
+        # reasoner principal (instancia aparte = cache pool propio). Override
+        # explícito vía orchestrator.context.compaction.{base_url,model}.
         compaction_reasoner = HttpReasoner(
-            base_url="http://127.0.0.1:8200/v1",
+            base_url=compaction_cfg.get("base_url")
+            or reasoner_config.get("http_base_url", "http://127.0.0.1:8200/v1"),
+            model=compaction_cfg.get("model") or reasoner_config.get("http_model"),
+            api_style=reasoner_config.get("api_style", "completions"),
+            api_key_env=reasoner_config.get("api_key_env"),
             timeout=compaction_cfg.get("timeout_s", 30.0),
         )
         try:

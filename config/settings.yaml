@@ -258,7 +258,7 @@ command_gate:
 # GLM-Air local de abajo y revertir failover.endpoints.reasoner_cloud.
 reasoner:
   mode: "http"
-  http_base_url: "https://api.minimax.io/v1"
+  http_base_url: "http://192.168.1.2:8200/v1"  # gateway LiteLLM 2026-05-30 (rollback directo: https://api.minimax.io/v1)
   http_timeout: 60
   http_model: "MiniMax-M2.7"   # base (validado, con cuota); -highspeed requiere otra suscripción
   api_style: "chat"            # MiniMax solo soporta /v1/chat/completions
