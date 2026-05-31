@@ -79,14 +79,12 @@ def _grammar_fastpath_classification(
     text: str,
     confidence_threshold: float = 0.75,
 ):
-    """Return a CommandClassification if the deterministic grammar extractor
-    produces a high-confidence, dispatchable command; otherwise return None.
+    """CommandClassification si la gramática determinística produce un comando
+    dispatchable de alta confianza (domótica o media); None si no.
 
-    The grammar parser is authoritative for domotics: it is rule-based,
-    language-model-free, and does not hallucinate.  When it extracts both
-    intent *and* entity above ``confidence_threshold`` the result is returned
-    as ``is_command=True`` so the caller can skip the unreliable
-    LLMCommandRouter entirely.
+    Para target='music' igual se devuelve is_command=True: el comando es válido
+    y debe pasar el gate; el dispatcher lo rutea a su music path por
+    _classify_request. El intent/target quedan en la clasificación para audit.
 
     Args:
         text: Transcribed text from the STT pipeline (post-wake-word).
@@ -95,23 +93,24 @@ def _grammar_fastpath_classification(
 
     Returns:
         A ``CommandClassification`` with ``is_command=True`` when the grammar
-        is confident, or ``None`` when it is not — the caller then falls
-        through to the LLMCommandRouter as before.
+        produces a full-quality parse above the confidence threshold, or
+        ``None`` when it does not — the caller then falls through to the
+        LLMCommandRouter as before.
     """
-    from src.nlu.command_grammar import parse_partial_command
+    from src.nlu.command_grammar import parse_command
     from src.nlu.llm_router import CommandClassification
 
-    pc = parse_partial_command(text)
-    if not pc.ready_to_dispatch() or pc.confidence < confidence_threshold:
+    pc = parse_command(text)
+    if pc.quality != "full" or pc.confidence < confidence_threshold:
         return None
 
     return CommandClassification(
         is_command=True,
         confidence=pc.confidence,
         intent=pc.intent,
-        entity_hint=pc.entity,
+        entity_hint=pc.domain,
         slots=dict(pc.slots),
-        raw_response="<grammar-authoritative>",
+        raw_response=f"<grammar:{pc.target}>",
         elapsed_ms=0.0,
     )
 
@@ -547,6 +546,26 @@ class RequestRouter:
                         f"[hooks] failed to emit intent after-event: {e}",
                         exc_info=True,
                     )
+            # Fallback: el LLM no pudo decidir (timeout/error → 'unavailable').
+            # NO descartar si la gramática tenía señal parcial.
+            if classification.rejection_reason == "unavailable":
+                from src.nlu.command_grammar import parse_partial_command
+                pc = parse_partial_command(text)
+                if pc.intent is not None and pc.entity is not None:
+                    # señal completa → dispatch best-effort
+                    classification.is_command = True
+                    classification.intent = pc.intent
+                    classification.entity_hint = pc.entity
+                    classification.slots = dict(pc.slots)
+                elif pc.intent is not None or pc.entity is not None:
+                    # señal parcial → pedir confirmación por voz
+                    question = self._build_confirmation_question(pc)
+                    result["needs_confirmation"] = True
+                    result["confirmation_question"] = question
+                    result["response"] = question
+                    result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                    return result
+                # sin señal → cae al manejo normal de no-comando abajo
             if not classification.is_command:
                 result["intent"] = f"llm_rejected:{classification.rejection_reason or 'unknown'}"
                 result["success"] = False
