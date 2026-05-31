@@ -110,9 +110,9 @@ class CommandSegment:
 @dataclass
 class CommandClassification:
     """Resultado de clasificar un texto post-wake."""
-    is_command: bool
+    is_command: Optional[bool]
     confidence: float = 0.0
-    rejection_reason: Optional[str] = None  # tv_replay | tv_phrase | incomplete | noise | unknown_intent
+    rejection_reason: Optional[str] = None  # tv_replay | tv_phrase | incomplete | noise | unknown_intent | unavailable
     intent: Optional[str] = None
     entity_hint: Optional[str] = None
     slots: dict = field(default_factory=dict)
@@ -183,7 +183,9 @@ _GUIDED_JSON_SCHEMA: dict = {
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         "rejection_reason": {
             "type": ["string", "null"],
-            "enum": [None, "tv_replay", "tv_phrase", "incomplete", "noise", "unknown_intent"],
+            # Note: "unavailable" is produced locally on timeout/error — not by the model,
+            # but included here for schema consistency.
+            "enum": [None, "tv_replay", "tv_phrase", "incomplete", "noise", "unknown_intent", "unavailable"],
         },
         "intent": {
             "type": ["string", "null"],
@@ -327,8 +329,8 @@ class LLMCommandRouter:
                 f"LLMCommandRouter timeout ({elapsed:.0f}ms > {self.timeout_s*1000:.0f}ms)"
             )
             return CommandClassification(
-                is_command=False,
-                rejection_reason="noise",
+                is_command=None,
+                rejection_reason="unavailable",
                 raw_response="<timeout>",
                 elapsed_ms=elapsed,
             )
@@ -336,8 +338,8 @@ class LLMCommandRouter:
             elapsed = (time.perf_counter() - t0) * 1000
             logger.error(f"LLMCommandRouter error: {e}")
             return CommandClassification(
-                is_command=False,
-                rejection_reason="noise",
+                is_command=None,
+                rejection_reason="unavailable",
                 raw_response=f"<error: {type(e).__name__}>",
                 elapsed_ms=elapsed,
             )

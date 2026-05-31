@@ -234,7 +234,9 @@ nlu:
     # 2026-05-08: 1.5 → 2.5. El 7B en :8101 corre con -ngl 20 (parcial GPU)
     # post-reorg, latencia warm ~250ms pero cold cache + carga concurrente
     # con el slow path lo lleva a 1.5-2s. Comando real perdido por 1ms.
-    timeout_s: 2.5
+    # 2026-05-30: 2.5 → 3.5; la domótica ya no toca el LLM (grammar fast-path),
+    # damos margen a no-domótica (preguntas, timers, reasoning).
+    timeout_s: 3.5
     max_tokens: 200           # cap del JSON response
     temperature: 0.0          # determinismo total para clasificación
 

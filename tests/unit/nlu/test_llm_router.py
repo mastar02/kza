@@ -23,7 +23,7 @@ def _make_router(llm_response: str | list[str], timeout_s: float = 5.0):
         responses = llm_response
     call_count = {"n": 0}
 
-    def fake_generate(prompts, max_tokens=256, temperature=0.3):
+    def fake_generate(prompts, max_tokens=256, temperature=0.3, response_format=None):
         idx = min(call_count["n"], len(responses) - 1)
         call_count["n"] += 1
         return [responses[idx]]
@@ -145,14 +145,14 @@ async def test_classify_timeout_returns_invalid():
     """Si el LLM tarda demasiado, devolvemos rechazo (caller decide fallback)."""
     fast = MagicMock()
 
-    def slow_generate(prompts, max_tokens=256, temperature=0.3):
+    def slow_generate(prompts, max_tokens=256, temperature=0.3, response_format=None):
         time.sleep(0.5)  # excede el timeout configurado abajo
         return [json.dumps({"is_command": True, "intent": "turn_on"})]
 
     fast.generate = slow_generate
     router = LLMCommandRouter(fast_router=fast, timeout_s=0.05)
     result = await router.classify("Nexa prendé")
-    assert result.is_command is False
+    assert result.is_command is None
     assert "timeout" in result.raw_response
 
 
@@ -162,7 +162,7 @@ async def test_classify_handles_llm_exception():
     fast.generate = MagicMock(side_effect=ConnectionError("vLLM down"))
     router = LLMCommandRouter(fast_router=fast)
     result = await router.classify("Nexa prendé")
-    assert result.is_command is False
+    assert result.is_command is None
     assert "error" in result.raw_response
 
 
@@ -209,7 +209,7 @@ async def test_history_appears_in_prompt():
 
     captured_prompts = {}
 
-    def capture_generate(prompts, max_tokens, temperature):
+    def capture_generate(prompts, max_tokens, temperature, response_format=None):
         captured_prompts["p"] = prompts[0]
         return [json.dumps({"is_command": False})]
 
@@ -258,3 +258,35 @@ def test_extract_json_prefers_object_with_is_command():
     raw = '{"foo": 1} {"is_command": true, "intent": "turn_off"}'
     obj = _extract_command_json(raw)
     assert obj["is_command"] is True
+
+
+# ---------------- Timeout / Error → unavailable (Task 5) ----------------
+
+class _TimeoutFastRouter:
+    """Simula un LLM que tarda más que el timeout configurado."""
+    def generate(self, prompts, max_tokens, temperature, response_format):
+        import time
+        time.sleep(5)
+        return ["{}"]
+
+
+class _ErrorFastRouter:
+    """Simula un LLM que lanza excepción."""
+    def generate(self, prompts, max_tokens, temperature, response_format):
+        raise RuntimeError("boom")
+
+
+@pytest.mark.asyncio
+async def test_timeout_marks_unavailable_not_noise():
+    r = LLMCommandRouter(fast_router=_TimeoutFastRouter(), timeout_s=0.1)
+    out = await r.classify("prendé la luz")
+    assert out.rejection_reason == "unavailable"
+    assert out.is_command is None
+
+
+@pytest.mark.asyncio
+async def test_error_marks_unavailable_not_noise():
+    r = LLMCommandRouter(fast_router=_ErrorFastRouter(), timeout_s=2.0)
+    out = await r.classify("prendé la luz")
+    assert out.rejection_reason == "unavailable"
+    assert out.is_command is None
