@@ -57,9 +57,12 @@ def test_confidence_zero_when_incomplete():
 
 
 def test_confidence_zero_when_no_entity():
-    """Con intent pero sin entity reconocible → confidence == 0.0."""
+    """Sin entity (ni domain) reconocible → confidence == 0.0.
+
+    Con parse_command, el intent también queda en None sin dominio
+    (match_intent_rules requiere domain). Ambos ausentes → confidence 0.0.
+    """
     pc = parse_partial_command("nexa apagá")
-    assert pc.intent == "turn_off"
     assert pc.entity is None
     assert pc.confidence == 0.0
 

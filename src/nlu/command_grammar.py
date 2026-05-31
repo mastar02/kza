@@ -208,83 +208,6 @@ def has_wake_word(text: str) -> bool:
 
 
 # ============================================================
-# PartialCommand
-# ============================================================
-@dataclass
-class PartialCommand:
-    """Resultado del parser. Se va actualizando a medida que llega más texto."""
-    intent: str | None = None
-    entity: str | None = None
-    room: str | None = None
-    slots: dict = field(default_factory=dict)
-    raw_text: str = ""
-    has_wake: bool = False
-    confidence: float = 0.0
-
-    def ready_to_dispatch(self) -> bool:
-        """
-        ¿Hay suficiente señal para ejecutar sin esperar más audio?
-
-        Mínimo: intent (verbo) + entity (dominio). El room/slots son opcionales
-        — si no vienen usamos el room actual (default) y el service_data default
-        del vector search.
-        """
-        return self.intent is not None and self.entity is not None
-
-    def is_empty(self) -> bool:
-        return not (self.intent or self.entity or self.room or self.slots)
-
-    def is_high_confidence(self, threshold: float = 0.75) -> bool:
-        """True si la confidence del comando supera el umbral dado."""
-        return self.confidence >= threshold
-
-
-def _compute_confidence(pc: PartialCommand) -> float:
-    """
-    Heurística de confidence para un PartialCommand.
-
-    Regla:
-      - Si falta intent o entity → 0.0 (el parser no puede dispatchar).
-      - Base = 0.7 con intent + entity presentes.
-      - +0.15 si hay wake word detectada.
-      - +0.10 si hay room detectado.
-      - +0.05 si hay slots extraídos.
-      - Clamp a 1.0.
-
-    Los scores NO son probabilidades calibradas — son señales para decidir
-    cuándo pedir confirmación a acciones sensibles. Ver plan S4.
-    """
-    if pc.intent is None or pc.entity is None:
-        return 0.0
-    score = 0.7
-    if pc.has_wake:
-        score += 0.15
-    if pc.room is not None:
-        score += 0.10
-    if pc.slots:
-        score += 0.05
-    return min(score, 1.0)
-
-
-def parse_partial_command(text: str) -> PartialCommand:
-    """
-    Parsea una transcripción (potencialmente parcial) y devuelve lo que se
-    puede extraer hasta ahora. Idempotente — llamadas sucesivas con texto más
-    largo devuelven mismo-o-más.
-    """
-    if not text:
-        return PartialCommand()
-    pc = PartialCommand(raw_text=text)
-    pc.has_wake = has_wake_word(text)
-    pc.intent = classify_intent(text)
-    pc.entity = extract_entity(text)
-    pc.room = extract_room(text)
-    pc.slots = extract_slots(text)
-    pc.confidence = _compute_confidence(pc)
-    return pc
-
-
-# ============================================================
 # ParsedCommand — motor autoritativo con quality/target.
 # ============================================================
 
@@ -340,6 +263,20 @@ def _has_any_onoff_verb(text: str) -> bool:
     return False
 
 
+def _has_any_action_verb(text: str) -> bool:
+    """True si el texto contiene cualquier verbo de acción (on/off/set/media/etc).
+
+    Usado como guardia para evitar que slots sueltos en frases conversacionales
+    (ej: 'gracias por todo' → brightness_pct=100 vía 'todo') disparen
+    clasificaciones espurias.  Solo verbos con verb_patterns no vacíos.
+    """
+    t = _norm(text)
+    for rule in INTENT_RULES:
+        if rule.verb_patterns and _rule_verb_matches(rule, t):
+            return True
+    return False
+
+
 def parse_command(text: str) -> ParsedCommand:
     """Parser autoritativo para domótica simple. Determinístico, idempotente,
     sin I/O. Produce intent + domain + target + quality.
@@ -362,9 +299,13 @@ def parse_command(text: str) -> ParsedCommand:
     # Inferencia segura: brillo/color/temperatura son slots exclusivos de luz.
     # Si no hubo dominio explícito pero hay un slot de luz (y NO de volumen),
     # asumimos light → habilita 'ponela cálida', 'subí el brillo al 50', etc.
+    # Guardia: requerimos al menos un verbo de acción para evitar frases
+    # conversacionales con 'todo'='100%' disparando clasificaciones espurias
+    # (ej: 'gracias por todo' → brightness_pct=100 por 'todo' en BRIGHTNESS_WORDS).
     _LIGHT_ONLY_SLOTS = {"brightness_pct", "rgb_color", "color_temp_kelvin"}
     if pc.domain is None and "volume_pct" not in pc.slots \
-            and any(k in pc.slots for k in _LIGHT_ONLY_SLOTS):
+            and any(k in pc.slots for k in _LIGHT_ONLY_SLOTS) \
+            and _has_any_action_verb(text):
         pc.domain = "light"
 
     rule = match_intent_rules(text, pc.domain)
@@ -385,3 +326,97 @@ def parse_command(text: str) -> ParsedCommand:
 
     pc.confidence = _parsed_confidence(pc)
     return pc
+
+
+# ============================================================
+# PartialCommand — compat shim para early_dispatch y tests.
+# ============================================================
+
+class PartialCommand(ParsedCommand):
+    """Shim de compatibilidad sobre ParsedCommand.
+
+    Expone ``.entity`` como alias bidireccional de ``.domain`` para que el
+    early_dispatch (multi_room_audio_loop, request_router) y los tests
+    existentes sigan funcionando sin cambios.  Toda la lógica real vive en
+    ParsedCommand / parse_command.
+
+    Se puede construir con keyword ``entity=`` como alias de ``domain=``:
+        PartialCommand(intent="turn_on", entity="light")
+    """
+
+    def __init__(
+        self,
+        intent: str | None = None,
+        domain: str | None = None,
+        room: str | None = None,
+        slots: dict | None = None,
+        target: str = "domotics",
+        confidence: float = 0.0,
+        quality: str = "none",
+        raw_text: str = "",
+        has_wake: bool = False,
+        *,
+        entity: str | None = None,
+    ) -> None:
+        # ``entity`` es el alias legacy de ``domain``.
+        resolved_domain = domain if domain is not None else entity
+        # Recalcular quality si no fue pasada explícitamente (construcción
+        # directa desde test: PartialCommand(intent="turn_on", entity="light")).
+        if quality == "none" and intent is not None and resolved_domain is not None:
+            quality = "full"
+        elif quality == "none" and (intent is not None or resolved_domain is not None):
+            quality = "partial"
+        super().__init__(
+            intent=intent,
+            domain=resolved_domain,
+            room=room,
+            slots=slots if slots is not None else {},
+            target=target,
+            confidence=confidence,
+            quality=quality,
+            raw_text=raw_text,
+            has_wake=has_wake,
+        )
+
+    @property
+    def entity(self) -> str | None:
+        """Alias de domain para compat con consumidores del early_dispatch."""
+        return self.domain
+
+    @entity.setter
+    def entity(self, value: str | None) -> None:
+        self.domain = value
+
+    def is_empty(self) -> bool:
+        """True si no hay ninguna señal extraída."""
+        return not (self.intent or self.domain or self.room or self.slots)
+
+
+def _compute_confidence(pc: "PartialCommand") -> float:
+    """Compat wrapper de _parsed_confidence para consumidores legacy.
+
+    El cálculo es idéntico al de ParsedCommand — usa ``quality`` en lugar de
+    comprobar ``entity`` directamente, lo que mantiene la misma semántica:
+    ambos tienen que estar presentes para que la confidence sea > 0.
+    """
+    return _parsed_confidence(pc)
+
+
+def parse_partial_command(text: str) -> PartialCommand:
+    """Compat wrapper sobre parse_command para el early_dispatch streaming.
+
+    Devuelve un PartialCommand (subclase de ParsedCommand) con .entity como
+    alias de .domain, más los métodos is_empty() / is_high_confidence().
+    """
+    pc = parse_command(text)
+    return PartialCommand(
+        intent=pc.intent,
+        domain=pc.domain,
+        room=pc.room,
+        slots=pc.slots,
+        target=pc.target,
+        confidence=pc.confidence,
+        quality=pc.quality,
+        raw_text=pc.raw_text,
+        has_wake=pc.has_wake,
+    )
