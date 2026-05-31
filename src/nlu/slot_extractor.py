@@ -140,52 +140,40 @@ def extract_color_temp(text: str) -> int | None:
 # ============================================================
 _RE_VOLUME_NUM = re.compile(
     r"\bvolumen\s+(?:al\s+|en\s+)?(\d{1,3})\b|"
-    r"\b(?:ponelo|pon[eé]|subilo|bajalo)\s+(?:\w+\s+)*?(?:al\s+|en\s+)?(\d{1,3})\s*(?:%|por\s*ciento)?\b",
+    r"\b(?:ponelo|pon[eé]|subilo|bajalo)\s+(?:al\s+|en\s+)?(\d{1,3})\s*(?:%|por\s*ciento)?\b",
     re.IGNORECASE,
 )
 
-# Words that always imply volume (no volume-context verb needed)
-_VOLUME_WORDS_INHERENT = {
-    "bajito": 20,
-    "fortísimo": 100, "fortisimo": 100,
+VOLUME_WORDS = {
+    "fuerte": 90, "alto": 90, "alta": 90, "fortísimo": 100, "fortisimo": 100,
+    "bajito": 20, "bajo": 20, "baja": 20, "suave": 30, "medio": 50, "media": 50,
 }
-
-# Words that imply volume ONLY when there's a volume-context verb/noun
-_VOLUME_WORDS_CONTEXT = {
-    "fuerte": 90, "alto": 90, "alta": 90,
-    "bajo": 20, "baja": 20, "suave": 30,
-    "medio": 50, "media": 50,
-}
-
-# Verbs / nouns that establish volume context
-# "más"/"menos" establish volume context because Spanish voice commands use
-# "más fuerte/alto" for louder (not "más brillante" for brightness).
-_VOLUME_CONTEXT_WORDS = ("volumen", "subilo", "bajalo", "ponelo", "más", "menos")
 
 
 def extract_volume(text: str) -> int | None:
-    """Extrae volume_pct (0-100) SOLO si hay contexto de volumen. None si no."""
-    t = text.lower()
+    """Extrae volume_pct (0-100) SOLO si hay contexto de volumen. None si no.
 
-    # Check for inherent volume words first (no context needed)
-    for word, val in _VOLUME_WORDS_INHERENT.items():
+    Contexto = palabra 'volumen' o un verbo de media (ponelo/poné/subilo/bajalo).
+    Sin contexto NO se interpreta nada como volumen — evita pisar comandos de
+    brillo ('la luz al 50', 'bajá la luz', 'más alta la luz').
+    """
+    t = text.lower()
+    has_volume_context = (
+        "volumen" in t
+        or re.search(r"\b(?:ponelo|pon[eé]|subilo|bajalo)\b", t) is not None
+    )
+    if not has_volume_context:
+        return None
+    m = _RE_VOLUME_NUM.search(t)
+    if m:
+        num = next((g for g in m.groups() if g), None)
+        if num is not None:
+            v = int(num)
+            if 0 <= v <= 100:
+                return v
+    for word, val in VOLUME_WORDS.items():
         if re.search(rf"\b{re.escape(word)}\b", t):
             return val
-
-    has_volume_context = any(w in t for w in _VOLUME_CONTEXT_WORDS)
-
-    if has_volume_context:
-        m = _RE_VOLUME_NUM.search(t)
-        if m:
-            num = next((g for g in m.groups() if g), None)
-            if num is not None:
-                v = int(num)
-                if 0 <= v <= 100:
-                    return v
-        for word, val in _VOLUME_WORDS_CONTEXT.items():
-            if re.search(rf"\b{re.escape(word)}\b", t):
-                return val
-
     return None
 
 
