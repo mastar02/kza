@@ -65,6 +65,7 @@ class StreamingWhisperWakeDetector:
         speaker_min_audio_s: float = 0.8,
         beam_size: int = 1,
         initial_prompt: Optional[str] = None,
+        use_silero_vad: bool = True,
     ):
         self.whisper = whisper_stt
         self.wake_words_norm = [_normalize(w) for w in wake_words]
@@ -85,6 +86,7 @@ class StreamingWhisperWakeDetector:
         )
         self.beam_size = beam_size
         self.initial_prompt = initial_prompt
+        self._use_silero_vad = use_silero_vad
 
         self._buffer: deque[np.ndarray] = deque()
         self._buffer_samples = 0
@@ -100,19 +102,26 @@ class StreamingWhisperWakeDetector:
     def load(self):
         if self._loaded:
             return
-        logger.info("StreamingWhisperWakeDetector: cargando silero-vad...")
-        try:
-            import torch
-            model, _ = torch.hub.load(
-                repo_or_dir="snakers4/silero-vad",
-                model="silero_vad",
-                trust_repo=True,
+        if not self._use_silero_vad:
+            logger.info(
+                "StreamingWhisperWakeDetector: Silero VAD disabled (use_silero_vad=false) "
+                "-- gating by RMS only"
             )
-            self._vad = model
-            self._torch = torch
-        except Exception as e:
-            logger.error(f"No pude cargar silero-vad: {e}. Fallback por RMS.")
             self._vad = None
+        else:
+            logger.info("StreamingWhisperWakeDetector: cargando silero-vad...")
+            try:
+                import torch
+                model, _ = torch.hub.load(
+                    repo_or_dir="snakers4/silero-vad",
+                    model="silero_vad",
+                    trust_repo=True,
+                )
+                self._vad = model
+                self._torch = torch
+            except Exception as e:
+                logger.error(f"No pude cargar silero-vad: {e}. Fallback por RMS.")
+                self._vad = None
         self._loaded = True
         filter_str = (
             f" +speaker_filter(threshold={self.speaker_threshold})"

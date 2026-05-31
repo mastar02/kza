@@ -730,6 +730,7 @@ async def main():
                             speaker_min_audio_s=sf_cfg.get("min_audio_s", 0.8),
                             beam_size=wake_beam,
                             initial_prompt=wake_prompt,
+                            use_silero_vad=room_wake_cfg.get("use_silero_vad", True),
                         )
                     else:
                         from src.wakeword.whisper_wake import WhisperWakeDetector
@@ -757,6 +758,7 @@ async def main():
                             known_room_aliases=_all_room_aliases_t,
                             tv_mode_min_rms=room_wake_cfg.get("tv_mode_min_rms", 0.04),
                             tv_mode_min_audio_s=room_wake_cfg.get("tv_mode_min_audio_s", 1.0),
+                            use_silero_vad=room_wake_cfg.get("use_silero_vad", True),
                         )
                     wake_detector.load()
                 else:

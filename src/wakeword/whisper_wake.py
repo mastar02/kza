@@ -472,6 +472,7 @@ class WhisperWakeDetector:
         known_room_aliases: tuple = (),
         tv_mode_min_rms: float = 0.04,
         tv_mode_min_audio_s: float = 1.0,
+        use_silero_vad: bool = True,
     ):
         """
         vad_threshold=0.7 (estricto) filtra voces lejanas/TV a volumen medio.
@@ -550,24 +551,32 @@ class WhisperWakeDetector:
         )
         self._tv_mode_min_rms = tv_mode_min_rms
         self._tv_mode_min_audio_s = tv_mode_min_audio_s
+        self._use_silero_vad = use_silero_vad
 
     def load(self):
         if self._loaded:
             return
-        logger.info("WhisperWakeDetector: cargando silero-vad...")
-        try:
-            import torch
-            model, _ = torch.hub.load(
-                repo_or_dir="snakers4/silero-vad",
-                model="silero_vad",
-                trust_repo=True,
+        if not self._use_silero_vad:
+            logger.info(
+                "WhisperWakeDetector: Silero VAD disabled (use_silero_vad=false) "
+                "-- gating by RMS only"
             )
-            self._vad = model
-            self._torch = torch
-        except Exception as e:
-            logger.error(f"No pude cargar silero-vad: {e}. "
-                         f"Fallback a VAD trivial por RMS (menos preciso).")
             self._vad = None
+        else:
+            logger.info("WhisperWakeDetector: cargando silero-vad...")
+            try:
+                import torch
+                model, _ = torch.hub.load(
+                    repo_or_dir="snakers4/silero-vad",
+                    model="silero_vad",
+                    trust_repo=True,
+                )
+                self._vad = model
+                self._torch = torch
+            except Exception as e:
+                logger.error(f"No pude cargar silero-vad: {e}. "
+                             f"Fallback a VAD trivial por RMS (menos preciso).")
+                self._vad = None
         self._loaded = True
         filter_str = (
             f" +speaker_filter(dim={self.speaker_embedding.shape[0]}, "

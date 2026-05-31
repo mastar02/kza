@@ -437,3 +437,36 @@ class TestCanonicalizeWake:
         from src.wakeword.whisper_wake import _canonicalize_wake
         # no debe tocar substrings dentro de otra palabra
         assert _canonicalize_wake("indexar algo", "dexa", "Nexa") == "indexar algo"
+
+
+# ---------------------------------------------------------------------------
+# Tests for use_silero_vad flag
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def wake_detector_no_silero():
+    """WhisperWakeDetector con use_silero_vad=False.
+
+    No carga Silero real: el flag debe cortar la carga en load() también.
+    _vad must stay None after construction and after load().
+    vad_threshold=0.3 replica la config de produccion para XVF3800.
+    """
+    det = WhisperWakeDetector(
+        whisper_stt=Mock(),
+        wake_words=["nexa"],
+        use_silero_vad=False,
+        vad_threshold=0.3,  # config de produccion XVF3800 (settings.yaml)
+    )
+    det.load()  # debe no cargar Silero y marcar _loaded=True
+    return det
+
+
+def test_use_silero_vad_false_disables_vad_rms_only(wake_detector_no_silero):
+    """Con use_silero_vad=False, _vad es None y _voice_prob usa fallback RMS-only."""
+    det = wake_detector_no_silero
+    assert det._vad is None
+    import numpy as np
+    loud = np.full(1280, 0.05, dtype=np.float32)   # rms ~0.05 >> min_rms
+    assert det._voice_prob(loud) >= det.vad_threshold   # pasa el gate
+    quiet = np.full(1280, 0.001, dtype=np.float32)  # rms < min_rms
+    assert det._voice_prob(quiet) == 0.0                # no pasa
