@@ -75,6 +75,47 @@ def _texts_diverge(a: str, b: str, min_ratio: float = 0.95) -> bool:
     return SequenceMatcher(None, _norm(a), _norm(b)).ratio() < min_ratio
 
 
+def _grammar_fastpath_classification(
+    text: str,
+    confidence_threshold: float = 0.75,
+):
+    """Return a CommandClassification if the deterministic grammar extractor
+    produces a high-confidence, dispatchable command; otherwise return None.
+
+    The grammar parser is authoritative for domotics: it is rule-based,
+    language-model-free, and does not hallucinate.  When it extracts both
+    intent *and* entity above ``confidence_threshold`` the result is returned
+    as ``is_command=True`` so the caller can skip the unreliable
+    LLMCommandRouter entirely.
+
+    Args:
+        text: Transcribed text from the STT pipeline (post-wake-word).
+        confidence_threshold: Minimum grammar confidence to trust the parse.
+            Defaults to 0.75 (same as ``RequestRouter.confidence_threshold``).
+
+    Returns:
+        A ``CommandClassification`` with ``is_command=True`` when the grammar
+        is confident, or ``None`` when it is not — the caller then falls
+        through to the LLMCommandRouter as before.
+    """
+    from src.nlu.command_grammar import parse_partial_command
+    from src.nlu.llm_router import CommandClassification
+
+    pc = parse_partial_command(text)
+    if not pc.ready_to_dispatch() or pc.confidence < confidence_threshold:
+        return None
+
+    return CommandClassification(
+        is_command=True,
+        confidence=pc.confidence,
+        intent=pc.intent,
+        entity_hint=pc.entity,
+        slots=dict(pc.slots),
+        raw_response="<grammar-authoritative>",
+        elapsed_ms=0.0,
+    )
+
+
 @dataclass
 class PermissionResult:
     """Result of a permission check when no UserManager is available."""
@@ -444,6 +485,24 @@ class RequestRouter:
                     f"[FAST_PATH_MULTI regex={regex_ms:.0f}ms n={len(rmatches)}] "
                     f"multi-intent no soportado en fast path; fall-through"
                 )
+
+        # 1a-grammar. Grammar fast-path: la gramática determinística manda en
+        # domótica.  Si extrae intent+entity con alta confianza, construimos
+        # una fast_classification y nos saltamos el LLMCommandRouter (poco
+        # fiable en el modelo actual: rechaza comandos válidos como 'noise').
+        # Solo corre cuando el regex+gate path de arriba NO produjo resultado.
+        if fast_classification is None:
+            grammar_cls = _grammar_fastpath_classification(
+                text, self.confidence_threshold
+            )
+            if grammar_cls is not None:
+                logger.info(
+                    f"[GRAMMAR_FASTPATH] intent={grammar_cls.intent} "
+                    f"entity={grammar_cls.entity_hint} "
+                    f"conf={grammar_cls.confidence:.2f} "
+                    f"— bypassing LLM router: {text!r}"
+                )
+                fast_classification = grammar_cls
 
         # 1a-bis. LLM-based command validator (Opción 2 de la sesión wake-fixes).
         # Reemplaza eventualmente el regex+Chroma; por ahora corre en paralelo
