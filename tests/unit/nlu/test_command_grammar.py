@@ -227,6 +227,7 @@ from src.nlu.command_grammar import ParsedCommand, parse_command
     ("poné la luz al 70%", "set", "light", "domotics", "full"),       # set por slot, sin on/off
     ("abrí la luz", None, "light", "domotics", "partial"),            # incompat → no full
     ("hola qué tal", None, None, "domotics", "none"),                 # no domótica
+    ("ponela cálida", "set", "light", "domotics", "full"),            # slot-inferred domain
 ])
 def test_parse_command(text, intent, domain, target, quality):
     pc = parse_command(text)
@@ -245,3 +246,16 @@ def test_parse_command_set_includes_slot():
 def test_parse_command_ready_to_dispatch():
     assert parse_command("prendé la luz").ready_to_dispatch() is True
     assert parse_command("abrí la luz").ready_to_dispatch() is False
+
+
+def test_parse_command_infers_light_from_slots():
+    # 'cálida' es color_temp → slot exclusivo de luz → domain inferido
+    pc = parse_command("ponela cálida")
+    assert pc.domain == "light"
+    assert pc.intent == "set"
+    assert pc.slots.get("color_temp_kelvin") == 2700
+
+
+def test_parse_command_no_false_light_inference():
+    # sin slots de luz, no se infiere nada
+    assert parse_command("dale").domain is None

@@ -359,6 +359,14 @@ def parse_command(text: str) -> ParsedCommand:
     pc.room = extract_room(text)
     pc.slots = extract_slots(text)
 
+    # Inferencia segura: brillo/color/temperatura son slots exclusivos de luz.
+    # Si no hubo dominio explícito pero hay un slot de luz (y NO de volumen),
+    # asumimos light → habilita 'ponela cálida', 'subí el brillo al 50', etc.
+    _LIGHT_ONLY_SLOTS = {"brightness_pct", "rgb_color", "color_temp_kelvin"}
+    if pc.domain is None and "volume_pct" not in pc.slots \
+            and any(k in pc.slots for k in _LIGHT_ONLY_SLOTS):
+        pc.domain = "light"
+
     rule = match_intent_rules(text, pc.domain)
     if rule is not None:
         pc.intent = rule.intent
