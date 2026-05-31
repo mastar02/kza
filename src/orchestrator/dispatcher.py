@@ -307,8 +307,15 @@ class RequestDispatcher:
     # Música - Fast path (búsqueda directa)
     MUSIC_DIRECT_KEYWORDS = [
         "pon música de", "música de", "canciones de", "reproduce",
-        "playlist", "pausa", "siguiente canción", "anterior",
-        "qué suena", "qué está sonando"
+        "playlist", "pausa", "pausá", "siguiente canción", "anterior",
+        "qué suena", "qué está sonando",
+        # Media-control lexemes — checked before DOMOTICS_KEYWORDS so verbs
+        # like "subí" or "poné" that also appear in domotics are resolved by
+        # the more-specific media noun, not by the generic verb.
+        "música", "musica",        # "poné música", "pausá la música"
+        "volumen",                 # "subí/bajá el volumen"
+        "canción", "cancion",      # "siguiente/anterior canción"
+        "reproducí", "reproduci",  # "reproducí la playlist"
     ]
 
     # Música - Slow path (requiere interpretación)
