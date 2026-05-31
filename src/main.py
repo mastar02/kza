@@ -410,26 +410,6 @@ async def main():
             f"max_history={nlu_cfg.get('max_history', 5)})"
         )
 
-    # Fast path determinístico: regex extractor + LLM gate binario.
-    # Activable via config nlu.fast_path.enabled. Reusa el mismo FastRouter
-    # del LLMCommandRouter para el gate binario (sin VRAM extra).
-    regex_extractor = None
-    llm_gate = None
-    fast_path_cfg = config.get("nlu", {}).get("fast_path", {})
-    if fast_path_cfg.get("enabled", False) and fast_router is not None:
-        from src.nlu.regex import RegexExtractor
-        from src.nlu.llm_gate import LLMGate
-        regex_extractor = RegexExtractor()
-        llm_gate = LLMGate(
-            fast_router=fast_router,
-            timeout_s=fast_path_cfg.get("gate_timeout_s", 0.5),
-            max_tokens=fast_path_cfg.get("gate_max_tokens", 20),
-        )
-        logger.info(
-            f"Fast path habilitado (regex + LLM gate, "
-            f"gate_timeout={fast_path_cfg.get('gate_timeout_s', 0.5)}s)"
-        )
-
     # Memory Manager - memoria contextual
     memory_config = config.get("memory", {})
     memory_manager = None
@@ -1106,8 +1086,6 @@ async def main():
         metrics_emitter=metrics_emitter,
         wake_words=_resolved_wake_words,
         llm_command_router=llm_command_router,
-        regex_extractor=regex_extractor,
-        llm_gate=llm_gate,
         hooks=hooks,
         command_gate=command_gate,
     )

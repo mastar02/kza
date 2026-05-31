@@ -240,12 +240,6 @@ nlu:
     max_tokens: 200           # cap del JSON response
     temperature: 0.0          # determinismo total para clasificación
 
-  fast_path:
-    enabled: true             # activado tras integración 2026-04-28 (regex + LLM gate)
-    # 2026-05-08: 0.5 → 0.8. Mismo motivo que llm_router.timeout_s.
-    gate_timeout_s: 0.8
-    gate_max_tokens: 20       # output corto del gate (~5-10 tokens)
-
 command_gate:
   # Hard rules (noise phrases, filler, repetition, missing wake) always enforce.
   # Confidence rules run in SHADOW until calibrated via the [CommandGate] logs.

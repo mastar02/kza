@@ -194,8 +194,6 @@ class RequestRouter:
         metrics_emitter=None,
         wake_words: tuple[str, ...] | list[str] | None = None,
         llm_command_router=None,
-        regex_extractor=None,
-        llm_gate=None,
         hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
         command_gate: CommandAcceptanceGate | None = None,
     ):
@@ -290,15 +288,6 @@ class RequestRouter:
         # texto post-wake antes del orchestrator y rechaza alucinaciones
         # de TV / replays / frases noise. Ver src/nlu/llm_router.py.
         self.llm_command_router = llm_command_router
-
-        # Fast path determinístico: regex_extractor + llm_gate (binario).
-        # Si el regex matchea limpio un patrón de domótica conocido, el LLM
-        # gate valida con ~70-100ms y bypass del LLMCommandRouter completo
-        # (que toma ~500-900ms). Si gate=false o regex no matchea, se cae
-        # al flujo del LLMCommandRouter como antes. Ver src/nlu/regex/ y
-        # src/nlu/llm_gate.py.
-        self.regex_extractor = regex_extractor
-        self.llm_gate = llm_gate
 
         # Plan #3 OpenClaw — plugin hooks registry (or None)
         self._hooks = hooks
@@ -429,79 +418,20 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
-        # 1a-fast. Fast path determinístico: regex extractor + LLM gate binario.
-        # Para single-intent que matchea limpio (apagá luz X, prendé Y, etc.),
-        # bypaseamos el LLMCommandRouter completo (~500-900ms) y validamos solo
-        # con un gate thin (~70-100ms). Si regex no matchea o gate=false, se
-        # cae al flujo del LLMCommandRouter como antes.
-        # Multi-intent (len>1) por ahora también cae al flujo normal — feature
-        # futuro: dispatch paralelo iterando segments.
-        fast_classification = None
-        if self.regex_extractor is not None and self.llm_gate is not None:
-            t_regex = time.perf_counter()
-            rmatches = self.regex_extractor.extract(text)
-            regex_ms = (time.perf_counter() - t_regex) * 1000
-            result["timings"]["regex"] = regex_ms
-
-            if len(rmatches) == 1:
-                rmatch = rmatches[0]
-                t_gate = time.perf_counter()
-                gate_result = await self.llm_gate.validate(
-                    text=text,
-                    intent=rmatch.intent,
-                    entity_hint=rmatch.entity_canonical,
-                )
-                gate_ms = (time.perf_counter() - t_gate) * 1000
-                result["timings"]["llm_gate"] = gate_ms
-
-                if gate_result.valid:
-                    logger.info(
-                        f"[FAST_PATH regex={regex_ms:.0f}ms gate={gate_ms:.0f}ms] "
-                        f"intent={rmatch.intent} entity={rmatch.entity_canonical} "
-                        f"text={text!r}"
-                    )
-                    # Construir CommandClassification para que el resto del flujo
-                    # funcione idéntico (history recording, etc.). is_command=True
-                    # asegura que NO se rechace abajo. Marcamos llm_classification
-                    # para que el bloque del LLMCommandRouter se saltee.
-                    from src.nlu.llm_router import CommandClassification
-                    fast_classification = CommandClassification(
-                        is_command=True,
-                        confidence=0.95,
-                        intent=rmatch.intent,
-                        entity_hint=rmatch.entity_canonical,
-                        slots=dict(rmatch.slots),
-                        raw_response="<regex+gate>",
-                        elapsed_ms=regex_ms + gate_ms,
-                    )
-                else:
-                    logger.info(
-                        f"[FAST_PATH_REJECT regex={regex_ms:.0f}ms gate={gate_ms:.0f}ms] "
-                        f"text={text!r} — falling through to LLM router"
-                    )
-            elif len(rmatches) > 1:
-                logger.debug(
-                    f"[FAST_PATH_MULTI regex={regex_ms:.0f}ms n={len(rmatches)}] "
-                    f"multi-intent no soportado en fast path; fall-through"
-                )
-
         # 1a-grammar. Grammar fast-path: la gramática determinística manda en
         # domótica.  Si extrae intent+entity con alta confianza, construimos
         # una fast_classification y nos saltamos el LLMCommandRouter (poco
         # fiable en el modelo actual: rechaza comandos válidos como 'noise').
-        # Solo corre cuando el regex+gate path de arriba NO produjo resultado.
-        if fast_classification is None:
-            grammar_cls = _grammar_fastpath_classification(
-                text, self.confidence_threshold
+        fast_classification = None
+        grammar_cls = _grammar_fastpath_classification(text, self.confidence_threshold)
+        if grammar_cls is not None:
+            logger.info(
+                f"[GRAMMAR_FASTPATH] intent={grammar_cls.intent} "
+                f"entity={grammar_cls.entity_hint} "
+                f"conf={grammar_cls.confidence:.2f} "
+                f"— bypassing LLM router: {text!r}"
             )
-            if grammar_cls is not None:
-                logger.info(
-                    f"[GRAMMAR_FASTPATH] intent={grammar_cls.intent} "
-                    f"entity={grammar_cls.entity_hint} "
-                    f"conf={grammar_cls.confidence:.2f} "
-                    f"— bypassing LLM router: {text!r}"
-                )
-                fast_classification = grammar_cls
+            fast_classification = grammar_cls
 
         # 1a-bis. LLM-based command validator (Opción 2 de la sesión wake-fixes).
         # Reemplaza eventualmente el regex+Chroma; por ahora corre en paralelo
