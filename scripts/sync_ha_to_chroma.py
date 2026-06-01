@@ -135,6 +135,41 @@ class CommandSpec:
     prompt_hint: str = ""                          # extra hint para el LLM
 
 
+@dataclass
+class SceneSpec:
+    """Escena global 'modo' indexada como comando (Approach B)."""
+    entity_id: str          # scene.cine
+    value_label: str        # cine
+    phrases: list[str]
+
+
+SCENE_ALLOWLIST = ["cine", "lectura", "calida", "fria", "relax"]
+
+# Frases curadas (sin LLM) con encuadre "modo/escena" — NO mencionan cuartos, para
+# no colisionar con el color_temp por-cuarto ("poné la cocina fría" → grupo_cocina).
+SCENE_PHRASES = {
+    "cine":    ["modo cine", "poné modo cine", "activá la escena cine",
+                "ponela en cine", "escena cine"],
+    "lectura": ["modo lectura", "escena lectura", "activá lectura",
+                "poné modo lectura", "luz de lectura"],
+    "calida":  ["modo cálido", "escena cálida", "poné todo cálido",
+                "luz cálida en toda la casa", "modo cálida"],
+    "fria":    ["modo fresco", "escena fría", "poné todo frío",
+                "luz fría en toda la casa", "modo frío"],
+    "relax":   ["modo relax", "escena relax", "activá relax",
+                "poné modo relax", "ponela en relax"],
+}
+
+
+def build_scene_specs() -> list[SceneSpec]:
+    """Specs de las 5 escenas globales 'modo' con frases curadas (sin LLM)."""
+    return [
+        SceneSpec(entity_id=f"scene.{name}", value_label=name,
+                  phrases=list(SCENE_PHRASES[name]))
+        for name in SCENE_ALLOWLIST
+    ]
+
+
 BRIGHTNESS_PRESETS = [
     ("tenue", 15),
     ("al 25%", 25),
