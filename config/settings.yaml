@@ -1112,7 +1112,7 @@ rooms:
     output_mode: "stereo"
     default_volume: 60
     noise_floor: 0.01
-    default_light: "light.living"
+    default_light: "light.grupo_living"
     default_climate: "climate.living_ac"
     default_cover: "cover.living_persiana"
     default_media_player: "media_player.living_tv"
@@ -1131,7 +1131,7 @@ rooms:
     output_mode: "mono"
     default_volume: 50
     noise_floor: 0.01
-    default_light: "light.hall"
+    default_light: "light.grupo_pasillo"   # hall≈pasillo; light.hall no existe en HA (2026-05-31)
     motion_sensor: "binary_sensor.motion_hall"
     tts_speaker: "media_player.hall_speaker"
     aliases: ["hall", "pasillo", "entrada", "el hall"]
@@ -1146,7 +1146,7 @@ rooms:
     output_mode: "mono"
     default_volume: 55
     noise_floor: 0.015
-    default_light: "light.cocina"
+    default_light: "light.grupo_cocina"
     default_fan: "fan.cocina_extractor"
     motion_sensor: "binary_sensor.motion_cocina"
     temperature_sensor: "sensor.temperature_cocina"
@@ -1170,12 +1170,14 @@ rooms:
     output_mode: "mono"
     default_volume: 50
     noise_floor: 0.01
-    default_light: "light.escritorio_2"   # grupo Z2M 2026-05-31 (slug light.escritorio reservado por huérfano Hue; volver a light.escritorio al liberarlo)
-    default_climate: "climate.escritorio_ac"
-    default_media_player: "media_player.escritorio_monitor"
-    motion_sensor: "binary_sensor.motion_escritorio"
-    temperature_sensor: "sensor.temperature_escritorio"
-    tts_speaker: "media_player.escritorio_speaker"
+    default_light: "light.grupo_escritorio"   # grupo HA uniforme (= Alexa); 2026-05-31
+    motion_sensor: "binary_sensor.escritorio_motion"
+    temperature_sensor: "sensor.blink_escritorio_temperature"   # de la cámara Blink (no hay sensor dedicado)
+    # TODO: el escritorio NO tiene estos devices físicamente (no existen en HA al 2026-05-31).
+    # Descomentar y apuntar a entidades reales cuando se agreguen:
+    # default_climate: "climate.escritorio_ac"
+    # default_media_player: "media_player.escritorio_monitor"
+    # tts_speaker: "media_player.escritorio_speaker"
     aliases: ["escritorio", "oficina", "estudio", "el escritorio"]
 
   bano:
@@ -1188,7 +1190,7 @@ rooms:
     output_mode: "stereo"
     default_volume: 50
     noise_floor: 0.02
-    default_light: "light.bano"
+    default_light: "light.grupo_bano"
     default_fan: "fan.bano_extractor"
     motion_sensor: "binary_sensor.motion_bano"
     humidity_sensor: "sensor.humidity_bano"
