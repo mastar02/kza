@@ -113,7 +113,11 @@ def is_group_entity(entity_id: str, friendly_name: str) -> bool:
     # group en HA, robusto a la migración Hue→Z2M, consistente con Alexa). Los grupos
     # Hue room/zone viejos (light.living, …) y el one-off light.escritorio_2 dejan de
     # tratarse como grupos. Ver docs/superpowers/specs/2026-05-31-kza-adopt-grupos-escenas-design.md
-    return entity_id.startswith("light.grupo_")
+    #
+    # light.hogar (whole-home, 29 bombillas) se preserva: NO tiene equivalente
+    # light.grupo_hogar, y es el target de "prendé/apagá toda la casa". Si HA lo
+    # deshabilita más adelante, simplemente no aparece en /api/states (no rompe).
+    return entity_id.startswith("light.grupo_") or entity_id == "light.hogar"
 
 
 def cache_key(entity_id: str, friendly_name: str, area: str | None, capability: str, value: str) -> str:

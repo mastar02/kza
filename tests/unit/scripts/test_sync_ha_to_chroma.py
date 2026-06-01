@@ -20,7 +20,8 @@ def test_is_group_entity_prefix():
     # Modelo viejo Hue y Z2M one-off NO son grupos del modelo nuevo:
     assert is_group_entity("light.cocina", "Cocina") is False
     assert is_group_entity("light.escritorio_2", "Escritorio 4") is False
-    assert is_group_entity("light.hogar", "Hogar") is False
+    # Whole-home preservado (no hay light.grupo_hogar; target de "toda la casa"):
+    assert is_group_entity("light.hogar", "Hogar") is True
     # Bombita individual:
     assert is_group_entity("light.l1", "L1") is False
 
