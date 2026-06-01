@@ -54,8 +54,11 @@
 
 **Archivo:** `scripts/sync_ha_to_chroma.py`
 
-- `is_group_entity(entity_id, friendly_name)` → `return entity_id.startswith("light.grupo_")`.
-  Borrar `KNOWN_GROUPS` (YAGNI). Los grupos Hue dejan de tratarse como grupos.
+- `is_group_entity(entity_id, friendly_name)` → `return entity_id.startswith("light.grupo_") or entity_id == "light.hogar"`.
+  Borrar `KNOWN_GROUPS` (YAGNI). Los grupos Hue room/zone dejan de tratarse como grupos.
+  **Excepción `light.hogar`** (whole-home, 29 bombillas): se preserva porque NO existe
+  `light.grupo_hogar` y es el target de "prendé/apagá toda la casa". Si HA lo deshabilita,
+  desaparece de `/api/states` (no rompe). Caught en verificación adversarial.
 - **No** tocar `decode_individual` / `GROUP_PREFIX_MAP` (bombita individual `l1`… sigue con
   `--include-individual`). **Preservar** el fix de auth del `VLLMClient`.
 - Los friendly_name de los grupo_* ya son limpios (`Living`, `Cocina`, …); `resolve_areas()`
@@ -124,10 +127,11 @@ Consistencia de los otros rooms con mic (sobreviven al disable de los Hue; los `
 
 1. Tras `--wipe`: "cocina"→`light.grupo_cocina`; 0 docs apuntan a grupos Hue ni a `light.escritorio_2`.
 2. "escritorio"→`light.grupo_escritorio` (incl. on/off/dim).
-3. "modo cine/lectura/relax/cálido/fresco" → `scene.turn_on scene.<x>`.
+3. "modo cine/lectura/relax", "escena cálida", "escena fría" → `scene.turn_on scene.<x>`.
 4. "poné la cocina fría" → `light.grupo_cocina` set_color_temp (sin regresión por las escenas).
 5. `settings.yaml` del escritorio: 0 entidades fantasma activas (climate/media comentados con TODO).
-6. (Lado HA, posterior) los grupos Hue quedan deshabilitables sin romper KZA.
+6. "prendé/apagá toda la casa" → `light.hogar` (whole-home preservado).
+7. (Lado HA, posterior) los grupos Hue room/zone quedan deshabilitables sin romper KZA.
 
 ## Riesgos
 
@@ -136,6 +140,31 @@ Consistencia de los otros rooms con mic (sobreviven al disable de los Hue; los `
 - Colisión escenas↔color_temp por-cuarto: mitigada con frases "modo/escena" + test de anti-colisión.
 - `hall` → `light.grupo_pasillo` es una inferencia (hall≈pasillo); reversible, flaggeada.
 - Deshabilitar los grupos Hue es reversible (registry); hacerlo solo tras validar KZA por voz.
+
+## Verificación adversarial (workflow 19 agentes) — resultados
+
+- **Config validada contra HA real:** las 8 referencias nuevas existen; los 7 fantasmas
+  comentados confirmados inexistentes.
+- **Colisión escenas↔luces:** test empírico con BGE-M3 → "poné la cocina cálido" resuelve a
+  `light.grupo_cocina` (sim 0.945) por encima de `scene.calida` (0.775). ✓ light gana.
+  Mitigado además acotando las frases de calida/fria a "escena/modo X" (sin "todo"/"casa").
+- **Regresión whole-home (`light.hogar`):** caught en self-review → preservado.
+- **Falsos positivos descartados por trazado:** `src/nlu/regex/vocab.py` (LIGHT_ENTITIES →
+  `light.escritorio`/etc) y `src/rooms/room_context.create_default_rooms()` apuntan a
+  entidades pre-grupo, PERO **NO son regresiones de runtime**: el `RegexExtractor` que consume
+  vocab **no tiene caller vivo** en el pipeline (solo tests + `__init__`), y `create_default_rooms`
+  solo se usa en el CLI `--detect`. El entity ejecutado sale SIEMPRE del vector search
+  (`request_router.py:978`), probado por logs reales del server (`[HA-CALL] …@light.escritorio_2`).
+
+## Follow-ups (dead code, NO bloquean — no se tocan en este cambio)
+
+- `src/nlu/regex/vocab.py` LIGHT_ENTITIES y `create_default_rooms()` → actualizar a `light.grupo_*`
+  SI se revive el `RegexExtractor` o el CLI `--detect`. Hoy inertes en runtime.
+- Slot pollution: "modo cálida" extrae `color_temp_kelvin` que `scene.turn_on` ignora (inocuo).
+  Filtrar slots por domain sería un cambio en `request_router`/`slot_extractor` (fuera de scope).
+- Test de anti-colisión a nivel vectorial (BGE-M3): impráctico en el venv local (sin chromadb/GPU);
+  el test unitario del spec (frases sin room) está cubierto; la validación vectorial se hace por
+  voz en el server. Empíricamente ya validado por el workflow.
 
 ## Correcciones al spec original (transparencia)
 
