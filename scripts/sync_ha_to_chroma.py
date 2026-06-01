@@ -43,13 +43,15 @@ logger = logging.getLogger("sync_ha")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-for line in (ROOT / ".env").read_text().splitlines():
-    if "=" in line and not line.startswith("#"):
-        k, v = line.strip().split("=", 1)
-        os.environ.setdefault(k, v)
+_env_path = ROOT / ".env"
+if _env_path.exists():
+    for line in _env_path.read_text().splitlines():
+        if "=" in line and not line.startswith("#"):
+            k, v = line.strip().split("=", 1)
+            os.environ.setdefault(k, v)
 
-HA_URL = os.environ["HOME_ASSISTANT_URL"].rstrip("/")
-HA_TOKEN = os.environ["HOME_ASSISTANT_TOKEN"]
+HA_URL = os.environ.get("HOME_ASSISTANT_URL", "").rstrip("/")
+HA_TOKEN = os.environ.get("HOME_ASSISTANT_TOKEN", "")
 
 
 # ============================================================
