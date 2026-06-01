@@ -95,16 +95,6 @@ GROUP_PREFIX_MAP = {
     "l": "living", "c": "cocina", "e": "escritorio",
     "b": "bano", "p": "pasillo", "cu": "cuarto",
 }
-KNOWN_GROUPS = {
-    "light.living", "light.cocina", "light.escritorio", "light.bano",
-    "light.pasillo", "light.cuarto", "light.balcon", "light.hogar",
-    "light.escalera", "light.escaleras",
-    # Z2M 2026-05-31: el grupo del escritorio quedó como light.escritorio_2
-    # (el slug light.escritorio sigue reservado por el huérfano viejo de Hue
-    # en el registro de HA). Ver project_lights_zigbee2mqtt_migration_2026-05-31.
-    # Cuando se libere el slug, renombrar a light.escritorio y quitar esto.
-    "light.escritorio_2",
-}
 INDIVIDUAL_RE = re.compile(r"^([a-z]{1,2})(\d+)(?:_\d+)?$", re.IGNORECASE)
 
 
@@ -119,7 +109,11 @@ def decode_individual(entity_id: str) -> tuple[str, str] | None:
 
 
 def is_group_entity(entity_id: str, friendly_name: str) -> bool:
-    return entity_id in KNOWN_GROUPS
+    # Modelo nuevo (2026-05-31): los 8 grupos por-cuarto son light.grupo_* (platform
+    # group en HA, robusto a la migración Hue→Z2M, consistente con Alexa). Los grupos
+    # Hue room/zone viejos (light.living, …) y el one-off light.escritorio_2 dejan de
+    # tratarse como grupos. Ver docs/superpowers/specs/2026-05-31-kza-adopt-grupos-escenas-design.md
+    return entity_id.startswith("light.grupo_")
 
 
 def cache_key(entity_id: str, friendly_name: str, area: str | None, capability: str, value: str) -> str:
