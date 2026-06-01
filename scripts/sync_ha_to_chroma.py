@@ -170,6 +170,28 @@ def build_scene_specs() -> list[SceneSpec]:
     ]
 
 
+def build_scene_documents(specs: list[SceneSpec]) -> list[tuple[str, str, dict]]:
+    """(doc_id, phrase, metadata) por frase. Metadata genérica → call_service_ws("scene","turn_on")."""
+    out: list[tuple[str, str, dict]] = []
+    for spec in specs:
+        key = cache_key(spec.entity_id, spec.value_label, None, "scene", "activate")
+        for j, phrase in enumerate(spec.phrases):
+            meta = {
+                "entity_id": spec.entity_id,
+                "friendly_name": spec.value_label,
+                "area": "",
+                "domain": "scene",
+                "service": "turn_on",
+                "capability": "scene",
+                "value_label": spec.value_label,
+                "service_data": json.dumps({}),
+                "is_group": False,
+                "cache_key": key,
+            }
+            out.append((f"{key}_{j}", phrase, meta))
+    return out
+
+
 BRIGHTNESS_PRESETS = [
     ("tenue", 15),
     ("al 25%", 25),
@@ -482,7 +504,12 @@ def main():
             to_process.append({"entity": s, "spec": spec, "key": key})
     logger.info(f"Total CommandSpecs: {total_specs}; a procesar (nuevos): {len(to_process)}")
 
-    if not to_process:
+    _scene_pending = [
+        d for d in (build_scene_documents(build_scene_specs())
+                    if not args.only_individual and not args.entity else [])
+        if args.force or d[2]["cache_key"] not in existing_keys
+    ]
+    if not to_process and not _scene_pending:
         logger.info("Todo ya está indexado. --force para re-generar.")
         return
 
@@ -554,6 +581,26 @@ def main():
             })
         if ids:
             collection.add(ids=ids, embeddings=embs, documents=docs, metadatas=metas)
+
+    # ── Escenas globales 'modo' (Approach B: curadas, sin LLM) ──────────────
+    # Indexadas como comandos genéricos: domain=scene, service=turn_on →
+    # request_router las ejecuta con call_service_ws("scene","turn_on","scene.x").
+    if not args.only_individual and not args.entity:
+        scene_added = 0
+        for doc_id, phrase, meta in build_scene_documents(build_scene_specs()):
+            if meta["cache_key"] in existing_keys and not args.force:
+                continue
+            logger.info(f"[scene] {meta['entity_id']} ← {phrase!r}")
+            if args.dry_run:
+                continue
+            collection.add(
+                ids=[doc_id],
+                embeddings=[embedder.encode(phrase).tolist()],
+                documents=[phrase],
+                metadatas=[meta],
+            )
+            scene_added += 1
+        logger.info(f"Escenas indexadas: {scene_added}")
 
     logger.info(f"Done. Stats: {stats}")
 

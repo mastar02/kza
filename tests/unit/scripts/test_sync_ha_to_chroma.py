@@ -49,3 +49,48 @@ def test_scene_phrases_no_room_collision():
             low = phrase.lower()
             assert not any(room in low.split() for room in _ROOM_WORDS), \
                 f"frase de escena con cuarto: {phrase!r}"
+
+
+import json as _json
+from scripts.sync_ha_to_chroma import build_scene_documents
+
+
+def test_build_scene_documents_metadata():
+    docs = build_scene_documents(build_scene_specs())
+    assert len(docs) >= 15  # 5 escenas × ≥3 frases
+    by_eid = {}
+    for doc_id, phrase, meta in docs:
+        assert meta["domain"] == "scene"
+        assert meta["service"] == "turn_on"
+        assert meta["entity_id"].startswith("scene.")
+        assert meta["capability"] == "scene"
+        assert _json.loads(meta["service_data"]) == {}
+        assert meta["is_group"] is False
+        assert isinstance(phrase, str) and phrase
+        assert doc_id[-1] in "0123456789"
+        by_eid[meta["entity_id"]] = by_eid.get(meta["entity_id"], 0) + 1
+    assert by_eid["scene.cine"] >= 3
+    # cache_key estable entre llamadas (idempotencia incremental):
+    docs2 = build_scene_documents(build_scene_specs())
+    assert [d[0] for d in docs] == [d[0] for d in docs2]
+
+
+def test_scene_indexing_block_persists():
+    """build_scene_documents → collection.add con domain=scene/service=turn_on."""
+    added = []
+
+    class FakeColl:
+        def add(self, ids, embeddings, documents, metadatas):
+            added.append((ids[0], metadatas[0]["domain"], metadatas[0]["service"]))
+
+    class FakeEmb:
+        def encode(self, p):
+            class _A:
+                def tolist(self_): return [0.0, 0.1, 0.2]
+            return _A()
+
+    coll, emb = FakeColl(), FakeEmb()
+    for doc_id, phrase, meta in build_scene_documents(build_scene_specs()):
+        coll.add(ids=[doc_id], embeddings=[emb.encode(phrase).tolist()],
+                 documents=[phrase], metadatas=[meta])
+    assert added and all(d == "scene" and s == "turn_on" for _, d, s in added)
