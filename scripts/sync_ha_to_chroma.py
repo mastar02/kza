@@ -151,15 +151,17 @@ SCENE_ALLOWLIST = ["cine", "lectura", "calida", "fria", "relax"]
 
 # Frases curadas (sin LLM) con encuadre "modo/escena" — NO mencionan cuartos, para
 # no colisionar con el color_temp por-cuarto ("poné la cocina fría" → grupo_cocina).
+# Para calida/fria: SOLO frases scene-explícitas ("escena/modo X"). Se evitan a
+# propósito "poné todo cálido" / "luz cálida en toda la casa" (colisionan con el
+# whole-home light.hogar+color_temp) y "modo cálido"/"modo fresco" (imperativos
+# de luz). Caught en verificación adversarial (similitud vectorial ambigua).
 SCENE_PHRASES = {
     "cine":    ["modo cine", "poné modo cine", "activá la escena cine",
                 "ponela en cine", "escena cine"],
     "lectura": ["modo lectura", "escena lectura", "activá lectura",
                 "poné modo lectura", "luz de lectura"],
-    "calida":  ["modo cálido", "escena cálida", "poné todo cálido",
-                "luz cálida en toda la casa", "modo cálida"],
-    "fria":    ["modo fresco", "escena fría", "poné todo frío",
-                "luz fría en toda la casa", "modo frío"],
+    "calida":  ["escena cálida", "modo cálida", "activá la escena cálida"],
+    "fria":    ["escena fría", "modo fría", "activá la escena fría"],
     "relax":   ["modo relax", "escena relax", "activá relax",
                 "poné modo relax", "ponela en relax"],
 }
@@ -464,19 +466,6 @@ def main():
         logger.warning("Nada que indexar. Saliendo.")
         return
 
-    # Embedder (antes que llama-cpp-python por bug libcudart)
-    embedder = None
-    if not args.dry_run:
-        logger.info(f"Cargando BGE-M3 en {args.embedder_device}...")
-        from sentence_transformers import SentenceTransformer
-        embedder = SentenceTransformer("BAAI/bge-m3", device=args.embedder_device)
-
-    # LLM
-    if args.use_72b:
-        llm = LocalLLMClient(args.model_path)
-    else:
-        llm = VLLMClient(args.vllm_url, args.vllm_model)
-
     # Chroma
     import chromadb
     chroma_path = str(ROOT / "data/chroma_db")
@@ -516,6 +505,21 @@ def main():
     if not to_process and not _scene_pending:
         logger.info("Todo ya está indexado. --force para re-generar.")
         return
+
+    # Embedder (antes que llama-cpp-python por bug libcudart) + LLM. Se cargan
+    # DESPUÉS del early-return para no inicializar GPU/endpoint cuando no hay nada
+    # que indexar; el LLM solo si hay luces (las escenas usan frases curadas, sin LLM).
+    embedder = None
+    if not args.dry_run:
+        logger.info(f"Cargando BGE-M3 en {args.embedder_device}...")
+        from sentence_transformers import SentenceTransformer
+        embedder = SentenceTransformer("BAAI/bge-m3", device=args.embedder_device)
+    llm = None
+    if to_process:
+        if args.use_72b:
+            llm = LocalLLMClient(args.model_path)
+        else:
+            llm = VLLMClient(args.vllm_url, args.vllm_model)
 
     # Generar + persistir
     stats = {"generated": 0, "phrases": 0, "failed": 0}
@@ -589,21 +593,20 @@ def main():
     # ── Escenas globales 'modo' (Approach B: curadas, sin LLM) ──────────────
     # Indexadas como comandos genéricos: domain=scene, service=turn_on →
     # request_router las ejecuta con call_service_ws("scene","turn_on","scene.x").
-    if not args.only_individual and not args.entity:
-        scene_added = 0
-        for doc_id, phrase, meta in build_scene_documents(build_scene_specs()):
-            if meta["cache_key"] in existing_keys and not args.force:
-                continue
-            logger.info(f"[scene] {meta['entity_id']} ← {phrase!r}")
-            if args.dry_run:
-                continue
-            collection.add(
-                ids=[doc_id],
-                embeddings=[embedder.encode(phrase).tolist()],
-                documents=[phrase],
-                metadatas=[meta],
-            )
-            scene_added += 1
+    # _scene_pending ya está filtrado (only_individual/entity + force/existing_keys).
+    scene_added = 0
+    for doc_id, phrase, meta in _scene_pending:
+        logger.info(f"[scene] {meta['entity_id']} ← {phrase!r}")
+        if args.dry_run:
+            continue
+        collection.add(
+            ids=[doc_id],
+            embeddings=[embedder.encode(phrase).tolist()],
+            documents=[phrase],
+            metadatas=[meta],
+        )
+        scene_added += 1
+    if _scene_pending:
         logger.info(f"Escenas indexadas: {scene_added}")
 
     logger.info(f"Done. Stats: {stats}")
