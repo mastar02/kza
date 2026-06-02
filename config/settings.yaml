@@ -1027,10 +1027,8 @@ rooms:
     # CALIBRAR en repro: el AGC ×64 del XVF3800 infla el piso (~0.025-0.05), el
     # valor útil se mide con voz real vs ambiente (idealmente tras bajar el AGC).
     min_wake_rms: 0.0
-    # Ventana de re-escucha post-comando (follow-up). 2026-06-02: cableado desde
-    # config (antes 8.0s hardcodeado en main.py, ignoraba este valor). 4s recorta
-    # la exposición a charla ambiente sin wake a la mitad.
-    follow_up_window_s: 4.0
+    # (follow_up_window_s ya existe más abajo en este mismo bloque — 2026-06-02
+    # main.py ahora lo CABLEA, antes hardcodeaba 8.0 e ignoraba el config.)
     # Porcupine (engine: porcupine) — wake-word dedicado "Nexa" (Picovoice).
     # AccessKey en /home/kza/secrets/.env (PORCUPINE_ACCESS_KEY). Activar: engine: porcupine.
     porcupine:
