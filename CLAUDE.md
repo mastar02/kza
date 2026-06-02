@@ -147,7 +147,7 @@ python tools/benchmark_latency.py --iterations 20
 - **RAM**: 128GB DDR5-5600 RDIMM (8x16GB, 8 canales, ~358 GB/s)
 - **GPUs**: 4x RTX 3070 8GB — cada una dedicada (STT/Embeddings/Router/TTS)
 - **Audio**: ReSpeaker XVF3800 por habitación + extensores USB Cat5e
-- **Amplificador**: Monoprice MA1260 (6 zonas)
+- **Amplificador**: Dayton Audio MA1260 Multi-Zone (12 canales / 6 zonas estéreo, control RS-232)
 - **BLE**: UGREEN BT 5.3 por habitación para presencia
 
 ## Estado Actual

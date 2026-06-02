@@ -45,7 +45,7 @@ Especificaciones RTX 3070: 5888 CUDA Cores, 8GB GDDR6, 448 GB/s, TDP 220W, PCIe 
 ## Audio
 - **Micrófono**: ReSpeaker XVF3800 (XMOS, 4 mics, beamforming) — uno por habitación
 - **Extensión USB**: Cat5e/6 hasta 60m para distribución
-- **Amplificador**: Monoprice MA1260 (12 canales, 6 zonas, RS-232)
+- **Amplificador**: Dayton Audio MA1260 Multi-Zone (12 canales, 6 zonas estéreo, RS-232)
 - **Bluetooth**: UGREEN BT 5.3 — uno por habitación para detección de presencia
 
 ## Resumen de Recursos
