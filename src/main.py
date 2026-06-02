@@ -827,10 +827,13 @@ async def main():
             barge_in_cfg = rooms_config.get("barge_in", {}) or {}
             multi_room_loop = MultiRoomAudioLoop(
                 room_streams=room_streams,
-                follow_up=FollowUpMode(follow_up_window=8.0),
+                follow_up=FollowUpMode(
+                    follow_up_window=early_cfg.get("follow_up_window_s", 4.0)
+                ),
                 sample_rate=16000,
                 command_duration=2.0,
                 dedup_window_ms=rooms_config.get("dedup_window_ms", 200),
+                min_wake_rms=early_cfg.get("min_wake_rms", 0.0),
                 early_dispatch_enabled=early_cfg.get("early_dispatch", False),
                 early_dispatch_interval_ms=early_cfg.get("early_dispatch_interval_ms", 400),
                 early_dispatch_min_audio_s=early_cfg.get("early_dispatch_min_audio_s", 0.6),
@@ -1110,6 +1113,7 @@ async def main():
         llm_command_router=llm_command_router,
         hooks=hooks,
         command_gate=command_gate,
+        llm_min_command_confidence=nlu_cfg.get("min_command_confidence", 0.6),
     )
 
     # Feature subsystems (timers, intercom, notifications, alerts)

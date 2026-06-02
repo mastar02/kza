@@ -124,9 +124,13 @@ alerts:
     voice_high_prefix: "Alerta importante: "
 
 # Wake Word
+# ⚠️ CONFIG MUERTA para el pipeline multi-room (engine=openwakeword). Este
+# bloque top-level solo alimenta AudioManager→AudioLoop (path legacy NO usado
+# cuando hay room_streams). El detector real usa rooms.wake_word.threshold.
+# Ver project_nexa_command_detection_rootcause_2026-06-02.
 wake_word:
   model: "hey_jarvis"  # O personalizado — "che_bo" una vez entrenado
-  threshold: 0.35      # 0.5 era muy estricto para acento rioplatense; 0.35 capta variantes
+  threshold: 0.35      # (legacy/muerto) — el umbral activo es rooms.wake_word.threshold
   inference_framework: "onnx"
 
 # Speech-to-Text (GPU 1 — junto con SpeakerID, Kokoro TTS y kza-llm-fast :8101)
@@ -239,6 +243,11 @@ nlu:
     timeout_s: 3.5
     max_tokens: 200           # cap del JSON response
     temperature: 0.0          # determinismo total para clasificación
+    # 2026-06-02: confianza mínima auto-reportada por el 7B para aceptar un
+    # comando. El modelo marca is_command=True sobre charla ambiente con
+    # confianza baja → acción fantasma. NO aplica al grammar fast-path (alta
+    # confianza). Calibrar observando confidence de comandos reales en logs.
+    min_command_confidence: 0.6
 
 command_gate:
   # Hard rules (noise phrases, filler, repetition, missing wake) always enforce.
@@ -1008,7 +1017,20 @@ rooms:
     # son palabras comunes en español rioplatense → riesgo bajo de FP).
     words: ["nexa", "alexa", "nexia", "nexta", "kaza", "neska", "nexca"]
     model: "/home/kza/kza/models/wakeword/nexa.onnx"            # usado cuando engine=openwakeword
-    threshold: 0.3                # usado cuando engine=openwakeword
+    # 2026-06-02: 0.3 → 0.40. A 0.3 el ambiente rozaba el umbral (activaciones
+    # amontonadas en 0.30-0.40 → ~46% de los disparos eran espurios). 0.40 poda
+    # ese grueso preservando confianza media. NO subir a 0.55 (mataba wakes
+    # far-field de media confianza). Calibrar con repro. (command_detection_rootcause)
+    threshold: 0.40              # usado cuando engine=openwakeword
+    # Pre-gate de energía post-wake (RMS): descarta near-silence antes de
+    # transcribir (mata Text='' / alucinaciones 'Gracias.'). 0.0 = desactivado.
+    # CALIBRAR en repro: el AGC ×64 del XVF3800 infla el piso (~0.025-0.05), el
+    # valor útil se mide con voz real vs ambiente (idealmente tras bajar el AGC).
+    min_wake_rms: 0.0
+    # Ventana de re-escucha post-comando (follow-up). 2026-06-02: cableado desde
+    # config (antes 8.0s hardcodeado en main.py, ignoraba este valor). 4s recorta
+    # la exposición a charla ambiente sin wake a la mitad.
+    follow_up_window_s: 4.0
     # Porcupine (engine: porcupine) — wake-word dedicado "Nexa" (Picovoice).
     # AccessKey en /home/kza/secrets/.env (PORCUPINE_ACCESS_KEY). Activar: engine: porcupine.
     porcupine:

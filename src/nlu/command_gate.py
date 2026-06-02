@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 _NOISE_PHRASES = (
     "suscribe", "suscrib", "campanita", "gracias por ver",
     "dale like", "dale lie", "dale mega like",
-    "canal de youtube", "activa la",
+    "canal de youtube",
+    # "activa la" REMOVIDO 2026-06-02: substring over-broad — false-rejectaba
+    # comandos válidos "activá la rutina/alarma/escena" (0 hits en 78k líneas de
+    # logs, así que no protegía de nada real). Ver command_detection_rootcause.
     "luz encendida", "luz apagada", "luces encendidas", "luces apagadas",
     "hecho", "perfecto", "listo",
 )

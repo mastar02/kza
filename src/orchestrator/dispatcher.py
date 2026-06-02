@@ -32,6 +32,7 @@ Ejemplo:
 """
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -47,6 +48,41 @@ from src.orchestrator.priority_queue import (
 from src.orchestrator.cancellation import CancellationToken
 
 logger = get_logger(__name__)
+
+
+# Stems cortos que colisionan como SUBcadena dentro de palabras comunes y
+# disparaban acciones fantasma sobre charla ambiente (2026-06-02):
+#   baja ∈ traBAJAmos · pon ∈ suPONgo/PONen · sube ∈ suBEstimar ·
+#   olvida ∈ inOLVIDAble
+# Para estos exigimos límite de palabra, PERO admitimos el sufijo enclítico
+# rioplatense (vocal temática opcional + pronombre): bajame, bajale, ponele,
+# ponelo, olvidate... siguen ruteando. El resto de los keywords usa substring
+# (preserva morfología: prende ∈ prender, apaga ∈ apagar). La preposición
+# "para" se removió de CANCEL_KEYWORDS (demasiado común incluso como palabra
+# entera; el comando real es "pará"). Ver review adversarial 2026-06-02 +
+# project_nexa_command_detection_rootcause_2026-06-02.
+_BOUNDARY_KEYWORDS = frozenset({"pon", "baja", "sube", "olvida", "olvidá"})
+# \bkw(e?<clítico>)?\b — la "e?" cubre la vocal temática del voseo (poné→ponele,
+# olvidá→olvidate). "ponen"/"pone"/"ponemos"/"trabajamos"/"subestimar"/
+# "inolvidable" NO terminan en un clítico pegado al stem → no matchean.
+_ENCLITICS = "me|te|se|le|lo|la|nos|les|los|las"
+_BOUNDARY_RE = {
+    kw: re.compile(rf"\b{re.escape(kw)}(?:e?(?:{_ENCLITICS}))?\b")
+    for kw in _BOUNDARY_KEYWORDS
+}
+
+
+def _kw_match(keyword: str, text_lower: str) -> bool:
+    """True si `keyword` aparece en `text_lower`.
+
+    Para los stems cortos ambiguos exige límite de palabra (admitiendo el
+    enclítico rioplatense); para el resto usa substring (preserva variantes
+    morfológicas como prende∈prender).
+    """
+    rx = _BOUNDARY_RE.get(keyword)
+    if rx is not None:
+        return rx.search(text_lower) is not None
+    return keyword in text_lower
 
 
 # Mapeo zone_id (ej: "zone_escritorio") → metadata.area en Chroma (ej:
@@ -283,9 +319,9 @@ class RequestDispatcher:
 
     CANCEL_KEYWORDS = [
         "cancela", "cancelá", "olvida", "olvidá",
-        "para", "pará", "detente", "detené",
+        "pará", "detente", "detené",
         "cancel", "stop",
-    ]
+    ]  # "para" (preposición) removido 2026-06-02 — solo "pará" cancela
 
     LIST_KEYWORDS = [
         "lista de", "agrega", "agregale", "quita", "quitale",
@@ -545,7 +581,7 @@ class RequestDispatcher:
 
         # Detectar domotica por keywords
         for keyword in self.DOMOTICS_KEYWORDS:
-            if keyword in text_lower:
+            if _kw_match(keyword, text_lower):
                 return PathType.FAST_DOMOTICS, Priority.HIGH
 
         # Detectar rutinas
@@ -607,7 +643,7 @@ class RequestDispatcher:
 
         # Comando de cancelacion
         for keyword in self.CANCEL_KEYWORDS:
-            if keyword in text_lower:
+            if _kw_match(keyword, text_lower):
                 cancelled = self.queue.cancel_user_request(user_id)
                 return DispatchResult(
                     path=PathType.FAST_ROUTER,

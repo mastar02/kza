@@ -196,6 +196,7 @@ class RequestRouter:
         llm_command_router=None,
         hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
         command_gate: CommandAcceptanceGate | None = None,
+        llm_min_command_confidence: float = 0.6,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -288,6 +289,12 @@ class RequestRouter:
         # texto post-wake antes del orchestrator y rechaza alucinaciones
         # de TV / replays / frases noise. Ver src/nlu/llm_router.py.
         self.llm_command_router = llm_command_router
+        # Confianza mínima auto-reportada por el LLMCommandRouter para aceptar
+        # un comando. El 7B marca is_command=True sobre charla ambiente con
+        # confianza baja → acción fantasma. Solo aplica al path LLM, NO al
+        # grammar fast-path (gramática = alta confianza, ya filtrada).
+        # (2026-06-02 command_detection_rootcause.) Calibrable vía config.
+        self.llm_min_command_confidence = llm_min_command_confidence
 
         # Plan #3 OpenClaw — plugin hooks registry (or None)
         self._hooks = hooks
@@ -476,6 +483,10 @@ class RequestRouter:
                         f"[hooks] failed to emit intent after-event: {e}",
                         exc_info=True,
                     )
+            # ¿El comando quedó respaldado por la gramática determinística?
+            # Si es así, NO le aplicamos el confidence gate del LLM (la
+            # gramática ya es señal de alta confianza).
+            grammar_backed = False
             # Fallback: el LLM no pudo decidir (timeout/error → 'unavailable').
             # NO descartar si la gramática tenía señal parcial.
             if classification.rejection_reason == "unavailable":
@@ -487,6 +498,7 @@ class RequestRouter:
                     classification.intent = pc.intent
                     classification.entity_hint = pc.entity
                     classification.slots = dict(pc.slots)
+                    grammar_backed = True
                 elif pc.intent is not None or pc.entity is not None:
                     # señal parcial → pedir confirmación por voz
                     question = self._build_confirmation_question(pc)
@@ -498,6 +510,20 @@ class RequestRouter:
                 # sin señal → cae al manejo normal de no-comando abajo
             if not classification.is_command:
                 result["intent"] = f"llm_rejected:{classification.rejection_reason or 'unknown'}"
+                result["success"] = False
+                result["response"] = ""
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
+            # Confidence gate (2026-06-02): el 7B marca is_command=True sobre
+            # charla ambiente coherente (TV/conversación) con confianza baja →
+            # acción fantasma. Si la confianza es baja Y la gramática NO respaldó
+            # el comando, rechazar en vez de dispatchar. (command_detection_rootcause)
+            if not grammar_backed and classification.confidence < self.llm_min_command_confidence:
+                logger.info(
+                    f"[LLMRouter] rechazado por confianza baja "
+                    f"({classification.confidence:.2f} < {self.llm_min_command_confidence}): {text!r}"
+                )
+                result["intent"] = f"low_confidence:{classification.confidence:.2f}"
                 result["success"] = False
                 result["response"] = ""
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000

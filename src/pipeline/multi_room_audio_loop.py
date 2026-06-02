@@ -102,6 +102,7 @@ class MultiRoomAudioLoop:
         barge_in_enabled: bool = False,
         barge_in_rms_threshold: float = 0.03,
         barge_in_min_duration_ms: int = 200,
+        min_wake_rms: float = 0.0,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -134,6 +135,14 @@ class MultiRoomAudioLoop:
         self.barge_in_enabled = barge_in_enabled
         self.barge_in_rms_threshold = barge_in_rms_threshold
         self.barge_in_min_duration_ms = barge_in_min_duration_ms
+
+        # Pre-gate de energía post-wake (2026-06-02). Descarta activaciones de
+        # muy baja RMS (near-silence) ANTES de transcribir → ataca las capturas
+        # Text='' y las alucinaciones 'Gracias.' sobre silencio. Default 0.0 =
+        # desactivado (sin regresión). CALIBRAR en repro: el AGC ×64 del XVF3800
+        # infla el piso de ruido (~0.025-0.05), así que el valor útil se mide
+        # con voz real vs ambiente, idealmente tras bajar el AGC.
+        self.min_wake_rms = min_wake_rms
 
         self._running = False
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
@@ -173,6 +182,15 @@ class MultiRoomAudioLoop:
         the one with higher RMS (closer to the speaker). If outside
         the window, both are independent commands.
         """
+        # Pre-gate de energía: descarta near-silence antes de capturar/transcribir.
+        # Default 0.0 = off. Ver __init__ (calibrar en repro; AGC infla el piso).
+        if self.min_wake_rms > 0.0 and rms < self.min_wake_rms:
+            logger.debug(
+                f"Wake en {room_id} rechazado por RMS bajo: "
+                f"{rms:.4f} < {self.min_wake_rms}"
+            )
+            return False
+
         elapsed_ms = (timestamp - self._last_wakeword_time) * 1000
 
         if elapsed_ms < self.dedup_window_ms and self._last_wakeword_room:

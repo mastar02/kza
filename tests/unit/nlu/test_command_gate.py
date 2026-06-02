@@ -115,3 +115,23 @@ def test_only_alp_exceeded_flags():
     d = g.evaluate("nexa prendé la luz", _conf(0.1, -2.0))  # nsp ok, alp bad
     assert d.accept is False
     assert "avg_logprob" in d.reason and "no_speech" not in d.reason
+
+
+def test_accepts_activa_la_routine_command():
+    """'activá la rutina/alarma/escena' NO debe rechazarse como ruido.
+
+    El noise phrase 'activa la' (substring) era over-broad: false-rejectaba
+    comandos válidos. Con engine=openwakeword el gate corre con wake_words=()
+    (sin missing_wake), así que el noise phrase era el único filtro que los
+    bloqueaba. (2026-06-02.)
+    """
+    g = CommandAcceptanceGate(wake_words=())  # prod openwakeword
+    for cmd in ("activá la rutina de la mañana", "activá la alarma", "activá la escena cine"):
+        d = g.evaluate(cmd)
+        assert d.accept is True, f"rechazó {cmd!r}: {d.reason}"
+
+
+def test_still_rejects_youtube_noise_without_wake():
+    """Las otras noise phrases siguen rechazando (no rompimos el gate)."""
+    g = CommandAcceptanceGate(wake_words=())
+    assert g.evaluate("suscribite al canal de youtube").accept is False

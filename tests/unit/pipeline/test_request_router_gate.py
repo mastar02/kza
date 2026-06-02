@@ -67,3 +67,52 @@ async def test_rejected_command_does_not_reach_orchestrator():
     assert not orch.process.called
     assert result["success"] is False
     assert result["intent"] == "gate_rejected"
+
+
+# ---- LLM router confidence gate (2026-06-02) ----
+# Charla ambiente que el LLMCommandRouter 7B marca is_command=True con confianza
+# baja NO debe ejecutar una acción fantasma. La gramática (alta confianza) NO se
+# ve afectada porque corre por el fast-path antes del LLM.
+from src.nlu.llm_router import CommandClassification
+
+
+def _router_with_llm(classification, text="hola esto es una charla cualquiera"):
+    command_processor = MagicMock()
+    command_processor.process_command = AsyncMock(return_value=_make_cmd(text))
+    orch = MagicMock()
+    orch.process = AsyncMock(return_value=MagicMock(
+        intent="domotics", response="ok", success=True, action=None, path=None,
+        timings={}, was_queued=False, queue_position=None,
+    ))
+    llm = MagicMock()
+    llm.classify = AsyncMock(return_value=classification)
+    r = RequestRouter(
+        command_processor=command_processor,
+        orchestrator=orch,
+        orchestrator_enabled=True,
+        response_handler=MagicMock(),
+        audio_manager=MagicMock(),
+        wake_words=("nexa",),
+        command_gate=CommandAcceptanceGate(wake_words=()),  # acepta (prod openwakeword)
+        llm_command_router=llm,
+    )
+    return r, orch, llm
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_llm_command_rejected():
+    cls = CommandClassification(is_command=True, confidence=0.4, intent="turn_on", entity_hint="light")
+    r, orch, llm = _router_with_llm(cls)
+    result = await r.process_command(np.zeros(16000, dtype="float32"))
+    assert llm.classify.called
+    assert not orch.process.called, "comando de baja confianza no debe dispatchar"
+    assert result["success"] is False
+    assert result["intent"].startswith("low_confidence")
+
+
+@pytest.mark.asyncio
+async def test_high_confidence_llm_command_dispatched():
+    cls = CommandClassification(is_command=True, confidence=0.85, intent="turn_on", entity_hint="light")
+    r, orch, llm = _router_with_llm(cls)
+    await r.process_command(np.zeros(16000, dtype="float32"))
+    assert orch.process.called, "comando de alta confianza SÍ debe dispatchar"

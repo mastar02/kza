@@ -236,6 +236,25 @@ class TestDeduplication:
         assert result2 is True
 
 
+class TestMinWakeRmsGate:
+    """Pre-gate de RMS post-wake (2026-06-02): rechaza activaciones de muy baja
+    energía (near-silence) antes de transcribir. Default 0.0 = desactivado (no
+    regresión); se calibra en repro porque el AGC ×64 infla el piso de ruido."""
+
+    def test_rms_below_min_wake_rms_rejected(self):
+        loop = _make_multi_room_loop(min_wake_rms=0.02)
+        assert loop._should_accept_wakeword("cocina", rms=0.005, timestamp=1.0) is False
+
+    def test_rms_at_or_above_min_wake_rms_accepted(self):
+        loop = _make_multi_room_loop(min_wake_rms=0.02)
+        assert loop._should_accept_wakeword("cocina", rms=0.05, timestamp=2.0) is True
+
+    def test_min_wake_rms_zero_disables_gate(self):
+        # Default 0.0 → gate off → comportamiento idéntico al baseline (dedup).
+        loop = _make_multi_room_loop(min_wake_rms=0.0)
+        assert loop._should_accept_wakeword("cocina", rms=0.0001, timestamp=3.0) is True
+
+
 class TestCallbacks:
     """Test callback registration."""
 
