@@ -75,12 +75,12 @@ class WakeWordDetector:
             if model in self.PRETRAINED_MODELS:
                 pretrained.append(model)
             elif model.endswith(".onnx"):
-                custom.append(model)
+                pretrained.append(model)  # KZA: .onnx -> openwakeword.Model (pipeline correcto)
             else:
                 # Verificar si es un modelo personalizado en el directorio
                 custom_path = self.custom_models_dir / f"{model}.onnx"
                 if custom_path.exists():
-                    custom.append(str(custom_path))
+                    pretrained.append(str(custom_path))
                 else:
                     logger.warning(f"Modelo no encontrado: {model}")
 
@@ -223,6 +223,14 @@ class WakeWordDetector:
         """
         predictions = self.predict(audio_chunk)
         current_time = time.time()
+        self._dbg_n = getattr(self, "_dbg_n", 0) + 1
+        if predictions:
+            _mxk = max(predictions, key=predictions.get); _mxv = predictions[_mxk]
+            if self._dbg_n % 25 == 0 or _mxv > 0.05:
+                import numpy as _np
+                _ac = audio_chunk.astype(_np.float32) if audio_chunk.dtype != _np.float32 else audio_chunk
+                _rms = float(_np.sqrt(_np.mean(_ac**2))) if _ac.size else 0.0
+                logger.info(f"[oww-dbg] n={self._dbg_n} rms={_rms:.4f} max={_mxk}:{_mxv:.3f} thr={self.threshold}")
 
         for model_name, confidence in predictions.items():
             if confidence >= self.threshold:

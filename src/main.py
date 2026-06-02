@@ -743,6 +743,20 @@ async def main():
                             use_silero_vad=room_wake_cfg.get("use_silero_vad", True),
                         )
                     wake_detector.load()
+                elif wake_engine == "porcupine":
+                    import os as _os
+                    from src.wakeword.porcupine_wake import PorcupineWakeDetector
+                    _pv = room_wake_cfg.get("porcupine", {})
+                    wake_detector = PorcupineWakeDetector(
+                        access_key=_os.environ.get(
+                            _pv.get("access_key_env", "PORCUPINE_ACCESS_KEY"), ""
+                        ),
+                        keyword_path=_pv.get("keyword_path", "models/wakeword/nexa_es.ppn"),
+                        model_path=_pv.get("model_path", "models/wakeword/porcupine_params_es.pv"),
+                        sensitivity=_pv.get("sensitivity", 0.6),
+                        wake_word=(room_wake_cfg.get("words") or ["nexa"])[0],
+                    )
+                    wake_detector.load()
                 else:
                     wake_detector = WakeWordDetector(
                         models=[room_wake_cfg.get("model", "hey_jarvis")],
@@ -1057,8 +1071,14 @@ async def main():
     _resolved_wake_words = rooms_config.get("wake_word", {}).get(
         "words", wake_config.get("words", ["nexa"])
     )
+    # Wake dedicado (openwakeword): el wake ya se confirmo acusticamente, el
+    # texto del comando NO contiene la wake word -> la regla missing_wake del
+    # gate seria un false-reject de todo comando valido. Solo aplicar la regla
+    # cuando el engine es whisper (wake-as-STT, el texto SI contiene la wake).
+    _wake_engine_gate = rooms_config.get("wake_word", {}).get("engine", "openwakeword")
+    _gate_wake_words = _resolved_wake_words if _wake_engine_gate == "whisper" else ()
     command_gate = CommandAcceptanceGate(
-        wake_words=_resolved_wake_words,
+        wake_words=_gate_wake_words,
         enforce_confidence=_gate_cfg.get("enforce_confidence", False),
         max_no_speech_prob=_gate_cfg.get("max_no_speech_prob", 0.60),
         min_avg_logprob=_gate_cfg.get("min_avg_logprob", -1.20),

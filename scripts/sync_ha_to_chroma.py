@@ -43,13 +43,15 @@ logger = logging.getLogger("sync_ha")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-for line in (ROOT / ".env").read_text().splitlines():
-    if "=" in line and not line.startswith("#"):
-        k, v = line.strip().split("=", 1)
-        os.environ.setdefault(k, v)
+_env_path = ROOT / ".env"
+if _env_path.exists():
+    for line in _env_path.read_text().splitlines():
+        if "=" in line and not line.startswith("#"):
+            k, v = line.strip().split("=", 1)
+            os.environ.setdefault(k, v)
 
-HA_URL = os.environ["HOME_ASSISTANT_URL"].rstrip("/")
-HA_TOKEN = os.environ["HOME_ASSISTANT_TOKEN"]
+HA_URL = os.environ.get("HOME_ASSISTANT_URL", "").rstrip("/")
+HA_TOKEN = os.environ.get("HOME_ASSISTANT_TOKEN", "")
 
 
 # ============================================================
@@ -93,16 +95,6 @@ GROUP_PREFIX_MAP = {
     "l": "living", "c": "cocina", "e": "escritorio",
     "b": "bano", "p": "pasillo", "cu": "cuarto",
 }
-KNOWN_GROUPS = {
-    "light.living", "light.cocina", "light.escritorio", "light.bano",
-    "light.pasillo", "light.cuarto", "light.balcon", "light.hogar",
-    "light.escalera", "light.escaleras",
-    # Z2M 2026-05-31: el grupo del escritorio quedó como light.escritorio_2
-    # (el slug light.escritorio sigue reservado por el huérfano viejo de Hue
-    # en el registro de HA). Ver project_lights_zigbee2mqtt_migration_2026-05-31.
-    # Cuando se libere el slug, renombrar a light.escritorio y quitar esto.
-    "light.escritorio_2",
-}
 INDIVIDUAL_RE = re.compile(r"^([a-z]{1,2})(\d+)(?:_\d+)?$", re.IGNORECASE)
 
 
@@ -117,7 +109,15 @@ def decode_individual(entity_id: str) -> tuple[str, str] | None:
 
 
 def is_group_entity(entity_id: str, friendly_name: str) -> bool:
-    return entity_id in KNOWN_GROUPS
+    # Modelo nuevo (2026-05-31): los 8 grupos por-cuarto son light.grupo_* (platform
+    # group en HA, robusto a la migración Hue→Z2M, consistente con Alexa). Los grupos
+    # Hue room/zone viejos (light.living, …) y el one-off light.escritorio_2 dejan de
+    # tratarse como grupos. Ver docs/superpowers/specs/2026-05-31-kza-adopt-grupos-escenas-design.md
+    #
+    # light.hogar (whole-home, 29 bombillas) se preserva: NO tiene equivalente
+    # light.grupo_hogar, y es el target de "prendé/apagá toda la casa". Si HA lo
+    # deshabilita más adelante, simplemente no aparece en /api/states (no rompe).
+    return entity_id.startswith("light.grupo_") or entity_id == "light.hogar"
 
 
 def cache_key(entity_id: str, friendly_name: str, area: str | None, capability: str, value: str) -> str:
@@ -137,6 +137,65 @@ class CommandSpec:
     value_label: str                               # "50%", "cálida", "rojo", ...
     service_data: dict                             # {"brightness_pct": 50}, etc.
     prompt_hint: str = ""                          # extra hint para el LLM
+
+
+@dataclass
+class SceneSpec:
+    """Escena global 'modo' indexada como comando (Approach B)."""
+    entity_id: str          # scene.cine
+    value_label: str        # cine
+    phrases: list[str]
+
+
+SCENE_ALLOWLIST = ["cine", "lectura", "calida", "fria", "relax"]
+
+# Frases curadas (sin LLM) con encuadre "modo/escena" — NO mencionan cuartos, para
+# no colisionar con el color_temp por-cuarto ("poné la cocina fría" → grupo_cocina).
+# Para calida/fria: SOLO frases scene-explícitas ("escena/modo X"). Se evitan a
+# propósito "poné todo cálido" / "luz cálida en toda la casa" (colisionan con el
+# whole-home light.hogar+color_temp) y "modo cálido"/"modo fresco" (imperativos
+# de luz). Caught en verificación adversarial (similitud vectorial ambigua).
+SCENE_PHRASES = {
+    "cine":    ["modo cine", "poné modo cine", "activá la escena cine",
+                "ponela en cine", "escena cine"],
+    "lectura": ["modo lectura", "escena lectura", "activá lectura",
+                "poné modo lectura", "luz de lectura"],
+    "calida":  ["escena cálida", "modo cálida", "activá la escena cálida"],
+    "fria":    ["escena fría", "modo fría", "activá la escena fría"],
+    "relax":   ["modo relax", "escena relax", "activá relax",
+                "poné modo relax", "ponela en relax"],
+}
+
+
+def build_scene_specs() -> list[SceneSpec]:
+    """Specs de las 5 escenas globales 'modo' con frases curadas (sin LLM)."""
+    return [
+        SceneSpec(entity_id=f"scene.{name}", value_label=name,
+                  phrases=list(SCENE_PHRASES[name]))
+        for name in SCENE_ALLOWLIST
+    ]
+
+
+def build_scene_documents(specs: list[SceneSpec]) -> list[tuple[str, str, dict]]:
+    """(doc_id, phrase, metadata) por frase. Metadata genérica → call_service_ws("scene","turn_on")."""
+    out: list[tuple[str, str, dict]] = []
+    for spec in specs:
+        key = cache_key(spec.entity_id, spec.value_label, None, "scene", "activate")
+        for j, phrase in enumerate(spec.phrases):
+            meta = {
+                "entity_id": spec.entity_id,
+                "friendly_name": spec.value_label,
+                "area": "",
+                "domain": "scene",
+                "service": "turn_on",
+                "capability": "scene",
+                "value_label": spec.value_label,
+                "service_data": json.dumps({}),
+                "is_group": False,
+                "cache_key": key,
+            }
+            out.append((f"{key}_{j}", phrase, meta))
+    return out
 
 
 BRIGHTNESS_PRESETS = [
@@ -407,19 +466,6 @@ def main():
         logger.warning("Nada que indexar. Saliendo.")
         return
 
-    # Embedder (antes que llama-cpp-python por bug libcudart)
-    embedder = None
-    if not args.dry_run:
-        logger.info(f"Cargando BGE-M3 en {args.embedder_device}...")
-        from sentence_transformers import SentenceTransformer
-        embedder = SentenceTransformer("BAAI/bge-m3", device=args.embedder_device)
-
-    # LLM
-    if args.use_72b:
-        llm = LocalLLMClient(args.model_path)
-    else:
-        llm = VLLMClient(args.vllm_url, args.vllm_model)
-
     # Chroma
     import chromadb
     chroma_path = str(ROOT / "data/chroma_db")
@@ -451,9 +497,29 @@ def main():
             to_process.append({"entity": s, "spec": spec, "key": key})
     logger.info(f"Total CommandSpecs: {total_specs}; a procesar (nuevos): {len(to_process)}")
 
-    if not to_process:
+    _scene_pending = [
+        d for d in (build_scene_documents(build_scene_specs())
+                    if not args.only_individual and not args.entity else [])
+        if args.force or d[2]["cache_key"] not in existing_keys
+    ]
+    if not to_process and not _scene_pending:
         logger.info("Todo ya está indexado. --force para re-generar.")
         return
+
+    # Embedder (antes que llama-cpp-python por bug libcudart) + LLM. Se cargan
+    # DESPUÉS del early-return para no inicializar GPU/endpoint cuando no hay nada
+    # que indexar; el LLM solo si hay luces (las escenas usan frases curadas, sin LLM).
+    embedder = None
+    if not args.dry_run:
+        logger.info(f"Cargando BGE-M3 en {args.embedder_device}...")
+        from sentence_transformers import SentenceTransformer
+        embedder = SentenceTransformer("BAAI/bge-m3", device=args.embedder_device)
+    llm = None
+    if to_process:
+        if args.use_72b:
+            llm = LocalLLMClient(args.model_path)
+        else:
+            llm = VLLMClient(args.vllm_url, args.vllm_model)
 
     # Generar + persistir
     stats = {"generated": 0, "phrases": 0, "failed": 0}
@@ -523,6 +589,25 @@ def main():
             })
         if ids:
             collection.add(ids=ids, embeddings=embs, documents=docs, metadatas=metas)
+
+    # ── Escenas globales 'modo' (Approach B: curadas, sin LLM) ──────────────
+    # Indexadas como comandos genéricos: domain=scene, service=turn_on →
+    # request_router las ejecuta con call_service_ws("scene","turn_on","scene.x").
+    # _scene_pending ya está filtrado (only_individual/entity + force/existing_keys).
+    scene_added = 0
+    for doc_id, phrase, meta in _scene_pending:
+        logger.info(f"[scene] {meta['entity_id']} ← {phrase!r}")
+        if args.dry_run:
+            continue
+        collection.add(
+            ids=[doc_id],
+            embeddings=[embedder.encode(phrase).tolist()],
+            documents=[phrase],
+            metadatas=[meta],
+        )
+        scene_added += 1
+    if _scene_pending:
+        logger.info(f"Escenas indexadas: {scene_added}")
 
     logger.info(f"Done. Stats: {stats}")
 
