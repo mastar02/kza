@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# kza-push — Puente laptop → GitHub para el server KZA.
+#
+# El server (/home/kza/app) ES un repo git y deploya in-place, pero NO puede
+# pushear a GitHub (su SSH key no está autorizada en el repo). Este script corre
+# en la LAPTOP: fetchea una rama del server por SSH y la pushea a origin.
+#
+# Uso:
+#   scripts/kza-push <rama>            # fetch del server + push a origin
+#   KZA_SERVER=kza:/ruta scripts/kza-push <rama>
+#
+# Prerrequisitos:
+#   - alias SSH 'kza' en ~/.ssh/config (o KZA_SERVER_SSH).
+#   - remote 'origin' con push autorizado (la laptop sí puede pushear).
+#
+# Ver docs/ECOSISTEMA_LOCAL_SERVER.md
+set -euo pipefail
+
+BRANCH="${1:-}"
+if [[ -z "$BRANCH" ]]; then
+  echo "uso: kza-push <rama>" >&2
+  exit 2
+fi
+
+SERVER="${KZA_SERVER:-kza:/home/kza/app}"
+REMOTE="${KZA_ORIGIN:-origin}"
+
+echo "→ fetch '$BRANCH' desde $SERVER"
+git fetch "$SERVER" "$BRANCH"
+SHA="$(git rev-parse --short FETCH_HEAD)"
+
+echo "→ push $SHA a $REMOTE/$BRANCH"
+git push "$REMOTE" "FETCH_HEAD:refs/heads/$BRANCH"
+
+echo "✓ '$BRANCH' ($SHA) pusheada a $REMOTE desde el server"

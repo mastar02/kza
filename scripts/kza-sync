@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# kza-sync — Reporte read-only del estado local ↔ server ↔ origin.
+#
+# Detecta los DOS males que causan drift en KZA:
+#   1) WIP sin commitear (local o server) — trabajo que se perdería con un
+#      stash -u / clean / reset --hard.
+#   2) Divergencia de commits entre local, server y origin/main.
+#
+# No escribe nada (solo git fetch de metadatos + ssh read-only).
+#
+# Uso:
+#   scripts/kza-sync
+#
+# Ver docs/ECOSISTEMA_LOCAL_SERVER.md
+set -euo pipefail
+
+SERVER_SSH="${KZA_SERVER_SSH:-kza}"
+SERVER_PATH="${KZA_SERVER_PATH:-/home/kza/app}"
+
+# Patrón de ruido para no contar .bak/benchmarks/logs como "trabajo real".
+# (los paths de `git status --porcelain` son relativos, sin slash inicial)
+NOISE='\.bak|benchmarks/|\.log$|\.orig$'
+
+echo "═══ LOCAL ═══"
+echo "  rama : $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD)"
+local_wip="$(git status --porcelain | grep -vcE "$NOISE" || true)"
+echo "  WIP sin commitear (real): ${local_wip} archivo(s)"
+
+echo "═══ ORIGIN (GitHub) ═══"
+git fetch origin --quiet 2>/dev/null || echo "  (fetch falló — sin red?)"
+if git rev-parse --verify --quiet origin/main >/dev/null; then
+  echo "  origin/main @ $(git rev-parse --short origin/main)"
+  ab="$(git rev-list --left-right --count HEAD...origin/main 2>/dev/null || echo '? ?')"
+  echo "  local vs origin/main (ahead/behind): ${ab}"
+fi
+
+echo "═══ SERVER ($SERVER_SSH:$SERVER_PATH) ═══"
+ssh -o ConnectTimeout=10 "$SERVER_SSH" "
+  cd '$SERVER_PATH' || exit 1
+  echo \"  rama : \$(git rev-parse --abbrev-ref HEAD) @ \$(git rev-parse --short HEAD)\"
+  wip=\$(git status --porcelain | grep -vcE '$NOISE' || true)
+  noise=\$(git status --porcelain | grep -cE '$NOISE' || true)
+  echo \"  WIP sin commitear (real): \${wip} archivo(s) | ruido (.bak/bench/log): \${noise}\"
+  echo \"  kza-voice: \$(systemctl --user is-active kza-voice 2>/dev/null || echo '?')\"
+" 2>&1
+
+echo "─────────────────────────────────────────"
+echo "Si 'WIP real' > 0 en el server al cerrar sesión: commitear en feat/* y 'kza-push <rama>'."
