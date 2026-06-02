@@ -834,6 +834,7 @@ async def main():
                 command_duration=2.0,
                 dedup_window_ms=rooms_config.get("dedup_window_ms", 200),
                 min_wake_rms=early_cfg.get("min_wake_rms", 0.0),
+                wake_preroll_s=early_cfg.get("wake_preroll_s", 0.0),
                 early_dispatch_enabled=early_cfg.get("early_dispatch", False),
                 early_dispatch_interval_ms=early_cfg.get("early_dispatch_interval_ms", 400),
                 early_dispatch_min_audio_s=early_cfg.get("early_dispatch_min_audio_s", 0.6),

@@ -1027,6 +1027,12 @@ rooms:
     # CALIBRAR en repro: el AGC ×64 del XVF3800 infla el piso (~0.025-0.05), el
     # valor útil se mide con voz real vs ambiente (idealmente tras bajar el AGC).
     min_wake_rms: 0.0
+    # Pre-roll de audio (2026-06-02): segundos de audio previos al wake que se
+    # prependen al comando. openwakeword tiene latencia de detección (~0.5-1s):
+    # decís "Nexa apagá la luz" de corrido y "apagá" se pierde porque la captura
+    # arranca recién al disparar → STT recibe "...la luz" sin verbo. El pre-roll
+    # lo recupera. 0.0 = desactivado. Ajustar si incluye charla previa de más.
+    wake_preroll_s: 1.0
     # (follow_up_window_s ya existe más abajo en este mismo bloque — 2026-06-02
     # main.py ahora lo CABLEA, antes hardcodeaba 8.0 e ignoraba el config.)
     # Porcupine (engine: porcupine) — wake-word dedicado "Nexa" (Picovoice).

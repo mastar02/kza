@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Awaitable, Optional
 
@@ -68,6 +69,11 @@ class RoomStream:
     # Se incrementa por cada chunk con RMS + is_human_voice==True; decae
     # con silencio. Dispara barge-in cuando supera `barge_in_min_duration_ms`.
     barge_in_accum_ms: float = 0.0
+    # Pre-roll: ring buffer (deque) de chunks de audio previos al wake. Al
+    # disparar el wake se usa para sembrar `audio_buffer` y recuperar el comando
+    # dicho durante la latencia de detección de openwakeword. None hasta que el
+    # loop lo inicializa con maxlen según wake_preroll_s.
+    preroll: object = None
 
 
 class MultiRoomAudioLoop:
@@ -103,6 +109,7 @@ class MultiRoomAudioLoop:
         barge_in_rms_threshold: float = 0.03,
         barge_in_min_duration_ms: int = 200,
         min_wake_rms: float = 0.0,
+        wake_preroll_s: float = 0.0,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -143,6 +150,17 @@ class MultiRoomAudioLoop:
         # infla el piso de ruido (~0.025-0.05), así que el valor útil se mide
         # con voz real vs ambiente, idealmente tras bajar el AGC.
         self.min_wake_rms = min_wake_rms
+
+        # Pre-roll (2026-06-02): cuántos chunks previos al wake conservar para
+        # sembrar el buffer del comando. openwakeword tiene latencia de detección
+        # (~0.5-1s): el verbo dicho justo tras "Nexa" se pierde porque la captura
+        # arranca recién al disparar. El pre-roll lo recupera. 0.0 = desactivado
+        # (sin regresión); settings.yaml lo activa (rooms.wake_word.wake_preroll_s).
+        self.wake_preroll_s = wake_preroll_s
+        self._preroll_maxchunks = (
+            int(round(wake_preroll_s * sample_rate / CHUNK_SIZE))
+            if wake_preroll_s > 0 else 0
+        )
 
         self._running = False
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
@@ -377,13 +395,28 @@ class MultiRoomAudioLoop:
                 return
 
             if not rs.listening:
+                # Pre-roll: acumular el audio reciente para sembrar el buffer al
+                # disparar el wake (recupera el comando dicho durante la latencia
+                # de detección de openwakeword). 0 chunks = desactivado.
+                if self._preroll_maxchunks > 0:
+                    if rs.preroll is None:
+                        rs.preroll = deque(maxlen=self._preroll_maxchunks)
+                    rs.preroll.append(audio_chunk)
                 detection = rs.wake_detector.detect(audio_chunk)
                 if detection:
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
                     if self._should_accept_wakeword(rs.room_id, rms, time.time()):
                         rs.listening = True
                         rs.command_start_time = time.time()
-                        rs.audio_buffer = []
+                        # Sembrar con el pre-roll (en vez de []) para no perder el
+                        # verbo dicho durante la latencia. Backdate command_start_time
+                        # para que el endpointing cuente la duración real del buffer.
+                        if rs.preroll:
+                            rs.audio_buffer = list(np.concatenate(list(rs.preroll)))
+                            rs.command_start_time = time.time() - len(rs.audio_buffer) / self.sample_rate
+                            rs.preroll.clear()
+                        else:
+                            rs.audio_buffer = []
                         self.follow_up.start_conversation()
                         logger.info(f"Wake word in {rs.room_id} ({detection[0]}: {detection[1]:.2f})")
 

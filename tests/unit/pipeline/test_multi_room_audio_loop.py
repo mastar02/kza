@@ -255,6 +255,57 @@ class TestMinWakeRmsGate:
         assert loop._should_accept_wakeword("cocina", rms=0.0001, timestamp=3.0) is True
 
 
+def _detector_seq(detect_returns):
+    """Wake detector mock SIN inline audio (simula el path openwakeword)."""
+    m = MagicMock()
+    m.load = MagicMock()
+    m.detect = MagicMock(side_effect=list(detect_returns))
+    m.get_active_models = MagicMock(return_value=[])
+    # openwakeword no tiene estos métodos (son del WhisperWake) -> None para que
+    # getattr(...) los saltee y se ejecute el path acústico.
+    m.peek_pending_text = None
+    m.pop_pending_command_audio = None
+    m.pop_pending_text = None
+    return m
+
+
+class TestWakePreroll:
+    """Pre-roll (2026-06-02): al disparar el wake, sembrar el buffer con el audio
+    previo para no perder el comando dicho durante la latencia de openwakeword
+    ('Nexa apagá la luz' -> 'apagá' se decía mientras el detector aún procesaba).
+    """
+
+    def _loop_with_room(self, detector, **kwargs):
+        rs = RoomStream(
+            room_id="escritorio", device_index=0,
+            wake_detector=detector, echo_suppressor=_make_echo_suppressor(),
+        )
+        loop = _make_multi_room_loop(rooms={"escritorio": rs}, **kwargs)
+        return loop, rs
+
+    def test_preroll_seeds_command_buffer_on_wake(self):
+        det = _detector_seq([None, None, None, ("nexa", 0.8)])
+        loop, rs = self._loop_with_room(det, wake_preroll_s=0.24)  # ~3 chunks @ 80ms
+        cb = loop._make_audio_callback(rs)
+        for i in range(3):
+            cb(np.full((CHUNK_SIZE, 2), 0.01 * (i + 1), dtype=np.float32), CHUNK_SIZE, None, None)
+            assert rs.listening is False
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is True
+        # el buffer arranca con el pre-roll (≥3 chunks) en vez de vacío
+        assert len(rs.audio_buffer) >= 3 * CHUNK_SIZE
+
+    def test_preroll_off_keeps_empty_buffer(self):
+        det = _detector_seq([None, None, ("nexa", 0.8)])
+        loop, rs = self._loop_with_room(det, wake_preroll_s=0.0)  # default = off
+        cb = loop._make_audio_callback(rs)
+        for _ in range(2):
+            cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is True
+        assert len(rs.audio_buffer) == 0  # sin pre-roll = comportamiento actual
+
+
 class TestCallbacks:
     """Test callback registration."""
 
