@@ -825,11 +825,23 @@ async def main():
             # Barge-in (S3). `response_handler` se inyecta luego con
             # `attach_response_handler()` porque se construye más abajo.
             barge_in_cfg = rooms_config.get("barge_in", {}) or {}
+            # Pre-gate SPENERGY (VAD por hardware del XVF3800). Fail-open: si no
+            # se puede abrir el device (sin udev/permisos/pyusb), el gate queda OFF.
+            spe_cfg = early_cfg.get("spenergy_gate", {}) or {}
+            xvf_controller = None
+            if spe_cfg.get("enabled", False):
+                from src.audio.xvf_controller import XvfController
+                xvf_controller = XvfController(
+                    poll_interval_s=spe_cfg.get("poll_interval_s", 0.04),
+                    window_s=spe_cfg.get("window_s", 4.0),
+                )
             multi_room_loop = MultiRoomAudioLoop(
                 room_streams=room_streams,
                 follow_up=FollowUpMode(
                     follow_up_window=early_cfg.get("follow_up_window_s", 4.0)
                 ),
+                xvf_controller=xvf_controller,
+                spenergy_threshold=spe_cfg.get("threshold", 100.0),
                 sample_rate=16000,
                 command_duration=2.0,
                 dedup_window_ms=rooms_config.get("dedup_window_ms", 200),

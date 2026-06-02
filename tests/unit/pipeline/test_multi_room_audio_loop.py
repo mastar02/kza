@@ -306,6 +306,49 @@ class TestWakePreroll:
         assert len(rs.audio_buffer) == 0  # sin pre-roll = comportamiento actual
 
 
+class _FakeXvf:
+    """XvfController falso: peak_since devuelve un valor fijo (o None)."""
+    def __init__(self, peak):
+        self._peak = peak
+        self.started = False
+    def start(self):
+        self.started = True
+        return True
+    def stop(self):
+        pass
+    def peak_since(self, since_ts):
+        return self._peak
+
+
+class TestSpenergyGate:
+    """Pre-gate SPENERGY (2026-06-02): no transcribir si el pico de SPENERGY
+    durante la captura < umbral (secador/silencio → alucinación de Whisper).
+    Fail-open: sin controller o sin datos → procesa."""
+
+    def _rs(self):
+        rs = _make_room_stream("escritorio")
+        rs.command_start_time = 100.0
+        return rs
+
+    def test_no_controller_passes(self):
+        loop = _make_multi_room_loop()  # xvf_controller None por defecto
+        assert loop._passes_spenergy_gate(self._rs()) is True
+
+    def test_peak_none_fail_open_passes(self):
+        loop = _make_multi_room_loop(xvf_controller=_FakeXvf(None), spenergy_threshold=100.0)
+        assert loop._passes_spenergy_gate(self._rs()) is True
+
+    def test_low_peak_blocks(self):
+        # secador/silencio = 0 < 100 → descarta
+        loop = _make_multi_room_loop(xvf_controller=_FakeXvf(0.0), spenergy_threshold=100.0)
+        assert loop._passes_spenergy_gate(self._rs()) is False
+
+    def test_voice_peak_passes(self):
+        # voz medida ~335k ≥ 100 → procesa
+        loop = _make_multi_room_loop(xvf_controller=_FakeXvf(335000.0), spenergy_threshold=100.0)
+        assert loop._passes_spenergy_gate(self._rs()) is True
+
+
 class TestCallbacks:
     """Test callback registration."""
 

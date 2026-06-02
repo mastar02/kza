@@ -1,0 +1,10 @@
+# XVF3800 ReSpeaker 4-Mic Array — acceso vendor (SPENERGY/AGC) sin root.
+# Permite que el user kza (kza-voice) lea AEC_SPENERGY_VALUES vía pyusb para el
+# pre-gate SPENERGY (ver src/audio/xvf_controller.py).
+#
+# Instalar en el server:
+#   sudo cp deploy/udev/99-xvf3800.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   # aplicar al device ya conectado sin replug:
+#   sudo chmod 666 $(lsusb | awk '/2886:001a/{d=$4;sub(/:/,"",d);printf "/dev/bus/usb/%s/%s",$2,d}')
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2886", ATTRS{idProduct}=="001a", MODE="0666"

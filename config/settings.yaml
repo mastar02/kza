@@ -1027,6 +1027,18 @@ rooms:
     # CALIBRAR en repro: el AGC ×64 del XVF3800 infla el piso (~0.025-0.05), el
     # valor útil se mide con voz real vs ambiente (idealmente tras bajar el AGC).
     min_wake_rms: 0.0
+    # Pre-gate SPENERGY (2026-06-02): VAD por HARDWARE del XVF3800 (pre-AGC,
+    # 0-GPU). Antes de transcribir, si el pico de SPENERGY durante la captura
+    # quedó < threshold → era secador/silencio → NO se corre Whisper (mata las
+    # alucinaciones "Gracias"/vacío). Calibrado en vivo 2026-06-02: secador/
+    # silencio=0, voz=52k-2.8M → 100 separa con margen enorme. Requiere udev
+    # rule (/etc/udev/rules.d/99-xvf3800.rules, MODE=0666) para acceso non-root.
+    # Fail-open: sin device/permisos/pyusb → gate OFF, nunca bloquea voz.
+    spenergy_gate:
+      enabled: true
+      threshold: 100.0
+      poll_interval_s: 0.04   # ~25 lecturas/s del SPENERGY
+      window_s: 4.0           # ventana del pico (cubre pre-roll + comando)
     # Pre-roll de audio (2026-06-02): segundos de audio previos al wake que se
     # prependen al comando. openwakeword tiene latencia de detección (~0.5-1s):
     # decís "Nexa apagá la luz" de corrido y "apagá" se pierde porque la captura

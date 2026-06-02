@@ -110,6 +110,8 @@ class MultiRoomAudioLoop:
         barge_in_min_duration_ms: int = 200,
         min_wake_rms: float = 0.0,
         wake_preroll_s: float = 0.0,
+        xvf_controller=None,
+        spenergy_threshold: float = 100.0,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -161,6 +163,14 @@ class MultiRoomAudioLoop:
             int(round(wake_preroll_s * sample_rate / CHUNK_SIZE))
             if wake_preroll_s > 0 else 0
         )
+
+        # Pre-gate SPENERGY (2026-06-02): VAD por hardware del XVF3800. Si el
+        # pico de SPENERGY durante la captura quedó por debajo del umbral, era
+        # secador/silencio → no transcribir (mata alucinaciones de Whisper).
+        # Fail-open: sin controller/datos, procesa siempre. Medido: secador/
+        # silencio=0, voz≥52k → umbral 100 separa con margen enorme.
+        self._xvf = xvf_controller
+        self.spenergy_threshold = spenergy_threshold
 
         self._running = False
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
@@ -245,6 +255,17 @@ class MultiRoomAudioLoop:
                 f"Room {room_id}: wake word loaded "
                 f"(device={rs.device_index}, models={rs.wake_detector.get_active_models()})"
             )
+        # Pre-gate SPENERGY: arrancar el poller del XVF3800 (fail-open).
+        if self._xvf is not None:
+            try:
+                if self._xvf.start():
+                    logger.info(
+                        f"Pre-gate SPENERGY activo (umbral {self.spenergy_threshold:.0f})"
+                    )
+                else:
+                    logger.warning("Pre-gate SPENERGY no pudo iniciar — gate OFF (fail-open)")
+            except Exception as e:
+                logger.warning(f"Pre-gate SPENERGY error al iniciar — gate OFF: {e}")
 
     async def run(self):
         """
@@ -328,6 +349,11 @@ class MultiRoomAudioLoop:
                     # 3. Fallback: VAD silencio normal
                     is_complete, audio_data = self._check_vad_completion(rs)
                     if is_complete and audio_data is not None:
+                        # Pre-gate SPENERGY: descartar capturas sin voz real
+                        # (secador/silencio) antes de gastar Whisper.
+                        if not self._passes_spenergy_gate(rs):
+                            self._reset_listening(rs)
+                            continue
                         event = CommandEvent(
                             audio=audio_data,
                             room_id=room_id,
@@ -344,6 +370,11 @@ class MultiRoomAudioLoop:
     async def stop(self):
         """Stop all audio streams."""
         self._running = False
+        if self._xvf is not None:
+            try:
+                self._xvf.stop()
+            except Exception:
+                pass
 
     def _make_audio_callback(self, rs: RoomStream):
         """Create a sounddevice callback closure for one room."""
@@ -487,6 +518,30 @@ class MultiRoomAudioLoop:
         if rs.early_command is not None and rs.early_command.ready_to_dispatch():
             return self.endpointing_short_ms
         return self.endpointing_medium_ms
+
+    def _passes_spenergy_gate(self, rs: RoomStream) -> bool:
+        """True si hubo voz (SPENERGY ≥ umbral) durante la captura, o si el gate
+        no aplica. FAIL-OPEN: sin controller o sin muestras → True (procesa).
+
+        Bloquea solo cuando el pico de SPENERGY durante [command_start_time, now]
+        quedó por debajo del umbral = secador/silencio → Whisper alucinaría.
+        """
+        if self._xvf is None:
+            return True
+        try:
+            peak = self._xvf.peak_since(rs.command_start_time)
+        except Exception as e:  # fail-open ante cualquier error del controller
+            logger.debug(f"SPENERGY gate fail-open ({e})")
+            return True
+        if peak is None:
+            return True
+        if peak < self.spenergy_threshold:
+            logger.info(
+                f"[SPENERGY-gate] descartado en {rs.room_id}: pico {peak:.0f} < "
+                f"{self.spenergy_threshold:.0f} (secador/silencio, no se transcribe)"
+            )
+            return False
+        return True
 
     def _check_vad_completion(self, rs: RoomStream) -> tuple[bool, np.ndarray | None]:
         """Check if a room's command capture is complete (VAD or timeout)."""
