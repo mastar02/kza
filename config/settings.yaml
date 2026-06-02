@@ -1000,15 +1000,22 @@ rooms:
 
   # Wake word config for all rooms
   wake_word:
-    engine: "whisper"              # "whisper" (STT-based, custom word) | "openwakeword" (legacy)
+    engine: "openwakeword"                     # "whisper" (STT-based, custom word) | "openwakeword" (legacy)
     # Aliases: Whisper produce variantes cuando oye "nexa" (alexa/nexia/nexta).
     # Eliminados aliases cortos/comunes (nesa/neza/next/necks) que causaban
     # muchos FPs fuzzy con palabras de TV como "esa"/"mesa"/"conseguí".
     # 2026-05-08: agregadas neska/nexca (variantes con consonante extra, no
     # son palabras comunes en español rioplatense → riesgo bajo de FP).
     words: ["nexa", "alexa", "nexia", "nexta", "kaza", "neska", "nexca"]
-    model: "hey_jarvis"            # usado cuando engine=openwakeword
-    threshold: 0.35                # usado cuando engine=openwakeword
+    model: "/home/kza/kza/models/wakeword/nexa.onnx"            # usado cuando engine=openwakeword
+    threshold: 0.3                # usado cuando engine=openwakeword
+    # Porcupine (engine: porcupine) — wake-word dedicado "Nexa" (Picovoice).
+    # AccessKey en /home/kza/secrets/.env (PORCUPINE_ACCESS_KEY). Activar: engine: porcupine.
+    porcupine:
+      access_key_env: "PORCUPINE_ACCESS_KEY"
+      keyword_path: "models/wakeword/nexa_es.ppn"
+      model_path: "models/wakeword/porcupine_params_es.pv"
+      sensitivity: 0.6
     # Whisper engine params (opcionales, con defaults razonables)
     # silence_end_ms 500ms (revertido de 700 el 2026-04-28): el early_dispatch
     # corta antes para comandos con grammar match (intent+entity), pero cuando
