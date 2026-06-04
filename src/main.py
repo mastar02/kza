@@ -853,6 +853,7 @@ async def main():
                 ),
                 xvf_controller=xvf_controller,
                 spenergy_threshold=spe_cfg.get("threshold", 100.0),
+                xvf_tuning=early_cfg.get("xvf_tuning", {}),
                 sample_rate=16000,
                 command_duration=2.0,
                 dedup_window_ms=rooms_config.get("dedup_window_ms", 200),

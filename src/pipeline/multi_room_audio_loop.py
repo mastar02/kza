@@ -120,6 +120,7 @@ class MultiRoomAudioLoop:
         wake_preroll_s: float = 0.0,
         xvf_controller=None,
         spenergy_threshold: float = 100.0,
+        xvf_tuning: dict | None = None,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -179,6 +180,13 @@ class MultiRoomAudioLoop:
         # silencio=0, voz≥52k → umbral 100 separa con margen enorme.
         self._xvf = xvf_controller
         self.spenergy_threshold = spenergy_threshold
+
+        # Tuning del DSP XVF3800 (L-2 2026-06-04): writes EN RAM aplicados al
+        # arrancar (reversibles al re-enchufar; SAVE_CONFIGURATION no existe en
+        # el command-map a propósito). Default None/apply_on_start=False = cero
+        # writes. Como es RAM, un re-enchufe del mic restaura el preset Seeed →
+        # re-aplicar requiere reiniciar kza-voice (aceptado: evento raro).
+        self._xvf_tuning = xvf_tuning or {}
 
         self._running = False
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
@@ -274,6 +282,34 @@ class MultiRoomAudioLoop:
                     logger.warning("Pre-gate SPENERGY no pudo iniciar — gate OFF (fail-open)")
             except Exception as e:
                 logger.warning(f"Pre-gate SPENERGY error al iniciar — gate OFF: {e}")
+            self._apply_xvf_tuning()
+
+    def _apply_xvf_tuning(self) -> None:
+        """Aplica el tuning configurado al DSP (EN RAM). Fail-open por param.
+
+        Un nombre/valor inválido en el yaml NO tira el servicio: se loguea y
+        se continúa con el resto. Loguea valor previo → nuevo para auditoría.
+        """
+        if not self._xvf_tuning.get("apply_on_start", False):
+            return
+        params = self._xvf_tuning.get("params") or {}
+        for name, values in params.items():
+            try:
+                before = self._xvf.read_param(name)
+            except ValueError:
+                before = None
+            try:
+                ok = self._xvf.write_param(name, values)
+            except ValueError as e:  # typo en el yaml: log y seguir
+                logger.error(f"[XVF-tuning] parámetro inválido en config: {e}")
+                continue
+            except Exception as e:  # cualquier otra cosa: fail-open
+                logger.warning(f"[XVF-tuning] {name} no aplicado: {e}")
+                continue
+            if ok:
+                logger.info(f"[XVF-tuning] {name}: {before} → {values} (RAM)")
+            else:
+                logger.warning(f"[XVF-tuning] {name} no aplicado (write fail-open)")
 
     async def run(self):
         """

@@ -1050,6 +1050,21 @@ rooms:
       threshold: 100.0
       poll_interval_s: 0.04   # ~25 lecturas/s del SPENERGY
       window_s: 4.0           # ventana del pico (cubre pre-roll + comando)
+    # Tuning del DSP XVF3800 aplicado al arrancar kza-voice (L-2 2026-06-04).
+    # ⚠️ SOLO RAM: reversible re-enchufando el mic (que también lo RESETEA —
+    # tras re-enchufar hay que reiniciar kza-voice para re-aplicar). Nunca
+    # persiste a flash (SAVE_CONFIGURATION no está expuesto: issue #8 Seeed).
+    # Nombres = dict PARAMETERS de src/audio/xvf_controller.py (xvf_host).
+    # PLAN L-2 (elegir UNA vía, A/B con medición de RMS piso + success rate):
+    #   Vía A (recortar techo): PP_AGCMAXGAIN: [16.0]  (preset Seeed=64,
+    #     default chip=125; si voz a 3-4m queda baja, subir a 12-16)
+    #   Vía B (congelar gain): PP_AGCONOFF: [0] + PP_AGCGAIN: [<calibrar>]
+    # Leer estado actual sin tocar nada: python -m tools.xvf_tune --read-all
+    xvf_tuning:
+      apply_on_start: false   # master switch — habilitar recién al hacer el A/B
+      params: {}
+      # params:
+      #   PP_AGCMAXGAIN: [16.0]
     # Pre-roll de audio (2026-06-02): segundos de audio previos al wake que se
     # prependen al comando. openwakeword tiene latencia de detección (~0.5-1s):
     # decís "Nexa apagá la luz" de corrido y "apagá" se pierde porque la captura

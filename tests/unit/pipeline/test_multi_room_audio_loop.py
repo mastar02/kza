@@ -651,3 +651,75 @@ class TestCaptureChannel:
     def test_room_stream_default_capture_channel(self):
         rs = _make_room_stream("cocina")
         assert rs.capture_channel == 0
+
+
+class _FakeXvfRW(_FakeXvf):
+    """FakeXvf con write/read de parámetros (L-2 apply-on-start)."""
+
+    def __init__(self, peak=0.0, reads=None):
+        super().__init__(peak)
+        self.writes = []
+        self._reads = reads or {}
+
+    def read_param(self, name):
+        if name == "NO_EXISTE":
+            raise ValueError(f"parámetro desconocido: {name!r}")
+        return self._reads.get(name)
+
+    def write_param(self, name, values):
+        if name == "NO_EXISTE":
+            raise ValueError(f"parámetro desconocido: {name!r}")
+        self.writes.append((name, list(values)))
+        return True
+
+
+class TestXvfTuningOnStart:
+    """L-2 prep (2026-06-04): tuning del DSP aplicado al arrancar el loop.
+
+    EN RAM (reversible al re-enchufar). Default apply_on_start=False → cero
+    writes (sin regresión). Un param inválido en el yaml NO debe tirar el
+    servicio (fail-open de config: log + continuar)."""
+
+    @pytest.mark.asyncio
+    async def test_tuning_applied_on_start(self):
+        xvf = _FakeXvfRW(reads={"PP_AGCMAXGAIN": (64.0,)})
+        loop = _make_multi_room_loop(
+            xvf_controller=xvf,
+            xvf_tuning={
+                "apply_on_start": True,
+                "params": {"PP_AGCMAXGAIN": [16.0], "PP_AGCONOFF": [1]},
+            },
+        )
+        await loop.start()
+        assert ("PP_AGCMAXGAIN", [16.0]) in xvf.writes
+        assert ("PP_AGCONOFF", [1]) in xvf.writes
+
+    @pytest.mark.asyncio
+    async def test_tuning_off_by_default_no_writes(self):
+        xvf = _FakeXvfRW()
+        loop = _make_multi_room_loop(
+            xvf_controller=xvf,
+            xvf_tuning={"params": {"PP_AGCMAXGAIN": [16.0]}},  # sin apply_on_start
+        )
+        await loop.start()
+        assert xvf.writes == []
+
+    @pytest.mark.asyncio
+    async def test_tuning_invalid_param_does_not_break_start(self):
+        xvf = _FakeXvfRW()
+        loop = _make_multi_room_loop(
+            xvf_controller=xvf,
+            xvf_tuning={
+                "apply_on_start": True,
+                "params": {"NO_EXISTE": [1], "PP_AGCMAXGAIN": [16.0]},
+            },
+        )
+        await loop.start()  # no explota
+        assert ("PP_AGCMAXGAIN", [16.0]) in xvf.writes  # el válido se aplicó
+
+    @pytest.mark.asyncio
+    async def test_tuning_without_controller_noop(self):
+        loop = _make_multi_room_loop(
+            xvf_tuning={"apply_on_start": True, "params": {"PP_AGCMAXGAIN": [16.0]}},
+        )
+        await loop.start()  # sin xvf_controller → no explota
