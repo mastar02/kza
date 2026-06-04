@@ -768,6 +768,10 @@ async def main():
                     device_index=rc.mic_device_index,
                     wake_detector=wake_detector,
                     echo_suppressor=room_echo,
+                    # L-3: canal de captura per-room (0=Conference, 1=ASR en el
+                    # XVF3800 UA según doc Seeed — A/B con medición, fallback
+                    # seguro a 0 si el device no tiene el canal).
+                    capture_channel=room_dict.get("capture_channel", 0),
                 )
 
             # Register BLE zone for presence

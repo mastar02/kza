@@ -599,3 +599,55 @@ class TestResolveCapturChannels:
     ])
     def test_resolve_capture_channels(self, reported, expected):
         assert _resolve_capture_channels(reported) == expected
+
+
+class TestCaptureChannel:
+    """L-3 prep (2026-06-04): canal de captura configurable per-room.
+
+    El XVF3800 UA expone 2 canales (doc Seeed: ch0=Conference con post-proceso
+    para oído humano, ch1=ASR del beam auto-select). Hoy se consume ch0 fijo;
+    capture_channel permite el A/B per-device SIN swap global (el mic UAC1.0
+    del escritorio es mono → un swap ciego daría IndexError)."""
+
+    def _loop_with_channel(self, capture_channel):
+        det = _detector_seq([("nexa", 0.8)] * 10)
+        rs = RoomStream(
+            room_id="living", device_index=0,
+            wake_detector=det, echo_suppressor=_make_echo_suppressor(),
+            capture_channel=capture_channel,
+        )
+        loop = _make_multi_room_loop(rooms={"living": rs})
+        return loop, rs, det
+
+    def test_callback_uses_configured_channel(self):
+        loop, rs, det = self._loop_with_channel(capture_channel=1)
+        cb = loop._make_audio_callback(rs)
+        indata = np.zeros((CHUNK_SIZE, 2), dtype=np.float32)
+        indata[:, 0] = 0.01
+        indata[:, 1] = 0.99
+        cb(indata, CHUNK_SIZE, None, None)
+        chunk = det.detect.call_args[0][0]
+        assert chunk == pytest.approx(np.full(CHUNK_SIZE, 0.99))
+
+    def test_default_channel_zero_preserved(self):
+        loop, rs, det = self._loop_with_channel(capture_channel=0)
+        cb = loop._make_audio_callback(rs)
+        indata = np.zeros((CHUNK_SIZE, 2), dtype=np.float32)
+        indata[:, 0] = 0.01
+        indata[:, 1] = 0.99
+        cb(indata, CHUNK_SIZE, None, None)
+        chunk = det.detect.call_args[0][0]
+        assert chunk == pytest.approx(np.full(CHUNK_SIZE, 0.01))
+
+    def test_missing_channel_falls_back_to_zero(self):
+        # Mic mono (UAC1.0 escritorio): capture_channel=1 NO debe explotar.
+        loop, rs, det = self._loop_with_channel(capture_channel=1)
+        cb = loop._make_audio_callback(rs)
+        indata = np.full((CHUNK_SIZE, 1), 0.07, dtype=np.float32)
+        cb(indata, CHUNK_SIZE, None, None)  # sin IndexError
+        chunk = det.detect.call_args[0][0]
+        assert chunk == pytest.approx(np.full(CHUNK_SIZE, 0.07))
+
+    def test_room_stream_default_capture_channel(self):
+        rs = _make_room_stream("cocina")
+        assert rs.capture_channel == 0

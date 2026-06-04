@@ -74,6 +74,14 @@ class RoomStream:
     # dicho durante la latencia de detección de openwakeword. None hasta que el
     # loop lo inicializa con maxlen según wake_preroll_s.
     preroll: object = None
+    # Canal de captura del device (L-3 prep 2026-06-04). El XVF3800 UA expone
+    # 2 canales (doc Seeed: ch0=Conference post-procesado para oído humano,
+    # ch1=ASR del beam auto-select). Default 0 = comportamiento histórico.
+    # Configurable per-room (rooms.<room>.capture_channel) para el A/B ch0/ch1
+    # SIN swap global — el mic UAC1.0 del escritorio es mono (fallback a 0).
+    capture_channel: int = 0
+    # Warning de canal faltante emitido (una sola vez por stream).
+    channel_warned: bool = False
 
 
 class MultiRoomAudioLoop:
@@ -391,7 +399,18 @@ class MultiRoomAudioLoop:
         """Create a sounddevice callback closure for one room."""
 
         def audio_callback(indata, frames, time_info, status):
-            audio_chunk = indata[:, 0].copy()
+            # Canal configurado per-room con fallback seguro: si el device no
+            # tiene ese canal (mic mono UAC1.0), usar ch0 y avisar una vez.
+            ch = rs.capture_channel
+            if ch and indata.shape[1] <= ch:
+                if not rs.channel_warned:
+                    rs.channel_warned = True
+                    logger.warning(
+                        f"Room {rs.room_id}: capture_channel={ch} no existe "
+                        f"(device de {indata.shape[1]}ch) — fallback a canal 0"
+                    )
+                ch = 0
+            audio_chunk = indata[:, ch].copy()
 
             # Barge-in check (S3) — corre ANTES del echo suppressor porque
             # `is_safe_to_listen` retorna False mientras TTS está activo, lo
