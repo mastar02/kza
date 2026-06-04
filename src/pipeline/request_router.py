@@ -78,6 +78,7 @@ def _texts_diverge(a: str, b: str, min_ratio: float = 0.95) -> bool:
 def _grammar_fastpath_classification(
     text: str,
     confidence_threshold: float = 0.75,
+    wake_confirmed: bool = False,
 ):
     """CommandClassification si la gramática determinística produce un comando
     dispatchable de alta confianza (domótica o media); None si no.
@@ -101,12 +102,20 @@ def _grammar_fastpath_classification(
     from src.nlu.llm_router import CommandClassification
 
     pc = parse_command(text)
-    if pc.quality != "full" or pc.confidence < confidence_threshold:
+    confidence = pc.confidence
+    # Con wake confirmado ACÚSTICAMENTE (openwakeword/porcupine), el STT a
+    # veces no transcribe "Nexa" y el parse pierde el bonus de wake (+0.15):
+    # 'Prende la luz.' quedaba en 0.7 < 0.75 y caía al LLMRouter, que lo
+    # rechazaba como noise (caso real 2026-06-04 18:24). El bonus corresponde
+    # igual — la confirmación llegó por otro canal, no por el texto.
+    if wake_confirmed and pc.quality == "full" and not pc.has_wake:
+        confidence += 0.15
+    if pc.quality != "full" or confidence < confidence_threshold:
         return None
 
     return CommandClassification(
         is_command=True,
-        confidence=pc.confidence,
+        confidence=confidence,
         intent=pc.intent,
         entity_hint=pc.domain,
         slots=dict(pc.slots),
@@ -194,6 +203,7 @@ class RequestRouter:
         metrics_emitter=None,
         wake_words: tuple[str, ...] | list[str] | None = None,
         llm_command_router=None,
+        wake_acoustically_confirmed: bool = False,
         hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
         command_gate: CommandAcceptanceGate | None = None,
         llm_min_command_confidence: float = 0.6,
@@ -289,6 +299,10 @@ class RequestRouter:
         # texto post-wake antes del orchestrator y rechaza alucinaciones
         # de TV / replays / frases noise. Ver src/nlu/llm_router.py.
         self.llm_command_router = llm_command_router
+        # True cuando el wake engine confirma acústicamente (openwakeword/
+        # porcupine): el grammar fastpath otorga el bonus de wake aunque el
+        # STT no haya transcripto "Nexa" (2026-06-04).
+        self.wake_acoustically_confirmed = wake_acoustically_confirmed
         # Confianza mínima auto-reportada por el LLMCommandRouter para aceptar
         # un comando. El 7B marca is_command=True sobre charla ambiente con
         # confianza baja → acción fantasma. Solo aplica al path LLM, NO al
@@ -430,7 +444,10 @@ class RequestRouter:
         # una fast_classification y nos saltamos el LLMCommandRouter (poco
         # fiable en el modelo actual: rechaza comandos válidos como 'noise').
         fast_classification = None
-        grammar_cls = _grammar_fastpath_classification(text, self.confidence_threshold)
+        grammar_cls = _grammar_fastpath_classification(
+            text, self.confidence_threshold,
+            wake_confirmed=self.wake_acoustically_confirmed,
+        )
         if grammar_cls is not None:
             logger.info(
                 f"[GRAMMAR_FASTPATH] intent={grammar_cls.intent} "

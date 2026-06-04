@@ -1152,6 +1152,9 @@ async def main():
         metrics_emitter=metrics_emitter,
         wake_words=_resolved_wake_words,
         llm_command_router=llm_command_router,
+        # Con engine acústico (openwakeword/porcupine) el wake ya se confirmó
+        # fuera del texto → el grammar fastpath no exige "Nexa" transcripta.
+        wake_acoustically_confirmed=(_wake_engine_gate != "whisper"),
         hooks=hooks,
         command_gate=command_gate,
         llm_min_command_confidence=nlu_cfg.get("min_command_confidence", 0.6),

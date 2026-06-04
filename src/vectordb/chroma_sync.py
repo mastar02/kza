@@ -25,7 +25,13 @@ class ChromaSync:
     # base_sim mucho menor. Valor 0.15 ≈ 7.5% del rango cosine [0,2] mapeado a
     # similarity. Ver bug 2026-05-03 (light.cuarto vs light.escritorio,
     # diferencia de distancias 0.34 vs 0.30 → similarities 0.83 vs 0.85).
-    PREFER_AREA_BOOST: float = 0.15
+    # 0.15 → 0.35 (2026-06-04): el garble far-field del STT ('prender a luz',
+    # 'la luz de la vida') matcheaba docs de OTRAS rooms con gap > 0.15 y
+    # prendía living/balcón desde el escritorio. Si hay candidato del área
+    # del mic sobre threshold, debe ganar. El cross-room explícito no se
+    # rompe: cuando el texto menciona la room, prefer_area sale del TEXTO
+    # (prioridad en _resolve_prefer_area), no de la zona del mic.
+    PREFER_AREA_BOOST: float = 0.35
 
     def __init__(
         self,

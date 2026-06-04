@@ -178,3 +178,36 @@ class TestPreferAreaScoring:
         )
         # Sin candidatos con esa area, gana el top distance original.
         assert result["entity_id"] == "light.cuarto"
+
+
+class TestContextBoostStrength:
+    """Fix 2026-06-04: con boost 0.15, el garble far-field del STT ('prender a
+    luz', 'la luz de la vida') matcheaba docs de OTRAS rooms con gap > 0.15 y
+    prendía living/balcón desde el escritorio. El boost debe ser contundente:
+    si hay candidato del área del mic sobre threshold, gana."""
+
+    def test_garble_gap_over_old_boost_still_picks_mic_area(self):
+        # living sim=0.88 vs escritorio sim=0.72 (gap 0.16 > 0.15 viejo)
+        rows = [
+            (0.24, {"entity_id": "light.grupo_living", "domain": "light",
+                    "service": "turn_on", "area": "Living",
+                    "friendly_name": "living"}, "Prendé la luz del living."),
+            (0.56, {"entity_id": "light.grupo_escritorio", "domain": "light",
+                    "service": "turn_on", "area": "Escritorio",
+                    "friendly_name": "escritorio"}, "Prendé la luz del escritorio."),
+        ]
+        cs = _make_chroma_with_results(rows)
+        r = cs.search_command("prender a luz", threshold=0.65, prefer_area="Escritorio")
+        assert r is not None
+        assert r["entity_id"] == "light.grupo_escritorio"
+
+    def test_boost_still_does_not_rescue_below_threshold(self):
+        # El gate de threshold sigue sobre la similarity BASE: un doc del área
+        # con sim 0.50 no se rescata por boost.
+        rows = [
+            (1.0, {"entity_id": "light.grupo_escritorio", "domain": "light",
+                   "service": "turn_on", "area": "Escritorio",
+                   "friendly_name": "escritorio"}, "Prendé la luz del escritorio."),
+        ]
+        cs = _make_chroma_with_results(rows)
+        assert cs.search_command("xyz", threshold=0.65, prefer_area="Escritorio") is None

@@ -46,12 +46,14 @@ def _meta(entity_id, area="", service="turn_on"):
 
 # El caso real de prod: light.hogar (excluido) gana por similitud con doc
 # genérico; el grupo del escritorio está apenas abajo y sobre threshold.
-# Gap de similitud (0.95 vs 0.77) MAYOR que PREFER_AREA_BOOST (0.15): como
-# en prod, el boost de área NO alcanza para destronar al doc genérico del
-# grupo global — solo la exclusión lo saca del medio.
+# El candidato válido NO es del área preferida (Cocina vs Escritorio): el
+# boost de área no aplica a ninguno → SOLO el filtro de exclusión puede
+# destronar al doc genérico del grupo global. (Con un doc del área, el
+# PREFER_AREA_BOOST=0.35 lo salvaría por sí solo y el test no probaría el
+# filtro.)
 _PROD_ROWS = [
     (0.10, _meta("light.hogar"), "Prendé la iluminación."),
-    (0.46, _meta("light.grupo_escritorio", area="Escritorio"), "Vos prenderás la luz del escritorio."),
+    (0.46, _meta("light.grupo_cocina", area="Cocina"), "Prendé la luz de la cocina."),
 ]
 
 
@@ -60,13 +62,13 @@ class TestExcludedEntitiesQueryTime:
         cs = _make_chroma(_PROD_ROWS)
         r = cs.search_command("prende la luz", threshold=0.65, prefer_area="Escritorio")
         assert r is not None
-        assert r["entity_id"] == "light.grupo_escritorio"
+        assert r["entity_id"] == "light.grupo_cocina"
 
     def test_excluded_top_candidate_skipped_without_prefer_area(self):
         cs = _make_chroma(_PROD_ROWS)
         r = cs.search_command("prende la luz", threshold=0.65)
         assert r is not None
-        assert r["entity_id"] == "light.grupo_escritorio"
+        assert r["entity_id"] == "light.grupo_cocina"
 
     def test_all_candidates_excluded_returns_none(self):
         rows = [(0.10, _meta("light.hogar"), "Prendé la iluminación.")]
