@@ -51,6 +51,7 @@ class FastWhisperSTT:
         beam_size: int = 1,
         best_of: int = 1,
         initial_prompt: str | None = None,
+        vad_filter: bool = True,
     ):
         """
         Args:
@@ -60,6 +61,11 @@ class FastWhisperSTT:
             initial_prompt: Texto que sesga la decodificación. Útil para
                 enseñarle a Whisper palabras novel ("Nexa") y vocabulario
                 del dominio (verbos y rooms). Máx ~224 tokens.
+            vad_filter: Pre-filtro Silero interno de faster-whisper. Para
+                audio del XVF3800 va en False: el chip YA hace VAD/NS/
+                beamforming por hardware y Silero lee prob~0 sobre su salida
+                — borraba capturas ENTERAS → Text='' con voz real
+                (confirmado en prod 2026-06-04).
         """
         self.model_name = model
         self.device = device
@@ -68,6 +74,7 @@ class FastWhisperSTT:
         self.beam_size = beam_size
         self.best_of = best_of
         self.initial_prompt = initial_prompt
+        self.vad_filter = vad_filter
         self._model = None
     
     def load(self):
@@ -128,7 +135,7 @@ class FastWhisperSTT:
             temperature=0,
             initial_prompt=self.initial_prompt,
             condition_on_previous_text=False,
-            vad_filter=True,
+            vad_filter=self.vad_filter,
             vad_parameters={
                 "min_silence_duration_ms": 300,
                 "speech_pad_ms": 100,
@@ -440,4 +447,5 @@ def create_stt(config: dict) -> FastWhisperSTT | MoonshineSTT:
             beam_size=config.get("beam_size", 1),
             best_of=config.get("best_of", 1),
             initial_prompt=config.get("initial_prompt"),
+            vad_filter=config.get("vad_filter", True),
         )

@@ -63,3 +63,26 @@ def test_plain_transcribe_still_returns_2_tuple():
     text, ms = out
     assert ms >= 0
     assert text == "hola"
+
+
+class TestVadFilterConfigurable:
+    """Fix 2026-06-04: vad_filter de faster-whisper configurable. El Silero
+    interno lee prob~0 sobre el audio del XVF3800 (el chip YA hace VAD/NS/
+    beamforming por hardware) y borraba capturas ENTERAS → Text='' con voz
+    real (confirmado en prod: 'VAD filter removed 02.000 of 02.000')."""
+
+    def _transcribe_kwargs(self, **stt_kwargs):
+        stt = FastWhisperSTT(model="x", device="cpu", **stt_kwargs)
+        model = MagicMock()
+        model.transcribe.return_value = (iter([]), MagicMock())
+        stt._model = model
+        stt.transcribe_with_confidence(np.zeros(16000, dtype="float32"))
+        return model.transcribe.call_args.kwargs
+
+    def test_vad_filter_disabled_propagates(self):
+        kwargs = self._transcribe_kwargs(vad_filter=False)
+        assert kwargs["vad_filter"] is False
+
+    def test_vad_filter_default_true_preserved(self):
+        kwargs = self._transcribe_kwargs()
+        assert kwargs["vad_filter"] is True

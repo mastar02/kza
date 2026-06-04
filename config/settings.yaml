@@ -149,7 +149,14 @@ stt:
   language: "es"
   beam_size: 5            # 1=greedy (rápido), 5=beam search (+30% latencia, +precisión)
   best_of: 1
-  vad_filter: true
+  # VAD interno de faster-whisper (Silero) OFF 2026-06-04: sobre la salida
+  # del XVF3800 (que YA hace VAD/NS/beamforming por hardware) Silero lee
+  # prob~0 y borraba capturas ENTERAS → Text='' con voz real (confirmado en
+  # prod: 'VAD filter removed 02.000 of audio' en cada Text vacío). NOTA:
+  # esta clave existía como true pero create_stt() nunca la leía — recién
+  # desde 2026-06-04 el factory la consume. El rol anti-silencio lo cubren
+  # el endpointing por RMS + CommandGate + compression guard.
+  vad_filter: false
   # Sesga la decodificación de Whisper para palabras del dominio. Le "enseña"
   # a reconocer "Nexa" y a favorecer vocabulario de domótica. Sin costo de
   # latencia — es un token-level prior. Máx ~224 tokens.
