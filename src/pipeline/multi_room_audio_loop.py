@@ -120,6 +120,7 @@ class MultiRoomAudioLoop:
         wake_preroll_s: float = 0.0,
         xvf_controller=None,
         spenergy_threshold: float = 100.0,
+        spenergy_gate_enabled: bool = True,
         xvf_tuning: dict | None = None,
     ):
         self.room_streams = room_streams
@@ -180,6 +181,10 @@ class MultiRoomAudioLoop:
         # silencio=0, voz≥52k → umbral 100 separa con margen enorme.
         self._xvf = xvf_controller
         self.spenergy_threshold = spenergy_threshold
+        # Gate y tuning son features ORTOGONALES sobre el mismo controller
+        # (review Fase 1): se puede tunear el DSP con el gate apagado. El
+        # poller solo corre si el gate está habilitado (el tuning no lo usa).
+        self.spenergy_gate_enabled = spenergy_gate_enabled
 
         # Tuning del DSP XVF3800 (L-2 2026-06-04): writes EN RAM aplicados al
         # arrancar (reversibles al re-enchufar; SAVE_CONFIGURATION no existe en
@@ -271,8 +276,13 @@ class MultiRoomAudioLoop:
                 f"Room {room_id}: wake word loaded "
                 f"(device={rs.device_index}, models={rs.wake_detector.get_active_models()})"
             )
-        # Pre-gate SPENERGY: arrancar el poller del XVF3800 (fail-open).
-        if self._xvf is not None:
+        # Tuning del DSP ANTES de arrancar el poller (review Fase 1): así los
+        # writes corren con USB single-threaded (sin transfers concurrentes
+        # sobre el mismo handle), y en to_thread para no bloquear el event
+        # loop (cada ctrl_transfer con retries puede tardar segundos).
+        await asyncio.to_thread(self._apply_xvf_tuning)
+        # Pre-gate SPENERGY: poller solo si el gate está habilitado (fail-open).
+        if self._xvf is not None and self.spenergy_gate_enabled:
             try:
                 if self._xvf.start():
                     logger.info(
@@ -282,7 +292,6 @@ class MultiRoomAudioLoop:
                     logger.warning("Pre-gate SPENERGY no pudo iniciar — gate OFF (fail-open)")
             except Exception as e:
                 logger.warning(f"Pre-gate SPENERGY error al iniciar — gate OFF: {e}")
-            self._apply_xvf_tuning()
 
     def _apply_xvf_tuning(self) -> None:
         """Aplica el tuning configurado al DSP (EN RAM). Fail-open por param.
@@ -291,6 +300,12 @@ class MultiRoomAudioLoop:
         se continúa con el resto. Loguea valor previo → nuevo para auditoría.
         """
         if not self._xvf_tuning.get("apply_on_start", False):
+            return
+        if self._xvf is None:
+            logger.warning(
+                "[XVF-tuning] xvf_tuning.apply_on_start=true pero no hay "
+                "XvfController — tuning NO aplicado (¿mic XVF3800 presente?)"
+            )
             return
         params = self._xvf_tuning.get("params") or {}
         for name, values in params.items():
@@ -592,7 +607,7 @@ class MultiRoomAudioLoop:
         Bloquea solo cuando el pico de SPENERGY durante [command_start_time, now]
         quedó por debajo del umbral = secador/silencio → Whisper alucinaría.
         """
-        if self._xvf is None:
+        if self._xvf is None or not self.spenergy_gate_enabled:
             return True
         try:
             peak = self._xvf.peak_since(rs.command_start_time)

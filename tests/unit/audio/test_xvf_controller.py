@@ -240,3 +240,44 @@ class TestReadParam:
         dev = FakeRWDev(read_responses=[(0, struct.pack("<ffff", 1.0, 2.0, 3.0, 4.0))])
         c = XvfController(device=dev)
         assert c.read_spenergy() == pytest.approx((1.0, 2.0, 3.0, 4.0))
+
+
+class TestWriteParamRangeValidation:
+    """Fix review Fase 1: validar rangos oficiales antes de escribir a RAM.
+
+    Los rangos vienen de las descripciones del xvf_host.py oficial (p.ej.
+    PP_AGCMAXGAIN 'Valid range: [1.0 .. 1000.0]'). Un fat-finger (0, negativo)
+    NO debe llegar al DSP de producción."""
+
+    def test_write_below_range_raises(self):
+        c = XvfController(device=FakeRWDev())
+        with pytest.raises(ValueError, match="rango"):
+            c.write_param("PP_AGCMAXGAIN", [0.0])  # oficial: [1.0 .. 1000.0]
+
+    def test_write_above_range_raises(self):
+        c = XvfController(device=FakeRWDev())
+        with pytest.raises(ValueError, match="rango"):
+            c.write_param("PP_AGCMAXGAIN", [1001.0])
+
+    def test_write_onoff_only_binary(self):
+        c = XvfController(device=FakeRWDev())
+        with pytest.raises(ValueError, match="rango"):
+            c.write_param("PP_AGCONOFF", [2])
+
+    def test_write_in_range_passes(self):
+        dev = FakeRWDev()
+        c = XvfController(device=dev)
+        assert c.write_param("PP_AGCMAXGAIN", [16.0]) is True
+        assert len(dev.writes) == 1
+
+    def test_write_param_without_known_range_not_blocked(self):
+        # Parámetros sin rango oficial declarado (azimuth) no se validan.
+        dev = FakeRWDev()
+        c = XvfController(device=dev)
+        assert c.write_param("AEC_FIXEDBEAMSAZIMUTH_VALUES", [1.5, 4.6]) is True
+
+    def test_usb_lock_exists_and_wraps_transfers(self):
+        # Lock dedicado para serializar ctrl_transfer (poller vs write).
+        c = XvfController(device=FakeRWDev())
+        assert hasattr(c, "_usb_lock")
+        assert c._usb_lock is not c._lock  # NO reusar el lock del deque

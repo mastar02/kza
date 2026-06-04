@@ -8,6 +8,11 @@ del plan L-2/L-4 en el server, con el mic conectado.
 persistido. SAVE_CONFIGURATION no está expuesto a propósito (issue #8 del
 repo Seeed: puede dejar el device sin enumerar).
 
+⚠️ Concurrencia cross-process: si kza-voice está corriendo, su poller
+SPENERGY emite control transfers al mismo device cada 40ms. Antes de
+cualquier --write, parar el servicio (systemctl --user stop kza-voice).
+Los --read sueltos son de bajo riesgo pero pueden pisarse con el poller.
+
 Uso (server, venv de kza):
     python -m tools.xvf_tune --list
     python -m tools.xvf_tune --read PP_AGCMAXGAIN
@@ -20,7 +25,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from src.audio.xvf_controller import PARAMETERS, XvfController
+from src.audio.xvf_controller import PARAMETERS, XvfController, validate_values
 
 _FLOAT_TYPES = ("float", "radians")
 
@@ -73,6 +78,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{name:34s} {rw:3s} {dtype:8s} {count}")
         return 0
 
+    # Validar args del write ANTES de abrir el device: un typo del operador
+    # da mensaje limpio + exit 2 sin necesitar hardware (review Fase 1).
+    write_name, write_values = None, None
+    if args.write:
+        write_name, *raw = args.write
+        if not raw:
+            print(f"ERROR: --write {write_name} necesita al menos un valor")
+            return 2
+        try:
+            write_values = parse_values(write_name, raw)
+            validate_values(write_name, write_values)
+        except (ValueError, OverflowError) as e:
+            print(f"ERROR: {e}")
+            return 2
+
     ctrl = XvfController()
     if not ctrl.open():
         print("ERROR: XVF3800 no accesible (¿conectado? ¿pyusb? ¿udev rule MODE=0666?)")
@@ -89,15 +109,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # --write NAME V1 [V2...]
-    name, *raw = args.write
-    if not raw:
-        print(f"ERROR: --write {name} necesita al menos un valor")
+    print(
+        "⚠️  Si kza-voice está corriendo, su poller SPENERGY usa este MISMO\n"
+        "    device (colisión de control transfers entre procesos). Pará el\n"
+        "    servicio antes de escribir: systemctl --user stop kza-voice"
+    )
+    try:
+        before = ctrl.read_param(write_name)
+        ok = ctrl.write_param(write_name, write_values)
+        after = ctrl.read_param(write_name)
+    except ValueError as e:  # defensa extra (write_param re-valida)
+        print(f"ERROR: {e}")
         return 2
-    values = parse_values(name, raw)
-    before = ctrl.read_param(name)
-    ok = ctrl.write_param(name, values)
-    after = ctrl.read_param(name)
-    print(f"{name}: {before} → {after} (write {'OK' if ok else 'FALLÓ'}; RAM, "
+    print(f"{write_name}: {before} → {after} (write {'OK' if ok else 'FALLÓ'}; RAM, "
           f"re-enchufar restaura el preset)")
     return 0 if ok else 1
 

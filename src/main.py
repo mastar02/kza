@@ -839,8 +839,16 @@ async def main():
             # por room con binding por puerto USB (análogo a mic_usb_port), o
             # una room bloquearía comandos válidos con la energía/silencio de OTRA.
             spe_cfg = early_cfg.get("spenergy_gate", {}) or {}
+            tuning_cfg = early_cfg.get("xvf_tuning", {}) or {}
             xvf_controller = None
-            if spe_cfg.get("enabled", False):
+            # Controller compartido por DOS features ortogonales (review Fase 1):
+            # el gate SPENERGY y el tuning del DSP. Se construye si CUALQUIERA
+            # lo necesita — antes, tuning con gate deshabilitado quedaba
+            # silenciosamente sin aplicar.
+            _need_xvf = spe_cfg.get("enabled", False) or (
+                tuning_cfg.get("apply_on_start", False) and tuning_cfg.get("params")
+            )
+            if _need_xvf:
                 from src.audio.xvf_controller import XvfController
                 xvf_controller = XvfController(
                     poll_interval_s=spe_cfg.get("poll_interval_s", 0.04),
@@ -853,7 +861,8 @@ async def main():
                 ),
                 xvf_controller=xvf_controller,
                 spenergy_threshold=spe_cfg.get("threshold", 100.0),
-                xvf_tuning=early_cfg.get("xvf_tuning", {}),
+                spenergy_gate_enabled=spe_cfg.get("enabled", False),
+                xvf_tuning=tuning_cfg,
                 sample_rate=16000,
                 command_duration=2.0,
                 dedup_window_ms=rooms_config.get("dedup_window_ms", 200),

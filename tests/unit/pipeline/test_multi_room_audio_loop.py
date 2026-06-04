@@ -723,3 +723,75 @@ class TestXvfTuningOnStart:
             xvf_tuning={"apply_on_start": True, "params": {"PP_AGCMAXGAIN": [16.0]}},
         )
         await loop.start()  # sin xvf_controller → no explota
+
+
+class TestXvfReviewFixes:
+    """Fixes de la review adversarial de Fase 1 (2026-06-04):
+    - el tuning se aplica ANTES de arrancar el poller (sin ventana de USB
+      concurrente en el arranque) y fuera del event loop;
+    - spenergy_gate_enabled desacoplado del tuning (dos features ortogonales);
+    - tuning configurado sin controller → warning, no silencio."""
+
+    def _xvf_with_events(self):
+        xvf = _FakeXvfRW()
+        xvf.events = []
+        orig_start, orig_write = xvf.start, xvf.write_param
+
+        def tracked_start():
+            xvf.events.append("poller_start")
+            return orig_start()
+
+        def tracked_write(name, values):
+            xvf.events.append(("write", name))
+            return orig_write(name, values)
+
+        xvf.start = tracked_start
+        xvf.write_param = tracked_write
+        return xvf
+
+    @pytest.mark.asyncio
+    async def test_tuning_applied_before_poller_starts(self):
+        # Sin esto, el write corre con el poller ya leyendo SPENERGY cada 40ms
+        # sobre el mismo device handle (transfers USB concurrentes sin lock).
+        xvf = self._xvf_with_events()
+        loop = _make_multi_room_loop(
+            xvf_controller=xvf,
+            xvf_tuning={"apply_on_start": True, "params": {"PP_AGCMAXGAIN": [16.0]}},
+        )
+        await loop.start()
+        assert xvf.events == [("write", "PP_AGCMAXGAIN"), "poller_start"]
+
+    @pytest.mark.asyncio
+    async def test_gate_disabled_passes_even_with_low_peak(self):
+        rs = _make_room_stream("escritorio")
+        rs.command_start_time = 100.0
+        loop = _make_multi_room_loop(
+            xvf_controller=_FakeXvf(0.0),  # pico bajo umbral
+            spenergy_threshold=100.0,
+            spenergy_gate_enabled=False,
+        )
+        assert loop._passes_spenergy_gate(rs) is True
+
+    @pytest.mark.asyncio
+    async def test_gate_disabled_skips_poller_but_applies_tuning(self):
+        # spenergy off + tuning on: el controller sirve SOLO para los writes;
+        # el poller (que alimenta el gate) no debe arrancar.
+        xvf = self._xvf_with_events()
+        loop = _make_multi_room_loop(
+            xvf_controller=xvf,
+            spenergy_gate_enabled=False,
+            xvf_tuning={"apply_on_start": True, "params": {"PP_AGCONOFF": [0]}},
+        )
+        await loop.start()
+        assert ("write", "PP_AGCONOFF") in xvf.events
+        assert "poller_start" not in xvf.events
+
+    @pytest.mark.asyncio
+    async def test_tuning_without_controller_warns(self, caplog):
+        import logging
+        loop = _make_multi_room_loop(
+            xvf_tuning={"apply_on_start": True, "params": {"PP_AGCMAXGAIN": [16.0]}},
+        )
+        with caplog.at_level(logging.WARNING):
+            await loop.start()
+        assert "xvf_tuning" in caplog.text.lower()

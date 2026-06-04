@@ -81,6 +81,47 @@ _SERVICER_COMMAND_RETRY = 64
 _TYPE_SIZE = {"uint8": 1, "int32": 4, "uint32": 4, "float": 4, "radians": 4}
 _TYPE_STRUCT = {"int32": "i", "uint32": "I", "float": "f", "radians": "f"}
 
+# Rangos válidos por parámetro, tomados de las descripciones del xvf_host.py
+# oficial ("Valid range: ..."). Solo se valida lo que el oficial declara;
+# los uint8 además acotan 0..255 implícito del tipo. Un fat-finger (AGC=0,
+# negativo) NO debe llegar al DSP de producción (review Fase 1 2026-06-04).
+_VALID_RANGES: dict[str, tuple[float, float]] = {
+    "PP_AGCONOFF": (0, 1),
+    "PP_AGCMAXGAIN": (1.0, 1000.0),
+    "PP_AGCDESIREDLEVEL": (1e-8, 1.0),
+    "PP_AGCGAIN": (1.0, 1000.0),
+    "AEC_ASROUTONOFF": (0, 1),
+    "AEC_ASROUTGAIN": (0.0, 1000.0),
+    "AEC_FIXEDBEAMSONOFF": (0, 1),
+    "AEC_FIXEDBEAMSGATING": (0, 1),
+}
+
+
+def validate_values(name: str, values: list) -> None:
+    """Valida cantidad y rango de valores para un parámetro escribible.
+
+    Reutilizable fuera del controller (CLI valida ANTES de abrir el device).
+
+    Raises:
+        ValueError: Parámetro desconocido, cantidad incorrecta o valor fuera
+            del rango oficial.
+    """
+    spec = PARAMETERS.get(name)
+    if spec is None:
+        raise ValueError(f"parámetro desconocido: {name!r}")
+    _resid, _cmdid, count, _rw, dtype = spec
+    if len(values) != count:
+        raise ValueError(f"{name} espera {count} valores, recibió {len(values)}")
+    lo, hi = _VALID_RANGES.get(name, (None, None))
+    if dtype == "uint8" and lo is None:
+        lo, hi = 0, 255  # acotado por el tipo
+    if lo is not None:
+        for v in values:
+            if not (lo <= v <= hi):
+                raise ValueError(
+                    f"{name}: valor {v} fuera de rango oficial [{lo} .. {hi}]"
+                )
+
 
 class XvfController:
     """Lee SPENERGY del XVF3800 vía pyusb y mantiene un pico móvil para gatear.
@@ -108,6 +149,11 @@ class XvfController:
         self._dev = device  # inyectable para tests
         self._samples: deque[tuple[float, float]] = deque()
         self._lock = threading.Lock()
+        # Lock DEDICADO para serializar ctrl_transfer sobre el device handle
+        # compartido (poller thread vs write_param desde otro thread). libusb
+        # no garantiza transfers síncronos concurrentes sobre un mismo handle
+        # (review Fase 1 2026-06-04). NO reusar _lock (es del deque).
+        self._usb_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._running = False
 
@@ -176,9 +222,10 @@ class XvfController:
         try:
             attempts = 0
             while attempts < self.max_retries:
-                resp = dev.ctrl_transfer(
-                    _BM_REQUEST_READ, 0, 0x80 | cmdid, resid, read_len, self.read_timeout_ms
-                )
+                with self._usb_lock:  # serializar vs writes de otros threads
+                    resp = dev.ctrl_transfer(
+                        _BM_REQUEST_READ, 0, 0x80 | cmdid, resid, read_len, self.read_timeout_ms
+                    )
                 status = resp[0]
                 if status == _CONTROL_SUCCESS:
                     return self._decode(dtype, count, bytes(resp[1:]))
@@ -215,8 +262,7 @@ class XvfController:
         if rw == "ro":
             raise ValueError(f"{name} es read-only")
         values = list(values)
-        if len(values) != count:
-            raise ValueError(f"{name} espera {count} valores, recibió {len(values)}")
+        validate_values(name, values)  # count + rango oficial
         payload = self._encode(dtype, values)  # errores de tipo explotan acá
         dev = self._dev
         if dev is None:
@@ -224,9 +270,10 @@ class XvfController:
                 return False
             dev = self._dev
         try:
-            dev.ctrl_transfer(
-                _BM_REQUEST_WRITE, 0, cmdid, resid, payload, self.read_timeout_ms
-            )
+            with self._usb_lock:  # serializar vs reads del poller
+                dev.ctrl_transfer(
+                    _BM_REQUEST_WRITE, 0, cmdid, resid, payload, self.read_timeout_ms
+                )
             logger.info(
                 f"XvfController: write {name}={values} (RAM — reversible al re-enchufar)"
             )
