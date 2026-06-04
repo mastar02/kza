@@ -380,7 +380,10 @@ class MultiRoomAudioLoop:
         self._running = False
         if self._xvf is not None:
             try:
-                self._xvf.stop()
+                # XvfController.stop() hace thread.join(timeout=1.0) — síncrono.
+                # to_thread evita bloquear el event loop durante el shutdown
+                # (regla del proyecto: nunca llamadas sync en el loop).
+                await asyncio.to_thread(self._xvf.stop)
             except Exception:
                 pass
 

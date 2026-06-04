@@ -572,6 +572,21 @@ class TestStop:
 
         assert loop._running is False
 
+    @pytest.mark.asyncio
+    async def test_stop_stops_xvf_controller(self):
+        """stop() detiene el XvfController (vía to_thread — el join sincrónico
+        del poller no debe correr en el event loop; review 2026-06-04)."""
+        xvf = _FakeXvf(0.0)
+        xvf.stopped = False
+        xvf.stop = lambda: setattr(xvf, "stopped", True)
+        loop = _make_multi_room_loop(xvf_controller=xvf)
+        loop._running = True
+
+        await loop.stop()
+
+        assert xvf.stopped is True
+        assert loop._running is False
+
 
 class TestResolveCapturChannels:
     """Test _resolve_capture_channels pure function."""

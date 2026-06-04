@@ -827,6 +827,13 @@ async def main():
             barge_in_cfg = rooms_config.get("barge_in", {}) or {}
             # Pre-gate SPENERGY (VAD por hardware del XVF3800). Fail-open: si no
             # se puede abrir el device (sin udev/permisos/pyusb), el gate queda OFF.
+            # ⚠️ LIMITACIÓN SINGLE-MIC (review 2026-06-04): se construye UN solo
+            # XvfController compartido y usb.core.find() toma el PRIMER XVF3800
+            # que matchee VID/PID — todas las rooms se gatean con el SPENERGY de
+            # ese único device. Hoy es correcto (solo escritorio tiene mic);
+            # cuando el living recupere su XVF3800 hay que pasar a un controller
+            # por room con binding por puerto USB (análogo a mic_usb_port), o
+            # una room bloquearía comandos válidos con la energía/silencio de OTRA.
             spe_cfg = early_cfg.get("spenergy_gate", {}) or {}
             xvf_controller = None
             if spe_cfg.get("enabled", False):
