@@ -1045,8 +1045,15 @@ rooms:
     # silencio=0, voz=52k-2.8M → 100 separa con margen enorme. Requiere udev
     # rule (/etc/udev/rules.d/99-xvf3800.rules, MODE=0666) para acceso non-root.
     # Fail-open: sin device/permisos/pyusb → gate OFF, nunca bloquea voz.
+    # ⚠️ DESHABILITADO 2026-06-04: con el chip en MAXGAIN=8 (estado desde
+    # 06-02), SPENERGY lee pico 0 INCLUSO CON VOZ REAL (verificado en vivo:
+    # 5 comandos del usuario descartados, uno con wake 0.81). La calibración
+    # "voz=101-2.1M, umbral 100" era del 31-05 con MAXGAIN=64 — la premisa
+    # "SPENERGY es pre-AGC" quedó desmentida por los datos. NO re-habilitar
+    # sin recalibrar contra el chip en su estado actual (xvf_tune --read
+    # AEC_SPENERGY_VALUES en loop con voz real vs silencio).
     spenergy_gate:
-      enabled: true
+      enabled: false
       threshold: 100.0
       poll_interval_s: 0.04   # ~25 lecturas/s del SPENERGY
       window_s: 4.0           # ventana del pico (cubre pre-roll + comando)
