@@ -1060,11 +1060,16 @@ rooms:
     #     default chip=125; si voz a 3-4m queda baja, subir a 12-16)
     #   Vía B (congelar gain): PP_AGCONOFF: [0] + PP_AGCGAIN: [<calibrar>]
     # Leer estado actual sin tocar nada: python -m tools.xvf_tune --read-all
+    # 2026-06-04 smoke test en chip real (VERSION 2.0.6): el DSP YA tenía
+    # MAXGAIN=8.0 (el plan "AGC 64→8" de la sesión 06-02 se aplicó a mano en
+    # RAM). Anclarlo acá lo hace reproducible: sin esto, un re-enchufe del mic
+    # revierte SILENCIOSAMENTE al preset persistido (64). Snapshot completo del
+    # chip ese día: AGCONOFF=1, DESIREDLEVEL=0.0045, ASROUTONOFF=1,
+    # AUDIO_MGR_OP_L=(8,0) / OP_R=(7,3) (routing L/R asimétrico).
     xvf_tuning:
-      apply_on_start: false   # master switch — habilitar recién al hacer el A/B
-      params: {}
-      # params:
-      #   PP_AGCMAXGAIN: [16.0]
+      apply_on_start: true
+      params:
+        PP_AGCMAXGAIN: [8.0]
     # Pre-roll de audio (2026-06-02): segundos de audio previos al wake que se
     # prependen al comando. openwakeword tiene latencia de detección (~0.5-1s):
     # decís "Nexa apagá la luz" de corrido y "apagá" se pierde porque la captura
