@@ -1254,12 +1254,15 @@ rooms:
     mic_device_name: "XVF3800"
     mic_usb_port: "3-1.4"   # XVF3800 reubicado al escritorio 2026-05-30 (port real 3-1.4, card1; era UAC1.0 en 3-1.1)
     mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
-    # Canal de captura (L-3 2026-06-04): el XVF3800 UA expone 2ch — doc Seeed:
-    # ch0=Conference (post-proceso pesado para oído humano), ch1=ASR (beam
-    # auto-select, menos destructivo). El mapeo del firmware flasheado NO está
-    # verificado empíricamente → A/B con medición RMS+WER antes de fijar 1.
+    # Canal de captura (L-3 2026-06-04): el XVF3800 UA expone 2ch. VERIFICADO
+    # en el chip real (snapshot 06-04) + doc primaria (XMOS appendix + README
+    # Seeed): ch0=L=(8,0)=Conference (auto-select beam + post-processor CON
+    # noise suppression), ch1=R=(7,3)=ASR (mismo beam, tap pre-post-processor
+    # SIN NS; ASROUTONOFF=1 en el chip). XMOS: la NS del post-processor
+    # degrada el ASR → ch1 es el canal diseñado para Whisper/wake. A/B en
+    # curso desde 2026-06-04 (baseline ch0; si wake/STT empeoran, volver a 0).
     # Fallback seguro a 0 si el device no tiene el canal (mics mono).
-    capture_channel: 0
+    capture_channel: 1
     bt_adapter: "F4:4E:FC:21:0D:66"   # UGREEN BT 5.3 escritorio (resuelve a hciN al iniciar — antes hardcoded "hci0")
     ma1260_zone: 4
     output_mode: "mono"
