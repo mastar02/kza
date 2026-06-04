@@ -1132,6 +1132,19 @@ rooms:
     short_ms: 150    # parser ready_to_dispatch → cerrar YA
     medium_ms: 300   # parser parcial o ausente → wait normal
     long_ms: 500     # sin señal del parser → esperar más (reserva futura)
+    # VAD de fin-de-comando del MultiRoomAudioLoop (QW-3 2026-06-04): antes
+    # eran defaults hardcodeados en el constructor — main.py no los cableaba y
+    # los valores calibrados de rooms.wake_word (min_rms/silence_end_ms) solo
+    # alimentaban al WhisperWakeDetector (engine INACTIVO). OJO semántica:
+    # silence_threshold = "RMS por debajo del cual un frame es silencio" (corte),
+    # NO es min_rms (gate de ingreso de energía al wake) — no copiar 0.007 acá.
+    # CALIBRAR: si el AGC ×64 del XVF3800 infla el piso ambiente por encima de
+    # silence_threshold, el silencio nunca se detecta y TODA captura cierra por
+    # timeout (command_duration=2s) → cola de ruido + latencia fija. Medir RMS
+    # ambiente real (idealmente tras bajar el AGC) antes de ajustar.
+    silence_threshold: 0.015   # RMS de silencio (default histórico, a calibrar)
+    silence_duration_ms: 300   # silencio sostenido p/ cerrar (fallback clásico)
+    min_speech_ms: 300         # mínimo de captura antes de poder cerrar
 
   # Detection config
   detection:

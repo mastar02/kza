@@ -851,6 +851,11 @@ async def main():
                 early_dispatch_interval_ms=early_cfg.get("early_dispatch_interval_ms", 400),
                 early_dispatch_min_audio_s=early_cfg.get("early_dispatch_min_audio_s", 0.6),
                 stt=stt,
+                # VAD de fin-de-comando (QW-3 2026-06-04): antes quedaban en los
+                # defaults hardcodeados del constructor — la config no llegaba.
+                silence_threshold=endpointing_cfg.get("silence_threshold", 0.015),
+                silence_duration_ms=endpointing_cfg.get("silence_duration_ms", 300),
+                min_speech_ms=endpointing_cfg.get("min_speech_ms", 300),
                 endpointing_enabled=endpointing_cfg.get("enabled", True),
                 endpointing_short_ms=endpointing_cfg.get("short_ms", 150),
                 endpointing_medium_ms=endpointing_cfg.get("medium_ms", 300),
