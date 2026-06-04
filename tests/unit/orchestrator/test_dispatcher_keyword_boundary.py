@@ -109,3 +109,54 @@ async def test_olvidate_enclitic_still_cancels(dispatcher):
     ctx.pending_confirmation = None
     res = await dispatcher._check_special_commands("olvidate de eso", "u1", ctx)
     assert res is not None and res.intent == "cancel"
+
+
+# --- service_filter del grammar manda sobre la re-clasificación (2026-06-04) ---
+# Bug real: "Nexa, encender la luz del escritorio." (grammar conf=0.95,
+# service_filter=turn_on) caía a SLOW_LLM → cola → timeout 5s, porque el
+# dispatcher re-adivinaba el path por keywords y "encender" no matchea
+# "enciende" (la diptongación e→ie rompe el prefijo).
+class TestServiceFilterForcesPath:
+    def test_service_filter_turn_on_forces_domotics(self, dispatcher):
+        path, _ = dispatcher._classify_request(
+            "nexa, encender la luz del escritorio.", service_filter="turn_on"
+        )
+        assert path == PathType.FAST_DOMOTICS
+
+    def test_service_filter_turn_off_forces_domotics(self, dispatcher):
+        path, _ = dispatcher._classify_request(
+            "quisiera que no haya luz aca", service_filter="turn_off"
+        )
+        assert path == PathType.FAST_DOMOTICS
+
+    def test_no_service_filter_keeps_classification(self, dispatcher):
+        path, _ = dispatcher._classify_request("contame un chiste")
+        assert path != PathType.FAST_DOMOTICS
+
+
+# --- Infinitivos con cambio de raíz o colisión (2026-06-04) ---
+# "encender"/"cerrar"/"abrir"/"subir"/"bajar"/"poner" no estaban cubiertos:
+# el prefijo conjugado no aplica (enciende≠encender) o el boundary del stem
+# corto no alcanza al infinitivo (\bbaja\b ∌ bajar). Whisper produce
+# infinitivos seguido ("encender la luz").
+@pytest.mark.parametrize("text", [
+    "encender la luz del escritorio",
+    "cerrar la persiana",
+    "abrir la cortina del living",
+    "subir el volumen",
+    "bajar la luz",
+    "poner la luz en azul",
+])
+def test_infinitives_route_to_domotics(dispatcher, text):
+    path, _ = dispatcher._classify_request(text.lower())
+    assert path == PathType.FAST_DOMOTICS, f"{text!r} NO ruteó a domótica"
+
+
+@pytest.mark.parametrize("text", [
+    "me siento encerrado en casa",       # cerrar ∈ enCERRARdo… boundary
+    "mañana vamos a trabajar temprano",  # bajar ∈ traBAJAR
+    "puedo suponer que si",              # poner ∈ suPONER
+])
+def test_infinitive_collisions_not_domotics(dispatcher, text):
+    path, _ = dispatcher._classify_request(text.lower())
+    assert path != PathType.FAST_DOMOTICS, f"{text!r} ruteó a domótica"

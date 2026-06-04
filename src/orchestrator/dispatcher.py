@@ -61,7 +61,12 @@ logger = get_logger(__name__)
 # "para" se removió de CANCEL_KEYWORDS (demasiado común incluso como palabra
 # entera; el comando real es "pará"). Ver review adversarial 2026-06-02 +
 # project_nexa_command_detection_rootcause_2026-06-02.
-_BOUNDARY_KEYWORDS = frozenset({"pon", "baja", "sube", "olvida", "olvidá"})
+_BOUNDARY_KEYWORDS = frozenset({
+    "pon", "baja", "sube", "olvida", "olvidá",
+    # Infinitivos (2026-06-04): como substring colisionan (bajar∈trabajar,
+    # poner∈suponer, cerrar∈encerrar) → exigen límite de palabra.
+    "encender", "cerrar", "abrir", "subir", "bajar", "poner",
+})
 # \bkw(e?<clítico>)?\b — la "e?" cubre la vocal temática del voseo (poné→ponele,
 # olvidá→olvidate). "ponen"/"pone"/"ponemos"/"trabajamos"/"subestimar"/
 # "inolvidable" NO terminan en un clítico pegado al stem → no matchean.
@@ -305,6 +310,13 @@ class RequestDispatcher:
         "abre", "abrí", "cierra", "cerrá",
         "pon", "poné", "cambia", "cambiá",
         "activa", "activá", "desactiva", "desactivá",
+        # Infinitivos NO derivables del prefijo conjugado (2026-06-04):
+        # enciende≠encender (diptongación e→ie), cierra≠cerrar, abre≠abrir,
+        # y los boundary-stems no alcanzan al infinitivo (\bbaja\b ∌ bajar).
+        # Whisper produce infinitivos seguido ("encender la luz"). Todos van
+        # con word-boundary (ver _BOUNDARY_KEYWORDS): bajar∈traBAJAR,
+        # poner∈suPONER, cerrar∈enCERRAR colisionan como substring.
+        "encender", "cerrar", "abrir", "subir", "bajar", "poner",
     ]
 
     SYNC_KEYWORDS = [
@@ -492,7 +504,7 @@ class RequestDispatcher:
             return special_result
 
         # 2. Detectar intent y prioridad
-        path, priority = self._classify_request(text_lower)
+        path, priority = self._classify_request(text_lower, service_filter=service_filter)
 
         # 3. Enrutar al path correcto
         if path == PathType.FAST_MUSIC:
@@ -551,13 +563,26 @@ class RequestDispatcher:
 
         return result
 
-    def _classify_request(self, text_lower: str) -> tuple[PathType, Priority]:
+    def _classify_request(
+        self, text_lower: str, service_filter: str | None = None
+    ) -> tuple[PathType, Priority]:
         """
         Clasificar peticion para determinar path y prioridad.
+
+        Args:
+            text_lower: Texto del usuario en minúsculas.
+            service_filter: Clasificación previa del grammar/router (turn_on/
+                turn_off). Si viene, manda sobre el keyword-matching: el
+                upstream ya decidió que es domótica con alta confianza —
+                re-adivinar por keywords mandaba "encender la luz" (infinitivo
+                sin keyword) al SLOW_LLM → timeout 5s (bug 2026-06-04).
 
         Returns:
             (PathType, Priority)
         """
+        if service_filter in ("turn_on", "turn_off"):
+            return PathType.FAST_DOMOTICS, Priority.HIGH
+
         # Detectar música - contexto complejo (slow path)
         if self.music:
             for keyword in self.MUSIC_CONTEXT_KEYWORDS:

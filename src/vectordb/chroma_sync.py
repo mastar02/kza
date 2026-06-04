@@ -353,15 +353,33 @@ Solo JSON, sin explicaciones:"""
             logger.debug(f"Vector search ({elapsed_ms:.0f}ms): No results")
             return None
 
+        # Filtro de entidades excluidas en QUERY-time (2026-06-04): el índice
+        # puede venir contaminado — el sync del 31-05 indexó 76 docs genéricos
+        # de light.hogar pese al default del runtime, y "prende la luz" desde
+        # el escritorio prendió TODA la casa. La exclusión al indexar no
+        # alcanza si el índice ya está sucio; acá es la defensa definitiva.
+        _metas_all = results["metadatas"][0]
+        valid_idx = [
+            i for i, m in enumerate(_metas_all)
+            if not self._is_excluded((m or {}).get("entity_id", ""))
+        ]
+        if not valid_idx:
+            logger.info(
+                f"Vector search ({elapsed_ms:.0f}ms): todos los candidatos "
+                f"están excluidos (índice contaminado?) — sin match"
+            )
+            return None
+
         # Re-ranking por prefer_area. El gate de threshold se aplica sobre la
         # similarity ORIGINAL (no boosteada) — el bonus solo desempata, no
         # rescata candidatos que están realmente lejos del query.
-        best_idx = 0
+        best_idx = valid_idx[0]
         if prefer_area:
             distances = results["distances"][0]
             metadatas = results["metadatas"][0]
             best_score = -1.0
-            for i, (dist, meta) in enumerate(zip(distances, metadatas)):
+            for i in valid_idx:
+                dist, meta = distances[i], metadatas[i]
                 base_sim = 1 - (dist / 2)
                 # Threshold gate sobre similarity base — protege contra rescue
                 # artificial. Si no pasa, no es candidato para ningún ranking.

@@ -34,10 +34,15 @@ def _make_chroma_with_results(rows):
     from src.vectordb.chroma_sync import ChromaSync
 
     cs = ChromaSync.__new__(ChromaSync)
-    cs.commands = MagicMock()
-    cs.commands.query = MagicMock(return_value=_fake_query_result(rows))
-    cs.embedder = MagicMock()
-    cs.embedder.encode = MagicMock(return_value=MagicMock(tolist=lambda: [0.0] * 8))
+    # `commands` es @property sin setter → setear el atributo interno real
+    cs._commands_collection = MagicMock()
+    cs._commands_collection.query = MagicMock(return_value=_fake_query_result(rows))
+    cs._embedder = MagicMock()
+    cs._embedder.encode = MagicMock(return_value=MagicMock(tolist=lambda: [0.0] * 8))
+    # search_command filtra excluidos en query-time (2026-06-04) — el mock
+    # bypasea __init__, así que hay que poblar el estado de exclusiones.
+    cs._excluded_entities = {"light.hogar"}
+    cs._excluded_patterns = []
     return cs
 
 
@@ -157,7 +162,7 @@ class TestPreferAreaScoring:
             prefer_area="Escritorio",
         )
         # Verify the where clause includes service_filter
-        call_kwargs = cs.commands.query.call_args.kwargs
+        call_kwargs = cs._commands_collection.query.call_args.kwargs
         assert call_kwargs.get("where") == {"service": "turn_off"}, (
             f"service_filter must still propagate as where clause. "
             f"Got where={call_kwargs.get('where')}"
