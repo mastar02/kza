@@ -35,6 +35,9 @@ sounddevice>=0.4.6
 soundfile>=0.12.1
 numpy>=1.24.0
 scipy>=1.11.0
+# XVF3800 vendor control (pre-gate SPENERGY). Sin esto el XvfController hace
+# fail-open silencioso (solo WARNING) y el gate anti-alucinaciones queda OFF.
+pyusb>=1.3.1
 
 # Speaker Diarization (opcional)
 pyannote.audio>=3.1.0
