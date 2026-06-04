@@ -349,6 +349,76 @@ class TestSpenergyGate:
         assert loop._passes_spenergy_gate(self._rs()) is True
 
 
+class TestSpenergyGateEarlyDispatch:
+    """El pre-gate SPENERGY debe cubrir TAMBIÉN el path early_dispatch (QW-1
+    2026-06-04): el bloque early en run() despachaba sin consultar el gate, así
+    que una alucinación con forma de comando (grammar full sobre ruido) se
+    ejecutaba saltándose el VAD por hardware. Con early_dispatch:true ese es el
+    path más usado en prod."""
+
+    def _make_ready_partial_command(self):
+        """PartialCommand-like ya listo para despachar (intent+entity)."""
+        pc = MagicMock()
+        pc.intent = "turn_on"
+        pc.entity = "luz"
+        pc.room = "escritorio"
+        pc.ready_to_dispatch = MagicMock(return_value=True)
+        return pc
+
+    async def _run_one_early_dispatch(self, xvf_peak: float) -> tuple[list, RoomStream]:
+        """Corre run() con un room en estado early-ready y SPENERGY=xvf_peak.
+
+        Devuelve (eventos despachados, room stream) tras ~3 iteraciones del
+        polling loop.
+        """
+        rs = _make_room_stream("escritorio")
+        rs.listening = True
+        rs.command_start_time = time.time()
+        rs.audio_buffer = [0.05] * CHUNK_SIZE
+        rs.early_command = self._make_ready_partial_command()
+
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": rs},
+            xvf_controller=_FakeXvf(xvf_peak),
+            spenergy_threshold=100.0,
+        )
+
+        received = []
+
+        async def on_cmd(event):
+            received.append(event)
+            return {}
+
+        loop.on_command(on_cmd)
+
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd):
+            run_task = asyncio.create_task(loop.run())
+            await asyncio.sleep(0.15)
+            await loop.stop()
+            await asyncio.wait_for(run_task, timeout=2.0)
+        await asyncio.sleep(0)  # drenar el create_task del dispatch si lo hubo
+        return received, rs
+
+    @pytest.mark.asyncio
+    async def test_early_dispatch_blocked_when_spenergy_low(self):
+        """SPENERGY bajo umbral (secador/silencio) → early_dispatch NO despacha."""
+        received, rs = await self._run_one_early_dispatch(xvf_peak=0.0)
+        assert received == []
+        assert rs.listening is False  # captura reseteada igual
+        assert rs.early_command is None
+
+    @pytest.mark.asyncio
+    async def test_early_dispatch_passes_when_spenergy_high(self):
+        """SPENERGY de voz real (≥ umbral) → early_dispatch despacha normal."""
+        received, rs = await self._run_one_early_dispatch(xvf_peak=335000.0)
+        assert len(received) == 1
+        assert received[0].early_dispatch is True
+        assert rs.listening is False
+
+
 class TestCallbacks:
     """Test callback registration."""
 

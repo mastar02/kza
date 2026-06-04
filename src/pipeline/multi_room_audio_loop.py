@@ -327,6 +327,14 @@ class MultiRoomAudioLoop:
 
                     # 2. Early dispatch si el worker detectó comando completo
                     if rs.early_command is not None:
+                        # Pre-gate SPENERGY también acá (QW-1 2026-06-04): sin
+                        # este chequeo, una alucinación con forma de comando
+                        # (grammar full sobre secador/ruido) se despachaba
+                        # saltándose el VAD por hardware — early_dispatch es el
+                        # path más usado en prod.
+                        if not self._passes_spenergy_gate(rs):
+                            self._reset_listening(rs)
+                            continue
                         audio_data = np.array(rs.audio_buffer, dtype=np.float32)
                         pc = rs.early_command
                         logger.info(
