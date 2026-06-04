@@ -5,11 +5,12 @@ import pytest
 from src.stt.whisper_fast import FastWhisperSTT, STTResult
 
 
-def _seg(text, no_speech_prob, avg_logprob):
+def _seg(text, no_speech_prob, avg_logprob, compression_ratio=1.0):
     s = MagicMock()
     s.text = text
     s.no_speech_prob = no_speech_prob
     s.avg_logprob = avg_logprob
+    s.compression_ratio = compression_ratio
     return s
 
 
@@ -36,6 +37,23 @@ def test_with_confidence_empty_segments_returns_none():
     assert r.text == ""
     assert r.no_speech_prob is None
     assert r.avg_logprob is None
+
+
+def test_with_confidence_surfaces_max_compression_ratio():
+    # MAX y no media: un solo segmento basura repetitiva (cr alto) debe poder
+    # disparar el guard anti-alucinación; la media lo diluiría.
+    stt = _stt_with_segments([
+        _seg("hola ", 0.1, -0.3, compression_ratio=1.2),
+        _seg("mundo", 0.3, -0.5, compression_ratio=3.4),
+    ])
+    r = stt.transcribe_with_confidence(np.zeros(16000, dtype="float32"))
+    assert r.compression_ratio == pytest.approx(3.4)
+
+
+def test_with_confidence_empty_segments_compression_none():
+    stt = _stt_with_segments([])
+    r = stt.transcribe_with_confidence(np.zeros(16000, dtype="float32"))
+    assert r.compression_ratio is None
 
 
 def test_plain_transcribe_still_returns_2_tuple():

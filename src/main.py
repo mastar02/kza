@@ -1103,6 +1103,8 @@ async def main():
         enforce_confidence=_gate_cfg.get("enforce_confidence", False),
         max_no_speech_prob=_gate_cfg.get("max_no_speech_prob", 0.60),
         min_avg_logprob=_gate_cfg.get("min_avg_logprob", -1.20),
+        enforce_compression_ratio=_gate_cfg.get("enforce_compression_ratio", False),
+        max_compression_ratio=_gate_cfg.get("max_compression_ratio", 2.2),
     )
     request_router = RequestRouter(
         command_processor=command_processor,

@@ -58,6 +58,8 @@ class CommandAcceptanceGate:
         enforce_confidence: bool = False,
         max_no_speech_prob: float = 0.60,
         min_avg_logprob: float = -1.20,
+        enforce_compression_ratio: bool = False,
+        max_compression_ratio: float = 2.2,
     ):
         """Configure the gate.
 
@@ -69,6 +71,14 @@ class CommandAcceptanceGate:
                 (shadow mode).
             max_no_speech_prob: Whisper no_speech_prob ceiling (0-1).
             min_avg_logprob: Whisper avg_logprob floor (negative).
+            enforce_compression_ratio: Separate enforce flag for the
+                compression-ratio rule. Unlike no_speech_prob/avg_logprob
+                (dead signals on turbo — inverted distribution, 14k events),
+                this one DOES separate hallucinations (openai/whisper #2378),
+                so it gets its own flag instead of riding enforce_confidence.
+            max_compression_ratio: Per-segment max compression_ratio ceiling.
+                Repetitive hallucinated text compresses high; short real
+                commands stay well below 2.2 (zlib overhead).
         """
         self._wake_words = tuple(
             w.lower().strip() for w in wake_words if w and w.strip()
@@ -76,6 +86,8 @@ class CommandAcceptanceGate:
         self._enforce_confidence = enforce_confidence
         self._max_no_speech_prob = max_no_speech_prob
         self._min_avg_logprob = min_avg_logprob
+        self._enforce_compression_ratio = enforce_compression_ratio
+        self._max_compression_ratio = max_compression_ratio
 
     def evaluate(self, text: str, stt_confidence: "STTResult | None" = None) -> AcceptanceDecision:
         """Evaluate a capture. Fail-open: on internal error, accept."""
@@ -119,27 +131,45 @@ class CommandAcceptanceGate:
         reason = f"low_confidence:{','.join(bad)}" if bad else None
         return reason, signals
 
+    def _compression_reason(self, stt_confidence: "STTResult | None") -> tuple[str | None, float | None]:
+        """Evaluate the compression-ratio rule. Returns (reason|None, ratio|None).
+
+        getattr defensivo: motores que no exponen compression_ratio (Moonshine,
+        mocks viejos) cuentan como None = sin penalizar.
+        """
+        cr = getattr(stt_confidence, "compression_ratio", None)
+        if cr is not None and cr > self._max_compression_ratio:
+            return f"high_compression:{cr:.2f}>{self._max_compression_ratio}", cr
+        return None, cr
+
     def _evaluate(self, text: str, stt_confidence: "STTResult | None") -> AcceptanceDecision:
         hard = self._hard_reason(text)
         conf_reason, signals = self._confidence_reason(stt_confidence)
+        comp_reason, comp_ratio = self._compression_reason(stt_confidence)
+        signals["compression_ratio"] = comp_ratio
 
         if hard is not None:
             decision = AcceptanceDecision(False, hard, signals)
+        elif comp_reason is not None and self._enforce_compression_ratio:
+            decision = AcceptanceDecision(False, comp_reason, signals)
         elif conf_reason is not None and self._enforce_confidence:
             decision = AcceptanceDecision(False, conf_reason, signals)
-        elif conf_reason is not None:
-            # shadow: accept but record what we WOULD reject
-            decision = AcceptanceDecision(
-                True, "ok", {**signals, "would_reject": conf_reason}
-            )
         else:
-            decision = AcceptanceDecision(True, "ok", signals)
+            # shadow: accept but record what we WOULD reject
+            would = ",".join(r for r in (comp_reason, conf_reason) if r)
+            if would:
+                decision = AcceptanceDecision(
+                    True, "ok", {**signals, "would_reject": would}
+                )
+            else:
+                decision = AcceptanceDecision(True, "ok", signals)
 
         if logger.isEnabledFor(logging.INFO):
             logger.info(
                 f"[CommandGate] accept={decision.accept} reason={decision.reason} "
                 f"no_speech={signals.get('no_speech_prob')} "
                 f"avg_logprob={signals.get('avg_logprob')} "
+                f"compression={signals.get('compression_ratio')} "
                 f"would_reject={decision.signals.get('would_reject')} "
                 f"text={text[:60]!r}"
             )

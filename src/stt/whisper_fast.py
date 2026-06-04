@@ -23,15 +23,20 @@ logger = logging.getLogger(__name__)
 class STTResult:
     """Resultado de transcripción con confianza del STT.
 
-    no_speech_prob / avg_logprob son None cuando no hay segmentos (audio
-    vacío) o el motor no los expone (Moonshine). El gate trata None como
-    'sin penalizar'.
+    no_speech_prob / avg_logprob / compression_ratio son None cuando no hay
+    segmentos (audio vacío) o el motor no los expone (Moonshine). El gate
+    trata None como 'sin penalizar'.
+
+    compression_ratio es el MÁXIMO entre segmentos (no la media): un solo
+    segmento basura repetitiva debe poder disparar el guard anti-alucinación
+    del CommandAcceptanceGate (openai/whisper #2378).
     """
 
     text: str
     elapsed_ms: float
     no_speech_prob: float | None = None
     avg_logprob: float | None = None
+    compression_ratio: float | None = None
 
 
 class FastWhisperSTT:
@@ -136,9 +141,11 @@ class FastWhisperSTT:
         if seg_list:
             no_speech = sum(s.no_speech_prob for s in seg_list) / len(seg_list)
             avg_lp = sum(s.avg_logprob for s in seg_list) / len(seg_list)
+            comp_ratio = max(s.compression_ratio for s in seg_list)
         else:
             no_speech = None
             avg_lp = None
+            comp_ratio = None
 
         elapsed_ms = (time.perf_counter() - start) * 1000
         logger.debug(f"STT ({elapsed_ms:.0f}ms): {text[:50]}...")
@@ -148,6 +155,7 @@ class FastWhisperSTT:
             elapsed_ms=elapsed_ms,
             no_speech_prob=no_speech,
             avg_logprob=avg_lp,
+            compression_ratio=comp_ratio,
         )
 
     def transcribe(
