@@ -161,11 +161,14 @@ class TestPreferAreaScoring:
             service_filter="turn_off",
             prefer_area="Escritorio",
         )
-        # Verify the where clause includes service_filter
+        # Verify the where clause includes service_filter — con el two-pass
+        # (2026-06-04) la query del pase de área lo lleva dentro del $and.
         call_kwargs = cs._commands_collection.query.call_args.kwargs
-        assert call_kwargs.get("where") == {"service": "turn_off"}, (
-            f"service_filter must still propagate as where clause. "
-            f"Got where={call_kwargs.get('where')}"
+        where = call_kwargs.get("where") or {}
+        clauses = where.get("$and", [where])
+        assert {"service": "turn_off"} in clauses, (
+            f"service_filter must still propagate in the where clause. "
+            f"Got where={where}"
         )
 
     def test_prefer_area_unknown_area_falls_back_to_baseline(self):
@@ -211,3 +214,75 @@ class TestContextBoostStrength:
         ]
         cs = _make_chroma_with_results(rows)
         assert cs.search_command("xyz", threshold=0.65, prefer_area="Escritorio") is None
+
+
+def _make_chroma_two_pass(area_rows, global_rows):
+    """Mock cuyo query devuelve area_rows si el where filtra por area,
+    global_rows si no — simula el filtrado real de ChromaDB."""
+    from src.vectordb.chroma_sync import ChromaSync
+
+    cs = ChromaSync.__new__(ChromaSync)
+    cs._commands_collection = MagicMock()
+
+    def _query(**kwargs):
+        where = kwargs.get("where") or {}
+        clauses = where.get("$and", [where]) if where else []
+        has_area = any("area" in c for c in clauses)
+        return _fake_query_result(area_rows if has_area else global_rows)
+
+    cs._commands_collection.query = MagicMock(side_effect=_query)
+    cs._embedder = MagicMock()
+    cs._embedder.encode = MagicMock(return_value=MagicMock(tolist=lambda: [0.0] * 8))
+    cs._excluded_entities = {"light.hogar"}
+    cs._excluded_patterns = []
+    return cs
+
+
+def _row(dist, entity, area, doc, service="turn_on"):
+    return (dist, {"entity_id": entity, "domain": "light", "service": service,
+                   "area": area, "friendly_name": entity}, doc)
+
+
+class TestAreaFirstTwoPassSearch:
+    """Fix 2026-06-04 ronda 3: 'prende la luz' desde el escritorio prendía el
+    PASILLO — el top-10 global se llena de docs cortos de otras rooms y ningún
+    doc del área del mic entra al pool → el boost no tiene a quién boostear
+    (verificado con ranking real: top-10 sin Escritorio, pasillo sim=0.945).
+    Pase 1: SOLO docs del área preferida; si hay match ≥ threshold, gana.
+    Pase 2 (fallback): query global actual con boost."""
+
+    # El caso real: top global lleno de pasillo/living, escritorio fuera.
+    _GLOBAL = [
+        _row(0.11, "light.grupo_pasillo", "Pasillo", "prende la luz fría"),
+        _row(0.23, "light.grupo_balcon", "Balcón", "Prendé la luz del balcón"),
+        _row(0.25, "light.grupo_living", "Living", "Prendé la luz con tono cálida"),
+    ]
+    _AREA = [
+        _row(0.40, "light.grupo_escritorio", "Escritorio", "Vos prenderás la luz del escritorio."),
+    ]
+
+    def test_generic_query_picks_mic_area_even_outside_global_top(self):
+        cs = _make_chroma_two_pass(self._AREA, self._GLOBAL)
+        r = cs.search_command("prende la luz", threshold=0.65, prefer_area="Escritorio")
+        assert r is not None
+        assert r["entity_id"] == "light.grupo_escritorio"
+
+    def test_area_below_threshold_falls_back_to_global(self):
+        area_weak = [_row(0.90, "light.grupo_escritorio", "Escritorio", "doc lejano")]  # sim 0.55
+        cs = _make_chroma_two_pass(area_weak, self._GLOBAL)
+        r = cs.search_command("prende la luz", threshold=0.65, prefer_area="Escritorio")
+        assert r is not None
+        assert r["entity_id"] == "light.grupo_pasillo"  # mejor global
+
+    def test_area_pass_empty_falls_back_to_global(self):
+        cs = _make_chroma_two_pass([], self._GLOBAL)
+        r = cs.search_command("prende la luz", threshold=0.65, prefer_area="Escritorio")
+        assert r is not None
+        assert r["entity_id"] == "light.grupo_pasillo"
+
+    def test_no_prefer_area_single_global_pass(self):
+        cs = _make_chroma_two_pass(self._AREA, self._GLOBAL)
+        r = cs.search_command("prende la luz", threshold=0.65)
+        assert r["entity_id"] == "light.grupo_pasillo"
+        # una sola query (sin pase de área)
+        assert cs._commands_collection.query.call_count == 1
