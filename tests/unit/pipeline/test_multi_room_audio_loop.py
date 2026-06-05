@@ -871,3 +871,44 @@ class TestAmbientGuardIntegration:
     def test_command_event_carries_ambient_strict_default_false(self):
         event = CommandEvent(audio=np.zeros(10, dtype=np.float32), room_id="cocina")
         assert event.ambient_strict is False
+
+
+class TestGuardRejectionClearsRefractory:
+    """Bug encontrado en validación en vivo 2026-06-05 (escenario 2): un frame
+    de TV a 0.528 disparó el detector, el guard lo rechazó (STRICT), pero el
+    refractario de 2s del detector quedó abierto → el "Nexa" real del usuario
+    a 0.907 80ms después fue suprimido por detect() y nunca llegó al guard.
+    El rechazo del guard NO debe consumir la ventana refractaria."""
+
+    def test_guard_rejection_resets_detector_refractory(self):
+        guard = _make_enabled_guard()
+        guard.on_capture_result("cocina", "noise")
+        guard.on_capture_result("cocina", "noise")  # → STRICT
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        rs = loop.room_streams["cocina"]
+        accepted = loop._should_accept_wakeword(
+            "cocina", rms=0.05, timestamp=time.time(), wake_score=0.50
+        )
+        assert accepted is False
+        rs.wake_detector.reset_refractory.assert_called_once()
+
+    def test_accepted_wake_does_not_reset_refractory(self):
+        guard = _make_enabled_guard()
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        rs = loop.room_streams["cocina"]
+        accepted = loop._should_accept_wakeword(
+            "cocina", rms=0.05, timestamp=time.time(), wake_score=0.90
+        )
+        assert accepted is True
+        rs.wake_detector.reset_refractory.assert_not_called()
+
+    def test_dedup_rejection_does_not_reset_refractory(self):
+        # Solo el rechazo del GUARD libera el refractario. El rechazo por
+        # dedup (eco cross-room) debe dejarlo intacto — si no, el eco
+        # re-dispararía cada frame durante la ventana de dedup.
+        loop = _make_multi_room_loop()
+        now = time.time()
+        assert loop._should_accept_wakeword("cocina", rms=0.5, timestamp=now) is True
+        accepted = loop._should_accept_wakeword("living", rms=0.01, timestamp=now)
+        assert accepted is False  # eco más débil dentro de la ventana
+        loop.room_streams["living"].wake_detector.reset_refractory.assert_not_called()

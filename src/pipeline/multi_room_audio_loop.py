@@ -250,6 +250,17 @@ class MultiRoomAudioLoop:
                     f"({decision.reason}, state={decision.state.value}, "
                     f"score={wake_score:.2f}, rms={rms:.4f})"
                 )
+                # Liberar el refractario del detector: el rechazo del guard NO
+                # debe consumir la ventana de 2s. Visto en vivo (2026-06-05,
+                # escenario 2): un frame de TV a 0.53 abría el refractario y el
+                # "Nexa" real a 0.91 que llegaba 80ms después era suprimido por
+                # detect() sin llegar nunca al guard. SOLO acá — el rechazo por
+                # dedup (eco cross-room) sí debe mantener el refractario.
+                rs = self.room_streams.get(room_id)
+                if rs is not None:
+                    reset_fn = getattr(rs.wake_detector, "reset_refractory", None)
+                    if callable(reset_fn):
+                        reset_fn()
                 return False
 
         # Pre-gate de energía: descarta near-silence antes de capturar/transcribir.
