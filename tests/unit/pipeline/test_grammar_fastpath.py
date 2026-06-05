@@ -96,3 +96,22 @@ class TestWakeAcousticallyConfirmed:
         # El bonus no convierte basura en comando (quality != full → None)
         c = _grammar_fastpath_classification("la vida es bella", wake_confirmed=True)
         assert c is None
+
+
+class TestWakeConfirmedShortTextOnly:
+    """El bonus de wake confirmado es para rescatar comandos CORTOS sin
+    'Nexa' transcripta ('Prende la luz.'). Charla larga que embebe un
+    comando ('...le dije que apague la luz cuando se vaya') NO debe ganar
+    el bonus — con wake espurio por TV, ese bonus ejecutaba charla
+    (acción fantasma 2026-06-04 19:49)."""
+
+    def test_long_text_does_not_get_wake_bonus(self):
+        c = _grammar_fastpath_classification(
+            "y entonces le dije que apague la luz cuando se vaya",
+            wake_confirmed=True,
+        )
+        assert c is None
+
+    def test_short_command_still_gets_bonus(self):
+        c = _grammar_fastpath_classification("Prende la luz.", wake_confirmed=True)
+        assert c is not None

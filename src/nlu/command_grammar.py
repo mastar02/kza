@@ -301,9 +301,16 @@ def parse_command(text: str) -> ParsedCommand:
     # conversacionales con 'todo'='100%' disparando clasificaciones espurias
     # (ej: 'gracias por todo' → brightness_pct=100 por 'todo' en BRIGHTNESS_WORDS).
     _LIGHT_ONLY_SLOTS = {"brightness_pct", "rgb_color", "color_temp_kelvin"}
+    # Guardia de longitud (2026-06-05): la inferencia slot→light es para
+    # comandos implícitos CORTOS ('ponela cálida', 'subí el brillo al 50').
+    # La charla larga colisiona: 'Tengo los coches de negro, van a bajar a…'
+    # ('negro'→rgb + 'bajar'→verbo) parseó full y EJECUTÓ light.turn_off
+    # (acción fantasma real 2026-06-04 19:49 con TV de fondo).
+    _MAX_IMPLICIT_WORDS = 6
     if pc.domain is None and "volume_pct" not in pc.slots \
             and any(k in pc.slots for k in _LIGHT_ONLY_SLOTS) \
-            and _has_any_action_verb(text):
+            and _has_any_action_verb(text) \
+            and len(text.split()) <= _MAX_IMPLICIT_WORDS:
         pc.domain = "light"
 
     rule = match_intent_rules(text, pc.domain)

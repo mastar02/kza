@@ -283,3 +283,23 @@ def test_partial_command_compat_shape():
 def test_partial_command_not_ready():
     pc = parse_partial_command("nexa")
     assert pc.ready_to_dispatch() is False
+
+
+class TestSlotDomainInferenceLengthGuard:
+    """Acción fantasma real 2026-06-04 19:49: 'Tengo los coches de negro, van
+    a bajar a...' parseó full conf 0.75-0.90 → light.turn_off ejecutado.
+    'negro'→rgb_color + 'bajar'→verbo de acción + inferencia domain=light
+    desde el slot = comando fantasma. La inferencia slot→light es para
+    comandos implícitos CORTOS ('ponela cálida'); la charla es larga."""
+
+    def test_long_chatter_with_color_and_verb_not_full(self):
+        from src.nlu.command_grammar import parse_command
+        pc = parse_command("Tengo los coches de negro, van a bajar a...")
+        assert pc.quality != "full"
+
+    def test_short_implicit_set_still_full(self):
+        from src.nlu.command_grammar import parse_command
+        # ('bajá la luz' ya era partial antes de este fix — no es control)
+        for t in ("ponela cálida", "subí el brillo al 50"):
+            pc = parse_command(t)
+            assert pc.quality == "full", f"{t!r} dejó de parsear full"

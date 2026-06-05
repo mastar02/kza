@@ -108,7 +108,18 @@ def _grammar_fastpath_classification(
     # 'Prende la luz.' quedaba en 0.7 < 0.75 y caía al LLMRouter, que lo
     # rechazaba como noise (caso real 2026-06-04 18:24). El bonus corresponde
     # igual — la confirmación llegó por otro canal, no por el texto.
-    if wake_confirmed and pc.quality == "full" and not pc.has_wake:
+    # SOLO para textos cortos (2026-06-05): el wake espurio con TV de fondo
+    # invalida la premisa "wake ⇒ usuario" — charla larga que embebe un
+    # comando ('…le dije que apague la luz cuando se vaya') no debe ganar
+    # el bonus (amplificó la acción fantasma del 06-04 19:49). El rescate
+    # es para comandos cortos sin "Nexa" transcripta.
+    _MAX_BONUS_WORDS = 6
+    if (
+        wake_confirmed
+        and pc.quality == "full"
+        and not pc.has_wake
+        and len(text.split()) <= _MAX_BONUS_WORDS
+    ):
         confidence += 0.15
     if pc.quality != "full" or confidence < confidence_threshold:
         return None
