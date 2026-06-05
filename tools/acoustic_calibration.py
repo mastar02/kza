@@ -259,7 +259,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration", type=float, default=120.0)
     parser.add_argument("--device", type=int, help="índice sounddevice del mic (prod usa binding mic_usb_port; ver logs de kza-voice o sd.query_devices())")
     parser.add_argument("--channel", type=int, default=1, help="canal de captura (prod escritorio=1 ASR)")
-    parser.add_argument("--model", default="models/wakeword/nexa.onnx")
+    # Default = path absoluto de prod (settings.yaml rooms.wake_word.model);
+    # un path relativo solo resuelve desde el app dir y falla en detector.load().
+    parser.add_argument("--model", default="/home/kza/kza/models/wakeword/nexa.onnx")
     parser.add_argument("--out", default="data/calibration")
     parser.add_argument("--analyze", metavar="DIR", help="solo análisis de JSONLs existentes")
     args = parser.parse_args(argv)

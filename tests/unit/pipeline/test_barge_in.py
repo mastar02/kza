@@ -89,6 +89,7 @@ _stub_module(
 # src.wakeword — WakeWordDetector (mock)
 _stub_module("src.wakeword", WakeWordDetector=MagicMock)
 _stub_module("src.wakeword.detector", WakeWordDetector=MagicMock)
+_stub_module("src.wakeword.whisper_wake", _text_likely_truncated=MagicMock())
 
 # src.llm.buffered_streamer — usado por response_handler
 _stub_module(
@@ -107,6 +108,17 @@ _stub_module(
 
 # src.pipeline.command_event
 _stub_module("src.pipeline.command_event", CommandEvent=MagicMock)
+
+# src.pipeline.ambient_guard — multi_room_audio_loop importa AmbientGuard,
+# GuardState y classify_outcome a nivel de módulo. Stubbeamos los tres nombres
+# (estos tests no ejercitan el guard; los suyos viven en test_ambient_guard.py
+# y test_multi_room_audio_loop.py).
+_stub_module(
+    "src.pipeline.ambient_guard",
+    AmbientGuard=MagicMock,
+    GuardState=MagicMock,
+    classify_outcome=MagicMock(),
+)
 
 # src.nlu.command_grammar — el módulo real es seguro de importar; dejamos
 # intentar el import real antes de stubear.
