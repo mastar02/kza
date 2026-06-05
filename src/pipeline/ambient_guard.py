@@ -36,6 +36,7 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -59,6 +60,12 @@ class AmbientGuardConfig:
     Los umbrales acústicos (strict_wake_score / strict_min_rms /
     strict_min_spenergy) se calibran con tools/acoustic_calibration.py —
     NO adivinar (lección de las sesiones 05-31..06-04).
+
+    Invariante: cooldown_duration_s < strict_exit_quiet_s.
+    Si cooldown >= quiet, _refresh encadenaría COOLDOWN→STRICT→NORMAL en una
+    sola llamada, rompiendo la garantía de que COOLDOWN sale siempre a STRICT.
+    __post_init__ fuerza el invariante haciendo clamp (no raise — un fat-finger
+    en el yaml no debe crashear kza-voice al boot).
     """
     enabled: bool = False
     # Escalada NORMAL → STRICT: N capturas rechazadas dentro de la ventana.
@@ -75,8 +82,18 @@ class AmbientGuardConfig:
     cooldown_entry_window_s: float = 60.0
     cooldown_duration_s: float = 30.0
 
+    def __post_init__(self) -> None:
+        if self.cooldown_duration_s >= self.strict_exit_quiet_s:
+            clamped = self.strict_exit_quiet_s / 2.0
+            logger.warning(
+                f"[AmbientGuardConfig] cooldown_duration_s={self.cooldown_duration_s}s >= "
+                f"strict_exit_quiet_s={self.strict_exit_quiet_s}s violaría invariante "
+                f"(COOLDOWN expiraría directo a NORMAL); clamping a {clamped}s"
+            )
+            self.cooldown_duration_s = clamped
 
-@dataclass
+
+@dataclass(frozen=True)
 class GuardDecision:
     accept: bool
     reason: str  # "ok" | "disabled" | "strict_score" | "strict_rms" | "strict_spenergy" | "cooldown"
@@ -86,7 +103,7 @@ class GuardDecision:
 @dataclass
 class _RoomState:
     state: GuardState = GuardState.NORMAL
-    capture_rejects: deque = field(default_factory=deque)  # timestamps
+    capture_rejects: deque[float] = field(default_factory=deque)  # timestamps
     last_reject_at: float = 0.0
     cooldown_until: float = 0.0
 
@@ -122,7 +139,7 @@ class AmbientGuard:
     def __init__(
         self,
         config: AmbientGuardConfig | None = None,
-        time_fn=time.time,
+        time_fn: Callable[[], float] = time.time,
     ):
         self.config = config or AmbientGuardConfig()
         self._time = time_fn
@@ -148,7 +165,7 @@ class AmbientGuard:
         now = self._time()
         with self._lock:
             rs = self._room(room_id)
-            self._refresh(rs, now)
+            self._refresh(rs, now, room_id)
             if rs.state is GuardState.COOLDOWN:
                 return GuardDecision(False, "cooldown", rs.state)
             if rs.state is GuardState.STRICT:
@@ -174,9 +191,12 @@ class AmbientGuard:
         now = self._time()
         with self._lock:
             rs = self._room(room_id)
-            self._refresh(rs, now)
+            self._refresh(rs, now, room_id)
             if outcome not in REJECT_OUTCOMES:
                 return
+            # Applies in COOLDOWN too: stale async capture results refresh the
+            # quiet timer on purpose (ambient persists → STRICT stays alive
+            # longer once COOLDOWN expires).
             rs.last_reject_at = now
             rs.capture_rejects.append(now)
             window = (
@@ -218,7 +238,7 @@ class AmbientGuard:
             return GuardState.NORMAL
         with self._lock:
             rs = self._room(room_id)
-            self._refresh(rs, self._time())
+            self._refresh(rs, self._time(), room_id)
             return rs.state
 
     def follow_up_allowed(self, room_id: str) -> bool:
@@ -237,12 +257,12 @@ class AmbientGuard:
             self._rooms[room_id] = rs
         return rs
 
-    def _refresh(self, rs: _RoomState, now: float) -> None:
+    def _refresh(self, rs: _RoomState, now: float, room_id: str) -> None:
         """Transiciones por tiempo (lazy — no hay timers)."""
         if rs.state is GuardState.COOLDOWN and now >= rs.cooldown_until:
             rs.state = GuardState.STRICT
             rs.capture_rejects.clear()
-            logger.info("[AmbientGuard] COOLDOWN expirado → STRICT")
+            logger.info("[AmbientGuard] %s: COOLDOWN expirado → STRICT", room_id)
         if (
             rs.state is GuardState.STRICT
             and rs.last_reject_at > 0.0
@@ -251,6 +271,7 @@ class AmbientGuard:
             rs.state = GuardState.NORMAL
             rs.capture_rejects.clear()
             logger.info(
-                f"[AmbientGuard] STRICT → NORMAL "
-                f"(quiet ≥ {self.config.strict_exit_quiet_s:.0f}s)"
+                "[AmbientGuard] %s: STRICT → NORMAL (quiet ≥ %.0fs)",
+                room_id,
+                self.config.strict_exit_quiet_s,
             )

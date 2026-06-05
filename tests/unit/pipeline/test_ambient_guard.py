@@ -246,3 +246,116 @@ class TestClassifyOutcome:
         # Voz real que falló en HA: NO debe escalar el guard.
         assert classify_outcome(
             {"success": False, "text": "prende la luz", "intent": "domotics"}) == "other_fail"
+
+
+class TestConfigInvariant:
+    def test_cooldown_clamped_when_exceeds_quiet(self):
+        # cooldown_duration_s >= strict_exit_quiet_s would chain
+        # COOLDOWN→STRICT→NORMAL in a single _refresh call. __post_init__
+        # clamps it to strict_exit_quiet_s / 2 without raising.
+        cfg = AmbientGuardConfig(
+            enabled=True,
+            cooldown_duration_s=150.0,
+            strict_exit_quiet_s=30.0,
+        )
+        assert cfg.cooldown_duration_s == 15.0  # clamped to 30/2
+
+    def test_clamped_cooldown_exits_to_strict_not_normal(self):
+        # After clamp, COOLDOWN must still exit to STRICT (not jump to NORMAL).
+        clock = FakeClock()
+        cfg = AmbientGuardConfig(
+            enabled=True,
+            strict_entry_rejects=3,
+            strict_entry_window_s=60.0,
+            strict_exit_quiet_s=30.0,
+            cooldown_duration_s=150.0,  # will be clamped to 15.0
+            cooldown_entry_rejects=3,
+            cooldown_entry_window_s=60.0,
+        )
+        guard = AmbientGuard(config=cfg, time_fn=clock)
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → STRICT
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → COOLDOWN
+        assert guard.state_for("escritorio") is GuardState.COOLDOWN
+        clock.advance(16.0)  # > clamped cooldown (15s), < strict_exit_quiet (30s)
+        assert guard.state_for("escritorio") is GuardState.STRICT
+
+
+class TestCooldownRefreshesQuietTimer:
+    def test_reject_during_cooldown_refreshes_quiet_timer(self):
+        # Stale async capture results during COOLDOWN must refresh last_reject_at
+        # so that STRICT survives after COOLDOWN expires.
+        clock = FakeClock(t=1000.0)
+        # Use strict_exit_quiet_s=120, cooldown_duration_s=30
+        guard = make_guard(clock=clock)
+        # Escalate to COOLDOWN
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → STRICT
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → COOLDOWN
+
+        cooldown_entry_t = clock.t  # t=1000
+
+        # Advance to t+20: still in COOLDOWN; report a reject (stale async result)
+        clock.advance(20.0)  # t=1020
+        guard.on_capture_result("escritorio", "noise")  # refreshes last_reject_at to t=1020
+
+        # Advance past cooldown (30s from entry): t+31 → exits to STRICT
+        clock.t = cooldown_entry_t + 31.0  # t=1031
+        assert guard.state_for("escritorio") is GuardState.STRICT
+
+        # 119s after the in-COOLDOWN reject → still STRICT (quiet < 120s)
+        clock.t = 1020.0 + 119.0  # t=1139
+        assert guard.state_for("escritorio") is GuardState.STRICT
+
+        # 120s+ after the in-COOLDOWN reject → NORMAL
+        clock.t = 1020.0 + 120.0  # t=1140
+        assert guard.state_for("escritorio") is GuardState.NORMAL
+
+
+class TestPerRoomCooldownIndependence:
+    def test_escritorio_cooldown_does_not_affect_living(self):
+        clock = FakeClock()
+        guard = make_guard(clock=clock)
+        # Escalate escritorio to COOLDOWN
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → STRICT
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → COOLDOWN
+        assert guard.state_for("escritorio") is GuardState.COOLDOWN
+        # living stays NORMAL and accepts any wake
+        assert guard.state_for("living") is GuardState.NORMAL
+        d = guard.on_wake("living", score=0.41, rms=0.01)
+        assert d.accept is True
+        assert d.state is GuardState.NORMAL
+
+
+class TestFullCycleReEntry:
+    def test_normal_strict_quiet_normal_then_strict_again(self):
+        clock = FakeClock()
+        guard = make_guard(clock=clock)
+        # First cycle: NORMAL → STRICT → (quiet) → NORMAL
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")
+        assert guard.state_for("escritorio") is GuardState.STRICT
+        clock.advance(121.0)  # quiet > 120s
+        assert guard.state_for("escritorio") is GuardState.NORMAL
+        # Second cycle: 3 more rejects → STRICT again
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")
+        assert guard.state_for("escritorio") is GuardState.STRICT
+
+
+class TestStrictBoundaryScore:
+    def test_exact_strict_wake_score_is_accepted(self):
+        # Guard check is `score < strict_wake_score`, so score == threshold
+        # must be ACCEPTED.
+        clock = FakeClock()
+        guard = make_guard(clock=clock, strict_wake_score=0.65)
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → STRICT
+        assert guard.state_for("escritorio") is GuardState.STRICT
+        d = guard.on_wake("escritorio", score=0.65, rms=0.05)
+        assert d.accept is True
+        assert d.reason == "ok"
