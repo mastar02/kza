@@ -17,6 +17,7 @@ from typing import Callable, Awaitable, Optional
 import numpy as np
 import sounddevice as sd
 
+from src.pipeline.ambient_guard import AmbientGuard, GuardState, classify_outcome
 from src.pipeline.command_event import CommandEvent
 from src.wakeword.detector import WakeWordDetector
 from src.wakeword.whisper_wake import _text_likely_truncated
@@ -122,6 +123,7 @@ class MultiRoomAudioLoop:
         spenergy_threshold: float = 100.0,
         spenergy_gate_enabled: bool = True,
         xvf_tuning: dict | None = None,
+        ambient_guard: AmbientGuard | None = None,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -193,6 +195,12 @@ class MultiRoomAudioLoop:
         # re-aplicar requiere reiniciar kza-voice (aceptado: evento raro).
         self._xvf_tuning = xvf_tuning or {}
 
+        # AmbientGuard (spec 2026-06-05): compuerta acústica integral por room.
+        # None = sin guard (comportamiento previo exacto). La escalera
+        # NORMAL/STRICT/COOLDOWN se alimenta de los resultados de captura
+        # (_dispatch_command) y decide sobre cada wake (_should_accept_wakeword).
+        self._guard = ambient_guard
+
         self._running = False
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
         self._on_post_command_callback: Callable[[dict, CommandEvent], Awaitable[None]] | None = None
@@ -222,7 +230,7 @@ class MultiRoomAudioLoop:
         self._on_post_command_callback = callback
 
     def _should_accept_wakeword(
-        self, room_id: str, rms: float, timestamp: float
+        self, room_id: str, rms: float, timestamp: float, wake_score: float = 1.0
     ) -> bool:
         """
         Deduplicate wake words between rooms.
@@ -231,6 +239,19 @@ class MultiRoomAudioLoop:
         the one with higher RMS (closer to the speaker). If outside
         the window, both are independent commands.
         """
+        # AmbientGuard primero: en COOLDOWN rechaza barato (sin tocar dedup);
+        # en STRICT exige score alto. El detector queda en su threshold base —
+        # la decisión adaptativa vive acá, en un solo lugar testeable.
+        if self._guard is not None:
+            decision = self._guard.on_wake(room_id, wake_score, rms)
+            if not decision.accept:
+                logger.info(
+                    f"[AmbientGuard] wake rechazado en {room_id} "
+                    f"({decision.reason}, state={decision.state.value}, "
+                    f"score={wake_score:.2f}, rms={rms:.4f})"
+                )
+                return False
+
         # Pre-gate de energía: descarta near-silence antes de capturar/transcribir.
         # Default 0.0 = off. Ver __init__ (calibrar en repro; AGC infla el piso).
         if self.min_wake_rms > 0.0 and rms < self.min_wake_rms:
@@ -408,6 +429,10 @@ class MultiRoomAudioLoop:
                             partial_command=pc,
                             early_dispatch=True,
                             wake_text=rs.wake_text,
+                            ambient_strict=(
+                                self._guard is not None
+                                and self._guard.state_for(room_id) is GuardState.STRICT
+                            ),
                         )
                         asyncio.create_task(self._dispatch_command(event))
                         self._reset_listening(rs)
@@ -426,6 +451,10 @@ class MultiRoomAudioLoop:
                             room_id=room_id,
                             mic_device_index=rs.device_index,
                             wake_text=rs.wake_text,
+                            ambient_strict=(
+                                self._guard is not None
+                                and self._guard.state_for(room_id) is GuardState.STRICT
+                            ),
                         )
                         asyncio.create_task(self._dispatch_command(event))
                         self._reset_listening(rs)
@@ -517,7 +546,9 @@ class MultiRoomAudioLoop:
                 detection = rs.wake_detector.detect(audio_chunk)
                 if detection:
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
-                    if self._should_accept_wakeword(rs.room_id, rms, time.time()):
+                    if self._should_accept_wakeword(
+                        rs.room_id, rms, time.time(), wake_score=detection[1]
+                    ):
                         rs.listening = True
                         rs.command_start_time = time.time()
                         # Sembrar con el pre-roll (en vez de []) para no perder el
@@ -529,7 +560,10 @@ class MultiRoomAudioLoop:
                             rs.preroll.clear()
                         else:
                             rs.audio_buffer = []
-                        self.follow_up.start_conversation()
+                        # En STRICT/COOLDOWN no abrir follow_up: la ventana
+                        # abierta con TV era parte de la cascada del 06-04.
+                        if self._guard is None or self._guard.follow_up_allowed(rs.room_id):
+                            self.follow_up.start_conversation()
                         logger.info(f"Wake word in {rs.room_id} ({detection[0]}: {detection[1]:.2f})")
 
                         # Peek wake text first to decide if it was truncated.
@@ -571,7 +605,9 @@ class MultiRoomAudioLoop:
                             popped = pop_text_fn()
                             rs.wake_text = popped if not wake_was_truncated else None
 
-                elif self.follow_up.is_active:
+                elif self.follow_up.is_active and (
+                    self._guard is None or self._guard.follow_up_allowed(rs.room_id)
+                ):
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
                     if rms > 0.02 and rs.echo_suppressor.is_human_voice(audio_chunk):
                         rs.listening = True
@@ -734,6 +770,15 @@ class MultiRoomAudioLoop:
             else:
                 logger.warning("No on_command callback registered")
                 result = {}
+
+            # AmbientGuard: el resultado de la captura alimenta la escalera
+            # (noise/empty/timeout escalan; accepted/other_fail no).
+            if self._guard is not None and isinstance(result, dict):
+                outcome = classify_outcome(result)
+                self._guard.on_capture_result(event.room_id, outcome)
+                logger.debug(
+                    f"[AmbientGuard] capture outcome en {event.room_id}: {outcome}"
+                )
 
             if self._on_post_command_callback:
                 await self._on_post_command_callback(result, event)

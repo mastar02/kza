@@ -795,3 +795,79 @@ class TestXvfReviewFixes:
         with caplog.at_level(logging.WARNING):
             await loop.start()
         assert "xvf_tuning" in caplog.text.lower()
+
+
+# ============================================================
+# AmbientGuard integration (spec 2026-06-05)
+# ============================================================
+
+from src.pipeline.ambient_guard import (
+    AmbientGuard,
+    AmbientGuardConfig,
+    GuardState,
+)
+
+
+def _make_enabled_guard(**overrides) -> AmbientGuard:
+    cfg = AmbientGuardConfig(
+        enabled=True,
+        strict_entry_rejects=2,
+        strict_entry_window_s=60.0,
+        strict_wake_score=0.65,
+    )
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
+    return AmbientGuard(config=cfg)
+
+
+class TestAmbientGuardIntegration:
+    def test_no_guard_keeps_current_behavior(self):
+        loop = _make_multi_room_loop()
+        assert loop._should_accept_wakeword("cocina", rms=0.05, timestamp=time.time(),
+                                            wake_score=0.41) is True
+
+    def test_guard_rejects_low_score_in_strict(self):
+        guard = _make_enabled_guard()
+        guard.on_capture_result("cocina", "noise")
+        guard.on_capture_result("cocina", "noise")  # → STRICT
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        assert loop._should_accept_wakeword("cocina", rms=0.05, timestamp=time.time(),
+                                            wake_score=0.50) is False
+
+    def test_guard_accepts_high_score_in_strict(self):
+        guard = _make_enabled_guard()
+        guard.on_capture_result("cocina", "noise")
+        guard.on_capture_result("cocina", "noise")
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        assert loop._should_accept_wakeword("cocina", rms=0.05, timestamp=time.time(),
+                                            wake_score=0.80) is True
+
+    @pytest.mark.asyncio
+    async def test_dispatch_reports_outcome_to_guard(self):
+        guard = _make_enabled_guard()
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        # Callback que simula rechazo del gate (texto ruido)
+        loop.on_command(AsyncMock(return_value={
+            "success": False, "text": "gracias por ver", "intent": "gate_rejected",
+        }))
+        event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
+        await loop._dispatch_command(event)
+        await loop._dispatch_command(event)
+        # 2 rechazos con strict_entry_rejects=2 → STRICT
+        assert guard.state_for("cocina") is GuardState.STRICT
+
+    @pytest.mark.asyncio
+    async def test_dispatch_accepted_does_not_escalate(self):
+        guard = _make_enabled_guard()
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        loop.on_command(AsyncMock(return_value={
+            "success": True, "text": "prende la luz", "intent": "domotics",
+        }))
+        event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
+        for _ in range(5):
+            await loop._dispatch_command(event)
+        assert guard.state_for("cocina") is GuardState.NORMAL
+
+    def test_command_event_carries_ambient_strict_default_false(self):
+        event = CommandEvent(audio=np.zeros(10, dtype=np.float32), room_id="cocina")
+        assert event.ambient_strict is False
