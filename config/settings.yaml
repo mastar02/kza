@@ -1167,6 +1167,32 @@ rooms:
       threshold: 0.65
       min_audio_s: 0.8
 
+  # AmbientGuard — compuerta acústica integral (spec 2026-06-05). Escalera
+  # NORMAL → STRICT (TV-mode) → COOLDOWN (breaker) POR ROOM, alimentada por la
+  # tasa de capturas rechazadas (noise/vacío/timeout del router) — señal de
+  # SOFTWARE que no depende del chip (funciona igual con el mic UAC1.0).
+  # En STRICT: wake exige score ≥ strict_wake_score (el threshold base 0.40
+  # del detector NO cambia), follow_up off, y el grammar fast-path pierde el
+  # bonus de wake acústico (se exige "nexa" en el texto). En COOLDOWN se
+  # descarta todo por cooldown_duration_s → la cola del router NUNCA se
+  # satura ("no me escucha" del 06-04/05 = comandos compitiendo en la cola).
+  # ⚠️ Umbrales acústicos (strict_wake_score/strict_min_rms/strict_min_spenergy):
+  # calibrar con tools/acoustic_calibration.py — NO adivinar.
+  # Invariante: cooldown_duration_s < strict_exit_quiet_s (si no, se clampa
+  # con warning — ver AmbientGuardConfig.__post_init__).
+  # enabled: false = guard 100% pasivo (comportamiento actual exacto).
+  ambient_guard:
+    enabled: false
+    strict_entry_rejects: 4        # capturas rechazadas en la ventana → STRICT
+    strict_entry_window_s: 60.0
+    strict_exit_quiet_s: 120.0     # histéresis: quiet sostenido → NORMAL
+    strict_wake_score: 0.65        # ⚠️ placeholder — calibrar con la matriz
+    strict_min_rms: 0.0            # 0.0 = no aplicar (calibrar o dejar muerto)
+    strict_min_spenergy: 0.0       # 0.0 = no aplicar (calibrar o dejar muerto)
+    cooldown_entry_rejects: 6      # rechazos MÁS estando en STRICT → COOLDOWN
+    cooldown_entry_window_s: 60.0
+    cooldown_duration_s: 30.0
+
   # Endpointing adaptativo (S5) — usa señal del parser streaming para decidir
   # cuánto silencio esperar antes de cerrar captura. Si el parser ya tiene
   # intent+entity (ready_to_dispatch) cortamos con short_ms. Si solo tiene

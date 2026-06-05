@@ -854,6 +854,31 @@ async def main():
                     poll_interval_s=spe_cfg.get("poll_interval_s", 0.04),
                     window_s=spe_cfg.get("window_s", 4.0),
                 )
+            # AmbientGuard (spec 2026-06-05): compuerta acústica integral.
+            # Default enabled=false → pasivo. Umbrales: ver settings.yaml.
+            from src.pipeline.ambient_guard import AmbientGuard, AmbientGuardConfig
+            ag_cfg = rooms_config.get("ambient_guard", {}) or {}
+            ambient_guard = AmbientGuard(
+                config=AmbientGuardConfig(
+                    enabled=ag_cfg.get("enabled", False),
+                    strict_entry_rejects=ag_cfg.get("strict_entry_rejects", 4),
+                    strict_entry_window_s=ag_cfg.get("strict_entry_window_s", 60.0),
+                    strict_exit_quiet_s=ag_cfg.get("strict_exit_quiet_s", 120.0),
+                    strict_wake_score=ag_cfg.get("strict_wake_score", 0.65),
+                    strict_min_rms=ag_cfg.get("strict_min_rms", 0.0),
+                    strict_min_spenergy=ag_cfg.get("strict_min_spenergy", 0.0),
+                    cooldown_entry_rejects=ag_cfg.get("cooldown_entry_rejects", 6),
+                    cooldown_entry_window_s=ag_cfg.get("cooldown_entry_window_s", 60.0),
+                    cooldown_duration_s=ag_cfg.get("cooldown_duration_s", 30.0),
+                )
+            )
+            if ag_cfg.get("enabled", False):
+                logger.info(
+                    f"AmbientGuard ACTIVO: strict_wake_score="
+                    f"{ag_cfg.get('strict_wake_score', 0.65)}, "
+                    f"entry={ag_cfg.get('strict_entry_rejects', 4)} rechazos/"
+                    f"{ag_cfg.get('strict_entry_window_s', 60.0):.0f}s"
+                )
             multi_room_loop = MultiRoomAudioLoop(
                 room_streams=room_streams,
                 follow_up=FollowUpMode(
@@ -863,6 +888,7 @@ async def main():
                 spenergy_threshold=spe_cfg.get("threshold", 100.0),
                 spenergy_gate_enabled=spe_cfg.get("enabled", False),
                 xvf_tuning=tuning_cfg,
+                ambient_guard=ambient_guard,
                 sample_rate=16000,
                 command_duration=2.0,
                 dedup_window_ms=rooms_config.get("dedup_window_ms", 200),
