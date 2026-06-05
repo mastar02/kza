@@ -34,7 +34,7 @@ import numpy as np
 CHUNK_SIZE = 1280  # 80ms @ 16kHz — mismo framing que prod (multi_room_audio_loop)
 SAMPLE_RATE = 16000
 SPENERGY_POLL_S = 0.04  # ~25Hz, igual que el poller del gate
-CONDITIONS = ("silencio", "tv", "voz", "voz_tv")
+CONDITIONS = ("silencio", "tv", "voz", "voz_tv", "secador", "voz_secador")
 SIGNALS = ("rms", "wake", "spenergy")
 
 
@@ -239,17 +239,22 @@ def print_report(directory: Path) -> None:
                 continue
             print(f"{cond:<10} {s['count']:>6} {s['p5']:>12.4f} {s['p50']:>12.4f} "
                   f"{s['p95']:>12.4f} {s['max']:>12.4f}")
-        # Veredicto: ¿separa la voz (con y sin TV) del ambiente TV?
-        for voice_cond in ("voz", "voz_tv"):
-            g = signal_gap(data[voice_cond][signal], data["tv"][signal])
+        # Veredicto: ¿separa la voz del ambiente? Por cada fuente de ruido
+        # medida (tv, secador) comparamos voz limpia y voz embebida en él.
+        pairs = (
+            ("voz", "tv"), ("voz_tv", "tv"),
+            ("voz", "secador"), ("voz_secador", "secador"),
+        )
+        for voice_cond, ambient_cond in pairs:
+            g = signal_gap(data[voice_cond][signal], data[ambient_cond][signal])
             verdict = (
                 f"SEPARABLE — umbral recomendado {g['recommended_threshold']:.4f}"
                 if g["separable"] else "NO separa"
             )
             if g["gap"] is not None:
-                print(f"  {voice_cond} vs tv: gap={g['gap']:+.4f} → {verdict}")
+                print(f"  {voice_cond} vs {ambient_cond}: gap={g['gap']:+.4f} → {verdict}")
             else:
-                print(f"  {voice_cond} vs tv: sin datos")
+                print(f"  {voice_cond} vs {ambient_cond}: sin datos")
 
 
 def main(argv: list[str] | None = None) -> int:
