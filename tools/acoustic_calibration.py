@@ -126,7 +126,11 @@ def load_condition(directory: Path, condition: str) -> dict[str, list[float]]:
 def _spenergy_poller(controller, rows: list, stop: threading.Event) -> None:
     """Thread: pollea SPENERGY[3] cada 40ms y acumula filas. Fail-open."""
     while not stop.is_set():
-        vals = controller.read_spenergy()
+        try:
+            vals = controller.read_spenergy()
+        except Exception as exc:
+            print(f"⚠️  SPENERGY poller error: {exc} — datos SPENERGY incompletos")
+            break
         if vals is not None:
             rows.append({"t": time.time(), "kind": "spenergy", "value": float(vals[3])})
         time.sleep(SPENERGY_POLL_S)
@@ -146,7 +150,8 @@ def run_capture(
     from src.wakeword.detector import WakeWordDetector
     from src.audio.xvf_controller import XvfController
 
-    detector = WakeWordDetector(models=[model_path], threshold=1.1)  # >1 → nunca "detecta", solo medimos scores
+    # Solo se llama a .predict() — el detector threshold no se usa (los scores raw se graban).
+    detector = WakeWordDetector(models=[model_path])
     detector.load()
 
     controller = XvfController()
@@ -170,6 +175,8 @@ def run_capture(
         poller.start()
 
     def callback(indata, frames, time_info, status):
+        if status:
+            print(f"⚠️ sd callback status: {status}", flush=True)
         ch = channel if indata.shape[1] > channel else 0
         chunk = indata[:, ch].copy()
         now = time.time()
@@ -179,10 +186,18 @@ def run_capture(
         if scores:
             rows.append({"t": now, "kind": "wake", "value": float(max(scores.values()))})
 
+    if channel == 0:
+        print(
+            "⚠️  --channel 0: el XVF3800 tiene 2 canales — abrirlo como 1ch puede "
+            "garbler el audio. Considera usar --channel 1 o superior en dispositivos "
+            "multi-canal (ver _resolve_capture_channels en src/pipeline/multi_room_audio_loop.py)."
+        )
     print(f"▶ Capturando condición '{condition}' por {duration_s:.0f}s "
           f"(device={device}, channel={channel})...")
     stream = sd.InputStream(
-        device=device, samplerate=SAMPLE_RATE, channels=channel + 1 if channel else 1,
+        device=device, samplerate=SAMPLE_RATE,
+        # abrir canales suficientes para que el índice `channel` exista
+        channels=max(channel + 1, 1),
         dtype="float32", blocksize=CHUNK_SIZE, callback=callback,
     )
     try:
@@ -196,12 +211,15 @@ def run_capture(
         stop.set()
         if poller is not None:
             poller.join(timeout=1.0)
+        # Snapshot después del join para evitar race si el poller agrega filas
+        # durante el timeout de 1 s (el hilo puede seguir corriendo brevemente).
+        snapshot = list(rows)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out_file = out_dir / f"{stamp}_{condition}.jsonl"
-    out_file.write_text("\n".join(json.dumps(r) for r in rows))
-    print(f"\n✔ {len(rows)} muestras → {out_file}")
+    out_file.write_text("\n".join(json.dumps(r) for r in snapshot))
+    print(f"\n✔ {len(snapshot)} muestras → {out_file}")
     return out_file
 
 
