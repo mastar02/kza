@@ -1,0 +1,248 @@
+"""Tests del AmbientGuard — compuerta acústica integral (spec 2026-06-05).
+
+Máquina de estados NORMAL → STRICT → COOLDOWN por habitación, alimentada por
+la tasa de capturas rechazadas. Reloj inyectado: cero sleeps.
+"""
+import pytest
+
+from src.pipeline.ambient_guard import (
+    AmbientGuard,
+    AmbientGuardConfig,
+    GuardState,
+    classify_outcome,
+)
+
+
+class FakeClock:
+    def __init__(self, t: float = 1000.0):
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
+
+
+def make_guard(clock=None, **overrides) -> AmbientGuard:
+    cfg = AmbientGuardConfig(
+        enabled=True,
+        strict_entry_rejects=3,
+        strict_entry_window_s=60.0,
+        strict_exit_quiet_s=120.0,
+        strict_wake_score=0.65,
+        strict_min_rms=0.0,
+        strict_min_spenergy=0.0,
+        cooldown_entry_rejects=3,
+        cooldown_entry_window_s=60.0,
+        cooldown_duration_s=30.0,
+    )
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
+    return AmbientGuard(config=cfg, time_fn=clock or FakeClock())
+
+
+class TestPassiveDefaults:
+    def test_disabled_accepts_everything(self):
+        guard = AmbientGuard()  # config default: enabled=False
+        d = guard.on_wake("escritorio", score=0.01, rms=0.0)
+        assert d.accept is True
+        assert d.reason == "disabled"
+
+    def test_disabled_never_escalates(self):
+        guard = AmbientGuard()
+        for _ in range(50):
+            guard.on_capture_result("escritorio", "noise")
+        assert guard.state_for("escritorio") is GuardState.NORMAL
+
+    def test_disabled_follow_up_allowed(self):
+        guard = AmbientGuard()
+        assert guard.follow_up_allowed("escritorio") is True
+
+
+class TestNormalState:
+    def test_accepts_any_score_in_normal(self):
+        guard = make_guard()
+        d = guard.on_wake("escritorio", score=0.41, rms=0.001)
+        assert d.accept is True
+        assert d.state is GuardState.NORMAL
+
+    def test_follow_up_allowed_in_normal(self):
+        guard = make_guard()
+        assert guard.follow_up_allowed("escritorio") is True
+
+
+class TestEscalationToStrict:
+    def test_rejects_within_window_escalate(self):
+        guard = make_guard()
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")
+        assert guard.state_for("escritorio") is GuardState.STRICT
+
+    def test_rejects_outside_window_do_not_escalate(self):
+        clock = FakeClock()
+        guard = make_guard(clock=clock)
+        guard.on_capture_result("escritorio", "noise")
+        clock.advance(61.0)
+        guard.on_capture_result("escritorio", "noise")
+        clock.advance(61.0)
+        guard.on_capture_result("escritorio", "noise")
+        assert guard.state_for("escritorio") is GuardState.NORMAL
+
+    def test_accepted_and_other_fail_do_not_escalate(self):
+        guard = make_guard()
+        for outcome in ("accepted", "other_fail", "accepted", "other_fail",
+                        "accepted", "other_fail"):
+            guard.on_capture_result("escritorio", outcome)
+        assert guard.state_for("escritorio") is GuardState.NORMAL
+
+    def test_all_reject_kinds_count(self):
+        guard = make_guard()
+        for outcome in ("noise", "empty", "timeout"):
+            guard.on_capture_result("escritorio", outcome)
+        assert guard.state_for("escritorio") is GuardState.STRICT
+
+
+class TestStrictState:
+    def _strict_guard(self, clock=None, **overrides):
+        guard = make_guard(clock=clock, **overrides)
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")
+        assert guard.state_for("escritorio") is GuardState.STRICT
+        return guard
+
+    def test_low_score_rejected_in_strict(self):
+        guard = self._strict_guard()
+        d = guard.on_wake("escritorio", score=0.50, rms=0.05)
+        assert d.accept is False
+        assert d.reason == "strict_score"
+        assert d.state is GuardState.STRICT
+
+    def test_high_score_accepted_in_strict(self):
+        guard = self._strict_guard()
+        d = guard.on_wake("escritorio", score=0.80, rms=0.05)
+        assert d.accept is True
+
+    def test_strict_min_rms_enforced_when_configured(self):
+        guard = self._strict_guard(strict_min_rms=0.02)
+        d = guard.on_wake("escritorio", score=0.80, rms=0.01)
+        assert d.accept is False
+        assert d.reason == "strict_rms"
+
+    def test_strict_min_spenergy_enforced_when_configured(self):
+        guard = self._strict_guard(strict_min_spenergy=50.0)
+        d = guard.on_wake("escritorio", score=0.80, rms=0.05, spenergy_peak=10.0)
+        assert d.accept is False
+        assert d.reason == "strict_spenergy"
+
+    def test_spenergy_none_fails_open(self):
+        # Sin lectura del chip (fail-open del controller) NO se bloquea voz.
+        guard = self._strict_guard(strict_min_spenergy=50.0)
+        d = guard.on_wake("escritorio", score=0.80, rms=0.05, spenergy_peak=None)
+        assert d.accept is True
+
+    def test_follow_up_blocked_in_strict(self):
+        guard = self._strict_guard()
+        assert guard.follow_up_allowed("escritorio") is False
+
+    def test_exit_to_normal_after_quiet(self):
+        clock = FakeClock()
+        guard = self._strict_guard(clock=clock)
+        clock.advance(121.0)  # > strict_exit_quiet_s sin rechazos
+        assert guard.state_for("escritorio") is GuardState.NORMAL
+
+    def test_guard_rejection_keeps_strict_alive(self):
+        # Los rechazos del propio guard (TV sigue disparando wakes con score
+        # bajo) refrescan el quiet timer → STRICT no expira mientras haya TV.
+        clock = FakeClock()
+        guard = self._strict_guard(clock=clock)
+        clock.advance(100.0)
+        guard.on_wake("escritorio", score=0.50, rms=0.05)  # rechazo del guard
+        clock.advance(100.0)  # 200s desde la escalada, pero 100s desde el último rechazo
+        assert guard.state_for("escritorio") is GuardState.STRICT
+
+    def test_accepted_command_does_not_exit_strict(self):
+        # Un comando real exitoso con TV de fondo NO saca de STRICT (la TV
+        # sigue ahí); la salida es solo por quiet sostenido.
+        guard = self._strict_guard()
+        guard.on_capture_result("escritorio", "accepted")
+        assert guard.state_for("escritorio") is GuardState.STRICT
+
+
+class TestCooldown:
+    def _cooldown_guard(self, clock):
+        guard = make_guard(clock=clock)
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → STRICT
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → COOLDOWN
+        assert guard.state_for("escritorio") is GuardState.COOLDOWN
+        return guard
+
+    def test_capture_rejects_in_strict_escalate_to_cooldown(self):
+        self._cooldown_guard(FakeClock())
+
+    def test_everything_rejected_during_cooldown(self):
+        guard = self._cooldown_guard(FakeClock())
+        d = guard.on_wake("escritorio", score=0.99, rms=0.5)
+        assert d.accept is False
+        assert d.reason == "cooldown"
+
+    def test_cooldown_expires_to_strict(self):
+        clock = FakeClock()
+        guard = self._cooldown_guard(clock)
+        clock.advance(31.0)  # > cooldown_duration_s
+        assert guard.state_for("escritorio") is GuardState.STRICT
+
+    def test_guard_rejections_do_not_escalate_to_cooldown(self):
+        # Rechazos a nivel guard (strict_score) son gratis: no gastan
+        # Whisper/router → NO cuentan para COOLDOWN.
+        guard = make_guard()
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → STRICT
+        for _ in range(10):
+            guard.on_wake("escritorio", score=0.50, rms=0.05)
+        assert guard.state_for("escritorio") is GuardState.STRICT
+
+
+class TestPerRoomIsolation:
+    def test_rooms_have_independent_state(self):
+        guard = make_guard()
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")
+        assert guard.state_for("escritorio") is GuardState.STRICT
+        assert guard.state_for("living") is GuardState.NORMAL
+        d = guard.on_wake("living", score=0.41, rms=0.01)
+        assert d.accept is True
+
+
+class TestClassifyOutcome:
+    def test_success_is_accepted(self):
+        assert classify_outcome({"success": True, "text": "prende la luz"}) == "accepted"
+
+    def test_empty_text(self):
+        assert classify_outcome({"success": False, "text": ""}) == "empty"
+        assert classify_outcome({"success": False, "text": None}) == "empty"
+        assert classify_outcome({}) == "empty"
+
+    def test_gate_and_llm_rejections_are_noise(self):
+        assert classify_outcome(
+            {"success": False, "text": "x", "intent": "gate_rejected"}) == "noise"
+        assert classify_outcome(
+            {"success": False, "text": "x", "intent": "llm_rejected:tv_phrase"}) == "noise"
+        assert classify_outcome(
+            {"success": False, "text": "x", "intent": "low_confidence:0.40"}) == "noise"
+
+    def test_unavailable_and_timeout_are_timeout(self):
+        # El LLMRouter produce rejection_reason="unavailable" en timeout/error
+        # local → intent "llm_rejected:unavailable" debe clasificar timeout,
+        # NO noise (por eso este check va ANTES del de llm_rejected).
+        assert classify_outcome(
+            {"success": False, "text": "x", "intent": "llm_rejected:unavailable"}) == "timeout"
+        assert classify_outcome(
+            {"success": False, "text": "x", "intent": "timeout"}) == "timeout"
+
+    def test_real_command_downstream_failure_is_other_fail(self):
+        # Voz real que falló en HA: NO debe escalar el guard.
+        assert classify_outcome(
+            {"success": False, "text": "prende la luz", "intent": "domotics"}) == "other_fail"
