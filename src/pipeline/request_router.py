@@ -356,10 +356,12 @@ class RequestRouter:
         pretranscribed_text: str | None = None
         used_wake_text = False
         early_dispatch = False
+        ambient_strict = False
         if isinstance(audio_or_event, CommandEvent):
             audio = audio_or_event.audio
             room_id = audio_or_event.room_id
             early_dispatch = audio_or_event.early_dispatch
+            ambient_strict = getattr(audio_or_event, "ambient_strict", False)
             wake_text = audio_or_event.wake_text
             partial_text = (
                 audio_or_event.partial_command.raw_text
@@ -400,6 +402,7 @@ class RequestRouter:
         if self.orchestrator_enabled and self._orchestrator:
             return await self._process_command_orchestrated(
                 audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
+                ambient_strict=ambient_strict,
             )
         else:
             return await self._process_command_legacy(
@@ -407,7 +410,8 @@ class RequestRouter:
             )
 
     async def _process_command_orchestrated(self, audio: np.ndarray, room_id: str = None,
-                                              pretranscribed_text: str | None = None) -> dict:
+                                              pretranscribed_text: str | None = None,
+                                              ambient_strict: bool = False) -> dict:
         """Process command with multi-user orchestrator."""
         result = {
             "text": "",
@@ -457,7 +461,10 @@ class RequestRouter:
         fast_classification = None
         grammar_cls = _grammar_fastpath_classification(
             text, self.confidence_threshold,
-            wake_confirmed=self.wake_acoustically_confirmed,
+            # En STRICT (AmbientGuard) el wake acústico no es evidencia de
+            # usuario — la TV dispara el wake espurio. Sin bonus, el texto
+            # tiene que valerse solo (o traer "nexa" transcripta).
+            wake_confirmed=self.wake_acoustically_confirmed and not ambient_strict,
         )
         if grammar_cls is not None:
             logger.info(
