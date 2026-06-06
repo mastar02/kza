@@ -32,6 +32,11 @@ class SpeakerTagger:
         self.sample_rate = sample_rate
 
     async def tag(self, audio_mono: np.ndarray) -> tuple[str, float]:
+        """Etiquetar el hablante de una utterance.
+
+        Best-effort: audio corto, sin enrolados, o cualquier error del
+        identifier → ("unknown", 0.0). Nunca propaga excepciones.
+        """
         if len(audio_mono) < self.min_audio_s * self.sample_rate:
             return ("unknown", 0.0)
         try:
