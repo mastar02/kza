@@ -1398,3 +1398,46 @@ hooks:
                                     # budget de 300ms del fast path. Plumbed
                                     # vía main.py → dispatcher / response_handler.
   audit_sqlite_path: "./data/audit.db"   # consumido por audit_sqlite policy
+
+# ============================================================================
+# Ambient path — transcripción continua multi-pista (spec 2026-06-06)
+# Requiere firmware 6ch en el XVF3800 (runbook docs/runbooks/2026-06-06-*).
+# Con firmware 2ch degrada solo: sin mics crudos → VAD sobre col 0, sin DoA.
+# enabled: false = cero efecto (ni tap ni modelos cargados). Fase 2 lo
+# prende con shadow_mode: true (etiqueta y persiste, no toca el command path).
+# Fase 3 (flip, con datos de una semana): shadow_mode: false.
+ambient:
+  enabled: false
+  shadow_mode: true
+  asr_col: 1            # beam ASR (fw 6ch ch1 — mismo canal que el command path)
+  vad_col: 2            # mic crudo 0 (Silero funciona sobre crudo, no post-DSP)
+  raw_first_col: 2      # primera columna de mics crudos (DoA)
+  retention_hours: 12   # TTL del texto crudo (destilar-y-descartar)
+  poll_interval_s: 0.25
+  db_path: "./data/ambient.db"
+  stt:
+    device: "cuda:0"    # GPU ambiental — JAMÁS cuda:1 (command path)
+    beam_size: 1
+    # model/compute_type heredan del bloque stt: top-level
+  segmenter:
+    speech_threshold: 0.5
+    close_silence_ms: 700
+    preroll_ms: 500
+    max_segment_s: 30.0
+    min_speech_ms: 300
+  speaker:
+    min_audio_s: 0.8
+    embeddings_dir: "./data/users"
+  classifier:
+    tv_tolerance_rad: 0.35
+    min_stability: 0.6
+    require_known_speaker_for_live: false
+  distill:
+    llm_url: "http://127.0.0.1:8101/v1"   # SOLO local (privacidad del spec)
+    model: "local"
+    interval_hours: 6
+    min_batch: 5
+    max_batch_chars: 12000
+  rooms:
+    escritorio:
+      tv_azimuth: null   # rad relativo — calibrar en Fase 2 (grabar con TV sonando)

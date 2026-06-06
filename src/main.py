@@ -534,6 +534,7 @@ async def main():
     room_context_manager = None
     presence_detector = None
     multi_room_loop = None
+    ambient_path = None
 
     # Multi-Zone Audio System (Dayton MA1260) — legacy fallback
     zones_config = config.get("zones", {})
@@ -916,6 +917,37 @@ async def main():
                 f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "
                 f"{', '.join(room_streams.keys())})"
             )
+
+            # Ambient path (spec 2026-06-06): transcripción continua multi-pista
+            # en cuda:0. Best-effort: si falla el build, el command path sigue.
+            ambient_cfg = config.get("ambient", {}) or {}
+            if ambient_cfg.get("enabled", False):
+                try:
+                    from src.ambient.transcriber import build_ambient_path
+                    _store_fact = (
+                        memory_manager.long_term.store_fact
+                        if memory_manager is not None else None
+                    )
+                    ambient_path = build_ambient_path(
+                        ambient_cfg=ambient_cfg,
+                        stt_base_cfg=config.get("stt", {}) or {},
+                        room_ids=list(room_streams.keys()),
+                        store_fact_fn=_store_fact,
+                    )
+                    multi_room_loop.attach_ambient(
+                        tap=ambient_path.tap,
+                        transcriber=ambient_path.transcriber,
+                    )
+                    logger.info(
+                        f"Ambient path construido ({len(room_streams)} rooms, "
+                        f"shadow={ambient_cfg.get('shadow_mode', True)})"
+                    )
+                except Exception:
+                    logger.exception(
+                        "Ambient path no construido (best-effort) — "
+                        "el pipeline de voz sigue sin él"
+                    )
+                    ambient_path = None
 
     # ----------------------------------------------------------------
     # Build pipeline components (DI chain)
@@ -1388,6 +1420,9 @@ async def main():
             dashboard_task = asyncio.create_task(dashboard.start())
             logger.info("Dashboard API started")
 
+        if ambient_path is not None:
+            asyncio.create_task(ambient_path.start())
+
         await pipeline.run()
     except KeyboardInterrupt:
         logger.info("\nDeteniendo...")
@@ -1398,6 +1433,8 @@ async def main():
             await presence_detector.stop()
         if reminder_scheduler:
             await reminder_scheduler.stop()
+        if ambient_path is not None:
+            await ambient_path.stop()
         await list_store.close()
         await reminder_store.close()
         await pipeline.stop()
