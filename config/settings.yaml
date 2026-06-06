@@ -283,7 +283,14 @@ reasoner:
   mode: "http"
   http_base_url: "http://192.168.1.2:8200/v1"  # gateway LiteLLM 2026-05-30 (rollback directo: https://api.minimax.io/v1)
   http_timeout: 60
-  http_model: "MiniMax-M2.7"   # base (validado, con cuota); -highspeed requiere otra suscripción
+  # 2026-06-06: migrado a -highspeed (registrado en el gateway por infra; la key
+  # de KZA lo accede). Bench sostenido 600 tok: ~+15% mediano sobre base con
+  # variancia alta (47-58 vs 32-77 t/s — el batching server-side domina).
+  # Rollback trivial: volver a "MiniMax-M2.7". Existe también "MiniMax-M2.7-nothink"
+  # (anthropic-compat): NO suprime el costo del thinking, solo entrega el content
+  # limpio en reasoning_content separado — sin valor hoy (el strip de <think> ya
+  # cubre); opción futura si el parsing de tags da problemas.
+  http_model: "MiniMax-M2.7-highspeed"
   api_style: "chat"            # MiniMax solo soporta /v1/chat/completions
   api_key_env: "MINIMAX_API_KEY"
   # Cloud cold puede tardar 10-20s al primer token → watchdog generoso.
