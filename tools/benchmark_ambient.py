@@ -2,7 +2,7 @@
 
 Mide en el server (cuda:0) los números que el diseño exige antes de comprometer:
   --stt    RTF y VRAM de faster-whisper turbo sobre segmentos de voz
-  --vad    throughput de Silero VAD (CPU) en ventanas de 512 samples
+  --vad    throughput de Silero VAD (CPU) en chunks de 1280 samples (80 ms)
   --doa    throughput de GCC-PHAT (CPU) sobre pares de canales
   --smoke  todo lo anterior con audio sintético corto y device=cpu (laptop)
 
@@ -61,7 +61,6 @@ def bench_stt(model: str, device: str, wav: str | None, iterations: int) -> None
     if is_cuda:
         dev_idx = int(device.split(":")[-1]) if ":" in device else 0
         torch.cuda.synchronize(dev_idx)
-        vram_before = torch.cuda.memory_allocated(dev_idx)
 
     # warmup
     stt.transcribe(audio[: SAMPLE_RATE * 2])
