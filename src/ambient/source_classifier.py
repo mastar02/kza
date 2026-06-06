@@ -16,6 +16,8 @@ from src.ambient.doa import angular_distance
 
 @dataclass
 class SourceClassifierConfig:
+    """Umbrales del clasificador de fuente (settings.yaml → ambient.classifier)."""
+
     tv_azimuth: float | None = None        # rad relativo; None = sin calibrar
     tv_tolerance_rad: float = 0.35
     min_stability: float = 0.6
@@ -36,6 +38,14 @@ class SourceClassifier:
         stability: float,
         during_tts: bool,
     ) -> str:
+        """Clasificar la fuente de una utterance.
+
+        Aplica las 5 reglas del docstring del módulo en orden; la primera
+        que matchea gana.
+
+        Returns:
+            Uno de SOURCE_VALUES: "live" | "tv" | "self" | "unknown".
+        """
         cfg = self._cfg
         if during_tts:
             return "self"
