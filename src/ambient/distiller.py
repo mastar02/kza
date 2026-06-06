@@ -131,6 +131,15 @@ class Distiller:
             if total > self.max_batch_chars:
                 break
             batch.append(r)
+        if not batch:
+            # max_batch_chars patológicamente chico: ni una utterance entra.
+            # Sin guard se llamaría al LLM con prompt vacío (riesgo de hechos
+            # alucinados) y mark_distilled([]) — ciclo en vano cada interval.
+            logger.warning(
+                "Distiller: batch vacío tras truncado por chars — revisar "
+                f"max_batch_chars={self.max_batch_chars}"
+            )
+            return 0
         lines = [
             f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['t0']))}] "
             f"({r['room_id']}, {r['speaker']}): {r['text']}"
