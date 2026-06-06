@@ -38,8 +38,21 @@ def make_silero_predictor() -> Callable[[np.ndarray], float]:
             win = torch.from_numpy(chunk_mono[i : i + 512])
             with torch.no_grad():
                 probs.append(float(model(win, 16000).item()))
-        return max(probs) if probs else 0.0
+        if not probs:
+            # Chunk < 512 samples: sin ventana completa no hay predicción —
+            # se trata como silencio. No ocurre con CHUNK_SIZE=1280; avisar
+            # si un caller futuro rompe ese contrato.
+            logger.warning(
+                f"Silero predict: chunk de {len(chunk_mono)} samples (<512) "
+                f"— tratado como silencio"
+            )
+            return 0.0
+        return max(probs)
 
+    # Silero es stateful (GRU): la doc oficial recomienda reset en límites
+    # de utterance. El segmenter lo invoca en _close() vía getattr (opcional
+    # — los predictores fake de los tests no lo exponen).
+    predict.reset = model.reset_states
     return predict
 
 
@@ -131,6 +144,14 @@ class UtteranceSegmenter:
         self._in_speech = False
         self._silence_ms = 0.0
         speech_ms, self._speech_ms = self._speech_ms, 0.0
+        # Silero stateful: reset de la GRU en el límite de utterance (doc
+        # oficial). Opcional vía getattr — los predictores fake no lo exponen.
+        reset_fn = getattr(self._vad_predict, "reset", None)
+        if callable(reset_fn):
+            try:
+                reset_fn()
+            except Exception as e:
+                logger.debug(f"Silero reset_states no-op: {e}")
         if not buf or speech_ms < self.min_speech_ms:
             return None  # blip: menos voz que min_speech_ms → descartar
         t0 = buf[0][0]

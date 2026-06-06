@@ -100,3 +100,32 @@ def test_vad_col_fallback_when_missing():
     )
     two_ch = np.zeros((CHUNK, 2), dtype=np.float32)
     seg.feed(ts=1.0, chunk=two_ch)  # no debe lanzar
+
+
+def test_consecutive_utterances_reset_state_and_call_vad_reset():
+    # Dos períodos de voz separados por silencio → 2 segmentos limpios,
+    # y el reset opcional del predictor (Silero stateful) se invoca al cierre.
+    probs = iter([0.9, 0.0, 0.0,   # utt 1: voz + 2 silencios (cierra)
+                  0.0,             # silencio entre utterances
+                  0.9, 0.0, 0.0])  # utt 2
+    resets = []
+
+    def fake_vad(mono):
+        return next(probs)
+
+    fake_vad.reset = lambda: resets.append(1)
+
+    seg = UtteranceSegmenter(
+        vad_predict=fake_vad, sample_rate=SR, vad_col=2,
+        speech_threshold=0.5, close_silence_ms=160, preroll_ms=0,
+        max_segment_s=30.0, min_speech_ms=80,
+    )
+    out = []
+    for i in range(7):
+        out.extend(seg.feed(ts=1.0 + i * 0.08, chunk=_chunk(0.1)))
+    assert len(out) == 2
+    # cada segmento: 1 chunk de voz + 2 de cola de silencio
+    assert out[0].audio.shape == (CHUNK * 3, 6)
+    assert out[1].audio.shape == (CHUNK * 3, 6)
+    assert out[1].t0 > out[0].t1 - 0.001  # sin solapamiento de estado
+    assert len(resets) == 2  # reset de Silero en cada límite de utterance
