@@ -1401,7 +1401,13 @@ hooks:
 
 # ============================================================================
 # Ambient path — transcripción continua multi-pista (spec 2026-06-06)
-# Requiere firmware 6ch en el XVF3800 (runbook docs/runbooks/2026-06-06-*).
+# Fase 0 MEDIDA en server 2026-06-06 (audio real, TV + voz near/far-field):
+#   Whisper turbo cuda:0 RTF 0.006-0.012, VRAM 1484 MiB. Silero CPU 0.46ms/chunk.
+#   Silero sobre fw 2ch (post-DSP) DISCRIMINA voz-viva de TV: near-field 45%
+#   de chunks >0.3 / far-field 3-4m 20.8% / TV 0.5-3.3% → el VAD funciona con
+#   el firmware ACTUAL (la creencia "Silero roto con DSP" era de capturas
+#   garbled del bug 2ch-como-1ch). El fw 6ch (runbook docs/runbooks/) suma
+#   mics crudos para DoA (etiqueta 'tv' por dirección) — ya no bloquea Fase 2.
 # Con firmware 2ch degrada solo: sin mics crudos → VAD sobre col 0, sin DoA.
 # enabled: false = cero efecto (ni tap ni modelos cargados). Fase 2 lo
 # prende con shadow_mode: true (etiqueta y persiste, no toca el command path).
@@ -1410,7 +1416,7 @@ ambient:
   enabled: false
   shadow_mode: true
   asr_col: 1            # beam ASR (fw 6ch ch1 — mismo canal que el command path)
-  vad_col: 2            # mic crudo 0 (Silero funciona sobre crudo, no post-DSP)
+  vad_col: 2            # mic crudo 0 (fw 6ch); con fw 2ch fallback a col 0 (medido OK)
   raw_first_col: 2      # primera columna de mics crudos (DoA)
   retention_hours: 12   # TTL del texto crudo (destilar-y-descartar)
   poll_interval_s: 0.25
@@ -1420,7 +1426,11 @@ ambient:
     beam_size: 1
     # model/compute_type heredan del bloque stt: top-level
   segmenter:
-    speech_threshold: 0.5
+    # 0.3 CALIBRADO Fase 0 (2026-06-06): far-field 3-4m la voz da 20.8% de
+    # chunks >0.3 vs TV 0.5-3.3% — a 0.5 la voz far-field cae a 12.8% y se
+    # pierden bordes de utterance. La TV espuria la filtra min_speech_ms
+    # (chunks dispersos no acumulan 300ms antes del close de 700ms).
+    speech_threshold: 0.3
     close_silence_ms: 700
     preroll_ms: 500
     max_segment_s: 30.0
