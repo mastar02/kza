@@ -1413,7 +1413,10 @@ hooks:
 # prende con shadow_mode: true (etiqueta y persiste, no toca el command path).
 # Fase 3 (flip, con datos de una semana): shadow_mode: false.
 ambient:
-  enabled: false
+  # Fase 2 ON (deploy 2026-06-06): shadow — etiqueta y persiste en ambient.db,
+  # NO destila (el builder no construye el distiller en shadow), no toca el
+  # command path. Flip de Fase 3 = shadow_mode: false (con datos de 1 semana).
+  enabled: true
   shadow_mode: true
   asr_col: 1            # beam ASR (fw 6ch ch1 — mismo canal que el command path)
   vad_col: 2            # mic crudo 0 (fw 6ch); con fw 2ch fallback a col 0 (medido OK)
