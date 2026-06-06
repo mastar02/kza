@@ -275,6 +275,21 @@ class MultiRoomAudioLoop:
                         reset_fn()
                 return False
 
+        # Señal shadow anti-TV (spec 2026-06-06 §5.1, Fase 2): si el ambient
+        # path vio una utterance 'tv' reciente, loguear qué haría el guard.
+        # SOLO log — el flip a enforcement es Fase 3, con una semana de datos.
+        # Fail-open: error del transcriber jamás toca el wake.
+        if self._ambient_transcriber is not None:
+            try:
+                if self._ambient_transcriber.tv_active_recent(room_id):
+                    logger.info(
+                        f"[Ambient-shadow] wake en {room_id} con TV activa "
+                        f"(score={wake_score:.2f}, rms={rms:.4f}) — "
+                        f"enforcement habría exigido strict_wake_score"
+                    )
+            except Exception as e:
+                logger.debug(f"[Ambient-shadow] señal no disponible: {e}")
+
         # Pre-gate de energía: descarta near-silence antes de capturar/transcribir.
         # Default 0.0 = off. Ver __init__ (calibrar en repro; AGC infla el piso).
         if self.min_wake_rms > 0.0 and rms < self.min_wake_rms:
