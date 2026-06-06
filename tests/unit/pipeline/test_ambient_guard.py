@@ -359,3 +359,12 @@ class TestStrictBoundaryScore:
         d = guard.on_wake("escritorio", score=0.65, rms=0.05)
         assert d.accept is True
         assert d.reason == "ok"
+
+
+class TestUnverifiedIntentOutcome:
+    def test_unverified_intent_is_noise(self):
+        # Garble del verbo (2026-06-06): 'pero a la luz' → LLM turn_on no
+        # evidenciado → rechazo. Gastó Whisper+router → alimenta la escalera.
+        assert classify_outcome(
+            {"success": False, "text": "pero a la luz", "intent": "unverified_intent:turn_on"}
+        ) == "noise"

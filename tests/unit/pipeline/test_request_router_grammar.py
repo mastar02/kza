@@ -154,3 +154,72 @@ class TestAmbientStrictDisablesWakeBonus:
             "En modo normal el bonus aplica → fast-path gana → "
             "el LLMCommandRouter NO debe ser llamado"
         )
+
+
+def _turn_on_classification(confidence: float = 0.9):
+    return CommandClassification(
+        is_command=True,
+        confidence=confidence,
+        intent="turn_on",
+        entity_hint="light",
+        rejection_reason=None,
+    )
+
+
+def _make_router_for(text: str, classification):
+    """Router con texto y clasificación LLM arbitrarios (texto SIN parse full
+    de gramática → siempre cae al path LLM)."""
+    command_processor = MagicMock()
+    command_processor.process_command = AsyncMock(return_value=_make_cmd_stub(text))
+    orch = MagicMock()
+    orch.process = AsyncMock(return_value=MagicMock(
+        intent="domotics", response="ok", success=True, action=None, path=None,
+        timings={}, was_queued=False, queue_position=None,
+    ))
+    llm = MagicMock()
+    llm.classify = AsyncMock(return_value=classification)
+    router = RequestRouter(
+        command_processor=command_processor,
+        orchestrator=orch,
+        orchestrator_enabled=True,
+        response_handler=MagicMock(),
+        audio_manager=MagicMock(),
+        wake_words=("nexa",),
+        command_gate=CommandAcceptanceGate(wake_words=()),
+        llm_command_router=llm,
+        wake_acoustically_confirmed=True,
+        confidence_threshold=0.75,
+    )
+    return router, orch
+
+
+class TestUnverifiedIntentGuard:
+    """El intent binario del LLM debe estar evidenciado por un verbo del texto
+    (caso real 2026-06-06: 'apagá'→STT 'pero a la luz'→LLM turn_on conf alta
+    → prendió cuando pidieron apagar)."""
+
+    @pytest.mark.asyncio
+    async def test_unevidenced_turn_on_rejected(self):
+        router, orch = _make_router_for(
+            "Nexa, pero a la luz.", _turn_on_classification(0.9)
+        )
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, pero a la luz.",
+        )
+        result = await router.process_command(event)
+        assert result["success"] is False
+        assert result["intent"] == "unverified_intent:turn_on"
+        orch.process.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_evidenced_turn_on_dispatches(self):
+        router, orch = _make_router_for(
+            "Nexa, prender el...", _turn_on_classification(0.9)
+        )
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, prender el...",
+        )
+        result = await router.process_command(event)
+        orch.process.assert_called_once()

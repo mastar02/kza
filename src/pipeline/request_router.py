@@ -563,6 +563,26 @@ class RequestRouter:
                 result["response"] = ""
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
+            # Verbo-evidencia (2026-06-06): el 7B ADIVINA turn_on/turn_off con
+            # confianza alta sobre texto con el verbo garbleado por el STT
+            # far-field ('apagá'→'pero a la luz'→turn_on → acción INVERTIDA en
+            # vivo). La auto-confianza no protege de esto (0.95 a 'haba la
+            # luz'). Si el intent binario no tiene un verbo de esa acción en
+            # el texto → rechazo honesto (el usuario repite) en vez de acción
+            # equivocada. grammar_backed implica verbo presente por construcción.
+            from src.nlu.command_grammar import llm_intent_evidenced
+            if not grammar_backed and not llm_intent_evidenced(
+                classification.intent, text
+            ):
+                logger.info(
+                    f"[LLMRouter] intent {classification.intent} sin verbo que "
+                    f"lo evidencie en el texto — rechazado: {text!r}"
+                )
+                result["intent"] = f"unverified_intent:{classification.intent}"
+                result["success"] = False
+                result["response"] = ""
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
             # Resultado válido — guardar para que el caller registre en history
             # tras dispatch exitoso (line ~480, post-orchestrator).
             result["llm_classification"] = classification

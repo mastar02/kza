@@ -128,6 +128,7 @@ def classify_outcome(result: dict) -> str:
         intent == "gate_rejected"
         or intent.startswith("llm_rejected")
         or intent.startswith("low_confidence")
+        or intent.startswith("unverified_intent")
     ):
         return "noise"
     return "other_fail"

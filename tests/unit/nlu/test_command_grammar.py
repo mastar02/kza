@@ -303,3 +303,37 @@ class TestSlotDomainInferenceLengthGuard:
         for t in ("ponela cálida", "subí el brillo al 50"):
             pc = parse_command(t)
             assert pc.quality == "full", f"{t!r} dejó de parsear full"
+
+
+class TestLlmIntentEvidenced:
+    """Guard determinístico contra intents adivinados por el LLM (2026-06-06):
+    el STT garblea el verbo far-field ('apagá'→'pero a') y el 7B ADIVINA
+    turn_on con confianza alta sobre texto sin verbo → acción invertida en
+    vivo (pidió apagar, prendió). Si el LLM afirma turn_on/turn_off, el texto
+    tiene que evidenciar un verbo de ESA acción."""
+
+    def test_turn_on_evidenced_by_prender_stem(self):
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced("turn_on", "Nexa, prender el...") is True
+
+    def test_turn_on_not_evidenced_by_garble(self):
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced("turn_on", "Nexa, pero a la luz.") is False
+
+    def test_turn_off_evidenced_by_garbled_apagia(self):
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced("turn_off", "Nexa apagia luz.") is True
+
+    def test_mismatched_verb_not_evidenced(self):
+        # Texto dice apagar, LLM afirma turn_on → NO evidenciado (inversión).
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced("turn_on", "apagá la luz de una vez") is False
+
+    def test_turn_off_evidenced_by_cortar(self):
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced("turn_off", "cortá todo") is True
+
+    def test_non_binary_intents_unconstrained(self):
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced(None, "qué hora es") is True
+        assert llm_intent_evidenced("timer", "en diez minutos") is True
