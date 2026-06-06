@@ -15,7 +15,9 @@ import numpy as np
 SOURCE_VALUES = {"live", "tv", "self", "unknown"}
 
 
-@dataclass
+# eq=False: el __eq__ generado compararía np.ndarray con == (devuelve array,
+# bool() ambiguo → ValueError). Identidad de objeto alcanza para este DTO.
+@dataclass(eq=False)
 class RawSegment:
     """Segmento de voz detectado por el VAD, audio multicanal sin procesar."""
 

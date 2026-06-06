@@ -26,3 +26,13 @@ def test_raw_segment_holds_multichannel_audio():
     assert seg.audio.shape == (16000, 6)
     assert seg.during_tts is True
     assert seg.duration_s == 1.0
+
+
+def test_raw_segment_defaults_and_no_eq_crash():
+    audio = np.zeros((100, 6), dtype=np.float32)
+    a = RawSegment(t0=1.0, t1=2.0, audio=audio)
+    b = RawSegment(t0=1.0, t1=2.0, audio=audio)
+    assert a.during_tts is False
+    # eq=False: comparar no debe lanzar ValueError por el ndarray (identidad)
+    assert (a == b) is False
+    assert (a == a) is True
