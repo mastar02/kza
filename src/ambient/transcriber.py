@@ -307,7 +307,9 @@ def build_ambient_path(
 
     distiller = None
     dis_cfg = ambient_cfg.get("distill", {}) or {}
-    if store_fact_fn is not None:
+    # Spec §6 Fase 2: en shadow_mode se etiqueta y persiste pero NO se
+    # destila a memoria — el distiller arranca recién en Fase 3 (flip).
+    if store_fact_fn is not None and not ambient_cfg.get("shadow_mode", True):
         distiller = Distiller(
             store=store,
             chat_fn=make_local_chat_fn(
