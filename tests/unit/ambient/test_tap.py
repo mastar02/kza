@@ -1,4 +1,6 @@
 """Tests: MultiChannelTap — ring buffer del audio callback al ambient path."""
+import time
+
 import numpy as np
 
 from src.ambient.tap import MultiChannelTap
@@ -6,6 +8,23 @@ from src.ambient.tap import MultiChannelTap
 
 def _chunk(val: float = 0.1) -> np.ndarray:
     return np.full((1280, 6), val, dtype=np.float32)
+
+
+def test_register_room_idempotent_preserves_items():
+    tap = MultiChannelTap(maxlen_chunks=10)
+    tap.register_room("escritorio")
+    tap.push("escritorio", _chunk(), ts=1.0)
+    tap.register_room("escritorio")  # segunda llamada NO debe resetear la cola
+    assert len(tap.drain("escritorio")) == 1
+
+
+def test_push_auto_ts_is_float():
+    tap = MultiChannelTap(maxlen_chunks=5)
+    tap.register_room("r")
+    t_before = time.time()
+    tap.push("r", _chunk())
+    ts, _, _ = tap.drain("r")[0]
+    assert t_before <= ts <= time.time() + 0.1
 
 
 def test_push_drain_roundtrip():

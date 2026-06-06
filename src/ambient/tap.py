@@ -15,13 +15,16 @@ import numpy as np
 # ~100s de audio por room @ chunks de 80ms. A 6ch float32: ~12 MB/room.
 DEFAULT_MAXLEN_CHUNKS = 1250
 
+# (timestamp epoch s del chunk, audio multicanal, TTS propio activo)
+_TapEntry = tuple[float, np.ndarray, bool]
+
 
 class MultiChannelTap:
     """Ring buffer por room de chunks multicanal (ts, chunk, tts_active)."""
 
     def __init__(self, maxlen_chunks: int = DEFAULT_MAXLEN_CHUNKS):
         self._maxlen = maxlen_chunks
-        self._queues: dict[str, deque] = {}
+        self._queues: dict[str, deque[_TapEntry]] = {}
 
     def register_room(self, room_id: str) -> None:
         """Registrar una room (idempotente)."""
@@ -37,8 +40,10 @@ class MultiChannelTap:
     ) -> None:
         """Encolar un chunk. Room no registrada = no-op silencioso (fail-open).
 
-        El caller (audio callback) ya hace .copy() del buffer de PortAudio —
-        acá NO se copia de nuevo.
+        El caller debe pasar ``indata.copy()`` (el array MULTICANAL completo) —
+        NO el ``audio_chunk`` monocanal ya recortado del command path. PortAudio
+        reutiliza el buffer de ``indata`` al retornar del callback; sin copia
+        propia el array encolado queda corrupto. Acá NO se copia de nuevo.
         """
         q = self._queues.get(room_id)
         if q is None:
