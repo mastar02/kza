@@ -69,6 +69,8 @@ class DoAEstimator:
         win = int(self.win_s * self.sample_rate)
         if audio.shape[0] < win:
             win = audio.shape[0]
+        if win == 0:
+            return None  # audio vacío: range(step=0) lanzaría ValueError
         azimuths = []
         for start in range(0, audio.shape[0] - win + 1, win):
             sl = slice(start, start + win)
