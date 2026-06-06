@@ -1421,7 +1421,14 @@ async def main():
             logger.info("Dashboard API started")
 
         if ambient_path is not None:
-            asyncio.create_task(ambient_path.start())
+            _ambient_task = asyncio.create_task(ambient_path.start())
+            # Best-effort, pero NO silencioso: si el start muere (CUDA OOM,
+            # DB), queremos verlo en logs aunque el command path siga sano.
+            _ambient_task.add_done_callback(
+                lambda t: logger.error(
+                    f"Ambient path murió al arrancar: {t.exception()}"
+                ) if not t.cancelled() and t.exception() else None
+            )
 
         await pipeline.run()
     except KeyboardInterrupt:

@@ -504,15 +504,20 @@ class MultiRoomAudioLoop:
         def audio_callback(indata, frames, time_info, status):
             # Tee al ambient path (spec 2026-06-06): SIEMPRE primero — el
             # ambient quiere todo el audio, incluso lo que el barge-in o el
-            # echo suppressor descartan para el command path. O(1), fail-open.
+            # echo suppressor descartan para el command path. O(1). El
+            # try/except hace el fail-open EXPLÍCITO: una excepción acá
+            # abortaría el stream de audio del command path (thread C).
             if self._ambient_tap is not None:
-                tts_now = (
-                    self._response_handler is not None
-                    and self._response_handler.is_speaking
-                )
-                self._ambient_tap.push(
-                    rs.room_id, indata.copy(), tts_active=tts_now
-                )
+                try:
+                    tts_now = (
+                        self._response_handler is not None
+                        and self._response_handler.is_speaking
+                    )
+                    self._ambient_tap.push(
+                        rs.room_id, indata.copy(), tts_active=tts_now
+                    )
+                except Exception:
+                    pass  # perder un chunk ambiental es aceptable; el stream no
 
             # Canal configurado per-room con fallback seguro: si el device no
             # tiene ese canal (mic mono UAC1.0), usar ch0 y avisar una vez.
