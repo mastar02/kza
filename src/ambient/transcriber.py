@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from src.ambient.types import AmbientUtterance
+from src.ambient.types import AmbientUtterance, RawSegment
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,7 @@ class AmbientTranscriber:
         self._last_tv: dict[str, float] = {}
 
     async def start(self) -> None:
+        """Lanzar un worker por room + el worker de purga."""
         self._running = True
         for room_id in self._rooms:
             self._tap.register_room(room_id)
@@ -60,6 +61,7 @@ class AmbientTranscriber:
         logger.info(f"AmbientTranscriber activo ({len(self._rooms)} rooms)")
 
     async def stop(self) -> None:
+        """Cancelar todos los workers y esperar su cierre (idempotente)."""
         self._running = False
         for t in self._tasks:
             t.cancel()
@@ -75,6 +77,10 @@ class AmbientTranscriber:
         return last is not None and (time.time() - last) < window_s
 
     async def _room_worker(self, room_id: str) -> None:
+        """Loop best-effort de una room: drain → segmentar → procesar.
+
+        Errores → log + backoff exponencial (1s→60s); jamás propaga.
+        """
         segmenter = self._segmenter_factory()
         backoff = 1.0
         while self._running:
@@ -99,7 +105,12 @@ class AmbientTranscriber:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60.0)
 
-    async def _handle_segment(self, room_id: str, seg) -> None:
+    async def _handle_segment(self, room_id: str, seg: RawSegment) -> None:
+        """Procesar un segmento: STT + speaker + DoA → clasificar → persistir.
+
+        Best-effort: un segmento malo se loguea y se descarta sin matar el
+        worker de la room.
+        """
         try:
             stt_result = await self._stt.transcribe(seg.audio)
             if not stt_result.text.strip():
@@ -155,14 +166,17 @@ class AmbientPath:
     distiller: object | None
 
     async def start(self) -> None:
+        """Arrancar: store → workers → job del distiller (si hay memoria)."""
         await self.store.init()
         await self.transcriber.start()
         if self.distiller is not None:
+            # En _tasks del transcriber: su stop() cancela TODO de una.
             self.transcriber._tasks.append(
                 asyncio.create_task(self.distiller.run_forever())
             )
 
     async def stop(self) -> None:
+        """Apagar en orden inverso; seguro de llamar sin start() previo."""
         if self.distiller is not None:
             self.distiller.stop()
         await self.transcriber.stop()
