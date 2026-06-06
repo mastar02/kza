@@ -65,8 +65,23 @@ def make_local_chat_fn(
     model: str = "local",
     timeout_s: float = 120.0,
 ) -> Callable[[str], Awaitable[str]]:
-    """chat_fn real contra el llama-server local (OpenAI-compat)."""
+    """chat_fn real contra el llama-server local (OpenAI-compat).
+
+    Las transcripciones del hogar SOLO deben ir a un LLM local — si la URL
+    configurada no es loopback se avisa fuerte (no se bloquea: una IP LAN del
+    propio server puede ser legítima, pero tiene que ser una decisión visible).
+    """
+    from urllib.parse import urlparse
+
     import aiohttp
+
+    host = urlparse(llm_url).hostname or ""
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        logger.warning(
+            f"⚠️ Distiller: llm_url apunta a {host!r} (no-loopback). Las "
+            f"transcripciones ambientales del hogar JAMÁS deben salir a un "
+            f"servicio cloud — verificá que sea un LLM local."
+        )
 
     async def chat(prompt: str) -> str:
         async with aiohttp.ClientSession(
@@ -155,8 +170,12 @@ class Distiller:
         stored = 0
         for f in facts:
             try:
-                self._store_fact(
-                    f["fact"], f["category"], confidence=f["confidence"],
+                # to_thread: LongTermMemory.store_fact es sync (ChromaDB add
+                # con cómputo de embeddings) — no bloquear el event loop.
+                await asyncio.to_thread(
+                    self._store_fact,
+                    f["fact"], f["category"],
+                    confidence=f["confidence"],
                     metadata={"origin": "ambient"},
                 )
                 stored += 1

@@ -115,6 +115,10 @@ class AmbientTranscriber:
             stt_result = await self._stt.transcribe(seg.audio)
             if not stt_result.text.strip():
                 return
+            # Tagger sobre ch0 (Conference): full-band, presente en TODOS los
+            # firmwares (6ch/2ch/mono). Asimétrico a propósito con el STT
+            # (ch1 ASR): los embeddings de hablante prefieren la señal con
+            # post-proceso completo; el ASR prefiere el tap sin NS.
             mono = seg.audio[:, 0] if seg.audio.ndim == 2 else seg.audio
             speaker, sp_conf = await self._tagger.tag(mono)
             doa = await asyncio.to_thread(self._doa.estimate, seg.audio)
@@ -223,11 +227,15 @@ def build_ambient_path(
     ambient_stt = AmbientSTT(stt=ambient_whisper, asr_col=ambient_cfg.get("asr_col", 1))
 
     seg_cfg = ambient_cfg.get("segmenter", {}) or {}
-    vad_predict = make_silero_predictor()
 
     def segmenter_factory() -> UtteranceSegmenter:
+        # Predictor Silero POR ROOM (review final 2026-06-06): el modelo es
+        # stateful (GRU) y el segmenter lo resetea en cada límite de utterance.
+        # Compartirlo entre rooms haría que el cierre de una room corrompa el
+        # estado de la otra a mitad de utterance. El modelo pesa ~2MB: N copias
+        # es trivial frente al bug.
         return UtteranceSegmenter(
-            vad_predict=vad_predict,
+            vad_predict=make_silero_predictor(),
             vad_col=ambient_cfg.get("vad_col", 2),
             speech_threshold=seg_cfg.get("speech_threshold", 0.5),
             close_silence_ms=seg_cfg.get("close_silence_ms", 700),
