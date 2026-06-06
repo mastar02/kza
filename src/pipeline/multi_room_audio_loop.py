@@ -790,6 +790,17 @@ class MultiRoomAudioLoop:
                 logger.debug(
                     f"[AmbientGuard] capture outcome en {event.room_id}: {outcome}"
                 )
+                # Gracia post-éxito (2026-06-06): en STRICT el follow_up no se
+                # abre al wake; tras un comando ACEPTADO se abre acá — el
+                # usuario quedó confirmado y puede encadenar ('apagá'→'prendé')
+                # sin re-pasar el wake estricto. Las compuertas de texto siguen.
+                if outcome == "accepted" and self._guard.follow_up_allowed(
+                    event.room_id
+                ):
+                    try:
+                        self.follow_up.start_conversation()
+                    except Exception as e:
+                        logger.debug(f"follow_up post-éxito no-op: {e}")
 
             if self._on_post_command_callback:
                 await self._on_post_command_callback(result, event)

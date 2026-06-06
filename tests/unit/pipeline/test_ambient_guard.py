@@ -368,3 +368,57 @@ class TestUnverifiedIntentOutcome:
         assert classify_outcome(
             {"success": False, "text": "pero a la luz", "intent": "unverified_intent:turn_on"}
         ) == "noise"
+
+
+class TestPostSuccessGrace:
+    """Caso real 2026-06-06: 'apagá' pasó STRICT (wake 0.77) pero el 'prendé'
+    encadenado salió 0.40-0.59 < 0.72 → rechazado. Un comando ACEPTADO es
+    evidencia fuerte de usuario real → gracia post-éxito: follow_up permitido
+    en STRICT por strict_follow_up_grace_s tras el último accepted."""
+
+    def _strict_guard(self, clock):
+        guard = make_guard(clock=clock, strict_follow_up_grace_s=12.0)
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")
+        assert guard.state_for("escritorio") is GuardState.STRICT
+        return guard
+
+    def test_follow_up_allowed_within_grace_after_accept(self):
+        clock = FakeClock()
+        guard = self._strict_guard(clock)
+        assert guard.follow_up_allowed("escritorio") is False
+        guard.on_capture_result("escritorio", "accepted")
+        assert guard.follow_up_allowed("escritorio") is True
+        clock.advance(11.0)
+        assert guard.follow_up_allowed("escritorio") is True
+
+    def test_grace_expires(self):
+        clock = FakeClock()
+        guard = self._strict_guard(clock)
+        guard.on_capture_result("escritorio", "accepted")
+        clock.advance(13.0)
+        assert guard.follow_up_allowed("escritorio") is False
+
+    def test_grace_zero_disables(self):
+        clock = FakeClock()
+        guard = make_guard(clock=clock, strict_follow_up_grace_s=0.0)
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")
+        guard.on_capture_result("escritorio", "accepted")
+        assert guard.follow_up_allowed("escritorio") is False
+
+    def test_grace_does_not_apply_in_cooldown(self):
+        clock = FakeClock()
+        guard = self._strict_guard(clock)
+        guard.on_capture_result("escritorio", "accepted")
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # STRICT → COOLDOWN
+        assert guard.state_for("escritorio") is GuardState.COOLDOWN
+        assert guard.follow_up_allowed("escritorio") is False
+
+    def test_noise_does_not_open_grace(self):
+        clock = FakeClock()
+        guard = self._strict_guard(clock)
+        # other_fail tampoco abre gracia (no fue acción confirmada)
+        guard.on_capture_result("escritorio", "other_fail")
+        assert guard.follow_up_allowed("escritorio") is False

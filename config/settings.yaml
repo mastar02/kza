@@ -1206,6 +1206,11 @@ rooms:
     cooldown_entry_rejects: 6      # rechazos MÁS estando en STRICT → COOLDOWN
     cooldown_entry_window_s: 180.0
     cooldown_duration_s: 30.0
+    # Gracia post-éxito (2026-06-06): tras un comando ACEPTADO, follow_up
+    # habilitado en STRICT por esta ventana — comandos encadenados sin
+    # re-pasar el wake 0.72 (caso real: 'apagá' pasó 0.77, el 'prendé'
+    # siguiente salió 0.40-0.59 y STRICT lo mató). Texto-gates siguen activos.
+    strict_follow_up_grace_s: 12.0
 
   # Endpointing adaptativo (S5) — usa señal del parser streaming para decidir
   # cuánto silencio esperar antes de cerrar captura. Si el parser ya tiene

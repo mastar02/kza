@@ -870,6 +870,7 @@ async def main():
                     cooldown_entry_rejects=ag_cfg.get("cooldown_entry_rejects", 6),
                     cooldown_entry_window_s=ag_cfg.get("cooldown_entry_window_s", 60.0),
                     cooldown_duration_s=ag_cfg.get("cooldown_duration_s", 30.0),
+                    strict_follow_up_grace_s=ag_cfg.get("strict_follow_up_grace_s", 12.0),
                 )
             )
             if ag_cfg.get("enabled", False):

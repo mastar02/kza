@@ -912,3 +912,35 @@ class TestGuardRejectionClearsRefractory:
         accepted = loop._should_accept_wakeword("living", rms=0.01, timestamp=now)
         assert accepted is False  # eco más débil dentro de la ventana
         loop.room_streams["living"].wake_detector.reset_refractory.assert_not_called()
+
+
+class TestPostSuccessFollowUp:
+    """Gracia post-éxito (2026-06-06): en STRICT el follow_up no se abre al
+    wake; tras un resultado ACEPTADO se abre acá (el guard ya registró
+    last_accept_at en on_capture_result → follow_up_allowed=True)."""
+
+    @pytest.mark.asyncio
+    async def test_accepted_dispatch_opens_follow_up(self):
+        guard = _make_enabled_guard()
+        guard.on_capture_result("cocina", "noise")
+        guard.on_capture_result("cocina", "noise")  # → STRICT
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        loop.on_command(AsyncMock(return_value={
+            "success": True, "text": "apaga la luz", "intent": "domotics",
+        }))
+        event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
+        await loop._dispatch_command(event)
+        loop.follow_up.start_conversation.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rejected_dispatch_does_not_open_follow_up(self):
+        guard = _make_enabled_guard()
+        guard.on_capture_result("cocina", "noise")
+        guard.on_capture_result("cocina", "noise")
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        loop.on_command(AsyncMock(return_value={
+            "success": False, "text": "gracias por ver", "intent": "gate_rejected",
+        }))
+        event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
+        await loop._dispatch_command(event)
+        loop.follow_up.start_conversation.assert_not_called()

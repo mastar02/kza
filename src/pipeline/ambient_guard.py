@@ -81,6 +81,12 @@ class AmbientGuardConfig:
     cooldown_entry_rejects: int = 6
     cooldown_entry_window_s: float = 60.0
     cooldown_duration_s: float = 30.0
+    # Gracia post-éxito (2026-06-06): un comando ACEPTADO es evidencia fuerte
+    # de usuario real → durante esta ventana el follow_up queda permitido en
+    # STRICT (comandos encadenados sin re-pasar el wake estricto — caso real:
+    # 'apagá' pasó con 0.77 pero el 'prendé' siguiente salió 0.40-0.59 y
+    # STRICT lo mató). Las compuertas de TEXTO siguen activas. 0.0 = off.
+    strict_follow_up_grace_s: float = 12.0
 
     def __post_init__(self) -> None:
         if self.cooldown_duration_s >= self.strict_exit_quiet_s:
@@ -106,6 +112,7 @@ class _RoomState:
     capture_rejects: deque[float] = field(default_factory=deque)  # timestamps
     last_reject_at: float = 0.0
     cooldown_until: float = 0.0
+    last_accept_at: float = 0.0  # gracia post-éxito (strict_follow_up_grace_s)
 
 
 def classify_outcome(result: dict) -> str:
@@ -193,6 +200,12 @@ class AmbientGuard:
         with self._lock:
             rs = self._room(room_id)
             self._refresh(rs, now, room_id)
+            if outcome == "accepted":
+                # Gracia post-éxito: habilita follow_up en STRICT por
+                # strict_follow_up_grace_s (comandos encadenados de un usuario
+                # ya confirmado). other_fail NO abre gracia — no hubo acción.
+                rs.last_accept_at = now
+                return
             if outcome not in REJECT_OUTCOMES:
                 return
             # Applies in COOLDOWN too: stale async capture results refresh the
@@ -243,11 +256,23 @@ class AmbientGuard:
             return rs.state
 
     def follow_up_allowed(self, room_id: str) -> bool:
-        """follow_up solo en NORMAL — en STRICT la ventana abierta era parte
-        de la cascada de saturación del 06-04."""
+        """follow_up en NORMAL siempre; en STRICT solo dentro de la gracia
+        post-éxito (la ventana abierta con TV era parte de la cascada del
+        06-04 — pero un comando ACEPTADO confirma usuario real)."""
         if not self.config.enabled:
             return True
-        return self.state_for(room_id) is GuardState.NORMAL
+        state = self.state_for(room_id)
+        if state is GuardState.NORMAL:
+            return True
+        if state is GuardState.STRICT and self.config.strict_follow_up_grace_s > 0.0:
+            with self._lock:
+                rs = self._room(room_id)
+                return (
+                    rs.last_accept_at > 0.0
+                    and (self._time() - rs.last_accept_at)
+                    <= self.config.strict_follow_up_grace_s
+                )
+        return False
 
     # ---- internos ----
 
