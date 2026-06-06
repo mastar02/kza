@@ -3,8 +3,6 @@ import logging
 import time
 from unittest.mock import MagicMock
 
-import numpy as np
-
 from src.conversation.follow_up_mode import FollowUpMode
 from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
 
