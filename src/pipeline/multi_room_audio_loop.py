@@ -201,6 +201,12 @@ class MultiRoomAudioLoop:
         # (_dispatch_command) y decide sobre cada wake (_should_accept_wakeword).
         self._guard = ambient_guard
 
+        # Ambient path (spec 2026-06-06): tap multicanal + transcriber para la
+        # señal shadow anti-TV. attach_ambient() post-init (orden de DI en main,
+        # mismo patrón que attach_response_handler). None = feature apagada.
+        self._ambient_tap = None
+        self._ambient_transcriber = None
+
         self._running = False
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
         self._on_post_command_callback: Callable[[dict, CommandEvent], Awaitable[None]] | None = None
@@ -218,6 +224,12 @@ class MultiRoomAudioLoop:
     def attach_response_handler(self, response_handler) -> None:
         """Inyectar ResponseHandler post-init (útil por orden de DI en main.py)."""
         self._response_handler = response_handler
+
+    def attach_ambient(self, tap, transcriber=None) -> None:
+        """Inyectar el ambient path post-init (tap obligatorio, transcriber
+        opcional — habilita la señal shadow anti-TV en el wake)."""
+        self._ambient_tap = tap
+        self._ambient_transcriber = transcriber
 
     def on_command(self, callback: Callable[[CommandEvent], Awaitable[dict]]):
         """Register callback for when command audio is captured."""
@@ -262,6 +274,21 @@ class MultiRoomAudioLoop:
                     if callable(reset_fn):
                         reset_fn()
                 return False
+
+        # Señal shadow anti-TV (spec 2026-06-06 §5.1, Fase 2): si el ambient
+        # path vio una utterance 'tv' reciente, loguear qué haría el guard.
+        # SOLO log — el flip a enforcement es Fase 3, con una semana de datos.
+        # Fail-open: error del transcriber jamás toca el wake.
+        if self._ambient_transcriber is not None:
+            try:
+                if self._ambient_transcriber.tv_active_recent(room_id):
+                    logger.info(
+                        f"[Ambient-shadow] wake en {room_id} con TV activa "
+                        f"(score={wake_score:.2f}, rms={rms:.4f}) — "
+                        f"enforcement habría exigido strict_wake_score"
+                    )
+            except Exception as e:
+                logger.debug(f"[Ambient-shadow] señal no disponible: {e}")
 
         # Pre-gate de energía: descarta near-silence antes de capturar/transcribir.
         # Default 0.0 = off. Ver __init__ (calibrar en repro; AGC infla el piso).
@@ -490,6 +517,23 @@ class MultiRoomAudioLoop:
         """Create a sounddevice callback closure for one room."""
 
         def audio_callback(indata, frames, time_info, status):
+            # Tee al ambient path (spec 2026-06-06): SIEMPRE primero — el
+            # ambient quiere todo el audio, incluso lo que el barge-in o el
+            # echo suppressor descartan para el command path. O(1). El
+            # try/except hace el fail-open EXPLÍCITO: una excepción acá
+            # abortaría el stream de audio del command path (thread C).
+            if self._ambient_tap is not None:
+                try:
+                    tts_now = (
+                        self._response_handler is not None
+                        and self._response_handler.is_speaking
+                    )
+                    self._ambient_tap.push(
+                        rs.room_id, indata.copy(), tts_active=tts_now
+                    )
+                except Exception:
+                    pass  # perder un chunk ambiental es aceptable; el stream no
+
             # Canal configurado per-room con fallback seguro: si el device no
             # tiene ese canal (mic mono UAC1.0), usar ch0 y avisar una vez.
             ch = rs.capture_channel
