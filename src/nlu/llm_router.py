@@ -214,9 +214,17 @@ _GUIDED_JSON_SCHEMA: dict = {
 }
 
 
-# Body que se reenvía como extra_body al endpoint /v1/completions de vLLM.
-# vLLM compila un FSM por schema único (cache), por eso definimos esto a nivel
-# módulo y no por llamada — primer call ~1s (compile), siguientes ~400-500ms.
+# Body que se reenvía como extra_body al endpoint /v1/completions.
+# Lleva el schema en DOS formatos porque el backend cambió (2026-05-07) y cada
+# uno honra el suyo ignorando el otro:
+# - "response_format" (OpenAI/vLLM): vLLM compila un FSM por schema único
+#   (cache) — primer call ~1s, siguientes ~400-500ms.
+# - "json_schema" (param nativo llama.cpp): ik_llama.cpp en :8101 IGNORA
+#   response_format en silencio (root cause 2026-06-05: el modelo emitía JSON
+#   libre SIN 'confidence' → parser defaulteaba 0.0 → min_command_confidence
+#   0.6 rechazaba TODO el path LLM desde el 06-02). Con este param el fork
+#   convierte el schema a GBNF y enforcea (verificado en chip real: JSON puro
+#   con confidence presente).
 _RESPONSE_FORMAT_BODY: dict = {
     "response_format": {
         "type": "json_schema",
@@ -224,7 +232,8 @@ _RESPONSE_FORMAT_BODY: dict = {
             "name": "kza_command_classification",
             "schema": _GUIDED_JSON_SCHEMA,
         },
-    }
+    },
+    "json_schema": _GUIDED_JSON_SCHEMA,
 }
 
 

@@ -290,3 +290,27 @@ async def test_error_marks_unavailable_not_noise():
     out = await r.classify("prendé la luz")
     assert out.rejection_reason == "unavailable"
     assert out.is_command is None
+
+
+class TestResponseFormatBody:
+    """Root cause 2026-06-05: ik_llama.cpp (:8101 desde 05-07) IGNORA el
+    response_format estilo vLLM → el modelo emitía JSON sin 'confidence' →
+    default 0.0 → min_command_confidence rechazaba TODO el path LLM. El fork
+    sí honra el param nativo 'json_schema' de llama.cpp (verificado en vivo:
+    JSON puro con confidence=0.95). El body debe llevar AMBOS."""
+
+    def test_body_carries_native_json_schema_for_llama_cpp(self):
+        from src.nlu.llm_router import _RESPONSE_FORMAT_BODY, _GUIDED_JSON_SCHEMA
+        assert _RESPONSE_FORMAT_BODY["json_schema"] is _GUIDED_JSON_SCHEMA
+
+    def test_body_keeps_vllm_response_format(self):
+        from src.nlu.llm_router import _RESPONSE_FORMAT_BODY, _GUIDED_JSON_SCHEMA
+        rf = _RESPONSE_FORMAT_BODY["response_format"]
+        assert rf["type"] == "json_schema"
+        assert rf["json_schema"]["schema"] is _GUIDED_JSON_SCHEMA
+
+    def test_schema_requires_confidence(self):
+        # Sin 'confidence' required, el default silencioso 0.0 del parser
+        # vuelve a matar el path LLM. Anclarlo.
+        from src.nlu.llm_router import _GUIDED_JSON_SCHEMA
+        assert "confidence" in _GUIDED_JSON_SCHEMA["required"]
