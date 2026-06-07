@@ -3,6 +3,7 @@ import asyncio
 import time
 
 import numpy as np
+import pytest
 
 from src.ambient.tap import MultiChannelTap
 from src.ambient.segmenter import UtteranceSegmenter
@@ -91,6 +92,31 @@ def test_voice_segment_lands_in_store_labeled():
     assert u.room_id == "escritorio"
     assert u.source == "live"
     assert u.azimuth == 1.0
+
+
+def test_vad_prob_propagates_to_utterance():
+    # El RawSegment lleva el mean de Silero; el transcriber lo persiste
+    # (señal anti-alucinación — no_speech_prob del turbo es inservible).
+    store = FakeStore()
+    tap, tr = _make(store, tv_azimuth=2.5)
+
+    async def inner():
+        await tr.start()
+        now = time.time()
+        voz = np.full((CHUNK, 6), 0.2, dtype=np.float32)
+        sil = np.zeros((CHUNK, 6), dtype=np.float32)
+        for i, ch in enumerate([voz, voz, sil, sil, sil]):
+            tap.push("escritorio", ch, ts=now + i * 0.08)
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if store.added:
+                break
+        await tr.stop()
+    asyncio.run(inner())
+
+    assert len(store.added) == 1
+    # vad fake: voz=1.0 ×2 + cola de silencio 0.0 ×2 → mean 0.5
+    assert store.added[0].vad_prob == pytest.approx(0.5)
 
 
 def test_tv_direction_labels_tv_and_signal_fires():

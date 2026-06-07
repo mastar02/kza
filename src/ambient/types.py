@@ -25,6 +25,11 @@ class RawSegment:
     t1: float                 # epoch s — fin
     audio: np.ndarray         # shape (n_samples, n_channels) float32
     during_tts: bool = False  # algún chunk llegó con el TTS propio activo
+    # Promedio de la prob de Silero sobre los chunks del segmento (sin
+    # pre-roll, con cola de silencio). Señal de calidad anti-alucinación:
+    # el no_speech_prob del turbo está degenerado (~1e-10 siempre, verificado
+    # 2026-06-07); este mean SÍ discrimina voz near-field vs TV/silencio.
+    vad_prob: float = 0.0
 
     @property
     def duration_s(self) -> float:
@@ -45,6 +50,7 @@ class AmbientUtterance:
     azimuth_stability: float = 0.0      # 0-1, dispersión circular entre sub-ventanas
     source: str = "unknown"             # ver SOURCE_VALUES
     confidence: float | None = None     # avg_logprob del STT
-    no_speech_prob: float | None = None
+    no_speech_prob: float | None = None  # ⚠️ degenerado con turbo (~1e-10 siempre)
+    vad_prob: float | None = None       # mean Silero del segmento (señal real)
     during_tts: bool = False
     distilled: bool = False

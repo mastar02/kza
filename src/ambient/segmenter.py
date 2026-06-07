@@ -84,6 +84,7 @@ class UtteranceSegmenter:
         )
         self._in_speech = False
         self._buf: list[tuple[float, np.ndarray, bool]] = []
+        self._probs: list[float] = []  # prob Silero por chunk del buffer
         self._silence_ms = 0.0
         self._speech_ms = 0.0
         self._col_warned = False
@@ -116,6 +117,9 @@ class UtteranceSegmenter:
                 self._in_speech = True
                 self._buf = list(self._preroll)
                 self._buf.append((ts, chunk, tts_active))
+                # vad_prob promedia los chunks evaluados in_speech; el
+                # pre-roll (silencio previo) queda fuera a propósito.
+                self._probs = [prob]
                 self._preroll.clear()
                 self._silence_ms = 0.0
                 self._speech_ms = chunk_ms
@@ -126,6 +130,7 @@ class UtteranceSegmenter:
 
         # in_speech
         self._buf.append((ts, chunk, tts_active))
+        self._probs.append(prob)
         if is_speech:
             self._silence_ms = 0.0
             self._speech_ms += chunk_ms
@@ -141,6 +146,7 @@ class UtteranceSegmenter:
 
     def _close(self) -> RawSegment | None:
         buf, self._buf = self._buf, []
+        probs, self._probs = self._probs, []
         self._in_speech = False
         self._silence_ms = 0.0
         speech_ms, self._speech_ms = self._speech_ms, 0.0
@@ -159,4 +165,7 @@ class UtteranceSegmenter:
         t1 = last_ts + last_chunk.shape[0] / self.sample_rate
         audio = np.concatenate([c for _, c, _ in buf], axis=0)
         during_tts = any(t for _, _, t in buf)
-        return RawSegment(t0=t0, t1=t1, audio=audio, during_tts=during_tts)
+        vad_prob = float(sum(probs) / len(probs)) if probs else 0.0
+        return RawSegment(
+            t0=t0, t1=t1, audio=audio, during_tts=during_tts, vad_prob=vad_prob
+        )

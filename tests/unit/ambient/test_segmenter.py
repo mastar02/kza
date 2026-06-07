@@ -1,5 +1,6 @@
 """Tests: UtteranceSegmenter — VAD chunked → RawSegment con pre-roll."""
 import numpy as np
+import pytest
 
 from src.ambient.segmenter import UtteranceSegmenter
 
@@ -100,6 +101,38 @@ def test_vad_col_fallback_when_missing():
     )
     two_ch = np.zeros((CHUNK, 2), dtype=np.float32)
     seg.feed(ts=1.0, chunk=two_ch)  # no debe lanzar
+
+
+def test_vad_prob_is_mean_over_segment_chunks():
+    # Señal de calidad anti-alucinación (no_speech_prob del turbo está
+    # degenerado — ~1e-10 SIEMPRE, verificado 2026-06-07): vad_prob = promedio
+    # de las probs de Silero de los chunks del segmento (sin pre-roll, con
+    # cola de silencio). Voz real near-field ≈ alto; alucinación de
+    # silencio/TV lejana ≈ bajo.
+    seg, _ = _make_segmenter([0.0, 0.9, 0.7, 0.0, 0.0])
+    out = []
+    for i in range(5):
+        out.extend(seg.feed(ts=100.0 + i * 0.08, chunk=_chunk(0.1)))
+    assert len(out) == 1
+    # chunks del buffer: voz(0.9) + voz(0.7) + cola(0.0, 0.0) → mean 0.4
+    assert out[0].vad_prob == pytest.approx(0.4)
+
+
+def test_vad_prob_resets_between_utterances():
+    probs = iter([0.9, 0.0, 0.0,   # utt 1 → mean (0.9+0+0)/3 = 0.3
+                  0.0,
+                  0.6, 0.0, 0.0])  # utt 2 → mean 0.2
+    seg = UtteranceSegmenter(
+        vad_predict=lambda m: next(probs), sample_rate=SR, vad_col=2,
+        speech_threshold=0.5, close_silence_ms=160, preroll_ms=0,
+        max_segment_s=30.0, min_speech_ms=80,
+    )
+    out = []
+    for i in range(7):
+        out.extend(seg.feed(ts=1.0 + i * 0.08, chunk=_chunk(0.1)))
+    assert len(out) == 2
+    assert out[0].vad_prob == pytest.approx(0.3)
+    assert out[1].vad_prob == pytest.approx(0.2)
 
 
 def test_consecutive_utterances_reset_state_and_call_vad_reset():

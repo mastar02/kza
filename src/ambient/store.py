@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS utterances (
   source TEXT NOT NULL DEFAULT 'unknown',
   confidence REAL,
   no_speech_prob REAL,
+  vad_prob REAL,
   during_tts INTEGER NOT NULL DEFAULT 0,
   distilled INTEGER NOT NULL DEFAULT 0,
   created_at REAL NOT NULL
@@ -44,6 +45,13 @@ CREATE TABLE IF NOT EXISTS utterances (
 CREATE INDEX IF NOT EXISTS idx_utt_room_time ON utterances(room_id, t0);
 CREATE INDEX IF NOT EXISTS idx_utt_distill ON utterances(distilled, source);
 """
+
+# Columnas agregadas después del deploy Fase 2 (la DB de prod ya existía):
+# init() las agrega vía ALTER TABLE si faltan. SQLite no soporta IF NOT
+# EXISTS en ADD COLUMN → se inspecciona PRAGMA table_info.
+_MIGRATIONS: dict[str, str] = {
+    "vad_prob": "ALTER TABLE utterances ADD COLUMN vad_prob REAL",
+}
 
 
 class AmbientStore:
@@ -60,6 +68,12 @@ class AmbientStore:
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(_SCHEMA)
+        cur = await self._db.execute("PRAGMA table_info(utterances)")
+        existing = {row["name"] for row in await cur.fetchall()}
+        for col, ddl in _MIGRATIONS.items():
+            if col not in existing:
+                await self._db.execute(ddl)
+                logger.info("AmbientStore migración: columna %s agregada", col)
         await self._db.commit()
         logger.info("AmbientStore listo (%s, TTL %.1fh)", self.db_path, self.retention_hours)
 
@@ -87,13 +101,14 @@ class AmbientStore:
             """INSERT INTO utterances
                (room_id, t0, t1, text, speaker, speaker_confidence, azimuth,
                 azimuth_stability, source, confidence, no_speech_prob,
-                during_tts, distilled, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                vad_prob, during_tts, distilled, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 utt.room_id, utt.t0, utt.t1, utt.text, utt.speaker,
                 utt.speaker_confidence, utt.azimuth, utt.azimuth_stability,
                 utt.source, utt.confidence, utt.no_speech_prob,
-                int(utt.during_tts), int(utt.distilled), time.time(),
+                utt.vad_prob, int(utt.during_tts), int(utt.distilled),
+                time.time(),
             ),
         )
         await self._db.commit()

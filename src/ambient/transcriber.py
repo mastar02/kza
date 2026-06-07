@@ -136,6 +136,7 @@ class AmbientTranscriber:
                 source=source,
                 confidence=stt_result.avg_logprob,
                 no_speech_prob=stt_result.no_speech_prob,
+                vad_prob=seg.vad_prob,
                 during_tts=seg.during_tts,
             )
             if source == "tv":
