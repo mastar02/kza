@@ -4,6 +4,7 @@ asyncio-mqtt>=0.16.0
 # Speech-to-Text
 faster-whisper>=1.0.0
 openai-whisper>=20231117
+onnx-asr[hub]>=0.11.0  # Parakeet-TDT-0.6B-v3 (ambient path, CPU) — swap 2026-06-07
 # moonshine-onnx  # Alternativa más rápida
 
 # Text-to-Speech

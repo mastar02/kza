@@ -188,6 +188,36 @@ class AmbientPath:
         await self.store.close()
 
 
+def _build_ambient_stt_engine(stt_cfg: dict, stt_base_cfg: dict):
+    """Seleccionar el motor ASR del ambient path según ``ambient.stt.engine``.
+
+    - ``parakeet`` (swap 2026-06-07): Parakeet-TDT-0.6B-v3 onnx en CPU —
+      0/5 alucinaciones sobre no-voz vs 5/5 del turbo en el benchmark A/B
+      con audio real (doc 2026-06-07_SOTA_ASR_ESPANOL_INVESTIGACION.md).
+    - ``whisper`` (default, compat): FastWhisperSTT dedicado en cuda:0,
+      hereda model/compute_type del bloque ``stt:`` top-level.
+    """
+    engine = stt_cfg.get("engine", "whisper")
+    if engine == "parakeet":
+        from src.ambient.parakeet_stt import ParakeetSTT
+
+        return ParakeetSTT(
+            model_name=stt_cfg.get("parakeet_model", "nemo-parakeet-tdt-0.6b-v3"),
+            language=stt_base_cfg.get("language", "es"),
+        )
+    from src.stt.whisper_fast import FastWhisperSTT
+
+    return FastWhisperSTT(
+        model=stt_cfg.get("model", stt_base_cfg.get("model", "./models/whisper-v3-turbo")),
+        device=stt_cfg.get("device", "cuda:0"),
+        compute_type=stt_cfg.get("compute_type", stt_base_cfg.get("compute_type", "int8_float16")),
+        language=stt_base_cfg.get("language", "es"),
+        beam_size=stt_cfg.get("beam_size", 1),
+        initial_prompt=None,
+        vad_filter=False,
+    )
+
+
 def build_ambient_path(
     ambient_cfg: dict,
     stt_base_cfg: dict,
@@ -211,21 +241,11 @@ def build_ambient_path(
     from src.ambient.speaker_tagger import SpeakerTagger
     from src.ambient.store import AmbientStore
     from src.ambient.tap import MultiChannelTap
-    from src.stt.whisper_fast import FastWhisperSTT
     from src.users.speaker_identifier import SpeakerIdentifier
 
     stt_cfg = ambient_cfg.get("stt", {}) or {}
-    # Hereda del stt top-level; overridea device/beam/prompt (desviación 3 del plan)
-    ambient_whisper = FastWhisperSTT(
-        model=stt_cfg.get("model", stt_base_cfg.get("model", "./models/whisper-v3-turbo")),
-        device=stt_cfg.get("device", "cuda:0"),
-        compute_type=stt_cfg.get("compute_type", stt_base_cfg.get("compute_type", "int8_float16")),
-        language=stt_base_cfg.get("language", "es"),
-        beam_size=stt_cfg.get("beam_size", 1),
-        initial_prompt=None,
-        vad_filter=False,
-    )
-    ambient_stt = AmbientSTT(stt=ambient_whisper, asr_col=ambient_cfg.get("asr_col", 1))
+    ambient_engine = _build_ambient_stt_engine(stt_cfg, stt_base_cfg)
+    ambient_stt = AmbientSTT(stt=ambient_engine, asr_col=ambient_cfg.get("asr_col", 1))
 
     seg_cfg = ambient_cfg.get("segmenter", {}) or {}
 
