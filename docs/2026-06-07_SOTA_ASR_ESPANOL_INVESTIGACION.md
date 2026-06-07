@@ -54,6 +54,22 @@
 3. **Si Parakeet gana**: swap SOLO del ambient path (`AmbientSTT` ya está aislado por DI — es cambiar el modelo que recibe). Command path queda en turbo.
 4. Command path: re-evaluar Qwen3-ASR cuando su stack local madure (o si el benchmark sorprende).
 
+## ✅ Benchmark A/B ejecutado (2026-06-07, server, audio real XVF3800)
+
+Setup: `/home/kza/bench-ambient/bench_ab_stt.py`, venv aislado `.venv-bench` (onnx-asr 0.11 + faster-whisper), 17 clips de 10s/3s del canal ch1 ASR (voz en llamada, far-field con ground truth, TV-only, silencio/ruido sintético). Resultados en `bench_ab_results.json`. **Nota: Parakeet corrió en CPU** (onnxruntime sin CUDA EP) — la calidad no depende del provider y el RTF CPU ya alcanza.
+
+| Métrica | turbo (CT2, cuda:0) | Parakeet-TDT-0.6B-v3 (onnx, **CPU**) |
+|---|---|---|
+| **Alucinación sobre no-voz (5 clips silencio/ruido)** | **5/5** ("Gracias por ver el video.") | **0/5** (string vacío) |
+| Calidad voz (anime en llamada) | peor ("sinobi", "a cumplir las velas... opciones") | mejor ("shinobi", "al cumplir... superiores", captó "¿Me llamó?" omitido por turbo) |
+| **Pérdida de contenido** | tv_10-20s → alucinó "Gracias." sobre diálogo real | transcribió "Sí, excelente trabajo, Pakashi." |
+| Far-field 3-4m + TV (usuario real) | garble | garble (≈) — **es problema de señal, ningún modelo lo salva** |
+| Latencia clip 3s | ~150ms (GPU) | **~130ms (CPU!)** |
+| Latencia clip 10s | ~160-210ms (GPU) | ~250-340ms (CPU), RTF ~0.03 |
+| VRAM | ~1.5GB cuda:0 | **0 (CPU)** |
+
+**Veredicto: Parakeet-TDT-0.6B-v3 gana el ambient path por KO** — elimina la clase entera de alucinaciones (el target #1), mejor calidad en voz real, y corre en CPU (libera ~1.5GB de cuda:0 si se quita el Whisper ambient). El far-field garbleado queda igual → sigue siendo el caso del flasheo 6ch/DoA. Command path: sin cambios (turbo GPU ~150ms).
+
 ## Fuentes principales
 
 - arxiv 2501.11378 (ICASSP 2025 — cuantificación alucinaciones Whisper)
