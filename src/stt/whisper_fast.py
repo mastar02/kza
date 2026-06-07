@@ -11,7 +11,9 @@ Optimizado para latencia mínima:
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
@@ -26,6 +28,13 @@ class STTResult:
     no_speech_prob / avg_logprob / compression_ratio son None cuando no hay
     segmentos (audio vacío) o el motor no los expone (Moonshine). El gate
     trata None como 'sin penalizar'.
+
+    ⚠️ no_speech_prob con large-v3-turbo está DEGENERADO: devuelve ~1e-10
+    siempre, incluso sobre silencio absoluto que alucina "Gracias por ver el
+    video." (reproducido en aislamiento 2026-06-07, CPU int8, faster-whisper
+    1.2.1). El head de no-speech se perdió en la destilación del turbo. NO
+    usarlo como señal anti-alucinación: usar avg_logprob, compression_ratio
+    y el VAD externo (Silero — `vad_prob` del ambient path).
 
     compression_ratio es el MÁXIMO entre segmentos (no la media): un solo
     segmento basura repetitiva debe poder disparar el guard anti-alucinación
@@ -76,8 +85,35 @@ class FastWhisperSTT:
         self.initial_prompt = initial_prompt
         self.vad_filter = vad_filter
         self._model = None
-    
+        # Thread dedicado del modelo (fix 2026-06-07): CUDA/CTranslate2
+        # mantienen estado per-thread; con DOS WhisperModel en GPUs distintas
+        # (command path cuda:1 + ambient cuda:0) ejecutados desde el pool
+        # default compartido (asyncio.to_thread / run_in_executor(None)), el
+        # reuso de threads alternando devices producía `RuntimeError: CUDA
+        # failed with error invalid argument` intermitente (12×/1.5h en prod,
+        # 2026-06-06, SOLO con ambos modelos activos). Pin: cada instancia
+        # carga y ejecuta su modelo SIEMPRE en su propio thread.
+        self._executor: ThreadPoolExecutor | None = None
+        self._worker_ident: int | None = None
+
+    def _run_pinned(self, fn, *args):
+        """Ejecutar fn en el thread dedicado del modelo (bloqueante)."""
+        if threading.get_ident() == self._worker_ident:
+            return fn(*args)  # re-entrada desde el propio worker
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix=f"whisper-{self.device}"
+            )
+            self._worker_ident = self._executor.submit(
+                threading.get_ident
+            ).result()
+        return self._executor.submit(fn, *args).result()
+
     def load(self):
+        """Cargar modelo en GPU (idempotente, en el thread dedicado)."""
+        self._run_pinned(self._load_impl)
+
+    def _load_impl(self):
         """Cargar modelo en GPU (idempotente).
 
         Idempotencia crítica: `load()` se invoca desde más de un sitio sobre
@@ -196,10 +232,7 @@ class FastWhisperSTT:
         Returns:
             STTResult con text, elapsed_ms, no_speech_prob y avg_logprob.
         """
-        if self._model is None:
-            self.load()
-
-        # Preparar audio para faster-whisper
+        # Preparar audio en el caller (solo numpy, sin CUDA)
         if isinstance(audio, np.ndarray):
             # Faster-whisper acepta numpy arrays directamente
             # Debe ser float32 normalizado entre -1.0 y 1.0
@@ -208,6 +241,12 @@ class FastWhisperSTT:
             # Path a archivo - faster-whisper lo maneja internamente
             audio_input = str(audio)
 
+        # load lazy + generate SIEMPRE en el thread dedicado del modelo
+        return self._run_pinned(self._transcribe_pinned, audio_input)
+
+    def _transcribe_pinned(self, audio_input: "np.ndarray | str") -> STTResult:
+        if self._model is None:
+            self._load_impl()
         return self._transcribe_impl(audio_input)
 
     def _prepare_audio(self, audio: np.ndarray) -> np.ndarray:
