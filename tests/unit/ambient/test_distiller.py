@@ -1,17 +1,32 @@
 """Tests: Distiller — extracción de hechos con LLM local y marcado."""
 import asyncio
 import json
+import logging
 
-from src.ambient.distiller import Distiller, _parse_facts
+from src.ambient.distiller import Distiller, _parse_facts, make_langid_fn
+
+
+def test_langid_distingue_es_de_en():
+    detect = make_langid_fn()
+    assert detect("hola, ¿cómo andás? acordate de comprar el pan") == "es"
+    assert detect("what do you think about it, I really don't know") == "en"
+
+
+def test_langid_texto_vacio_devuelve_unknown():
+    detect = make_langid_fn()
+    assert detect("") == "unknown"
+    assert detect("   ") == "unknown"
 
 
 class FakeStore:
     def __init__(self, rows):
         self.rows = rows
         self.marked = []
+        self.last_min_vad = None
 
-    async def undistilled_live(self, limit=200):
-        return self.rows[:limit]
+    async def undistilled_live(self, limit=200, min_vad_prob=0.0):
+        self.last_min_vad = min_vad_prob
+        return [r for r in self.rows if (r.get("vad_prob") or 0) >= min_vad_prob][:limit]
 
     async def mark_distilled(self, ids):
         self.marked.extend(ids)
@@ -48,6 +63,42 @@ def test_distill_once_extracts_and_marks():
     assert facts_out[1][1] == "preference"
     # metadata referencia el origen ambiental
     assert facts_out[0][3]["origin"] == "ambient"
+
+
+def test_distill_once_aplica_min_vad_prob_al_store():
+    # El umbral de calidad configurado se propaga al query del store.
+    rows = [_row(1, "voz cerca"), _row(2, "otra cosa")]
+    store = FakeStore(rows)
+
+    async def fake_chat(prompt):
+        return "[]"
+
+    d = Distiller(store=store, chat_fn=fake_chat, store_fact_fn=lambda *a, **k: "x",
+                  interval_hours=6, min_batch=1, min_vad_prob=0.45)
+    asyncio.run(d.distill_once())
+    assert store.last_min_vad == 0.45
+
+
+def test_distill_once_loguea_idioma_shadow(caplog):
+    # Shadow: detecta idioma del batch y lo loguea, SIN filtrar (vad-only gate).
+    rows = [_row(1, "hola que tal todo bien"), _row(2, "what do you think man")]
+    store = FakeStore(rows)
+
+    async def fake_chat(prompt):
+        return "[]"
+
+    def fake_lang(text):
+        return "es" if "hola" in text else "en"
+
+    d = Distiller(store=store, chat_fn=fake_chat, store_fact_fn=lambda *a, **k: "x",
+                  interval_hours=6, min_batch=1, lang_detect_fn=fake_lang)
+    with caplog.at_level(logging.INFO):
+        asyncio.run(d.distill_once())
+    text = caplog.text.lower()
+    assert "idioma" in text
+    assert "'es': 1" in caplog.text and "'en': 1" in caplog.text
+    # No filtra: ambas filas se procesan/marcan igual
+    assert sorted(store.marked) == [1, 2]
 
 
 def test_distill_below_min_batch_is_noop():

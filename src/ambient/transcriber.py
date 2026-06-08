@@ -234,7 +234,7 @@ def build_ambient_path(
             None (sin memoria → sin distiller, solo buffer TTL).
     """
     from src.ambient.ambient_stt import AmbientSTT
-    from src.ambient.distiller import Distiller, make_local_chat_fn
+    from src.ambient.distiller import Distiller, make_langid_fn, make_local_chat_fn
     from src.ambient.doa import DoAEstimator
     from src.ambient.segmenter import UtteranceSegmenter, make_silero_predictor
     from src.ambient.source_classifier import SourceClassifier, SourceClassifierConfig
@@ -341,6 +341,10 @@ def build_ambient_path(
             interval_hours=dis_cfg.get("interval_hours", 6.0),
             min_batch=dis_cfg.get("min_batch", 5),
             max_batch_chars=dis_cfg.get("max_batch_chars", 12000),
+            min_vad_prob=dis_cfg.get("min_vad_prob", 0.0),
+            lang_detect_fn=(
+                make_langid_fn() if dis_cfg.get("log_language", False) else None
+            ),
         )
 
     return AmbientPath(tap=tap, transcriber=transcriber, store=store, distiller=distiller)

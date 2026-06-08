@@ -1458,6 +1458,16 @@ ambient:
     interval_hours: 6
     min_batch: 5
     max_batch_chars: 12000
+    # Compuerta de calidad ENFORCED (validada sobre ambient.db 2026-06-07,
+    # 1833 utterances): vad_prob (Silero) cruza español-hogar / bleed-TV
+    # far-field en ≈0.45 — dropea 78% del ruido conservando 54% del español.
+    # Reemplaza al filtro source='live' (inútil sin enrollment: 1833/1833
+    # 'unknown'). no_speech_prob quedó muerto (degenerado ~0).
+    min_vad_prob: 0.45
+    # SHADOW (no filtra): loguea distribución de idioma del batch con py3langid.
+    # El ruido dominante es TV en inglés (47% del crudo) — insumo para decidir
+    # una futura compuerta de idioma enforced.
+    log_language: true
   rooms:
     escritorio:
       tv_azimuth: null   # rad relativo — calibrar en Fase 2 (grabar con TV sonando)

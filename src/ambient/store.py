@@ -133,19 +133,34 @@ class AmbientStore:
         )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def undistilled_live(self, limit: int = 200) -> list[dict]:
-        """Lote para el Distiller: source='live' sin destilar, viejas primero.
+    async def undistilled_live(
+        self, limit: int = 200, min_vad_prob: float = 0.0
+    ) -> list[dict]:
+        """Lote para el Distiller: utterances destilables sin destilar.
+
+        Selecciona por blacklist de fuente en vez de whitelist 'live': sin
+        enrollment ni DoA estable el classifier marca TODO 'unknown' (medido
+        en prod: 1833/1833), así que filtrar por source='live' devolvería
+        cero. Se incluye 'unknown' (el grueso real) y 'live'; se excluyen
+        'self' (nuestro TTS) y 'tv' (cuando el DoA lo marque).
+
+        La compuerta de calidad real es ``min_vad_prob`` (Silero): la señal
+        anti-alucinación validada sobre ambient.db (cruce español-hogar /
+        bleed-TV ≈ 0.45). ``no_speech_prob`` quedó muerto (degenerado ~0).
 
         Args:
             limit: Máximo de filas a devolver.
+            min_vad_prob: Umbral inferior de vad_prob (vad NULL cuenta como 0).
 
         Returns:
             Lista de dicts ordenada por t0 ascendente.
         """
         cur = await self._db.execute(
-            "SELECT * FROM utterances WHERE distilled=0 AND source='live' "
+            "SELECT * FROM utterances WHERE distilled=0 "
+            "AND source NOT IN ('self','tv') "
+            "AND COALESCE(vad_prob, 0) >= ? "
             "ORDER BY t0 LIMIT ?",
-            (limit,),
+            (min_vad_prob, limit),
         )
         return [dict(r) for r in await cur.fetchall()]
 

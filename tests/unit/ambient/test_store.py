@@ -50,6 +50,42 @@ def test_undistilled_live_and_mark(tmp_path):
     _run(inner())
 
 
+def test_undistilled_live_incluye_unknown_excluye_self_tv(tmp_path):
+    # Sin enrollment ni DoA estable el classifier marca TODO 'unknown'
+    # (verificado en prod: 1833/1833). El distiller debe consumir 'unknown',
+    # no solo 'live' (que hoy nunca se produce). 'self'/'tv' siguen excluidos.
+    async def inner():
+        store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=12)
+        await store.init()
+        now = time.time()
+        id_unk = await store.add(_utt(now, text="charla real", source="unknown"))
+        id_live = await store.add(_utt(now, text="con speaker", source="live"))
+        await store.add(_utt(now, text="ruido tele", source="tv"))
+        await store.add(_utt(now, text="yo mismo", source="self"))
+
+        batch = await store.undistilled_live(limit=10)
+        assert sorted(r["id"] for r in batch) == sorted([id_unk, id_live])
+        await store.close()
+    _run(inner())
+
+
+def test_undistilled_live_filtra_por_vad_prob(tmp_path):
+    async def inner():
+        store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=12)
+        await store.init()
+        now = time.time()
+        id_hi = await store.add(_utt(now, text="voz cerca", source="unknown", vad_prob=0.6))
+        await store.add(_utt(now, text="far-field", source="unknown", vad_prob=0.2))
+        await store.add(_utt(now, text="sin vad", source="unknown"))  # None → 0
+
+        batch = await store.undistilled_live(limit=10, min_vad_prob=0.45)
+        assert [r["id"] for r in batch] == [id_hi]
+        # Sin umbral (default 0.0) pasan las tres
+        assert len(await store.undistilled_live(limit=10)) == 3
+        await store.close()
+    _run(inner())
+
+
 def test_purge_expired(tmp_path):
     async def inner():
         store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=1)

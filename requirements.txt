@@ -49,6 +49,10 @@ speechbrain>=1.0.0
 # Database
 aiosqlite>=0.19.0
 
+# Language ID (ambient distiller — señal SHADOW de idioma; modelo embebido,
+# sin descarga, solo numpy). El hogar habla español; inglés = bleed de TV.
+py3langid>=0.3.0
+
 # Dashboard
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0

@@ -60,6 +60,34 @@ def _parse_facts(raw: str) -> list[dict]:
     return facts
 
 
+def make_langid_fn() -> Callable[[str], str]:
+    """Detector de idioma para la señal SHADOW del distiller (py3langid).
+
+    El hogar habla español; el inglés en las transcripciones ambientales es
+    bleed de TV/película far-field. py3langid lleva el modelo embebido (sin
+    descarga, determinista, solo numpy ya presente). El distiller lo usa para
+    LOGUEAR la distribución de idioma de lo que pasa la compuerta de vad —
+    insumo para decidir si en el futuro se enforce una compuerta de idioma.
+
+    Returns:
+        callable ``text -> código ISO-639-1`` (p.ej. "es", "en"); "unknown"
+        si el texto es vacío/whitespace.
+    """
+    import py3langid
+
+    identifier = py3langid.langid.LanguageIdentifier.from_pickled_model(
+        py3langid.langid.MODEL_FILE, norm_probs=True
+    )
+
+    def detect(text: str) -> str:
+        if not text or not text.strip():
+            return "unknown"
+        lang, _prob = identifier.classify(text)
+        return lang
+
+    return detect
+
+
 def make_local_chat_fn(
     llm_url: str = "http://127.0.0.1:8101/v1",
     model: str = "local",
@@ -117,6 +145,8 @@ class Distiller:
         interval_hours: float = 6.0,
         min_batch: int = 5,
         max_batch_chars: int = 12000,
+        min_vad_prob: float = 0.0,
+        lang_detect_fn: Callable[[str], str] | None = None,
     ):
         """
         Args:
@@ -125,6 +155,12 @@ class Distiller:
             store_fact_fn: firma de LongTermMemory.store_fact(fact, category,
                 confidence=, metadata=).
             min_batch: no destilar con menos utterances (ahorra ciclos LLM).
+            min_vad_prob: compuerta de calidad (Silero) — solo se destilan
+                utterances con vad_prob ≥ umbral. 0.0 = sin filtrar.
+            lang_detect_fn: detector de idioma SHADOW (opcional). Si está, se
+                loguea la distribución de idioma del batch SIN filtrar — insumo
+                para decidir una futura compuerta de idioma (el ruido dominante
+                es bleed de TV en inglés). Ver make_langid_fn.
         """
         self._store = store
         self._chat = chat_fn
@@ -132,11 +168,15 @@ class Distiller:
         self.interval_hours = interval_hours
         self.min_batch = min_batch
         self.max_batch_chars = max_batch_chars
+        self.min_vad_prob = min_vad_prob
+        self._lang_detect = lang_detect_fn
         self._running = False
 
     async def distill_once(self) -> int:
         """Un ciclo de destilación. Devuelve cantidad de hechos guardados."""
-        rows = await self._store.undistilled_live(limit=200)
+        rows = await self._store.undistilled_live(
+            limit=200, min_vad_prob=self.min_vad_prob
+        )
         if len(rows) < self.min_batch:
             return 0
         # Truncar el lote por presupuesto de chars del prompt (7B local)
@@ -155,6 +195,7 @@ class Distiller:
                 f"max_batch_chars={self.max_batch_chars}"
             )
             return 0
+        self._log_language_shadow(batch)
         lines = [
             f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['t0']))}] "
             f"({r['room_id']}, {r['speaker']}): {r['text']}"
@@ -186,6 +227,20 @@ class Distiller:
         if stored:
             logger.info(f"Distiller: {stored} hechos de {len(batch)} utterances")
         return stored
+
+    def _log_language_shadow(self, batch: list[dict]) -> None:
+        """SHADOW: loguear la distribución de idioma del batch (no filtra).
+
+        El ruido dominante del ambient path es bleed de TV en inglés (medido:
+        47% del crudo). Este log mide cuánto de lo que pasa la compuerta de vad
+        sigue siendo no-español — insumo para una futura compuerta de idioma.
+        """
+        if self._lang_detect is None:
+            return
+        from collections import Counter
+
+        dist = Counter(self._lang_detect(r["text"]) for r in batch)
+        logger.info("Distiller shadow idioma: %s", dict(dist))
 
     async def run_forever(self) -> None:
         """Loop del job (lo lanza AmbientTranscriber.start)."""
