@@ -1417,7 +1417,11 @@ ambient:
   # NO destila (el builder no construye el distiller en shadow), no toca el
   # command path. Flip de Fase 3 = shadow_mode: false (con datos de 1 semana).
   enabled: true
-  shadow_mode: true
+  # FLIP Fase 3 2026-06-08: shadow_mode false → se construye y corre el
+  # Distiller (destila a memoria ChromaDB vía LLM local :8101). Gate de
+  # calidad vad_prob ≥ 0.45 enforced + idioma SHADOW (log). NO toca el
+  # command/wake path (shadow_mode solo gatea el distiller, verificado).
+  shadow_mode: false
   asr_col: 1            # beam ASR (fw 6ch ch1 — mismo canal que el command path)
   vad_col: 2            # mic crudo 0 (fw 6ch); con fw 2ch fallback a col 0 (medido OK)
   raw_first_col: 2      # primera columna de mics crudos (DoA)
