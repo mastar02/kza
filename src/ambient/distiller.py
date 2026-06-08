@@ -103,6 +103,8 @@ def make_local_chat_fn(
 
     import aiohttp
 
+    from src.llm.reasoner import _resolve_api_key
+
     host = urlparse(llm_url).hostname or ""
     if host not in ("127.0.0.1", "localhost", "::1"):
         logger.warning(
@@ -111,12 +113,17 @@ def make_local_chat_fn(
             f"servicio cloud — verificá que sea un LLM local."
         )
 
+    # El LLM local exige bearer (LLAMA_API_KEY :8101, enforce desde 2026-04-30).
+    # Reusa la resolución por puerto del reasoner — sin el header → 401.
+    headers = {"Authorization": f"Bearer {_resolve_api_key(llm_url)}"}
+
     async def chat(prompt: str) -> str:
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=timeout_s)
         ) as session:
             async with session.post(
                 f"{llm_url.rstrip('/')}/chat/completions",
+                headers=headers,
                 json={
                     "model": model,
                     "messages": [

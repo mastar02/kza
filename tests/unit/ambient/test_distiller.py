@@ -125,6 +125,43 @@ def test_llm_error_does_not_mark():
     assert store.marked == []  # sin marcar: se reintenta el próximo ciclo
 
 
+def test_make_local_chat_fn_envia_bearer_token(monkeypatch):
+    # El distiller habla con el LLM local :8101, que exige auth (bearer
+    # compartido LLAMA_API_KEY desde 2026-04-30). Sin el header → 401.
+    import http.server
+    import threading
+
+    from src.ambient.distiller import make_local_chat_fn
+
+    seen = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen["auth"] = self.headers.get("Authorization")
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            body = b'{"choices":[{"message":{"content":"[]"}}]}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("LLAMA_API_KEY", "secret-token-xyz")
+        chat = make_local_chat_fn(llm_url=f"http://127.0.0.1:{port}/v1")
+        out = asyncio.run(chat("hola"))
+    finally:
+        srv.shutdown()
+    assert out == "[]"
+    assert seen["auth"] == "Bearer secret-token-xyz"
+
+
 def test_parse_facts_tolerates_fences_and_garbage():
     raw = "```json\n[{\"fact\": \"X\", \"category\": \"fact\", \"confidence\": 0.8}]\n```"
     assert _parse_facts(raw) == [{"fact": "X", "category": "fact", "confidence": 0.8}]
