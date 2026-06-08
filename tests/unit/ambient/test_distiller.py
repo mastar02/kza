@@ -8,14 +8,17 @@ from src.ambient.distiller import Distiller, _parse_facts, make_langid_fn
 
 def test_langid_distingue_es_de_en():
     detect = make_langid_fn()
-    assert detect("hola, ¿cómo andás? acordate de comprar el pan") == "es"
-    assert detect("what do you think about it, I really don't know") == "en"
+    lang_es, prob_es = detect("hola, ¿cómo andás? acordate de comprar el pan")
+    lang_en, prob_en = detect("what do you think about it, I really don't know")
+    assert lang_es == "es"
+    assert lang_en == "en"
+    assert 0.0 <= prob_es <= 1.0 and 0.0 <= prob_en <= 1.0
 
 
 def test_langid_texto_vacio_devuelve_unknown():
     detect = make_langid_fn()
-    assert detect("") == "unknown"
-    assert detect("   ") == "unknown"
+    assert detect("") == ("unknown", 0.0)
+    assert detect("   ") == ("unknown", 0.0)
 
 
 class FakeStore:
@@ -88,7 +91,7 @@ def test_distill_once_loguea_idioma_shadow(caplog):
         return "[]"
 
     def fake_lang(text):
-        return "es" if "hola" in text else "en"
+        return ("es", 0.99) if "hola" in text else ("en", 0.99)
 
     d = Distiller(store=store, chat_fn=fake_chat, store_fact_fn=lambda *a, **k: "x",
                   interval_hours=6, min_batch=1, lang_detect_fn=fake_lang)
@@ -99,6 +102,51 @@ def test_distill_once_loguea_idioma_shadow(caplog):
     assert "'es': 1" in caplog.text and "'en': 1" in caplog.text
     # No filtra: ambas filas se procesan/marcan igual
     assert sorted(store.marked) == [1, 2]
+
+
+def test_distill_once_dropea_ingles_con_confianza_alta():
+    # El inglés es bleed de TV (nunca comando/hogar). Gate enforced: dropea
+    # 'en' confiado del prompt, conserva español y 'en' dudoso (okay/yeah).
+    rows = [_row(1, "che, comprá pan mañana"),        # es
+            _row(2, "what are we watching tonight"),   # en alta conf → drop
+            _row(3, "okay")]                           # en baja conf → keep
+    store = FakeStore(rows)
+    captured = {}
+
+    async def fake_chat(prompt):
+        captured["prompt"] = prompt
+        return "[]"
+
+    def fake_lang(text):
+        if text.startswith("che"):
+            return ("es", 0.99)
+        if text == "okay":
+            return ("en", 0.40)        # baja confianza → NO dropear
+        return ("en", 0.97)            # alta confianza → dropear
+
+    d = Distiller(store=store, chat_fn=fake_chat, store_fact_fn=lambda *a, **k: "x",
+                  interval_hours=6, min_batch=1, lang_detect_fn=fake_lang,
+                  drop_language="en", drop_language_min_prob=0.9)
+    asyncio.run(d.distill_once())
+    assert "comprá pan" in captured["prompt"]            # español → al LLM
+    assert "okay" in captured["prompt"]                  # 'en' dudoso → al LLM
+    assert "what are we watching" not in captured["prompt"]  # 'en' confiado → dropeado
+    # todas marcadas (kept + dropped) — los dropeados no se reprocesan
+    assert sorted(store.marked) == [1, 2, 3]
+
+
+def test_distill_once_batch_todo_ingles_no_llama_llm():
+    rows = [_row(1, "what is this"), _row(2, "look at that")]
+    store = FakeStore(rows)
+
+    async def fake_chat(prompt):
+        raise AssertionError("no debe llamarse: todo el batch es inglés dropeado")
+
+    d = Distiller(store=store, chat_fn=fake_chat, store_fact_fn=lambda *a, **k: "x",
+                  interval_hours=6, min_batch=1, lang_detect_fn=lambda t: ("en", 0.98),
+                  drop_language="en", drop_language_min_prob=0.9)
+    assert asyncio.run(d.distill_once()) == 0
+    assert sorted(store.marked) == [1, 2]  # marcadas igual (no reprocesar)
 
 
 def test_distill_below_min_batch_is_noop():

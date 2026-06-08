@@ -343,8 +343,12 @@ def build_ambient_path(
             max_batch_chars=dis_cfg.get("max_batch_chars", 12000),
             min_vad_prob=dis_cfg.get("min_vad_prob", 0.0),
             lang_detect_fn=(
-                make_langid_fn() if dis_cfg.get("log_language", False) else None
+                make_langid_fn()
+                if (dis_cfg.get("log_language", False) or dis_cfg.get("drop_language"))
+                else None
             ),
+            drop_language=dis_cfg.get("drop_language"),
+            drop_language_min_prob=dis_cfg.get("drop_language_min_prob", 0.9),
         )
 
     return AmbientPath(tap=tap, transcriber=transcriber, store=store, distiller=distiller)

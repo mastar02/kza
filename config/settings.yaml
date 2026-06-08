@@ -1468,10 +1468,15 @@ ambient:
     # Reemplaza al filtro source='live' (inútil sin enrollment: 1833/1833
     # 'unknown'). no_speech_prob quedó muerto (degenerado ~0).
     min_vad_prob: 0.45
-    # SHADOW (no filtra): loguea distribución de idioma del batch con py3langid.
-    # El ruido dominante es TV en inglés (47% del crudo) — insumo para decidir
-    # una futura compuerta de idioma enforced.
+    # Loguea distribución de idioma del batch con py3langid (insumo + habilita
+    # el detector para drop_language).
     log_language: true
+    # Compuerta de idioma ENFORCED (2026-06-08): dropea inglés antes del LLM —
+    # es bleed de TV/series far-field, NUNCA comando ni conversación del hogar
+    # (confirmado por el usuario). Validado: ~30% del post-vad sigue siendo
+    # inglés. Umbral de confianza para no tirar un "okay/yeah" suelto del hogar.
+    drop_language: "en"
+    drop_language_min_prob: 0.9
   rooms:
     escritorio:
       tv_azimuth: null   # rad relativo — calibrar en Fase 2 (grabar con TV sonando)

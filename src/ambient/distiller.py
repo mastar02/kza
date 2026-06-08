@@ -60,18 +60,18 @@ def _parse_facts(raw: str) -> list[dict]:
     return facts
 
 
-def make_langid_fn() -> Callable[[str], str]:
-    """Detector de idioma para la señal SHADOW del distiller (py3langid).
+def make_langid_fn() -> Callable[[str], tuple[str, float]]:
+    """Detector de idioma del distiller (py3langid).
 
     El hogar habla español; el inglés en las transcripciones ambientales es
-    bleed de TV/película far-field. py3langid lleva el modelo embebido (sin
-    descarga, determinista, solo numpy ya presente). El distiller lo usa para
-    LOGUEAR la distribución de idioma de lo que pasa la compuerta de vad —
-    insumo para decidir si en el futuro se enforce una compuerta de idioma.
+    bleed de TV/series far-field (nunca comando ni conversación del hogar).
+    py3langid lleva el modelo embebido (sin descarga, determinista, solo numpy
+    ya presente). Se usa para (a) LOGUEAR la distribución de idioma (shadow) y
+    (b) la compuerta enforced que dropea inglés con confianza alta.
 
     Returns:
-        callable ``text -> código ISO-639-1`` (p.ej. "es", "en"); "unknown"
-        si el texto es vacío/whitespace.
+        callable ``text -> (código ISO-639-1, prob)`` con ``prob`` normalizada
+        en [0,1] (norm_probs); ``("unknown", 0.0)`` si el texto es vacío.
     """
     import py3langid
 
@@ -79,11 +79,11 @@ def make_langid_fn() -> Callable[[str], str]:
         py3langid.langid.MODEL_FILE, norm_probs=True
     )
 
-    def detect(text: str) -> str:
+    def detect(text: str) -> tuple[str, float]:
         if not text or not text.strip():
-            return "unknown"
-        lang, _prob = identifier.classify(text)
-        return lang
+            return ("unknown", 0.0)
+        lang, prob = identifier.classify(text)
+        return (lang, float(prob))
 
     return detect
 
@@ -153,7 +153,9 @@ class Distiller:
         min_batch: int = 5,
         max_batch_chars: int = 12000,
         min_vad_prob: float = 0.0,
-        lang_detect_fn: Callable[[str], str] | None = None,
+        lang_detect_fn: Callable[[str], tuple[str, float]] | None = None,
+        drop_language: str | None = None,
+        drop_language_min_prob: float = 0.9,
     ):
         """
         Args:
@@ -164,10 +166,15 @@ class Distiller:
             min_batch: no destilar con menos utterances (ahorra ciclos LLM).
             min_vad_prob: compuerta de calidad (Silero) — solo se destilan
                 utterances con vad_prob ≥ umbral. 0.0 = sin filtrar.
-            lang_detect_fn: detector de idioma SHADOW (opcional). Si está, se
-                loguea la distribución de idioma del batch SIN filtrar — insumo
-                para decidir una futura compuerta de idioma (el ruido dominante
-                es bleed de TV en inglés). Ver make_langid_fn.
+            lang_detect_fn: detector de idioma ``text -> (lang, prob)``
+                (opcional). Si está, se loguea la distribución de idioma del
+                batch (shadow) y habilita la compuerta drop_language. Ver
+                make_langid_fn.
+            drop_language: código ISO a dropear del batch antes del LLM (p.ej.
+                "en" — bleed de TV, nunca comando/hogar). None = sin filtrar.
+                Requiere lang_detect_fn.
+            drop_language_min_prob: solo dropea cuando la confianza del idioma
+                ≥ umbral — evita tirar 'en' dudoso (un "okay/yeah" suelto).
         """
         self._store = store
         self._chat = chat_fn
@@ -177,6 +184,8 @@ class Distiller:
         self.max_batch_chars = max_batch_chars
         self.min_vad_prob = min_vad_prob
         self._lang_detect = lang_detect_fn
+        self.drop_language = drop_language
+        self.drop_language_min_prob = drop_language_min_prob
         self._running = False
 
     async def distill_once(self) -> int:
@@ -203,10 +212,16 @@ class Distiller:
             )
             return 0
         self._log_language_shadow(batch)
+        kept, dropped = self._apply_language_gate(batch)
+        if not kept:
+            # Todo el batch era el idioma dropeado (TV) — marcar para no
+            # reprocesar y salir sin gastar un ciclo de LLM.
+            await self._store.mark_distilled([r["id"] for r in dropped])
+            return 0
         lines = [
             f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['t0']))}] "
             f"({r['room_id']}, {r['speaker']}): {r['text']}"
-            for r in batch
+            for r in kept
         ]
         prompt = "Transcripciones ambientales:\n" + "\n".join(lines)
         try:
@@ -229,11 +244,37 @@ class Distiller:
                 stored += 1
             except Exception as e:
                 logger.warning(f"Distiller: store_fact falló: {e}")
-        # Marcar TODO el batch procesado (aunque no haya hechos: ya se evaluó)
-        await self._store.mark_distilled([r["id"] for r in batch])
+        # Marcar TODO lo evaluado (kept procesado + dropped por idioma): nada
+        # se reprocesa el próximo ciclo.
+        await self._store.mark_distilled([r["id"] for r in kept + dropped])
         if stored:
-            logger.info(f"Distiller: {stored} hechos de {len(batch)} utterances")
+            logger.info(f"Distiller: {stored} hechos de {len(kept)} utterances")
         return stored
+
+    def _apply_language_gate(
+        self, batch: list[dict]
+    ) -> tuple[list[dict], list[dict]]:
+        """Partir el batch en (kept, dropped) según drop_language.
+
+        Dropea utterances cuyo idioma detectado == drop_language con confianza
+        ≥ drop_language_min_prob (inglés = bleed de TV, nunca comando/hogar).
+        Sin drop_language o sin detector: no dropea nada.
+        """
+        if not self.drop_language or self._lang_detect is None:
+            return batch, []
+        kept, dropped = [], []
+        for r in batch:
+            lang, prob = self._lang_detect(r["text"])
+            if lang == self.drop_language and prob >= self.drop_language_min_prob:
+                dropped.append(r)
+            else:
+                kept.append(r)
+        if dropped:
+            logger.info(
+                "Distiller: %d utterances %r dropeadas (gate idioma)",
+                len(dropped), self.drop_language,
+            )
+        return kept, dropped
 
     def _log_language_shadow(self, batch: list[dict]) -> None:
         """SHADOW: loguear la distribución de idioma del batch (no filtra).
@@ -246,7 +287,7 @@ class Distiller:
             return
         from collections import Counter
 
-        dist = Counter(self._lang_detect(r["text"]) for r in batch)
+        dist = Counter(self._lang_detect(r["text"])[0] for r in batch)
         logger.info("Distiller shadow idioma: %s", dict(dist))
 
     async def run_forever(self) -> None:
