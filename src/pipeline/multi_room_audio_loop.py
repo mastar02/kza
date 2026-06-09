@@ -30,6 +30,25 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 1280
 
 
+def compute_wake_vad(audio_chunk, vad_predict) -> float | None:
+    """Prob de Silero sobre el audio del wake-trigger (fail-safe → None).
+
+    vad_predict es el predictor de make_silero_predictor (devuelve prob máx
+    sobre las ventanas de 512 del chunk). Cualquier fallo → None: el guard
+    usa entonces el umbral fijo (nunca más permisivo por falta de señal).
+    """
+    if vad_predict is None:
+        return None
+    try:
+        import numpy as np
+        mono = audio_chunk
+        if getattr(mono, "ndim", 1) > 1:
+            mono = mono[:, 0]
+        return float(vad_predict(np.ascontiguousarray(mono)))
+    except Exception:
+        return None
+
+
 def _resolve_capture_channels(max_input_channels: int) -> int:
     """Channels to open for the InputStream capture.
 
@@ -206,6 +225,7 @@ class MultiRoomAudioLoop:
         # mismo patrón que attach_response_handler). None = feature apagada.
         self._ambient_tap = None
         self._ambient_transcriber = None
+        self._wake_vad_predict = None  # lazy: predictor Silero para wake_vad
 
         self._running = False
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
@@ -242,7 +262,8 @@ class MultiRoomAudioLoop:
         self._on_post_command_callback = callback
 
     def _should_accept_wakeword(
-        self, room_id: str, rms: float, timestamp: float, wake_score: float = 1.0
+        self, room_id: str, rms: float, timestamp: float,
+        wake_score: float = 1.0, wake_vad: float | None = None,
     ) -> bool:
         """
         Deduplicate wake words between rooms.
@@ -255,7 +276,7 @@ class MultiRoomAudioLoop:
         # en STRICT exige score alto. El detector queda en su threshold base —
         # la decisión adaptativa vive acá, en un solo lugar testeable.
         if self._guard is not None:
-            decision = self._guard.on_wake(room_id, wake_score, rms)
+            decision = self._guard.on_wake(room_id, wake_score, rms, wake_vad=wake_vad)
             if not decision.accept:
                 logger.info(
                     f"[AmbientGuard] wake rechazado en {room_id} "
@@ -601,8 +622,17 @@ class MultiRoomAudioLoop:
                 detection = rs.wake_detector.detect(audio_chunk)
                 if detection:
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
+                    if self._wake_vad_predict is None:
+                        from src.ambient.segmenter import make_silero_predictor
+                        try:
+                            self._wake_vad_predict = make_silero_predictor()
+                        except Exception:
+                            self._wake_vad_predict = False  # no reintentar
+                    predict = self._wake_vad_predict or None
+                    wake_vad = compute_wake_vad(audio_chunk, predict)
                     if self._should_accept_wakeword(
-                        rs.room_id, rms, time.time(), wake_score=detection[1]
+                        rs.room_id, rms, time.time(),
+                        wake_score=detection[1], wake_vad=wake_vad,
                     ):
                         rs.listening = True
                         rs.command_start_time = time.time()

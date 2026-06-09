@@ -3,6 +3,7 @@
 Máquina de estados NORMAL → STRICT → COOLDOWN por habitación, alimentada por
 la tasa de capturas rechazadas. Reloj inyectado: cero sleeps.
 """
+import numpy as np
 import pytest
 
 from src.pipeline.ambient_guard import (
@@ -11,6 +12,7 @@ from src.pipeline.ambient_guard import (
     GuardState,
     classify_outcome,
 )
+from src.pipeline.multi_room_audio_loop import compute_wake_vad
 
 
 class FakeClock:
@@ -513,3 +515,24 @@ class TestVadAdaptiveConfig:
     def test_clamps_min_not_above_hard(self):
         cfg = AmbientGuardConfig(strict_wake_score=0.65, strict_wake_score_min=0.90)
         assert cfg.strict_wake_score_min <= cfg.strict_wake_score
+
+
+class TestComputeWakeVad:
+    def test_uses_predictor_max_over_chunk(self):
+        calls = []
+        def fake_predict(mono):
+            calls.append(mono)
+            return 0.83
+        audio = np.zeros(1280, dtype=np.float32)
+        assert compute_wake_vad(audio, fake_predict) == 0.83
+        assert len(calls) == 1
+
+    def test_none_predictor_returns_none(self):
+        audio = np.zeros(1280, dtype=np.float32)
+        assert compute_wake_vad(audio, None) is None
+
+    def test_predictor_error_returns_none(self):
+        def boom(mono):
+            raise RuntimeError("silero down")
+        audio = np.zeros(1280, dtype=np.float32)
+        assert compute_wake_vad(audio, boom) is None  # fail-safe
