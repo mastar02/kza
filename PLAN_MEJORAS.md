@@ -13,7 +13,7 @@ Asistente de voz 100% local para Home Assistant: Faster-Whisper (STT), Piper/Kok
 
 ## P0 — Higiene urgente
 - [x] Resolver `kza_tts_test.mp3` sin trackear: borrarlo y agregar `*.mp3` de prueba a `.gitignore` (o moverlo a `tests/fixtures/` si se usa). _(Sin referencias en el repo → borrado; `*.mp3` agregado a .gitignore. No había mp3/wav trackeados.)_
-- [ ] Revisar el `index.lock` colgado en `.git/worktrees/kza-wt-escritorio/`: si no hay proceso git activo, eliminarlo y verificar `git -C ../kza-wt-escritorio status`.
+- [x] Revisar el `index.lock` colgado en `.git/worktrees/kza-wt-escritorio/`: si no hay proceso git activo, eliminarlo y verificar `git -C ../kza-wt-escritorio status`. _(El lock ya no existía al ejecutar (2026-06-09); `git status` del worktree OK: rama `feat/escritorio-grupos-escenas`, working tree clean, 4 commits behind origin/main. Sí se eliminó un `index.lock` huérfano distinto en `.git/` del repo principal — 0 bytes, 4 h de antigüedad, sin proceso dueño.)_
 - [ ] Commitear o descartar el cambio pendiente en `docs/2026-06-06_TAREA_KZA_MIGRACION_HIGHSPEED.md`.
 
 ## P1 — Documentación y convenciones
