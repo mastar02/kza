@@ -47,6 +47,8 @@ orquester.json
 
 # Local notes / scratch
 sriov-migration-prompt.md
+# Audios de prueba manual (TTS/STT) generados ad-hoc
+*.mp3
 
 # Claude Code local config
 .claude/
