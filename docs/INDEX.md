@@ -12,6 +12,7 @@
 ## architecture/ — docs vivos del sistema
 
 - [ARCHITECTURE_REVIEW.md](architecture/ARCHITECTURE_REVIEW.md) — Review de arquitectura del sistema de voz: fortalezas, deudas y recomendaciones.
+- [DEPLOYMENT.md](architecture/DEPLOYMENT.md) — **Fuente de verdad de deploy**: producción = kza-voice nativo systemd --user (excepción R10); docker/ es experimental, compose es legacy.
 - [ECOSISTEMA_LOCAL_SERVER.md](architecture/ECOSISTEMA_LOCAL_SERVER.md) — Flujo de trabajo Local ↔ Server ↔ GitHub: el server deploya in-place pero no pushea; la laptop es el puente (`kza-push`/`kza-sync`).
 - [EMOTION_DETECTOR.md](architecture/EMOTION_DETECTOR.md) — Módulo de detección de emociones (wav2vec2): API, integración y configuración.
 - [ESTADO_PROYECTO_KZA.md](architecture/ESTADO_PROYECTO_KZA.md) — Reporte de estado del proyecto: qué funciona, métricas y pendientes.

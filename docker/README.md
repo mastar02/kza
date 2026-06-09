@@ -3,6 +3,9 @@
 Docker mode is **experimental** and does **not** have full parity with the
 canonical monolith runtime (`python -m src.main`).
 
+> Production deploy source of truth: [`docs/architecture/DEPLOYMENT.md`](../docs/architecture/DEPLOYMENT.md)
+> (native systemd --user service, documented R10 exception — NOT these containers).
+
 ## What works
 
 | Service     | Port | GPU/CPU | Status |
