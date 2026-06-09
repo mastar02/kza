@@ -23,7 +23,7 @@ Asistente de voz 100% local para Home Assistant: Faster-Whisper (STT), Piper/Kok
 - [x] Documentar en `CLAUDE.md` la estrategia del worktree `kza-wt-escritorio`: qué rama vive ahí, cómo y cuándo se mergea, regla de no tocar ambos a la vez. _(Sección "Worktrees" nueva. Verificado: la rama del worktree ya está contenida en origin/main → candidato a cleanup.)_
 
 ## P2 — Deuda técnica
-- [ ] Crear schema Pydantic para `config/settings.yaml` con validación al boot (`src/main.py`) y test que cargue el settings de ejemplo.
+- [x] Crear schema Pydantic para `config/settings.yaml` con validación al boot (`src/main.py`) y test que cargue el settings de ejemplo. _(`src/core/settings_schema.py`: schema permisivo (extra=allow) con las secciones núcleo + campos que main.py ya exigía a mano; `load_config` ahora fail-fast con detalle por campo. 6 tests TDD en `tests/unit/core/test_settings_schema.py`, incluido smoke contra el settings.yaml del repo.)_
 - [ ] Limpiar referencias legacy a systemd/docker-compose en docs si producción usa Quadlets+podman; dejar una sola fuente de verdad de deploy.
 - [ ] Revisar los 8 paquetes de diferencia en `requirements.txt` vs el worktree y consolidar.
 
