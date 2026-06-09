@@ -1,6 +1,7 @@
 # Tarea KZA: migrar el reasoner a MiniMax-M2.7-highspeed (+ Etapa B gated: delegación a hermes-agent)
 
-> **ESTADO 2026-06-06 — Etapa A ejecutada en local, pendiente deploy al server.**
+> **ESTADO 2026-06-06 — Etapa A DEPLOYADA Y VERIFICADA en el server** (commit `74c7820`, local=origin=server en `feat/nexa-command-detection-fixes`).
+> Restart de kza-voice limpio: preflight VRAM OK (cuda:0 7606 MiB, cuda:1 2453 MiB libres pre-carga), `HttpReasoner OK → :8200 (modelo: MiniMax-M2.7-highspeed)` con health check pasado, LLMRouter 2 endpoints, VRAM post idéntica al estado previo (sin double-load). Warning preexistente de HA WS subscribe timeout (issue conocido, auto-reconecta) — no relacionado. **Falta solo la prueba de voz manual del slow path** (preguntarle algo que requiera razonamiento).
 > - Gateway verificado: lista `MiniMax-M2.7-highspeed` y `MiniMax-M2.7-nothink`; la key de KZA accede a ambos.
 > - Re-bench sostenido (600 tok, vía gateway, key KZA): base 32.3/77.3 t/s, highspeed 58.2/47.5 t/s — confirma el hallazgo de infra: **+15% mediano con variancia de serving que domina** (un run de base superó al highspeed). El objetivo "≥80 t/s" del punto 2 NO se cumple; no es overhead del gateway (infra lo midió ≈0%) sino el serving de MiniMax desde esta región. Se migra igual: costo marginal 0 (suscripción), mejora mediana, rollback de 1 línea.
 > - `settings.yaml` actualizado: `reasoner.http_model: "MiniMax-M2.7-highspeed"` (comentario con bench y rollback).
