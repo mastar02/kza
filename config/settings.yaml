@@ -1218,6 +1218,15 @@ rooms:
     # re-pasar el wake 0.72 (caso real: 'apagá' pasó 0.77, el 'prendé'
     # siguiente salió 0.40-0.59 y STRICT lo mató). Texto-gates siguen activos.
     strict_follow_up_grace_s: 12.0
+    # Umbral de wake adaptativo por vad en STRICT (spec 2026-06-09). El audio
+    # del trigger pasa por Silero; voz clara (vad alto) baja el umbral hacia
+    # strict_wake_score_min, TV/lejos (vad bajo) lo mantiene en strict_wake_score.
+    # SHADOW primero: loguea [AmbientGuard-vadshadow] qué haría, sin decidir con
+    # él. Calibrar lo/hi/min con esos logs (incluir comandos reales) y flipear.
+    strict_vad_adaptive: false
+    strict_wake_score_min: 0.50
+    strict_vad_lo: 0.30
+    strict_vad_hi: 0.70
 
   # Endpointing adaptativo (S5) — usa señal del parser streaming para decidir
   # cuánto silencio esperar antes de cerrar captura. Si el parser ya tiene
