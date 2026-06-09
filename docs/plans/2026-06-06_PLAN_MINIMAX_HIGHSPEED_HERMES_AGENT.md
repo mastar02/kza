@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-06-06
 **Decisión del usuario:** suscripción MiniMax ya paga (costo por token no es factor) → habilitar `-highspeed`; hermes-agent en **etapas: asistente paralelo primero → delegación del slow path solo si los números validan**; sandbox = **Quadlet/podman rootless en el server**.
-**Contexto previo:** `docs/2026-06-06_HERMES4_RAG_TOTAL_ANALISIS.md` (veredicto Hermes-modelo + addendum MiniMax).
+**Contexto previo:** `docs/research/2026-06-06_HERMES4_RAG_TOTAL_ANALISIS.md` (veredicto Hermes-modelo + addendum MiniMax).
 
 ---
 
@@ -121,8 +121,8 @@ curl :8200/v1/models antes de empezar). El slow path de KZA usa HttpReasoner
 (src/llm/reasoner.py:446, OpenAI-compat) → gateway → MiniMax-M2.7 base. Mediciones
 2026-06-06: base vía gateway = TTFT 0.9-2.5s, gen ~41 t/s; prefill cloud de 4.7K tokens
 <1s (el RAG total casi no agrega latencia cloud). Doc de referencia:
-docs/2026-06-06_PLAN_MINIMAX_HIGHSPEED_HERMES_AGENT.md y
-docs/2026-06-06_HERMES4_RAG_TOTAL_ANALISIS.md.
+docs/plans/2026-06-06_PLAN_MINIMAX_HIGHSPEED_HERMES_AGENT.md y
+docs/research/2026-06-06_HERMES4_RAG_TOTAL_ANALISIS.md.
 
 ETAPA A — migrar el reasoner a highspeed (config-only + medición):
 1. config/settings.yaml reasoner.http_model: "MiniMax-M2.7" → "MiniMax-M2.7-highspeed"

@@ -14,7 +14,7 @@
 #   - alias SSH 'kza' en ~/.ssh/config (o KZA_SERVER_SSH).
 #   - remote 'origin' con push autorizado (la laptop sí puede pushear).
 #
-# Ver docs/ECOSISTEMA_LOCAL_SERVER.md
+# Ver docs/architecture/ECOSISTEMA_LOCAL_SERVER.md
 set -euo pipefail
 
 BRANCH="${1:-}"

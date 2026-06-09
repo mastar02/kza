@@ -53,7 +53,7 @@ sriov-migration-prompt.md
 # Claude Code local config
 .claude/
 
-# Ruido de sesiones de dev en el server (ver docs/ECOSISTEMA_LOCAL_SERVER.md)
+# Ruido de sesiones de dev en el server (ver docs/architecture/ECOSISTEMA_LOCAL_SERVER.md)
 # Snapshots timestamped que ensucian git status y esconden el trabajo real.
 *.bak
 *.bak.*

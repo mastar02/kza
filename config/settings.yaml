@@ -1442,7 +1442,7 @@ ambient:
     # en el ambient path. Benchmark A/B con audio real XVF3800: 0/5
     # alucinaciones sobre no-voz vs 5/5 del turbo, mejor calidad en voz,
     # RTF ~0.03 en CPU → 0 VRAM (libera ~1.5GB de cuda:0). El command path
-    # NO se toca (turbo GPU). Doc: docs/2026-06-07_SOTA_ASR_ESPANOL_INVESTIGACION.md
+    # NO se toca (turbo GPU). Doc: docs/research/2026-06-07_SOTA_ASR_ESPANOL_INVESTIGACION.md
     engine: "parakeet"               # parakeet | whisper (fallback/rollback)
     parakeet_model: "nemo-parakeet-tdt-0.6b-v3"
     device: "cuda:0"    # solo engine=whisper — GPU ambiental, JAMÁS cuda:1

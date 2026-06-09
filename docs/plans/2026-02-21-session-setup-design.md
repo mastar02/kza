@@ -15,7 +15,7 @@ Las sesiones anteriores sufrían de:
 ### Entregable 1: CLAUDE.md Reescrito
 - De ~250 líneas de spec sheet de hardware → ~150 líneas de guía de desarrollo
 - Secciones: Reglas imperativas, convenciones, arquitectura, mapa de archivos, comandos
-- Hardware detallado movido a `docs/HARDWARE.md`
+- Hardware detallado movido a `docs/architecture/HARDWARE.md`
 
 ### Entregable 2: Memoria Persistente
 Archivos en `.claude/projects/.../memory/`:
@@ -32,7 +32,7 @@ Archivos en `.claude/projects/.../memory/`:
 - `claude-md-architect` (43 installs) — CLAUDE.md structure
 
 ### Entregable 4: Hardware specs en docs/
-- `docs/HARDWARE.md` — Todo el detalle de CPU, GPU, RAM, PSU, cooling
+- `docs/architecture/HARDWARE.md` — Todo el detalle de CPU, GPU, RAM, PSU, cooling
 
 ## Decisiones Clave
 

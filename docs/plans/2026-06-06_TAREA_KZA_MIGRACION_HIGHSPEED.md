@@ -12,7 +12,7 @@
 
 **Fecha de creación:** 2026-06-06.
 **Prerequisito:** infra registró `MiniMax-M2.7-highspeed` en el gateway — **verificar antes de empezar**: `curl -s -H "Authorization: Bearer $MINIMAX_API_KEY" http://192.168.1.2:8200/v1/models` debe listarlo (la env del server es la virtual key del gateway).
-**Contexto completo:** `docs/2026-06-06_PLAN_MINIMAX_HIGHSPEED_HERMES_AGENT.md` (mediciones) y `docs/2026-06-06_HERMES4_RAG_TOTAL_ANALISIS.md` (análisis de fondo).
+**Contexto completo:** `docs/plans/2026-06-06_PLAN_MINIMAX_HIGHSPEED_HERMES_AGENT.md` (mediciones) y `docs/research/2026-06-06_HERMES4_RAG_TOTAL_ANALISIS.md` (análisis de fondo).
 
 ## Contexto
 

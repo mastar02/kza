@@ -133,7 +133,7 @@ python -m src.main
 - "Pausa" / "Siguiente canción"
 - "¿Qué está sonando?"
 
-> Ver [docs/SPOTIFY.md](docs/SPOTIFY.md) para configuración completa.
+> Ver [docs/architecture/SPOTIFY.md](docs/architecture/SPOTIFY.md) para configuración completa.
 
 ## 📁 Estructura
 
@@ -222,8 +222,8 @@ Reduce `gpu_memory_utilization` en settings.yaml o usa modelos más pequeños.
 | Documento | Descripción |
 |-----------|-------------|
 | [CLAUDE.md](CLAUDE.md) | Contexto del proyecto para Claude Code |
-| [docs/ORCHESTRATOR.md](docs/ORCHESTRATOR.md) | Sistema multi-usuario, cola priorizada, cancelación |
-| [docs/SPOTIFY.md](docs/SPOTIFY.md) | Integración Spotify con interpretación de contexto |
+| [docs/architecture/ORCHESTRATOR.md](docs/architecture/ORCHESTRATOR.md) | Sistema multi-usuario, cola priorizada, cancelación |
+| [docs/architecture/SPOTIFY.md](docs/architecture/SPOTIFY.md) | Integración Spotify con interpretación de contexto |
 
 ## 📝 Licencia
 

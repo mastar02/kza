@@ -301,7 +301,7 @@ Expected: wake events totales caen de ~2000/hora a decenas/día; tasa de aceptac
 - [ ] **Step 5:** Validar con el placeholder (decir "Hey Jarvis prendé la luz" natural, sin pausa) que el comando se transcribe limpio y llega a HA. Luego con "Nexa" (post-F3).
 
 ### Task 5.2: (Opcional) Gate del XVF3800 VAD on-chip
-- [ ] Pre-gate `DOA_VALUE.speech_active` por pyusb antes de alimentar el wake/STT (0-GPU, opera pre-AGC). Ver `docs/2026-05-31_DIAGNOSTICO_ALUCINACIONES_Y_ROADMAP_ALEXA.md` §C/Prioridad-1.
+- [ ] Pre-gate `DOA_VALUE.speech_active` por pyusb antes de alimentar el wake/STT (0-GPU, opera pre-AGC). Ver `docs/research/2026-05-31_DIAGNOSTICO_ALUCINACIONES_Y_ROADMAP_ALEXA.md` §C/Prioridad-1.
 
 ---
 

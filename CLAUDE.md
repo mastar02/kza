@@ -141,7 +141,7 @@ python tools/benchmark_latency.py --iterations 20
 ./scripts/download_models.sh               # Descargar todos los modelos
 ```
 
-## Hardware Resumen (detalle en docs/HARDWARE.md)
+## Hardware Resumen (detalle en docs/architecture/HARDWARE.md)
 
 - **CPU**: Threadripper PRO 7965WX — 24c/48t, LLM 72B Q6_K usa ~71GB RAM + 24 threads
 - **RAM**: 128GB DDR5-5600 RDIMM (8x16GB, 8 canales, ~358 GB/s)

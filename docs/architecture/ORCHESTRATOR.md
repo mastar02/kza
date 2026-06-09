@@ -36,7 +36,7 @@ Sistema para manejar multiples usuarios concurrentes con contexto separado por u
        │  │   (Predefinidas)  │  │   │  • Slow: ~3-5s          │   │  │   + Buffered TTS  │  │
        │  └───────────────────┘  │   │                         │   │  └───────────────────┘  │
        │                         │   │                         │   │                         │
-       │  ┌───────────────────┐  │   │  Ver: docs/SPOTIFY.md   │   │  Latencia: 5-30s        │
+       │  ┌───────────────────┐  │   │  Ver: docs/architecture/SPOTIFY.md   │   │  Latencia: 5-30s        │
        │  │   Lists (CRUD)    │  │   │                         │   │                         │
        │  └───────────────────┘  │   │                         │   │                         │
        │                         │   │                         │   │                         │

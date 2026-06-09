@@ -11,7 +11,7 @@ mejor calidad sobre voz, RTF ~0.03 en CPU). Razones de arquitectura:
   el Whisper ambiental.
 
 El COMMAND path no se toca: sigue en faster-whisper turbo GPU (~150ms,
-presupuesto <300ms). Doc: docs/2026-06-07_SOTA_ASR_ESPANOL_INVESTIGACION.md.
+presupuesto <300ms). Doc: docs/research/2026-06-07_SOTA_ASR_ESPANOL_INVESTIGACION.md.
 
 Duck-type de FastWhisperSTT para AmbientSTT: expone
 ``transcribe_with_confidence(audio) -> STTResult``. Parakeet no produce

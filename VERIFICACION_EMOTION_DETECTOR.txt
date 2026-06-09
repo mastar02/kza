@@ -28,7 +28,7 @@ TESTS UNITARIOS:
       - Mocks: Completos (sin dependencias externas)
 
 DOCUMENTACIÓN:
-  [✓] /sessions/great-epic-planck/mnt/kza/docs/EMOTION_DETECTOR.md
+  [✓] /sessions/great-epic-planck/mnt/kza/docs/architecture/EMOTION_DETECTOR.md
       - Guía de instalación
       - Ejemplos de uso
       - Especificación técnica
@@ -237,7 +237,7 @@ INCLUIDA:
   [✓] Type hints como documentación
 
 EXTERNA:
-  [✓] docs/EMOTION_DETECTOR.md (300+ líneas)
+  [✓] docs/architecture/EMOTION_DETECTOR.md (300+ líneas)
       - Descripción general
       - Instalación
       - Ejemplos de uso

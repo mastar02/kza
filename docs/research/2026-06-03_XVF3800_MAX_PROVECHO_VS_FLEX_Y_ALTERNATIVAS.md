@@ -210,7 +210,7 @@ Ordenado por ROI y dependencias. Cada paso dice qué se valida.
 
 ### Fuentes principales
 - **Código KZA:** `src/audio/xvf_controller.py:33-171`; `src/pipeline/multi_room_audio_loop.py:32-47,95-97,329-356,383,522-544`; `src/main.py:828-861`; `src/orchestrator/dispatcher.py:763-778`; `config/settings.yaml:1011-1212`; `deploy/udev/99-xvf3800.rules:10`; `requirements.txt`.
-- **Docs KZA:** `docs/2026-05-31_SESION_CONSOLIDADA_wake_alucinaciones.md`; `docs/2026-05-31_DIAGNOSTICO_ALUCINACIONES_Y_ROADMAP_ALEXA.md`; `docs/2026-05-31_BUG_RAIZ_WAKE_NEXA_Y_ROADMAP_v2.md`.
+- **Docs KZA:** `docs/research/2026-05-31_SESION_CONSOLIDADA_wake_alucinaciones.md`; `docs/research/2026-05-31_DIAGNOSTICO_ALUCINACIONES_Y_ROADMAP_ALEXA.md`; `docs/research/2026-05-31_BUG_RAIZ_WAKE_NEXA_Y_ROADMAP_v2.md`.
 - **XMOS oficial:** `xmos.com/.../04_tuning_the_application.html`, `.../03_audio_pipeline.html`, `.../AA_control_command_appendix.html`, `.../CC_alternative_tuning_parameters.html`, User Guide v3.2.1.
 - **Seeed / repo:** `wiki.seeedstudio.com/respeaker_xvf3800_introduction/`, `wiki.seeedstudio.com/respeaker_flex_introduction/`, `github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY` (`python_control/xvf_host.py`, issue #8).
 - **Académicas:** ICAART 2024 (scitepress 124571); arXiv 2512.17562, 2505.12969 (Calm-Whisper); openai/whisper #2378.

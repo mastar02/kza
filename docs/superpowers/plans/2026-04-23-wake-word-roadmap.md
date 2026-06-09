@@ -339,7 +339,7 @@ Audio stream continuo
 - FeatureManager warning `'ZoneManager' object has no attribute 'get_all_zones'`.
 
 **4.2 Docs & memoria**:
-- Update `docs/notion_page8_kza_update.md` con arquitectura final del wake word pipeline.
+- Update `docs/research/notion_page8_kza_update.md` con arquitectura final del wake word pipeline.
 - Actualizar memoria `~/.claude/projects/.../memory/`:
   - Feedback sobre `call_service` vs `call_service_ws` vs `call_service_ws` + await.
   - Nueva entry sobre speaker filter + threshold tuning.

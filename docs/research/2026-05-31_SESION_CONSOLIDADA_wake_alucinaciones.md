@@ -144,7 +144,7 @@ verificar SIEMPRE antes de afirmar; en producción, read-only + confirmar antes 
 
 ## Archivos de esta sesión
 - Memoria: `project_wake_word_dedicado_f2_2026-05-31.md` (bloques sesión 2 y 3).
-- `docs/2026-05-31_BUG_RAIZ_WAKE_NEXA_Y_ROADMAP_v2.md` (roadmap corregido).
+- `docs/research/2026-05-31_BUG_RAIZ_WAKE_NEXA_Y_ROADMAP_v2.md` (roadmap corregido).
 - Este doc (cierre).
 - Tooling XVF3800 en server: `/tmp/xvf3800_tool/` (repo oficial + `xvf_host` + firmware 6ch).
 - `pyusb 1.3.1` instalado en `~/app/.venv` (único cambio persistente, inerte).
