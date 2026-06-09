@@ -5,6 +5,10 @@
 > `plans/` = planes de implementación; `runbooks/` = procedimientos operativos paso a paso;
 > `superpowers/` = planes/specs generados con el plugin superpowers; `examples/` = ejemplos de configuración.
 
+## Raíz
+
+- [SERVER_CONVENTIONS.md](SERVER_CONVENTIONS.md) — Espejo local de Notion pág. 8 y 9: contrato del servidor compartido (usuarios/UID, puertos, Podman rootless + Quadlets, GPU por CDI, onboarding).
+
 ## architecture/ — docs vivos del sistema
 
 - [ARCHITECTURE_REVIEW.md](architecture/ARCHITECTURE_REVIEW.md) — Review de arquitectura del sistema de voz: fortalezas, deudas y recomendaciones.
