@@ -28,5 +28,23 @@ Asistente de voz 100% local para Home Assistant: Faster-Whisper (STT), Piper/Kok
 - [x] Revisar los 8 paquetes de diferencia en `requirements.txt` vs el worktree y consolidar. _(Verificado con `comm`: el worktree NO tiene ningún paquete que falte acá — la diferencia son 3 adiciones legítimas de esta rama posteriores al worktree (`onnx-asr[hub]` swap Parakeet 2026-06-07, `py3langid` language-ID shadow, `pyusb` control XVF3800) + comentarios. La rama del worktree está 100% contenida en origin/main (`git log feat/escritorio-grupos-escenas ^origin/main` vacío). `requirements.txt` actual ES la versión consolidada; nada que cambiar. El worktree se actualiza solo cuando se haga su cleanup (ver CLAUDE.md § Worktrees).)_
 
 ## Verificación final
-- [ ] `git status` limpio, pytest del subset verde, `docs/INDEX.md` consistente.
-- [ ] Resumen: hecho / pendiente / riesgos / tareas [HUMANO].
+- [x] `git status` limpio, pytest del subset verde, `docs/INDEX.md` consistente. _(Subset core+pipeline+orchestrator+ambient: 657 passed, 5 failed — las MISMAS 5 fallas pre-existentes del baseline de la rama antes de empezar (verificado en el primer paso; `test_endpointing::test_voice_prob_uses_vad` ya documentada como falla del baseline al 2026-06-01). Cero regresiones nuevas. INDEX: 0 docs sin listar, 0 links muertos.)_
+- [x] Resumen: hecho / pendiente / riesgos / tareas [HUMANO]. _(Ver sección "Cierre 2026-06-09" abajo.)_
+
+## Cierre 2026-06-09 (ejecutado por Claude)
+
+**Hecho** (10 commits en `chore/plan-mejoras-2026-06`): P0 completo (mp3 borrado + .gitignore; locks verificados/limpiados; doc highspeed commiteado), P1 completo (docs/ reorganizado en architecture/research/plans con git mv + INDEX.md; SERVER_CONVENTIONS.md espejado desde Notion pág 8+9 vía MCP; CLAUDE.md apunta primero al espejo local; estrategia de worktrees documentada), P2 completo (schema Pydantic + validación al boot + 6 tests TDD; DEPLOYMENT.md fuente de verdad única de deploy; requirements verificado ya-consolidado).
+
+**Decisiones tomadas** (documentadas, revisables):
+- La rama se creó desde `feat/nexa-command-detection-fixes` (que contiene main entero, ff-able) y NO desde main puro: el cambio pendiente de P0.3 y 5 de los docs a reorganizar solo existen en esa rama; desde main las tareas eran inejecutables.
+- "Lint" = `py_compile` + suite pytest: el repo no tiene linter configurado (sin ruff/flake8/pyproject).
+
+**Riesgos**:
+- La reorganización de docs/ rompe paths memorizados fuera del repo (memoria de Claude, Notion, notas). Dentro del repo todas las referencias fueron actualizadas y verificadas con grep.
+- SERVER_CONVENTIONS.md es un snapshot (2026-06-09); puede driftear de Notion. El doc declara que Notion gana ante conflicto.
+- La validación Pydantic al boot es fail-fast: si el settings.yaml del SERVER difiere del local y le faltara una sección núcleo, kza-voice no arrancaría tras el próximo deploy+restart. Mitigado: solo se exigen secciones/campos que main.py ya exigía a mano; el settings.yaml del repo pasa el smoke test.
+- Esta rama NO está mergeada ni pusheada; el server no la tiene.
+
+**Tareas [HUMANO] pendientes**:
+- P1.2: validar el contenido de `docs/SERVER_CONVENTIONS.md` contra Notion (el acceso MCP funcionó, así que el fallback [HUMANO] no se necesitó — queda solo la validación opcional de fidelidad).
+- (Fuera del plan, detectado): decidir cleanup del worktree `kza-wt-escritorio` (su rama ya está contenida en origin/main) y mergear/pushear esta rama.

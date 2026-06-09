@@ -17,7 +17,6 @@
 - [EMOTION_DETECTOR.md](architecture/EMOTION_DETECTOR.md) — Módulo de detección de emociones (wav2vec2): API, integración y configuración.
 - [ESTADO_PROYECTO_KZA.md](architecture/ESTADO_PROYECTO_KZA.md) — Reporte de estado del proyecto: qué funciona, métricas y pendientes.
 - [HARDWARE.md](architecture/HARDWARE.md) — Especificaciones de hardware: Threadripper PRO, 128GB RAM, GPUs, XVF3800, MA1260, BLE.
-- [KZA_ANALISIS_Y_ROADMAP.md](architecture/KZA_ANALISIS_Y_ROADMAP.md) — Análisis completo del sistema y roadmap de mejoras por área.
 - [OPTIMIZACION_128GB_8x16.md](architecture/OPTIMIZACION_128GB_8x16.md) — Análisis de la config de RAM 8x16GB (8 canales) para inferencia LLM en CPU.
 - [ORCHESTRATOR.md](architecture/ORCHESTRATOR.md) — Sistema de orquestación multi-usuario: colas de prioridad, contexto por usuario, cancelación.
 - [SPOTIFY.md](architecture/SPOTIFY.md) — Integración Spotify multi-room: dispatcher, mood mapping, grupos de bocinas.
@@ -27,6 +26,7 @@
 
 - [REPORTE_KZA_FEBRERO_2026.md](research/REPORTE_KZA_FEBRERO_2026.md) — Reporte general del asistente (febrero 2026): visión, capacidades y estado.
 - [MEJORAS_IMPLEMENTADAS.md](research/MEJORAS_IMPLEMENTADAS.md) — Registro histórico de mejoras implementadas por área.
+- [KZA_ANALISIS_Y_ROADMAP.md](research/KZA_ANALISIS_Y_ROADMAP.md) — Análisis completo del sistema y roadmap de mejoras por área (histórico).
 - [OPENCLAW_INTEGRATION_ANALYSIS.md](research/OPENCLAW_INTEGRATION_ANALYSIS.md) — Análisis de patrones de OpenClaw transferibles a KZA (failover, compaction, hooks).
 - [RECOMENDACION_DISCOS_URUGUAY.md](research/RECOMENDACION_DISCOS_URUGUAY.md) — Recomendaciones de almacenamiento (mercado uruguayo).
 - [notion_page8_kza_update.md](research/notion_page8_kza_update.md) — Borrador del update para Notion pág 8 ("Proyectos registrados" → entrada KZA).
