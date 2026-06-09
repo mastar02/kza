@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from src.core.settings_schema import validate_settings
+from src.core.settings_schema import check_unresolved_env_vars, validate_settings
 from src.stt.whisper_fast import create_stt
 from src.tts.piper_tts import create_tts
 from src.vectordb.chroma_sync import ChromaSync
@@ -89,8 +89,12 @@ def load_config(config_path: str = "config/settings.yaml") -> dict:
         return obj
 
     # Fail-fast al boot: una config rota aborta acá con el detalle de cada
-    # campo inválido, en vez de morir a mitad de la cadena de DI.
-    return validate_settings(replace_env_vars(config))
+    # campo inválido, en vez de morir a mitad de la cadena de DI. Los
+    # placeholders ${VAR} sin resolver abortan solo si son de HA (esencial);
+    # el resto loguea WARNING.
+    config = replace_env_vars(config)
+    check_unresolved_env_vars(config)
+    return validate_settings(config)
 
 
 async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma):
