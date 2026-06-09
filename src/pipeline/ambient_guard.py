@@ -182,6 +182,7 @@ class AmbientGuard:
         score: float,
         rms: float,
         spenergy_peak: float | None = None,
+        wake_vad: float | None = None,
     ) -> GuardDecision:
         """Decisión sobre un wake detectado (llamado desde el audio thread).
 
@@ -197,7 +198,19 @@ class AmbientGuard:
             if rs.state is GuardState.COOLDOWN:
                 return GuardDecision(False, "cooldown", rs.state)
             if rs.state is GuardState.STRICT:
-                if score < self.config.strict_wake_score:
+                adaptive = self._effective_strict_threshold(wake_vad)
+                threshold = (
+                    adaptive if self.config.strict_vad_adaptive
+                    else self.config.strict_wake_score
+                )
+                if self.config.strict_vad_adaptive is False and wake_vad is not None:
+                    would = "sí" if (score >= adaptive) != (score >= self.config.strict_wake_score) else "no"
+                    logger.info(
+                        f"[AmbientGuard-vadshadow] room={room_id} wake_vad={wake_vad:.2f} "
+                        f"score={score:.2f} umbral_fijo={self.config.strict_wake_score:.2f} "
+                        f"umbral_adaptativo={adaptive:.2f} cambiaria={would}"
+                    )
+                if score < threshold:
                     rs.last_reject_at = now  # ambiente persiste → quiet timer se refresca
                     return GuardDecision(False, "strict_score", rs.state)
                 if self.config.strict_min_rms > 0.0 and rms < self.config.strict_min_rms:

@@ -424,6 +424,48 @@ class TestPostSuccessGrace:
         assert guard.follow_up_allowed("escritorio") is False
 
 
+def make_strict_guard(clock=None, **overrides):
+    """Guard ya escalado a STRICT, para probar on_wake con wake_vad."""
+    guard = make_guard(clock=clock, **overrides)
+    for _ in range(3):  # strict_entry_rejects=3
+        guard.on_capture_result("escritorio", "noise")
+    assert guard.state_for("escritorio") is GuardState.STRICT
+    return guard
+
+
+class TestVadAdaptiveOnWake:
+    def test_enforce_high_vad_accepts_mid_score(self):
+        guard = make_strict_guard(strict_vad_adaptive=True, strict_wake_score=0.72,
+                                  strict_wake_score_min=0.50, strict_vad_hi=0.70)
+        d = guard.on_wake("escritorio", score=0.60, rms=0.05, wake_vad=0.80)
+        assert d.accept is True
+
+    def test_enforce_low_vad_rejects_mid_score(self):
+        guard = make_strict_guard(strict_vad_adaptive=True, strict_wake_score=0.72,
+                                  strict_wake_score_min=0.50, strict_vad_lo=0.30)
+        d = guard.on_wake("escritorio", score=0.60, rms=0.05, wake_vad=0.10)
+        assert d.accept is False
+        assert d.reason == "strict_score"
+
+    def test_enforce_vad_none_uses_hard(self):
+        guard = make_strict_guard(strict_vad_adaptive=True, strict_wake_score=0.72,
+                                  strict_wake_score_min=0.50)
+        d = guard.on_wake("escritorio", score=0.60, rms=0.05, wake_vad=None)
+        assert d.accept is False
+
+    def test_shadow_decides_with_hard_despite_high_vad(self):
+        guard = make_strict_guard(strict_vad_adaptive=False, strict_wake_score=0.72,
+                                  strict_wake_score_min=0.50, strict_vad_hi=0.70)
+        d = guard.on_wake("escritorio", score=0.60, rms=0.05, wake_vad=0.80)
+        assert d.accept is False
+        assert d.reason == "strict_score"
+
+    def test_wake_vad_ignored_in_normal(self):
+        guard = make_guard(strict_vad_adaptive=True)
+        d = guard.on_wake("escritorio", score=0.41, rms=0.05, wake_vad=0.10)
+        assert d.accept is True
+
+
 class TestEffectiveThreshold:
     def test_vad_none_returns_hard(self):
         guard = make_guard(strict_wake_score=0.72, strict_wake_score_min=0.50,
