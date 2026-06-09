@@ -424,6 +424,30 @@ class TestPostSuccessGrace:
         assert guard.follow_up_allowed("escritorio") is False
 
 
+class TestEffectiveThreshold:
+    def test_vad_none_returns_hard(self):
+        guard = make_guard(strict_wake_score=0.72, strict_wake_score_min=0.50,
+                           strict_vad_lo=0.30, strict_vad_hi=0.70)
+        assert guard._effective_strict_threshold(None) == 0.72
+
+    def test_vad_at_or_below_lo_returns_hard(self):
+        guard = make_guard(strict_wake_score=0.72, strict_wake_score_min=0.50,
+                           strict_vad_lo=0.30, strict_vad_hi=0.70)
+        assert guard._effective_strict_threshold(0.30) == 0.72
+        assert guard._effective_strict_threshold(0.10) == 0.72
+
+    def test_vad_at_or_above_hi_returns_soft(self):
+        guard = make_guard(strict_wake_score=0.72, strict_wake_score_min=0.50,
+                           strict_vad_lo=0.30, strict_vad_hi=0.70)
+        assert guard._effective_strict_threshold(0.70) == 0.50
+        assert guard._effective_strict_threshold(0.95) == 0.50
+
+    def test_vad_midpoint_interpolates_linear(self):
+        guard = make_guard(strict_wake_score=0.72, strict_wake_score_min=0.50,
+                           strict_vad_lo=0.30, strict_vad_hi=0.70)
+        assert guard._effective_strict_threshold(0.50) == pytest.approx(0.61)
+
+
 class TestVadAdaptiveConfig:
     def test_new_fields_have_shadow_defaults(self):
         cfg = AmbientGuardConfig()

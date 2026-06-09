@@ -296,6 +296,25 @@ class AmbientGuard:
 
     # ---- internos ----
 
+    def _effective_strict_threshold(self, wake_vad: float | None) -> float:
+        """Umbral de wake en STRICT, interpolado por vad del trigger.
+
+        wake_vad None (sin señal) → umbral duro (fail-safe: nunca más
+        permisivo por falta de dato). <= lo → duro; >= hi → blando; lineal
+        entre medio.
+        """
+        hard = self.config.strict_wake_score
+        if wake_vad is None:
+            return hard
+        soft = self.config.strict_wake_score_min
+        lo, hi = self.config.strict_vad_lo, self.config.strict_vad_hi
+        if wake_vad <= lo:
+            return hard
+        if wake_vad >= hi:
+            return soft
+        frac = (wake_vad - lo) / (hi - lo)
+        return hard - frac * (hard - soft)
+
     def _room(self, room_id: str) -> _RoomState:
         rs = self._rooms.get(room_id)
         if rs is None:
