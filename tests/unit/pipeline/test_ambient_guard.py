@@ -465,6 +465,14 @@ class TestVadAdaptiveOnWake:
         d = guard.on_wake("escritorio", score=0.41, rms=0.05, wake_vad=0.10)
         assert d.accept is True
 
+    def test_shadow_emits_log(self, caplog):
+        import logging
+        guard = make_strict_guard(strict_vad_adaptive=False, strict_wake_score=0.72,
+                                  strict_wake_score_min=0.50, strict_vad_hi=0.70)
+        with caplog.at_level(logging.INFO, logger="src.pipeline.ambient_guard"):
+            guard.on_wake("escritorio", score=0.60, rms=0.05, wake_vad=0.80)
+        assert any("AmbientGuard-vadshadow" in r.message for r in caplog.records)
+
 
 class TestEffectiveThreshold:
     def test_vad_none_returns_hard(self):
