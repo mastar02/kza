@@ -19,7 +19,7 @@ Asistente de voz 100% local para Home Assistant: Faster-Whisper (STT), Piper/Kok
 ## P1 — Documentación y convenciones
 - [x] Reorganizar `docs/` en `docs/architecture/`, `docs/research/`, `docs/plans/` (mover los ~30 .md con fecha según su tipo) + `docs/INDEX.md` con una línea por documento. Usar `git mv`. _(25 .md movidos con git mv: 9→architecture, 14→research, 2→plans (11 ya estaban en plans/). Referencias internas actualizadas en CLAUDE.md, README.md, .gitignore, src/ambient/, config/settings.yaml y docs cruzados. runbooks/, examples/ y superpowers/ quedan como estaban.)_
 - [x] Crear `docs/SERVER_CONVENTIONS.md`: espejo local de las convenciones del servidor compartido que hoy viven solo en Notion (pág. 8 y 9.x — usuarios/UID, sub-rangos de puertos, Podman rootless + Quadlets, GPU por CDI). **[HUMANO]** pegar/validar el contenido desde Notion si Claude no tiene acceso al MCP. _(Hecho vía MCP Notion 2026-06-09: pág. 8 completa (4 páginas de bloques + 3 tablas) y pág. 9 completa. Credenciales que figuran en Notion fueron redactadas. Las sub-páginas 9.x de proyectos ajenos se listan sin espejar. Queda a validación humana opcional, el acceso MCP funcionó.)_
-- [ ] Actualizar `CLAUDE.md`: apuntar primero a `docs/SERVER_CONVENTIONS.md` y dejar Notion como referencia secundaria.
+- [x] Actualizar `CLAUDE.md`: apuntar primero a `docs/SERVER_CONVENTIONS.md` y dejar Notion como referencia secundaria. _(Sección "Source of truth cross-project" reescrita; Notion sigue siendo canónica ante diferencias.)_
 - [ ] Documentar en `CLAUDE.md` la estrategia del worktree `kza-wt-escritorio`: qué rama vive ahí, cómo y cuándo se mergea, regla de no tocar ambos a la vez.
 
 ## P2 — Deuda técnica

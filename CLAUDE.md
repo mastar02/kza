@@ -4,11 +4,11 @@ Sistema de control por voz 100% local para Home Assistant. Latencia <300ms para 
 
 ## Source of truth cross-project
 
-Este proyecto cubre **solo** el pipeline de voz. Para temas de plataforma (server físico, red, observabilidad, mail, HA), la fuente de verdad es **Notion** (workspace KZA, root page_id `345ab24f-c493-80b2-b6f4-ef917e865f26`), consultable vía MCP `mcp__notion__*`.
+Este proyecto cubre **solo** el pipeline de voz. Para las convenciones del servidor compartido (usuarios/UID, sub-rangos de puertos, Podman rootless + Quadlets, GPU por CDI, onboarding), consultar **primero** el espejo local `docs/SERVER_CONVENTIONS.md`. **Notion** (workspace KZA, root page_id `345ab24f-c493-80b2-b6f4-ef917e865f26`, vía MCP `mcp__notion__*`) queda como referencia secundaria y fuente canónica si difieren.
 
 - **No** leer la memoria de `~/Documents/homelab-infra/` ni `~/Documents/homelab-services/`.
-- **Sí** ir a Notion: pág 8 (contrato compartido), pág 11 (red), pág 10 (HA), pág 12 (mail), pág 14 (obs).
-- Cuando el código de KZA depende de algo compartido (vLLM compartido :8100, sub-rangos puertos), seguir el contrato de Notion pág 8.
+- Para temas de plataforma sin espejo local, ir a Notion: pág 8 (contrato compartido), pág 11 (red), pág 10 (HA), pág 12 (mail), pág 14 (obs).
+- Cuando el código de KZA depende de algo compartido (gateway LLM :8200, sub-rangos puertos 9500-9599), seguir `docs/SERVER_CONVENTIONS.md` y validar contra Notion pág 8 ante dudas.
 
 ## Reglas para Claude — LEER SIEMPRE
 
