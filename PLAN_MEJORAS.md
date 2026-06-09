@@ -33,7 +33,7 @@ Asistente de voz 100% local para Home Assistant: Faster-Whisper (STT), Piper/Kok
 
 ## Cierre 2026-06-09 (ejecutado por Claude)
 
-**Hecho** (10 commits en `chore/plan-mejoras-2026-06`): P0 completo (mp3 borrado + .gitignore; locks verificados/limpiados; doc highspeed commiteado), P1 completo (docs/ reorganizado en architecture/research/plans con git mv + INDEX.md; SERVER_CONVENTIONS.md espejado desde Notion pág 8+9 vía MCP; CLAUDE.md apunta primero al espejo local; estrategia de worktrees documentada), P2 completo (schema Pydantic + validación al boot + 6 tests TDD; DEPLOYMENT.md fuente de verdad única de deploy; requirements verificado ya-consolidado).
+**Hecho** (11 commits, ejecutados en `chore/plan-mejoras-2026-06`): P0 completo (mp3 borrado + .gitignore; locks verificados/limpiados; doc highspeed commiteado), P1 completo (docs/ reorganizado en architecture/research/plans con git mv + INDEX.md; SERVER_CONVENTIONS.md espejado desde Notion pág 8+9 vía MCP; CLAUDE.md apunta primero al espejo local; estrategia de worktrees documentada), P2 completo (schema Pydantic + validación al boot + 6 tests TDD; DEPLOYMENT.md fuente de verdad única de deploy; requirements verificado ya-consolidado).
 
 **Decisiones tomadas** (documentadas, revisables):
 - La rama se creó desde `feat/nexa-command-detection-fixes` (que contiene main entero, ff-able) y NO desde main puro: el cambio pendiente de P0.3 y 5 de los docs a reorganizar solo existen en esa rama; desde main las tareas eran inejecutables.
@@ -42,9 +42,9 @@ Asistente de voz 100% local para Home Assistant: Faster-Whisper (STT), Piper/Kok
 **Riesgos**:
 - La reorganización de docs/ rompe paths memorizados fuera del repo (memoria de Claude, Notion, notas). Dentro del repo todas las referencias fueron actualizadas y verificadas con grep.
 - SERVER_CONVENTIONS.md es un snapshot (2026-06-09); puede driftear de Notion. El doc declara que Notion gana ante conflicto.
-- La validación Pydantic al boot es fail-fast: si el settings.yaml del SERVER difiere del local y le faltara una sección núcleo, kza-voice no arrancaría tras el próximo deploy+restart. Mitigado: solo se exigen secciones/campos que main.py ya exigía a mano; el settings.yaml del repo pasa el smoke test.
-- Esta rama NO está mergeada ni pusheada; el server no la tiene.
+- La validación Pydantic al boot es fail-fast: si el settings.yaml del SERVER difiere del local y le faltara una sección núcleo, kza-voice no arrancaría tras el próximo deploy+restart. Mitigado (post-review 2026-06-09): el schema replica el contrato exacto de main.py — embeddings.model/device y home_assistant.url incondicionales; speaker_id/emotion model+device solo cuando enabled (default true); el settings.yaml del repo pasa el smoke test.
+- ~~Esta rama NO está mergeada ni pusheada~~ Actualización post-cierre: mergeada ff a `feat/nexa-command-detection-fixes` y pusheada a origin el 2026-06-09; la rama `chore/` se borró tras integrarse. El server aún no hizo pull.
 
 **Tareas [HUMANO] pendientes**:
 - P1.2: validar el contenido de `docs/SERVER_CONVENTIONS.md` contra Notion (el acceso MCP funcionó, así que el fallback [HUMANO] no se necesitó — queda solo la validación opcional de fidelidad).
-- (Fuera del plan, detectado): decidir cleanup del worktree `kza-wt-escritorio` (su rama ya está contenida en origin/main) y mergear/pushear esta rama.
+- (Fuera del plan, detectado): ~~decidir cleanup del worktree `kza-wt-escritorio` y mergear/pushear esta rama~~ — hecho el 2026-06-09 (worktree removido, rama escritorio borrada, merge+push ejecutados). El worktree `kza-dashboard` se conserva (tiene commits propios no integrados).

@@ -13,7 +13,9 @@
 - **Gateway LiteLLM :8200 → MiniMax cloud** — reasoner slow-path, bajo `infra` (no lo
   administra KZA; consumir con virtual key).
 - **ChromaDB** — hoy in-process dentro de kza-voice. Existe el Quadlet
-  `kza-chroma.container` preparado para migrarlo a :9500x, todavía no en uso.
+  `kza-chroma.container` para migrarlo a :9500, pero NO está operativo: la auditoría
+  2026-05-30 lo encontró en crash-loop (monta `chroma` en vez de `chroma_db` —
+  fix pendiente; ver `docs/SERVER_CONVENTIONS.md` § deudas 2026-05-30).
 - Secrets en `/home/kza/secrets/` (`.env`, `*-api-key.env`), inyectados vía
   `EnvironmentFile=` del unit.
 
@@ -30,7 +32,9 @@ requiere — chequear VRAM libre antes (`nvidia-smi`; preflight integrado avisa 
 - **`docker/` (Dockerfiles + services) — EXPERIMENTAL, sin paridad** con el monolito
   canónico (`python -m src.main`). Ver `docker/README.md` para el detalle de gaps.
   No deployar producción con esto.
-- **docker-compose** — aparece solo en docs históricos (`docs/research/`,
-  `docs/plans/` de 2026-02/03) como propuesta vieja. No existe compose en producción.
+- **docker-compose** — el `docker-compose.yml` de la raíz del repo pertenece al modo
+  experimental de `docker/` (mismo estatus: sin paridad, no producción); las menciones
+  en `docs/research/` y `docs/plans/` de 2026-02/03 son propuestas históricas. Nada de
+  compose corre en producción.
 - Units de sistema en `/etc/systemd/system/` — prohibido por contrato (todo va en
   systemd `--user`).

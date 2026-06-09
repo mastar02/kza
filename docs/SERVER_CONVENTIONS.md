@@ -3,6 +3,7 @@
 > Espejo de Notion KZA **pág. 8** ("Convenciones del servidor compartido") y **pág. 9** ("Onboarding — cómo sumar un proyecto nuevo"), extraído el **2026-06-09** vía MCP.
 > La fuente canónica sigue siendo Notion; si este doc y Notion difieren, **gana Notion**. Root del workspace: page_id `345ab24f-c493-80b2-b6f4-ef917e865f26`.
 > Nota: la pág. 8 es un log append-only con actualizaciones fechadas; ante conflicto entre secciones, prevalece la más reciente.
+> Inconsistencias conocidas DEL ORIGINAL (espejadas fielmente, no errores de este doc): la pág. 9 dice "reglas R1-R12" pero la pág. 8 define hasta R14; el mapa de puertos ubica `:9501` (Kibana, obs) dentro del sub-rango 9500-9599 reclamado por KZA; el sub-rango de thermouy (9320-9329) quedó dentro del de konsi (9300-9399). El propio original (auditoría 2026-05-01) reconoce que el mapa necesita auditoría.
 
 ---
 
@@ -59,7 +60,7 @@ El servidor `192.168.1.2` aloja múltiples proyectos que comparten CPU, RAM, VRA
 1. **vLLM nativo bajo infra (2026-04-20)** — el overhead de NVIDIA CDI (~0.34 GB sobre 8 GB) obligaba a `gpu-memory-utilization 0.92`; se revirtió a nativo (`/home/infra/vllm-venv/`, systemd --user) con 0.80. Criterio para nativo en servicios de plataforma: (a) servicio estable y pinneado, (b) recursos al límite y el overhead del container lo agrava, (c) el dueño del servicio opera la infra. Forma nativa correcta: venv en `/home/<usuario>/<proyecto>-venv/`, unit en `~/.config/systemd/user/`, Type=simple, ExecStart absoluto al venv, Restart=on-failure.
 2. **ha-core rootful + host network (2026-04-21)** — Podman rootless con `--network=host` no ve la red física (slirp4netns/pasta); HA necesita broadcasts mDNS/SSDP para discovery. Quadlet rootful en `/etc/containers/systemd/ha-core.container`, `MemoryMax=3G`, `AddCapability=NET_ADMIN,NET_RAW`. Criterio rootful: (a) requiere visibilidad de red física real, (b) multicast/broadcast esencial, (c) sin alternativa rootless.
 3. **mail/Mailcow bajo root (requisito Docker)** — user `mail` (UID 8) existe pero Mailcow corre bajo root directamente.
-4. **unbound nativo bajo dns (2026-04-30)** — imagen mvance no es rootless-friendly. AppArmor override en `/etc/apparmor.d/local/usr.sbin.unbound` para leer config bajo `/home/dns/` (template para futuros servicios nativos). *(KZA-voice también es excepción R10 #3-style: nativo por USB ReSpeaker + MA1260 serial + presupuesto <300ms.)*
+4. **unbound nativo bajo dns (2026-04-30)** — imagen mvance no es rootless-friendly. AppArmor override en `/etc/apparmor.d/local/usr.sbin.unbound` para leer config bajo `/home/dns/` (template para futuros servicios nativos). *(KZA-voice también corre nativo bajo systemd --user — excepción R10 propia, análoga a la #1 (vLLM nativo): acceso USB ReSpeaker + MA1260 serial + presupuesto <300ms hacen al contenedor inviable.)*
 5. **obs-filebeat nativo bajo obs (2026-06-04)** — imagen oficial 8.15.5 (libsystemd 245) no lee formato compact de systemd 255; keep-groups requiere crun no instalado.
 
 ### Excepción a R6 — proxy intra-proyecto (2026-04-24)
