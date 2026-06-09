@@ -40,7 +40,6 @@ def compute_wake_vad(audio_chunk, vad_predict) -> float | None:
     if vad_predict is None:
         return None
     try:
-        import numpy as np
         mono = audio_chunk
         if getattr(mono, "ndim", 1) > 1:
             mono = mono[:, 0]
@@ -356,6 +355,19 @@ class MultiRoomAudioLoop:
                 f"Room {room_id}: wake word loaded "
                 f"(device={rs.device_index}, models={rs.wake_detector.get_active_models()})"
             )
+        # Pre-cargar el predictor Silero para wake_vad FUERA del audio callback
+        # (torch.hub.load hace I/O + init de torch; en el callback C de
+        # sounddevice congelaría el stream en la primera detección). Dedicado:
+        # NO compartir con los predictores del ambient segmenter (Silero es
+        # stateful — GRU — y el segmenter resetea su estado por utterance).
+        if self._wake_vad_predict is None:
+            from src.ambient.segmenter import make_silero_predictor
+            try:
+                self._wake_vad_predict = make_silero_predictor()
+                logger.info("wake_vad: predictor Silero pre-cargado")
+            except Exception as e:
+                logger.warning(f"wake_vad: Silero no disponible ({e}) — umbral fijo")
+                self._wake_vad_predict = False  # no reintentar
         # Tuning del DSP ANTES de arrancar el poller (review Fase 1): así los
         # writes corren con USB single-threaded (sin transfers concurrentes
         # sobre el mismo handle), y en to_thread para no bloquear el event
@@ -622,12 +634,6 @@ class MultiRoomAudioLoop:
                 detection = rs.wake_detector.detect(audio_chunk)
                 if detection:
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
-                    if self._wake_vad_predict is None:
-                        from src.ambient.segmenter import make_silero_predictor
-                        try:
-                            self._wake_vad_predict = make_silero_predictor()
-                        except Exception:
-                            self._wake_vad_predict = False  # no reintentar
                     predict = self._wake_vad_predict or None
                     wake_vad = compute_wake_vad(audio_chunk, predict)
                     if self._should_accept_wakeword(
