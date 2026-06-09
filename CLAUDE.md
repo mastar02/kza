@@ -143,11 +143,10 @@ python tools/benchmark_latency.py --iterations 20
 
 ## Worktrees
 
-- `../kza-wt-escritorio` → rama `feat/escritorio-grupos-escenas` (grupos de luces `light.grupo_*` + escenas). Comparte `.git` con este repo.
 - **Regla: nunca trabajar en este repo y en un worktree a la vez** (comparten `.git`: locks de index y refs pueden colisionar; ya pasó con un `index.lock` colgado).
-- **Cómo se integra**: el trabajo del worktree se mergea a `main` desde la laptop (PR o merge local + push); el worktree NO pushea por su cuenta nada que no esté coordinado con la rama principal.
-- **Cuándo se elimina**: cuando `git log <rama-del-worktree> ^main` queda vacío (rama contenida en main), hacer `git worktree remove ../kza-wt-escritorio` y borrar la rama. Estado 2026-06-09: la rama está behind origin/main (ya integrada) → el worktree es candidato a cleanup.
-- Existe también `.claude/worktrees/kza-dashboard` (worktree de sesión Claude, mismo criterio).
+- **Cómo se integra**: el trabajo de un worktree se mergea a `main` desde la laptop (PR o merge local + push); el worktree NO pushea por su cuenta nada que no esté coordinado con la rama principal.
+- **Cuándo se elimina**: cuando `git log <rama-del-worktree> ^main` queda vacío (rama contenida en main), hacer `git worktree remove <path>` y borrar la rama. (Así se eliminó `../kza-wt-escritorio` el 2026-06-09.)
+- Worktree activo: `.claude/worktrees/kza-dashboard` (rama `worktree-kza-dashboard`, dashboard/métricas LLM — tiene commits propios sin integrar).
 
 ## Hardware Resumen (detalle en docs/architecture/HARDWARE.md)
 
