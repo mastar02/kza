@@ -87,6 +87,14 @@ class AmbientGuardConfig:
     # 'apagá' pasó con 0.77 pero el 'prendé' siguiente salió 0.40-0.59 y
     # STRICT lo mató). Las compuertas de TEXTO siguen activas. 0.0 = off.
     strict_follow_up_grace_s: float = 12.0
+    # Umbral de wake adaptativo por vad en STRICT (spec 2026-06-09). El umbral
+    # fijo strict_wake_score (TV/lejos) se interpola hacia strict_wake_score_min
+    # (voz clara) según el vad de Silero del audio del trigger. Arranca en
+    # shadow: computa y loguea el umbral adaptativo pero decide con el fijo.
+    strict_vad_adaptive: bool = False
+    strict_wake_score_min: float = 0.50   # umbral con wake_vad >= strict_vad_hi
+    strict_vad_lo: float = 0.30           # wake_vad <= esto → umbral duro
+    strict_vad_hi: float = 0.70           # wake_vad >= esto → umbral blando
 
     def __post_init__(self) -> None:
         if self.cooldown_duration_s >= self.strict_exit_quiet_s:
@@ -97,6 +105,18 @@ class AmbientGuardConfig:
                 f"(COOLDOWN expiraría directo a NORMAL); clamping a {clamped}s"
             )
             self.cooldown_duration_s = clamped
+        if self.strict_vad_lo >= self.strict_vad_hi:
+            logger.warning(
+                f"[AmbientGuardConfig] strict_vad_lo={self.strict_vad_lo} >= "
+                f"strict_vad_hi={self.strict_vad_hi}; clamping lo a hi-0.1"
+            )
+            self.strict_vad_lo = self.strict_vad_hi - 0.1
+        if self.strict_wake_score_min > self.strict_wake_score:
+            logger.warning(
+                f"[AmbientGuardConfig] strict_wake_score_min={self.strict_wake_score_min} > "
+                f"strict_wake_score={self.strict_wake_score}; clamping a hard"
+            )
+            self.strict_wake_score_min = self.strict_wake_score
 
 
 @dataclass(frozen=True)

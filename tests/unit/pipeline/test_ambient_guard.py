@@ -422,3 +422,20 @@ class TestPostSuccessGrace:
         # other_fail tampoco abre gracia (no fue acción confirmada)
         guard.on_capture_result("escritorio", "other_fail")
         assert guard.follow_up_allowed("escritorio") is False
+
+
+class TestVadAdaptiveConfig:
+    def test_new_fields_have_shadow_defaults(self):
+        cfg = AmbientGuardConfig()
+        assert cfg.strict_vad_adaptive is False  # shadow primero
+        assert cfg.strict_wake_score_min == 0.50
+        assert cfg.strict_vad_lo == 0.30
+        assert cfg.strict_vad_hi == 0.70
+
+    def test_clamps_lo_below_hi(self):
+        cfg = AmbientGuardConfig(strict_vad_lo=0.8, strict_vad_hi=0.4)
+        assert cfg.strict_vad_lo < cfg.strict_vad_hi
+
+    def test_clamps_min_not_above_hard(self):
+        cfg = AmbientGuardConfig(strict_wake_score=0.65, strict_wake_score_min=0.90)
+        assert cfg.strict_wake_score_min <= cfg.strict_wake_score
