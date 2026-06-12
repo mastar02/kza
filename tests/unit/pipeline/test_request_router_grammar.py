@@ -223,3 +223,39 @@ class TestUnverifiedIntentGuard:
         )
         result = await router.process_command(event)
         orch.process.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unevidenced_rejection_speaks_feedback(self):
+        """El rechazo por verbo no evidenciado debe AVISAR por voz: para llegar
+        acá el texto pasó el CommandGate y el 7B dio comando con confianza alta
+        — casi seguro es un humano con el STT garbleado. El silencio es
+        indistinguible de 'no funciona' (caso real 2026-06-11 17:57)."""
+        router, orch = _make_router_for(
+            "Nexa, pero a la luz.", _turn_on_classification(0.9)
+        )
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, pero a la luz.",
+        )
+        result = await router.process_command(event)
+        assert result["response"], "el rechazo debe llevar mensaje hablable"
+        router.response_handler.speak.assert_called_once()
+        spoken = router.response_handler.speak.call_args.args[0]
+        assert spoken == result["response"]
+
+    @pytest.mark.asyncio
+    async def test_gate_rejection_stays_silent(self):
+        """Los rechazos del CommandGate (TV: 'gracias por ver el video') NO
+        deben hablar — son cientos por día con la TV prendida."""
+        router, orch = _make_router_for(
+            "Gracias por ver el video.", _noise_classification()
+        )
+        # Gate real con noise phrases activas para que rechace el texto de TV.
+        router.command_gate = CommandAcceptanceGate(wake_words=("nexa",))
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Gracias por ver el video.",
+        )
+        result = await router.process_command(event)
+        assert result["success"] is False
+        router.response_handler.speak.assert_not_called()

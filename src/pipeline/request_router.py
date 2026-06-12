@@ -580,7 +580,18 @@ class RequestRouter:
                 )
                 result["intent"] = f"unverified_intent:{classification.intent}"
                 result["success"] = False
-                result["response"] = ""
+                # Feedback audible (2026-06-12): para llegar acá el texto pasó
+                # el CommandGate y el 7B dio comando con confianza alta — casi
+                # seguro es un humano con el STT garbleado. Sin aviso, el
+                # rechazo es indistinguible de "no funciona" (1 caso en 48h de
+                # logs y era un comando real; la TV no llega a este punto).
+                result["response"] = "No te entendí bien, ¿me lo repetís?"
+                _rc = None
+                if self.room_context_manager and room_id:
+                    _rc = self.room_context_manager.resolve_room(
+                        mic_zone_id=room_id, user_id=None,
+                    )
+                self.response_handler.speak(result["response"], room_context=_rc)
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
             # Resultado válido — guardar para que el caller registre en history

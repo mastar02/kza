@@ -155,9 +155,12 @@ def classify_outcome(result: dict) -> str:
         intent == "gate_rejected"
         or intent.startswith("llm_rejected")
         or intent.startswith("low_confidence")
-        or intent.startswith("unverified_intent")
     ):
         return "noise"
+    # unverified_intent NO es noise: pasó el CommandGate y el 7B le dio
+    # is_command con confianza alta — solo el verbo quedó garbleado por el
+    # STT far-field. Señal de humano real; escalarlo dejaba el guard sordo
+    # justo después de un intento legítimo (2026-06-11 17:57).
     return "other_fail"
 
 

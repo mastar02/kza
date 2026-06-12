@@ -249,6 +249,16 @@ class TestClassifyOutcome:
         assert classify_outcome(
             {"success": False, "text": "prende la luz", "intent": "domotics"}) == "other_fail"
 
+    def test_unverified_intent_is_other_fail_not_noise(self):
+        # unverified_intent = pasó CommandGate + el 7B dio is_command con
+        # confianza alta; solo el verbo quedó garbleado por el STT far-field.
+        # Eso es señal de humano real, no de TV — NO debe escalar el guard
+        # (caso real 2026-06-11 17:57: 'Nexa, a perder a luz' rechazado y el
+        # guard entró a STRICT 2s después, dejando sordo el sistema al usuario).
+        assert classify_outcome(
+            {"success": False, "text": "Nexa, a perder a luz.",
+             "intent": "unverified_intent:turn_off"}) == "other_fail"
+
 
 class TestConfigInvariant:
     def test_cooldown_clamped_when_exceeds_quiet(self):
@@ -361,15 +371,6 @@ class TestStrictBoundaryScore:
         d = guard.on_wake("escritorio", score=0.65, rms=0.05)
         assert d.accept is True
         assert d.reason == "ok"
-
-
-class TestUnverifiedIntentOutcome:
-    def test_unverified_intent_is_noise(self):
-        # Garble del verbo (2026-06-06): 'pero a la luz' → LLM turn_on no
-        # evidenciado → rechazo. Gastó Whisper+router → alimenta la escalera.
-        assert classify_outcome(
-            {"success": False, "text": "pero a la luz", "intent": "unverified_intent:turn_on"}
-        ) == "noise"
 
 
 class TestPostSuccessGrace:
