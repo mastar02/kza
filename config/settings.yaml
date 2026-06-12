@@ -1097,6 +1097,18 @@ rooms:
     # arranca recién al disparar → STT recibe "...la luz" sin verbo. El pre-roll
     # lo recupera. 0.0 = desactivado. Ajustar si incluye charla previa de más.
     wake_preroll_s: 1.0
+    # Captura de clips de wake (2026-06-12): cada wake ACEPTADO guarda su
+    # preroll (~1s) como WAV 16k mono. Objetivo: dataset de re-entrenamiento
+    # de nexa.onnx con audio REAL — los falsos wakes de TV ("gracias por ver
+    # el video", score 0.5-0.95) son hard negatives con la distribución exacta
+    # que engaña al modelo; los wakes de comandos reales son positivos
+    # far-field. Etiquetar cruzando el timestamp del archivo con el journal.
+    # Requiere wake_preroll_s > 0. ~2000 clips ≈ 70MB. El writer corre en su
+    # propio thread (jamás bloquea el audio callback).
+    capture_clips:
+      enabled: true
+      dir: "data/wakeword_training/captured"
+      max_files: 2000
     # (follow_up_window_s ya existe más abajo en este mismo bloque — 2026-06-02
     # main.py ahora lo CABLEA, antes hardcodeaba 8.0 e ignoraba el config.)
     # Porcupine (engine: porcupine) — wake-word dedicado "Nexa" (Picovoice).

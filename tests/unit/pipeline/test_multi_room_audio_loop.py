@@ -306,6 +306,71 @@ class TestWakePreroll:
         assert len(rs.audio_buffer) == 0  # sin pre-roll = comportamiento actual
 
 
+class TestWakeClipCapture:
+    """Captura de clips de wake (2026-06-12): cada wake ACEPTADO persiste su
+    audio (preroll) vía WakeClipWriter para el dataset de re-entrenamiento
+    (hard negatives de TV + positivos far-field). El submit no debe bloquear
+    el audio callback — el writer es un colaborador inyectado y mockeable."""
+
+    def _loop_with_room(self, detector, **kwargs):
+        rs = RoomStream(
+            room_id="escritorio", device_index=0,
+            wake_detector=detector, echo_suppressor=_make_echo_suppressor(),
+        )
+        loop = _make_multi_room_loop(rooms={"escritorio": rs}, **kwargs)
+        return loop, rs
+
+    def test_accepted_wake_submits_clip(self):
+        det = _detector_seq([None, None, None, ("nexa", 0.8)])
+        writer = MagicMock()
+        loop, rs = self._loop_with_room(
+            det, wake_preroll_s=0.24, wake_clip_writer=writer,
+        )
+        cb = loop._make_audio_callback(rs)
+        for i in range(3):
+            cb(np.full((CHUNK_SIZE, 2), 0.01 * (i + 1), dtype=np.float32), CHUNK_SIZE, None, None)
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is True
+        writer.submit.assert_called_once()
+        room_id, score, audio = writer.submit.call_args.args
+        assert room_id == "escritorio"
+        assert score == 0.8
+        assert len(audio) >= 3 * CHUNK_SIZE  # el preroll sembrado
+
+    def test_no_writer_is_fine(self):
+        det = _detector_seq([None, ("nexa", 0.8)])
+        loop, rs = self._loop_with_room(det, wake_preroll_s=0.24)
+        cb = loop._make_audio_callback(rs)
+        cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is True  # sin writer no rompe nada
+
+    def test_rejected_wake_does_not_submit(self):
+        # min_wake_rms imposible → _should_accept_wakeword rechaza.
+        det = _detector_seq([None, ("nexa", 0.8)])
+        writer = MagicMock()
+        loop, rs = self._loop_with_room(
+            det, wake_preroll_s=0.24, wake_clip_writer=writer, min_wake_rms=9.9,
+        )
+        cb = loop._make_audio_callback(rs)
+        cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is False
+        writer.submit.assert_not_called()
+
+    def test_writer_exception_does_not_break_capture(self):
+        det = _detector_seq([None, ("nexa", 0.8)])
+        writer = MagicMock()
+        writer.submit.side_effect = RuntimeError("disk on fire")
+        loop, rs = self._loop_with_room(
+            det, wake_preroll_s=0.24, wake_clip_writer=writer,
+        )
+        cb = loop._make_audio_callback(rs)
+        cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is True  # fail-open: la captura del comando sigue
+
+
 class _FakeXvf:
     """XvfController falso: peak_since devuelve un valor fijo (o None)."""
     def __init__(self, peak):

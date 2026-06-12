@@ -142,6 +142,7 @@ class MultiRoomAudioLoop:
         spenergy_gate_enabled: bool = True,
         xvf_tuning: dict | None = None,
         ambient_guard: AmbientGuard | None = None,
+        wake_clip_writer=None,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -193,6 +194,12 @@ class MultiRoomAudioLoop:
             int(round(wake_preroll_s * sample_rate / CHUNK_SIZE))
             if wake_preroll_s > 0 else 0
         )
+
+        # Captura de clips de wake (2026-06-12): cada wake ACEPTADO persiste su
+        # preroll como WAV (dataset de re-entrenamiento: falsos de TV = hard
+        # negatives; comandos reales = positivos far-field). Requiere preroll
+        # activo (sin preroll no hay audio que guardar). None = apagado.
+        self._wake_clip_writer = wake_clip_writer
 
         # Pre-gate SPENERGY (2026-06-02): VAD por hardware del XVF3800. Si el
         # pico de SPENERGY durante la captura quedó por debajo del umbral, era
@@ -545,6 +552,12 @@ class MultiRoomAudioLoop:
                 await asyncio.to_thread(self._xvf.stop)
             except Exception:
                 pass
+        if self._wake_clip_writer is not None:
+            try:
+                # stop() drena la cola y hace thread.join — síncrono.
+                await asyncio.to_thread(self._wake_clip_writer.stop)
+            except Exception:
+                pass
 
     def _make_audio_callback(self, rs: RoomStream):
         """Create a sounddevice callback closure for one room."""
@@ -651,6 +664,15 @@ class MultiRoomAudioLoop:
                             rs.preroll.clear()
                         else:
                             rs.audio_buffer = []
+                        # Persistir el clip del trigger para entrenamiento
+                        # (fail-open: un writer roto jamás corta la captura).
+                        if self._wake_clip_writer is not None and rs.audio_buffer:
+                            try:
+                                self._wake_clip_writer.submit(
+                                    rs.room_id, detection[1], rs.audio_buffer,
+                                )
+                            except Exception as e:
+                                logger.warning(f"[WakeClip] submit error: {e}")
                         # En STRICT/COOLDOWN no abrir follow_up: la ventana
                         # abierta con TV era parte de la cascada del 06-04.
                         if self._guard is None or self._guard.follow_up_allowed(rs.room_id):

@@ -892,6 +892,22 @@ async def main():
                     f"entry={ag_cfg.get('strict_entry_rejects', 4)} rechazos/"
                     f"{ag_cfg.get('strict_entry_window_s', 60.0):.0f}s"
                 )
+            # Captura de clips de wake (2026-06-12): dataset de re-entrenamiento
+            # de nexa.onnx con audio real (falsos de TV + comandos far-field).
+            wake_clip_writer = None
+            clip_cfg = early_cfg.get("capture_clips", {}) or {}
+            if clip_cfg.get("enabled", False):
+                from src.wakeword.wake_clip_writer import WakeClipWriter
+                wake_clip_writer = WakeClipWriter(
+                    directory=clip_cfg.get(
+                        "dir", "data/wakeword_training/captured"
+                    ),
+                    max_files=int(clip_cfg.get("max_files", 2000)),
+                )
+                logger.info(
+                    f"WakeClipWriter ACTIVO: dir={clip_cfg.get('dir')} "
+                    f"max_files={clip_cfg.get('max_files', 2000)}"
+                )
             multi_room_loop = MultiRoomAudioLoop(
                 room_streams=room_streams,
                 follow_up=FollowUpMode(
@@ -902,6 +918,7 @@ async def main():
                 spenergy_gate_enabled=spe_cfg.get("enabled", False),
                 xvf_tuning=tuning_cfg,
                 ambient_guard=ambient_guard,
+                wake_clip_writer=wake_clip_writer,
                 sample_rate=16000,
                 command_duration=2.0,
                 dedup_window_ms=rooms_config.get("dedup_window_ms", 200),
