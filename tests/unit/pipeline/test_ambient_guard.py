@@ -196,6 +196,29 @@ class TestCooldown:
         clock.advance(31.0)  # > cooldown_duration_s
         assert guard.state_for("escritorio") is GuardState.STRICT
 
+    def test_strong_wake_bypasses_cooldown_when_override_enabled(self):
+        # A (2026-06-13): un wake FUERTE (>= cooldown_override_score) pasa
+        # aunque el room esté en COOLDOWN. Recupera el "Nexa" clarísimo que el
+        # breaker tiraba tras una racha de rechazos por voz de fondo (se vio un
+        # nexa:0.87 rechazado en cooldown).
+        clock = FakeClock()
+        guard = make_guard(clock=clock, cooldown_override_score=0.85)
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → STRICT
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → COOLDOWN
+        assert guard.state_for("escritorio") is GuardState.COOLDOWN
+        # wake fuerte → bypass del cooldown
+        d = guard.on_wake("escritorio", score=0.90, rms=0.5)
+        assert d.accept is True
+        assert d.reason == "cooldown_override"
+        # el bypass NO cambia el estado (sigue en COOLDOWN para el resto)
+        assert guard.state_for("escritorio") is GuardState.COOLDOWN
+        # un wake por debajo del override sigue bloqueado
+        d2 = guard.on_wake("escritorio", score=0.70, rms=0.5)
+        assert d2.accept is False
+        assert d2.reason == "cooldown"
+
     def test_guard_rejections_do_not_escalate_to_cooldown(self):
         # Rechazos a nivel guard (strict_score) son gratis: no gastan
         # Whisper/router → NO cuentan para COOLDOWN.

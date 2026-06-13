@@ -81,6 +81,14 @@ class AmbientGuardConfig:
     cooldown_entry_rejects: int = 6
     cooldown_entry_window_s: float = 60.0
     cooldown_duration_s: float = 30.0
+    # Bypass del COOLDOWN para un wake INEQUÍVOCO (2026-06-13). El breaker
+    # COOLDOWN, por diseño, descarta TODO para no saturar el router — pero eso
+    # tira también un "Nexa" clarísimo del usuario cuando una racha de rechazos
+    # (voz de fondo/TV) lo metió en cooldown (se vio rechazar un nexa:0.87). Un
+    # wake con score >= cooldown_override_score pasa igual. 0.0 = off (preserva
+    # la garantía dura del breaker). ⚠️ Trade-off: la TV llega a ~0.95 ocasional
+    # → usar umbral ALTO (≈0.85) y medir los logs `cooldown_override`.
+    cooldown_override_score: float = 0.0
     # Gracia post-éxito (2026-06-06): un comando ACEPTADO es evidencia fuerte
     # de usuario real → durante esta ventana el follow_up queda permitido en
     # STRICT (comandos encadenados sin re-pasar el wake estricto — caso real:
@@ -122,7 +130,7 @@ class AmbientGuardConfig:
 @dataclass(frozen=True)
 class GuardDecision:
     accept: bool
-    reason: str  # "ok" | "disabled" | "strict_score" | "strict_rms" | "strict_spenergy" | "cooldown"
+    reason: str  # "ok" | "disabled" | "strict_score" | "strict_rms" | "strict_spenergy" | "cooldown" | "cooldown_override"
     state: GuardState
 
 
@@ -199,6 +207,15 @@ class AmbientGuard:
             rs = self._room(room_id)
             self._refresh(rs, now, room_id)
             if rs.state is GuardState.COOLDOWN:
+                if (
+                    self.config.cooldown_override_score > 0.0
+                    and score >= self.config.cooldown_override_score
+                ):
+                    logger.info(
+                        "[AmbientGuard] %s: wake fuerte %.2f ≥ %.2f → bypass COOLDOWN",
+                        room_id, score, self.config.cooldown_override_score,
+                    )
+                    return GuardDecision(True, "cooldown_override", rs.state)
                 return GuardDecision(False, "cooldown", rs.state)
             if rs.state is GuardState.STRICT:
                 adaptive = self._effective_strict_threshold(wake_vad)

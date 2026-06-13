@@ -1237,6 +1237,14 @@ rooms:
     cooldown_entry_rejects: 6      # rechazos MÁS estando en STRICT → COOLDOWN
     cooldown_entry_window_s: 180.0
     cooldown_duration_s: 30.0
+    # Bypass del COOLDOWN para un wake INEQUÍVOCO (2026-06-13). Sin esto, el
+    # breaker tira un "Nexa" clarísimo del usuario si una racha de rechazos
+    # (compa/TV de fondo) lo metió en cooldown (se vio rechazar nexa:0.87).
+    # 0.85 = conservador: la voz del usuario rara vez llega ahí far-field, pero
+    # la TV pica a ~0.95 ocasional → arrancar alto y medir los logs
+    # `bypass COOLDOWN`. Subir/bajar según cuántos wakes reales lo crucen.
+    cooldown_override_score: 0.85
+
     # Gracia post-éxito (2026-06-06): tras un comando ACEPTADO, follow_up
     # habilitado en STRICT por esta ventana — comandos encadenados sin
     # re-pasar el wake 0.72 (caso real: 'apagá' pasó 0.77, el 'prendé'
