@@ -52,5 +52,12 @@ class AmbientUtterance:
     confidence: float | None = None     # avg_logprob del STT
     no_speech_prob: float | None = None  # ⚠️ degenerado con turbo (~1e-10 siempre)
     vad_prob: float | None = None       # mean Silero del segmento (señal real)
+    # Idioma del TEXTO (py3langid) + regla "español conservable" — FLAG, no drop.
+    # El discriminante real de calidad del rioplatense es el idioma del texto, no
+    # la energía (vad). lang_ok=False NO descarta: se persiste para audit/re-train
+    # (à la WakeClipWriter). None = utterance sin clasificar (filas viejas).
+    lang: str | None = None             # ISO-639-1 detectado, o None
+    lang_prob: float | None = None      # confianza del LID (norm_probs)
+    lang_ok: bool | None = None         # ¿español conservable? (markers OR lang==es)
     during_tts: bool = False
     distilled: bool = False

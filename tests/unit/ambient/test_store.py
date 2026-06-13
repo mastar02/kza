@@ -171,3 +171,86 @@ def test_add_validates_source(tmp_path):
         assert raised
         await store.close()
     _run(inner())
+
+
+def test_lang_fields_roundtrip(tmp_path):
+    async def inner():
+        store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=12)
+        await store.init()
+        now = time.time()
+        await store.add(_utt(now, text="texto espanol", lang="es", lang_prob=0.99, lang_ok=True))
+        await store.add(_utt(now, text="garble ingles", lang="en", lang_prob=0.95, lang_ok=False))
+        await store.add(_utt(now, text="sin idioma"))  # defaults None
+        rows = await store.utterances_between("escritorio", now - 1, now + 1)
+        by = {r["text"]: (r["lang"], r["lang_prob"], r["lang_ok"]) for r in rows}
+        assert by["texto espanol"] == ("es", 0.99, 1)
+        assert by["garble ingles"] == ("en", 0.95, 0)
+        assert by["sin idioma"] == (None, None, None)
+        await store.close()
+    _run(inner())
+
+
+def test_undistilled_live_spanish_only(tmp_path):
+    # spanish_only filtra lang_ok=0 (garble/no-es) pero conserva lang_ok=1 y
+    # NULL (filas viejas sin clasificar — COALESCE 1, no se pierden).
+    async def inner():
+        store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=12)
+        await store.init()
+        now = time.time()
+        id_es = await store.add(_utt(now, text="charla buena", source="unknown",
+                                     vad_prob=0.6, lang="es", lang_ok=True))
+        await store.add(_utt(now, text="garble", source="unknown",
+                             vad_prob=0.6, lang="en", lang_ok=False))
+        id_old = await store.add(_utt(now, text="vieja sin flag", source="unknown",
+                                      vad_prob=0.6))  # lang_ok None
+
+        batch = await store.undistilled_live(limit=10, spanish_only=True)
+        assert sorted(r["id"] for r in batch) == sorted([id_es, id_old])
+        # default (spanish_only=False) trae las tres
+        assert len(await store.undistilled_live(limit=10)) == 3
+        await store.close()
+    _run(inner())
+
+
+def test_init_migrates_old_schema_adding_lang_columns(tmp_path):
+    # La DB de prod (post swap parakeet, ya con vad_prob) NO tiene las columnas
+    # de idioma: init() debe agregarlas sin perder filas.
+    import sqlite3
+
+    db_path = str(tmp_path / "legacy.db")
+    legacy_schema = """
+    CREATE TABLE utterances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      room_id TEXT NOT NULL, t0 REAL NOT NULL, t1 REAL NOT NULL,
+      text TEXT NOT NULL, speaker TEXT NOT NULL DEFAULT 'unknown',
+      speaker_confidence REAL NOT NULL DEFAULT 0, azimuth REAL,
+      azimuth_stability REAL NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'unknown', confidence REAL,
+      no_speech_prob REAL, vad_prob REAL, during_tts INTEGER NOT NULL DEFAULT 0,
+      distilled INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL
+    );
+    """
+    conn = sqlite3.connect(db_path)
+    conn.executescript(legacy_schema)
+    conn.execute(
+        "INSERT INTO utterances (room_id, t0, t1, text, vad_prob, created_at) "
+        "VALUES ('escritorio', 100.0, 102.0, 'fila vieja', 0.5, 100.0)"
+    )
+    conn.commit()
+    conn.close()
+
+    async def inner():
+        store = AmbientStore(db_path=db_path, retention_hours=12)
+        await store.init()  # debe migrar sin romper
+        rows = await store.utterances_between("escritorio", 0, 200)
+        assert [r["text"] for r in rows] == ["fila vieja"]
+        assert rows[0]["lang"] is None
+        assert rows[0]["lang_prob"] is None
+        assert rows[0]["lang_ok"] is None
+        # y aceptar inserts con las columnas nuevas
+        await store.add(_utt(150.0, text="fila nueva", lang="es", lang_prob=0.9, lang_ok=True))
+        rows = await store.utterances_between("escritorio", 0, 200)
+        by = {r["text"]: r["lang_ok"] for r in rows}
+        assert by == {"fila vieja": None, "fila nueva": 1}
+        await store.close()
+    _run(inner())

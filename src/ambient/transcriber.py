@@ -35,6 +35,8 @@ class AmbientTranscriber:
         store,
         rooms: list[str],
         poll_interval_s: float = 0.25,
+        quality_fn: Callable[[str, float | None], tuple[str | None, float | None, bool]]
+        | None = None,
     ):
         self._tap = tap
         self._segmenter_factory = segmenter_factory
@@ -45,6 +47,10 @@ class AmbientTranscriber:
         self._store = store
         self._rooms = rooms
         self.poll_interval_s = poll_interval_s
+        # Regla "español conservable" (language_quality.make_quality_fn): marca
+        # cada utterance con (lang, lang_prob, lang_ok) al persistir — FLAG, no
+        # drop. Opcional (None = sin clasificar, campos quedan None).
+        self._quality_fn = quality_fn
 
         self._running = False
         self._tasks: list[asyncio.Task] = []
@@ -113,8 +119,16 @@ class AmbientTranscriber:
         """
         try:
             stt_result = await self._stt.transcribe(seg.audio)
-            if not stt_result.text.strip():
+            text = stt_result.text.strip()
+            if not text:
                 return
+            # Flag de idioma sobre el TEXTO (no la energía): el discriminante
+            # real de calidad del rioplatense. FLAG, no drop — la utterance se
+            # persiste igual; lang_ok solo gobierna qué consume el distiller.
+            lang = lang_prob = None
+            lang_ok = None
+            if self._quality_fn is not None:
+                lang, lang_prob, lang_ok = self._quality_fn(text, seg.vad_prob)
             # Tagger sobre ch0 (Conference): full-band, presente en TODOS los
             # firmwares (6ch/2ch/mono). Asimétrico a propósito con el STT
             # (ch1 ASR): los embeddings de hablante prefieren la señal con
@@ -130,13 +144,14 @@ class AmbientTranscriber:
             )
             utt = AmbientUtterance(
                 room_id=room_id, t0=seg.t0, t1=seg.t1,
-                text=stt_result.text.strip(),
+                text=text,
                 speaker=speaker, speaker_confidence=sp_conf,
                 azimuth=azimuth, azimuth_stability=stability,
                 source=source,
                 confidence=stt_result.avg_logprob,
                 no_speech_prob=stt_result.no_speech_prob,
                 vad_prob=seg.vad_prob,
+                lang=lang, lang_prob=lang_prob, lang_ok=lang_ok,
                 during_tts=seg.during_tts,
             )
             if source == "tv":
@@ -236,6 +251,7 @@ def build_ambient_path(
     from src.ambient.ambient_stt import AmbientSTT
     from src.ambient.distiller import Distiller, make_langid_fn, make_local_chat_fn
     from src.ambient.doa import DoAEstimator
+    from src.ambient.language_quality import make_quality_fn
     from src.ambient.segmenter import UtteranceSegmenter, make_silero_predictor
     from src.ambient.source_classifier import SourceClassifier, SourceClassifierConfig
     from src.ambient.speaker_tagger import SpeakerTagger
@@ -313,6 +329,20 @@ def build_ambient_path(
         retention_hours=ambient_cfg.get("retention_hours", 12.0),
     )
 
+    # Regla "español conservable" (flag-no-drop): marca cada utterance con
+    # (lang, lang_prob, lang_ok) al persistir. py3langid + marcadores rioplatenses
+    # corren en el hot-path del worker ambient (CPU, determinista, liviano). El
+    # discriminante de calidad del rioplatense es el IDIOMA DEL TEXTO, no la
+    # energía (vad). min_vad alineado con el gate del distiller (0.45).
+    q_cfg = ambient_cfg.get("quality", {}) or {}
+    quality_fn = None
+    if q_cfg.get("enabled", False):
+        quality_fn = make_quality_fn(
+            make_langid_fn(),
+            min_len=q_cfg.get("min_len", 8),
+            min_vad=q_cfg.get("min_vad", 0.45),
+        )
+
     tap = MultiChannelTap()
     transcriber = AmbientTranscriber(
         tap=tap,
@@ -324,6 +354,7 @@ def build_ambient_path(
         store=store,
         rooms=room_ids,
         poll_interval_s=ambient_cfg.get("poll_interval_s", 0.25),
+        quality_fn=quality_fn,
     )
 
     distiller = None
@@ -342,6 +373,7 @@ def build_ambient_path(
             min_batch=dis_cfg.get("min_batch", 5),
             max_batch_chars=dis_cfg.get("max_batch_chars", 12000),
             min_vad_prob=dis_cfg.get("min_vad_prob", 0.0),
+            spanish_only=dis_cfg.get("spanish_only", False),
             lang_detect_fn=(
                 make_langid_fn()
                 if (dis_cfg.get("log_language", False) or dis_cfg.get("drop_language"))

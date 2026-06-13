@@ -1461,9 +1461,20 @@ ambient:
   asr_col: 1            # beam ASR (fw 6ch ch1 — mismo canal que el command path)
   vad_col: 2            # mic crudo 0 (fw 6ch); con fw 2ch fallback a col 0 (medido OK)
   raw_first_col: 2      # primera columna de mics crudos (DoA)
-  retention_hours: 12   # TTL del texto crudo (destilar-y-descartar)
+  # 12→48 (2026-06-13): la evidencia far-field se purgaba antes de poder
+  # auditarla / juntar dataset de re-entrenamiento. 48h da ventana de audit.
+  retention_hours: 48   # TTL del texto crudo (destilar-y-descartar)
   poll_interval_s: 0.25
   db_path: "./data/ambient.db"
+  # Flag de idioma del TEXTO al persistir (2026-06-13, flag-no-drop). El
+  # discriminante real de calidad del rioplatense es el idioma, no la energía
+  # (vad). py3langid + marcadores rioplatenses → (lang, lang_prob, lang_ok) en
+  # cada utterance. NO descarta: lang_ok solo gobierna qué consume el distiller
+  # (spanish_only). El no-español persiste para audit/re-train.
+  quality:
+    enabled: true
+    min_len: 8          # texto < min_len no se considera (ruido corto)
+    min_vad: 0.45       # alineado con distill.min_vad_prob
   stt:
     # Swap 2026-06-07: Parakeet-TDT-0.6B-v3 (onnx, CPU) reemplaza al turbo
     # en el ambient path. Benchmark A/B con audio real XVF3800: 0/5
@@ -1504,14 +1515,18 @@ ambient:
     # Reemplaza al filtro source='live' (inútil sin enrollment: 1833/1833
     # 'unknown'). no_speech_prob quedó muerto (degenerado ~0).
     min_vad_prob: 0.45
-    # Loguea distribución de idioma del batch con py3langid (insumo + habilita
-    # el detector para drop_language).
+    # Loguea distribución de idioma del batch con py3langid (insumo/shadow).
     log_language: true
-    # Compuerta de idioma ENFORCED (2026-06-08): dropea inglés antes del LLM —
-    # es bleed de TV/series far-field, NUNCA comando ni conversación del hogar
-    # (confirmado por el usuario). Validado: ~30% del post-vad sigue siendo
-    # inglés. Umbral de confianza para no tirar un "okay/yeah" suelto del hogar.
-    drop_language: "en"
+    # Filtro flag-no-drop (2026-06-13): el distiller consume SOLO lo conservable
+    # (lang_ok≠0, marcado al persistir). El no-español NO se borra — persiste en
+    # la DB hasta el TTL para audit/re-train.
+    spanish_only: true
+    # ⚠️ DEGRADADO DE ENFORCE A NULL (2026-06-13). Antes "en" dropeaba+borraba
+    # inglés (mark_distilled→purga) en Fase 3 = pérdida IRREVERSIBLE de voz del
+    # hogar que py3langid misclasifica 'en' sobre garble far-field. Verificado:
+    # py3langid manda rioplatense LIMPIO a fr/ca/gl/wa con prob>0.9. El reemplazo
+    # es spanish_only (flag, no drop). Reactivar solo tras audit ciego.
+    drop_language: null
     drop_language_min_prob: 0.9
   rooms:
     escritorio:

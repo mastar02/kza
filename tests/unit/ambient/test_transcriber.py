@@ -165,6 +165,71 @@ def test_store_error_does_not_kill_worker():
     asyncio.run(inner())
 
 
+def test_quality_fn_flags_idioma_en_utterance():
+    # B (flag-no-drop): el transcriber computa lang/lang_prob/lang_ok del texto
+    # vía quality_fn inyectado y los persiste. NO descarta nada (es flag).
+    store = FakeStore()
+    seen = []
+
+    def quality_fn(text, vad_prob):
+        seen.append((text, vad_prob))
+        return ("es", 0.97, True)
+
+    tap = MultiChannelTap(maxlen_chunks=100)
+    clf = SourceClassifier(SourceClassifierConfig(tv_azimuth=2.5))
+    tr = AmbientTranscriber(
+        tap=tap, segmenter_factory=_segmenter_factory,
+        ambient_stt=FakeAmbientSTT(), tagger=FakeTagger(),
+        doa_estimator=FakeDoA(), classifier=clf, store=store,
+        rooms=["escritorio"], poll_interval_s=0.01, quality_fn=quality_fn,
+    )
+
+    async def inner():
+        await tr.start()
+        now = time.time()
+        voz = np.full((CHUNK, 6), 0.2, dtype=np.float32)
+        sil = np.zeros((CHUNK, 6), dtype=np.float32)
+        for i, ch in enumerate([voz, voz, sil, sil, sil]):
+            tap.push("escritorio", ch, ts=now + i * 0.08)
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if store.added:
+                break
+        await tr.stop()
+    asyncio.run(inner())
+
+    assert len(store.added) == 1
+    u = store.added[0]
+    assert (u.lang, u.lang_prob, u.lang_ok) == ("es", 0.97, True)
+    # quality_fn recibe el texto transcripto (stripped) y el vad del segmento
+    assert seen and seen[0][0] == "hola che"
+    assert seen[0][1] == pytest.approx(0.5)  # vad fake: 1.0×2 + 0.0×2 → mean 0.5
+
+
+def test_sin_quality_fn_idioma_queda_none():
+    # default: sin quality_fn el flag es opcional → campos de idioma None
+    store = FakeStore()
+    tap, tr = _make(store, tv_azimuth=2.5)
+
+    async def inner():
+        await tr.start()
+        now = time.time()
+        voz = np.full((CHUNK, 6), 0.2, dtype=np.float32)
+        sil = np.zeros((CHUNK, 6), dtype=np.float32)
+        for i, ch in enumerate([voz, voz, sil, sil, sil]):
+            tap.push("escritorio", ch, ts=now + i * 0.08)
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if store.added:
+                break
+        await tr.stop()
+    asyncio.run(inner())
+
+    assert len(store.added) == 1
+    u = store.added[0]
+    assert (u.lang, u.lang_prob, u.lang_ok) == (None, None, None)
+
+
 def test_empty_text_is_not_stored():
     class EmptySTT:
         async def transcribe(self, audio):

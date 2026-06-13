@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS utterances (
   confidence REAL,
   no_speech_prob REAL,
   vad_prob REAL,
+  lang TEXT,
+  lang_prob REAL,
+  lang_ok INTEGER,
   during_tts INTEGER NOT NULL DEFAULT 0,
   distilled INTEGER NOT NULL DEFAULT 0,
   created_at REAL NOT NULL
@@ -51,6 +54,11 @@ CREATE INDEX IF NOT EXISTS idx_utt_distill ON utterances(distilled, source);
 # EXISTS en ADD COLUMN → se inspecciona PRAGMA table_info.
 _MIGRATIONS: dict[str, str] = {
     "vad_prob": "ALTER TABLE utterances ADD COLUMN vad_prob REAL",
+    # Idioma del texto (flag-no-drop, 2026-06-13). La DB de prod ya tiene
+    # vad_prob pero no estas tres → se agregan en orden sin perder filas.
+    "lang": "ALTER TABLE utterances ADD COLUMN lang TEXT",
+    "lang_prob": "ALTER TABLE utterances ADD COLUMN lang_prob REAL",
+    "lang_ok": "ALTER TABLE utterances ADD COLUMN lang_ok INTEGER",
 }
 
 
@@ -101,13 +109,16 @@ class AmbientStore:
             """INSERT INTO utterances
                (room_id, t0, t1, text, speaker, speaker_confidence, azimuth,
                 azimuth_stability, source, confidence, no_speech_prob,
-                vad_prob, during_tts, distilled, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                vad_prob, lang, lang_prob, lang_ok, during_tts, distilled,
+                created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 utt.room_id, utt.t0, utt.t1, utt.text, utt.speaker,
                 utt.speaker_confidence, utt.azimuth, utt.azimuth_stability,
                 utt.source, utt.confidence, utt.no_speech_prob,
-                utt.vad_prob, int(utt.during_tts), int(utt.distilled),
+                utt.vad_prob, utt.lang, utt.lang_prob,
+                None if utt.lang_ok is None else int(utt.lang_ok),
+                int(utt.during_tts), int(utt.distilled),
                 time.time(),
             ),
         )
@@ -134,7 +145,7 @@ class AmbientStore:
         return [dict(r) for r in await cur.fetchall()]
 
     async def undistilled_live(
-        self, limit: int = 200, min_vad_prob: float = 0.0
+        self, limit: int = 200, min_vad_prob: float = 0.0, spanish_only: bool = False
     ) -> list[dict]:
         """Lote para el Distiller: utterances destilables sin destilar.
 
@@ -151,17 +162,26 @@ class AmbientStore:
         Args:
             limit: Máximo de filas a devolver.
             min_vad_prob: Umbral inferior de vad_prob (vad NULL cuenta como 0).
+            spanish_only: si True, excluye utterances marcadas no-conservables
+                (``lang_ok=0``); conserva las conservables (``lang_ok=1``) y las
+                sin clasificar (``lang_ok NULL`` → COALESCE 1, filas viejas no se
+                pierden). Es el filtro flag-no-drop: el no-español persiste en la
+                DB (audit/re-train) pero no se destila a memoria.
 
         Returns:
             Lista de dicts ordenada por t0 ascendente.
         """
-        cur = await self._db.execute(
+        query = (
             "SELECT * FROM utterances WHERE distilled=0 "
             "AND source NOT IN ('self','tv') "
             "AND COALESCE(vad_prob, 0) >= ? "
-            "ORDER BY t0 LIMIT ?",
-            (min_vad_prob, limit),
         )
+        params: list = [min_vad_prob]
+        if spanish_only:
+            query += "AND COALESCE(lang_ok, 1) = 1 "
+        query += "ORDER BY t0 LIMIT ?"
+        params.append(limit)
+        cur = await self._db.execute(query, params)
         return [dict(r) for r in await cur.fetchall()]
 
     async def mark_distilled(self, ids: list[int]) -> None:

@@ -153,6 +153,7 @@ class Distiller:
         min_batch: int = 5,
         max_batch_chars: int = 12000,
         min_vad_prob: float = 0.0,
+        spanish_only: bool = False,
         lang_detect_fn: Callable[[str], tuple[str, float]] | None = None,
         drop_language: str | None = None,
         drop_language_min_prob: float = 0.9,
@@ -166,6 +167,12 @@ class Distiller:
             min_batch: no destilar con menos utterances (ahorra ciclos LLM).
             min_vad_prob: compuerta de calidad (Silero) — solo se destilan
                 utterances con vad_prob ≥ umbral. 0.0 = sin filtrar.
+            spanish_only: si True, el store excluye del lote las utterances
+                marcadas no-conservables (``lang_ok=0``) — flag-no-drop: el
+                no-español persiste en la DB (audit/re-train) pero no se destila
+                a memoria. Reemplaza al hard-drop ``drop_language`` (que sí
+                borraba). Las filas viejas sin clasificar (lang_ok NULL) se
+                conservan (COALESCE 1).
             lang_detect_fn: detector de idioma ``text -> (lang, prob)``
                 (opcional). Si está, se loguea la distribución de idioma del
                 batch (shadow) y habilita la compuerta drop_language. Ver
@@ -183,6 +190,7 @@ class Distiller:
         self.min_batch = min_batch
         self.max_batch_chars = max_batch_chars
         self.min_vad_prob = min_vad_prob
+        self.spanish_only = spanish_only
         self._lang_detect = lang_detect_fn
         self.drop_language = drop_language
         self.drop_language_min_prob = drop_language_min_prob
@@ -191,7 +199,7 @@ class Distiller:
     async def distill_once(self) -> int:
         """Un ciclo de destilación. Devuelve cantidad de hechos guardados."""
         rows = await self._store.undistilled_live(
-            limit=200, min_vad_prob=self.min_vad_prob
+            limit=200, min_vad_prob=self.min_vad_prob, spanish_only=self.spanish_only
         )
         if len(rows) < self.min_batch:
             return 0

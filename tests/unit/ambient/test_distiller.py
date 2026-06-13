@@ -26,10 +26,15 @@ class FakeStore:
         self.rows = rows
         self.marked = []
         self.last_min_vad = None
+        self.last_spanish_only = None
 
-    async def undistilled_live(self, limit=200, min_vad_prob=0.0):
+    async def undistilled_live(self, limit=200, min_vad_prob=0.0, spanish_only=False):
         self.last_min_vad = min_vad_prob
-        return [r for r in self.rows if (r.get("vad_prob") or 0) >= min_vad_prob][:limit]
+        self.last_spanish_only = spanish_only
+        rows = [r for r in self.rows if (r.get("vad_prob") or 0) >= min_vad_prob]
+        if spanish_only:
+            rows = [r for r in rows if r.get("lang_ok", 1) in (1, None)]
+        return rows[:limit]
 
     async def mark_distilled(self, ids):
         self.marked.extend(ids)
@@ -80,6 +85,21 @@ def test_distill_once_aplica_min_vad_prob_al_store():
                   interval_hours=6, min_batch=1, min_vad_prob=0.45)
     asyncio.run(d.distill_once())
     assert store.last_min_vad == 0.45
+
+
+def test_distill_once_propaga_spanish_only_al_store():
+    # A (flag-no-drop): el distiller consume SOLO lo conservable (lang_ok) vía el
+    # filtro spanish_only del store. El no-español no se dropea — queda en la DB.
+    rows = [_row(1, "hola che todo bien")]
+    store = FakeStore(rows)
+
+    async def fake_chat(prompt):
+        return "[]"
+
+    d = Distiller(store=store, chat_fn=fake_chat, store_fact_fn=lambda *a, **k: "x",
+                  interval_hours=6, min_batch=1, spanish_only=True)
+    asyncio.run(d.distill_once())
+    assert store.last_spanish_only is True
 
 
 def test_distill_once_loguea_idioma_shadow(caplog):
