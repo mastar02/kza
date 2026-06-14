@@ -271,7 +271,13 @@ command_gate:
   # validada en openai/whisper #2378 (el threshold built-in no funciona, hay
   # que filtrar post-transcripción). Shadow primero (patrón del proyecto):
   # calibrar con los logs [CommandGate] compression=... y flippear a true.
-  enforce_compression_ratio: false
+  # ENFORCE 2026-06-14: calibrado con 3 días de logs reales [CommandGate] —
+  # texto legítimo (incl. frases largas) comprime ≤0.95; las alucinaciones
+  # repetitivas del turbo ("Esto es un asistente de voz, un asistente de voz…",
+  # loops del initial_prompt) comprimen 2.33-4.82. Hueco enorme → 2.2 con margen
+  # de sobra a ambos lados. A diferencia de no_speech_prob/avg_logprob (muertos
+  # en el turbo), compression_ratio SÍ separa. Antes en shadow.
+  enforce_compression_ratio: true
   max_compression_ratio: 2.2
 
 # LLM para Razonamiento — REEMPLAZO TOTAL 2026-05-29: GLM-4.5-Air local (:8200)
