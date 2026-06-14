@@ -904,6 +904,7 @@ async def main():
                         "dir", "data/wakeword_training/captured"
                     ),
                     max_files=int(clip_cfg.get("max_files", 2000)),
+                    max_rejected_files=int(clip_cfg.get("max_rejected_files", 4000)),
                 )
                 logger.info(
                     f"WakeClipWriter ACTIVO: dir={clip_cfg.get('dir')} "

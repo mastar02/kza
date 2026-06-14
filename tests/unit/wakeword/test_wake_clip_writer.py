@@ -85,6 +85,42 @@ class TestRotation:
         assert all(f"_0.4{d}.wav" in n for n, d in zip(names, range(3, 8)))
 
 
+class TestRejectedClips:
+    def test_rejected_clip_goes_to_subdir(self, writer, tmp_path):
+        # Los wakes que el guard RECHAZA (STRICT/COOLDOWN) se guardan en
+        # rejected/ aparte: los 0.40-0.45 son comandos far-field reales que
+        # STRICT mata (positivos hoy perdidos) + hard-negatives de TV.
+        writer.submit("escritorio", 0.43, np.zeros(1600, dtype=np.float32),
+                      accepted=False)
+        rej = tmp_path / "captured" / "rejected"
+        assert _wait_for(lambda: rej.is_dir() and len(list(rej.glob("*.wav"))) == 1)
+        # no contamina el dir de aceptados (raíz)
+        assert list((tmp_path / "captured").glob("*.wav")) == []
+
+    def test_accepted_default_stays_in_root(self, writer, tmp_path):
+        # accepted=True (default) preserva el comportamiento previo: dir raíz.
+        writer.submit("escritorio", 0.61, np.zeros(1600, dtype=np.float32))
+        out = tmp_path / "captured"
+        assert _wait_for(lambda: len(list(out.glob("*.wav"))) == 1)
+        rej = out / "rejected"
+        assert not rej.exists() or list(rej.glob("*.wav")) == []
+
+    def test_rejected_rotation_independent(self, tmp_path):
+        # rejected/ rota con su propio tope (max_rejected_files), sin tocar los
+        # aceptados (que son raros y valiosos — no deben purgarse por el flujo
+        # de rechazos, mucho más voluminoso).
+        w = WakeClipWriter(tmp_path / "captured", max_files=5, max_rejected_files=3)
+        try:
+            for i in range(6):
+                w.submit("escritorio", 0.40 + i / 100,
+                         np.zeros(160, dtype=np.float32), accepted=False)
+                time.sleep(0.01)  # timestamps distintos → rotación determinística
+            rej = tmp_path / "captured" / "rejected"
+            assert _wait_for(lambda: len(list(rej.glob("*.wav"))) == 3, timeout=3.0)
+        finally:
+            w.stop()
+
+
 class TestNeverBlocks:
     def test_submit_returns_false_when_queue_full(self, tmp_path):
         w = WakeClipWriter(tmp_path / "c", queue_size=1)

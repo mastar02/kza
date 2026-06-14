@@ -717,6 +717,22 @@ class MultiRoomAudioLoop:
                         if callable(pop_text_fn):
                             popped = pop_text_fn()
                             rs.wake_text = popped if not wake_was_truncated else None
+                    else:
+                        # Wake RECHAZADO por el guard (STRICT score / COOLDOWN):
+                        # persistir igual para el dataset de re-entrenamiento. Los
+                        # 0.40-0.45 que STRICT mata son comandos far-field REALES
+                        # (voz del usuario 0.41-0.65) = positivos hoy perdidos; los
+                        # de TV son hard-negatives. Fail-open: jamás bloquea ni
+                        # muta el estado del room (no toca preroll/listening).
+                        if self._wake_clip_writer is not None and rs.preroll:
+                            try:
+                                self._wake_clip_writer.submit(
+                                    rs.room_id, detection[1],
+                                    np.concatenate(list(rs.preroll)),
+                                    accepted=False,
+                                )
+                            except Exception as e:
+                                logger.warning(f"[WakeClip] submit (rejected) error: {e}")
 
                 elif self.follow_up.is_active and (
                     self._guard is None or self._guard.follow_up_allowed(rs.room_id)

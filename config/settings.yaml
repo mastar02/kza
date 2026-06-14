@@ -1115,6 +1115,11 @@ rooms:
       enabled: true
       dir: "data/wakeword_training/captured"
       max_files: 2000
+      # 2026-06-14: ahora también se capturan los wakes RECHAZADOS por el guard
+      # (STRICT/COOLDOWN) en dir/rejected/ — los 0.40-0.45 que STRICT mata son
+      # comandos far-field REALES (positivos hoy perdidos) + hard-negatives de TV.
+      # Tope propio (más voluminoso) que NO purga los aceptados (raros/valiosos).
+      max_rejected_files: 4000
     # (follow_up_window_s ya existe más abajo en este mismo bloque — 2026-06-02
     # main.py ahora lo CABLEA, antes hardcodeaba 8.0 e ignoraba el config.)
     # Porcupine (engine: porcupine) — wake-word dedicado "Nexa" (Picovoice).

@@ -345,7 +345,11 @@ class TestWakeClipCapture:
         cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
         assert rs.listening is True  # sin writer no rompe nada
 
-    def test_rejected_wake_does_not_submit(self):
+    def test_rejected_wake_submits_as_rejected(self):
+        # 2026-06-14: el wake RECHAZADO por el guard también se persiste (desde
+        # el preroll) con accepted=False → subcarpeta rejected/. Recupera los
+        # 0.40-0.45 que STRICT mata (positivos far-field reales) + hard-negatives
+        # de TV. NO entra en captura (rs.listening sigue False).
         # min_wake_rms imposible → _should_accept_wakeword rechaza.
         det = _detector_seq([None, ("nexa", 0.8)])
         writer = MagicMock()
@@ -355,8 +359,10 @@ class TestWakeClipCapture:
         cb = loop._make_audio_callback(rs)
         cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
         cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
-        assert rs.listening is False
-        writer.submit.assert_not_called()
+        assert rs.listening is False  # rechazado: no entra en captura
+        writer.submit.assert_called_once()
+        assert writer.submit.call_args.kwargs.get("accepted") is False
+        assert writer.submit.call_args.args[1] == 0.8  # score
 
     def test_writer_exception_does_not_break_capture(self):
         det = _detector_seq([None, ("nexa", 0.8)])
