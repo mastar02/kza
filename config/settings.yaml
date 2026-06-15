@@ -177,7 +177,8 @@ stt:
   initial_prompt: >-
     Esto es un asistente de voz llamado Nexa que controla luces, aire
     acondicionado, persianas y música en el escritorio, el living, la cocina,
-    el baño y el hall.
+    el baño y el hall. Habla rioplatense con voseo: prendé, apagá, subí, bajá,
+    poné, dale.
 
 # Text-to-Speech (GPU 1 — junto con STT, SpeakerID y kza-llm-fast :8101)
 # 2026-05-07: movido cuda:0 → cuda:1 (ver nota en stt.device).
