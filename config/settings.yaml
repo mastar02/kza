@@ -157,6 +157,15 @@ stt:
   # desde 2026-06-04 el factory la consume. El rol anti-silencio lo cubren
   # el endpointing por RMS + CommandGate + compression guard.
   vad_filter: false
+  # Temperature fallback (2026-06-15): re-decode adaptativo de Whisper sobre
+  # segmentos garble. Gateado SOLO por compression_ratio (única señal viva en
+  # turbo); log_prob_threshold muy bajo para no disparar por el logprob
+  # invertido. Caso fácil = temp 0 (0 latencia extra); garble = sube temp.
+  temperature_fallback:
+    enabled: true
+    temperatures: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    compression_ratio_threshold: 2.0
+    log_prob_threshold: -3.0
   # Sesga la decodificación de Whisper para palabras del dominio. Le "enseña"
   # a reconocer "Nexa" y a favorecer vocabulario de domótica. Sin costo de
   # latencia — es un token-level prior. Máx ~224 tokens.
