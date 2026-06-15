@@ -455,7 +455,13 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
+            result["intent"] = "gate_rejected"
+            result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            self._earcon_and_log(
+                "empty", text or "", {}, room_id, wake_score, wake_rms,
+                outcome="gate_rejected",
+            )
             return result
 
         # 1a. Command acceptance gate: corta antes del orchestrator si el texto
@@ -475,6 +481,11 @@ class RequestRouter:
                 room_id, wake_score, wake_rms, outcome="gate_rejected",
             )
             return result
+
+        log_asr_outcome(
+            self._asr_event_logger, room_id, "accepted", "ok", text,
+            gate_decision.signals or {}, wake_score, wake_rms,
+        )
 
         # 1a-grammar. Grammar fast-path: la gramática determinística manda en
         # domótica.  Si extrae intent+entity con alta confianza, construimos
@@ -781,6 +792,12 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
+            result["intent"] = "gate_rejected"
+            result["response"] = ""
+            self._earcon_and_log(
+                "empty", text or "", {}, room_id, wake_score, wake_rms,
+                outcome="gate_rejected",
+            )
             return result
 
         # 1a. Command acceptance gate — mismo corto-circuito que el path orchestrated
@@ -798,6 +815,11 @@ class RequestRouter:
                 room_id, wake_score, wake_rms, outcome="gate_rejected",
             )
             return result
+
+        log_asr_outcome(
+            self._asr_event_logger, room_id, "accepted", "ok", text,
+            gate_decision.signals or {}, wake_score, wake_rms,
+        )
 
         user = cmd.user
         emotion = cmd.emotion

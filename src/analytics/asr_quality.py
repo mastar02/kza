@@ -27,12 +27,20 @@ def log_asr_outcome(
 ) -> None:
     """Registrar el resultado de una captura del command path.
 
+    Embudo real del gate:
+        denominator = accepted + gate_rejected
+
     Args:
         event_logger: EventLogger o None (None = no-op, fail-open).
         room_id: room donde ocurrió la captura.
-        outcome: accepted | gate_rejected | low_confidence | earcon_fired
-                 | fallback_triggered | fallback_recovered.
-        reason: sub-motivo (ej: empty, high_compression, ok).
+        outcome: Uno de los siguientes valores reales:
+            - ``accepted``: superó el CommandGate y pasa al orchestrator.
+            - ``gate_rejected``: rechazado en el gate (incluye STT vacío).
+            - ``low_confidence``: el 7B rechazó por confianza baja (post-gate).
+            - ``unverified_intent``: el 7B rechazó por intent no verificado (post-gate).
+            - ``earcon_fired``: el earcon sonó realmente (emitido junto al outcome
+              anterior, no en lugar de él).
+        reason: sub-motivo (ej: empty, empty_after_norm, high_compression, ok).
         text: transcripción (se trunca a 60 chars).
         signals: dict de señales STT (compression_ratio, etc.).
         wake_score: score del wake que abrió la captura.

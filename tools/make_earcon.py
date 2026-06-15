@@ -1,8 +1,9 @@
 # tools/make_earcon.py
 """Genera el earcon 'no entendí' (dos tonos descendentes, ~200ms, 24kHz mono).
 
-24kHz float32 = formato del ResponseCache (Kokoro). Reproducible: no se
-commitea el WAV binario, se regenera con `python -m tools.make_earcon`.
+24kHz float32 = formato del ResponseCache (Kokoro). Reproducible: el WAV se
+commitea (chico, ~9KB) para que funcione out-of-the-box; este tool lo regenera
+de forma reproducible con `python -m tools.make_earcon`.
 """
 from __future__ import annotations
 
