@@ -17,6 +17,7 @@ import asyncio
 import logging
 import re
 import time
+import wave as _wave
 from dataclasses import dataclass
 
 import numpy as np
@@ -85,6 +86,19 @@ def _normalize_key(text: str) -> str:
     t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)
     t = re.sub(r"\s+", " ", t).strip()
     return t
+
+
+def load_earcon(path: str) -> tuple[np.ndarray, int] | tuple[None, None]:
+    """Cargar un WAV de earcon a float32 mono. Fail-open: (None, None) si falla."""
+    try:
+        with _wave.open(path, "rb") as w:
+            sr = w.getframerate()
+            frames = w.readframes(w.getnframes())
+        audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        return audio, sr
+    except Exception as e:
+        logger.warning(f"[earcon] no se pudo cargar {path!r}: {e}")
+        return None, None
 
 
 class ResponseCache:
