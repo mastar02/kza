@@ -225,23 +225,34 @@ class TestUnverifiedIntentGuard:
         orch.process.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_unevidenced_rejection_speaks_feedback(self):
-        """El rechazo por verbo no evidenciado debe AVISAR por voz: para llegar
-        acá el texto pasó el CommandGate y el 7B dio comando con confianza alta
-        — casi seguro es un humano con el STT garbleado. El silencio es
-        indistinguible de 'no funciona' (caso real 2026-06-11 17:57)."""
+    async def test_unevidenced_rejection_plays_earcon(self):
+        """El rechazo por verbo no evidenciado debe avisar con EARCON (solo
+        sonido, 2026-06-15): para llegar acá el texto pasó el CommandGate y el
+        7B dio comando con confianza alta — casi seguro es un humano con el STT
+        garbleado. El silence mudo es indistinguible de 'no funciona' (caso real
+        2026-06-11 17:57). Reemplaza el reprompt de voz por el earcon."""
         router, orch = _make_router_for(
             "Nexa, pero a la luz.", _turn_on_classification(0.9)
         )
+        # Activar earcon con wake_score alto (simula humano plausible)
+        router._earcon_cfg = {
+            "enabled": True,
+            "min_wake_score": 0.0,
+            "min_rms": 0.0,
+            "reasons": ["unverified_intent"],
+        }
         event = CommandEvent(
             audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
             wake_text="Nexa, pero a la luz.",
+            wake_score=0.9,
         )
         result = await router.process_command(event)
-        assert result["response"], "el rechazo debe llevar mensaje hablable"
-        router.response_handler.speak.assert_called_once()
-        spoken = router.response_handler.speak.call_args.args[0]
-        assert spoken == result["response"]
+        # response vacío: el feedback es el earcon, no texto hablado
+        assert result["response"] == "", "solo earcon, sin texto de voz"
+        assert result["success"] is False
+        assert result["intent"].startswith("unverified_intent")
+        router.response_handler.speak.assert_not_called()
+        router.response_handler.play_earcon.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_gate_rejection_stays_silent(self):

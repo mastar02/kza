@@ -288,6 +288,17 @@ command_gate:
   # en el turbo), compression_ratio SÍ separa. Antes en shadow.
   enforce_compression_ratio: true
   max_compression_ratio: 2.2
+  # Earcon "te oí, no te entendí" (2026-06-15). Reemplaza el descarte mudo por
+  # un sonido corto. Gateado a "humano plausible": NUNCA suena ante TV/eco
+  # (noise_phrase/filler/word_repetition) ni capturas de baja energía.
+  # min_wake_score 0.55 = wake fuerte (base 0.40); min_rms 0.02 apenas bajo el
+  # piso inflado por el AGC (~0.025-0.05). CALIBRAR ambos con repro.
+  earcon:
+    enabled: true
+    asset: "data/earcons/not_understood.wav"
+    min_wake_score: 0.55
+    min_rms: 0.02
+    reasons: ["empty", "empty_after_norm", "high_compression", "low_confidence", "unverified_intent"]
 
 # LLM para Razonamiento — REEMPLAZO TOTAL 2026-05-29: GLM-4.5-Air local (:8200)
 # → MiniMax-M2.7-highspeed en el cloud de MiniMax (OpenAI-compat).

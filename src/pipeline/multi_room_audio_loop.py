@@ -101,6 +101,9 @@ class RoomStream:
     capture_channel: int = 0
     # Warning de canal faltante emitido (una sola vez por stream).
     channel_warned: bool = False
+    # Score del wake que abrió la captura actual. Se fija al aceptar el wake
+    # y se propaga al CommandEvent para que el earcon gate decida humano-plausible.
+    wake_score: float = 1.0
 
 
 class MultiRoomAudioLoop:
@@ -511,6 +514,7 @@ class MultiRoomAudioLoop:
                                 self._guard is not None
                                 and self._guard.state_for(room_id) is GuardState.STRICT
                             ),
+                            wake_score=rs.wake_score,
                         )
                         asyncio.create_task(self._dispatch_command(event))
                         self._reset_listening(rs)
@@ -533,6 +537,7 @@ class MultiRoomAudioLoop:
                                 self._guard is not None
                                 and self._guard.state_for(room_id) is GuardState.STRICT
                             ),
+                            wake_score=rs.wake_score,
                         )
                         asyncio.create_task(self._dispatch_command(event))
                         self._reset_listening(rs)
@@ -654,6 +659,7 @@ class MultiRoomAudioLoop:
                         wake_score=detection[1], wake_vad=wake_vad,
                     ):
                         rs.listening = True
+                        rs.wake_score = detection[1]
                         rs.command_start_time = time.time()
                         # Sembrar con el pre-roll (en vez de []) para no perder el
                         # verbo dicho durante la latencia. Backdate command_start_time

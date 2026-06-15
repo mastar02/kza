@@ -1088,6 +1088,16 @@ async def main():
         before_handler_warn_ms=self_warn_ms,
     )
 
+    # Earcon "te oí, no te entendí" (2026-06-15): cargar asset y configurar
+    # en el response_handler para que play_earcon() lo reproduzca en zonas.
+    from src.tts.response_cache import load_earcon
+    _earcon_cfg = config.get("command_gate", {}).get("earcon", {"enabled": False})
+    _earcon_audio, _earcon_sr = load_earcon(
+        _earcon_cfg.get("asset", "data/earcons/not_understood.wav")
+    )
+    if _earcon_audio is not None:
+        response_handler.set_earcon(_earcon_audio, _earcon_sr)
+
     # Inyectar response_handler al MultiRoomAudioLoop para barge-in (S3).
     # Se construyó arriba sin response_handler por orden de DI; lo attacheamos
     # ahora que ambos existen.
@@ -1247,6 +1257,8 @@ async def main():
         hooks=hooks,
         command_gate=command_gate,
         llm_min_command_confidence=nlu_cfg.get("min_command_confidence", 0.6),
+        earcon_cfg=_earcon_cfg,
+        asr_event_logger=event_logger,
     )
 
     # Feature subsystems (timers, intercom, notifications, alerts)
