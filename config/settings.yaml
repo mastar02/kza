@@ -1158,7 +1158,10 @@ rooms:
     # follow-up window post-wake-solo (4s) ya cubre pausas naturales >500ms.
     silence_end_ms: 500
     min_utterance_ms: 250
-    max_utterance_s: 3.5
+    # 2026-06-15: 3.5 → 5.0. Comandos largos/con pausa natural se truncaban a
+    # 3.5s → STT veía audio parcial → vacío/equivocado → descarte mudo.
+    # Revertir si sube gate_rejected:noise (más charla ambiente captada).
+    max_utterance_s: 5.0
     # Gates pre-Whisper. Calibrados para mic XVF3800 montado en cielorraso con
     # placa de yeso 6mm (atenuación ~8 dB). Medición real (voz.wav 2026-04-24):
     # voz a ~2m llega -40..-32 dBFS. Gate a -40 dBFS (=0.010) recupera 66% de
