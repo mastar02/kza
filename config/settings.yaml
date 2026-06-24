@@ -1051,6 +1051,17 @@ rooms:
     rms_threshold: 0.03
     min_duration_ms: 200
 
+  # Watchdog del stream de audio: detecta cuando un mic USB deja de entregar
+  # frames (re-enumeración USB / pérdida de corriente del bus) y reabre el
+  # stream sobre el device actual sin reiniciar el servicio. Ver
+  # docs/superpowers/specs/2026-06-24-audio-watchdog-usb-recovery-design.md
+  stream_watchdog:
+    enabled: true
+    no_frames_timeout_s: 8.0     # sin frames del callback por más de esto → recuperar
+    check_interval_s: 2.0        # cada cuánto evalúa el watchdog
+    reopen_backoff_min_s: 1.0    # espera inicial entre reintentos de reabrir
+    reopen_backoff_max_s: 10.0   # tope del backoff
+
   # MA1260 amplifier connection (moved from zones)
   ma1260:
     connection_type: "simulation"  # "serial" cuando el MA1260 esté conectado

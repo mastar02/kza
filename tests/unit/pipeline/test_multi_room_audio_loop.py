@@ -1177,3 +1177,20 @@ class TestRecoverStreams:
 
         assert rs.device_index == 7
         assert "escritorio" in loop._streams
+
+
+class TestWatchdogConfigContract:
+    def test_disabled_by_default(self):
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": _make_room_stream("escritorio", device_index=4)}
+        )
+        assert loop._watchdog_enabled is False
+
+    def test_enabled_via_kwarg(self):
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": _make_room_stream("escritorio", device_index=4)},
+            stream_watchdog_enabled=True,
+            stream_watchdog_no_frames_timeout_s=8.0,
+        )
+        assert loop._watchdog_enabled is True
+        assert loop._watchdog_timeout_s == 8.0

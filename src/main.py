@@ -834,6 +834,7 @@ async def main():
         # Build MultiRoomAudioLoop if we have room streams
         if room_streams:
             early_cfg = rooms_config.get("wake_word", {})
+            watchdog_cfg = rooms_config.get("stream_watchdog", {}) or {}
             endpointing_cfg = rooms_config.get("endpointing", {})
             # Barge-in (S3). `response_handler` se inyecta luego con
             # `attach_response_handler()` porque se construye más abajo.
@@ -943,6 +944,11 @@ async def main():
                 barge_in_enabled=barge_in_cfg.get("enabled", False),
                 barge_in_rms_threshold=barge_in_cfg.get("rms_threshold", 0.03),
                 barge_in_min_duration_ms=barge_in_cfg.get("min_duration_ms", 200),
+                stream_watchdog_enabled=watchdog_cfg.get("enabled", False),
+                stream_watchdog_no_frames_timeout_s=watchdog_cfg.get("no_frames_timeout_s", 8.0),
+                stream_watchdog_check_interval_s=watchdog_cfg.get("check_interval_s", 2.0),
+                stream_watchdog_reopen_backoff_min_s=watchdog_cfg.get("reopen_backoff_min_s", 1.0),
+                stream_watchdog_reopen_backoff_max_s=watchdog_cfg.get("reopen_backoff_max_s", 10.0),
             )
             logger.info(
                 f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "
