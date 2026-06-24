@@ -66,6 +66,28 @@ def _resolve_capture_channels(max_input_channels: int) -> int:
     return max_input_channels if max_input_channels and max_input_channels >= 1 else 1
 
 
+def detect_stale_streams(
+    states: list[tuple[str, float]], now: float, timeout_s: float
+) -> list[str]:
+    """Return room_ids whose audio stream stopped delivering frames.
+
+    A stream is stale when it has produced at least one frame (last_frame_ts > 0)
+    and more than `timeout_s` seconds elapsed since the last one. Streams that
+    never opened (last_frame_ts == 0.0) are ignored — there is nothing to recover
+    until `run()` opens them.
+
+    Args:
+        states: list of (room_id, last_frame_ts) with monotonic timestamps.
+        now: current monotonic time.
+        timeout_s: seconds without frames before a stream is considered dead.
+    """
+    return [
+        room_id
+        for room_id, last_frame_ts in states
+        if last_frame_ts > 0.0 and (now - last_frame_ts) > timeout_s
+    ]
+
+
 @dataclass
 class RoomStream:
     """Per-room audio capture state."""

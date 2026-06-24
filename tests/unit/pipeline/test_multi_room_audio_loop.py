@@ -1015,3 +1015,25 @@ class TestPostSuccessFollowUp:
         event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
         await loop._dispatch_command(event)
         loop.follow_up.start_conversation.assert_not_called()
+
+
+from src.pipeline.multi_room_audio_loop import detect_stale_streams
+
+
+class TestDetectStaleStreams:
+    def test_marks_stream_past_timeout(self):
+        # last_frame_ts=100.0, now=109.0 → 9s sin frames > 8s
+        assert detect_stale_streams([("escritorio", 100.0)], now=109.0, timeout_s=8.0) == ["escritorio"]
+
+    def test_ignores_fresh_stream(self):
+        # 2s sin frames < 8s
+        assert detect_stale_streams([("escritorio", 100.0)], now=102.0, timeout_s=8.0) == []
+
+    def test_ignores_never_opened_stream(self):
+        # last_frame_ts=0.0 → nunca recibió/abrió, no se marca
+        assert detect_stale_streams([("escritorio", 0.0)], now=999.0, timeout_s=8.0) == []
+
+    def test_multiple_streams_only_stale_returned(self):
+        states = [("a", 100.0), ("b", 108.5), ("c", 0.0)]
+        # now=110: a=10s stale, b=1.5s fresh, c=never
+        assert detect_stale_streams(states, now=110.0, timeout_s=8.0) == ["a"]
