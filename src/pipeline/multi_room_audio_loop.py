@@ -523,7 +523,7 @@ class MultiRoomAudioLoop:
         while self._running:
             new_index = rs.device_index
             if rs.mic_usb_port:
-                resolved = resolve_mic_usb_port(rs.mic_usb_port)
+                resolved = await asyncio.to_thread(resolve_mic_usb_port, rs.mic_usb_port)
                 if resolved is None:
                     logger.warning(
                         f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} "
@@ -534,7 +534,7 @@ class MultiRoomAudioLoop:
                     continue
                 new_index = resolved
             rs.device_index = new_index
-            stream = self._open_stream(rs)
+            stream = await asyncio.to_thread(self._open_stream, rs)
             if stream is not None:
                 self._streams[rs.room_id] = stream
                 rs.last_frame_ts = time.monotonic()
@@ -704,6 +704,9 @@ class MultiRoomAudioLoop:
     async def stop(self):
         """Stop all audio streams."""
         self._running = False
+        if self._watchdog_task is not None:
+            self._watchdog_task.cancel()
+            self._watchdog_task = None
         if self._xvf is not None:
             try:
                 # XvfController.stop() hace thread.join(timeout=1.0) — síncrono.
