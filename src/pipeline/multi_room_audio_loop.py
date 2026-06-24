@@ -126,6 +126,13 @@ class RoomStream:
     # Score del wake que abrió la captura actual. Se fija al aceptar el wake
     # y se propaga al CommandEvent para que el earcon gate decida humano-plausible.
     wake_score: float = 1.0
+    # Puerto USB físico estable (ej "3-1.4") para re-resolver el índice de
+    # PortAudio si el device se re-enumera. None = no re-resolver por puerto.
+    mic_usb_port: Optional[str] = None
+    # Timestamp monotónico del último frame recibido por el callback. 0.0 hasta
+    # que el stream se abre/recibe el primer frame. Lo vigila _stream_watchdog
+    # para detectar un mic muerto por re-enumeración USB.
+    last_frame_ts: float = 0.0
 
 
 class MultiRoomAudioLoop:
@@ -590,6 +597,11 @@ class MultiRoomAudioLoop:
         """Create a sounddevice callback closure for one room."""
 
         def audio_callback(indata, frames, time_info, status):
+            # Watchdog heartbeat: marca que el stream entregó un frame. Primera
+            # línea, O(1), nunca lanza — si esto deja de actualizarse, el mic
+            # murió (re-enumeración USB) y _stream_watchdog dispara recovery.
+            rs.last_frame_ts = time.monotonic()
+
             # Tee al ambient path (spec 2026-06-06): SIEMPRE primero — el
             # ambient quiere todo el audio, incluso lo que el barge-in o el
             # echo suppressor descartan para el command path. O(1). El

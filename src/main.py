@@ -780,6 +780,7 @@ async def main():
                     # XVF3800 UA según doc Seeed — A/B con medición, fallback
                     # seguro a 0 si el device no tiene el canal).
                     capture_channel=room_dict.get("capture_channel", 0),
+                    mic_usb_port=rc.mic_usb_port,
                 )
 
             # Register BLE zone for presence

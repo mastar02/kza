@@ -1020,6 +1020,24 @@ class TestPostSuccessFollowUp:
 from src.pipeline.multi_room_audio_loop import detect_stale_streams
 
 
+class TestCallbackStampsFrameTimestamp:
+    def test_fields_default(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        assert rs.last_frame_ts == 0.0
+        assert rs.mic_usb_port is None
+
+    def test_callback_updates_last_frame_ts(self):
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": _make_room_stream("escritorio", device_index=4)}
+        )
+        rs = loop.room_streams["escritorio"]
+        callback = loop._make_audio_callback(rs)
+        indata = np.zeros((160, 2), dtype="float32")
+        assert rs.last_frame_ts == 0.0
+        callback(indata, 160, None, None)
+        assert rs.last_frame_ts > 0.0
+
+
 class TestDetectStaleStreams:
     def test_marks_stream_past_timeout(self):
         # last_frame_ts=100.0, now=109.0 → 9s sin frames > 8s
