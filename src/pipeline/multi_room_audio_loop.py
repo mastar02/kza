@@ -266,6 +266,7 @@ class MultiRoomAudioLoop:
         self._wake_vad_predict = None  # lazy: predictor Silero para wake_vad
 
         self._running = False
+        self._streams: dict = {}
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
         self._on_post_command_callback: Callable[[dict, CommandEvent], Awaitable[None]] | None = None
 
@@ -457,6 +458,34 @@ class MultiRoomAudioLoop:
             else:
                 logger.warning(f"[XVF-tuning] {name} no aplicado (write fail-open)")
 
+    def _open_stream(self, rs: "RoomStream"):
+        """Open and start an InputStream for one room. None on PortAudioError."""
+        callback = self._make_audio_callback(rs)
+        try:
+            dev_info = sd.query_devices(rs.device_index)
+            capture_channels = _resolve_capture_channels(
+                int(dev_info.get("max_input_channels", 0))
+            )
+            stream = sd.InputStream(
+                device=rs.device_index,
+                samplerate=self.sample_rate,
+                channels=capture_channels,
+                dtype="float32",
+                blocksize=CHUNK_SIZE,
+                callback=callback,
+            )
+            stream.start()
+            logger.info(
+                f"Room {rs.room_id}: audio stream started "
+                f"(device={rs.device_index}, channels={capture_channels})"
+            )
+            return stream
+        except sd.PortAudioError as e:
+            logger.error(
+                f"Room {rs.room_id}: failed to open device {rs.device_index}: {e}"
+            )
+            return None
+
     async def run(self):
         """
         Main loop — opens N InputStreams and polls for completed commands.
@@ -469,33 +498,18 @@ class MultiRoomAudioLoop:
         # sounddevice) pueda schedular corrutinas via run_coroutine_threadsafe
         # cuando detecta barge-in.
         self._loop = asyncio.get_running_loop()
-        streams = []
 
+        self._streams = {}
         for room_id, rs in self.room_streams.items():
-            callback = self._make_audio_callback(rs)
-            try:
-                dev_info = sd.query_devices(rs.device_index)
-                capture_channels = _resolve_capture_channels(
-                    int(dev_info.get("max_input_channels", 0))
-                )
-                stream = sd.InputStream(
-                    device=rs.device_index,
-                    samplerate=self.sample_rate,
-                    channels=capture_channels,
-                    dtype="float32",
-                    blocksize=CHUNK_SIZE,
-                    callback=callback,
-                )
-                stream.start()
-                streams.append(stream)
-                logger.info(
-                    f"Room {room_id}: audio stream started "
-                    f"(device={rs.device_index}, channels={capture_channels})"
-                )
-            except sd.PortAudioError as e:
-                logger.error(f"Room {room_id}: failed to open device {rs.device_index}: {e}")
+            stream = self._open_stream(rs)
+            if stream is not None:
+                self._streams[room_id] = stream
+                rs.last_frame_ts = time.monotonic()
 
-        logger.info(f"MultiRoomAudioLoop ready ({len(streams)}/{len(self.room_streams)} streams)")
+        logger.info(
+            f"MultiRoomAudioLoop ready "
+            f"({len(self._streams)}/{len(self.room_streams)} streams)"
+        )
 
         try:
             while self._running:
@@ -571,9 +585,12 @@ class MultiRoomAudioLoop:
                         asyncio.create_task(self._dispatch_command(event))
                         self._reset_listening(rs)
         finally:
-            for stream in streams:
-                stream.stop()
-                stream.close()
+            for stream in self._streams.values():
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
 
     async def stop(self):
         """Stop all audio streams."""

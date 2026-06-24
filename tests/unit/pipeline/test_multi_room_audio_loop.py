@@ -1055,3 +1055,32 @@ class TestDetectStaleStreams:
         states = [("a", 100.0), ("b", 108.5), ("c", 0.0)]
         # now=110: a=10s stale, b=1.5s fresh, c=never
         assert detect_stale_streams(states, now=110.0, timeout_s=8.0) == ["a"]
+
+
+class TestOpenStream:
+    def test_open_stream_returns_started_stream(self):
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": _make_room_stream("escritorio", device_index=4)}
+        )
+        rs = loop.room_streams["escritorio"]
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+        fake_stream = MagicMock()
+        mock_sd.InputStream.return_value = fake_stream
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd):
+            result = loop._open_stream(rs)
+        assert result is fake_stream
+        fake_stream.start.assert_called_once()
+
+    def test_open_stream_returns_none_on_portaudio_error(self):
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": _make_room_stream("escritorio", device_index=4)}
+        )
+        rs = loop.room_streams["escritorio"]
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.side_effect = mock_sd.PortAudioError("no device")
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd):
+            result = loop._open_stream(rs)
+        assert result is None
