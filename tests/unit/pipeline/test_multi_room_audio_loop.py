@@ -1084,3 +1084,54 @@ class TestOpenStream:
         with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd):
             result = loop._open_stream(rs)
         assert result is None
+
+
+class TestRecoverStreams:
+    @pytest.mark.asyncio
+    async def test_recover_reinits_portaudio_and_reopens(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        rs.mic_usb_port = "3-1.4"
+        loop = _make_multi_room_loop(rooms={"escritorio": rs})
+        loop._running = True
+        old_stream = MagicMock()
+        loop._streams = {"escritorio": old_stream}
+
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+        new_stream = MagicMock()
+        mock_sd.InputStream.return_value = new_stream
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port",
+            return_value=7,
+        ):
+            await loop._recover_streams(["escritorio"])
+
+        old_stream.close.assert_called_once()          # cerró el muerto
+        assert mock_sd._terminate.called and mock_sd._initialize.called  # reinit
+        assert rs.device_index == 7                    # re-resolvió por puerto
+        assert loop._streams["escritorio"] is new_stream  # reabrió
+        assert rs.last_frame_ts > 0.0                  # re-estampó
+
+    @pytest.mark.asyncio
+    async def test_reopen_waits_with_backoff_when_device_absent(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        rs.mic_usb_port = "3-1.4"
+        loop = _make_multi_room_loop(rooms={"escritorio": rs})
+        loop._running = True
+        loop._watchdog_backoff_min_s = 0.001
+        loop._watchdog_backoff_max_s = 0.004
+
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+        mock_sd.InputStream.return_value = MagicMock()
+        # 1ra resolución None (ausente), 2da devuelve índice → 1 reintento
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port",
+            side_effect=[None, 7],
+        ):
+            await loop._reopen_room(rs)
+
+        assert rs.device_index == 7
+        assert "escritorio" in loop._streams

@@ -24,6 +24,7 @@ from src.wakeword.whisper_wake import _text_likely_truncated
 from src.audio.echo_suppressor import EchoSuppressor
 from src.conversation.follow_up_mode import FollowUpMode
 from src.nlu.command_grammar import PartialCommand, parse_partial_command
+from src.rooms.room_context import resolve_mic_usb_port
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,11 @@ class MultiRoomAudioLoop:
         xvf_tuning: dict | None = None,
         ambient_guard: AmbientGuard | None = None,
         wake_clip_writer=None,
+        stream_watchdog_enabled: bool = False,
+        stream_watchdog_no_frames_timeout_s: float = 8.0,
+        stream_watchdog_check_interval_s: float = 2.0,
+        stream_watchdog_reopen_backoff_min_s: float = 1.0,
+        stream_watchdog_reopen_backoff_max_s: float = 10.0,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -264,6 +270,13 @@ class MultiRoomAudioLoop:
         self._ambient_tap = None
         self._ambient_transcriber = None
         self._wake_vad_predict = None  # lazy: predictor Silero para wake_vad
+
+        self._watchdog_enabled = stream_watchdog_enabled
+        self._watchdog_timeout_s = stream_watchdog_no_frames_timeout_s
+        self._watchdog_check_interval_s = stream_watchdog_check_interval_s
+        self._watchdog_backoff_min_s = stream_watchdog_reopen_backoff_min_s
+        self._watchdog_backoff_max_s = stream_watchdog_reopen_backoff_max_s
+        self._watchdog_task = None
 
         self._running = False
         self._streams: dict = {}
@@ -485,6 +498,73 @@ class MultiRoomAudioLoop:
                 f"Room {rs.room_id}: failed to open device {rs.device_index}: {e}"
             )
             return None
+
+    def _reinit_portaudio(self) -> None:
+        """Force PortAudio to re-scan the device list (sync; fail-open).
+
+        PortAudio snapshots devices at Pa_Initialize and never re-scans. After a
+        USB re-enumeration the cached indices point to dead devices, so we must
+        terminate+initialize to see the new ones. This is GLOBAL: it invalidates
+        every open stream, which is why _recover_streams reopens all of them.
+        """
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as e:
+            logger.warning(f"[audio-watchdog] PortAudio reinit failed: {e}")
+
+    async def _reopen_room(self, rs: "RoomStream") -> None:
+        """Re-resolve the device by USB port and reopen its stream, with backoff.
+
+        Waits indefinitely (while self._running) for the device to reappear in
+        sysfs — the service stays alive; only this mic waits. Never raises.
+        """
+        backoff = self._watchdog_backoff_min_s
+        while self._running:
+            new_index = rs.device_index
+            if rs.mic_usb_port:
+                resolved = resolve_mic_usb_port(rs.mic_usb_port)
+                if resolved is None:
+                    logger.warning(
+                        f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} "
+                        f"absent, retry in {backoff:.1f}s"
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, self._watchdog_backoff_max_s)
+                    continue
+                new_index = resolved
+            rs.device_index = new_index
+            stream = self._open_stream(rs)
+            if stream is not None:
+                self._streams[rs.room_id] = stream
+                rs.last_frame_ts = time.monotonic()
+                logger.info(
+                    f"[audio-watchdog] {rs.room_id}: recovered (device={new_index})"
+                )
+                return
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, self._watchdog_backoff_max_s)
+
+    async def _recover_streams(self, trigger_room_ids: list) -> None:
+        """Close all streams, reinit PortAudio, reopen all rooms.
+
+        sd._terminate() invalidates every stream, so recovery is all-or-nothing
+        even if only one room went stale.
+        """
+        logger.error(
+            f"[audio-watchdog] streams {trigger_room_ids} stopped delivering "
+            f"audio → recovering all streams"
+        )
+        for room_id, stream in list(self._streams.items()):
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+        self._streams.clear()
+        await asyncio.to_thread(self._reinit_portaudio)
+        for room_id, rs in self.room_streams.items():
+            await self._reopen_room(rs)
 
     async def run(self):
         """
