@@ -566,6 +566,25 @@ class MultiRoomAudioLoop:
         for room_id, rs in self.room_streams.items():
             await self._reopen_room(rs)
 
+    async def _stream_watchdog(self) -> None:
+        """Periodically detect mics that stopped delivering frames and recover.
+
+        Reuses detect_stale_streams (pure) for the decision. Runs only while
+        self._running; recovery is awaited so we never overlap two recoveries.
+        """
+        while self._running:
+            await asyncio.sleep(self._watchdog_check_interval_s)
+            if not self._running:
+                break
+            now = time.monotonic()
+            states = [
+                (room_id, rs.last_frame_ts)
+                for room_id, rs in self.room_streams.items()
+            ]
+            stale = detect_stale_streams(states, now, self._watchdog_timeout_s)
+            if stale:
+                await self._recover_streams(stale)
+
     async def run(self):
         """
         Main loop — opens N InputStreams and polls for completed commands.
@@ -590,6 +609,13 @@ class MultiRoomAudioLoop:
             f"MultiRoomAudioLoop ready "
             f"({len(self._streams)}/{len(self.room_streams)} streams)"
         )
+
+        if self._watchdog_enabled:
+            self._watchdog_task = asyncio.create_task(self._stream_watchdog())
+            logger.info(
+                f"[audio-watchdog] ACTIVO (timeout={self._watchdog_timeout_s}s, "
+                f"check={self._watchdog_check_interval_s}s)"
+            )
 
         try:
             while self._running:
@@ -665,6 +691,9 @@ class MultiRoomAudioLoop:
                         asyncio.create_task(self._dispatch_command(event))
                         self._reset_listening(rs)
         finally:
+            if self._watchdog_task is not None:
+                self._watchdog_task.cancel()
+                self._watchdog_task = None
             for stream in self._streams.values():
                 try:
                     stream.stop()

@@ -1086,6 +1086,48 @@ class TestOpenStream:
         assert result is None
 
 
+class TestStreamWatchdog:
+    @pytest.mark.asyncio
+    async def test_watchdog_recovers_when_stream_stale(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        rs.mic_usb_port = "3-1.4"
+        loop = _make_multi_room_loop(rooms={"escritorio": rs})
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 0.05
+        # frame "viejo": monotonic muy atrás → stale
+        rs.last_frame_ts = time.monotonic() - 10.0
+
+        called = {}
+        async def fake_recover(ids):
+            called["ids"] = ids
+            loop._running = False  # corta el loop tras una recuperación
+        loop._recover_streams = fake_recover
+
+        await asyncio.wait_for(loop._stream_watchdog(), timeout=1.0)
+        assert called.get("ids") == ["escritorio"]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_noop_when_fresh(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        loop = _make_multi_room_loop(rooms={"escritorio": rs})
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 5.0
+        rs.last_frame_ts = time.monotonic()  # fresco
+
+        called = {"n": 0}
+        async def fake_recover(ids):
+            called["n"] += 1
+        loop._recover_streams = fake_recover
+
+        async def stop_soon():
+            await asyncio.sleep(0.05)
+            loop._running = False
+        await asyncio.gather(loop._stream_watchdog(), stop_soon())
+        assert called["n"] == 0
+
+
 class TestRecoverStreams:
     @pytest.mark.asyncio
     async def test_recover_reinits_portaudio_and_reopens(self):
