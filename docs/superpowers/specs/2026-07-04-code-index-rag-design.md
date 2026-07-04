@@ -48,7 +48,7 @@ code-index service :9510 (server, systemd --user kza)
  │    └─ colección code_cards   (resumen por archivo)
  ├─ BGE-M3 en CPU (embeddings, 0 VRAM)
  └─ indexer incremental (AST + cards vía gateway :8200 → MiniMax)
-        ▲ trigger: curl POST /reindex al final de kza-sync
+        ▲ trigger: hook git post-merge del server (cada git pull de deploy)
 ```
 
 ### Componentes
@@ -82,6 +82,11 @@ code-index service :9510 (server, systemd --user kza)
 - El manifest registra el SHA de HEAD del árbol indexado.
 - Escritura del manifest por archivo procesado → un reindex interrumpido es
   idempotente y retoma donde quedó.
+- **Trigger post-deploy (corrección 2026-07-04):** el deploy real es `git pull`
+  en el server (`kza-sync` es solo un reporte read-only), así que el trigger es
+  un hook git `post-merge` instalado en el repo del server
+  (`scripts/install_code_index_hook.sh`) que hace `curl POST /reindex`. Si el
+  servicio está caído, el hook solo avisa — nunca bloquea el deploy.
 
 ### Consulta desde agentes
 
