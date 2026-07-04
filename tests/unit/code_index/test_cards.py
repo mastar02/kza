@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from src.code_index.cards import CardGenerator, _strip_think
 
 
@@ -61,3 +63,64 @@ async def test_generate_truncates_long_source():
 
     prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
     assert "x" * 11 not in prompt
+
+
+async def test_generate_propagates_gateway_errors():
+    gen = CardGenerator(base_url="http://fake:8200/v1", model="m")
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(side_effect=RuntimeError("gateway caído"))
+            )
+        )
+    )
+    gen._client = fake_client
+
+    with pytest.raises(RuntimeError, match="gateway caído"):
+        await gen.generate("src/foo.py", "def f(): pass")
+
+
+def test_get_client_lazy_wiring(monkeypatch):
+    import sys
+
+    captured = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class FakeOpenAI:
+        AsyncOpenAI = FakeAsyncOpenAI
+
+    monkeypatch.setitem(sys.modules, "openai", FakeOpenAI())
+    monkeypatch.setenv("MI_KEY_ENV", "clave-virtual")
+
+    gen = CardGenerator(
+        base_url="http://gw:8200/v1", model="m",
+        api_key_env="MI_KEY_ENV", timeout=45.0,
+    )
+    client = gen._get_client()
+
+    assert captured == {
+        "base_url": "http://gw:8200/v1",
+        "api_key": "clave-virtual",
+        "timeout": 45.0,
+    }
+    assert gen._get_client() is client  # cacheado (lazy una sola vez)
+
+
+def test_get_client_dummy_key_when_env_missing(monkeypatch):
+    import sys
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeOpenAI:
+        AsyncOpenAI = FakeAsyncOpenAI
+
+    monkeypatch.setitem(sys.modules, "openai", FakeOpenAI())
+    monkeypatch.delenv("NO_EXISTE_ENV", raising=False)
+
+    gen = CardGenerator(base_url="http://gw:8200/v1", model="m", api_key_env="NO_EXISTE_ENV")
+    assert gen._get_client().kwargs["api_key"] == "dummy"

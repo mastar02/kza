@@ -46,6 +46,15 @@ class CardGenerator:
         timeout: float = 120.0,
         max_source_chars: int = 48_000,
     ):
+        """Inicializar el generador de cards.
+
+        Args:
+            base_url: URL base del gateway OpenAI-compatible (ej. http://gw:8200/v1).
+            model: Nombre del modelo (ej. m o minimax-text-01).
+            api_key_env: Variable de entorno que contiene la API key virtual (default MINIMAX_API_KEY).
+            timeout: Timeout en segundos para requests al gateway (default 120.0).
+            max_source_chars: Máximo de caracteres del source a enviar al LLM (default 48000).
+        """
         self.base_url = base_url
         self.model = model
         self.api_key_env = api_key_env
@@ -66,6 +75,13 @@ class CardGenerator:
 
     async def generate(self, path: str, source: str) -> str:
         """Generar la card markdown de un archivo.
+
+        Args:
+            path: Ruta relativa del archivo (ej. src/foo.py).
+            source: Código fuente del archivo a analizar.
+
+        Returns:
+            Markdown de la card (sin bloques <think>).
 
         Raises:
             Exception: si el gateway falla (el caller decide el retry —
