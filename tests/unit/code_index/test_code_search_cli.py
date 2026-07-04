@@ -67,3 +67,26 @@ def test_card_printed_once_per_path(tmp_path):
     out2 = code_search.format_result(_result(), tmp_path, seen_cards=seen)
     assert "## Propósito" in out1
     assert "## Propósito" not in out2
+
+
+def test_main_handles_non_json_response(monkeypatch, capsys):
+    import io
+
+    class FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        code_search.urllib.request,
+        "urlopen",
+        lambda *a, **k: FakeResp(b"<html>gateway error</html>"),
+    )
+    monkeypatch.setattr(code_search.sys, "argv", ["code_search.py", "query x"])
+
+    rc = code_search.main()
+
+    assert rc == 1
+    assert "Fallback" in capsys.readouterr().err

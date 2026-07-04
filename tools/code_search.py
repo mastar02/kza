@@ -66,7 +66,7 @@ def main() -> int:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError) as e:
         print(
             f"code-index no disponible ({e}). Fallback: usar Grep/Glob.",
             file=sys.stderr,
