@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from aiohttp import web
@@ -13,8 +14,29 @@ from src.code_index.manifest import IndexManifest
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ReindexState:
+    """Estado mutable del reindex en background (referencia a la tarea actual, si hay)."""
+
+    task: asyncio.Task | None = None
+
+
+INDEXER_KEY = web.AppKey("indexer", CodeIndexer)
+REINDEX_STATE_KEY: web.AppKey = web.AppKey("reindex_state", ReindexState)
+
+
+def _log_reindex_failure(task) -> None:
+    """Loguear fallas del reindex en background (fuera del try por-archivo)."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(f"[CodeIndexService] Reindex falló: {exc!r}")
+
+
 async def handle_health(request: web.Request) -> web.Response:
-    idx: CodeIndexer = request.app["indexer"]
+    """Reportar estado del índice: sha indexado, cantidad de archivos y último resultado."""
+    idx = request.app[INDEXER_KEY]
     return web.json_response(
         {
             "status": "ok",
@@ -27,20 +49,25 @@ async def handle_health(request: web.Request) -> web.Response:
 
 
 async def handle_search(request: web.Request) -> web.Response:
-    body = await request.json()
+    """Buscar código por query semántica, devolviendo hasta top_k resultados."""
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "body JSON inválido"}, status=400)
     query = (body.get("query") or "").strip()
     if not query:
         return web.json_response({"error": "query vacía"}, status=400)
-    top_k = int(body.get("top_k", 8))
-    idx: CodeIndexer = request.app["indexer"]
+    try:
+        top_k = int(body.get("top_k", 8))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "top_k inválido"}, status=400)
+    idx = request.app[INDEXER_KEY]
     results = await idx.search(query, top_k=top_k)
     return web.json_response({"results": results})
 
 
 async def handle_reindex(request: web.Request) -> web.Response:
-    idx: CodeIndexer = request.app["indexer"]
-    if idx.running:
-        return web.json_response({"status": "already_running"}, status=409)
+    """Disparar un reindex en background, devolviendo 409 si ya hay uno en curso."""
     mode = "incremental"
     if request.can_read_body:
         try:
@@ -48,17 +75,23 @@ async def handle_reindex(request: web.Request) -> web.Response:
             mode = body.get("mode", "incremental")
         except ValueError:
             pass
-    # referencia guardada en app para que el task no sea recolectado
-    request.app["reindex_task"] = asyncio.get_running_loop().create_task(
-        idx.reindex(mode=mode)
-    )
+
+    idx = request.app[INDEXER_KEY]
+    state = request.app[REINDEX_STATE_KEY]
+    prev = state.task
+    if (prev is not None and not prev.done()) or idx.running:
+        return web.json_response({"status": "already_running"}, status=409)
+    task = asyncio.get_running_loop().create_task(idx.reindex(mode=mode))
+    task.add_done_callback(_log_reindex_failure)
+    state.task = task
     return web.json_response({"status": "started", "mode": mode}, status=202)
 
 
 def create_app(indexer: CodeIndexer) -> web.Application:
     """Armar la app aiohttp con el indexer inyectado."""
     app = web.Application()
-    app["indexer"] = indexer
+    app[INDEXER_KEY] = indexer
+    app[REINDEX_STATE_KEY] = ReindexState()
     app.add_routes(
         [
             web.get("/health", handle_health),

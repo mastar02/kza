@@ -1,11 +1,12 @@
 """Tests del servicio HTTP del code-index."""
 
 import asyncio
+import contextlib
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from src.code_index.service import create_app
+from src.code_index.service import INDEXER_KEY, REINDEX_STATE_KEY, create_app
 from tests.unit.code_index.test_indexer import make_indexer, repo  # noqa: F401
 
 
@@ -56,10 +57,56 @@ async def test_search_empty_query_is_400(client):
 
 async def test_reindex_returns_409_when_running(client, repo):  # noqa: F811
     # bloquear el lock del indexer manualmente para simular reindex en curso
-    idx = client.server.app["indexer"]
+    idx = client.server.app[INDEXER_KEY]
     await idx._lock.acquire()
     try:
         resp = await client.post("/reindex")
         assert resp.status == 409
     finally:
         idx._lock.release()
+
+
+async def test_search_invalid_body_is_400(client):
+    resp = await client.post("/search", data=b"esto no es json")
+    assert resp.status == 400
+    resp = await client.post("/search")
+    assert resp.status == 400
+
+
+async def test_search_invalid_top_k_is_400(client):
+    resp = await client.post("/search", json={"query": "x", "top_k": "muchos"})
+    assert resp.status == 400
+
+
+async def test_reindex_second_request_409_while_first_pending(client):
+    idx = client.server.app[INDEXER_KEY]
+    release = asyncio.Event()
+
+    async def slow_reindex(mode="incremental"):
+        await release.wait()
+        return {"indexed": 0, "deleted": 0, "cards_failed": 0, "errors": 0}
+
+    idx.reindex = slow_reindex
+    r1 = await client.post("/reindex")
+    r2 = await client.post("/reindex")
+    assert r1.status == 202
+    assert r2.status == 409
+    release.set()
+
+
+async def test_reindex_failure_is_logged(client, caplog):
+    import logging as _logging
+
+    idx = client.server.app[INDEXER_KEY]
+
+    async def boom(mode="incremental"):
+        raise RuntimeError("scan explotó")
+
+    idx.reindex = boom
+    with caplog.at_level(_logging.ERROR):
+        await client.post("/reindex")
+        task = client.server.app[REINDEX_STATE_KEY].task
+        with contextlib.suppress(RuntimeError):
+            await task
+        await asyncio.sleep(0)  # dejar correr el done_callback
+    assert "Reindex falló" in caplog.text
