@@ -57,7 +57,7 @@ def make_indexer(repo, card_gen=None):
 async def test_initial_reindex_indexes_everything(repo):
     idx, chunks, cards, manifest = make_indexer(repo)
     stats = await idx.reindex()
-    assert stats == {"indexed": 2, "deleted": 0, "cards_failed": 0}
+    assert stats == {"indexed": 2, "deleted": 0, "cards_failed": 0, "errors": 0}
     assert chunks.count() == 2  # fa y fb
     assert cards.count() == 2
     assert set(manifest.files) == {"src/a.py", "src/b.py"}
@@ -117,3 +117,33 @@ async def test_full_mode_reindexes_all(repo):
     stats = await idx.reindex(mode="full")
     assert stats["indexed"] == 2
     assert sorted(card_gen.calls) == ["src/a.py", "src/b.py"]
+
+
+async def test_full_mode_purges_deleted_files(repo):
+    idx, chunks, cards, manifest = make_indexer(repo)
+    await idx.reindex()
+
+    (repo / "src" / "b.py").unlink()
+    stats = await idx.reindex(mode="full")
+
+    assert stats["deleted"] == 1
+    assert "src/b.py" not in manifest.files
+    assert chunks.get(ids=["src/b.py::fb"])["ids"] == []
+    assert cards.get(ids=["src/b.py"])["ids"] == []
+
+
+async def test_unreadable_file_does_not_wedge_reindex(repo):
+    # archivo no-UTF8: debe contarse como error y NO impedir indexar el resto
+    (repo / "src" / "bad.py").write_bytes(b"\xff\xfe invalid \xff")
+    idx, chunks, cards, manifest = make_indexer(repo)
+
+    stats = await idx.reindex()
+
+    assert stats["errors"] == 1
+    assert stats["indexed"] == 2          # a.py y b.py se indexaron igual
+    assert "src/bad.py" not in manifest.files
+    # el archivo malo no bloquea reindexes futuros de los demás
+    (repo / "src" / "a.py").write_text("def fa():\n    return 3\n")
+    stats2 = await idx.reindex()
+    assert stats2["indexed"] == 1
+    assert stats2["errors"] == 1

@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from src.code_index.chunker import extract_chunks
-from src.code_index.manifest import IndexManifest, git_blob_hash
+from src.code_index.manifest import IndexManifest, ManifestDiff, git_blob_hash
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +46,11 @@ class CodeIndexer:
         Idempotente ante interrupciones: el manifest se persiste por archivo.
         """
         async with self._lock:
-            if mode == "full":
-                self.manifest.files = {}
             current = await asyncio.to_thread(self._scan)
             diff = self.manifest.diff(current)
-            stats = {"indexed": 0, "deleted": 0, "cards_failed": 0}
+            if mode == "full":
+                diff = ManifestDiff(added=sorted(current), deleted=diff.deleted)
+            stats = {"indexed": 0, "deleted": 0, "cards_failed": 0, "errors": 0}
             logger.info(
                 f"[CodeIndexer] reindex mode={mode}: +{len(diff.added)} "
                 f"~{len(diff.changed)} -{len(diff.deleted)}"
@@ -58,14 +58,18 @@ class CodeIndexer:
 
             for path in diff.deleted:
                 await asyncio.to_thread(self._purge_path, path)
-                self.manifest.remove_file(path)
+                await asyncio.to_thread(self.manifest.remove_file, path)
                 stats["deleted"] += 1
 
             for path in diff.added + diff.changed:
-                await self._index_file(path, current[path], stats)
+                try:
+                    await self._index_file(path, current[path], stats)
+                except Exception as e:
+                    logger.error(f"[CodeIndexer] Error indexando {path}: {e}")
+                    stats["errors"] += 1
 
             self.manifest.head_sha = await self._git_head()
-            self.manifest.save()
+            await asyncio.to_thread(self.manifest.save)
             self.last_stats = stats
             logger.info(f"[CodeIndexer] reindex done: {stats}")
             return stats
@@ -76,7 +80,10 @@ class CodeIndexer:
         for pattern in self.include_globs:
             for f in sorted(self.repo_root.glob(pattern)):
                 rel = f.relative_to(self.repo_root).as_posix()
-                current[rel] = git_blob_hash(f.read_bytes())
+                try:
+                    current[rel] = git_blob_hash(f.read_bytes())
+                except OSError as e:
+                    logger.warning(f"[CodeIndexer] No se pudo leer {rel}: {e}")
         return current
 
     def _purge_path(self, path: str) -> None:
@@ -94,7 +101,8 @@ class CodeIndexer:
             embeddings = await asyncio.to_thread(
                 self.embedder.encode, [c.text for c in chunks]
             )
-            self.chunks.add(
+            await asyncio.to_thread(
+                self.chunks.add,
                 ids=[c.chunk_id for c in chunks],
                 embeddings=[list(map(float, e)) for e in embeddings],
                 documents=[c.text for c in chunks],
@@ -115,7 +123,8 @@ class CodeIndexer:
         try:
             card = await self.card_generator.generate(path, source)
             card_emb = await asyncio.to_thread(self.embedder.encode, [card])
-            self.cards.add(
+            await asyncio.to_thread(
+                self.cards.add,
                 ids=[path],
                 embeddings=[list(map(float, card_emb[0]))],
                 documents=[card],
@@ -126,7 +135,7 @@ class CodeIndexer:
             logger.warning(f"[CodeIndexer] Card falló para {path}: {e}")
             stats["cards_failed"] += 1
 
-        self.manifest.update_file(path, blob_hash, card_done)
+        await asyncio.to_thread(self.manifest.update_file, path, blob_hash, card_done)
         stats["indexed"] += 1
 
     async def _git_head(self) -> str | None:
