@@ -35,3 +35,8 @@ def test_high_compression_prefix_matches():
 def test_disabled_never_fires():
     cfg = {**CFG, "enabled": False}
     assert should_play_earcon("empty", wake_score=0.99, rms=0.5, cfg=cfg) is False
+
+
+def test_silent_on_prompt_echo():
+    cfg = {"enabled": True, "min_wake_score": 0.55, "min_rms": 0.02, "reasons": ("empty",)}
+    assert should_play_earcon("prompt_echo", 0.9, 0.5, cfg) is False

@@ -1232,6 +1232,10 @@ async def main():
         min_avg_logprob=_gate_cfg.get("min_avg_logprob", -1.20),
         enforce_compression_ratio=_gate_cfg.get("enforce_compression_ratio", False),
         max_compression_ratio=_gate_cfg.get("max_compression_ratio", 2.2),
+        # Leer config["stt"] directo: stt_cfg solo se asigna en el branch
+        # wake_engine=="whisper" (nunca corre con openwakeword) y usarla acá
+        # era UnboundLocalError al boot (review 2026-07-05).
+        initial_prompt=config.get("stt", {}).get("initial_prompt"),
     )
     request_router = RequestRouter(
         command_processor=command_processor,

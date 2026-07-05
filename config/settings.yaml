@@ -181,6 +181,12 @@ stt:
   # (TV/voz), disparando acciones fantasma (la luz del escritorio prendía sola).
   # Dejamos solo vocabulario de dominio: da el prior léxico sin el motor de
   # alucinación. Ver project_escritorio_light_phantom_toggles_2026-05-29.
+  # ⚠️ DOBLE USO (2026-07-05): este prompt también alimenta la regla
+  # prompt_echo del CommandGate (rechaza transcripciones que son eco del
+  # prompt, umbral 0.9). NO re-agregar ejemplos de comandos verbatim acá:
+  # prompt_echo empezaría a rechazar esos comandos reales. El test
+  # test_prompt_echo_calibration_against_live_settings_prompt se pone rojo
+  # si una edición rompe la calibración.
   initial_prompt: >-
     Esto es un asistente de voz llamado Nexa que controla luces, aire
     acondicionado, persianas y música en el escritorio, el living, la cocina,
