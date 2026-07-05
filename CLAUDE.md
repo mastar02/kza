@@ -100,6 +100,7 @@ Mic → WakeWord(CPU) → STT(GPU0) → Router 7B(GPU1 :8101) → TTS(GPU0) → 
 | `src/users/emotion_detector.py` | Detección de emociones wav2vec2 | Cambios en emotion |
 | `src/alerts/alert_manager.py` | Sistema de alertas proactivas | Nuevos tipos de alerta |
 | `src/vectordb/chroma_sync.py` | Sync HA entities → ChromaDB | Cambios en búsqueda |
+| `src/code_index/` | Servicio índice semántico del codebase (:9515) | Cambios en búsqueda de código para agentes |
 | `src/audio/zone_manager.py` | Multi-zona + MA1260 | Cambios en zonas |
 | `src/rooms/room_context.py` | Contexto por habitación (mic+BT) | Nuevas habitaciones |
 | `config/settings.yaml` | TODA la configuración centralizada | Cualquier config nueva |
@@ -136,6 +137,9 @@ python -m src.rooms.room_context --detect  # Detectar dispositivos USB
 
 # Benchmark
 python tools/benchmark_latency.py --iterations 20
+
+# Búsqueda semántica del codebase (requiere kza-code-index en el server)
+python tools/code_search.py "cómo se maneja el timeout de HA al boot"
 
 # Modelos
 ./scripts/download_models.sh               # Descargar todos los modelos
