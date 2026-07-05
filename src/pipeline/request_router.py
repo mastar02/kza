@@ -455,7 +455,7 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
-            result["intent"] = "gate_rejected"
+            result["intent"] = "gate_rejected:empty"
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             self._earcon_and_log(
@@ -472,7 +472,7 @@ class RequestRouter:
         )
         if not gate_decision.accept:
             logger.info(f"Gate reject ({gate_decision.reason}): {text!r}")
-            result["intent"] = "gate_rejected"
+            result["intent"] = f"gate_rejected:{gate_decision.reason}"
             result["success"] = False
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
@@ -792,7 +792,7 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
-            result["intent"] = "gate_rejected"
+            result["intent"] = "gate_rejected:empty"
             result["response"] = ""
             self._earcon_and_log(
                 "empty", text or "", {}, room_id, wake_score, wake_rms,
@@ -806,7 +806,7 @@ class RequestRouter:
         )
         if not gate_decision.accept:
             logger.info(f"Gate reject ({gate_decision.reason}): {text!r}")
-            result["intent"] = "gate_rejected"
+            result["intent"] = f"gate_rejected:{gate_decision.reason}"
             result["success"] = False
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000

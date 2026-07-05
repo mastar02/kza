@@ -66,7 +66,7 @@ async def test_rejected_command_does_not_reach_orchestrator():
     result = await r.process_command(np.zeros(16000, dtype="float32"))
     assert not orch.process.called
     assert result["success"] is False
-    assert result["intent"] == "gate_rejected"
+    assert result["intent"].startswith("gate_rejected:missing_wake")
 
 
 # ---- LLM router confidence gate (2026-06-02) ----

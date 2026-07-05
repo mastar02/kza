@@ -250,9 +250,12 @@ class TestClassifyOutcome:
         assert classify_outcome({"success": False, "text": None}) == "empty"
         assert classify_outcome({}) == "empty"
 
-    def test_gate_and_llm_rejections_are_noise(self):
-        assert classify_outcome(
-            {"success": False, "text": "x", "intent": "gate_rejected"}) == "noise"
+    def test_llm_and_low_confidence_rejections_are_noise(self):
+        # El intent "gate_rejected" (bare o con ":reason") se resuelve ahora en
+        # TestClassifyOutcomeGateReasons — noise_phrase/missing_wake escalan
+        # como "noise"; el resto (filler_word/prompt_echo/etc., incluido el
+        # bare backward-compat) es "hallucination" (2026-07-05: alucinaciones
+        # de silencio de Whisper no son evidencia de ambiente hostil).
         assert classify_outcome(
             {"success": False, "text": "x", "intent": "llm_rejected:tv_phrase"}) == "noise"
         assert classify_outcome(
@@ -281,6 +284,85 @@ class TestClassifyOutcome:
         assert classify_outcome(
             {"success": False, "text": "Nexa, a perder a luz.",
              "intent": "unverified_intent:turn_off"}) == "other_fail"
+
+
+class TestClassifyOutcomeGateReasons:
+    """request_router propaga gate_decision.reason: "gate_rejected:<reason>"
+    (2026-07-05). Solo el ruido REAL (noise_phrase/missing_wake) debe seguir
+    escalando el guard; el resto son alucinaciones de Whisper sobre silencio
+    (validado en prod: ráfaga a los 8s del boot disparaba STRICT y castigaba
+    el wake real del usuario, que scorea 0.41-0.59 contra un STRICT que exige
+    0.45)."""
+
+    def test_gate_reject_noise_phrase_is_noise(self):
+        r = {"success": False, "text": "gracias por ver el video", "intent": "gate_rejected:noise_phrase:'gracias por ver'"}
+        assert classify_outcome(r) == "noise"
+
+    def test_gate_reject_missing_wake_is_noise(self):
+        r = {"success": False, "text": "bajá la persiana", "intent": "gate_rejected:missing_wake:'nexa'"}
+        assert classify_outcome(r) == "noise"
+
+    def test_gate_reject_filler_is_hallucination(self):
+        r = {"success": False, "text": "¡Gracias!", "intent": "gate_rejected:filler_word:'gracias'"}
+        assert classify_outcome(r) == "hallucination"
+
+    def test_gate_reject_prompt_echo_is_hallucination(self):
+        r = {"success": False, "text": "Esto es un asistente de voz.", "intent": "gate_rejected:prompt_echo"}
+        assert classify_outcome(r) == "hallucination"
+
+    def test_gate_reject_word_repetition_is_hallucination(self):
+        r = {"success": False, "text": "no no no no", "intent": "gate_rejected:word_repetition:'no'"}
+        assert classify_outcome(r) == "hallucination"
+
+    def test_bare_gate_rejected_is_hallucination_backcompat(self):
+        r = {"success": False, "text": "algo", "intent": "gate_rejected"}
+        assert classify_outcome(r) == "hallucination"
+
+    def test_llm_rejected_still_noise(self):
+        r = {"success": False, "text": "ubico el reality", "intent": "llm_rejected:tv_phrase"}
+        assert classify_outcome(r) == "noise"
+
+
+class TestHallucinationEscalation:
+    """Wiring end-to-end guard.on_capture_result con el outcome "hallucination"
+    (bug validado en prod 2026-07-05: ráfaga de alucinaciones de silencio del
+    warmup a los 8s del boot escalaba STRICT)."""
+
+    def test_hallucination_burst_does_not_escalate(self):
+        # N alucinaciones de silencio seguidas NO ponen STRICT (bug del boot
+        # 14:39:48) — N bien por encima de strict_entry_rejects=3.
+        guard = make_guard()
+        for _ in range(10):
+            guard.on_capture_result("escritorio", "hallucination")
+        assert guard.state_for("escritorio") is GuardState.NORMAL
+
+    def test_hallucinations_do_not_block_quiet_recovery(self):
+        # En STRICT, una racha de alucinaciones NO refresca last_reject_at:
+        # avanzar el reloj > strict_exit_quiet_s con hallucinations en el
+        # medio igual vuelve a NORMAL (el ambiente está en silencio real).
+        clock = FakeClock()
+        guard = make_guard(clock=clock)
+        for _ in range(3):
+            guard.on_capture_result("escritorio", "noise")  # → STRICT
+        assert guard.state_for("escritorio") is GuardState.STRICT
+        clock.advance(60.0)
+        guard.on_capture_result("escritorio", "hallucination")
+        guard.on_capture_result("escritorio", "hallucination")
+        clock.advance(61.0)  # 121s desde el último "noise" real (> 120s quiet)
+        assert guard.state_for("escritorio") is GuardState.NORMAL
+
+    def test_noise_phrases_still_escalate(self):
+        # Con reasons nuevos: N x "gate_rejected:noise_phrase..." vía
+        # classify_outcome + on_capture_result → sigue escalando a STRICT.
+        guard = make_guard()
+        for _ in range(3):  # strict_entry_rejects=3
+            result = {
+                "success": False, "text": "gracias por ver",
+                "intent": "gate_rejected:noise_phrase:'gracias por ver'",
+            }
+            outcome = classify_outcome(result)
+            guard.on_capture_result("escritorio", outcome)
+        assert guard.state_for("escritorio") is GuardState.STRICT
 
 
 class TestConfigInvariant:
