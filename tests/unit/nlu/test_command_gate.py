@@ -274,3 +274,33 @@ def test_prompt_echo_survives_long_prompt_sentences():
     d = g.evaluate("el cuarto de visitas con la lampara de visitas y la persiana de visitas")
     assert d.accept is False
     assert d.reason == "prompt_echo"
+
+
+def test_prompt_echo_calibration_against_live_settings_prompt():
+    """Acopla la calibración de prompt_echo al prompt REAL de settings.yaml.
+
+    stt.initial_prompt es perilla de doble uso (decodificación STT + regla
+    prompt_echo). Si una edición futura del prompt re-agrega ejemplos de
+    comandos verbatim (estilo pre-f09c4d6), este test se pone rojo ANTES
+    de que prompt_echo empiece a rechazar comandos reales en producción.
+    """
+    import yaml
+
+    with open("config/settings.yaml") as f:
+        live_prompt = yaml.safe_load(f)["stt"]["initial_prompt"]
+    assert live_prompt, "stt.initial_prompt desapareció de settings.yaml"
+
+    g = CommandAcceptanceGate(initial_prompt=live_prompt)
+
+    # Ecos del prompt vivo → reject
+    d = g.evaluate("Esto es un asistente de voz.")
+    assert d.reason == "prompt_echo"
+
+    # Comandos reales y enumeración multiroom → accept (margen 0.021 medido)
+    for cmd in (
+        "nexa prendé la luz del escritorio",
+        "apagá el aire acondicionado del living",
+        "luces del escritorio el living la cocina el baño y el hall",
+    ):
+        d = g.evaluate(cmd)
+        assert d.accept is True, f"false-reject con prompt vivo: {cmd!r} → {d.reason}"

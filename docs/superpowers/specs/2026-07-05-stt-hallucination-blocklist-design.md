@@ -51,12 +51,16 @@ implementación, revisadas a mano antes de entrar).
   `--file`. Standalone stdlib (corre en el server sin PYTHONPATH), salvo el
   import opcional de la lista actual para excluir ya-bloqueadas (si
   `src.nlu.command_gate` está importable, la usa; si no, sigue sin excluir).
-- Detecta el patrón: `[CommandProcessor] Text='X'` seguido de
-  `[CommandGate] accept=True` y luego `is_command=False` del router
-  (aceptado por el gate pero descartado por el router = candidata).
+- Detecta líneas `[LLMRouter ...] is_command=False ... text=<repr>` (esa
+  línea solo se emite post-gate-accept — `request_router.py:525` — así que
+  equivale al patrón gate-aceptó-router-descartó; el `text=` se parsea como
+  repr de Python vía `ast.literal_eval`).
 - Agrupa por texto normalizado, cuenta ocurrencias, y lista candidatas con
   `count >= --min-count` (default 3): tabla `count | texto | primera/última vez`.
 - **Solo propone** — un humano decide qué entra a `_NOISE_PHRASES`.
+- Primera cosecha: usar `--since` desde la fecha del deploy (el journal
+  pre-deploy contiene ecos del prompt que prompt_echo ya corta — no
+  proponerlos).
 
 ## Errores y edge cases
 

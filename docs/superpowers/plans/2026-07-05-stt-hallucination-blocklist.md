@@ -17,7 +17,7 @@
 - El gate es **fail-open** (`evaluate` ya envuelve en try/except) — la regla nueva vive adentro de `_hard_reason`, no cambiar esa semántica.
 - Reason de la regla nueva: exactamente `"prompt_echo"` (el earcon gate matchea por `startswith`).
 - `prompt_echo` solo aplica si la transcripción normalizada tiene ≥4 palabras Y el prompt tiene oraciones válidas (≥4 palabras); gate sin prompt = comportamiento idéntico al actual (backward compat: los tests existentes de `test_command_gate.py` deben seguir pasando SIN modificaciones).
-- Umbral: bloque contiguo común más largo / len(transcripción normalizada) ≥ 0.8 (constante módulo `_PROMPT_ECHO_RATIO = 0.8`).
+- Umbral: bloque contiguo común más largo / len(transcripción normalizada) ≥ 0.8 (constante módulo `_PROMPT_ECHO_RATIO = 0.8`). *(superseded en review: 0.9 — ver spec, mediciones 0.879/0.963)*
 - El script de cosecha es standalone stdlib (corre en el server sin venv); import de `src.nlu.command_gate` OPCIONAL (si falla, sigue sin excluir ya-bloqueadas). SOLO propone — nunca escribe código/config.
 - Commits `feat(gate): ...` / `feat(tools): ...`; working dir `/Users/yo/Documents/kza`, rama `feat/stt-hallucination-blocklist`.
 
@@ -527,4 +527,5 @@ git commit -m "feat(tools): harvest_hallucinations — cosecha de candidatas BoH
 
 1. Merge a main + push + deploy (git pull en server — el hook del code-index reindexa solo) + restart kza-voice coordinado.
 2. Primera cosecha real: `journalctl --user -u kza-voice --since '14 days ago' --output=cat | python3 tools/harvest_hallucinations.py` en el server → curar candidatas → PR chico con las aprobadas.
+   - Primera cosecha: usar `--since` desde la fecha del deploy (el journal pre-deploy contiene ecos del prompt que prompt_echo ya corta — no proponerlos).
 3. Después: audit ciego del shadow Parakeet (siguiente pieza del roadmap STT).
