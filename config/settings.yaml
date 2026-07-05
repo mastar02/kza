@@ -1130,7 +1130,13 @@ rooms:
     xvf_tuning:
       apply_on_start: true
       params:
-        PP_AGCMAXGAIN: [8.0]
+        # 8→16 (2026-07-05): el 8 era calibración del mic EMBUTIDO en el cielo
+        # raso; con el mic expuesto (mudanza 07-02) la voz llegaba con RMS
+        # 0.011-0.016 — bajo el silence_threshold 0.015 del endpointing, que
+        # cerraba la captura a los 300ms → "¡Gracias!" alucinado. Con 16 la
+        # voz mide RMS 0.24-0.30 y los comandos transcriben limpios (sesión
+        # de recalibración en vivo, validado con comando ejecutado e2e).
+        PP_AGCMAXGAIN: [16.0]
     # Pre-roll de audio (2026-06-02): segundos de audio previos al wake que se
     # prependen al comando. openwakeword tiene latencia de detección (~0.5-1s):
     # decís "Nexa apagá la luz" de corrido y "apagá" se pierde porque la captura
