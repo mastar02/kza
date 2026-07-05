@@ -124,15 +124,13 @@ def main() -> int:
 
     if args.file:
         with open(args.file, encoding="utf-8", errors="replace") as f:
-            lines = f
+            raw_candidates = parse_candidates(f)
     else:
         sys.stdin.reconfigure(errors="replace")
-        lines = sys.stdin
+        raw_candidates = parse_candidates(sys.stdin)
 
     blocked, fillers = _load_existing_blocklist()
-    candidates = filter_candidates(
-        parse_candidates(lines), args.min_count, blocked, fillers
-    )
+    candidates = filter_candidates(raw_candidates, args.min_count, blocked, fillers)
 
     if not candidates:
         print("Sin candidatas nuevas (todo bloqueado o bajo el umbral).")

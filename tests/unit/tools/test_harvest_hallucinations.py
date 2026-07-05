@@ -89,3 +89,40 @@ def test_parse_ignores_malformed_repr():
         "reason=None text='truncad"
     )
     assert harvest.parse_candidates([line]) == {}
+
+
+def test_main_with_file_end_to_end(tmp_path, capsys, monkeypatch):
+    """Regresión review 2026-07-05: `lines = f` dentro del with + consumo
+    afuera crasheaba con "I/O operation on closed file".
+    """
+    journal = tmp_path / "journal.txt"
+    journal.write_text(
+        "10:00:00.000 X [LLMRouter 1ms] is_command=False intent=None reason=None text='Aplausos'\n"
+        "10:01:00.000 X [LLMRouter 2ms] is_command=False intent=None reason=None text='Aplausos'\n"
+        "10:02:00.000 X [LLMRouter 3ms] is_command=False intent=None reason=None text='Aplausos'\n",
+        encoding="utf-8",
+    )
+    # Mock _load_existing_blocklist para evitar que 'aplausos' sea excluida
+    # si src.nlu.command_gate está disponible (está en _NOISE_PHRASES).
+    monkeypatch.setattr(
+        harvest, "_load_existing_blocklist", lambda: ((), frozenset())
+    )
+    monkeypatch.setattr(
+        harvest.sys, "argv",
+        ["harvest_hallucinations.py", "--file", str(journal), "--min-count", "3"],
+    )
+    rc = harvest.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "aplausos" in out
+    assert "3" in out
+
+
+def test_literal_eval_except_branch_skips_bad_escape():
+    """Token que matchea el regex pero literal_eval no puede evaluar
+    (escape inválido como \\xzz)."""
+    line = (
+        "10:03:00.000 X [LLMRouter 4ms] is_command=False intent=None "
+        "reason=None text='caf\\xzz'"
+    )
+    assert harvest.parse_candidates([line]) == {}
