@@ -8,8 +8,10 @@ SOLO PROPONE: un humano decide qué entra a _NOISE_PHRASES (criterio del fix
 
 Uso (en el server):
     journalctl --user -u kza-voice --since '7 days ago' --output=cat \\
-        | python3 tools/harvest_hallucinations.py --min-count 3
-    python3 tools/harvest_hallucinations.py --file journal_export.txt
+        | PYTHONPATH=. python3 tools/harvest_hallucinations.py --min-count 3
+    # Para que la exclusión de frases ya bloqueadas funcione (import de
+    # src.nlu.command_gate), correr desde la raíz del repo con PYTHONPATH:
+    PYTHONPATH=. python3 tools/harvest_hallucinations.py --file journal_export.txt
 
 Standalone stdlib a propósito; el import de src.nlu.command_gate es opcional
 (excluye ya-bloqueadas si está disponible).

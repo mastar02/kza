@@ -1,6 +1,7 @@
 """Tests del script de cosecha de alucinaciones (carga por importlib: tools/ no es package)."""
 
 import importlib.util
+import re
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
@@ -115,7 +116,7 @@ def test_main_with_file_end_to_end(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert rc == 0
     assert "aplausos" in out
-    assert "3" in out
+    assert re.search(r"^\s+3\s+10:00:00", out, re.M)
 
 
 def test_literal_eval_except_branch_skips_bad_escape():
