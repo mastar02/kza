@@ -61,3 +61,31 @@ def test_filter_excludes_fillers():
         cands, min_count=1, blocked_phrases=(), filler_words=frozenset({"dale"})
     )
     assert out == []
+
+
+def test_parse_handles_apostrophe_text_double_quoted_repr():
+    # repr() usa comillas dobles cuando el texto tiene apóstrofe
+    line = (
+        "10:00:00.000 INFO x [LLMRouter 1ms] is_command=False intent=None "
+        "reason=None text=\"don't forget to subscribe\" (request_router.py:524)"
+    )
+    cands = harvest.parse_candidates([line])
+    assert "don t forget to subscribe" in cands
+
+
+def test_parse_handles_escaped_quote_and_trailing_suffix():
+    # repr() escapa la comilla interna; el journal agrega sufijo (file:line)
+    line = (
+        "10:01:00.000 INFO x [LLMRouter 2ms] is_command=False intent=None "
+        "reason=None text='she said \"it\\'s fine\" ok' (request_router.py:524)"
+    )
+    cands = harvest.parse_candidates([line])
+    assert any("she said" in k and "fine" in k for k in cands)
+
+
+def test_parse_ignores_malformed_repr():
+    line = (
+        "10:02:00.000 INFO x [LLMRouter 3ms] is_command=False intent=None "
+        "reason=None text='truncad"
+    )
+    assert harvest.parse_candidates([line]) == {}

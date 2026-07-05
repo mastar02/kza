@@ -16,6 +16,7 @@ Standalone stdlib a propósito; el import de src.nlu.command_gate es opcional
 """
 
 import argparse
+import ast
 import re
 import sys
 import unicodedata
@@ -23,7 +24,8 @@ from dataclasses import dataclass
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _ROUTER_REJECT_RE = re.compile(
-    r"\[LLMRouter [^\]]*\] is_command=False .*?text='(?P<text>[^']*)'"
+    r"\[LLMRouter [^\]]*\] is_command=False .*?"
+    r"text=(?P<raw>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")"
 )
 _TS_RE = re.compile(r"^(?P<ts>\d{2}:\d{2}:\d{2}\.\d+)")
 
@@ -64,7 +66,14 @@ def parse_candidates(lines) -> dict:
         m = _ROUTER_REJECT_RE.search(line)
         if not m:
             continue
-        norm = normalize(m.group("text"))
+        raw_repr = m.group("raw")
+        try:
+            text = ast.literal_eval(raw_repr)
+        except (ValueError, SyntaxError):
+            # repr malformado (línea truncada del journal) — mejor saltear
+            # que contar basura.
+            continue
+        norm = normalize(text)
         if not norm:
             continue
         ts_match = _TS_RE.match(line.strip())
@@ -115,9 +124,10 @@ def main() -> int:
 
     if args.file:
         with open(args.file, encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
+            lines = f
     else:
-        lines = sys.stdin.readlines()
+        sys.stdin.reconfigure(errors="replace")
+        lines = sys.stdin
 
     blocked, fillers = _load_existing_blocklist()
     candidates = filter_candidates(
