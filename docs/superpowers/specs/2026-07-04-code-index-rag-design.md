@@ -57,12 +57,15 @@ code-index service :9510 (server, systemd --user kza)
    puerto **:9510** (sub-rango KZA 9500-9599; :9500 ya apuntado a obs/Quadlet
    Chroma — validar contra `docs/SERVER_CONVENTIONS.md` / Notion pág 8 antes de
    deploy). Endpoints:
-   - `POST /search` — `{query, top_k, filters}` → resultados rankeados.
+   - `POST /search` — `{query, top_k}` → resultados rankeados (v1 sin
+     `filters`; ver Fuera de alcance).
    - `POST /reindex` — `{mode: incremental|full}` → 202, indexa en background.
-   - `GET /health` — estado + SHA indexado + timestamp del último reindex.
+   - `GET /health` — estado + SHA indexado + stats del último reindex (v1 sin
+     timestamp; ver Fuera de alcance).
 2. **Chroma persistente propio** en `/home/kza/code-index/chroma/`. Totalmente
    separado del Chroma in-process de kza-voice.
-3. **Embeddings BGE-M3 en CPU** — carga lazy, `device="cpu"`. Cero VRAM; el
+3. **Embeddings BGE-M3 en CPU** — `device="cpu"`, carga eager al boot del
+   servicio (corrección 2026-07-04: fail-fast bajo systemd > lazy). Cero VRAM; el
    Threadripper indexa 38K líneas en minutos y una query tarda ~100-200ms
    (irrelevante para búsqueda de código).
 4. **Chunking por AST** — módulo `ast` de la stdlib (el proyecto es 100%
@@ -131,6 +134,10 @@ code-index service :9510 (server, systemd --user kza)
 ## Fuera de alcance (v1)
 
 - Indexar tests/docs/scripts.
+- `filters` en `/search` y timestamp de último reindex en `/health`
+  (recorte v1 anotado post-review final 2026-07-04).
+- Auth del endpoint (LAN doméstica; follow-up sugerido: bind a 192.168.1.2 o
+  token compartido, precedente bearer auth de vLLM/llama).
 - MCP server como interfaz (el CLI alcanza; evaluable después).
 - Timer nocturno adicional (el hook post-deploy cubre el flujo actual).
 - Búsqueda híbrida BM25+denso (Chroma denso solo; recordar limitación conocida
