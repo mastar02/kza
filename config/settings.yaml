@@ -161,8 +161,15 @@ stt:
   # segmentos garble. Gateado SOLO por compression_ratio (única señal viva en
   # turbo); log_prob_threshold muy bajo para no disparar por el logprob
   # invertido. Caso fácil = temp 0 (0 latencia extra); garble = sube temp.
+  # ⚠️ OFF 2026-07-05: entró en vivo con el restart del 27/6 y causó la
+  # sordera total de comandos (incidente 28/6→4/7). A T alta Whisper produce
+  # galimatías "creativo" que comprime BAJO → pasa el gate de compression
+  # (la única señal viva) y llega al router como texto plausible. El fallback
+  # LAVA exactamente las alucinaciones que el gate atrapaba a T=0. Si se
+  # quiere rescatar garble a futuro: usar la escalación como DETECTOR
+  # (descartar la transcripción si terminó en T>0.4), nunca como salida.
   temperature_fallback:
-    enabled: true
+    enabled: false
     temperatures: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
     compression_ratio_threshold: 2.0
     log_prob_threshold: -3.0
