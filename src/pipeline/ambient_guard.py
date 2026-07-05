@@ -20,11 +20,20 @@ unifica TV-mode + circuit breaker en una escalera de 3 estados POR ROOM:
   acústicas (la señal de escalada es de software: capturas rechazadas).
 
 Semántica de escalada (decisión de diseño, ver spec):
-- Solo los RESULTADOS DE CAPTURA rechazados (noise/empty/timeout — ya
-  gastaron Whisper/router) escalan. Los rechazos del propio guard en STRICT
-  son gratis: no cuentan para COOLDOWN, pero refrescan el quiet timer
-  (ambiente persiste → STRICT sigue vivo).
-- accepted / other_fail (voz real con fallo downstream) no escalan.
+- Solo los RESULTADOS DE CAPTURA rechazados por RUIDO REAL (noise/empty/
+  timeout — ya gastaron Whisper/router Y evidencian ambiente hostil)
+  escalan. Los rechazos del propio guard en STRICT son gratis: no cuentan
+  para COOLDOWN, pero refrescan el quiet timer (ambiente persiste → STRICT
+  sigue vivo).
+- accepted / other_fail (voz real con fallo downstream) / hallucination NO
+  escalan NI refrescan el quiet timer. hallucination = alucinación de
+  Whisper sobre silencio/ambiente (filler_word, word_repetition,
+  prompt_echo, high_compression, low_confidence del propio gate — ver
+  classify_outcome), DISTINTA de ruido real (noise_phrase/missing_wake):
+  el ambiente está en silencio, no hostil, y el quiet timer STRICT→NORMAL
+  debe poder seguir corriendo (2026-07-05: una ráfaga de alucinaciones del
+  warmup a los 8s del boot escalaba a STRICT y de ahí castigaba el wake
+  real del usuario, que scorea 0.41-0.59 contra un STRICT que exige 0.45).
 
 Thread-safety: on_wake corre en el thread C de sounddevice;
 on_capture_result en el event loop → lock interno. Reloj inyectable
@@ -43,7 +52,9 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 # Outcomes de captura que evidencian ambiente hostil (gastaron pipeline y
-# fueron basura). "accepted" y "other_fail" no escalan.
+# fueron basura). "accepted", "other_fail" y "hallucination" no escalan
+# (2026-07-05: una alucinación de Whisper sobre silencio NO es ambiente
+# hostil — ver classify_outcome).
 REJECT_OUTCOMES = ("noise", "empty", "timeout")
 
 
@@ -146,8 +157,29 @@ class _RoomState:
 def classify_outcome(result: dict) -> str:
     """Mapea el dict resultado del RequestRouter a un outcome del guard.
 
+    "gate_rejected" viaja como "gate_rejected:<reason>" (request_router
+    propaga gate_decision.reason, 2026-07-05). Sub-clasificación del reason:
+    - empieza con "noise_phrase" o "missing_wake" → "noise" (ambiente hostil
+      real: TV/charla de fondo sin la wake word — sigue escalando el guard).
+    - cualquier otro reason del gate (filler_word, word_repetition,
+      prompt_echo, high_compression, low_confidence, gate_error) → "hallucination":
+      Whisper alucinando sobre silencio, NO evidencia de ambiente hostil.
+    - "gate_rejected" pelado, sin ":reason" (routers viejos o campo vacío) →
+      "hallucination" por default seguro. Cambio de comportamiento respecto
+      de antes (donde el bare era "noise") — decisión aprobada 2026-07-05: es
+      preferible no castigar al usuario real ante la duda.
+
+    Nota especial: text vacío clasifica "empty" (escala) ANTES de mirar el
+    intent — decisión 2026-07-05: captura vacía con energía suficiente para
+    pasar el pre-gate RMS = música/ruido real, no alucinación. El guard NUNCA
+    ve un empty de alucinación (empty_after_norm dispara cuando NO queda nada
+    tras normalizar, pero el text CRUDO sigue teniendo algo —puntuación pura—,
+    así que llega acá con text no-blank y clasifica por intent; text realmente
+    vacío = señal acústica real sin contenido interpretable).
+
     Returns:
-        "accepted" | "empty" | "noise" | "timeout" | "other_fail"
+        "accepted" | "empty" | "noise" | "hallucination" | "timeout" |
+        "other_fail"
     """
     if result.get("success"):
         return "accepted"
@@ -155,15 +187,21 @@ def classify_outcome(result: dict) -> str:
     if not text:
         return "empty"
     intent = str(result.get("intent") or "")
+    # gate_rejected PRIMERO: sus reasons embeben texto de la transcripción
+    # (word_repetition:'<token>', noise_phrase:'<frase>', etc.) y un token
+    # alucinado tipo 'timeout' NO debe matchear el check de substring de
+    # abajo (review 2026-07-05). Los reasons reales del gate que disparan
+    # escalada son solo noise_phrase/missing_wake.
+    if intent.startswith("gate_rejected"):
+        reason = intent.partition(":")[2]  # "" si vino pelado (backward compat)
+        if reason.startswith("noise_phrase") or reason.startswith("missing_wake"):
+            return "noise"
+        return "hallucination"
     # "unavailable" la produce el LLMRouter en timeout/error local → puede
     # venir como "llm_rejected:unavailable": chequear ANTES que llm_rejected.
     if "timeout" in intent or "unavailable" in intent:
         return "timeout"
-    if (
-        intent == "gate_rejected"
-        or intent.startswith("llm_rejected")
-        or intent.startswith("low_confidence")
-    ):
+    if intent.startswith("llm_rejected") or intent.startswith("low_confidence"):
         return "noise"
     # unverified_intent NO es noise: pasó el CommandGate y el 7B le dio
     # is_command con confianza alta — solo el verbo quedó garbleado por el

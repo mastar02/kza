@@ -1070,7 +1070,9 @@ class MultiRoomAudioLoop:
                 result = {}
 
             # AmbientGuard: el resultado de la captura alimenta la escalera
-            # (noise/empty/timeout escalan; accepted/other_fail no).
+            # (noise/empty/timeout escalan; accepted/other_fail/hallucination
+            # no — alucinaciones de silencio de Whisper no son ambiente
+            # hostil y no deben bloquear el quiet timer, 2026-07-05).
             if self._guard is not None and isinstance(result, dict):
                 outcome = classify_outcome(result)
                 self._guard.on_capture_result(event.room_id, outcome)

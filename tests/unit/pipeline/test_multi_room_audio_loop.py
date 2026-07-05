@@ -917,9 +917,11 @@ class TestAmbientGuardIntegration:
     async def test_dispatch_reports_outcome_to_guard(self):
         guard = _make_enabled_guard()
         loop = _make_multi_room_loop(ambient_guard=guard)
-        # Callback que simula rechazo del gate (texto ruido)
+        # Callback que simula rechazo del gate por ruido real (TV/frase noise,
+        # no una alucinación de silencio — ver TestClassifyOutcomeGateReasons).
         loop.on_command(AsyncMock(return_value={
-            "success": False, "text": "gracias por ver", "intent": "gate_rejected",
+            "success": False, "text": "gracias por ver",
+            "intent": "gate_rejected:noise_phrase:'gracias por ver'",
         }))
         event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
         await loop._dispatch_command(event)
@@ -1010,7 +1012,8 @@ class TestPostSuccessFollowUp:
         guard.on_capture_result("cocina", "noise")
         loop = _make_multi_room_loop(ambient_guard=guard)
         loop.on_command(AsyncMock(return_value={
-            "success": False, "text": "gracias por ver", "intent": "gate_rejected",
+            "success": False, "text": "gracias por ver",
+            "intent": "gate_rejected:noise_phrase:'gracias por ver'",
         }))
         event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
         await loop._dispatch_command(event)
