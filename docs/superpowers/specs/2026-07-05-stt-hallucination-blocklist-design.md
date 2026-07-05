@@ -37,9 +37,10 @@ implementación, revisadas a mano antes de entrar).
   si `bloque / len(transcripción) >= 0.9` → reject `prompt_echo`. (Corrección
   2026-07-05: el ratio simétrico daba ~0.3 para ecos fragmento-de-oración;
   autojunk=False necesario porque el default purga chars frecuentes en oraciones
-  >=200 chars y pierde ecos reales. Umbral 0.9: ecos miden 0.96-1.0, comandos
-  multi-room con verbo ≤0.81.)
+  >=200 chars y pierde ecos reales. Umbral 0.9: ecos miden 0.963-1.0; enumeración
+  multi-room sin verbo llega a 0.879 (margen de error 0.021).)
 - Orden: corre junto a las demás hard rules (después de noise/filler).
+  **Mediciones reales (review 2026-07-05):** enumeración multi-room sin verbo = 0.879, con verbo ≈0.75; ecos ≥0.963. Riesgo residual aceptado: una lista de cuartos verbatim SIN verbo (~0.95) se rechaza como eco — inofensivo, el router la descartaría igual.
 - `earcon_gate._NOISE_PREFIXES` suma `"prompt_echo"` (el eco JAMÁS earcon).
 
 ### 3. Script de cosecha `tools/harvest_hallucinations.py`

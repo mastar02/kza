@@ -250,20 +250,27 @@ def test_prompt_echo_inactive_without_prompt():
 
 
 def test_prompt_echo_does_not_reject_multiroom_enumeration():
-    # Regresión review 2026-07-05: con ratio 0.8 esto daba prompt_echo (0.81)
+    # Regresión review 2026-07-05: con ratio 0.8 esto daba prompt_echo (0.879, margen 0.021)
     g = CommandAcceptanceGate(initial_prompt=REAL_PROMPT)
     d = g.evaluate("luces del escritorio el living la cocina el baño y el hall")
     assert d.accept is True
 
 
 def test_prompt_echo_survives_long_prompt_sentences():
-    # Regresión review 2026-07-05: autojunk=True devolvía size 0 con
-    # oraciones >=200 chars → eco verbatim aceptado en silencio.
-    rooms = ", ".join(
-        f"el cuarto {i} con la lámpara {i} y la persiana {i}" for i in range(12)
+    # Regresión review 2026-07-05: con autojunk=True (default), en oraciones
+    # >=200 chars difflib purga los chars frecuentes y find_longest_match
+    # devuelve size 0 → eco verbatim aceptado en silencio. Fixture all-prose
+    # a propósito: un fixture con dígitos deja anclas que sobreviven la purga
+    # y el test pasaría aun sin el fix.
+    nombres = (
+        "principal", "de visitas", "del fondo", "de arriba", "de abajo",
+        "del pasillo", "de servicio", "de invitados", "del altillo",
+        "de la terraza", "del garage", "de la entrada", "del sótano",
+        "de almacenaje", "de trabajo", "de descanso", "de juego",
     )
-    long_prompt = f"Esto es un asistente que controla {rooms}."
+    rooms = ", ".join(f"el cuarto {n} con la lampara {n} y la persiana {n}" for n in nombres)
+    long_prompt = f"Esto es un asistente de voz que controla todas las luces y persianas en {rooms}. Puedes hablarle en español."
     g = CommandAcceptanceGate(initial_prompt=long_prompt)
-    d = g.evaluate("el cuarto 7 con la lámpara 7 y la persiana 7 el")
+    d = g.evaluate("el cuarto de visitas con la lampara de visitas y la persiana de visitas")
     assert d.accept is False
     assert d.reason == "prompt_echo"
