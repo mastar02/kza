@@ -322,6 +322,21 @@ class TestClassifyOutcomeGateReasons:
         r = {"success": False, "text": "ubico el reality", "intent": "llm_rejected:tv_phrase"}
         assert classify_outcome(r) == "noise"
 
+    def test_gate_reject_with_hallucinated_timeout_token_is_hallucination(self):
+        # Regresión review 2026-07-05: el token alucinado 'timeout' embebido
+        # en el reason no debe matchear el check de substring de timeout abajo.
+        r = {"success": False, "text": "timeout timeout timeout timeout",
+             "intent": "gate_rejected:word_repetition:'timeout'"}
+        assert classify_outcome(r) == "hallucination"
+
+    def test_gate_reject_with_hallucinated_unavailable_token_is_noise(self):
+        # El token 'unavailable' alucinado en reason "noise_phrase" sigue
+        # siendo ruido real (no timeout), porque noise_phrase = ambiente
+        # con voz de fondo real, no alucinación.
+        r = {"success": False, "text": "unavailable unavailable",
+             "intent": "gate_rejected:noise_phrase:'unavailable'"}
+        assert classify_outcome(r) == "noise"
+
 
 class TestHallucinationEscalation:
     """Wiring end-to-end guard.on_capture_result con el outcome "hallucination"
@@ -363,6 +378,21 @@ class TestHallucinationEscalation:
             outcome = classify_outcome(result)
             guard.on_capture_result("escritorio", outcome)
         assert guard.state_for("escritorio") is GuardState.STRICT
+
+    def test_boot_incident_filler_burst_stays_normal(self):
+        # Firma del incidente 2026-07-05 14:39:48: 3 rechazos filler_word
+        # ("Gracias." de warmup) ponían STRICT a los 8s del boot. La
+        # composición completa: dict real → classify_outcome → on_capture_result.
+        # Con el fix (gate_rejected PRIMERO), los filler deben ser "hallucination"
+        # y no escalar.
+        guard = make_guard()
+        for _ in range(5):  # bien por encima de strict_entry_rejects=3
+            r = {"success": False, "text": "Gracias.",
+                 "intent": "gate_rejected:filler_word:'gracias'"}
+            outcome = classify_outcome(r)
+            guard.on_capture_result("escritorio", outcome)
+        # Sin el fix, esto habría llegado a STRICT en la tercera alucinación.
+        assert guard.state_for("escritorio") is GuardState.NORMAL
 
 
 class TestConfigInvariant:

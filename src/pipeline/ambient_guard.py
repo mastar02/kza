@@ -162,13 +162,19 @@ def classify_outcome(result: dict) -> str:
     - empieza con "noise_phrase" o "missing_wake" → "noise" (ambiente hostil
       real: TV/charla de fondo sin la wake word — sigue escalando el guard).
     - cualquier otro reason del gate (filler_word, word_repetition,
-      prompt_echo, empty, empty_after_norm, high_compression, low_confidence,
-      gate_error) → "hallucination": Whisper alucinando sobre silencio, NO
-      evidencia de ambiente hostil.
+      prompt_echo, high_compression, low_confidence, gate_error) → "hallucination":
+      Whisper alucinando sobre silencio, NO evidencia de ambiente hostil.
     - "gate_rejected" pelado, sin ":reason" (routers viejos o campo vacío) →
       "hallucination" por default seguro. Cambio de comportamiento respecto
       de antes (donde el bare era "noise") — decisión aprobada 2026-07-05: es
       preferible no castigar al usuario real ante la duda.
+
+    Nota especial: text vacío clasifica "empty" (escala) ANTES de mirar el
+    intent — decisión 2026-07-05: captura vacía con energía suficiente para
+    pasar el pre-gate RMS = música/ruido real, no alucinación. El guard NUNCA
+    ve un empty de alucinación (empty_after_norm es reason del gate, pero text
+    sigue teniendo algo tras normalización; text realmente vacío = señal
+    acústica real sin contenido interpretable).
 
     Returns:
         "accepted" | "empty" | "noise" | "hallucination" | "timeout" |
@@ -180,15 +186,20 @@ def classify_outcome(result: dict) -> str:
     if not text:
         return "empty"
     intent = str(result.get("intent") or "")
-    # "unavailable" la produce el LLMRouter en timeout/error local → puede
-    # venir como "llm_rejected:unavailable": chequear ANTES que llm_rejected.
-    if "timeout" in intent or "unavailable" in intent:
-        return "timeout"
+    # gate_rejected PRIMERO: sus reasons embeben texto de la transcripción
+    # (word_repetition:'<token>', noise_phrase:'<frase>', etc.) y un token
+    # alucinado tipo 'timeout' NO debe matchear el check de substring de
+    # abajo (review 2026-07-05). Los reasons reales del gate que disparan
+    # escalada son solo noise_phrase/missing_wake.
     if intent.startswith("gate_rejected"):
         reason = intent.partition(":")[2]  # "" si vino pelado (backward compat)
         if reason.startswith("noise_phrase") or reason.startswith("missing_wake"):
             return "noise"
         return "hallucination"
+    # "unavailable" la produce el LLMRouter en timeout/error local → puede
+    # venir como "llm_rejected:unavailable": chequear ANTES que llm_rejected.
+    if "timeout" in intent or "unavailable" in intent:
+        return "timeout"
     if intent.startswith("llm_rejected") or intent.startswith("low_confidence"):
         return "noise"
     # unverified_intent NO es noise: pasó el CommandGate y el 7B le dio
