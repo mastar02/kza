@@ -124,9 +124,13 @@ alerts:
     voice_high_prefix: "Alerta importante: "
 
 # Wake Word
+# ⚠️ CONFIG MUERTA para el pipeline multi-room (engine=openwakeword). Este
+# bloque top-level solo alimenta AudioManager→AudioLoop (path legacy NO usado
+# cuando hay room_streams). El detector real usa rooms.wake_word.threshold.
+# Ver project_nexa_command_detection_rootcause_2026-06-02.
 wake_word:
   model: "hey_jarvis"  # O personalizado — "che_bo" una vez entrenado
-  threshold: 0.35      # 0.5 era muy estricto para acento rioplatense; 0.35 capta variantes
+  threshold: 0.35      # (legacy/muerto) — el umbral activo es rooms.wake_word.threshold
   inference_framework: "onnx"
 
 # Speech-to-Text (GPU 1 — junto con SpeakerID, Kokoro TTS y kza-llm-fast :8101)
@@ -145,7 +149,23 @@ stt:
   language: "es"
   beam_size: 5            # 1=greedy (rápido), 5=beam search (+30% latencia, +precisión)
   best_of: 1
-  vad_filter: true
+  # VAD interno de faster-whisper (Silero) OFF 2026-06-04: sobre la salida
+  # del XVF3800 (que YA hace VAD/NS/beamforming por hardware) Silero lee
+  # prob~0 y borraba capturas ENTERAS → Text='' con voz real (confirmado en
+  # prod: 'VAD filter removed 02.000 of audio' en cada Text vacío). NOTA:
+  # esta clave existía como true pero create_stt() nunca la leía — recién
+  # desde 2026-06-04 el factory la consume. El rol anti-silencio lo cubren
+  # el endpointing por RMS + CommandGate + compression guard.
+  vad_filter: false
+  # Temperature fallback (2026-06-15): re-decode adaptativo de Whisper sobre
+  # segmentos garble. Gateado SOLO por compression_ratio (única señal viva en
+  # turbo); log_prob_threshold muy bajo para no disparar por el logprob
+  # invertido. Caso fácil = temp 0 (0 latencia extra); garble = sube temp.
+  temperature_fallback:
+    enabled: true
+    temperatures: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    compression_ratio_threshold: 2.0
+    log_prob_threshold: -3.0
   # Sesga la decodificación de Whisper para palabras del dominio. Le "enseña"
   # a reconocer "Nexa" y a favorecer vocabulario de domótica. Sin costo de
   # latencia — es un token-level prior. Máx ~224 tokens.
@@ -157,7 +177,8 @@ stt:
   initial_prompt: >-
     Esto es un asistente de voz llamado Nexa que controla luces, aire
     acondicionado, persianas y música en el escritorio, el living, la cocina,
-    el baño y el hall.
+    el baño y el hall. Habla rioplatense con voseo: prendé, apagá, subí, bajá,
+    poné, dale.
 
 # Text-to-Speech (GPU 1 — junto con STT, SpeakerID y kza-llm-fast :8101)
 # 2026-05-07: movido cuda:0 → cuda:1 (ver nota en stt.device).
@@ -239,13 +260,46 @@ nlu:
     timeout_s: 3.5
     max_tokens: 200           # cap del JSON response
     temperature: 0.0          # determinismo total para clasificación
+    # 2026-06-02: confianza mínima auto-reportada por el 7B para aceptar un
+    # comando. El modelo marca is_command=True sobre charla ambiente con
+    # confianza baja → acción fantasma. NO aplica al grammar fast-path (alta
+    # confianza). Calibrar observando confidence de comandos reales en logs.
+    min_command_confidence: 0.6
 
 command_gate:
   # Hard rules (noise phrases, filler, repetition, missing wake) always enforce.
   # Confidence rules run in SHADOW until calibrated via the [CommandGate] logs.
+  # ⚠️ NO flippear enforce_confidence: con 14.288 eventos medidos, no_speech_prob
+  # =0.00 siempre y avg_logprob está INVERTIDO en turbo (alucinaciones puntúan
+  # MEJOR que comandos reales) — señales muertas. Ver reporte XVF3800 2026-06-03.
   enforce_confidence: false
   max_no_speech_prob: 0.60   # > this = suspicious (conservative, to calibrate)
   min_avg_logprob: -1.20     # < this = suspicious (conservative, to calibrate)
+  # Guard de compression_ratio (2026-06-04) — a diferencia de las 2 señales de
+  # arriba, esta SÍ separa alucinaciones (texto repetitivo comprime alto; un
+  # comando real corto no llega a 2.2 por el overhead de zlib). Práctica
+  # validada en openai/whisper #2378 (el threshold built-in no funciona, hay
+  # que filtrar post-transcripción). Shadow primero (patrón del proyecto):
+  # calibrar con los logs [CommandGate] compression=... y flippear a true.
+  # ENFORCE 2026-06-14: calibrado con 3 días de logs reales [CommandGate] —
+  # texto legítimo (incl. frases largas) comprime ≤0.95; las alucinaciones
+  # repetitivas del turbo ("Esto es un asistente de voz, un asistente de voz…",
+  # loops del initial_prompt) comprimen 2.33-4.82. Hueco enorme → 2.2 con margen
+  # de sobra a ambos lados. A diferencia de no_speech_prob/avg_logprob (muertos
+  # en el turbo), compression_ratio SÍ separa. Antes en shadow.
+  enforce_compression_ratio: true
+  max_compression_ratio: 2.2
+  # Earcon "te oí, no te entendí" (2026-06-15). Reemplaza el descarte mudo por
+  # un sonido corto. Gateado a "humano plausible": NUNCA suena ante TV/eco
+  # (noise_phrase/filler/word_repetition) ni capturas de baja energía.
+  # min_wake_score 0.55 = wake fuerte (base 0.40); min_rms 0.02 apenas bajo el
+  # piso inflado por el AGC (~0.025-0.05). CALIBRAR ambos con repro.
+  earcon:
+    enabled: true
+    asset: "data/earcons/not_understood.wav"
+    min_wake_score: 0.55
+    min_rms: 0.02
+    reasons: ["empty", "empty_after_norm", "high_compression", "low_confidence", "unverified_intent"]
 
 # LLM para Razonamiento — REEMPLAZO TOTAL 2026-05-29: GLM-4.5-Air local (:8200)
 # → MiniMax-M2.7-highspeed en el cloud de MiniMax (OpenAI-compat).
@@ -256,7 +310,14 @@ reasoner:
   mode: "http"
   http_base_url: "http://192.168.1.2:8200/v1"  # gateway LiteLLM 2026-05-30 (rollback directo: https://api.minimax.io/v1)
   http_timeout: 60
-  http_model: "MiniMax-M2.7"   # base (validado, con cuota); -highspeed requiere otra suscripción
+  # 2026-06-06: migrado a -highspeed (registrado en el gateway por infra; la key
+  # de KZA lo accede). Bench sostenido 600 tok: ~+15% mediano sobre base con
+  # variancia alta (47-58 vs 32-77 t/s — el batching server-side domina).
+  # Rollback trivial: volver a "MiniMax-M2.7". Existe también "MiniMax-M2.7-nothink"
+  # (anthropic-compat): NO suprime el costo del thinking, solo entrega el content
+  # limpio en reasoning_content separado — sin valor hoy (el strip de <think> ya
+  # cubre); opción futura si el parsing de tags da problemas.
+  http_model: "MiniMax-M2.7-highspeed"
   api_style: "chat"            # MiniMax solo soporta /v1/chat/completions
   api_key_env: "MINIMAX_API_KEY"
   # Cloud cold puede tardar 10-20s al primer token → watchdog generoso.
@@ -1008,7 +1069,80 @@ rooms:
     # son palabras comunes en español rioplatense → riesgo bajo de FP).
     words: ["nexa", "alexa", "nexia", "nexta", "kaza", "neska", "nexca"]
     model: "/home/kza/kza/models/wakeword/nexa.onnx"            # usado cuando engine=openwakeword
-    threshold: 0.3                # usado cuando engine=openwakeword
+    # 2026-06-02: 0.3 → 0.40. A 0.3 el ambiente rozaba el umbral (activaciones
+    # amontonadas en 0.30-0.40 → ~46% de los disparos eran espurios). 0.40 poda
+    # ese grueso preservando confianza media. NO subir a 0.55 (mataba wakes
+    # far-field de media confianza). Calibrar con repro. (command_detection_rootcause)
+    threshold: 0.40              # usado cuando engine=openwakeword
+    # Pre-gate de energía post-wake (RMS): descarta near-silence antes de
+    # transcribir (mata Text='' / alucinaciones 'Gracias.'). 0.0 = desactivado.
+    # CALIBRAR en repro: el AGC ×64 del XVF3800 infla el piso (~0.025-0.05), el
+    # valor útil se mide con voz real vs ambiente (idealmente tras bajar el AGC).
+    min_wake_rms: 0.0
+    # Pre-gate SPENERGY (2026-06-02): VAD por HARDWARE del XVF3800 (pre-AGC,
+    # 0-GPU). Antes de transcribir, si el pico de SPENERGY durante la captura
+    # quedó < threshold → era secador/silencio → NO se corre Whisper (mata las
+    # alucinaciones "Gracias"/vacío). Calibrado en vivo 2026-06-02: secador/
+    # silencio=0, voz=52k-2.8M → 100 separa con margen enorme. Requiere udev
+    # rule (/etc/udev/rules.d/99-xvf3800.rules, MODE=0666) para acceso non-root.
+    # Fail-open: sin device/permisos/pyusb → gate OFF, nunca bloquea voz.
+    # ⚠️ DESHABILITADO 2026-06-04: con el chip en MAXGAIN=8 (estado desde
+    # 06-02), SPENERGY lee pico 0 INCLUSO CON VOZ REAL (verificado en vivo:
+    # 5 comandos del usuario descartados, uno con wake 0.81). La calibración
+    # "voz=101-2.1M, umbral 100" era del 31-05 con MAXGAIN=64 — la premisa
+    # "SPENERGY es pre-AGC" quedó desmentida por los datos. NO re-habilitar
+    # sin recalibrar contra el chip en su estado actual (xvf_tune --read
+    # AEC_SPENERGY_VALUES en loop con voz real vs silencio).
+    spenergy_gate:
+      enabled: false
+      threshold: 100.0
+      poll_interval_s: 0.04   # ~25 lecturas/s del SPENERGY
+      window_s: 4.0           # ventana del pico (cubre pre-roll + comando)
+    # Tuning del DSP XVF3800 aplicado al arrancar kza-voice (L-2 2026-06-04).
+    # ⚠️ SOLO RAM: reversible re-enchufando el mic (que también lo RESETEA —
+    # tras re-enchufar hay que reiniciar kza-voice para re-aplicar). Nunca
+    # persiste a flash (SAVE_CONFIGURATION no está expuesto: issue #8 Seeed).
+    # Nombres = dict PARAMETERS de src/audio/xvf_controller.py (xvf_host).
+    # PLAN L-2 (elegir UNA vía, A/B con medición de RMS piso + success rate):
+    #   Vía A (recortar techo): PP_AGCMAXGAIN: [16.0]  (preset Seeed=64,
+    #     default chip=125; si voz a 3-4m queda baja, subir a 12-16)
+    #   Vía B (congelar gain): PP_AGCONOFF: [0] + PP_AGCGAIN: [<calibrar>]
+    # Leer estado actual sin tocar nada: python -m tools.xvf_tune --read-all
+    # 2026-06-04 smoke test en chip real (VERSION 2.0.6): el DSP YA tenía
+    # MAXGAIN=8.0 (el plan "AGC 64→8" de la sesión 06-02 se aplicó a mano en
+    # RAM). Anclarlo acá lo hace reproducible: sin esto, un re-enchufe del mic
+    # revierte SILENCIOSAMENTE al preset persistido (64). Snapshot completo del
+    # chip ese día: AGCONOFF=1, DESIREDLEVEL=0.0045, ASROUTONOFF=1,
+    # AUDIO_MGR_OP_L=(8,0) / OP_R=(7,3) (routing L/R asimétrico).
+    xvf_tuning:
+      apply_on_start: true
+      params:
+        PP_AGCMAXGAIN: [8.0]
+    # Pre-roll de audio (2026-06-02): segundos de audio previos al wake que se
+    # prependen al comando. openwakeword tiene latencia de detección (~0.5-1s):
+    # decís "Nexa apagá la luz" de corrido y "apagá" se pierde porque la captura
+    # arranca recién al disparar → STT recibe "...la luz" sin verbo. El pre-roll
+    # lo recupera. 0.0 = desactivado. Ajustar si incluye charla previa de más.
+    wake_preroll_s: 1.0
+    # Captura de clips de wake (2026-06-12): cada wake ACEPTADO guarda su
+    # preroll (~1s) como WAV 16k mono. Objetivo: dataset de re-entrenamiento
+    # de nexa.onnx con audio REAL — los falsos wakes de TV ("gracias por ver
+    # el video", score 0.5-0.95) son hard negatives con la distribución exacta
+    # que engaña al modelo; los wakes de comandos reales son positivos
+    # far-field. Etiquetar cruzando el timestamp del archivo con el journal.
+    # Requiere wake_preroll_s > 0. ~2000 clips ≈ 70MB. El writer corre en su
+    # propio thread (jamás bloquea el audio callback).
+    capture_clips:
+      enabled: true
+      dir: "data/wakeword_training/captured"
+      max_files: 2000
+      # 2026-06-14: ahora también se capturan los wakes RECHAZADOS por el guard
+      # (STRICT/COOLDOWN) en dir/rejected/ — los 0.40-0.45 que STRICT mata son
+      # comandos far-field REALES (positivos hoy perdidos) + hard-negatives de TV.
+      # Tope propio (más voluminoso) que NO purga los aceptados (raros/valiosos).
+      max_rejected_files: 4000
+    # (follow_up_window_s ya existe más abajo en este mismo bloque — 2026-06-02
+    # main.py ahora lo CABLEA, antes hardcodeaba 8.0 e ignoraba el config.)
     # Porcupine (engine: porcupine) — wake-word dedicado "Nexa" (Picovoice).
     # AccessKey en /home/kza/secrets/.env (PORCUPINE_ACCESS_KEY). Activar: engine: porcupine.
     porcupine:
@@ -1024,7 +1158,10 @@ rooms:
     # follow-up window post-wake-solo (4s) ya cubre pausas naturales >500ms.
     silence_end_ms: 500
     min_utterance_ms: 250
-    max_utterance_s: 3.5
+    # 2026-06-15: 3.5 → 5.0. Comandos largos/con pausa natural se truncaban a
+    # 3.5s → STT veía audio parcial → vacío/equivocado → descarte mudo.
+    # Revertir si sube gate_rejected:noise (más charla ambiente captada).
+    max_utterance_s: 5.0
     # Gates pre-Whisper. Calibrados para mic XVF3800 montado en cielorraso con
     # placa de yeso 6mm (atenuación ~8 dB). Medición real (voz.wav 2026-04-24):
     # voz a ~2m llega -40..-32 dBFS. Gate a -40 dBFS (=0.010) recupera 66% de
@@ -1084,6 +1221,83 @@ rooms:
       threshold: 0.65
       min_audio_s: 0.8
 
+  # AmbientGuard — compuerta acústica integral (spec 2026-06-05). Escalera
+  # NORMAL → STRICT (TV-mode) → COOLDOWN (breaker) POR ROOM, alimentada por la
+  # tasa de capturas rechazadas (noise/vacío/timeout del router) — señal de
+  # SOFTWARE que no depende del chip (funciona igual con el mic UAC1.0).
+  # En STRICT: wake exige score ≥ strict_wake_score (el threshold base 0.40
+  # del detector NO cambia), follow_up off, y el grammar fast-path pierde el
+  # bonus de wake acústico (se exige "nexa" en el texto). En COOLDOWN se
+  # descarta todo por cooldown_duration_s → la cola del router NUNCA se
+  # satura ("no me escucha" del 06-04/05 = comandos compitiendo en la cola).
+  # ⚠️ Umbrales acústicos (strict_wake_score/strict_min_rms/strict_min_spenergy):
+  # calibrar con tools/acoustic_calibration.py — NO adivinar.
+  # Invariante: cooldown_duration_s < strict_exit_quiet_s (si no, se clampa
+  # con warning — ver AmbientGuardConfig.__post_init__).
+  # enabled: false = guard 100% pasivo (comportamiento actual exacto).
+  # Umbrales CALIBRADOS 2026-06-05 con la matriz en vivo (6 condiciones,
+  # data/calibration/20260605-*.jsonl, chip MAXGAIN=8, ch1 ASR):
+  # - wake score: TV 3min → 0 frames >0.72 (4 >0.40 = los espurios de hoy);
+  #   voz con TV → 43 frames >0.72 (todos los comandos pasan). El secador
+  #   NUNCA dispara el wake (max 0.0035) → no genera capturas → se queda en
+  #   NORMAL, donde la voz con secador sí pasa (24 frames >0.40): el secador
+  #   NO necesita STRICT.
+  # - RMS: muerto (distribuciones solapadas en todas las condiciones, AGC).
+  # - SPENERGY: muerto como discriminador — dispara fuerte con TV (p95 311k,
+  #   la TV ES voz para el chip) y PIERDE la voz del usuario bajo el secador
+  #   (voz_secador p95=0). Es detector de habla, no de *tu* habla. Veredicto
+  #   final: deja de ser candidato a compuerta.
+  # - entrada a STRICT: la TV genera ~1.3 wakes espurios/min → con 4/60s no
+  #   entraría nunca; 3/180s la captura.
+  # RECALIBRADO 2026-06-12 con 632 eventos shadow de producción (3 días,
+  # journal [AmbientGuard-vadshadow] + transcripciones):
+  # - La calibración 0.72 del 06-05 quedó DESMENTIDA en producción: la voz
+  #   real del usuario far-field dispara 0.41-0.65 (intento verificado
+  #   2026-06-11 17:57 = 0.61) → con 0.72 el sistema queda SORDO al usuario
+  #   ("no me reconoce", 101 entradas a STRICT en 48h con TV).
+  # - score NO separa TV de usuario (TV mediana 0.65, picos 0.95; distribuciones
+  #   solapadas) → ningún umbral es limpio. 0.45 recupera la voz del usuario;
+  #   la TV extra que pasa la matan los gates de texto (310 wakes falsos en
+  #   48h → 0 acciones fantasma) y el costo es solo cómputo (~12 STT/h).
+  #   El fix de raíz del discriminador = re-entrenar nexa.onnx con los hard
+  #   negatives ya logueados; este umbral es el puente hasta entonces.
+  ambient_guard:
+    enabled: true
+    strict_entry_rejects: 3        # capturas rechazadas en la ventana → STRICT
+    strict_entry_window_s: 180.0
+    strict_exit_quiet_s: 120.0     # histéresis: quiet sostenido → NORMAL
+    strict_wake_score: 0.45        # producción 06-12: voz usuario 0.41-0.65
+    strict_min_rms: 0.0            # MUERTO (medido 2026-06-05)
+    strict_min_spenergy: 0.0       # MUERTO (medido 2026-06-05)
+    cooldown_entry_rejects: 6      # rechazos MÁS estando en STRICT → COOLDOWN
+    cooldown_entry_window_s: 180.0
+    cooldown_duration_s: 30.0
+    # Bypass del COOLDOWN para un wake INEQUÍVOCO (2026-06-13). Sin esto, el
+    # breaker tira un "Nexa" clarísimo del usuario si una racha de rechazos
+    # (compa/TV de fondo) lo metió en cooldown (se vio rechazar nexa:0.87).
+    # 0.85 = conservador: la voz del usuario rara vez llega ahí far-field, pero
+    # la TV pica a ~0.95 ocasional → arrancar alto y medir los logs
+    # `bypass COOLDOWN`. Subir/bajar según cuántos wakes reales lo crucen.
+    cooldown_override_score: 0.85
+
+    # Gracia post-éxito (2026-06-06): tras un comando ACEPTADO, follow_up
+    # habilitado en STRICT por esta ventana — comandos encadenados sin
+    # re-pasar el wake 0.72 (caso real: 'apagá' pasó 0.77, el 'prendé'
+    # siguiente salió 0.40-0.59 y STRICT lo mató). Texto-gates siguen activos.
+    strict_follow_up_grace_s: 12.0
+    # Umbral de wake adaptativo por vad en STRICT (spec 2026-06-09). El audio
+    # del trigger pasa por Silero; voz clara (vad alto) baja el umbral hacia
+    # strict_wake_score_min, TV/lejos (vad bajo) lo mantiene en strict_wake_score.
+    # ⚠️ VEREDICTO SHADOW 2026-06-12 (632 eventos): NO FLIPPEAR. Silero no
+    # discrimina la TV — la TV ES voz humana (vad mediana 0.73-0.94, igual o
+    # mayor que el usuario; hoy mismo hubo TV con vad 0.01 y score 0.77).
+    # De los 256 'cambiaria=sí', casi todos eran TV: flippear BAJARÍA el
+    # umbral justo cuando la TV habla. Queda en shadow como registro.
+    strict_vad_adaptive: false
+    strict_wake_score_min: 0.50
+    strict_vad_lo: 0.30
+    strict_vad_hi: 0.70
+
   # Endpointing adaptativo (S5) — usa señal del parser streaming para decidir
   # cuánto silencio esperar antes de cerrar captura. Si el parser ya tiene
   # intent+entity (ready_to_dispatch) cortamos con short_ms. Si solo tiene
@@ -1094,6 +1308,19 @@ rooms:
     short_ms: 150    # parser ready_to_dispatch → cerrar YA
     medium_ms: 300   # parser parcial o ausente → wait normal
     long_ms: 500     # sin señal del parser → esperar más (reserva futura)
+    # VAD de fin-de-comando del MultiRoomAudioLoop (QW-3 2026-06-04): antes
+    # eran defaults hardcodeados en el constructor — main.py no los cableaba y
+    # los valores calibrados de rooms.wake_word (min_rms/silence_end_ms) solo
+    # alimentaban al WhisperWakeDetector (engine INACTIVO). OJO semántica:
+    # silence_threshold = "RMS por debajo del cual un frame es silencio" (corte),
+    # NO es min_rms (gate de ingreso de energía al wake) — no copiar 0.007 acá.
+    # CALIBRAR: si el AGC ×64 del XVF3800 infla el piso ambiente por encima de
+    # silence_threshold, el silencio nunca se detecta y TODA captura cierra por
+    # timeout (command_duration=2s) → cola de ruido + latencia fija. Medir RMS
+    # ambiente real (idealmente tras bajar el AGC) antes de ajustar.
+    silence_threshold: 0.015   # RMS de silencio (default histórico, a calibrar)
+    silence_duration_ms: 300   # silencio sostenido p/ cerrar (fallback clásico)
+    min_speech_ms: 300         # mínimo de captura antes de poder cerrar
 
   # Detection config
   detection:
@@ -1172,6 +1399,15 @@ rooms:
     mic_device_name: "XVF3800"
     mic_usb_port: "3-1.4"   # XVF3800 reubicado al escritorio 2026-05-30 (port real 3-1.4, card1; era UAC1.0 en 3-1.1)
     mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
+    # Canal de captura (L-3 2026-06-04): el XVF3800 UA expone 2ch. VERIFICADO
+    # en el chip real (snapshot 06-04) + doc primaria (XMOS appendix + README
+    # Seeed): ch0=L=(8,0)=Conference (auto-select beam + post-processor CON
+    # noise suppression), ch1=R=(7,3)=ASR (mismo beam, tap pre-post-processor
+    # SIN NS; ASROUTONOFF=1 en el chip). XMOS: la NS del post-processor
+    # degrada el ASR → ch1 es el canal diseñado para Whisper/wake. A/B en
+    # curso desde 2026-06-04 (baseline ch0; si wake/STT empeoran, volver a 0).
+    # Fallback seguro a 0 si el device no tiene el canal (mics mono).
+    capture_channel: 1
     bt_adapter: "F4:4E:FC:21:0D:66"   # UGREEN BT 5.3 escritorio (resuelve a hciN al iniciar — antes hardcoded "hci0")
     ma1260_zone: 4
     output_mode: "mono"
@@ -1241,3 +1477,120 @@ hooks:
                                     # budget de 300ms del fast path. Plumbed
                                     # vía main.py → dispatcher / response_handler.
   audit_sqlite_path: "./data/audit.db"   # consumido por audit_sqlite policy
+
+# ============================================================================
+# Ambient path — transcripción continua multi-pista (spec 2026-06-06)
+# Fase 0 MEDIDA en server 2026-06-06 (audio real, TV + voz near/far-field):
+#   Whisper turbo cuda:0 RTF 0.006-0.012, VRAM 1484 MiB. Silero CPU 0.46ms/chunk.
+#   Silero sobre fw 2ch (post-DSP) DISCRIMINA voz-viva de TV: near-field 45%
+#   de chunks >0.3 / far-field 3-4m 20.8% / TV 0.5-3.3% → el VAD funciona con
+#   el firmware ACTUAL (la creencia "Silero roto con DSP" era de capturas
+#   garbled del bug 2ch-como-1ch). El fw 6ch (runbook docs/runbooks/) suma
+#   mics crudos para DoA (etiqueta 'tv' por dirección) — ya no bloquea Fase 2.
+# Con firmware 2ch degrada solo: sin mics crudos → VAD sobre col 0, sin DoA.
+# enabled: false = cero efecto (ni tap ni modelos cargados). Fase 2 lo
+# prende con shadow_mode: true (etiqueta y persiste, no toca el command path).
+# Fase 3 (flip, con datos de una semana): shadow_mode: false.
+ambient:
+  # Fase 2 ON (deploy 2026-06-06): shadow — etiqueta y persiste en ambient.db,
+  # NO destila (el builder no construye el distiller en shadow), no toca el
+  # command path. Flip de Fase 3 = shadow_mode: false (con datos de 1 semana).
+  enabled: true
+  # FLIP Fase 3 2026-06-08: shadow_mode false → se construye y corre el
+  # Distiller (destila a memoria ChromaDB vía LLM local :8101). Gate de
+  # calidad vad_prob ≥ 0.45 enforced + idioma SHADOW (log). NO toca el
+  # command/wake path (shadow_mode solo gatea el distiller, verificado).
+  shadow_mode: false
+  asr_col: 1            # beam ASR (fw 6ch ch1 — mismo canal que el command path)
+  vad_col: 2            # mic crudo 0 (fw 6ch); con fw 2ch fallback a col 0 (medido OK)
+  raw_first_col: 2      # primera columna de mics crudos (DoA)
+  # 12→48 (2026-06-13): la evidencia far-field se purgaba antes de poder
+  # auditarla / juntar dataset de re-entrenamiento. 48h da ventana de audit.
+  retention_hours: 48   # TTL del texto crudo (destilar-y-descartar)
+  poll_interval_s: 0.25
+  db_path: "./data/ambient.db"
+  # Flag de idioma del TEXTO al persistir (2026-06-13, flag-no-drop). El
+  # discriminante real de calidad del rioplatense es el idioma, no la energía
+  # (vad). py3langid + marcadores rioplatenses → (lang, lang_prob, lang_ok) en
+  # cada utterance. NO descarta: lang_ok solo gobierna qué consume el distiller
+  # (spanish_only). El no-español persiste para audit/re-train.
+  quality:
+    enabled: true
+    min_len: 8          # texto < min_len no se considera (ruido corto)
+    min_vad: 0.45       # alineado con distill.min_vad_prob
+  stt:
+    # Swap 2026-06-07: Parakeet-TDT-0.6B-v3 (onnx, CPU) reemplaza al turbo
+    # en el ambient path. Benchmark A/B con audio real XVF3800: 0/5
+    # alucinaciones sobre no-voz vs 5/5 del turbo, mejor calidad en voz,
+    # RTF ~0.03 en CPU → 0 VRAM (libera ~1.5GB de cuda:0). El command path
+    # NO se toca (turbo GPU). Doc: docs/research/2026-06-07_SOTA_ASR_ESPANOL_INVESTIGACION.md
+    engine: "parakeet"               # parakeet | whisper (fallback/rollback)
+    parakeet_model: "nemo-parakeet-tdt-0.6b-v3"
+    device: "cuda:0"    # solo engine=whisper — GPU ambiental, JAMÁS cuda:1
+    beam_size: 1        # solo engine=whisper
+    # model/compute_type heredan del bloque stt: top-level (solo whisper)
+  segmenter:
+    # 0.3 CALIBRADO Fase 0 (2026-06-06): far-field 3-4m la voz da 20.8% de
+    # chunks >0.3 vs TV 0.5-3.3% — a 0.5 la voz far-field cae a 12.8% y se
+    # pierden bordes de utterance. La TV espuria la filtra min_speech_ms
+    # (chunks dispersos no acumulan 300ms antes del close de 700ms).
+    speech_threshold: 0.3
+    close_silence_ms: 700
+    preroll_ms: 500
+    max_segment_s: 30.0
+    min_speech_ms: 300
+  speaker:
+    min_audio_s: 0.8
+    embeddings_dir: "./data/users"
+  classifier:
+    tv_tolerance_rad: 0.35
+    min_stability: 0.6
+    require_known_speaker_for_live: false
+  distill:
+    llm_url: "http://127.0.0.1:8101/v1"   # SOLO local (privacidad del spec)
+    model: "local"
+    interval_hours: 6
+    min_batch: 5
+    max_batch_chars: 12000
+    # Compuerta de calidad ENFORCED (validada sobre ambient.db 2026-06-07,
+    # 1833 utterances): vad_prob (Silero) cruza español-hogar / bleed-TV
+    # far-field en ≈0.45 — dropea 78% del ruido conservando 54% del español.
+    # Reemplaza al filtro source='live' (inútil sin enrollment: 1833/1833
+    # 'unknown'). no_speech_prob quedó muerto (degenerado ~0).
+    min_vad_prob: 0.45
+    # Loguea distribución de idioma del batch con py3langid (insumo/shadow).
+    log_language: true
+    # Filtro flag-no-drop (2026-06-13): el distiller consume SOLO lo conservable
+    # (lang_ok≠0, marcado al persistir). El no-español NO se borra — persiste en
+    # la DB hasta el TTL para audit/re-train.
+    spanish_only: true
+    # ⚠️ DEGRADADO DE ENFORCE A NULL (2026-06-13). Antes "en" dropeaba+borraba
+    # inglés (mark_distilled→purga) en Fase 3 = pérdida IRREVERSIBLE de voz del
+    # hogar que py3langid misclasifica 'en' sobre garble far-field. Verificado:
+    # py3langid manda rioplatense LIMPIO a fr/ca/gl/wa con prob>0.9. El reemplazo
+    # es spanish_only (flag, no drop). Reactivar solo tras audit ciego.
+    drop_language: null
+    drop_language_min_prob: 0.9
+  rooms:
+    escritorio:
+      tv_azimuth: null   # rad relativo — calibrar en Fase 2 (grabar con TV sonando)
+
+# Code-Index — búsqueda semántica del codebase para agentes (spec 2026-07-04).
+# Servicio SEPARADO (kza-code-index.service, :9510); el pipeline de voz NO lo
+# consume. Embedder SIEMPRE en CPU: cuda:0 está al límite (regla de proyecto).
+code_index:
+  enabled: true
+  host: "0.0.0.0"
+  port: 9510                    # sub-rango KZA 9500-9599 (:9500 = obs)
+  chroma_path: "/home/kza/code-index/chroma"
+  manifest_path: "/home/kza/code-index/manifest.json"
+  include_globs:
+    - "src/**/*.py"             # v1: solo código productivo (sin tests/docs)
+  embedder:
+    model: "BAAI/bge-m3"
+    device: "cpu"               # NUNCA GPU
+  cards:
+    base_url: "http://192.168.1.2:8200/v1"   # gateway LiteLLM → MiniMax
+    model: "MiniMax-M2.7-highspeed"
+    api_key_env: "MINIMAX_API_KEY"            # virtual key del gateway
+    timeout: 120

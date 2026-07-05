@@ -1,0 +1,375 @@
+"""AmbientGuard — compuerta acústica integral por habitación (spec 2026-06-05).
+
+Con TV de fondo, el wake openwakeword dispara constantemente (0.4-0.9) y el
+ambiente satura Whisper + LLM router ("no me escucha" = comandos reales
+compitiendo contra la cola; 1 acción fantasma el 2026-06-04). Este guard
+unifica TV-mode + circuit breaker en una escalera de 3 estados POR ROOM:
+
+    NORMAL ──(rechazos de captura ≥ N en ventana)──► STRICT
+    STRICT ──(rechazos persisten)──► COOLDOWN ──(expira)──► STRICT
+    STRICT ──(quiet sostenido, histéresis)──► NORMAL
+
+- NORMAL: comportamiento actual (threshold base del detector).
+- STRICT: exige score de wake ≥ strict_wake_score (encima del threshold base
+  del detector, que NO se muta) + RMS/SPENERGY mínimos si están calibrados.
+  El follow_up queda deshabilitado (la cascada del 06-04 era follow_up
+  siempre abierto). El bonus wake_acoustically_confirmed del grammar
+  fast-path también se apaga (ver request_router).
+- COOLDOWN: descarta toda captura por cooldown_duration_s. Garantiza que la
+  cola del router NUNCA se satura, sea cual sea el estado de las señales
+  acústicas (la señal de escalada es de software: capturas rechazadas).
+
+Semántica de escalada (decisión de diseño, ver spec):
+- Solo los RESULTADOS DE CAPTURA rechazados (noise/empty/timeout — ya
+  gastaron Whisper/router) escalan. Los rechazos del propio guard en STRICT
+  son gratis: no cuentan para COOLDOWN, pero refrescan el quiet timer
+  (ambiente persiste → STRICT sigue vivo).
+- accepted / other_fail (voz real con fallo downstream) no escalan.
+
+Thread-safety: on_wake corre en el thread C de sounddevice;
+on_capture_result en el event loop → lock interno. Reloj inyectable
+(time_fn) para tests sin sleeps. enabled=False (default) = guard pasivo.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from enum import Enum
+
+logger = logging.getLogger(__name__)
+
+# Outcomes de captura que evidencian ambiente hostil (gastaron pipeline y
+# fueron basura). "accepted" y "other_fail" no escalan.
+REJECT_OUTCOMES = ("noise", "empty", "timeout")
+
+
+class GuardState(Enum):
+    NORMAL = "normal"
+    STRICT = "strict"
+    COOLDOWN = "cooldown"
+
+
+@dataclass
+class AmbientGuardConfig:
+    """Config del guard (settings.yaml → rooms.ambient_guard).
+
+    Los umbrales acústicos (strict_wake_score / strict_min_rms /
+    strict_min_spenergy) se calibran con tools/acoustic_calibration.py —
+    NO adivinar (lección de las sesiones 05-31..06-04).
+
+    Invariante: cooldown_duration_s < strict_exit_quiet_s.
+    Si cooldown >= quiet, _refresh encadenaría COOLDOWN→STRICT→NORMAL en una
+    sola llamada, rompiendo la garantía de que COOLDOWN sale siempre a STRICT.
+    __post_init__ fuerza el invariante haciendo clamp (no raise — un fat-finger
+    en el yaml no debe crashear kza-voice al boot).
+    """
+    enabled: bool = False
+    # Escalada NORMAL → STRICT: N capturas rechazadas dentro de la ventana.
+    strict_entry_rejects: int = 4
+    strict_entry_window_s: float = 60.0
+    # Salida STRICT → NORMAL: histéresis de quiet (sin NINGÚN rechazo).
+    strict_exit_quiet_s: float = 120.0
+    # Compuertas en STRICT. 0.0 = no aplicar (señal no calibrada/muerta).
+    strict_wake_score: float = 0.65
+    strict_min_rms: float = 0.0
+    strict_min_spenergy: float = 0.0
+    # Escalada STRICT → COOLDOWN: N capturas rechazadas MÁS en la ventana.
+    cooldown_entry_rejects: int = 6
+    cooldown_entry_window_s: float = 60.0
+    cooldown_duration_s: float = 30.0
+    # Bypass del COOLDOWN para un wake INEQUÍVOCO (2026-06-13). El breaker
+    # COOLDOWN, por diseño, descarta TODO para no saturar el router — pero eso
+    # tira también un "Nexa" clarísimo del usuario cuando una racha de rechazos
+    # (voz de fondo/TV) lo metió en cooldown (se vio rechazar un nexa:0.87). Un
+    # wake con score >= cooldown_override_score pasa igual. 0.0 = off (preserva
+    # la garantía dura del breaker). ⚠️ Trade-off: la TV llega a ~0.95 ocasional
+    # → usar umbral ALTO (≈0.85) y medir los logs `cooldown_override`.
+    cooldown_override_score: float = 0.0
+    # Gracia post-éxito (2026-06-06): un comando ACEPTADO es evidencia fuerte
+    # de usuario real → durante esta ventana el follow_up queda permitido en
+    # STRICT (comandos encadenados sin re-pasar el wake estricto — caso real:
+    # 'apagá' pasó con 0.77 pero el 'prendé' siguiente salió 0.40-0.59 y
+    # STRICT lo mató). Las compuertas de TEXTO siguen activas. 0.0 = off.
+    strict_follow_up_grace_s: float = 12.0
+    # Umbral de wake adaptativo por vad en STRICT (spec 2026-06-09). El umbral
+    # fijo strict_wake_score (TV/lejos) se interpola hacia strict_wake_score_min
+    # (voz clara) según el vad de Silero del audio del trigger. Arranca en
+    # shadow: computa y loguea el umbral adaptativo pero decide con el fijo.
+    strict_vad_adaptive: bool = False
+    strict_wake_score_min: float = 0.50   # umbral con wake_vad >= strict_vad_hi
+    strict_vad_lo: float = 0.30           # wake_vad <= esto → umbral duro
+    strict_vad_hi: float = 0.70           # wake_vad >= esto → umbral blando
+
+    def __post_init__(self) -> None:
+        if self.cooldown_duration_s >= self.strict_exit_quiet_s:
+            clamped = self.strict_exit_quiet_s / 2.0
+            logger.warning(
+                f"[AmbientGuardConfig] cooldown_duration_s={self.cooldown_duration_s}s >= "
+                f"strict_exit_quiet_s={self.strict_exit_quiet_s}s violaría invariante "
+                f"(COOLDOWN expiraría directo a NORMAL); clamping a {clamped}s"
+            )
+            self.cooldown_duration_s = clamped
+        if self.strict_vad_lo >= self.strict_vad_hi:
+            logger.warning(
+                f"[AmbientGuardConfig] strict_vad_lo={self.strict_vad_lo} >= "
+                f"strict_vad_hi={self.strict_vad_hi}; clamping lo a hi-0.1"
+            )
+            self.strict_vad_lo = self.strict_vad_hi - 0.1
+        if self.strict_wake_score_min > self.strict_wake_score:
+            logger.warning(
+                f"[AmbientGuardConfig] strict_wake_score_min={self.strict_wake_score_min} > "
+                f"strict_wake_score={self.strict_wake_score}; clamping a hard"
+            )
+            self.strict_wake_score_min = self.strict_wake_score
+
+
+@dataclass(frozen=True)
+class GuardDecision:
+    accept: bool
+    reason: str  # "ok" | "disabled" | "strict_score" | "strict_rms" | "strict_spenergy" | "cooldown" | "cooldown_override"
+    state: GuardState
+
+
+@dataclass
+class _RoomState:
+    state: GuardState = GuardState.NORMAL
+    capture_rejects: deque[float] = field(default_factory=deque)  # timestamps
+    last_reject_at: float = 0.0
+    cooldown_until: float = 0.0
+    last_accept_at: float = 0.0  # gracia post-éxito (strict_follow_up_grace_s)
+
+
+def classify_outcome(result: dict) -> str:
+    """Mapea el dict resultado del RequestRouter a un outcome del guard.
+
+    Returns:
+        "accepted" | "empty" | "noise" | "timeout" | "other_fail"
+    """
+    if result.get("success"):
+        return "accepted"
+    text = (result.get("text") or "").strip()
+    if not text:
+        return "empty"
+    intent = str(result.get("intent") or "")
+    # "unavailable" la produce el LLMRouter en timeout/error local → puede
+    # venir como "llm_rejected:unavailable": chequear ANTES que llm_rejected.
+    if "timeout" in intent or "unavailable" in intent:
+        return "timeout"
+    if (
+        intent == "gate_rejected"
+        or intent.startswith("llm_rejected")
+        or intent.startswith("low_confidence")
+    ):
+        return "noise"
+    # unverified_intent NO es noise: pasó el CommandGate y el 7B le dio
+    # is_command con confianza alta — solo el verbo quedó garbleado por el
+    # STT far-field. Señal de humano real; escalarlo dejaba el guard sordo
+    # justo después de un intento legítimo (2026-06-11 17:57).
+    return "other_fail"
+
+
+class AmbientGuard:
+    """Escalera NORMAL/STRICT/COOLDOWN por room. Ver docstring del módulo."""
+
+    def __init__(
+        self,
+        config: AmbientGuardConfig | None = None,
+        time_fn: Callable[[], float] = time.time,
+    ):
+        self.config = config or AmbientGuardConfig()
+        self._time = time_fn
+        self._rooms: dict[str, _RoomState] = {}
+        self._lock = threading.Lock()
+
+    # ---- API pública ----
+
+    def on_wake(
+        self,
+        room_id: str,
+        score: float,
+        rms: float,
+        spenergy_peak: float | None = None,
+        wake_vad: float | None = None,
+    ) -> GuardDecision:
+        """Decisión sobre un wake detectado (llamado desde el audio thread).
+
+        spenergy_peak=None = sin lectura del chip (fail-open del controller)
+        → nunca se bloquea voz por un fallo USB.
+        """
+        if not self.config.enabled:
+            return GuardDecision(True, "disabled", GuardState.NORMAL)
+        now = self._time()
+        with self._lock:
+            rs = self._room(room_id)
+            self._refresh(rs, now, room_id)
+            if rs.state is GuardState.COOLDOWN:
+                if (
+                    self.config.cooldown_override_score > 0.0
+                    and score >= self.config.cooldown_override_score
+                ):
+                    logger.info(
+                        "[AmbientGuard] %s: wake fuerte %.2f ≥ %.2f → bypass COOLDOWN",
+                        room_id, score, self.config.cooldown_override_score,
+                    )
+                    return GuardDecision(True, "cooldown_override", rs.state)
+                return GuardDecision(False, "cooldown", rs.state)
+            if rs.state is GuardState.STRICT:
+                adaptive = self._effective_strict_threshold(wake_vad)
+                threshold = (
+                    adaptive if self.config.strict_vad_adaptive
+                    else self.config.strict_wake_score
+                )
+                if self.config.strict_vad_adaptive is False and wake_vad is not None:
+                    would = "sí" if (score >= adaptive) != (score >= self.config.strict_wake_score) else "no"
+                    logger.info(
+                        f"[AmbientGuard-vadshadow] room={room_id} wake_vad={wake_vad:.2f} "
+                        f"score={score:.2f} umbral_fijo={self.config.strict_wake_score:.2f} "
+                        f"umbral_adaptativo={adaptive:.2f} cambiaria={would}"
+                    )
+                if score < threshold:
+                    rs.last_reject_at = now  # ambiente persiste → quiet timer se refresca
+                    return GuardDecision(False, "strict_score", rs.state)
+                if self.config.strict_min_rms > 0.0 and rms < self.config.strict_min_rms:
+                    rs.last_reject_at = now
+                    return GuardDecision(False, "strict_rms", rs.state)
+                if (
+                    self.config.strict_min_spenergy > 0.0
+                    and spenergy_peak is not None
+                    and spenergy_peak < self.config.strict_min_spenergy
+                ):
+                    rs.last_reject_at = now
+                    return GuardDecision(False, "strict_spenergy", rs.state)
+            return GuardDecision(True, "ok", rs.state)
+
+    def on_capture_result(self, room_id: str, outcome: str) -> None:
+        """Reporta el resultado de una captura ya procesada (event loop)."""
+        if not self.config.enabled:
+            return
+        now = self._time()
+        with self._lock:
+            rs = self._room(room_id)
+            self._refresh(rs, now, room_id)
+            if outcome == "accepted":
+                # Gracia post-éxito: habilita follow_up en STRICT por
+                # strict_follow_up_grace_s (comandos encadenados de un usuario
+                # ya confirmado). other_fail NO abre gracia — no hubo acción.
+                rs.last_accept_at = now
+                return
+            if outcome not in REJECT_OUTCOMES:
+                return
+            # Applies in COOLDOWN too: stale async capture results refresh the
+            # quiet timer on purpose (ambient persists → STRICT stays alive
+            # longer once COOLDOWN expires).
+            rs.last_reject_at = now
+            rs.capture_rejects.append(now)
+            window = (
+                self.config.cooldown_entry_window_s
+                if rs.state is GuardState.STRICT
+                else self.config.strict_entry_window_s
+            )
+            cutoff = now - window
+            while rs.capture_rejects and rs.capture_rejects[0] < cutoff:
+                rs.capture_rejects.popleft()
+            if (
+                rs.state is GuardState.NORMAL
+                and len(rs.capture_rejects) >= self.config.strict_entry_rejects
+            ):
+                rs.state = GuardState.STRICT
+                rs.capture_rejects.clear()
+                logger.warning(
+                    f"[AmbientGuard] {room_id}: NORMAL → STRICT "
+                    f"({self.config.strict_entry_rejects} capturas rechazadas en "
+                    f"{self.config.strict_entry_window_s:.0f}s — ambiente hostil; "
+                    f"wake ahora exige score ≥ {self.config.strict_wake_score})"
+                )
+            elif (
+                rs.state is GuardState.STRICT
+                and len(rs.capture_rejects) >= self.config.cooldown_entry_rejects
+            ):
+                rs.state = GuardState.COOLDOWN
+                rs.cooldown_until = now + self.config.cooldown_duration_s
+                rs.capture_rejects.clear()
+                logger.warning(
+                    f"[AmbientGuard] {room_id}: STRICT → COOLDOWN "
+                    f"{self.config.cooldown_duration_s:.0f}s (rechazos persisten — "
+                    f"breaker para no saturar el router)"
+                )
+
+    def state_for(self, room_id: str) -> GuardState:
+        """Retorna el estado actual de la habitación (con lazy refresh)."""
+        if not self.config.enabled:
+            return GuardState.NORMAL
+        with self._lock:
+            rs = self._room(room_id)
+            self._refresh(rs, self._time(), room_id)
+            return rs.state
+
+    def follow_up_allowed(self, room_id: str) -> bool:
+        """follow_up en NORMAL siempre; en STRICT solo dentro de la gracia
+        post-éxito (la ventana abierta con TV era parte de la cascada del
+        06-04 — pero un comando ACEPTADO confirma usuario real)."""
+        if not self.config.enabled:
+            return True
+        state = self.state_for(room_id)
+        if state is GuardState.NORMAL:
+            return True
+        if state is GuardState.STRICT and self.config.strict_follow_up_grace_s > 0.0:
+            with self._lock:
+                rs = self._room(room_id)
+                return (
+                    rs.last_accept_at > 0.0
+                    and (self._time() - rs.last_accept_at)
+                    <= self.config.strict_follow_up_grace_s
+                )
+        return False
+
+    # ---- internos ----
+
+    def _effective_strict_threshold(self, wake_vad: float | None) -> float:
+        """Umbral de wake en STRICT, interpolado por vad del trigger.
+
+        wake_vad None (sin señal) → umbral duro (fail-safe: nunca más
+        permisivo por falta de dato). <= lo → duro; >= hi → blando; lineal
+        entre medio.
+        """
+        hard = self.config.strict_wake_score
+        if wake_vad is None:
+            return hard
+        soft = self.config.strict_wake_score_min
+        lo, hi = self.config.strict_vad_lo, self.config.strict_vad_hi
+        if wake_vad <= lo:
+            return hard
+        if wake_vad >= hi:
+            return soft
+        frac = (wake_vad - lo) / (hi - lo)
+        return hard - frac * (hard - soft)
+
+    def _room(self, room_id: str) -> _RoomState:
+        rs = self._rooms.get(room_id)
+        if rs is None:
+            rs = _RoomState()
+            self._rooms[room_id] = rs
+        return rs
+
+    def _refresh(self, rs: _RoomState, now: float, room_id: str) -> None:
+        """Transiciones por tiempo (lazy — no hay timers)."""
+        if rs.state is GuardState.COOLDOWN and now >= rs.cooldown_until:
+            rs.state = GuardState.STRICT
+            rs.capture_rejects.clear()
+            logger.info("[AmbientGuard] %s: COOLDOWN expirado → STRICT", room_id)
+        if (
+            rs.state is GuardState.STRICT
+            and rs.last_reject_at > 0.0
+            and (now - rs.last_reject_at) >= self.config.strict_exit_quiet_s
+        ):
+            rs.state = GuardState.NORMAL
+            rs.capture_rejects.clear()
+            logger.info(
+                "[AmbientGuard] %s: STRICT → NORMAL (quiet ≥ %.0fs)",
+                room_id,
+                self.config.strict_exit_quiet_s,
+            )

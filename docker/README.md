@@ -3,6 +3,13 @@
 Docker mode is **experimental** and does **not** have full parity with the
 canonical monolith runtime (`python -m src.main`).
 
+> Production deploy source of truth: [`docs/architecture/DEPLOYMENT.md`](../docs/architecture/DEPLOYMENT.md)
+> (native systemd --user service, documented R10 exception — NOT these containers).
+>
+> The GPU 0-3 assignment below reflects the original 4-GPU experimental design.
+> Current hardware has **2x RTX 3070** (more to be added later); running these services
+> as-is would require remapping devices. See `docs/SERVER_CONVENTIONS.md` for the real GPU map.
+
 ## What works
 
 | Service     | Port | GPU/CPU | Status |

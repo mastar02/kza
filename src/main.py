@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+from src.core.settings_schema import check_unresolved_env_vars, validate_settings
 from src.stt.whisper_fast import create_stt
 from src.tts.piper_tts import create_tts
 from src.vectordb.chroma_sync import ChromaSync
@@ -87,7 +88,13 @@ def load_config(config_path: str = "config/settings.yaml") -> dict:
             return [replace_env_vars(item) for item in obj]
         return obj
 
-    return replace_env_vars(config)
+    # Fail-fast al boot: una config rota aborta acá con el detalle de cada
+    # campo inválido, en vez de morir a mitad de la cadena de DI. Los
+    # placeholders ${VAR} sin resolver abortan solo si son de HA (esencial);
+    # el resto loguea WARNING.
+    config = replace_env_vars(config)
+    check_unresolved_env_vars(config)
+    return validate_settings(config)
 
 
 async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma):
@@ -534,6 +541,7 @@ async def main():
     room_context_manager = None
     presence_detector = None
     multi_room_loop = None
+    ambient_path = None
 
     # Multi-Zone Audio System (Dayton MA1260) — legacy fallback
     zones_config = config.get("zones", {})
@@ -768,6 +776,10 @@ async def main():
                     device_index=rc.mic_device_index,
                     wake_detector=wake_detector,
                     echo_suppressor=room_echo,
+                    # L-3: canal de captura per-room (0=Conference, 1=ASR en el
+                    # XVF3800 UA según doc Seeed — A/B con medición, fallback
+                    # seguro a 0 si el device no tiene el canal).
+                    capture_channel=room_dict.get("capture_channel", 0),
                 )
 
             # Register BLE zone for presence
@@ -825,16 +837,104 @@ async def main():
             # Barge-in (S3). `response_handler` se inyecta luego con
             # `attach_response_handler()` porque se construye más abajo.
             barge_in_cfg = rooms_config.get("barge_in", {}) or {}
+            # Pre-gate SPENERGY (VAD por hardware del XVF3800). Fail-open: si no
+            # se puede abrir el device (sin udev/permisos/pyusb), el gate queda OFF.
+            # ⚠️ LIMITACIÓN SINGLE-MIC (review 2026-06-04): se construye UN solo
+            # XvfController compartido y usb.core.find() toma el PRIMER XVF3800
+            # que matchee VID/PID — todas las rooms se gatean con el SPENERGY de
+            # ese único device. Hoy es correcto (solo escritorio tiene mic);
+            # cuando el living recupere su XVF3800 hay que pasar a un controller
+            # por room con binding por puerto USB (análogo a mic_usb_port), o
+            # una room bloquearía comandos válidos con la energía/silencio de OTRA.
+            spe_cfg = early_cfg.get("spenergy_gate", {}) or {}
+            tuning_cfg = early_cfg.get("xvf_tuning", {}) or {}
+            xvf_controller = None
+            # Controller compartido por DOS features ortogonales (review Fase 1):
+            # el gate SPENERGY y el tuning del DSP. Se construye si CUALQUIERA
+            # lo necesita — antes, tuning con gate deshabilitado quedaba
+            # silenciosamente sin aplicar.
+            _need_xvf = spe_cfg.get("enabled", False) or (
+                tuning_cfg.get("apply_on_start", False) and tuning_cfg.get("params")
+            )
+            if _need_xvf:
+                from src.audio.xvf_controller import XvfController
+                xvf_controller = XvfController(
+                    poll_interval_s=spe_cfg.get("poll_interval_s", 0.04),
+                    window_s=spe_cfg.get("window_s", 4.0),
+                )
+            # AmbientGuard (spec 2026-06-05): compuerta acústica integral.
+            # Default enabled=false → pasivo. Umbrales: ver settings.yaml.
+            from src.pipeline.ambient_guard import AmbientGuard, AmbientGuardConfig
+            ag_cfg = rooms_config.get("ambient_guard", {}) or {}
+            ambient_guard = AmbientGuard(
+                config=AmbientGuardConfig(
+                    enabled=ag_cfg.get("enabled", False),
+                    strict_entry_rejects=ag_cfg.get("strict_entry_rejects", 4),
+                    strict_entry_window_s=ag_cfg.get("strict_entry_window_s", 60.0),
+                    strict_exit_quiet_s=ag_cfg.get("strict_exit_quiet_s", 120.0),
+                    strict_wake_score=ag_cfg.get("strict_wake_score", 0.65),
+                    strict_min_rms=ag_cfg.get("strict_min_rms", 0.0),
+                    strict_min_spenergy=ag_cfg.get("strict_min_spenergy", 0.0),
+                    cooldown_entry_rejects=ag_cfg.get("cooldown_entry_rejects", 6),
+                    cooldown_entry_window_s=ag_cfg.get("cooldown_entry_window_s", 60.0),
+                    cooldown_duration_s=ag_cfg.get("cooldown_duration_s", 30.0),
+                    cooldown_override_score=ag_cfg.get("cooldown_override_score", 0.0),
+                    strict_follow_up_grace_s=ag_cfg.get("strict_follow_up_grace_s", 12.0),
+                    strict_vad_adaptive=ag_cfg.get("strict_vad_adaptive", False),
+                    strict_wake_score_min=ag_cfg.get("strict_wake_score_min", 0.50),
+                    strict_vad_lo=ag_cfg.get("strict_vad_lo", 0.30),
+                    strict_vad_hi=ag_cfg.get("strict_vad_hi", 0.70),
+                )
+            )
+            if ag_cfg.get("enabled", False):
+                logger.info(
+                    f"AmbientGuard ACTIVO: strict_wake_score="
+                    f"{ag_cfg.get('strict_wake_score', 0.65)}, "
+                    f"entry={ag_cfg.get('strict_entry_rejects', 4)} rechazos/"
+                    f"{ag_cfg.get('strict_entry_window_s', 60.0):.0f}s"
+                )
+            # Captura de clips de wake (2026-06-12): dataset de re-entrenamiento
+            # de nexa.onnx con audio real (falsos de TV + comandos far-field).
+            wake_clip_writer = None
+            clip_cfg = early_cfg.get("capture_clips", {}) or {}
+            if clip_cfg.get("enabled", False):
+                from src.wakeword.wake_clip_writer import WakeClipWriter
+                wake_clip_writer = WakeClipWriter(
+                    directory=clip_cfg.get(
+                        "dir", "data/wakeword_training/captured"
+                    ),
+                    max_files=int(clip_cfg.get("max_files", 2000)),
+                    max_rejected_files=int(clip_cfg.get("max_rejected_files", 4000)),
+                )
+                logger.info(
+                    f"WakeClipWriter ACTIVO: dir={clip_cfg.get('dir')} "
+                    f"max_files={clip_cfg.get('max_files', 2000)}"
+                )
             multi_room_loop = MultiRoomAudioLoop(
                 room_streams=room_streams,
-                follow_up=FollowUpMode(follow_up_window=8.0),
+                follow_up=FollowUpMode(
+                    follow_up_window=early_cfg.get("follow_up_window_s", 4.0)
+                ),
+                xvf_controller=xvf_controller,
+                spenergy_threshold=spe_cfg.get("threshold", 100.0),
+                spenergy_gate_enabled=spe_cfg.get("enabled", False),
+                xvf_tuning=tuning_cfg,
+                ambient_guard=ambient_guard,
+                wake_clip_writer=wake_clip_writer,
                 sample_rate=16000,
                 command_duration=2.0,
                 dedup_window_ms=rooms_config.get("dedup_window_ms", 200),
+                min_wake_rms=early_cfg.get("min_wake_rms", 0.0),
+                wake_preroll_s=early_cfg.get("wake_preroll_s", 0.0),
                 early_dispatch_enabled=early_cfg.get("early_dispatch", False),
                 early_dispatch_interval_ms=early_cfg.get("early_dispatch_interval_ms", 400),
                 early_dispatch_min_audio_s=early_cfg.get("early_dispatch_min_audio_s", 0.6),
                 stt=stt,
+                # VAD de fin-de-comando (QW-3 2026-06-04): antes quedaban en los
+                # defaults hardcodeados del constructor — la config no llegaba.
+                silence_threshold=endpointing_cfg.get("silence_threshold", 0.015),
+                silence_duration_ms=endpointing_cfg.get("silence_duration_ms", 300),
+                min_speech_ms=endpointing_cfg.get("min_speech_ms", 300),
                 endpointing_enabled=endpointing_cfg.get("enabled", True),
                 endpointing_short_ms=endpointing_cfg.get("short_ms", 150),
                 endpointing_medium_ms=endpointing_cfg.get("medium_ms", 300),
@@ -847,6 +947,37 @@ async def main():
                 f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "
                 f"{', '.join(room_streams.keys())})"
             )
+
+            # Ambient path (spec 2026-06-06): transcripción continua multi-pista
+            # en cuda:0. Best-effort: si falla el build, el command path sigue.
+            ambient_cfg = config.get("ambient", {}) or {}
+            if ambient_cfg.get("enabled", False):
+                try:
+                    from src.ambient.transcriber import build_ambient_path
+                    _store_fact = (
+                        memory_manager.long_term.store_fact
+                        if memory_manager is not None else None
+                    )
+                    ambient_path = build_ambient_path(
+                        ambient_cfg=ambient_cfg,
+                        stt_base_cfg=config.get("stt", {}) or {},
+                        room_ids=list(room_streams.keys()),
+                        store_fact_fn=_store_fact,
+                    )
+                    multi_room_loop.attach_ambient(
+                        tap=ambient_path.tap,
+                        transcriber=ambient_path.transcriber,
+                    )
+                    logger.info(
+                        f"Ambient path construido ({len(room_streams)} rooms, "
+                        f"shadow={ambient_cfg.get('shadow_mode', True)})"
+                    )
+                except Exception:
+                    logger.exception(
+                        "Ambient path no construido (best-effort) — "
+                        "el pipeline de voz sigue sin él"
+                    )
+                    ambient_path = None
 
     # ----------------------------------------------------------------
     # Build pipeline components (DI chain)
@@ -956,6 +1087,16 @@ async def main():
         hooks=hooks,
         before_handler_warn_ms=self_warn_ms,
     )
+
+    # Earcon "te oí, no te entendí" (2026-06-15): cargar asset y configurar
+    # en el response_handler para que play_earcon() lo reproduzca en zonas.
+    from src.tts.response_cache import load_earcon
+    _earcon_cfg = config.get("command_gate", {}).get("earcon", {"enabled": False})
+    _earcon_audio, _earcon_sr = load_earcon(
+        _earcon_cfg.get("asset", "data/earcons/not_understood.wav")
+    )
+    if _earcon_audio is not None:
+        response_handler.set_earcon(_earcon_audio, _earcon_sr)
 
     # Inyectar response_handler al MultiRoomAudioLoop para barge-in (S3).
     # Se construyó arriba sin response_handler por orden de DI; lo attacheamos
@@ -1082,6 +1223,8 @@ async def main():
         enforce_confidence=_gate_cfg.get("enforce_confidence", False),
         max_no_speech_prob=_gate_cfg.get("max_no_speech_prob", 0.60),
         min_avg_logprob=_gate_cfg.get("min_avg_logprob", -1.20),
+        enforce_compression_ratio=_gate_cfg.get("enforce_compression_ratio", False),
+        max_compression_ratio=_gate_cfg.get("max_compression_ratio", 2.2),
     )
     request_router = RequestRouter(
         command_processor=command_processor,
@@ -1108,8 +1251,14 @@ async def main():
         metrics_emitter=metrics_emitter,
         wake_words=_resolved_wake_words,
         llm_command_router=llm_command_router,
+        # Con engine acústico (openwakeword/porcupine) el wake ya se confirmó
+        # fuera del texto → el grammar fastpath no exige "Nexa" transcripta.
+        wake_acoustically_confirmed=(_wake_engine_gate != "whisper"),
         hooks=hooks,
         command_gate=command_gate,
+        llm_min_command_confidence=nlu_cfg.get("min_command_confidence", 0.6),
+        earcon_cfg=_earcon_cfg,
+        asr_event_logger=event_logger,
     )
 
     # Feature subsystems (timers, intercom, notifications, alerts)
@@ -1313,6 +1462,16 @@ async def main():
             dashboard_task = asyncio.create_task(dashboard.start())
             logger.info("Dashboard API started")
 
+        if ambient_path is not None:
+            _ambient_task = asyncio.create_task(ambient_path.start())
+            # Best-effort, pero NO silencioso: si el start muere (CUDA OOM,
+            # DB), queremos verlo en logs aunque el command path siga sano.
+            _ambient_task.add_done_callback(
+                lambda t: logger.error(
+                    f"Ambient path murió al arrancar: {t.exception()}"
+                ) if not t.cancelled() and t.exception() else None
+            )
+
         await pipeline.run()
     except KeyboardInterrupt:
         logger.info("\nDeteniendo...")
@@ -1323,6 +1482,8 @@ async def main():
             await presence_detector.stop()
         if reminder_scheduler:
             await reminder_scheduler.stop()
+        if ambient_path is not None:
+            await ambient_path.stop()
         await list_store.close()
         await reminder_store.close()
         await pipeline.stop()

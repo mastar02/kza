@@ -63,7 +63,7 @@ Contiene:
 **Resultado**: ✓ 35/35 PASSED (100%)
 
 ### 3. Documentación
-**Ubicación**: `/docs/EMOTION_DETECTOR.md` (300+ líneas)
+**Ubicación**: `/docs/architecture/EMOTION_DETECTOR.md` (300+ líneas)
 
 Contiene:
 - Descripción general

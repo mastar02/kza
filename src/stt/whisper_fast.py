@@ -11,7 +11,9 @@ Optimizado para latencia mínima:
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
@@ -23,15 +25,27 @@ logger = logging.getLogger(__name__)
 class STTResult:
     """Resultado de transcripción con confianza del STT.
 
-    no_speech_prob / avg_logprob son None cuando no hay segmentos (audio
-    vacío) o el motor no los expone (Moonshine). El gate trata None como
-    'sin penalizar'.
+    no_speech_prob / avg_logprob / compression_ratio son None cuando no hay
+    segmentos (audio vacío) o el motor no los expone (Moonshine). El gate
+    trata None como 'sin penalizar'.
+
+    ⚠️ no_speech_prob con large-v3-turbo está DEGENERADO: devuelve ~1e-10
+    siempre, incluso sobre silencio absoluto que alucina "Gracias por ver el
+    video." (reproducido en aislamiento 2026-06-07, CPU int8, faster-whisper
+    1.2.1). El head de no-speech se perdió en la destilación del turbo. NO
+    usarlo como señal anti-alucinación: usar avg_logprob, compression_ratio
+    y el VAD externo (Silero — `vad_prob` del ambient path).
+
+    compression_ratio es el MÁXIMO entre segmentos (no la media): un solo
+    segmento basura repetitiva debe poder disparar el guard anti-alucinación
+    del CommandAcceptanceGate (openai/whisper #2378).
     """
 
     text: str
     elapsed_ms: float
     no_speech_prob: float | None = None
     avg_logprob: float | None = None
+    compression_ratio: float | None = None
 
 
 class FastWhisperSTT:
@@ -46,6 +60,11 @@ class FastWhisperSTT:
         beam_size: int = 1,
         best_of: int = 1,
         initial_prompt: str | None = None,
+        vad_filter: bool = True,
+        temperature_fallback: bool = False,
+        fallback_temperatures: list[float] | None = None,
+        compression_ratio_threshold: float = 2.0,
+        log_prob_threshold: float = -3.0,
     ):
         """
         Args:
@@ -55,6 +74,24 @@ class FastWhisperSTT:
             initial_prompt: Texto que sesga la decodificación. Útil para
                 enseñarle a Whisper palabras novel ("Nexa") y vocabulario
                 del dominio (verbos y rooms). Máx ~224 tokens.
+            vad_filter: Pre-filtro Silero interno de faster-whisper. Para
+                audio del XVF3800 va en False: el chip YA hace VAD/NS/
+                beamforming por hardware y Silero lee prob~0 sobre su salida
+                — borraba capturas ENTERAS → Text='' con voz real
+                (confirmado en prod 2026-06-04).
+            temperature_fallback: Habilitar re-decodificación adaptativa de
+                Whisper a temperatura creciente cuando el segmento resulta
+                garble (compression_ratio alto). En turbo, no_speech_prob y
+                avg_logprob están degenerados → el fallback se gatea SOLO por
+                compression_ratio_threshold. False = escalar 0 (comportamiento
+                anterior, sin fallback).
+            fallback_temperatures: Lista de temperaturas a probar en orden.
+                Solo se usa cuando temperature_fallback=True.
+            compression_ratio_threshold: Umbral de compression_ratio para
+                disparar fallback. Por defecto 2.0 (valor openai/whisper).
+            log_prob_threshold: Umbral de avg_logprob. Se deja muy bajo (-3.0)
+                para que NO dispare fallback espurio por el logprob invertido
+                del turbo; el gating real lo hace compression_ratio.
         """
         self.model_name = model
         self.device = device
@@ -63,9 +100,41 @@ class FastWhisperSTT:
         self.beam_size = beam_size
         self.best_of = best_of
         self.initial_prompt = initial_prompt
+        self.vad_filter = vad_filter
+        self.temperature_fallback = temperature_fallback
+        self.fallback_temperatures = fallback_temperatures or [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        self.compression_ratio_threshold = compression_ratio_threshold
+        self.log_prob_threshold = log_prob_threshold
         self._model = None
-    
+        # Thread dedicado del modelo (fix 2026-06-07): CUDA/CTranslate2
+        # mantienen estado per-thread; con DOS WhisperModel en GPUs distintas
+        # (command path cuda:1 + ambient cuda:0) ejecutados desde el pool
+        # default compartido (asyncio.to_thread / run_in_executor(None)), el
+        # reuso de threads alternando devices producía `RuntimeError: CUDA
+        # failed with error invalid argument` intermitente (12×/1.5h en prod,
+        # 2026-06-06, SOLO con ambos modelos activos). Pin: cada instancia
+        # carga y ejecuta su modelo SIEMPRE en su propio thread.
+        self._executor: ThreadPoolExecutor | None = None
+        self._worker_ident: int | None = None
+
+    def _run_pinned(self, fn, *args):
+        """Ejecutar fn en el thread dedicado del modelo (bloqueante)."""
+        if threading.get_ident() == self._worker_ident:
+            return fn(*args)  # re-entrada desde el propio worker
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix=f"whisper-{self.device}"
+            )
+            self._worker_ident = self._executor.submit(
+                threading.get_ident
+            ).result()
+        return self._executor.submit(fn, *args).result()
+
     def load(self):
+        """Cargar modelo en GPU (idempotente, en el thread dedicado)."""
+        self._run_pinned(self._load_impl)
+
+    def _load_impl(self):
         """Cargar modelo en GPU (idempotente).
 
         Idempotencia crítica: `load()` se invoca desde más de un sitio sobre
@@ -115,15 +184,25 @@ class FastWhisperSTT:
         # Transcribir con configuración (beam/prompt configurables — defaults
         # priorizan velocidad, subir beam_size=5 + initial_prompt mejora precisión
         # para palabras novel como "nexa" a costa de ~30% latencia).
+
+        # Temperature: lista (fallback adaptativo de Whisper) o escalar 0.
+        # En turbo, no_speech/avg_logprob están muertos → el fallback se gatea
+        # por compression_ratio (única señal viva). log_prob_threshold se deja
+        # muy bajo para NO disparar fallback espurio por el logprob invertido.
+        temperature = (
+            self.fallback_temperatures if self.temperature_fallback else 0
+        )
         segments, info = self._model.transcribe(
             audio_input,
             language=self.language,
             beam_size=self.beam_size,
             best_of=self.best_of,
-            temperature=0,
+            temperature=temperature,
+            compression_ratio_threshold=self.compression_ratio_threshold,
+            log_prob_threshold=self.log_prob_threshold,
             initial_prompt=self.initial_prompt,
             condition_on_previous_text=False,
-            vad_filter=True,
+            vad_filter=self.vad_filter,
             vad_parameters={
                 "min_silence_duration_ms": 300,
                 "speech_pad_ms": 100,
@@ -136,9 +215,11 @@ class FastWhisperSTT:
         if seg_list:
             no_speech = sum(s.no_speech_prob for s in seg_list) / len(seg_list)
             avg_lp = sum(s.avg_logprob for s in seg_list) / len(seg_list)
+            comp_ratio = max(s.compression_ratio for s in seg_list)
         else:
             no_speech = None
             avg_lp = None
+            comp_ratio = None
 
         elapsed_ms = (time.perf_counter() - start) * 1000
         logger.debug(f"STT ({elapsed_ms:.0f}ms): {text[:50]}...")
@@ -148,6 +229,7 @@ class FastWhisperSTT:
             elapsed_ms=elapsed_ms,
             no_speech_prob=no_speech,
             avg_logprob=avg_lp,
+            compression_ratio=comp_ratio,
         )
 
     def transcribe(
@@ -181,10 +263,7 @@ class FastWhisperSTT:
         Returns:
             STTResult con text, elapsed_ms, no_speech_prob y avg_logprob.
         """
-        if self._model is None:
-            self.load()
-
-        # Preparar audio para faster-whisper
+        # Preparar audio en el caller (solo numpy, sin CUDA)
         if isinstance(audio, np.ndarray):
             # Faster-whisper acepta numpy arrays directamente
             # Debe ser float32 normalizado entre -1.0 y 1.0
@@ -193,6 +272,12 @@ class FastWhisperSTT:
             # Path a archivo - faster-whisper lo maneja internamente
             audio_input = str(audio)
 
+        # load lazy + generate SIEMPRE en el thread dedicado del modelo
+        return self._run_pinned(self._transcribe_pinned, audio_input)
+
+    def _transcribe_pinned(self, audio_input: "np.ndarray | str") -> STTResult:
+        if self._model is None:
+            self._load_impl()
         return self._transcribe_impl(audio_input)
 
     def _prepare_audio(self, audio: np.ndarray) -> np.ndarray:
@@ -432,4 +517,9 @@ def create_stt(config: dict) -> FastWhisperSTT | MoonshineSTT:
             beam_size=config.get("beam_size", 1),
             best_of=config.get("best_of", 1),
             initial_prompt=config.get("initial_prompt"),
+            vad_filter=config.get("vad_filter", True),
+            temperature_fallback=config.get("temperature_fallback", {}).get("enabled", False),
+            fallback_temperatures=config.get("temperature_fallback", {}).get("temperatures"),
+            compression_ratio_threshold=config.get("temperature_fallback", {}).get("compression_ratio_threshold", 2.0),
+            log_prob_threshold=config.get("temperature_fallback", {}).get("log_prob_threshold", -3.0),
         )

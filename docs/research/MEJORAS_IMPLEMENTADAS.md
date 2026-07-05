@@ -151,7 +151,7 @@ Se agregó sección completa de configuración:
 
 ### 4.2 Documentación Nueva
 
-**Archivo**: `docs/WAKE_WORD_TRAINING.md`
+**Archivo**: `docs/architecture/WAKE_WORD_TRAINING.md`
 
 Guía completa con:
 - Proceso paso a paso
@@ -184,10 +184,10 @@ models/wakeword/         - Modelos entrenados
 
 | Archivo | Descripción |
 |---------|-------------|
-| docs/KZA_ANALISIS_Y_ROADMAP.md | Análisis completo y plan |
-| docs/MEJORAS_IMPLEMENTADAS.md | Este documento |
-| docs/EMOTION_DETECTOR.md | Guía de emociones |
-| docs/WAKE_WORD_TRAINING.md | Guía de wake word |
+| docs/research/KZA_ANALISIS_Y_ROADMAP.md | Análisis completo y plan |
+| docs/research/MEJORAS_IMPLEMENTADAS.md | Este documento |
+| docs/architecture/EMOTION_DETECTOR.md | Guía de emociones |
+| docs/architecture/WAKE_WORD_TRAINING.md | Guía de wake word |
 | src/alerts/README.md | Documentación de alertas |
 | src/alerts/QUICK_START.md | Inicio rápido alertas |
 

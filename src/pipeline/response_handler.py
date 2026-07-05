@@ -97,6 +97,10 @@ class ResponseHandler:
         self._current_stream = None
         self._playback_task: asyncio.Task | None = None
 
+        # Earcon "no entendí" (2026-06-15): se inyecta vía set_earcon() desde main.
+        self._earcon_audio = None
+        self._earcon_sr = 24000
+
     @property
     def is_speaking(self) -> bool:
         """True si hay un TTS activo. Consultado por barge-in checker."""
@@ -162,6 +166,39 @@ class ResponseHandler:
         if self.zone_manager:
             self.zone_manager.set_active_zone(zone_id)
         logger.info(f"Zona activa: {zone_id}")
+
+    def set_earcon(self, audio, sr: int) -> None:
+        """Inyectar el earcon pre-cargado (np.ndarray float32, sample rate)."""
+        self._earcon_audio = audio
+        self._earcon_sr = sr
+
+    def play_earcon(self, zone_id: str = None, room_context=None) -> None:
+        """Reproducir el earcon 'no entendí'. No-op si no hay asset."""
+        if self._earcon_audio is None:
+            return
+        if room_context and hasattr(room_context, "room_id") and not zone_id:
+            zone_id = f"zone_{room_context.room_id}"
+        target_zone = zone_id or self._active_zone_id
+        self._is_speaking = True
+        try:
+            self._play_earcon_array(self._earcon_audio, self._earcon_sr, target_zone)
+        finally:
+            self._is_speaking = False
+
+    def _play_earcon_array(self, audio, sr: int, zone_id: str) -> None:
+        """Reproducir el array del earcon en la zona (bypassa TTS y hooks)."""
+        self._playback_pcm(audio, sr, zone_id)
+
+    def _playback_pcm(self, audio, sr: int, zone_id: str) -> None:
+        """Envolver un array PCM en el objeto de audio cacheado y reproducirlo."""
+        from src.tts.response_cache import CachedAudio
+        cached = CachedAudio(
+            audio=audio,
+            sample_rate=sr,
+            duration_s=len(audio) / sr,
+            text="",
+        )
+        self._playback_cached(cached, zone_id)
 
     def speak(
         self,

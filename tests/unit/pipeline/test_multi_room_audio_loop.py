@@ -236,6 +236,260 @@ class TestDeduplication:
         assert result2 is True
 
 
+class TestMinWakeRmsGate:
+    """Pre-gate de RMS post-wake (2026-06-02): rechaza activaciones de muy baja
+    energía (near-silence) antes de transcribir. Default 0.0 = desactivado (no
+    regresión); se calibra en repro porque el AGC ×64 infla el piso de ruido."""
+
+    def test_rms_below_min_wake_rms_rejected(self):
+        loop = _make_multi_room_loop(min_wake_rms=0.02)
+        assert loop._should_accept_wakeword("cocina", rms=0.005, timestamp=1.0) is False
+
+    def test_rms_at_or_above_min_wake_rms_accepted(self):
+        loop = _make_multi_room_loop(min_wake_rms=0.02)
+        assert loop._should_accept_wakeword("cocina", rms=0.05, timestamp=2.0) is True
+
+    def test_min_wake_rms_zero_disables_gate(self):
+        # Default 0.0 → gate off → comportamiento idéntico al baseline (dedup).
+        loop = _make_multi_room_loop(min_wake_rms=0.0)
+        assert loop._should_accept_wakeword("cocina", rms=0.0001, timestamp=3.0) is True
+
+
+def _detector_seq(detect_returns):
+    """Wake detector mock SIN inline audio (simula el path openwakeword)."""
+    m = MagicMock()
+    m.load = MagicMock()
+    m.detect = MagicMock(side_effect=list(detect_returns))
+    m.get_active_models = MagicMock(return_value=[])
+    # openwakeword no tiene estos métodos (son del WhisperWake) -> None para que
+    # getattr(...) los saltee y se ejecute el path acústico.
+    m.peek_pending_text = None
+    m.pop_pending_command_audio = None
+    m.pop_pending_text = None
+    return m
+
+
+class TestWakePreroll:
+    """Pre-roll (2026-06-02): al disparar el wake, sembrar el buffer con el audio
+    previo para no perder el comando dicho durante la latencia de openwakeword
+    ('Nexa apagá la luz' -> 'apagá' se decía mientras el detector aún procesaba).
+    """
+
+    def _loop_with_room(self, detector, **kwargs):
+        rs = RoomStream(
+            room_id="escritorio", device_index=0,
+            wake_detector=detector, echo_suppressor=_make_echo_suppressor(),
+        )
+        loop = _make_multi_room_loop(rooms={"escritorio": rs}, **kwargs)
+        return loop, rs
+
+    def test_preroll_seeds_command_buffer_on_wake(self):
+        det = _detector_seq([None, None, None, ("nexa", 0.8)])
+        loop, rs = self._loop_with_room(det, wake_preroll_s=0.24)  # ~3 chunks @ 80ms
+        cb = loop._make_audio_callback(rs)
+        for i in range(3):
+            cb(np.full((CHUNK_SIZE, 2), 0.01 * (i + 1), dtype=np.float32), CHUNK_SIZE, None, None)
+            assert rs.listening is False
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is True
+        # el buffer arranca con el pre-roll (≥3 chunks) en vez de vacío
+        assert len(rs.audio_buffer) >= 3 * CHUNK_SIZE
+
+    def test_preroll_off_keeps_empty_buffer(self):
+        det = _detector_seq([None, None, ("nexa", 0.8)])
+        loop, rs = self._loop_with_room(det, wake_preroll_s=0.0)  # default = off
+        cb = loop._make_audio_callback(rs)
+        for _ in range(2):
+            cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is True
+        assert len(rs.audio_buffer) == 0  # sin pre-roll = comportamiento actual
+
+
+class TestWakeClipCapture:
+    """Captura de clips de wake (2026-06-12): cada wake ACEPTADO persiste su
+    audio (preroll) vía WakeClipWriter para el dataset de re-entrenamiento
+    (hard negatives de TV + positivos far-field). El submit no debe bloquear
+    el audio callback — el writer es un colaborador inyectado y mockeable."""
+
+    def _loop_with_room(self, detector, **kwargs):
+        rs = RoomStream(
+            room_id="escritorio", device_index=0,
+            wake_detector=detector, echo_suppressor=_make_echo_suppressor(),
+        )
+        loop = _make_multi_room_loop(rooms={"escritorio": rs}, **kwargs)
+        return loop, rs
+
+    def test_accepted_wake_submits_clip(self):
+        det = _detector_seq([None, None, None, ("nexa", 0.8)])
+        writer = MagicMock()
+        loop, rs = self._loop_with_room(
+            det, wake_preroll_s=0.24, wake_clip_writer=writer,
+        )
+        cb = loop._make_audio_callback(rs)
+        for i in range(3):
+            cb(np.full((CHUNK_SIZE, 2), 0.01 * (i + 1), dtype=np.float32), CHUNK_SIZE, None, None)
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is True
+        writer.submit.assert_called_once()
+        room_id, score, audio = writer.submit.call_args.args
+        assert room_id == "escritorio"
+        assert score == 0.8
+        assert len(audio) >= 3 * CHUNK_SIZE  # el preroll sembrado
+
+    def test_no_writer_is_fine(self):
+        det = _detector_seq([None, ("nexa", 0.8)])
+        loop, rs = self._loop_with_room(det, wake_preroll_s=0.24)
+        cb = loop._make_audio_callback(rs)
+        cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is True  # sin writer no rompe nada
+
+    def test_rejected_wake_submits_as_rejected(self):
+        # 2026-06-14: el wake RECHAZADO por el guard también se persiste (desde
+        # el preroll) con accepted=False → subcarpeta rejected/. Recupera los
+        # 0.40-0.45 que STRICT mata (positivos far-field reales) + hard-negatives
+        # de TV. NO entra en captura (rs.listening sigue False).
+        # min_wake_rms imposible → _should_accept_wakeword rechaza.
+        det = _detector_seq([None, ("nexa", 0.8)])
+        writer = MagicMock()
+        loop, rs = self._loop_with_room(
+            det, wake_preroll_s=0.24, wake_clip_writer=writer, min_wake_rms=9.9,
+        )
+        cb = loop._make_audio_callback(rs)
+        cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is False  # rechazado: no entra en captura
+        writer.submit.assert_called_once()
+        assert writer.submit.call_args.kwargs.get("accepted") is False
+        assert writer.submit.call_args.args[1] == 0.8  # score
+
+    def test_writer_exception_does_not_break_capture(self):
+        det = _detector_seq([None, ("nexa", 0.8)])
+        writer = MagicMock()
+        writer.submit.side_effect = RuntimeError("disk on fire")
+        loop, rs = self._loop_with_room(
+            det, wake_preroll_s=0.24, wake_clip_writer=writer,
+        )
+        cb = loop._make_audio_callback(rs)
+        cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
+        cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
+        assert rs.listening is True  # fail-open: la captura del comando sigue
+
+
+class _FakeXvf:
+    """XvfController falso: peak_since devuelve un valor fijo (o None)."""
+    def __init__(self, peak):
+        self._peak = peak
+        self.started = False
+    def start(self):
+        self.started = True
+        return True
+    def stop(self):
+        pass
+    def peak_since(self, since_ts):
+        return self._peak
+
+
+class TestSpenergyGate:
+    """Pre-gate SPENERGY (2026-06-02): no transcribir si el pico de SPENERGY
+    durante la captura < umbral (secador/silencio → alucinación de Whisper).
+    Fail-open: sin controller o sin datos → procesa."""
+
+    def _rs(self):
+        rs = _make_room_stream("escritorio")
+        rs.command_start_time = 100.0
+        return rs
+
+    def test_no_controller_passes(self):
+        loop = _make_multi_room_loop()  # xvf_controller None por defecto
+        assert loop._passes_spenergy_gate(self._rs()) is True
+
+    def test_peak_none_fail_open_passes(self):
+        loop = _make_multi_room_loop(xvf_controller=_FakeXvf(None), spenergy_threshold=100.0)
+        assert loop._passes_spenergy_gate(self._rs()) is True
+
+    def test_low_peak_blocks(self):
+        # secador/silencio = 0 < 100 → descarta
+        loop = _make_multi_room_loop(xvf_controller=_FakeXvf(0.0), spenergy_threshold=100.0)
+        assert loop._passes_spenergy_gate(self._rs()) is False
+
+    def test_voice_peak_passes(self):
+        # voz medida ~335k ≥ 100 → procesa
+        loop = _make_multi_room_loop(xvf_controller=_FakeXvf(335000.0), spenergy_threshold=100.0)
+        assert loop._passes_spenergy_gate(self._rs()) is True
+
+
+class TestSpenergyGateEarlyDispatch:
+    """El pre-gate SPENERGY debe cubrir TAMBIÉN el path early_dispatch (QW-1
+    2026-06-04): el bloque early en run() despachaba sin consultar el gate, así
+    que una alucinación con forma de comando (grammar full sobre ruido) se
+    ejecutaba saltándose el VAD por hardware. Con early_dispatch:true ese es el
+    path más usado en prod."""
+
+    def _make_ready_partial_command(self):
+        """PartialCommand-like ya listo para despachar (intent+entity)."""
+        pc = MagicMock()
+        pc.intent = "turn_on"
+        pc.entity = "luz"
+        pc.room = "escritorio"
+        pc.ready_to_dispatch = MagicMock(return_value=True)
+        return pc
+
+    async def _run_one_early_dispatch(self, xvf_peak: float) -> tuple[list, RoomStream]:
+        """Corre run() con un room en estado early-ready y SPENERGY=xvf_peak.
+
+        Devuelve (eventos despachados, room stream) tras ~3 iteraciones del
+        polling loop.
+        """
+        rs = _make_room_stream("escritorio")
+        rs.listening = True
+        rs.command_start_time = time.time()
+        rs.audio_buffer = [0.05] * CHUNK_SIZE
+        rs.early_command = self._make_ready_partial_command()
+
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": rs},
+            xvf_controller=_FakeXvf(xvf_peak),
+            spenergy_threshold=100.0,
+        )
+
+        received = []
+
+        async def on_cmd(event):
+            received.append(event)
+            return {}
+
+        loop.on_command(on_cmd)
+
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd):
+            run_task = asyncio.create_task(loop.run())
+            await asyncio.sleep(0.15)
+            await loop.stop()
+            await asyncio.wait_for(run_task, timeout=2.0)
+        await asyncio.sleep(0)  # drenar el create_task del dispatch si lo hubo
+        return received, rs
+
+    @pytest.mark.asyncio
+    async def test_early_dispatch_blocked_when_spenergy_low(self):
+        """SPENERGY bajo umbral (secador/silencio) → early_dispatch NO despacha."""
+        received, rs = await self._run_one_early_dispatch(xvf_peak=0.0)
+        assert received == []
+        assert rs.listening is False  # captura reseteada igual
+        assert rs.early_command is None
+
+    @pytest.mark.asyncio
+    async def test_early_dispatch_passes_when_spenergy_high(self):
+        """SPENERGY de voz real (≥ umbral) → early_dispatch despacha normal."""
+        received, rs = await self._run_one_early_dispatch(xvf_peak=335000.0)
+        assert len(received) == 1
+        assert received[0].early_dispatch is True
+        assert rs.listening is False
+
+
 class TestCallbacks:
     """Test callback registration."""
 
@@ -389,6 +643,21 @@ class TestStop:
 
         assert loop._running is False
 
+    @pytest.mark.asyncio
+    async def test_stop_stops_xvf_controller(self):
+        """stop() detiene el XvfController (vía to_thread — el join sincrónico
+        del poller no debe correr en el event loop; review 2026-06-04)."""
+        xvf = _FakeXvf(0.0)
+        xvf.stopped = False
+        xvf.stop = lambda: setattr(xvf, "stopped", True)
+        loop = _make_multi_room_loop(xvf_controller=xvf)
+        loop._running = True
+
+        await loop.stop()
+
+        assert xvf.stopped is True
+        assert loop._running is False
+
 
 class TestResolveCapturChannels:
     """Test _resolve_capture_channels pure function."""
@@ -401,3 +670,348 @@ class TestResolveCapturChannels:
     ])
     def test_resolve_capture_channels(self, reported, expected):
         assert _resolve_capture_channels(reported) == expected
+
+
+class TestCaptureChannel:
+    """L-3 prep (2026-06-04): canal de captura configurable per-room.
+
+    El XVF3800 UA expone 2 canales (doc Seeed: ch0=Conference con post-proceso
+    para oído humano, ch1=ASR del beam auto-select). Hoy se consume ch0 fijo;
+    capture_channel permite el A/B per-device SIN swap global (el mic UAC1.0
+    del escritorio es mono → un swap ciego daría IndexError)."""
+
+    def _loop_with_channel(self, capture_channel):
+        det = _detector_seq([("nexa", 0.8)] * 10)
+        rs = RoomStream(
+            room_id="living", device_index=0,
+            wake_detector=det, echo_suppressor=_make_echo_suppressor(),
+            capture_channel=capture_channel,
+        )
+        loop = _make_multi_room_loop(rooms={"living": rs})
+        return loop, rs, det
+
+    def test_callback_uses_configured_channel(self):
+        loop, rs, det = self._loop_with_channel(capture_channel=1)
+        cb = loop._make_audio_callback(rs)
+        indata = np.zeros((CHUNK_SIZE, 2), dtype=np.float32)
+        indata[:, 0] = 0.01
+        indata[:, 1] = 0.99
+        cb(indata, CHUNK_SIZE, None, None)
+        chunk = det.detect.call_args[0][0]
+        assert chunk == pytest.approx(np.full(CHUNK_SIZE, 0.99))
+
+    def test_default_channel_zero_preserved(self):
+        loop, rs, det = self._loop_with_channel(capture_channel=0)
+        cb = loop._make_audio_callback(rs)
+        indata = np.zeros((CHUNK_SIZE, 2), dtype=np.float32)
+        indata[:, 0] = 0.01
+        indata[:, 1] = 0.99
+        cb(indata, CHUNK_SIZE, None, None)
+        chunk = det.detect.call_args[0][0]
+        assert chunk == pytest.approx(np.full(CHUNK_SIZE, 0.01))
+
+    def test_missing_channel_falls_back_to_zero(self):
+        # Mic mono (UAC1.0 escritorio): capture_channel=1 NO debe explotar.
+        loop, rs, det = self._loop_with_channel(capture_channel=1)
+        cb = loop._make_audio_callback(rs)
+        indata = np.full((CHUNK_SIZE, 1), 0.07, dtype=np.float32)
+        cb(indata, CHUNK_SIZE, None, None)  # sin IndexError
+        chunk = det.detect.call_args[0][0]
+        assert chunk == pytest.approx(np.full(CHUNK_SIZE, 0.07))
+
+    def test_room_stream_default_capture_channel(self):
+        rs = _make_room_stream("cocina")
+        assert rs.capture_channel == 0
+
+
+class _FakeXvfRW(_FakeXvf):
+    """FakeXvf con write/read de parámetros (L-2 apply-on-start)."""
+
+    def __init__(self, peak=0.0, reads=None):
+        super().__init__(peak)
+        self.writes = []
+        self._reads = reads or {}
+
+    def read_param(self, name):
+        if name == "NO_EXISTE":
+            raise ValueError(f"parámetro desconocido: {name!r}")
+        return self._reads.get(name)
+
+    def write_param(self, name, values):
+        if name == "NO_EXISTE":
+            raise ValueError(f"parámetro desconocido: {name!r}")
+        self.writes.append((name, list(values)))
+        return True
+
+
+class TestXvfTuningOnStart:
+    """L-2 prep (2026-06-04): tuning del DSP aplicado al arrancar el loop.
+
+    EN RAM (reversible al re-enchufar). Default apply_on_start=False → cero
+    writes (sin regresión). Un param inválido en el yaml NO debe tirar el
+    servicio (fail-open de config: log + continuar)."""
+
+    @pytest.mark.asyncio
+    async def test_tuning_applied_on_start(self):
+        xvf = _FakeXvfRW(reads={"PP_AGCMAXGAIN": (64.0,)})
+        loop = _make_multi_room_loop(
+            xvf_controller=xvf,
+            xvf_tuning={
+                "apply_on_start": True,
+                "params": {"PP_AGCMAXGAIN": [16.0], "PP_AGCONOFF": [1]},
+            },
+        )
+        await loop.start()
+        assert ("PP_AGCMAXGAIN", [16.0]) in xvf.writes
+        assert ("PP_AGCONOFF", [1]) in xvf.writes
+
+    @pytest.mark.asyncio
+    async def test_tuning_off_by_default_no_writes(self):
+        xvf = _FakeXvfRW()
+        loop = _make_multi_room_loop(
+            xvf_controller=xvf,
+            xvf_tuning={"params": {"PP_AGCMAXGAIN": [16.0]}},  # sin apply_on_start
+        )
+        await loop.start()
+        assert xvf.writes == []
+
+    @pytest.mark.asyncio
+    async def test_tuning_invalid_param_does_not_break_start(self):
+        xvf = _FakeXvfRW()
+        loop = _make_multi_room_loop(
+            xvf_controller=xvf,
+            xvf_tuning={
+                "apply_on_start": True,
+                "params": {"NO_EXISTE": [1], "PP_AGCMAXGAIN": [16.0]},
+            },
+        )
+        await loop.start()  # no explota
+        assert ("PP_AGCMAXGAIN", [16.0]) in xvf.writes  # el válido se aplicó
+
+    @pytest.mark.asyncio
+    async def test_tuning_without_controller_noop(self):
+        loop = _make_multi_room_loop(
+            xvf_tuning={"apply_on_start": True, "params": {"PP_AGCMAXGAIN": [16.0]}},
+        )
+        await loop.start()  # sin xvf_controller → no explota
+
+
+class TestXvfReviewFixes:
+    """Fixes de la review adversarial de Fase 1 (2026-06-04):
+    - el tuning se aplica ANTES de arrancar el poller (sin ventana de USB
+      concurrente en el arranque) y fuera del event loop;
+    - spenergy_gate_enabled desacoplado del tuning (dos features ortogonales);
+    - tuning configurado sin controller → warning, no silencio."""
+
+    def _xvf_with_events(self):
+        xvf = _FakeXvfRW()
+        xvf.events = []
+        orig_start, orig_write = xvf.start, xvf.write_param
+
+        def tracked_start():
+            xvf.events.append("poller_start")
+            return orig_start()
+
+        def tracked_write(name, values):
+            xvf.events.append(("write", name))
+            return orig_write(name, values)
+
+        xvf.start = tracked_start
+        xvf.write_param = tracked_write
+        return xvf
+
+    @pytest.mark.asyncio
+    async def test_tuning_applied_before_poller_starts(self):
+        # Sin esto, el write corre con el poller ya leyendo SPENERGY cada 40ms
+        # sobre el mismo device handle (transfers USB concurrentes sin lock).
+        xvf = self._xvf_with_events()
+        loop = _make_multi_room_loop(
+            xvf_controller=xvf,
+            xvf_tuning={"apply_on_start": True, "params": {"PP_AGCMAXGAIN": [16.0]}},
+        )
+        await loop.start()
+        assert xvf.events == [("write", "PP_AGCMAXGAIN"), "poller_start"]
+
+    @pytest.mark.asyncio
+    async def test_gate_disabled_passes_even_with_low_peak(self):
+        rs = _make_room_stream("escritorio")
+        rs.command_start_time = 100.0
+        loop = _make_multi_room_loop(
+            xvf_controller=_FakeXvf(0.0),  # pico bajo umbral
+            spenergy_threshold=100.0,
+            spenergy_gate_enabled=False,
+        )
+        assert loop._passes_spenergy_gate(rs) is True
+
+    @pytest.mark.asyncio
+    async def test_gate_disabled_skips_poller_but_applies_tuning(self):
+        # spenergy off + tuning on: el controller sirve SOLO para los writes;
+        # el poller (que alimenta el gate) no debe arrancar.
+        xvf = self._xvf_with_events()
+        loop = _make_multi_room_loop(
+            xvf_controller=xvf,
+            spenergy_gate_enabled=False,
+            xvf_tuning={"apply_on_start": True, "params": {"PP_AGCONOFF": [0]}},
+        )
+        await loop.start()
+        assert ("write", "PP_AGCONOFF") in xvf.events
+        assert "poller_start" not in xvf.events
+
+    @pytest.mark.asyncio
+    async def test_tuning_without_controller_warns(self, caplog):
+        import logging
+        loop = _make_multi_room_loop(
+            xvf_tuning={"apply_on_start": True, "params": {"PP_AGCMAXGAIN": [16.0]}},
+        )
+        with caplog.at_level(logging.WARNING):
+            await loop.start()
+        assert "xvf_tuning" in caplog.text.lower()
+
+
+# ============================================================
+# AmbientGuard integration (spec 2026-06-05)
+# ============================================================
+
+from src.pipeline.ambient_guard import (
+    AmbientGuard,
+    AmbientGuardConfig,
+    GuardState,
+)
+
+
+def _make_enabled_guard(**overrides) -> AmbientGuard:
+    cfg = AmbientGuardConfig(
+        enabled=True,
+        strict_entry_rejects=2,
+        strict_entry_window_s=60.0,
+        strict_wake_score=0.65,
+    )
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
+    return AmbientGuard(config=cfg)
+
+
+class TestAmbientGuardIntegration:
+    def test_no_guard_keeps_current_behavior(self):
+        loop = _make_multi_room_loop()
+        assert loop._should_accept_wakeword("cocina", rms=0.05, timestamp=time.time(),
+                                            wake_score=0.41) is True
+
+    def test_guard_rejects_low_score_in_strict(self):
+        guard = _make_enabled_guard()
+        guard.on_capture_result("cocina", "noise")
+        guard.on_capture_result("cocina", "noise")  # → STRICT
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        assert loop._should_accept_wakeword("cocina", rms=0.05, timestamp=time.time(),
+                                            wake_score=0.50) is False
+
+    def test_guard_accepts_high_score_in_strict(self):
+        guard = _make_enabled_guard()
+        guard.on_capture_result("cocina", "noise")
+        guard.on_capture_result("cocina", "noise")
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        assert loop._should_accept_wakeword("cocina", rms=0.05, timestamp=time.time(),
+                                            wake_score=0.80) is True
+
+    @pytest.mark.asyncio
+    async def test_dispatch_reports_outcome_to_guard(self):
+        guard = _make_enabled_guard()
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        # Callback que simula rechazo del gate (texto ruido)
+        loop.on_command(AsyncMock(return_value={
+            "success": False, "text": "gracias por ver", "intent": "gate_rejected",
+        }))
+        event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
+        await loop._dispatch_command(event)
+        await loop._dispatch_command(event)
+        # 2 rechazos con strict_entry_rejects=2 → STRICT
+        assert guard.state_for("cocina") is GuardState.STRICT
+
+    @pytest.mark.asyncio
+    async def test_dispatch_accepted_does_not_escalate(self):
+        guard = _make_enabled_guard()
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        loop.on_command(AsyncMock(return_value={
+            "success": True, "text": "prende la luz", "intent": "domotics",
+        }))
+        event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
+        for _ in range(5):
+            await loop._dispatch_command(event)
+        assert guard.state_for("cocina") is GuardState.NORMAL
+
+    def test_command_event_carries_ambient_strict_default_false(self):
+        event = CommandEvent(audio=np.zeros(10, dtype=np.float32), room_id="cocina")
+        assert event.ambient_strict is False
+
+
+class TestGuardRejectionClearsRefractory:
+    """Bug encontrado en validación en vivo 2026-06-05 (escenario 2): un frame
+    de TV a 0.528 disparó el detector, el guard lo rechazó (STRICT), pero el
+    refractario de 2s del detector quedó abierto → el "Nexa" real del usuario
+    a 0.907 80ms después fue suprimido por detect() y nunca llegó al guard.
+    El rechazo del guard NO debe consumir la ventana refractaria."""
+
+    def test_guard_rejection_resets_detector_refractory(self):
+        guard = _make_enabled_guard()
+        guard.on_capture_result("cocina", "noise")
+        guard.on_capture_result("cocina", "noise")  # → STRICT
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        rs = loop.room_streams["cocina"]
+        accepted = loop._should_accept_wakeword(
+            "cocina", rms=0.05, timestamp=time.time(), wake_score=0.50
+        )
+        assert accepted is False
+        rs.wake_detector.reset_refractory.assert_called_once()
+
+    def test_accepted_wake_does_not_reset_refractory(self):
+        guard = _make_enabled_guard()
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        rs = loop.room_streams["cocina"]
+        accepted = loop._should_accept_wakeword(
+            "cocina", rms=0.05, timestamp=time.time(), wake_score=0.90
+        )
+        assert accepted is True
+        rs.wake_detector.reset_refractory.assert_not_called()
+
+    def test_dedup_rejection_does_not_reset_refractory(self):
+        # Solo el rechazo del GUARD libera el refractario. El rechazo por
+        # dedup (eco cross-room) debe dejarlo intacto — si no, el eco
+        # re-dispararía cada frame durante la ventana de dedup.
+        loop = _make_multi_room_loop()
+        now = time.time()
+        assert loop._should_accept_wakeword("cocina", rms=0.5, timestamp=now) is True
+        accepted = loop._should_accept_wakeword("living", rms=0.01, timestamp=now)
+        assert accepted is False  # eco más débil dentro de la ventana
+        loop.room_streams["living"].wake_detector.reset_refractory.assert_not_called()
+
+
+class TestPostSuccessFollowUp:
+    """Gracia post-éxito (2026-06-06): en STRICT el follow_up no se abre al
+    wake; tras un resultado ACEPTADO se abre acá (el guard ya registró
+    last_accept_at en on_capture_result → follow_up_allowed=True)."""
+
+    @pytest.mark.asyncio
+    async def test_accepted_dispatch_opens_follow_up(self):
+        guard = _make_enabled_guard()
+        guard.on_capture_result("cocina", "noise")
+        guard.on_capture_result("cocina", "noise")  # → STRICT
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        loop.on_command(AsyncMock(return_value={
+            "success": True, "text": "apaga la luz", "intent": "domotics",
+        }))
+        event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
+        await loop._dispatch_command(event)
+        loop.follow_up.start_conversation.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rejected_dispatch_does_not_open_follow_up(self):
+        guard = _make_enabled_guard()
+        guard.on_capture_result("cocina", "noise")
+        guard.on_capture_result("cocina", "noise")
+        loop = _make_multi_room_loop(ambient_guard=guard)
+        loop.on_command(AsyncMock(return_value={
+            "success": False, "text": "gracias por ver", "intent": "gate_rejected",
+        }))
+        event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
+        await loop._dispatch_command(event)
+        loop.follow_up.start_conversation.assert_not_called()

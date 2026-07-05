@@ -1,14 +1,14 @@
 # KZA — Asistente de Voz Local para Domótica
 
-Sistema de control por voz 100% local para Home Assistant. Latencia <300ms para domótica, LLM 72B en CPU para razonamiento complejo. 2x RTX 3070 (cuda:0 audio+TTS+BGE-M3, cuda:1 vLLM compartido infra). Python 3.13 (vLLM requiere <3.14), async/await, ~38K líneas, 617+ tests.
+Sistema de control por voz local para Home Assistant. Latencia <300ms para domótica (fast path 100% local); razonamiento complejo delegado al gateway LLM `:8200` (MiniMax cloud, decisión 2026-05-30 con `cloud.consent`). **2x RTX 3070 hoy** (cuda:0 audio+TTS+BGE-M3, cuda:1 llama-server 7B fast-path NLU `:8101`) — se irán conectando más GPUs; cualquier reasignación se discute primero. Python 3.13, async/await, ~38K líneas, 617+ tests.
 
 ## Source of truth cross-project
 
-Este proyecto cubre **solo** el pipeline de voz. Para temas de plataforma (server físico, red, observabilidad, mail, HA), la fuente de verdad es **Notion** (workspace KZA, root page_id `345ab24f-c493-80b2-b6f4-ef917e865f26`), consultable vía MCP `mcp__notion__*`.
+Este proyecto cubre **solo** el pipeline de voz. Para las convenciones del servidor compartido (usuarios/UID, sub-rangos de puertos, Podman rootless + Quadlets, GPU por CDI, onboarding), consultar **primero** el espejo local `docs/SERVER_CONVENTIONS.md`. **Notion** (workspace KZA, root page_id `345ab24f-c493-80b2-b6f4-ef917e865f26`, vía MCP `mcp__notion__*`) queda como referencia secundaria y fuente canónica si difieren.
 
 - **No** leer la memoria de `~/Documents/homelab-infra/` ni `~/Documents/homelab-services/`.
-- **Sí** ir a Notion: pág 8 (contrato compartido), pág 11 (red), pág 10 (HA), pág 12 (mail), pág 14 (obs).
-- Cuando el código de KZA depende de algo compartido (vLLM compartido :8100, sub-rangos puertos), seguir el contrato de Notion pág 8.
+- Para temas de plataforma sin espejo local, ir a Notion: pág 8 (contrato compartido), pág 11 (red), pág 10 (HA), pág 12 (mail), pág 14 (obs).
+- Cuando el código de KZA depende de algo compartido (gateway LLM :8200, sub-rangos puertos 9500-9599), seguir `docs/SERVER_CONVENTIONS.md` y validar contra Notion pág 8 ante dudas.
 
 ## Reglas para Claude — LEER SIEMPRE
 
@@ -23,7 +23,7 @@ Este proyecto cubre **solo** el pipeline de voz. Para temas de plataforma (serve
 - Logging con `logger = logging.getLogger(__name__)` y prefijos descriptivos
 - Mensajes de voz y UI en español, código/logs en inglés
 - Tests con pytest + fixtures en `conftest.py`, mocks en `tests/mocks/`
-- Respetar asignación de GPUs: cuda:0=STT, cuda:1=Embeddings/Speaker, cuda:2=Router, cuda:3=TTS
+- Respetar asignación de GPUs (2 hoy): cuda:0 = STT + SpeakerID + Emotion + TTS + BGE-M3 (todo el audio); cuda:1 = llama-server 7B `:8101` (fast-path NLU). Al conectar GPUs nuevas, la reasignación se discute primero
 
 ### NUNCA hacer
 - Herencia profunda (usar composición siempre)
@@ -68,17 +68,17 @@ class MiServicio:
 ## Arquitectura
 
 ```
-Mic → WakeWord(CPU) → STT(GPU0) → Router(GPU2) → TTS(GPU3) → Speaker
-                         ↕              ↕
-                   SpeakerID(GPU1)   LLM 72B(CPU)
-                   Emotion(GPU1)     ChromaDB
-                                     HomeAssistant
+Mic → WakeWord(CPU) → STT(GPU0) → Router 7B(GPU1 :8101) → TTS(GPU0) → Speaker
+                         ↕                  ↕
+                   SpeakerID(GPU0)   Reasoner cloud (gateway :8200)
+                   Emotion(GPU0)     ChromaDB
+                   BGE-M3(GPU0)      HomeAssistant
 ```
 
 **Paths de ejecución:**
 - **Fast path** (<300ms): Domótica → VectorSearch → HA action → TTS
 - **Music path** (~500ms): Spotify → MoodMapper → ZoneController → TTS
-- **Slow path** (5-30s): LLM 72B reasoning → Memory → TTS
+- **Slow path** (segundos): Reasoner cloud (gateway `:8200` → MiniMax) → Memory → TTS
 
 **Orquestación multi-usuario:** `MultiUserOrchestrator` → `PriorityRequestQueue` → `ContextManager` (contexto por usuario) → `CancellationManager`
 
@@ -92,7 +92,7 @@ Mic → WakeWord(CPU) → STT(GPU0) → Router(GPU2) → TTS(GPU3) → Speaker
 | `src/pipeline/response_handler.py` | Texto → audio con streaming | Cambios en respuesta |
 | `src/orchestrator/request_dispatcher.py` | Routing fast/slow path | Agregar nuevos paths |
 | `src/orchestrator/context_manager.py` | Contexto conversacional por usuario | Cambios en memoria |
-| `src/llm/reasoner.py` | LLM 72B + FastRouter 7B | Cambios en inferencia |
+| `src/llm/reasoner.py` | HttpReasoner (gateway :8200) + FastRouter 7B | Cambios en inferencia |
 | `src/home_assistant/ha_client.py` | Cliente HA REST + WebSocket | Nuevas integraciones HA |
 | `src/spotify/music_dispatcher.py` | Routing de comandos musicales | Nuevos comandos Spotify |
 | `src/spotify/speaker_groups.py` | Gestión de bocinas y zonas | Cambios en multi-room |
@@ -100,6 +100,7 @@ Mic → WakeWord(CPU) → STT(GPU0) → Router(GPU2) → TTS(GPU3) → Speaker
 | `src/users/emotion_detector.py` | Detección de emociones wav2vec2 | Cambios en emotion |
 | `src/alerts/alert_manager.py` | Sistema de alertas proactivas | Nuevos tipos de alerta |
 | `src/vectordb/chroma_sync.py` | Sync HA entities → ChromaDB | Cambios en búsqueda |
+| `src/code_index/` | Servicio índice semántico del codebase (:9510) | Cambios en búsqueda de código para agentes |
 | `src/audio/zone_manager.py` | Multi-zona + MA1260 | Cambios en zonas |
 | `src/rooms/room_context.py` | Contexto por habitación (mic+BT) | Nuevas habitaciones |
 | `config/settings.yaml` | TODA la configuración centralizada | Cualquier config nueva |
@@ -116,7 +117,7 @@ Mic → WakeWord(CPU) → STT(GPU0) → Router(GPU2) → TTS(GPU3) → Speaker
 | pipeline | 2,492 | Voice pipeline, command processor |
 | users | 1,511 | Speaker ID, emociones, permisos |
 | audio | 1,271 | Multi-zona, MA1260, captura |
-| llm | 948 | Reasoner 72B + Router 7B |
+| llm | 948 | HttpReasoner (cloud gateway) + Router 7B |
 | memory | 721 | Short/long term, preferencias |
 | presence | ~600 | BLE scanning, tracking por zona |
 | rooms | ~400 | Contexto por habitación |
@@ -137,15 +138,25 @@ python -m src.rooms.room_context --detect  # Detectar dispositivos USB
 # Benchmark
 python tools/benchmark_latency.py --iterations 20
 
+# Búsqueda semántica del codebase (requiere kza-code-index en el server)
+python tools/code_search.py "cómo se maneja el timeout de HA al boot"
+
 # Modelos
 ./scripts/download_models.sh               # Descargar todos los modelos
 ```
 
-## Hardware Resumen (detalle en docs/HARDWARE.md)
+## Worktrees
 
-- **CPU**: Threadripper PRO 7965WX — 24c/48t, LLM 72B Q6_K usa ~71GB RAM + 24 threads
+- **Regla: nunca trabajar en este repo y en un worktree a la vez** (comparten `.git`: locks de index y refs pueden colisionar; ya pasó con un `index.lock` colgado).
+- **Cómo se integra**: el trabajo de un worktree se mergea a `main` desde la laptop (PR o merge local + push); el worktree NO pushea por su cuenta nada que no esté coordinado con la rama principal.
+- **Cuándo se elimina**: cuando `git log <rama-del-worktree> ^main` queda vacío (rama contenida en main), hacer `git worktree remove <path>` y borrar la rama. (Así se eliminó `../kza-wt-escritorio` el 2026-06-09.)
+- Worktree activo: `.claude/worktrees/kza-dashboard` (rama `worktree-kza-dashboard`, dashboard/métricas LLM — tiene commits propios sin integrar).
+
+## Hardware Resumen (detalle en docs/architecture/HARDWARE.md)
+
+- **CPU**: Threadripper PRO 7965WX — 24c/48t (el LLM 72B local en CPU se retiró 2026-05-30; el reasoner es cloud vía gateway :8200)
 - **RAM**: 128GB DDR5-5600 RDIMM (8x16GB, 8 canales, ~358 GB/s)
-- **GPUs**: 4x RTX 3070 8GB — cada una dedicada (STT/Embeddings/Router/TTS)
+- **GPUs**: **2x RTX 3070 8GB hoy** — cuda:0 = audio completo (STT/SpeakerID/Emotion/TTS/BGE-M3, ~7.5GB), cuda:1 = llama-server 7B :8101. Se irán conectando más GPUs a futuro; ver contrato en `docs/SERVER_CONVENTIONS.md`
 - **Audio**: ReSpeaker XVF3800 por habitación + extensores USB Cat5e
 - **Amplificador**: Dayton Audio MA1260 Multi-Zone (12 canales / 6 zonas estéreo, control RS-232)
 - **BLE**: UGREEN BT 5.3 por habitación para presencia

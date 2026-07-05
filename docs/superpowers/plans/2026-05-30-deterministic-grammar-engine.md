@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, pytest, dataclasses, regex (`re`), unicodedata. Sin dependencias nuevas.
 
-**Entorno de ejecución:** El código vive en el server (`kza@192.168.1.2:/home/kza/app`). Ejecutar tests con `.venv/bin/python -m pytest`. Commits en `main` del server; push desde la laptop (`git fetch kza:/home/kza/app main` + push del SHA — el server no tiene auth a GitHub). Ver `docs/SESSION_2026-05-30_XVF3800_WAKE_NLU_FIXES.md`.
+**Entorno de ejecución:** El código vive en el server (`kza@192.168.1.2:/home/kza/app`). Ejecutar tests con `.venv/bin/python -m pytest`. Commits en `main` del server; push desde la laptop (`git fetch kza:/home/kza/app main` + push del SHA — el server no tiene auth a GitHub). Ver `docs/research/SESSION_2026-05-30_XVF3800_WAKE_NLU_FIXES.md`.
 
 **Spec:** `docs/superpowers/specs/2026-05-30-deterministic-grammar-engine-design.md`.
 

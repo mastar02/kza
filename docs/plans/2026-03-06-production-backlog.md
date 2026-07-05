@@ -6,8 +6,8 @@
 **Recommended product shape:** Modular monolith as the source of truth, with optional local worker services only after interfaces and tests are stable.
 
 **Related docs:**
-- `docs/ARCHITECTURE_REVIEW.md`
-- `docs/ESTADO_PROYECTO_KZA.md`
+- `docs/architecture/ARCHITECTURE_REVIEW.md`
+- `docs/architecture/ESTADO_PROYECTO_KZA.md`
 - `docs/plans/2026-02-21-q1-architecture-refactor.md`
 - `docs/plans/2026-02-21-q2-robustness-quality.md`
 
@@ -194,10 +194,10 @@ or remain a dict with a fixed shape. Dataclass recommended for compile-time safe
 
 **Files likely involved:**
 - `README.md`
-- `docs/ESTADO_PROYECTO_KZA.md`
-- `docs/ARCHITECTURE_REVIEW.md`
-- `docs/ORCHESTRATOR.md`
-- `docs/HARDWARE.md`
+- `docs/architecture/ESTADO_PROYECTO_KZA.md`
+- `docs/architecture/ARCHITECTURE_REVIEW.md`
+- `docs/architecture/ORCHESTRATOR.md`
+- `docs/architecture/HARDWARE.md`
 
 **Tasks:**
 - Replace stale line counts, test counts, and architecture descriptions.

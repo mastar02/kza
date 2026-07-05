@@ -288,6 +288,16 @@ class WakeWordDetector:
 
         self.threshold = threshold
 
+    def reset_refractory(self):
+        """Liberar el período refractario sin tocar el estado del modelo.
+
+        Usado por el AmbientGuard (2026-06-05): cuando el guard rechaza un
+        wake (score < strict_wake_score), la detección NO debe consumir la
+        ventana refractaria de 2s — un frame de TV a 0.5 abría el refractario
+        y suprimía el "Nexa" real del usuario a 0.9 que llegaba 80ms después.
+        """
+        self._last_detection_time.clear()
+
     def reset(self):
         """Resetear estado del detector"""
         self._last_detection_time.clear()

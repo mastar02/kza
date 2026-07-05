@@ -20,6 +20,8 @@ from src.nlu.command_gate import CommandAcceptanceGate
 from src.nlu.command_grammar import PartialCommand, parse_partial_command
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
+from src.pipeline.earcon_gate import should_play_earcon
+from src.analytics.asr_quality import log_asr_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,7 @@ def _texts_diverge(a: str, b: str, min_ratio: float = 0.95) -> bool:
 def _grammar_fastpath_classification(
     text: str,
     confidence_threshold: float = 0.75,
+    wake_confirmed: bool = False,
 ):
     """CommandClassification si la gramática determinística produce un comando
     dispatchable de alta confianza (domótica o media); None si no.
@@ -101,12 +104,31 @@ def _grammar_fastpath_classification(
     from src.nlu.llm_router import CommandClassification
 
     pc = parse_command(text)
-    if pc.quality != "full" or pc.confidence < confidence_threshold:
+    confidence = pc.confidence
+    # Con wake confirmado ACÚSTICAMENTE (openwakeword/porcupine), el STT a
+    # veces no transcribe "Nexa" y el parse pierde el bonus de wake (+0.15):
+    # 'Prende la luz.' quedaba en 0.7 < 0.75 y caía al LLMRouter, que lo
+    # rechazaba como noise (caso real 2026-06-04 18:24). El bonus corresponde
+    # igual — la confirmación llegó por otro canal, no por el texto.
+    # SOLO para textos cortos (2026-06-05): el wake espurio con TV de fondo
+    # invalida la premisa "wake ⇒ usuario" — charla larga que embebe un
+    # comando ('…le dije que apague la luz cuando se vaya') no debe ganar
+    # el bonus (amplificó la acción fantasma del 06-04 19:49). El rescate
+    # es para comandos cortos sin "Nexa" transcripta.
+    _MAX_BONUS_WORDS = 6
+    if (
+        wake_confirmed
+        and pc.quality == "full"
+        and not pc.has_wake
+        and len(text.split()) <= _MAX_BONUS_WORDS
+    ):
+        confidence += 0.15
+    if pc.quality != "full" or confidence < confidence_threshold:
         return None
 
     return CommandClassification(
         is_command=True,
-        confidence=pc.confidence,
+        confidence=confidence,
         intent=pc.intent,
         entity_hint=pc.domain,
         slots=dict(pc.slots),
@@ -194,8 +216,12 @@ class RequestRouter:
         metrics_emitter=None,
         wake_words: tuple[str, ...] | list[str] | None = None,
         llm_command_router=None,
+        wake_acoustically_confirmed: bool = False,
         hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
         command_gate: CommandAcceptanceGate | None = None,
+        llm_min_command_confidence: float = 0.6,
+        earcon_cfg: dict | None = None,
+        asr_event_logger=None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -288,6 +314,20 @@ class RequestRouter:
         # texto post-wake antes del orchestrator y rechaza alucinaciones
         # de TV / replays / frases noise. Ver src/nlu/llm_router.py.
         self.llm_command_router = llm_command_router
+        # True cuando el wake engine confirma acústicamente (openwakeword/
+        # porcupine): el grammar fastpath otorga el bonus de wake aunque el
+        # STT no haya transcripto "Nexa" (2026-06-04).
+        self.wake_acoustically_confirmed = wake_acoustically_confirmed
+        # Confianza mínima auto-reportada por el LLMCommandRouter para aceptar
+        # un comando. El 7B marca is_command=True sobre charla ambiente con
+        # confianza baja → acción fantasma. Solo aplica al path LLM, NO al
+        # grammar fast-path (gramática = alta confianza, ya filtrada).
+        # (2026-06-02 command_detection_rootcause.) Calibrable vía config.
+        self.llm_min_command_confidence = llm_min_command_confidence
+
+        # Earcon "te oí, no te entendí" (2026-06-15)
+        self._earcon_cfg = earcon_cfg or {"enabled": False}
+        self._asr_event_logger = asr_event_logger
 
         # Plan #3 OpenClaw — plugin hooks registry (or None)
         self._hooks = hooks
@@ -324,10 +364,12 @@ class RequestRouter:
         pretranscribed_text: str | None = None
         used_wake_text = False
         early_dispatch = False
+        ambient_strict = False
         if isinstance(audio_or_event, CommandEvent):
             audio = audio_or_event.audio
             room_id = audio_or_event.room_id
             early_dispatch = audio_or_event.early_dispatch
+            ambient_strict = getattr(audio_or_event, "ambient_strict", False)
             wake_text = audio_or_event.wake_text
             partial_text = (
                 audio_or_event.partial_command.raw_text
@@ -365,17 +407,29 @@ class RequestRouter:
             "audio_duration_ms": audio_duration_ms,
         }
 
+        wake_score = getattr(audio_or_event, "wake_score", 1.0)
+        wake_rms = (
+            float(np.sqrt(np.mean(np.square(audio))))
+            if audio is not None and len(audio) else 0.0
+        )
+
         if self.orchestrator_enabled and self._orchestrator:
             return await self._process_command_orchestrated(
                 audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
+                ambient_strict=ambient_strict,
+                wake_score=wake_score, wake_rms=wake_rms,
             )
         else:
             return await self._process_command_legacy(
                 audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
+                wake_score=wake_score, wake_rms=wake_rms,
             )
 
     async def _process_command_orchestrated(self, audio: np.ndarray, room_id: str = None,
-                                              pretranscribed_text: str | None = None) -> dict:
+                                              pretranscribed_text: str | None = None,
+                                              ambient_strict: bool = False,
+                                              wake_score: float = 1.0,
+                                              wake_rms: float = 0.0) -> dict:
         """Process command with multi-user orchestrator."""
         result = {
             "text": "",
@@ -401,7 +455,13 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
+            result["intent"] = "gate_rejected"
+            result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            self._earcon_and_log(
+                "empty", text or "", {}, room_id, wake_score, wake_rms,
+                outcome="gate_rejected",
+            )
             return result
 
         # 1a. Command acceptance gate: corta antes del orchestrator si el texto
@@ -416,14 +476,29 @@ class RequestRouter:
             result["success"] = False
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            self._earcon_and_log(
+                gate_decision.reason, text, gate_decision.signals or {},
+                room_id, wake_score, wake_rms, outcome="gate_rejected",
+            )
             return result
+
+        log_asr_outcome(
+            self._asr_event_logger, room_id, "accepted", "ok", text,
+            gate_decision.signals or {}, wake_score, wake_rms,
+        )
 
         # 1a-grammar. Grammar fast-path: la gramática determinística manda en
         # domótica.  Si extrae intent+entity con alta confianza, construimos
         # una fast_classification y nos saltamos el LLMCommandRouter (poco
         # fiable en el modelo actual: rechaza comandos válidos como 'noise').
         fast_classification = None
-        grammar_cls = _grammar_fastpath_classification(text, self.confidence_threshold)
+        grammar_cls = _grammar_fastpath_classification(
+            text, self.confidence_threshold,
+            # En STRICT (AmbientGuard) el wake acústico no es evidencia de
+            # usuario — la TV dispara el wake espurio. Sin bonus, el texto
+            # tiene que valerse solo (o traer "nexa" transcripta).
+            wake_confirmed=self.wake_acoustically_confirmed and not ambient_strict,
+        )
         if grammar_cls is not None:
             logger.info(
                 f"[GRAMMAR_FASTPATH] intent={grammar_cls.intent} "
@@ -476,6 +551,10 @@ class RequestRouter:
                         f"[hooks] failed to emit intent after-event: {e}",
                         exc_info=True,
                     )
+            # ¿El comando quedó respaldado por la gramática determinística?
+            # Si es así, NO le aplicamos el confidence gate del LLM (la
+            # gramática ya es señal de alta confianza).
+            grammar_backed = False
             # Fallback: el LLM no pudo decidir (timeout/error → 'unavailable').
             # NO descartar si la gramática tenía señal parcial.
             if classification.rejection_reason == "unavailable":
@@ -487,6 +566,7 @@ class RequestRouter:
                     classification.intent = pc.intent
                     classification.entity_hint = pc.entity
                     classification.slots = dict(pc.slots)
+                    grammar_backed = True
                 elif pc.intent is not None or pc.entity is not None:
                     # señal parcial → pedir confirmación por voz
                     question = self._build_confirmation_question(pc)
@@ -500,6 +580,53 @@ class RequestRouter:
                 result["intent"] = f"llm_rejected:{classification.rejection_reason or 'unknown'}"
                 result["success"] = False
                 result["response"] = ""
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
+            # Confidence gate (2026-06-02): el 7B marca is_command=True sobre
+            # charla ambiente coherente (TV/conversación) con confianza baja →
+            # acción fantasma. Si la confianza es baja Y la gramática NO respaldó
+            # el comando, rechazar en vez de dispatchar. (command_detection_rootcause)
+            if not grammar_backed and classification.confidence < self.llm_min_command_confidence:
+                logger.info(
+                    f"[LLMRouter] rechazado por confianza baja "
+                    f"({classification.confidence:.2f} < {self.llm_min_command_confidence}): {text!r}"
+                )
+                _reason_lc = f"low_confidence:{classification.confidence:.2f}"
+                result["intent"] = _reason_lc
+                result["success"] = False
+                result["response"] = ""
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                self._earcon_and_log(
+                    _reason_lc, text, {}, room_id, wake_score, wake_rms,
+                    outcome="low_confidence",
+                )
+                return result
+            # Verbo-evidencia (2026-06-06): el 7B ADIVINA turn_on/turn_off con
+            # confianza alta sobre texto con el verbo garbleado por el STT
+            # far-field ('apagá'→'pero a la luz'→turn_on → acción INVERTIDA en
+            # vivo). La auto-confianza no protege de esto (0.95 a 'haba la
+            # luz'). Si el intent binario no tiene un verbo de esa acción en
+            # el texto → rechazo honesto (el usuario repite) en vez de acción
+            # equivocada. grammar_backed implica verbo presente por construcción.
+            from src.nlu.command_grammar import llm_intent_evidenced
+            if not grammar_backed and not llm_intent_evidenced(
+                classification.intent, text
+            ):
+                logger.info(
+                    f"[LLMRouter] intent {classification.intent} sin verbo que "
+                    f"lo evidencie en el texto — rechazado: {text!r}"
+                )
+                _reason_ui = f"unverified_intent:{classification.intent}"
+                result["intent"] = _reason_ui
+                result["success"] = False
+                # Solo sonido (2026-06-15): reemplaza el reprompt de voz por el
+                # earcon. La TV no llega a este punto (pasó el CommandGate + 7B);
+                # casi seguro es un humano con STT garbleado → earcon apropiado.
+                result["response"] = ""
+                self._earcon_and_log(
+                    _reason_ui, text, {}, room_id, wake_score, wake_rms,
+                    outcome="low_confidence",
+                )
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
             # Resultado válido — guardar para que el caller registre en history
@@ -639,7 +766,9 @@ class RequestRouter:
         return result
 
     async def _process_command_legacy(self, audio: np.ndarray, room_id: str = None,
-                                        pretranscribed_text: str | None = None) -> dict:
+                                        pretranscribed_text: str | None = None,
+                                        wake_score: float = 1.0,
+                                        wake_rms: float = 0.0) -> dict:
         """Legacy processing (single-user) for backwards compatibility."""
         result = {
             "text": "",
@@ -663,6 +792,12 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
+            result["intent"] = "gate_rejected"
+            result["response"] = ""
+            self._earcon_and_log(
+                "empty", text or "", {}, room_id, wake_score, wake_rms,
+                outcome="gate_rejected",
+            )
             return result
 
         # 1a. Command acceptance gate — mismo corto-circuito que el path orchestrated
@@ -675,7 +810,16 @@ class RequestRouter:
             result["success"] = False
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            self._earcon_and_log(
+                gate_decision.reason, text, gate_decision.signals or {},
+                room_id, wake_score, wake_rms, outcome="gate_rejected",
+            )
             return result
+
+        log_asr_outcome(
+            self._asr_event_logger, room_id, "accepted", "ok", text,
+            gate_decision.signals or {}, wake_score, wake_rms,
+        )
 
         user = cmd.user
         emotion = cmd.emotion
@@ -1077,6 +1221,28 @@ class RequestRouter:
 
         result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
         return result
+
+    def _earcon_and_log(
+        self, reason: str, text: str, signals: dict,
+        room_id, wake_score: float, wake_rms: float,
+        outcome: str = "gate_rejected",
+    ) -> None:
+        """Suena el earcon si el reject es 'humano plausible' + loguea el outcome."""
+        if should_play_earcon(reason, wake_score, wake_rms, self._earcon_cfg):
+            _rc = None
+            if self.room_context_manager and room_id:
+                _rc = self.room_context_manager.resolve_room(
+                    mic_zone_id=room_id, user_id=None,
+                )
+            self.response_handler.play_earcon(room_context=_rc)
+            log_asr_outcome(
+                self._asr_event_logger, room_id, "earcon_fired",
+                reason, text, signals or {}, wake_score, wake_rms,
+            )
+        log_asr_outcome(
+            self._asr_event_logger, room_id, outcome,
+            reason, text, signals or {}, wake_score, wake_rms,
+        )
 
     def _build_confirmation_question(self, pc: PartialCommand) -> str:
         """

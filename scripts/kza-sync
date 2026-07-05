@@ -12,7 +12,7 @@
 # Uso:
 #   scripts/kza-sync
 #
-# Ver docs/ECOSISTEMA_LOCAL_SERVER.md
+# Ver docs/architecture/ECOSISTEMA_LOCAL_SERVER.md
 set -euo pipefail
 
 SERVER_SSH="${KZA_SERVER_SSH:-kza}"

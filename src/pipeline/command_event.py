@@ -34,3 +34,12 @@ class CommandEvent:
     # para el nuevo criterio") aunque el primer Whisper del wake haya salido
     # bien ("Nexa apagá la luz del escritorio").
     wake_text: str | None = None
+    # AmbientGuard (spec 2026-06-05): True cuando la room estaba en STRICT al
+    # despachar. El RequestRouter lo usa para NO otorgar el bonus de
+    # wake_acoustically_confirmed al grammar fast-path — con TV de fondo el
+    # wake espurio invalida la premisa "wake ⇒ usuario".
+    ambient_strict: bool = False
+    # Score del wake (openwakeword) que abrió esta captura. Lo usa el earcon
+    # gate del router para decidir "humano plausible" (wake fuerte). Default
+    # 1.0 para llamadas que no vienen del wake loop (tests, raw ndarray).
+    wake_score: float = 1.0

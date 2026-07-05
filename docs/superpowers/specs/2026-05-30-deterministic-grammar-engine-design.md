@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-05-30
 **Estado:** aprobado (brainstorming) → pendiente plan de implementación
-**Contexto previo:** análisis de latencia sesión XVF3800 (`docs/SESSION_2026-05-30_XVF3800_WAKE_NLU_FIXES.md`), pendiente #4 (LLMRouter Q4_K_M débil) y #7 (latencia <300ms).
+**Contexto previo:** análisis de latencia sesión XVF3800 (`docs/research/SESSION_2026-05-30_XVF3800_WAKE_NLU_FIXES.md`), pendiente #4 (LLMRouter Q4_K_M débil) y #7 (latencia <300ms).
 
 ## Problema
 

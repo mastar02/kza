@@ -1,0 +1,19 @@
+# scripts/kza-code-index.service
+# Instalar en el server: cp a ~/.config/systemd/user/ + daemon-reload + enable --now
+[Unit]
+Description=KZA code-index — búsqueda semántica del codebase (port 9510)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/kza/app
+EnvironmentFile=/home/kza/secrets/.env
+ExecStart=/home/kza/app/.venv/bin/python -m src.code_index
+Restart=on-failure
+RestartSec=10s
+StartLimitBurst=3
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=default.target

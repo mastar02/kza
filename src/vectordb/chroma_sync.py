@@ -25,7 +25,13 @@ class ChromaSync:
     # base_sim mucho menor. Valor 0.15 ≈ 7.5% del rango cosine [0,2] mapeado a
     # similarity. Ver bug 2026-05-03 (light.cuarto vs light.escritorio,
     # diferencia de distancias 0.34 vs 0.30 → similarities 0.83 vs 0.85).
-    PREFER_AREA_BOOST: float = 0.15
+    # 0.15 → 0.35 (2026-06-04): el garble far-field del STT ('prender a luz',
+    # 'la luz de la vida') matcheaba docs de OTRAS rooms con gap > 0.15 y
+    # prendía living/balcón desde el escritorio. Si hay candidato del área
+    # del mic sobre threshold, debe ganar. El cross-room explícito no se
+    # rompe: cuando el texto menciona la room, prefer_area sale del TEXTO
+    # (prioridad en _resolve_prefer_area), no de la zona del mic.
+    PREFER_AREA_BOOST: float = 0.35
 
     def __init__(
         self,
@@ -337,15 +343,62 @@ Solo JSON, sin explicaciones:"""
         query_embedding = self.embedder.encode(query).tolist()
 
         where = {"service": service_filter} if service_filter else None
-        # Con prefer_area traemos más candidatos para tener pool real para
-        # re-puntuar; sin él, mantenemos N=3 como antes (sin overhead).
-        n_results = 10 if prefer_area else 3
-        results = self.commands.query(
-            query_embeddings=[query_embedding],
-            n_results=n_results,
-            where=where,
-            include=["metadatas", "distances", "documents"],
-        )
+
+        # PASE 1 — área del mic primero (2026-06-04, ronda 3): con queries
+        # genéricas ("prende la luz") el top-10 GLOBAL se llena de docs cortos
+        # de otras rooms y ningún doc del área del mic entra al pool — el
+        # boost no tiene a quién boostear (medido: top-10 sin Escritorio,
+        # 'prende la luz fría'@Pasillo sim=0.945 → prendía el pasillo).
+        # Buscamos primero SOLO dentro del área preferida; si hay match sobre
+        # threshold, gana. Si no, fallback al pase global (con boost) para
+        # cross-room implícito o áreas sin docs.
+        results = None
+        best_idx: int | None = None
+        area_locked = False
+        if prefer_area:
+            area_clauses: list[dict] = [{"area": prefer_area}]
+            if service_filter:
+                area_clauses.append({"service": service_filter})
+            where_area = (
+                {"$and": area_clauses} if len(area_clauses) > 1 else area_clauses[0]
+            )
+            res_area = self.commands.query(
+                query_embeddings=[query_embedding],
+                n_results=3,
+                where=where_area,
+                include=["metadatas", "distances", "documents"],
+            )
+            if res_area["ids"][0]:
+                best_sim_a = -1.0
+                for i, (dist, meta) in enumerate(
+                    zip(res_area["distances"][0], res_area["metadatas"][0])
+                ):
+                    m = meta or {}
+                    if self._is_excluded(m.get("entity_id", "")):
+                        continue
+                    # Cinturón: el where ya filtró en Chroma, pero validamos
+                    # el área igual (defensa contra metadata inconsistente).
+                    if m.get("area") != prefer_area:
+                        continue
+                    sim = 1 - (dist / 2)
+                    if sim >= threshold and sim > best_sim_a:
+                        best_sim_a = sim
+                        best_idx = i
+                if best_idx is not None:
+                    results = res_area
+                    area_locked = True
+
+        if results is None:
+            # PASE 2 — global. Con prefer_area traemos más candidatos para
+            # tener pool real para re-puntuar; sin él, N=3 como antes.
+            best_idx = None
+            n_results = 10 if prefer_area else 3
+            results = self.commands.query(
+                query_embeddings=[query_embedding],
+                n_results=n_results,
+                where=where,
+                include=["metadatas", "distances", "documents"],
+            )
 
         elapsed_ms = (time.perf_counter() - start) * 1000
 
@@ -353,15 +406,35 @@ Solo JSON, sin explicaciones:"""
             logger.debug(f"Vector search ({elapsed_ms:.0f}ms): No results")
             return None
 
-        # Re-ranking por prefer_area. El gate de threshold se aplica sobre la
-        # similarity ORIGINAL (no boosteada) — el bonus solo desempata, no
-        # rescata candidatos que están realmente lejos del query.
-        best_idx = 0
-        if prefer_area:
+        # Filtro de entidades excluidas en QUERY-time (2026-06-04): el índice
+        # puede venir contaminado — el sync del 31-05 indexó 76 docs genéricos
+        # de light.hogar pese al default del runtime, y "prende la luz" desde
+        # el escritorio prendió TODA la casa. La exclusión al indexar no
+        # alcanza si el índice ya está sucio; acá es la defensa definitiva.
+        # (Con area_locked, el pase 1 ya filtró excluidos y validó threshold.)
+        if not area_locked:
+            _metas_all = results["metadatas"][0]
+            valid_idx = [
+                i for i, m in enumerate(_metas_all)
+                if not self._is_excluded((m or {}).get("entity_id", ""))
+            ]
+            if not valid_idx:
+                logger.info(
+                    f"Vector search ({elapsed_ms:.0f}ms): todos los candidatos "
+                    f"están excluidos (índice contaminado?) — sin match"
+                )
+                return None
+
+            # Re-ranking por prefer_area. El gate de threshold se aplica
+            # sobre la similarity ORIGINAL (no boosteada) — el bonus solo
+            # desempata, no rescata candidatos lejos del query.
+            best_idx = valid_idx[0]
+        if not area_locked and prefer_area:
             distances = results["distances"][0]
             metadatas = results["metadatas"][0]
             best_score = -1.0
-            for i, (dist, meta) in enumerate(zip(distances, metadatas)):
+            for i in valid_idx:
+                dist, meta = distances[i], metadatas[i]
                 base_sim = 1 - (dist / 2)
                 # Threshold gate sobre similarity base — protege contra rescue
                 # artificial. Si no pasa, no es candidato para ningún ranking.

@@ -7,7 +7,7 @@ Verifies that:
 - Incompatible or conversational text returns None (falls through to LLM router).
 """
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 # Mock heavy system-level modules before any imports
 sys.modules.setdefault("sounddevice", MagicMock())
@@ -16,9 +16,14 @@ sys.modules.setdefault("pyaudio", MagicMock())
 sys.modules.setdefault("torch", MagicMock())
 sys.modules.setdefault("torch.cuda", MagicMock())
 
+import numpy as np
 import pytest
 
 from src.pipeline.request_router import _grammar_fastpath_classification
+from src.pipeline.command_event import CommandEvent
+from src.nlu.llm_router import CommandClassification
+from src.pipeline.request_router import RequestRouter
+from src.nlu.command_gate import CommandAcceptanceGate
 
 
 @pytest.mark.parametrize("text,intent,is_cmd", [
@@ -39,3 +44,229 @@ def test_grammar_fastpath_classification(text, intent, is_cmd):
     else:
         assert cls.is_command is True
         assert cls.intent == intent
+
+
+# ---------------------------------------------------------------------------
+# Helpers compartidos para TestAmbientStrictDisablesWakeBonus
+# ---------------------------------------------------------------------------
+
+def _make_cmd_stub(text="prende la luz"):
+    """Stub del resultado de command_processor.process_command."""
+    cmd = MagicMock()
+    cmd.text = text
+    cmd.user = None
+    cmd.emotion = None
+    cmd.timings = {}
+    cmd.stt_confidence = None
+    return cmd
+
+
+def _noise_classification():
+    """Clasificación de 'ruido' para que el LLM router indique no-comando."""
+    return CommandClassification(
+        is_command=False,
+        confidence=0.1,
+        intent="noise",
+        entity_hint=None,
+        rejection_reason="ambient_noise",
+    )
+
+
+def _make_router_with_llm(wake_acoustically_confirmed: bool):
+    """Construye un RequestRouter con wake_acoustically_confirmed dado y un
+    llm_command_router mockeado que devuelve ruido (no-comando).
+    Devuelve (router, llm_mock).
+    """
+    # STT stub — devuelve el texto que viene en el CommandEvent (pretranscribed)
+    # pero el router lo llama con pretranscribed_text y cmd.text debe coincidir.
+    cmd_stub = _make_cmd_stub("prende la luz")
+    command_processor = MagicMock()
+    command_processor.process_command = AsyncMock(return_value=cmd_stub)
+
+    orch = MagicMock()
+    orch.process = AsyncMock(return_value=MagicMock(
+        intent="domotics", response="ok", success=True, action=None, path=None,
+        timings={}, was_queued=False, queue_position=None,
+    ))
+
+    llm = MagicMock()
+    llm.classify = AsyncMock(return_value=_noise_classification())
+
+    router = RequestRouter(
+        command_processor=command_processor,
+        orchestrator=orch,
+        orchestrator_enabled=True,
+        response_handler=MagicMock(),
+        audio_manager=MagicMock(),
+        wake_words=("nexa",),
+        # El gate acepta todo (openwakeword ya disparó)
+        command_gate=CommandAcceptanceGate(wake_words=()),
+        llm_command_router=llm,
+        wake_acoustically_confirmed=wake_acoustically_confirmed,
+        confidence_threshold=0.75,
+    )
+    return router, llm
+
+
+class TestAmbientStrictDisablesWakeBonus:
+    """ambient_strict=True debe suprimir el bonus wake_acoustically_confirmed
+    en el grammar fast-path.
+
+    'prende la luz' es un comando de 3 palabras que la gramática parsea con
+    quality='full' y confidence=0.70 (sin bonus).  Con wake_confirmed=True el
+    bonus +0.15 lo lleva a 0.85 ≥ 0.75 → fast-path gana y el LLM NO se llama.
+    Con ambient_strict=True el bonus se suprime → conf=0.70 < 0.75 → fast-path
+    devuelve None → se llama al llm_command_router.classify.
+    """
+
+    @pytest.mark.asyncio
+    async def test_strict_event_does_not_get_wake_bonus(self):
+        """STRICT: sin bonus el fast-path falla → llm_command_router.classify SÍ se llama."""
+        router, llm = _make_router_with_llm(wake_acoustically_confirmed=True)
+
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32),
+            room_id="escritorio",
+            wake_text="prende la luz",
+            ambient_strict=True,
+        )
+        await router.process_command(event)
+
+        assert llm.classify.called, (
+            "En STRICT el bonus debe suprimirse → fast-path no clasifica → "
+            "el LLMCommandRouter DEBE ser llamado"
+        )
+
+    @pytest.mark.asyncio
+    async def test_normal_event_keeps_wake_bonus(self):
+        """Normal (ambient_strict=False): bonus aplica → fast-path gana → LLM NO se llama."""
+        router, llm = _make_router_with_llm(wake_acoustically_confirmed=True)
+
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32),
+            room_id="escritorio",
+            wake_text="prende la luz",
+            ambient_strict=False,
+        )
+        await router.process_command(event)
+
+        assert not llm.classify.called, (
+            "En modo normal el bonus aplica → fast-path gana → "
+            "el LLMCommandRouter NO debe ser llamado"
+        )
+
+
+def _turn_on_classification(confidence: float = 0.9):
+    return CommandClassification(
+        is_command=True,
+        confidence=confidence,
+        intent="turn_on",
+        entity_hint="light",
+        rejection_reason=None,
+    )
+
+
+def _make_router_for(text: str, classification):
+    """Router con texto y clasificación LLM arbitrarios (texto SIN parse full
+    de gramática → siempre cae al path LLM)."""
+    command_processor = MagicMock()
+    command_processor.process_command = AsyncMock(return_value=_make_cmd_stub(text))
+    orch = MagicMock()
+    orch.process = AsyncMock(return_value=MagicMock(
+        intent="domotics", response="ok", success=True, action=None, path=None,
+        timings={}, was_queued=False, queue_position=None,
+    ))
+    llm = MagicMock()
+    llm.classify = AsyncMock(return_value=classification)
+    router = RequestRouter(
+        command_processor=command_processor,
+        orchestrator=orch,
+        orchestrator_enabled=True,
+        response_handler=MagicMock(),
+        audio_manager=MagicMock(),
+        wake_words=("nexa",),
+        command_gate=CommandAcceptanceGate(wake_words=()),
+        llm_command_router=llm,
+        wake_acoustically_confirmed=True,
+        confidence_threshold=0.75,
+    )
+    return router, orch
+
+
+class TestUnverifiedIntentGuard:
+    """El intent binario del LLM debe estar evidenciado por un verbo del texto
+    (caso real 2026-06-06: 'apagá'→STT 'pero a la luz'→LLM turn_on conf alta
+    → prendió cuando pidieron apagar)."""
+
+    @pytest.mark.asyncio
+    async def test_unevidenced_turn_on_rejected(self):
+        router, orch = _make_router_for(
+            "Nexa, pero a la luz.", _turn_on_classification(0.9)
+        )
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, pero a la luz.",
+        )
+        result = await router.process_command(event)
+        assert result["success"] is False
+        assert result["intent"] == "unverified_intent:turn_on"
+        orch.process.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_evidenced_turn_on_dispatches(self):
+        router, orch = _make_router_for(
+            "Nexa, prender el...", _turn_on_classification(0.9)
+        )
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, prender el...",
+        )
+        result = await router.process_command(event)
+        orch.process.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unevidenced_rejection_plays_earcon(self):
+        """El rechazo por verbo no evidenciado debe avisar con EARCON (solo
+        sonido, 2026-06-15): para llegar acá el texto pasó el CommandGate y el
+        7B dio comando con confianza alta — casi seguro es un humano con el STT
+        garbleado. El silence mudo es indistinguible de 'no funciona' (caso real
+        2026-06-11 17:57). Reemplaza el reprompt de voz por el earcon."""
+        router, orch = _make_router_for(
+            "Nexa, pero a la luz.", _turn_on_classification(0.9)
+        )
+        # Activar earcon con wake_score alto (simula humano plausible)
+        router._earcon_cfg = {
+            "enabled": True,
+            "min_wake_score": 0.0,
+            "min_rms": 0.0,
+            "reasons": ["unverified_intent"],
+        }
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, pero a la luz.",
+            wake_score=0.9,
+        )
+        result = await router.process_command(event)
+        # response vacío: el feedback es el earcon, no texto hablado
+        assert result["response"] == "", "solo earcon, sin texto de voz"
+        assert result["success"] is False
+        assert result["intent"].startswith("unverified_intent")
+        router.response_handler.speak.assert_not_called()
+        router.response_handler.play_earcon.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_gate_rejection_stays_silent(self):
+        """Los rechazos del CommandGate (TV: 'gracias por ver el video') NO
+        deben hablar — son cientos por día con la TV prendida."""
+        router, orch = _make_router_for(
+            "Gracias por ver el video.", _noise_classification()
+        )
+        # Gate real con noise phrases activas para que rechace el texto de TV.
+        router.command_gate = CommandAcceptanceGate(wake_words=("nexa",))
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Gracias por ver el video.",
+        )
+        result = await router.process_command(event)
+        assert result["success"] is False
+        router.response_handler.speak.assert_not_called()

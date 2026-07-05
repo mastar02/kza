@@ -261,6 +261,33 @@ def _has_any_onoff_verb(text: str) -> bool:
     return False
 
 
+def llm_intent_evidenced(intent: str | None, text: str) -> bool:
+    """Valida que un intent binario afirmado por el LLM tenga verbo en el texto.
+
+    Guard determinístico (2026-06-06): el STT garblea el verbo far-field
+    ('apagá'→'pero a', 'prendé'→'haba') y el 7B ADIVINA turn_on/turn_off con
+    confianza alta auto-reportada sobre texto sin verbo — en vivo invirtió una
+    acción (pidió apagar, prendió). La auto-confianza del modelo no es señal:
+    le puso 0.95 a 'haba la luz'. Regla: si el LLM afirma turn_on o turn_off,
+    el texto tiene que contener un verbo de ESA acción (stems de INTENT_RULES).
+    Otros intents no se restringen — solo el par binario invierte acciones.
+
+    Args:
+        intent: Intent afirmado por el LLMCommandRouter (puede ser None).
+        text: Texto transcripto del comando.
+
+    Returns:
+        True si el intent está evidenciado o no requiere evidencia.
+    """
+    if intent not in ("turn_on", "turn_off"):
+        return True
+    t = _norm(text)
+    for rule in INTENT_RULES:
+        if rule.intent == intent and _rule_verb_matches(rule, t):
+            return True
+    return False
+
+
 def _has_any_action_verb(text: str) -> bool:
     """True si el texto contiene cualquier verbo de acción (on/off/set/media/etc).
 
@@ -301,9 +328,16 @@ def parse_command(text: str) -> ParsedCommand:
     # conversacionales con 'todo'='100%' disparando clasificaciones espurias
     # (ej: 'gracias por todo' → brightness_pct=100 por 'todo' en BRIGHTNESS_WORDS).
     _LIGHT_ONLY_SLOTS = {"brightness_pct", "rgb_color", "color_temp_kelvin"}
+    # Guardia de longitud (2026-06-05): la inferencia slot→light es para
+    # comandos implícitos CORTOS ('ponela cálida', 'subí el brillo al 50').
+    # La charla larga colisiona: 'Tengo los coches de negro, van a bajar a…'
+    # ('negro'→rgb + 'bajar'→verbo) parseó full y EJECUTÓ light.turn_off
+    # (acción fantasma real 2026-06-04 19:49 con TV de fondo).
+    _MAX_IMPLICIT_WORDS = 6
     if pc.domain is None and "volume_pct" not in pc.slots \
             and any(k in pc.slots for k in _LIGHT_ONLY_SLOTS) \
-            and _has_any_action_verb(text):
+            and _has_any_action_verb(text) \
+            and len(text.split()) <= _MAX_IMPLICIT_WORDS:
         pc.domain = "light"
 
     rule = match_intent_rules(text, pc.domain)

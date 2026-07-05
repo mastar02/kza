@@ -1,5 +1,9 @@
 # KZA - Análisis Completo y Roadmap de Mejoras
 
+> ⚠️ **Documento histórico.** Las propuestas de infraestructura de este doc (p. ej.
+> docker-compose para ChromaDB) NO reflejan producción. La fuente de verdad de deploy
+> es [`docs/architecture/DEPLOYMENT.md`](../architecture/DEPLOYMENT.md).
+
 ## Resumen Ejecutivo
 
 **Estado actual**: Tienes un proyecto muy sólido y bien arquitecturado que ya supera las capacidades de Alexa en varios aspectos. La base está lista para sustituir asistentes comerciales.

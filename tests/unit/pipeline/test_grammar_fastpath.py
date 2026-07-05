@@ -65,3 +65,53 @@ class TestGrammarFastpathClassification:
         c = _grammar_fastpath_classification("Nexa, prende la luz del escritorio.")
         assert c is not None
         assert c.elapsed_ms == 0.0
+
+
+class TestWakeAcousticallyConfirmed:
+    """Fix 2026-06-04: con openwakeword el wake se confirma ACÚSTICAMENTE y el
+    STT a veces no transcribe 'Nexa' — 'Prende la luz.' daba conf=0.7 < 0.75 y
+    caía al LLMRouter (que lo rechazó como noise). El bonus de wake (+0.15)
+    corresponde también cuando el wake fue confirmado fuera del texto."""
+
+    def test_no_wake_in_text_but_confirmed_passes(self):
+        # Caso real de prod 18:24:05: wake openwakeword 0.84, STT limpio sin 'Nexa'
+        c = _grammar_fastpath_classification(
+            "Prende la luz.", wake_confirmed=True
+        )
+        assert c is not None
+        assert c.intent == "turn_on"
+
+    def test_no_wake_in_text_not_confirmed_still_falls_through(self):
+        # Engine whisper (wake-as-STT): sin wake en texto = sin confirmación
+        c = _grammar_fastpath_classification("Prende la luz.", wake_confirmed=False)
+        assert c is None
+
+    def test_wake_in_text_unaffected(self):
+        c = _grammar_fastpath_classification(
+            "Nexa, prende la luz.", wake_confirmed=False
+        )
+        assert c is not None
+
+    def test_confirmed_does_not_rescue_low_quality(self):
+        # El bonus no convierte basura en comando (quality != full → None)
+        c = _grammar_fastpath_classification("la vida es bella", wake_confirmed=True)
+        assert c is None
+
+
+class TestWakeConfirmedShortTextOnly:
+    """El bonus de wake confirmado es para rescatar comandos CORTOS sin
+    'Nexa' transcripta ('Prende la luz.'). Charla larga que embebe un
+    comando ('...le dije que apague la luz cuando se vaya') NO debe ganar
+    el bonus — con wake espurio por TV, ese bonus ejecutaba charla
+    (acción fantasma 2026-06-04 19:49)."""
+
+    def test_long_text_does_not_get_wake_bonus(self):
+        c = _grammar_fastpath_classification(
+            "y entonces le dije que apague la luz cuando se vaya",
+            wake_confirmed=True,
+        )
+        assert c is None
+
+    def test_short_command_still_gets_bonus(self):
+        c = _grammar_fastpath_classification("Prende la luz.", wake_confirmed=True)
+        assert c is not None

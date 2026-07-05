@@ -283,3 +283,57 @@ def test_partial_command_compat_shape():
 def test_partial_command_not_ready():
     pc = parse_partial_command("nexa")
     assert pc.ready_to_dispatch() is False
+
+
+class TestSlotDomainInferenceLengthGuard:
+    """Acción fantasma real 2026-06-04 19:49: 'Tengo los coches de negro, van
+    a bajar a...' parseó full conf 0.75-0.90 → light.turn_off ejecutado.
+    'negro'→rgb_color + 'bajar'→verbo de acción + inferencia domain=light
+    desde el slot = comando fantasma. La inferencia slot→light es para
+    comandos implícitos CORTOS ('ponela cálida'); la charla es larga."""
+
+    def test_long_chatter_with_color_and_verb_not_full(self):
+        from src.nlu.command_grammar import parse_command
+        pc = parse_command("Tengo los coches de negro, van a bajar a...")
+        assert pc.quality != "full"
+
+    def test_short_implicit_set_still_full(self):
+        from src.nlu.command_grammar import parse_command
+        # ('bajá la luz' ya era partial antes de este fix — no es control)
+        for t in ("ponela cálida", "subí el brillo al 50"):
+            pc = parse_command(t)
+            assert pc.quality == "full", f"{t!r} dejó de parsear full"
+
+
+class TestLlmIntentEvidenced:
+    """Guard determinístico contra intents adivinados por el LLM (2026-06-06):
+    el STT garblea el verbo far-field ('apagá'→'pero a') y el 7B ADIVINA
+    turn_on con confianza alta sobre texto sin verbo → acción invertida en
+    vivo (pidió apagar, prendió). Si el LLM afirma turn_on/turn_off, el texto
+    tiene que evidenciar un verbo de ESA acción."""
+
+    def test_turn_on_evidenced_by_prender_stem(self):
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced("turn_on", "Nexa, prender el...") is True
+
+    def test_turn_on_not_evidenced_by_garble(self):
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced("turn_on", "Nexa, pero a la luz.") is False
+
+    def test_turn_off_evidenced_by_garbled_apagia(self):
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced("turn_off", "Nexa apagia luz.") is True
+
+    def test_mismatched_verb_not_evidenced(self):
+        # Texto dice apagar, LLM afirma turn_on → NO evidenciado (inversión).
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced("turn_on", "apagá la luz de una vez") is False
+
+    def test_turn_off_evidenced_by_cortar(self):
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced("turn_off", "cortá todo") is True
+
+    def test_non_binary_intents_unconstrained(self):
+        from src.nlu.command_grammar import llm_intent_evidenced
+        assert llm_intent_evidenced(None, "qué hora es") is True
+        assert llm_intent_evidenced("timer", "en diez minutos") is True
