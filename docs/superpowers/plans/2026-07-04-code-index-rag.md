@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Servicio `code-index` en el server (:9510) que indexa el codebase (chunks AST + cards MiniMax) en un Chroma propio y lo expone a los agentes vía HTTP + CLI, con reindex incremental disparado por deploy.
+**Goal:** Servicio `code-index` en el server (:9515) que indexa el codebase (chunks AST + cards MiniMax) en un Chroma propio y lo expone a los agentes vía HTTP + CLI, con reindex incremental disparado por deploy.
 
 **Architecture:** Servicio aiohttp standalone (`python -m src.code_index`) bajo systemd --user `kza`, con Chroma persistente propio en `/home/kza/code-index/`, embeddings BGE-M3 **en CPU** (cero VRAM) y cards por archivo generadas con MiniMax vía gateway :8200. Reindex incremental por `git hash-object` disparado por hook `post-merge` del server. Los agentes consultan con `tools/code_search.py`, que detecta drift laptop↔server por hash.
 
@@ -19,7 +19,7 @@
 - Config SOLO en `config/settings.yaml` (sección `code_index:` nueva) — ningún archivo de config nuevo.
 - Embedder `BAAI/bge-m3` con `device="cpu"` — NUNCA GPU (cuda:0 al límite; regla de proyecto).
 - Cards: gateway `http://192.168.1.2:8200/v1`, model `MiniMax-M2.7-highspeed`, `api_key_env=MINIMAX_API_KEY`, api chat. MiniMax emite `<think>...</think>` → SIEMPRE strippear.
-- Puerto del servicio: **9510** (sub-rango KZA 9500-9599; :9500 ocupado por obs).
+- Puerto del servicio: **9515** (sub-rango KZA 9500-9599; :9500 ocupado por obs).
 - Este servicio NO toca kza-voice, ni el Chroma del pipeline, ni GPUs.
 - Tests nuevos en `tests/unit/code_index/`; mocks reutilizables en `tests/mocks/`.
 - Commits frecuentes, mensajes `feat(code-index): ...` / `test(code-index): ...`.
@@ -1364,7 +1364,7 @@ def main() -> None:
 
     indexer = build_indexer(cfg, repo_root=Path.cwd())
     app = create_app(indexer)
-    web.run_app(app, host=cfg.get("host", "0.0.0.0"), port=cfg.get("port", 9510))
+    web.run_app(app, host=cfg.get("host", "0.0.0.0"), port=cfg.get("port", 9515))
 
 
 if __name__ == "__main__":
@@ -1401,12 +1401,12 @@ git commit -m "feat(code-index): servicio HTTP aiohttp (/health /search /reindex
 ```yaml
 
 # Code-Index — búsqueda semántica del codebase para agentes (spec 2026-07-04).
-# Servicio SEPARADO (kza-code-index.service, :9510); el pipeline de voz NO lo
+# Servicio SEPARADO (kza-code-index.service, :9515); el pipeline de voz NO lo
 # consume. Embedder SIEMPRE en CPU: cuda:0 está al límite (regla de proyecto).
 code_index:
   enabled: true
   host: "0.0.0.0"
-  port: 9510                    # sub-rango KZA 9500-9599 (:9500 = obs)
+  port: 9515                    # sub-rango KZA 9500-9599 (:9500 = obs)
   chroma_path: "/home/kza/code-index/chroma"
   manifest_path: "/home/kza/code-index/manifest.json"
   include_globs:
@@ -1427,7 +1427,7 @@ code_index:
 # scripts/kza-code-index.service
 # Instalar en el server: cp a ~/.config/systemd/user/ + daemon-reload + enable --now
 [Unit]
-Description=KZA code-index — búsqueda semántica del codebase (port 9510)
+Description=KZA code-index — búsqueda semántica del codebase (port 9515)
 After=network-online.target
 Wants=network-online.target
 
@@ -1463,7 +1463,7 @@ cat > "$HOOK" <<'EOF'
 #!/usr/bin/env bash
 # Dispara reindex incremental del code-index tras cada git pull (deploy).
 # No bloquea el deploy si el servicio está caído.
-curl -fsS -X POST -m 5 http://127.0.0.1:9510/reindex \
+curl -fsS -X POST -m 5 http://127.0.0.1:9515/reindex \
   -H 'Content-Type: application/json' -d '{"mode":"incremental"}' \
   || echo "[post-merge] code-index no disponible (reindex omitido)"
 EOF
@@ -1476,7 +1476,7 @@ echo "✓ hook post-merge instalado en $HOOK"
 
 Run:
 ```bash
-/Users/yo/Documents/kza/.venv/bin/python -c "import yaml; cfg = yaml.safe_load(open('config/settings.yaml'))['code_index']; assert cfg['port'] == 9510 and cfg['embedder']['device'] == 'cpu'; print('yaml OK')"
+/Users/yo/Documents/kza/.venv/bin/python -c "import yaml; cfg = yaml.safe_load(open('config/settings.yaml'))['code_index']; assert cfg['port'] == 9515 and cfg['embedder']['device'] == 'cpu'; print('yaml OK')"
 bash -n scripts/install_code_index_hook.sh && echo "hook script OK"
 ```
 Expected: `yaml OK` y `hook script OK`
@@ -1605,7 +1605,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DEFAULT_URL = "http://192.168.1.2:9510"
+DEFAULT_URL = "http://192.168.1.2:9515"
 SNIPPET_PRINT_CHARS = 1200
 
 
@@ -1700,7 +1700,7 @@ git commit -m "feat(code-index): CLI code_search.py con detección de drift por 
 En la tabla "Mapa de Archivos Clave", después de la fila de `src/vectordb/chroma_sync.py`:
 
 ```markdown
-| `src/code_index/` | Servicio índice semántico del codebase (:9510) | Cambios en búsqueda de código para agentes |
+| `src/code_index/` | Servicio índice semántico del codebase (:9515) | Cambios en búsqueda de código para agentes |
 ```
 
 En "Comandos de Desarrollo", después del bloque "Benchmark":
@@ -1721,7 +1721,7 @@ Servicio de búsqueda semántica del codebase para agentes (spec
 
 ## Qué es
 
-- `kza-code-index.service` (systemd --user `kza`) en `:9510`.
+- `kza-code-index.service` (systemd --user `kza`) en `:9515`.
 - Chroma persistente propio: `/home/kza/code-index/chroma/` (colecciones
   `code_chunks` y `code_cards`) + manifest `/home/kza/code-index/manifest.json`.
 - Embeddings BGE-M3 **en CPU** (cero VRAM). Cards por archivo con MiniMax vía
@@ -1740,8 +1740,8 @@ systemctl --user enable --now kza-code-index
 bash scripts/install_code_index_hook.sh   # hook post-merge → reindex por deploy
 
 # primer indexado (full): ~300 archivos, cards MiniMax — tarda varios minutos
-curl -X POST localhost:9510/reindex -H 'Content-Type: application/json' -d '{"mode":"full"}'
-watch -n 5 'curl -s localhost:9510/health'
+curl -X POST localhost:9515/reindex -H 'Content-Type: application/json' -d '{"mode":"full"}'
+watch -n 5 'curl -s localhost:9515/health'
 ```
 
 ## Uso (desde la laptop)
@@ -1758,9 +1758,9 @@ python tools/code_search.py "dónde se reintenta la conexión al gateway"
 
 | Acción | Comando |
 |--------|---------|
-| Estado | `curl -s localhost:9510/health` |
-| Reindex incremental manual | `curl -X POST localhost:9510/reindex` |
-| Reindex full (reconstruir) | `curl -X POST localhost:9510/reindex -d '{"mode":"full"}' -H 'Content-Type: application/json'` |
+| Estado | `curl -s localhost:9515/health` |
+| Reindex incremental manual | `curl -X POST localhost:9515/reindex` |
+| Reindex full (reconstruir) | `curl -X POST localhost:9515/reindex -d '{"mode":"full"}' -H 'Content-Type: application/json'` |
 | Logs | `journalctl --user -u kza-code-index -f` |
 | Reset total | parar servicio, borrar `/home/kza/code-index/`, arrancar, reindex full |
 

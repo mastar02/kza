@@ -13,7 +13,7 @@ cat > "$HOOK" <<'EOF'
 #!/usr/bin/env bash
 # Dispara reindex incremental del code-index tras cada git pull (deploy).
 # No bloquea el deploy si el servicio está caído.
-curl -fsS -X POST -m 5 http://127.0.0.1:9510/reindex \
+curl -fsS -X POST -m 5 http://127.0.0.1:9515/reindex \
   -H 'Content-Type: application/json' -d '{"mode":"incremental"}' \
   || echo "[post-merge] code-index no disponible (reindex omitido)"
 EOF

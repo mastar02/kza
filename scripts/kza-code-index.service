@@ -1,7 +1,7 @@
 # scripts/kza-code-index.service
 # Instalar en el server: cp a ~/.config/systemd/user/ + daemon-reload + enable --now
 [Unit]
-Description=KZA code-index — búsqueda semántica del codebase (port 9510)
+Description=KZA code-index — búsqueda semántica del codebase (port 9515)
 After=network-online.target
 Wants=network-online.target
 

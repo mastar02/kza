@@ -5,7 +5,7 @@ Servicio de búsqueda semántica del codebase para agentes (spec
 
 ## Qué es
 
-- `kza-code-index.service` (systemd --user `kza`) en `:9510`.
+- `kza-code-index.service` (systemd --user `kza`) en `:9515`.
 - Chroma persistente propio: `/home/kza/code-index/chroma/` (colecciones
   `code_chunks` y `code_cards`) + manifest `/home/kza/code-index/manifest.json`.
 - Embeddings BGE-M3 **en CPU** (cero VRAM). Cards por archivo con MiniMax vía
@@ -25,8 +25,8 @@ bash scripts/install_code_index_hook.sh   # hook post-merge → reindex por depl
 
 # primer indexado (full): ~196 archivos secuenciales contra MiniMax → estimar
 # 30-60 min; seguí el avance con el watch de /health
-curl -X POST localhost:9510/reindex -H 'Content-Type: application/json' -d '{"mode":"full"}'
-watch -n 5 'curl -s localhost:9510/health'
+curl -X POST localhost:9515/reindex -H 'Content-Type: application/json' -d '{"mode":"full"}'
+watch -n 5 'curl -s localhost:9515/health'
 ```
 
 ## Uso (desde la laptop)
@@ -43,9 +43,9 @@ python tools/code_search.py "dónde se reintenta la conexión al gateway"
 
 | Acción | Comando |
 |--------|---------|
-| Estado | `curl -s localhost:9510/health` |
-| Reindex incremental manual | `curl -X POST localhost:9510/reindex` |
-| Reindex full (reconstruir) | `curl -X POST localhost:9510/reindex -d '{"mode":"full"}' -H 'Content-Type: application/json'` |
+| Estado | `curl -s localhost:9515/health` |
+| Reindex incremental manual | `curl -X POST localhost:9515/reindex` |
+| Reindex full (reconstruir) | `curl -X POST localhost:9515/reindex -d '{"mode":"full"}' -H 'Content-Type: application/json'` |
 | Logs | `journalctl --user -u kza-code-index -f` |
 | Reset total | parar servicio, borrar `/home/kza/code-index/`, arrancar, reindex full |
 

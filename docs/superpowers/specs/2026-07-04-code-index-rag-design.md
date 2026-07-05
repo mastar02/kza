@@ -40,9 +40,9 @@ la exploración, no la lectura final.
 
 ```
 laptop (agentes Claude Code)
-   │  python tools/code_search.py "query"  →  HTTP a 192.168.1.2:9510
+   │  python tools/code_search.py "query"  →  HTTP a 192.168.1.2:9515
    ▼
-code-index service :9510 (server, systemd --user kza)
+code-index service :9515 (server, systemd --user kza)
  ├─ Chroma persistente propio  /home/kza/code-index/chroma/
  │    ├─ colección code_chunks  (funciones/clases/métodos)
  │    └─ colección code_cards   (resumen por archivo)
@@ -54,7 +54,7 @@ code-index service :9510 (server, systemd --user kza)
 ### Componentes
 
 1. **Servicio HTTP `code-index`** — Python async (mismo estilo del proyecto),
-   puerto **:9510** (sub-rango KZA 9500-9599; :9500 ya apuntado a obs/Quadlet
+   puerto **:9515** (sub-rango KZA 9500-9599; :9500 ya apuntado a obs/Quadlet
    Chroma — validar contra `docs/SERVER_CONVENTIONS.md` / Notion pág 8 antes de
    deploy). Endpoints:
    - `POST /search` — `{query, top_k}` → resultados rankeados (v1 sin

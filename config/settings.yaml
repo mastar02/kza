@@ -1576,12 +1576,12 @@ ambient:
       tv_azimuth: null   # rad relativo — calibrar en Fase 2 (grabar con TV sonando)
 
 # Code-Index — búsqueda semántica del codebase para agentes (spec 2026-07-04).
-# Servicio SEPARADO (kza-code-index.service, :9510); el pipeline de voz NO lo
+# Servicio SEPARADO (kza-code-index.service, :9515); el pipeline de voz NO lo
 # consume. Embedder SIEMPRE en CPU: cuda:0 está al límite (regla de proyecto).
 code_index:
   enabled: true
   host: "0.0.0.0"
-  port: 9510                    # sub-rango KZA 9500-9599 (:9500 = obs)
+  port: 9515                    # sub-rango KZA 9500-9599 (:9500=obs; :9510 y :9587 ocupados no-declarados, auditoría 2026-05-01)
   chroma_path: "/home/kza/code-index/chroma"
   manifest_path: "/home/kza/code-index/manifest.json"
   include_globs:

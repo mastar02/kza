@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DEFAULT_URL = "http://192.168.1.2:9510"
+DEFAULT_URL = "http://192.168.1.2:9515"
 SNIPPET_PRINT_CHARS = 1200
 
 
