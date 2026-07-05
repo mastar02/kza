@@ -172,9 +172,10 @@ def classify_outcome(result: dict) -> str:
     Nota especial: text vacío clasifica "empty" (escala) ANTES de mirar el
     intent — decisión 2026-07-05: captura vacía con energía suficiente para
     pasar el pre-gate RMS = música/ruido real, no alucinación. El guard NUNCA
-    ve un empty de alucinación (empty_after_norm es reason del gate, pero text
-    sigue teniendo algo tras normalización; text realmente vacío = señal
-    acústica real sin contenido interpretable).
+    ve un empty de alucinación (empty_after_norm dispara cuando NO queda nada
+    tras normalizar, pero el text CRUDO sigue teniendo algo —puntuación pura—,
+    así que llega acá con text no-blank y clasifica por intent; text realmente
+    vacío = señal acústica real sin contenido interpretable).
 
     Returns:
         "accepted" | "empty" | "noise" | "hallucination" | "timeout" |
