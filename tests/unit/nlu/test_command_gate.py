@@ -247,3 +247,23 @@ def test_prompt_echo_skips_short_texts():
 def test_prompt_echo_inactive_without_prompt():
     d = CommandAcceptanceGate().evaluate("Esto es un asistente de voz.")
     assert d.accept is True
+
+
+def test_prompt_echo_does_not_reject_multiroom_enumeration():
+    # Regresión review 2026-07-05: con ratio 0.8 esto daba prompt_echo (0.81)
+    g = CommandAcceptanceGate(initial_prompt=REAL_PROMPT)
+    d = g.evaluate("luces del escritorio el living la cocina el baño y el hall")
+    assert d.accept is True
+
+
+def test_prompt_echo_survives_long_prompt_sentences():
+    # Regresión review 2026-07-05: autojunk=True devolvía size 0 con
+    # oraciones >=200 chars → eco verbatim aceptado en silencio.
+    rooms = ", ".join(
+        f"el cuarto {i} con la lámpara {i} y la persiana {i}" for i in range(12)
+    )
+    long_prompt = f"Esto es un asistente que controla {rooms}."
+    g = CommandAcceptanceGate(initial_prompt=long_prompt)
+    d = g.evaluate("el cuarto 7 con la lámpara 7 y la persiana 7 el")
+    assert d.accept is False
+    assert d.reason == "prompt_echo"

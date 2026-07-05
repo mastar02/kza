@@ -41,7 +41,10 @@ _FILLER_WORDS = {"gracias", "si", "no", "ok", "bueno", "dale"}
 # eco (Whisper regurgitando el prompt). Ratio sobre len(transcripción), NO
 # ratio simétrico de SequenceMatcher: el eco es un FRAGMENTO corto de una
 # oración larga y el ratio simétrico quedaría ~0.3.
-_PROMPT_ECHO_RATIO = 0.8
+# 0.9 (no 0.8): ecos reales miden 0.96-1.0; comandos multi-room que enumeran
+# cuartos llegan a 0.81 (false positive con 0.8). El único texto >=0.9 sin
+# verbo (lista de cuartos verbatim) jamás ejecutaría nada igual (router lo descarta).
+_PROMPT_ECHO_RATIO = 0.9
 _PROMPT_ECHO_MIN_WORDS = 4
 
 
@@ -148,9 +151,11 @@ class CommandAcceptanceGate:
             return f"word_repetition:{words[0]!r}"
         if self._prompt_sentences and len(words) >= _PROMPT_ECHO_MIN_WORDS:
             for sentence in self._prompt_sentences:
-                m = difflib.SequenceMatcher(None, norm, sentence).find_longest_match(
-                    0, len(norm), 0, len(sentence)
-                )
+                m = difflib.SequenceMatcher(
+                    None, norm, sentence, autojunk=False
+                ).find_longest_match(0, len(norm), 0, len(sentence))
+                # autojunk=False: el default purga chars frecuentes en oraciones >=200 chars
+                # y pierde ecos reales (size 0). Con autojunk=False capturamos ecos verbatim.
                 if m.size / len(norm) >= _PROMPT_ECHO_RATIO:
                     return "prompt_echo"
         if self._wake_words and not any(w in norm for w in self._wake_words):
