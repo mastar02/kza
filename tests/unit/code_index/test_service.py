@@ -78,6 +78,11 @@ async def test_search_invalid_top_k_is_400(client):
     assert resp.status == 400
 
 
+async def test_search_top_k_zero_is_400(client):
+    resp = await client.post("/search", json={"query": "x", "top_k": 0})
+    assert resp.status == 400
+
+
 async def test_reindex_second_request_409_while_first_pending(client):
     idx = client.server.app[INDEXER_KEY]
     release = asyncio.Event()

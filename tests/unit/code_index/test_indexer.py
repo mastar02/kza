@@ -132,6 +132,32 @@ async def test_full_mode_purges_deleted_files(repo):
     assert cards.get(ids=["src/b.py"])["ids"] == []
 
 
+async def test_property_setter_file_indexes_without_duplicate_ids(repo):
+    (repo / "src" / "conn.py").write_text(
+        "class Conn:\n"
+        "    @property\n"
+        "    def state(self):\n"
+        "        return self._s\n"
+        "\n"
+        "    @state.setter\n"
+        "    def state(self, v):\n"
+        "        self._s = v\n"
+    )
+    idx, chunks, cards, manifest = make_indexer(repo)
+    stats = await idx.reindex()
+    assert stats["errors"] == 0
+    assert "src/conn.py" in manifest.files
+
+
+async def test_empty_file_skips_card_generation(repo):
+    (repo / "src" / "__init__.py").write_text("")
+    card_gen = FakeCardGenerator()
+    idx, chunks, cards, manifest = make_indexer(repo, card_gen)
+    await idx.reindex()
+    assert "src/__init__.py" not in card_gen.calls
+    assert manifest.files["src/__init__.py"]["card_done"] is True
+
+
 async def test_unreadable_file_does_not_wedge_reindex(repo):
     # archivo no-UTF8: debe contarse como error y NO impedir indexar el resto
     (repo / "src" / "bad.py").write_bytes(b"\xff\xfe invalid \xff")

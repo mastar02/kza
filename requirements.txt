@@ -19,6 +19,7 @@ llama-cpp-python>=0.2.50
 vllm>=0.4.0
 transformers>=4.40.0
 autoawq>=0.2.0
+openai>=1.0.0  # cliente OpenAI-compat (gateway :8200: reasoner + code-index cards)
 
 # Embeddings
 sentence-transformers>=2.5.0

@@ -30,6 +30,13 @@ def extract_chunks(source: str, path: str) -> list[CodeChunk]:
 
     Returns:
         Lista de CodeChunk. Vacía si el archivo no parsea (se loguea warning).
+
+    Nota sobre chunk_id: dos nodos con el mismo nombre calificado (ej. un
+    `@property` y su `@x.setter`, ambos "Clase.metodo") producirían el mismo
+    "<path>::<nombre>" y romperían la unicidad que exige Chroma en `add()`.
+    Por eso, si el nombre calificado se repite dentro del archivo, TODOS los
+    chunks con ese nombre (incluido el primero) llevan sufijo `#<start_line>`
+    en su chunk_id — así ningún id queda ambiguo entre sí.
     """
     try:
         tree = ast.parse(source)
@@ -44,7 +51,24 @@ def extract_chunks(source: str, path: str) -> list[CodeChunk]:
             chunks.append(_make_chunk(node, node.name, "function", path, lines))
         elif isinstance(node, ast.ClassDef):
             chunks.extend(_class_chunks(node, path, lines))
+    _dedupe_chunk_ids(chunks)
     return chunks
+
+
+def _dedupe_chunk_ids(chunks: list[CodeChunk]) -> None:
+    """Desambiguar chunk_ids repetidos (ej. @property + @x.setter) in-place.
+
+    Todos los chunks cuyo nombre calificado colisiona con otro en el mismo
+    archivo reciben el sufijo `#<start_line>` en su chunk_id, incluido el
+    primero — ninguno queda "sin marcar" y ambiguo respecto de los demás.
+    """
+    by_name: dict[str, list[CodeChunk]] = {}
+    for c in chunks:
+        by_name.setdefault(c.name, []).append(c)
+    for group in by_name.values():
+        if len(group) > 1:
+            for c in group:
+                c.chunk_id = f"{c.chunk_id}#{c.start_line}"
 
 
 def _node_start(node: ast.AST) -> int:

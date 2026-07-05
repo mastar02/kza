@@ -84,3 +84,23 @@ def test_syntax_error_returns_empty():
 
 def test_empty_source_returns_empty():
     assert extract_chunks("", "src/empty.py") == []
+
+
+PROPERTY_SETTER = '''\
+class Conn:
+    @property
+    def state(self):
+        return self._state
+
+    @state.setter
+    def state(self, v):
+        self._state = v
+'''
+
+
+def test_property_setter_pair_gets_unique_chunk_ids():
+    chunks = extract_chunks(PROPERTY_SETTER, "src/conn.py")
+    ids = [c.chunk_id for c in chunks]
+    assert len(ids) == len(set(ids)), f"ids duplicados: {ids}"
+    # ambos métodos siguen presentes
+    assert sum(1 for c in chunks if c.name.startswith("Conn.state")) == 2

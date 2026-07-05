@@ -25,13 +25,13 @@ INDEXER_KEY = web.AppKey("indexer", CodeIndexer)
 REINDEX_STATE_KEY: web.AppKey = web.AppKey("reindex_state", ReindexState)
 
 
-def _log_reindex_failure(task) -> None:
+def _log_reindex_failure(task: asyncio.Task) -> None:
     """Loguear fallas del reindex en background (fuera del try por-archivo)."""
     if task.cancelled():
         return
     exc = task.exception()
     if exc is not None:
-        logger.error(f"[CodeIndexService] Reindex falló: {exc!r}")
+        logger.error(f"[CodeIndexService] Reindex falló: {exc!r}", exc_info=exc)
 
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -60,6 +60,8 @@ async def handle_search(request: web.Request) -> web.Response:
     try:
         top_k = int(body.get("top_k", 8))
     except (ValueError, TypeError):
+        return web.json_response({"error": "top_k inválido"}, status=400)
+    if top_k < 1:
         return web.json_response({"error": "top_k inválido"}, status=400)
     idx = request.app[INDEXER_KEY]
     results = await idx.search(query, top_k=top_k)

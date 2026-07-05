@@ -23,7 +23,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now kza-code-index
 bash scripts/install_code_index_hook.sh   # hook post-merge → reindex por deploy
 
-# primer indexado (full): ~300 archivos, cards MiniMax — tarda varios minutos
+# primer indexado (full): ~196 archivos secuenciales contra MiniMax → estimar
+# 30-60 min; seguí el avance con el watch de /health
 curl -X POST localhost:9510/reindex -H 'Content-Type: application/json' -d '{"mode":"full"}'
 watch -n 5 'curl -s localhost:9510/health'
 ```
@@ -55,3 +56,6 @@ python tools/code_search.py "dónde se reintenta la conexión al gateway"
   bloquea (el hook solo avisa).
 - Cards fallidas (gateway caído) quedan `card_done: false` en el manifest y
   se reintentan solas en el próximo reindex.
+- El hook post-merge dispara con `git pull` (merge/ff); un deploy por
+  `git pull --rebase` o `reset` NO lo dispara — en ese caso correr el
+  reindex manual.

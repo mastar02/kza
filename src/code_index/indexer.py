@@ -41,7 +41,11 @@ class CodeIndexer:
         return self._lock.locked()
 
     async def reindex(self, mode: str = "incremental") -> dict:
-        """Reindexar el repo. mode="full" resetea el manifest primero.
+        """Reindexar el repo.
+
+        mode="full" reprocesa todos los archivos actuales y purga los
+        borrados (detectados contra el manifest previo). mode="incremental"
+        (default) solo procesa lo agregado/cambiado desde el último reindex.
 
         Idempotente ante interrupciones: el manifest se persiste por archivo.
         """
@@ -119,21 +123,26 @@ class CodeIndexer:
                 ],
             )
 
-        card_done = False
-        try:
-            card = await self.card_generator.generate(path, source)
-            card_emb = await asyncio.to_thread(self.embedder.encode, [card])
-            await asyncio.to_thread(
-                self.cards.add,
-                ids=[path],
-                embeddings=[list(map(float, card_emb[0]))],
-                documents=[card],
-                metadatas=[{"path": path, "blob_hash": blob_hash}],
-            )
+        if not source.strip():
+            # Archivo vacío (ej. __init__.py): no hay nada que resumir, no
+            # gastar una llamada al gateway MiniMax en una card sin contenido.
             card_done = True
-        except Exception as e:
-            logger.warning(f"[CodeIndexer] Card falló para {path}: {e}")
-            stats["cards_failed"] += 1
+        else:
+            card_done = False
+            try:
+                card = await self.card_generator.generate(path, source)
+                card_emb = await asyncio.to_thread(self.embedder.encode, [card])
+                await asyncio.to_thread(
+                    self.cards.add,
+                    ids=[path],
+                    embeddings=[list(map(float, card_emb[0]))],
+                    documents=[card],
+                    metadatas=[{"path": path, "blob_hash": blob_hash}],
+                )
+                card_done = True
+            except Exception as e:
+                logger.warning(f"[CodeIndexer] Card falló para {path}: {e}")
+                stats["cards_failed"] += 1
 
         await asyncio.to_thread(self.manifest.update_file, path, blob_hash, card_done)
         stats["indexed"] += 1

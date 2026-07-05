@@ -11,6 +11,12 @@ class MockChromaCollection:
         self._store: dict[str, dict] = {}  # id -> {embedding, document, metadata}
 
     def add(self, ids, embeddings, documents, metadatas):
+        """Agregar ids nuevos. Espeja Chroma real: rechaza duplicados (no upsert)."""
+        seen: set[str] = set()
+        for id_ in ids:
+            if id_ in seen or id_ in self._store:
+                raise ValueError("Expected IDs to be unique")
+            seen.add(id_)
         for i, id_ in enumerate(ids):
             self._store[id_] = {
                 "embedding": list(embeddings[i]),
