@@ -193,3 +193,57 @@ def test_hard_rule_wins_over_compression():
     d = g.evaluate("", _conf_cr(9.9))
     assert d.accept is False
     assert d.reason == "empty"
+
+
+# --- BoH-es: blocklist + prompt_echo (spec 2026-07-05) ---
+
+REAL_PROMPT = (
+    "Esto es un asistente de voz llamado Nexa que controla luces, aire "
+    "acondicionado, persianas y música en el escritorio, el living, la cocina, "
+    "el baño y el hall. Habla rioplatense con voseo: prendé, apagá, subí, "
+    "bajá, poné."
+)
+
+
+def test_rejects_aplausos_as_noise():
+    d = _gate().evaluate("¡Aplausos!")
+    assert d.accept is False
+    assert d.reason.startswith("noise_phrase")
+
+
+def test_prompt_echo_rejects_prompt_fragment():
+    g = CommandAcceptanceGate(initial_prompt=REAL_PROMPT)
+    d = g.evaluate("Esto es un asistente de voz.")
+    assert d.accept is False
+    assert d.reason == "prompt_echo"
+
+
+def test_prompt_echo_rejects_slightly_garbled_fragment():
+    g = CommandAcceptanceGate(initial_prompt=REAL_PROMPT)
+    d = g.evaluate("Esto es un asistente de vos")
+    assert d.accept is False
+    assert d.reason == "prompt_echo"
+
+
+def test_prompt_echo_does_not_reject_real_commands():
+    g = CommandAcceptanceGate(initial_prompt=REAL_PROMPT)
+    for cmd in (
+        "nexa prendé la luz del escritorio",
+        "nexa subí el volumen en el living",
+        "activá la escena lectura",
+        "apagá el aire acondicionado del living",
+    ):
+        d = g.evaluate(cmd)
+        assert d.accept is True, f"false-reject: {cmd!r} → {d.reason}"
+
+
+def test_prompt_echo_skips_short_texts():
+    # <4 palabras jamás dispara prompt_echo aunque estén en el prompt
+    g = CommandAcceptanceGate(initial_prompt=REAL_PROMPT)
+    d = g.evaluate("en el living")
+    assert d.reason != "prompt_echo"
+
+
+def test_prompt_echo_inactive_without_prompt():
+    d = CommandAcceptanceGate().evaluate("Esto es un asistente de voz.")
+    assert d.accept is True

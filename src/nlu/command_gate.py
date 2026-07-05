@@ -5,6 +5,7 @@ and incorporates STT confidence. Reject = silent discard upstream.
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 import unicodedata
@@ -29,8 +30,19 @@ _NOISE_PHRASES = (
     # logs, así que no protegía de nada real). Ver command_detection_rootcause.
     "luz encendida", "luz apagada", "luces encendidas", "luces apagadas",
     "hecho", "perfecto", "listo",
+    # BoH-es (spec 2026-07-05): alucinación de Whisper sobre audio
+    # ininteligible; 25 ocurrencias en 48h de prod, 0 comandos reales.
+    "aplausos",
 )
 _FILLER_WORDS = {"gracias", "si", "no", "ok", "bueno", "dale"}
+
+# prompt_echo: fracción mínima de la transcripción que debe aparecer como
+# bloque contiguo dentro de una oración del initial_prompt para considerarla
+# eco (Whisper regurgitando el prompt). Ratio sobre len(transcripción), NO
+# ratio simétrico de SequenceMatcher: el eco es un FRAGMENTO corto de una
+# oración larga y el ratio simétrico quedaría ~0.3.
+_PROMPT_ECHO_RATIO = 0.8
+_PROMPT_ECHO_MIN_WORDS = 4
 
 
 def _normalize(text: str) -> str:
@@ -39,6 +51,22 @@ def _normalize(text: str) -> str:
     norm = "".join(c for c in norm if unicodedata.category(c) != "Mn")
     norm = re.sub(r"[^\w\s]", " ", norm)
     return re.sub(r"\s+", " ", norm).strip()
+
+
+def _prompt_sentences(prompt: str | None) -> tuple[str, ...]:
+    """Oraciones normalizadas del initial_prompt con ≥4 palabras.
+
+    Se usan como referencia para detectar eco del prompt en la transcripción
+    (Whisper a veces devuelve texto del propio initial_prompt).
+    """
+    if not prompt:
+        return ()
+    sentences = []
+    for raw in prompt.split("."):
+        norm = _normalize(raw)
+        if len(norm.split()) >= _PROMPT_ECHO_MIN_WORDS:
+            sentences.append(norm)
+    return tuple(sentences)
 
 
 @dataclass(frozen=True)
@@ -60,6 +88,7 @@ class CommandAcceptanceGate:
         min_avg_logprob: float = -1.20,
         enforce_compression_ratio: bool = False,
         max_compression_ratio: float = 2.2,
+        initial_prompt: str | None = None,
     ):
         """Configure the gate.
 
@@ -79,6 +108,10 @@ class CommandAcceptanceGate:
             max_compression_ratio: Per-segment max compression_ratio ceiling.
                 Repetitive hallucinated text compresses high; short real
                 commands stay well below 2.2 (zlib overhead).
+            initial_prompt: Texto del stt.initial_prompt configurado. Si se
+                provee, transcripciones que son eco del prompt (Whisper lo
+                regurgita sobre audio ininteligible) se rechazan con reason
+                'prompt_echo'. None = regla inactiva.
         """
         self._wake_words = tuple(
             w.lower().strip() for w in wake_words if w and w.strip()
@@ -88,6 +121,7 @@ class CommandAcceptanceGate:
         self._min_avg_logprob = min_avg_logprob
         self._enforce_compression_ratio = enforce_compression_ratio
         self._max_compression_ratio = max_compression_ratio
+        self._prompt_sentences = _prompt_sentences(initial_prompt)
 
     def evaluate(self, text: str, stt_confidence: "STTResult | None" = None) -> AcceptanceDecision:
         """Evaluate a capture. Fail-open: on internal error, accept."""
@@ -112,6 +146,13 @@ class CommandAcceptanceGate:
         words = norm.split()
         if len(words) >= 4 and len(set(words)) == 1:
             return f"word_repetition:{words[0]!r}"
+        if self._prompt_sentences and len(words) >= _PROMPT_ECHO_MIN_WORDS:
+            for sentence in self._prompt_sentences:
+                m = difflib.SequenceMatcher(None, norm, sentence).find_longest_match(
+                    0, len(norm), 0, len(sentence)
+                )
+                if m.size / len(norm) >= _PROMPT_ECHO_RATIO:
+                    return "prompt_echo"
         if self._wake_words and not any(w in norm for w in self._wake_words):
             return f"missing_wake:{self._wake_words[0]!r}"
         return None

@@ -7,7 +7,7 @@ no-comprensión (no de ruido/eco). Lógica pura, un solo lugar testeable.
 from __future__ import annotations
 
 # Motivos que indican TV/eco/ruido → JAMÁS earcon (aunque el wake sea fuerte).
-_NOISE_PREFIXES = ("noise_phrase", "filler_word", "word_repetition", "missing_wake")
+_NOISE_PREFIXES = ("noise_phrase", "filler_word", "word_repetition", "missing_wake", "prompt_echo")
 
 
 def should_play_earcon(reason: str, wake_score: float, rms: float, cfg: dict) -> bool:

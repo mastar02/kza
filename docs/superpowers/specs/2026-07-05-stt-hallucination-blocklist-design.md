@@ -32,8 +32,10 @@ implementación, revisadas a mano antes de entrar).
   constructor (DI desde `main.py`, valor de `stt.initial_prompt` del settings).
 - Al construir: separa el prompt en oraciones (split por `.`), normaliza cada
   una con `_normalize()` y descarta las de <4 palabras (evita matches triviales).
-- Regla: si `SequenceMatcher(None, _normalize(text), oracion).ratio() >= 0.8`
-  para alguna oración del prompt → reject `prompt_echo`.
+- Regla: bloque contiguo común más largo (SequenceMatcher.find_longest_match)
+  entre la transcripción normalizada y cada oración del prompt; si
+  `bloque / len(transcripción) >= 0.8` → reject `prompt_echo`. (Corrección
+  2026-07-05: el ratio simétrico daba ~0.3 para ecos fragmento-de-oración.)
 - Orden: corre junto a las demás hard rules (después de noise/filler).
 - `earcon_gate._NOISE_PREFIXES` suma `"prompt_echo"` (el eco JAMÁS earcon).
 
