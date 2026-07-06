@@ -103,6 +103,7 @@ Mic → WakeWord(CPU) → STT(GPU0) → Router 7B(GPU1 :8101) → TTS(GPU0) → 
 | `src/code_index/` | Servicio índice semántico del codebase (:9515) | Cambios en búsqueda de código para agentes |
 | `src/audio/zone_manager.py` | Multi-zona + MA1260 | Cambios en zonas |
 | `src/rooms/room_context.py` | Contexto por habitación (mic+BT) | Nuevas habitaciones |
+| `src/ambient/textual_wake.py` | Wake textual "nexa" sobre stream ambient (red de seguridad) | Cambios en disparo textual |
 | `config/settings.yaml` | TODA la configuración centralizada | Cualquier config nueva |
 | `tests/conftest.py` | Fixtures globales de tests | Nuevos mocks/fixtures |
 
