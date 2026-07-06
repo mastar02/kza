@@ -1594,6 +1594,15 @@ ambient:
     escritorio:
       tv_azimuth: null   # rad relativo — calibrar en Fase 2 (grabar con TV sonando)
 
+  # Wake textual (spec 2026-07-05): si una utterance no-TV contiene "nexa",
+  # dispara el command path con el texto ya transcripto (wake_text). Red de
+  # seguridad del wake acústico débil post-mudanza del mic. Kill-switch acá.
+  textual_wake:
+    enabled: true
+    dedup_window_s: 8.0
+    variants: ["nexa", "next up"]
+    max_edit_distance: 1
+
 # Code-Index — búsqueda semántica del codebase para agentes (spec 2026-07-04).
 # Servicio SEPARADO (kza-code-index.service, :9515); el pipeline de voz NO lo
 # consume. Embedder SIEMPRE en CPU: cuda:0 está al límite (regla de proyecto).

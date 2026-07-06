@@ -1265,6 +1265,37 @@ async def main():
         asr_event_logger=event_logger,
     )
 
+    # Wake textual (spec 2026-07-05): red de seguridad puramente textual sobre
+    # el ambient path — "nexa" en una utterance no-TV dispara el command path
+    # con el texto ya transcripto. Requiere el ambient_path (transcriber) Y el
+    # request_router recién construido arriba; se conecta acá y no antes.
+    # Best-effort, mismo patrón que el bloque ambient de más arriba.
+    _textual_wake_cfg = (config.get("ambient", {}) or {}).get("textual_wake", {}) or {}
+    if (
+        ambient_path is not None
+        and multi_room_loop is not None
+        and _textual_wake_cfg.get("enabled", False)
+    ):
+        try:
+            from src.ambient.textual_wake import TextualWakeDetector
+
+            textual_wake_detector = TextualWakeDetector(
+                dispatch_fn=request_router.process_command,
+                last_acoustic_command_ts_fn=multi_room_loop.last_command_dispatch_ts,
+                dedup_window_s=_textual_wake_cfg.get("dedup_window_s", 8.0),
+                variants=tuple(_textual_wake_cfg.get("variants", ("nexa", "next up"))),
+                max_edit_distance=_textual_wake_cfg.get("max_edit_distance", 1),
+            )
+            ambient_path.transcriber.attach_textual_wake(textual_wake_detector)
+            logger.info(
+                f"[TextualWake] activo (rooms={list(room_streams.keys())})"
+            )
+        except Exception:
+            logger.exception(
+                "[TextualWake] no se pudo activar (best-effort) — "
+                "el ambient path sigue sin él"
+            )
+
     # Feature subsystems (timers, intercom, notifications, alerts)
     alerts_config = config.get("alerts", {})
     alert_manager = None

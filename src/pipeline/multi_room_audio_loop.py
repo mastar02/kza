@@ -250,9 +250,19 @@ class MultiRoomAudioLoop:
         self._last_wakeword_room: str = ""
         self._last_wakeword_rms: float = 0.0
 
+        # Wake textual (spec 2026-07-05): timestamp monotónico del último
+        # dispatch ACÚSTICO por room — consumido por TextualWakeDetector
+        # (last_acoustic_command_ts_fn) para el dedup cruzado acústico/textual.
+        self._last_command_dispatch_ts: dict[str, float] = {}
+
     def attach_response_handler(self, response_handler) -> None:
         """Inyectar ResponseHandler post-init (útil por orden de DI en main.py)."""
         self._response_handler = response_handler
+
+    def last_command_dispatch_ts(self, room_id: str) -> float:
+        """Timestamp monotónico (`time.monotonic()`) del último dispatch
+        ACÚSTICO en `room_id`, o 0.0 si nunca hubo uno en esta room."""
+        return self._last_command_dispatch_ts.get(room_id, 0.0)
 
     def attach_ambient(self, tap, transcriber=None) -> None:
         """Inyectar el ambient path post-init (tap obligatorio, transcriber
@@ -905,6 +915,11 @@ class MultiRoomAudioLoop:
             else:
                 logger.warning("No on_command callback registered")
                 result = {}
+
+            # Wake textual (spec 2026-07-05): registrar el ts del dispatch
+            # ACÚSTICO por room, ANTES de cualquier early-return de abajo —
+            # el TextualWakeDetector lo consume para su dedup cruzado.
+            self._last_command_dispatch_ts[event.room_id] = time.monotonic()
 
             # AmbientGuard: el resultado de la captura alimenta la escalera
             # (noise/empty/timeout escalan; accepted/other_fail/hallucination

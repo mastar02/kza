@@ -56,6 +56,11 @@ class AmbientTranscriber:
         self._tasks: list[asyncio.Task] = []
         # Última utterance 'tv' vista por room: timestamp del registro — señal shadow
         self._last_tv: dict[str, float] = {}
+        # Wake textual (spec 2026-07-05): None = feature apagada (comportamiento
+        # previo exacto). Se inyecta post-init vía attach_textual_wake() — mismo
+        # patrón que MultiRoomAudioLoop.attach_ambient (orden de DI en main.py:
+        # el detector necesita el request_router, que se construye después).
+        self._textual_wake = None
 
     async def start(self) -> None:
         """Lanzar un worker por room + el worker de purga."""
@@ -73,6 +78,18 @@ class AmbientTranscriber:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
+
+    def attach_textual_wake(self, detector) -> None:
+        """Inyectar el TextualWakeDetector post-init (orden de DI en main.py:
+        el detector se construye después del request_router, que a su vez se
+        construye después del ambient path — mismo patrón que
+        MultiRoomAudioLoop.attach_ambient/attach_response_handler).
+
+        Args:
+            detector: `TextualWakeDetector` (o compatible) con
+                `async maybe_dispatch(room_id, text, source, speaker, audio)`.
+        """
+        self._textual_wake = detector
 
     def tv_active_recent(self, room_id: str, window_s: float = 5.0) -> bool:
         """True si hubo una utterance 'tv' que terminó hace < window_s.
@@ -161,6 +178,20 @@ class AmbientTranscriber:
                 f"[Ambient] {room_id} {source} {speaker}: "
                 f"{utt.text[:60]!r} (az={azimuth}, stab={stability:.2f})"
             )
+            # Wake textual (spec 2026-07-05): SIEMPRE después de persistir —
+            # la utterance ya quedó en el store pase lo que pase acá. Fail-open
+            # explícito: una excepción del detector (o de dispatch_fn/router)
+            # jamás debe matar el worker de la room.
+            if self._textual_wake is not None:
+                try:
+                    await self._textual_wake.maybe_dispatch(
+                        room_id, text, source, speaker, audio=seg.audio,
+                    )
+                except Exception:
+                    logger.exception(
+                        f"[TextualWake] error al evaluar utterance en {room_id} "
+                        f"(best-effort, la utterance ya está persistida)"
+                    )
         except Exception:
             # un segmento malo no tira el worker — se pierde ese segmento
             logger.exception(f"AmbientTranscriber[{room_id}]: segmento descartado")
