@@ -88,11 +88,16 @@ class TestMatchesWakeFuzzy:
         # no lo oculta con un assert False cómodo.
         assert matches_wake("la anexa el documento") is True
 
-    def test_next_alone_matches_via_token_fuzzy(self):
-        # Consecuencia esperada del check por-token (no un caso especial):
-        # "next" sin "up" también está a distancia 1 de "nexa" (sustitución
-        # t↔a), aunque no complete el bigrama "next up".
-        assert matches_wake("el next episodio ya empieza") is True
+    def test_next_alone_does_not_match_after_denylist(self):
+        # "next" está a distancia 1 de "nexa" pero es falso positivo común
+        # en STT ambient en inglés (Parakeet emite spurious english words).
+        # Mitigación: denylist. Bare "next" ya no debería matchear.
+        assert matches_wake("el next episodio ya empieza") is False
+
+    def test_next_up_bigram_still_matches_unaffected(self):
+        # El denylist afecta SOLO al fuzzy per-token; el bigram "next up"
+        # se evalúa en el pase exacto y NO consulta el denylist.
+        assert matches_wake("Next up, apagá la luz") is True
 
     def test_unrelated_words_do_not_match(self):
         # "apaga"/"la"/"luz" no están a distancia <=1 de "nexa".
@@ -371,6 +376,32 @@ class TestDetectorDedupSelf:
         assert salon is True
         assert living is True
         assert dispatch.await_count == 2
+
+    async def test_dedup_self_logs_info(self, caplog):
+        clock = FakeClock(t=1000.0)
+        dispatch = AsyncMock(return_value={"success": True})
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+            now_fn=clock,
+        )
+
+        await detector.maybe_dispatch(
+            room_id="salon", text="Nexa, apagá la luz", source="human_direct",
+            speaker=None, audio=make_audio(),
+        )
+        clock.advance(3.0)  # < dedup_window_s=8.0
+
+        with caplog.at_level(logging.INFO):
+            await detector.maybe_dispatch(
+                room_id="salon", text="Nexa, prendé la luz", source="human_direct",
+                speaker=None, audio=make_audio(),
+            )
+
+        assert any(
+            "[TextualWake]" in r.message and "dedup_self" in r.message
+            for r in caplog.records
+        )
 
 
 # ==================== TextualWakeDetector: errores de dispatch ====================

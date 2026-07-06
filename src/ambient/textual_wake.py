@@ -24,10 +24,13 @@ justifica, la mitigación futura es una excepción explícita para "anexa" —NO
 bajar max_edit_distance a 0, que perdería la variante real "lexa".
 
 Por el mismo mecanismo por-token, "next" (sin el "up") también matchea "nexa"
-por sí solo (distancia 1, sustitución t↔a) — comportamiento esperado del
-check por-token, no un caso especial: el fuzzy match se evalúa contra CADA
-token individual del texto, independientemente de si ese token también forma
-parte de un bigrama.
+por sí solo (distancia 1, sustitución t↔a), pero es un FALSO POSITIVO
+común: el STT ambient (Parakeet) emite inglés spurious con regularidad.
+Mitigación (v1): denylist de palabras comunes en inglés (p. ej. "next") que
+son edit-distance ≤1 de un token base, excluidas SOLO del fuzzy per-token.
+El bigram "next up" se evalúa en el pase exacto, que NO consulta el denylist,
+así que sigue matcheando; los tokens exactos ("nexa" sin fuzzy) tampoco
+consultan el denylist. Ver también test_textual_wake.py.
 
 "alexa" NO matchea: edit-distance("nexa", "alexa") = 2 (dos inserciones),
 por encima del default max_edit_distance=1 — verificado con test.
@@ -53,6 +56,12 @@ from src.pipeline.command_event import CommandEvent
 logger = logging.getLogger(__name__)
 
 _DEFAULT_VARIANTS: tuple[str, ...] = ("nexa", "next up")
+
+# Palabras comunes en inglés (spurious del STT ambient Parakeet) que están a
+# edit-distance ≤1 de "nexa" pero son falsos positivos — excluidas del fuzzy
+# per-token (las bigramas exactas como "next up" y los tokens exactos se
+# siguen evaluando sin consultar esta lista).
+_FUZZY_DENYLIST: frozenset[str] = frozenset({"next"})
 
 
 def normalize_text(text: str) -> str:
@@ -155,6 +164,8 @@ def matches_wake(
             return True
 
     for token in tokens:
+        if token in _FUZZY_DENYLIST:
+            continue
         for base in single_variants:
             if _within_edit_distance(token, base, max_edit_distance):
                 return True
