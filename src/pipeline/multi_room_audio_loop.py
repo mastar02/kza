@@ -909,6 +909,15 @@ class MultiRoomAudioLoop:
 
     async def _dispatch_command(self, event: CommandEvent):
         """Dispatch a captured command via registered callback."""
+        # Wake textual (spec 2026-07-05, fix review final): registrar el ts
+        # del dispatch ACÚSTICO por room ANTES de awaitear el callback. Un
+        # comando slow-path (reasoner cloud, segundos) deja una ventana
+        # abierta mientras se procesa — si el ts se registrara solo al final,
+        # el canal textual podría evaluar la MISMA utterance sin ver el
+        # dedup acústico (el ts todavía no existiría) y disparar un segundo
+        # comando en paralelo. Registrarlo acá hace que el canal textual
+        # gane la carrera de dedup desde el primer instante del dispatch.
+        self._last_command_dispatch_ts[event.room_id] = time.monotonic()
         try:
             if self._on_command_callback:
                 result = await self._on_command_callback(event)
@@ -916,9 +925,9 @@ class MultiRoomAudioLoop:
                 logger.warning("No on_command callback registered")
                 result = {}
 
-            # Wake textual (spec 2026-07-05): registrar el ts del dispatch
-            # ACÚSTICO por room, ANTES de cualquier early-return de abajo —
-            # el TextualWakeDetector lo consume para su dedup cruzado.
+            # Refrescar el ts tras el callback: ancla también la ventana de
+            # dedup al momento de FINALIZACIÓN de comandos largos, no solo
+            # al de inicio.
             self._last_command_dispatch_ts[event.room_id] = time.monotonic()
 
             # AmbientGuard: el resultado de la captura alimenta la escalera

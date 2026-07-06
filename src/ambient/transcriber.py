@@ -12,9 +12,12 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from src.ambient.types import AmbientUtterance, RawSegment
+
+if TYPE_CHECKING:
+    from src.ambient.textual_wake import TextualWakeDetector
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +82,7 @@ class AmbientTranscriber:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
 
-    def attach_textual_wake(self, detector) -> None:
+    def attach_textual_wake(self, detector: "TextualWakeDetector") -> None:
         """Inyectar el TextualWakeDetector post-init (orden de DI en main.py:
         el detector se construye después del request_router, que a su vez se
         construye después del ambient path — mismo patrón que
@@ -185,7 +188,8 @@ class AmbientTranscriber:
             if self._textual_wake is not None:
                 try:
                     await self._textual_wake.maybe_dispatch(
-                        room_id, text, source, speaker, audio=seg.audio,
+                        room_id, text, source, speaker,
+                        audio=self._stt.asr_mono(seg.audio),
                     )
                 except Exception:
                     logger.exception(

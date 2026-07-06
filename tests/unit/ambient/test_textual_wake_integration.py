@@ -37,14 +37,22 @@ CHUNK = 1280
 # ============================================================
 
 class FakeAmbientSTT:
-    def __init__(self, text: str = "hola nexa"):
+    def __init__(self, text: str = "hola nexa", asr_col: int = 1):
         self._text = text
+        self.asr_col = asr_col
 
     async def transcribe(self, audio):
         return STTResult(
             text=self._text, elapsed_ms=10.0,
             no_speech_prob=0.05, avg_logprob=-0.2, compression_ratio=1.0,
         )
+
+    def asr_mono(self, audio):
+        """Mismo contrato que AmbientSTT.asr_mono real (fixture Fix 1)."""
+        if audio.ndim == 1:
+            return audio
+        col = self.asr_col if audio.shape[1] > self.asr_col else 0
+        return np.ascontiguousarray(audio[:, col])
 
 
 class FakeTagger:
@@ -190,6 +198,36 @@ def test_tv_source_persists_but_never_reaches_dispatch_fn():
     assert dispatched == []
 
 
+def test_textual_wake_receives_mono_audio_not_raw_multichannel_segment():
+    """CRITICAL: el hook debe pasar la vista ASR mono (1D), no `seg.audio` crudo.
+
+    `seg.audio` es 2D `(frames, channels)` en producción (mic 6ch); el
+    CommandEvent que arma el detector se re-inyecta al router, que corre
+    SpeakerID/ECAPA sobre `event.audio` esperando 1D. Pasar 2D rompería el
+    speaker-ID en TODO dispatch textual (sin try/except en
+    `command_processor._identify_speaker`).
+    """
+    store = RecordingStore()
+    captured_audio: list[np.ndarray] = []
+
+    class CapturingDetector:
+        async def maybe_dispatch(self, room_id, text, source, speaker, audio):
+            captured_audio.append(audio)
+            return True
+
+    tap, tr = _make_transcriber(store, FakeAmbientSTT("hola nexa"), tv_azimuth=2.5)
+    tr.attach_textual_wake(CapturingDetector())
+
+    async def inner():
+        await tr.start()
+        await _feed_and_wait(tap, store)
+        await tr.stop()
+    asyncio.run(inner())
+
+    assert len(captured_audio) == 1
+    assert captured_audio[0].ndim == 1
+
+
 def test_no_detector_attached_is_pure_noop():
     """Sin attach_textual_wake() (default None) el pipeline persiste igual."""
     store = RecordingStore()
@@ -266,3 +304,33 @@ def test_last_command_dispatch_ts_unknown_room_returns_zero():
     """Getter devuelve 0.0 (nunca) para una room sin dispatch previo."""
     loop = _make_loop()
     assert loop.last_command_dispatch_ts("sala_jamas_vista") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_acoustic_ts_is_visible_during_slow_callback():
+    """CRITICAL: el ts debe existir ANTES de awaitear el callback, no después.
+
+    Un comando slow-path (segundos, reasoner cloud) deja una ventana donde,
+    si el ts se registrara solo al final, el canal textual evaluaría la
+    MISMA utterance sin ver el dedup acústico → doble ejecución. Este test
+    verifica que el getter ya ve un ts > 0.0 DESDE ADENTRO del callback,
+    antes de que este retorne.
+    """
+    loop = _make_loop()
+    seen_ts_during_callback = []
+
+    async def slow_cb(event):
+        # Mientras el callback está "corriendo" (comando slow-path), el ts
+        # acústico ya debe estar registrado para esta room.
+        seen_ts_during_callback.append(loop.last_command_dispatch_ts(event.room_id))
+        await asyncio.sleep(0)  # cede el control, simula I/O del slow path
+        return {"success": True}
+
+    loop.on_command(slow_cb)
+
+    audio = np.zeros(8000, dtype=np.float32)
+    event = CommandEvent(audio=audio, room_id="cocina")
+    await loop._dispatch_command(event)
+
+    assert len(seen_ts_during_callback) == 1
+    assert seen_ts_during_callback[0] > 0.0

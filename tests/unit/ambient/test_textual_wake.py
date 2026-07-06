@@ -99,6 +99,17 @@ class TestMatchesWakeFuzzy:
         # se evalúa en el pase exacto y NO consulta el denylist.
         assert matches_wake("Next up, apagá la luz") is True
 
+    def test_nena_does_not_match_common_vocative(self):
+        # "nena" (vocativo rioplatense muy común, "nena, apagá la luz") está
+        # a distancia 1 de "nexa" (sustitución x↔n) — denylist para evitar
+        # ejecutar comandos dirigidos a una persona, no al asistente.
+        assert matches_wake("nena apagá la luz") is False
+
+    def test_nexo_does_not_match_common_word(self):
+        # "nexo" ("el nexo entre ambos") está a distancia 1 de "nexa"
+        # (sustitución a↔o) — palabra española común, denylist.
+        assert matches_wake("el nexo entre ambos") is False
+
     def test_unrelated_words_do_not_match(self):
         # "apaga"/"la"/"luz" no están a distancia <=1 de "nexa".
         assert matches_wake("apagá la luz") is False
@@ -161,6 +172,39 @@ class TestDetectorSkipConditions:
 
         assert result is False
         dispatch.assert_not_awaited()
+
+    async def test_no_dispatch_when_source_is_self(self):
+        # source="self" = eco de la propia TTS del asistente (SourceClassifier
+        # durante reproducción). Una respuesta hablada que contenga "nexa" no
+        # debe re-disparar un comando.
+        dispatch = AsyncMock()
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+        )
+
+        result = await detector.maybe_dispatch(
+            room_id="salon", text="Nexa apagó la luz", source="self",
+            speaker=None, audio=make_audio(),
+        )
+
+        assert result is False
+        dispatch.assert_not_awaited()
+
+    async def test_self_skip_logs_info(self, caplog):
+        dispatch = AsyncMock()
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+        )
+
+        with caplog.at_level(logging.INFO):
+            await detector.maybe_dispatch(
+                room_id="salon", text="Nexa apagó la luz", source="self",
+                speaker=None, audio=make_audio(),
+            )
+
+        assert any("[TextualWake]" in r.message for r in caplog.records)
 
     async def test_no_dispatch_when_disabled(self):
         dispatch = AsyncMock()

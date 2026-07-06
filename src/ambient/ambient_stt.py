@@ -27,6 +27,24 @@ class AmbientSTT:
         self._stt = stt
         self.asr_col = asr_col
 
+    def asr_mono(self, audio: np.ndarray) -> np.ndarray:
+        """Extraer la columna ASR mono de un audio potencialmente multicanal.
+
+        No-op passthrough si `audio` ya es 1D. Método público para que
+        consumidores externos (p. ej. el hook de wake textual en
+        `transcriber.py`) obtengan la misma vista mono que usa internamente
+        el STT, en vez de pasar el segmento crudo multicanal río abajo
+        (rompe SpeakerID/ECAPA, que espera `(time,)`).
+
+        Args:
+            audio: Audio del segmento, 1D `(frames,)` o 2D `(frames, channels)`.
+
+        Returns:
+            Vista/copia 1D `(frames,)` — la columna `asr_col` si hay multicanal,
+            o el mismo array si ya era mono.
+        """
+        return self._asr_mono(audio)
+
     def _asr_mono(self, audio: np.ndarray) -> np.ndarray:
         if audio.ndim == 1:
             return audio

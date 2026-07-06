@@ -1597,6 +1597,9 @@ ambient:
   # Wake textual (spec 2026-07-05): si una utterance no-TV contiene "nexa",
   # dispara el command path con el texto ya transcripto (wake_text). Red de
   # seguridad del wake acústico débil post-mudanza del mic. Kill-switch acá.
+  # Nota para recalibraciones futuras: el matcher es SOLO token exacto o
+  # bigrama exacto (p. ej. "next up") + fuzzy per-token a distancia 1 —
+  # variantes de 3+ palabras NO matchean (no hay soporte de n-gramas >2).
   textual_wake:
     enabled: true
     dedup_window_s: 8.0

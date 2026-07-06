@@ -105,7 +105,7 @@ utterance.
 |-------|----------------|
 | Matcher lanza excepción | fail-open del ambient: la utterance se persiste igual, sin disparo; error logueado |
 | request_router falla en el dispatch textual | mismo manejo que un comando acústico (result con success=False); no tumba el transcriber |
-| Doble disparo acústico+textual | dedup_window_s lo corta; si igual pasara, el dedup existente del router (dedup_window_ms) es la segunda barrera |
+| Doble disparo acústico+textual | dedup_window_s lo corta; el mecanismo real de la segunda barrera es el ts acústico registrado ANTES del `await` del callback en `MultiRoomAudioLoop._dispatch_command` (así el canal textual ve el ts incluso durante un comando slow-path en curso) + el self-dedup propio del `TextualWakeDetector` — el `dedup_window_ms` del router es un dedup cruzado de ROOMS para el wake ACÚSTICO, no aplica al canal textual |
 | Parakeet transcribe el comando garbled | las defensas del router deciden (igual que cualquier comando); el textual no agrega riesgo nuevo |
 
 ## Testing

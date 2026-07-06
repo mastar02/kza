@@ -2,8 +2,9 @@
 
 El wake acústico (openwakeword) puede fallar en condiciones far-field (spec
 2026-07-05, "compuerta acústica"). Este módulo agrega una red de seguridad
-puramente textual: si una utterance del ambient path (ya transcripta, no-TV)
-contiene una mención de "nexa" —exacta o a corta distancia de edición—, se
+puramente textual: si una utterance del ambient path (ya transcripta, ni de TV
+ni eco de la propia TTS del asistente) contiene una mención de "nexa" —exacta
+o a corta distancia de edición—, se
 re-despacha como comando con el texto ya transcripto (`CommandEvent.wake_text`),
 evitando un segundo pase de STT.
 
@@ -26,11 +27,14 @@ bajar max_edit_distance a 0, que perdería la variante real "lexa".
 Por el mismo mecanismo por-token, "next" (sin el "up") también matchea "nexa"
 por sí solo (distancia 1, sustitución t↔a), pero es un FALSO POSITIVO
 común: el STT ambient (Parakeet) emite inglés spurious con regularidad.
-Mitigación (v1): denylist de palabras comunes en inglés (p. ej. "next") que
-son edit-distance ≤1 de un token base, excluidas SOLO del fuzzy per-token.
-El bigram "next up" se evalúa en el pase exacto, que NO consulta el denylist,
-así que sigue matcheando; los tokens exactos ("nexa" sin fuzzy) tampoco
-consultan el denylist. Ver también test_textual_wake.py.
+Mismo caso con "nena" (vocativo rioplatense muy común, sustitución x↔n) y
+"nexo" (palabra española común, sustitución a↔o): ambas dispararían un
+comando fantasma en conversación normal del hogar. Mitigación (v1): denylist
+de palabras comunes —inglés o español— (`_FUZZY_DENYLIST`: "next", "nena",
+"nexo") que son edit-distance ≤1 de un token base, excluidas SOLO del fuzzy
+per-token. El bigram "next up" se evalúa en el pase exacto, que NO consulta
+el denylist, así que sigue matcheando; los tokens exactos ("nexa" sin fuzzy)
+tampoco consultan el denylist. Ver también test_textual_wake.py.
 
 "alexa" NO matchea: edit-distance("nexa", "alexa") = 2 (dos inserciones),
 por encima del default max_edit_distance=1 — verificado con test.
@@ -57,11 +61,16 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_VARIANTS: tuple[str, ...] = ("nexa", "next up")
 
-# Palabras comunes en inglés (spurious del STT ambient Parakeet) que están a
-# edit-distance ≤1 de "nexa" pero son falsos positivos — excluidas del fuzzy
-# per-token (las bigramas exactas como "next up" y los tokens exactos se
-# siguen evaluando sin consultar esta lista).
-_FUZZY_DENYLIST: frozenset[str] = frozenset({"next"})
+# Palabras comunes (inglés o español) que están a edit-distance ≤1 de "nexa"
+# pero son falsos positivos — excluidas del fuzzy per-token (las bigramas
+# exactas como "next up" y los tokens exactos se siguen evaluando sin
+# consultar esta lista):
+# - "next": spurious del STT ambient Parakeet (emite inglés sobre far-field).
+# - "nena": vocativo rioplatense extremadamente común ("nena, apagá la luz"
+#   dicho a una persona, no al asistente) — sustitución x↔n de "nexa".
+# - "nexo": palabra española común ("el nexo entre ambos") — sustitución
+#   a↔o de "nexa".
+_FUZZY_DENYLIST: frozenset[str] = frozenset({"next", "nena", "nexo"})
 
 
 def normalize_text(text: str) -> str:
@@ -238,7 +247,9 @@ class TextualWakeDetector:
 
         Reglas en orden (la primera que aplica decide):
         1. Canal deshabilitado -> no dispara.
-        2. `source == "tv"` -> no dispara (log INFO).
+        2. `source in {"tv", "self"}` -> no dispara (log INFO). "tv" = audio
+           de un televisor de fondo; "self" = eco de la propia TTS del
+           asistente reproduciéndose (`SourceClassifier` durante `during_tts`).
         3. Sin match del wake word -> no dispara (sin log, caso común).
         4. Wake acústico disparó hace menos de `dedup_window_s` en esta
            room -> no dispara (log INFO).
@@ -250,8 +261,8 @@ class TextualWakeDetector:
         Args:
             room_id: Habitación de origen de la utterance.
             text: Texto ya transcripto por el ambient STT.
-            source: Clasificación de la fuente ("tv", "live", etc.) — solo
-                "tv" se trata especial acá.
+            source: Clasificación de la fuente ("tv", "self", "live", etc.) —
+                "tv" y "self" se tratan especial acá (skip, ver Reglas).
             speaker: Hablante identificado, o None. Solo se usa para logging.
             audio: Audio del segmento (misma vista usada para el ASR
                 ambient), se adjunta al CommandEvent sin copiar.
@@ -263,10 +274,11 @@ class TextualWakeDetector:
         if not self._enabled:
             return False
 
-        if source == "tv":
+        if source in {"tv", "self"}:
+            decision = "source_tv" if source == "tv" else "source_self"
             logger.info(
                 f"[TextualWake] skip room={room_id} source={source} "
-                f"speaker={speaker} decision=source_tv text={text!r}"
+                f"speaker={speaker} decision={decision} text={text!r}"
             )
             return False
 
