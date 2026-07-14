@@ -137,6 +137,15 @@ wake_word:
 # 2026-05-07: movido cuda:0 → cuda:1. GLM-Air consolidó en cuda:0 (6.7 GB);
 # cuda:1 quedó libre y absorbe fast 7B Q4 (~5 GB) + audio (~1.9 GB) con ~1.4 GB margen.
 stt:
+  # engine del fast path (command path). "whisper" (default, faster-whisper
+  # turbo GPU) | "parakeet" (Parakeet-TDT onnx-asr CPU, 0 VRAM, no alucina
+  # sobre no-voz). NO cambiar a parakeet sin datos del benchmark/shadow — el
+  # command path tiene presupuesto <300ms. Ver plan Parakeet fast path.
+  engine: "whisper"
+  # shadow_engine: corre un 2º STT en paralelo SOLO para loguear/comparar
+  # (fire-and-forget, no bloquea la respuesta ni cambia el STT activo).
+  # null = off. "parakeet" = A/B en vivo Whisper vs Parakeet ([STT-shadow]).
+  shadow_engine: null
   model: "./models/whisper-v3-turbo"  # faster-whisper-large-v3-turbo-ct2 (~800MB, 8× más rápido que large-v3)
   device: "cuda:1"
   # 2026-05-07: float16 → int8_float16. FP16 + workspaces cuBLAS de

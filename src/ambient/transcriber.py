@@ -249,7 +249,7 @@ def _build_ambient_stt_engine(stt_cfg: dict, stt_base_cfg: dict):
     """
     engine = stt_cfg.get("engine", "whisper")
     if engine == "parakeet":
-        from src.ambient.parakeet_stt import ParakeetSTT
+        from src.stt.parakeet_stt import ParakeetSTT
 
         return ParakeetSTT(
             model_name=stt_cfg.get("parakeet_model", "nemo-parakeet-tdt-0.6b-v3"),

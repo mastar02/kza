@@ -499,11 +499,28 @@ class MoonshineSTT:
         return STTResult(text=text, elapsed_ms=ms, no_speech_prob=None, avg_logprob=None)
 
 
-def create_stt(config: dict) -> FastWhisperSTT | MoonshineSTT:
-    """Factory para crear el STT según configuración"""
-    model = config.get("model", "distil-whisper/distil-small.en")
+def create_stt(config: dict):
+    """Factory para crear el STT del fast path según configuración.
 
-    if "moonshine" in model.lower():
+    Selección por ``engine`` (o heurística sobre ``model``):
+    - ``parakeet``: ParakeetSTT (onnx-asr, CPU) — transducer TDT que no alucina
+      sobre no-voz. Duck-type de FastWhisperSTT (transcribe / transcribe_with_
+      confidence -> STTResult). GPU descartado (loop TDT rinde peor que CPU en
+      clips cortos); ver plan Parakeet fast path.
+    - ``moonshine``: MoonshineSTT.
+    - ``whisper`` (default): FastWhisperSTT (faster-whisper turbo, GPU).
+    """
+    model = config.get("model", "distil-whisper/distil-small.en")
+    engine = config.get("engine", "").lower()
+
+    if engine == "parakeet" or "parakeet" in model.lower():
+        from src.stt.parakeet_stt import ParakeetSTT
+
+        return ParakeetSTT(
+            model_name=config.get("parakeet_model", "nemo-parakeet-tdt-0.6b-v3"),
+            language=config.get("language", "es"),
+        )
+    if engine == "moonshine" or "moonshine" in model.lower():
         return MoonshineSTT(
             model=model,
             device=config.get("device", "cuda:0")

@@ -48,6 +48,7 @@ class CommandProcessor:
         user_manager=None,
         emotion_detector=None,
         sample_rate: int = 16000,
+        shadow_stt=None,
     ):
         """
         Inicializar CommandProcessor.
@@ -58,12 +59,22 @@ class CommandProcessor:
             user_manager: User management service
             emotion_detector: EmotionDetector para análisis de emociones
             sample_rate: Sample rate de audio (Hz)
+            shadow_stt: STT secundario opcional para A/B en vivo. Si se provee,
+                se transcribe el MISMO audio en paralelo (fire-and-forget, NO
+                bloquea la respuesta ni cambia el texto usado) y se loguea
+                ``[STT-shadow]`` con ambas transcripciones y latencias. None =
+                off (default). Se usa para comparar Parakeet vs Whisper sobre
+                tráfico real antes de decidir un flip del STT primario.
         """
         self.stt = stt
         self.speaker_id = speaker_identifier
         self.user_manager = user_manager
         self.emotion_detector = emotion_detector
         self.sample_rate = sample_rate
+        self.shadow_stt = shadow_stt
+        # Referencias fuertes a las tasks de shadow en vuelo: sin esto el GC
+        # de asyncio puede cancelar una task fire-and-forget a mitad de camino.
+        self._shadow_tasks: set = set()
 
         self._current_user = None
         self._current_emotion = None
@@ -81,6 +92,11 @@ class CommandProcessor:
         # Cargar STT si es necesario
         if hasattr(self.stt, 'load'):
             self.stt.load()
+
+        # Cargar STT shadow si está configurado (A/B en vivo)
+        if self.shadow_stt is not None and hasattr(self.shadow_stt, 'load'):
+            self.shadow_stt.load()
+            logger.info("Shadow STT loaded (A/B en vivo)")
 
         # Cargar speaker ID si es disponible
         if self.speaker_id and hasattr(self.speaker_id, 'load'):
@@ -176,7 +192,38 @@ class CommandProcessor:
             f"Emotion={result.emotion.emotion if result.emotion else 'none'}"
         )
 
+        # A/B en vivo: transcribir el mismo audio con el STT shadow SIN bloquear
+        # la respuesta (fire-and-forget). Solo loguea la comparación.
+        if self.shadow_stt is not None:
+            self._dispatch_shadow(audio, text, result.timings.get("stt", 0.0))
+
         return result
+
+    def _dispatch_shadow(self, audio: np.ndarray, primary_text: str, primary_ms: float) -> None:
+        """Lanzar la transcripción shadow en background (no bloquea el return)."""
+        try:
+            task = asyncio.create_task(
+                self._run_shadow(audio, primary_text, primary_ms)
+            )
+            self._shadow_tasks.add(task)
+            task.add_done_callback(self._shadow_tasks.discard)
+        except RuntimeError:
+            # Sin event loop corriendo (p. ej. tests sync): shadow es opcional.
+            pass
+
+    async def _run_shadow(self, audio: np.ndarray, primary_text: str, primary_ms: float) -> None:
+        """Transcribir con el STT shadow y loguear la comparación A/B."""
+        try:
+            loop = asyncio.get_running_loop()
+            r = await loop.run_in_executor(
+                None, self.shadow_stt.transcribe_with_confidence, audio, self.sample_rate
+            )
+            logger.info(
+                f"[STT-shadow] primary={primary_text[:60]!r} primary_ms={primary_ms:.0f} "
+                f"shadow={r.text[:60]!r} shadow_ms={r.elapsed_ms:.0f}"
+            )
+        except Exception as e:  # el shadow jamás debe afectar el command path
+            logger.debug(f"[STT-shadow] error (ignorado): {e}")
 
     async def _process_parallel(self, audio: np.ndarray) -> tuple[str, float, tuple | None, object | None, STTResult | None]:
         """

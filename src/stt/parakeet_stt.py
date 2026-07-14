@@ -1,22 +1,24 @@
-"""ParakeetSTT — NVIDIA Parakeet-TDT-0.6B-v3 vía onnx-asr, motor del ambient path.
+"""ParakeetSTT — NVIDIA Parakeet-TDT-0.6B-v3 vía onnx-asr (CPU).
 
-Reemplaza al Whisper turbo en el AMBIENT path (swap 2026-06-07, benchmark A/B
-con audio real XVF3800: 0/5 alucinaciones sobre no-voz vs 5/5 del turbo,
-mejor calidad sobre voz, RTF ~0.03 en CPU). Razones de arquitectura:
+Motor ASR alternativo al faster-whisper turbo. Origen: swap del AMBIENT path
+(2026-06-07, benchmark A/B con audio real XVF3800: 0/5 alucinaciones sobre
+no-voz vs 5/5 del turbo, mejor calidad sobre voz, RTF ~0.03 en CPU). Movido de
+``src/ambient/`` a ``src/stt/`` para que también lo pueda seleccionar el COMMAND
+path (fast path) vía ``create_stt``, sin que el STT del fast path dependa del
+módulo ``ambient``. Razones de arquitectura:
 - Transducer frame-synchronous: no "free-runea" texto como el decoder
   autoregresivo de Whisper → sin "Gracias por ver el video." sobre silencio
   ni repetition loops (entrenado con 36kh de no-voz/target-vacío,
   arxiv 2509.14128).
-- Corre en CPU (onnxruntime): 0 VRAM — libera ~1.5GB de cuda:0 que usaba
-  el Whisper ambiental.
+- Corre en CPU (onnxruntime): 0 VRAM. GPU descartado para el fast path — el
+  decoder TDT autoregresivo en onnxruntime-gpu (loop Python) rinde PEOR que
+  CPU en clips cortos (RTF ~0.1 vs ~0.03); ver plan Parakeet fast path.
 
-El COMMAND path no se toca: sigue en faster-whisper turbo GPU (~150ms,
-presupuesto <300ms). Doc: docs/research/2026-06-07_SOTA_ASR_ESPANOL_INVESTIGACION.md.
-
-Duck-type de FastWhisperSTT para AmbientSTT: expone
-``transcribe_with_confidence(audio) -> STTResult``. Parakeet no produce
-no_speech_prob/avg_logprob/compression_ratio → None ('sin penalizar');
-la señal de calidad del ambient path es ``vad_prob`` (Silero), no el STT.
+Duck-type de FastWhisperSTT: expone ``transcribe_with_confidence(audio) ->
+STTResult`` y ``transcribe(audio) -> (text, ms)``. Parakeet no produce
+no_speech_prob/avg_logprob/compression_ratio → None ('sin penalizar' en el
+CommandGate, cuyas reglas duras son todas por texto); la señal de calidad del
+ambient path es ``vad_prob`` (Silero), no el STT.
 """
 from __future__ import annotations
 
@@ -91,3 +93,17 @@ class ParakeetSTT:
         logger.debug(f"Parakeet STT ({elapsed_ms:.0f}ms): {text[:50]}...")
 
         return STTResult(text=text.strip(), elapsed_ms=elapsed_ms)
+
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+    ) -> tuple[str, float]:
+        """Transcribir audio a texto. Firma compat (text, elapsed_ms).
+
+        Espejo de ``FastWhisperSTT.transcribe``: el command path lo usa en el
+        early-parse (``multi_room_audio_loop._early_parse_worker``), que solo
+        necesita (texto, ms) sin las señales de confianza.
+        """
+        r = self.transcribe_with_confidence(audio, sample_rate)
+        return r.text, r.elapsed_ms
