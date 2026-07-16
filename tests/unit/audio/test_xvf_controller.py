@@ -198,6 +198,53 @@ class TestWriteParam:
         assert c.write_param("PP_AGCMAXGAIN", [8.0]) is False
 
 
+class TestFase3TuningParams:
+    """Params anti-TV agregados 2026-07-16 (IDs del xvf_host.py oficial)."""
+
+    @pytest.mark.parametrize("name,resid,cmdid", [
+        ("AUDIO_MGR_MIC_GAIN", 35, 0),
+        ("PP_MIN_NS", 17, 21),
+        ("PP_MIN_NN", 17, 22),
+        ("PP_FMIN_SPEINDEX", 17, 30),
+        ("PP_ATTNS_NOMINAL", 17, 33),
+        ("PP_ATTNS_SLOPE", 17, 34),
+    ])
+    def test_write_float_ids_exactos(self, name, resid, cmdid):
+        dev = FakeRWDev()
+        c = XvfController(device=dev)
+        assert c.write_param(name, [0.5]) is True
+        _, _, wvalue, windex, payload = dev.writes[0]
+        assert (windex, wvalue) == (resid, cmdid)
+        assert payload == struct.pack("<f", 0.5)
+
+    def test_write_attns_mode_int32(self):
+        dev = FakeRWDev()
+        c = XvfController(device=dev)
+        assert c.write_param("PP_ATTNS_MODE", [1]) is True
+        _, _, wvalue, windex, payload = dev.writes[0]
+        assert (windex, wvalue) == (17, 32)
+        assert payload == struct.pack("<i", 1)
+
+    @pytest.mark.parametrize("name,bad", [
+        ("PP_MIN_NN", 1.5),         # oficial [0.0 .. 1.0]
+        ("PP_ATTNS_MODE", 2),        # oficial 0,1
+        ("PP_ATTNS_SLOPE", 5.1),     # oficial [0.0 .. 5.0]
+        ("PP_FMIN_SPEINDEX", 8000.0),  # oficial [0.0 .. 7999.0]
+    ])
+    def test_write_fuera_de_rango_oficial_raises(self, name, bad):
+        c = XvfController(device=FakeRWDev())
+        with pytest.raises(ValueError, match="rango"):
+            c.write_param(name, [bad])
+
+    def test_mic_gain_sin_rango_oficial_no_valida(self):
+        # AUDIO_MGR_MIC_GAIN no declara rango en el oficial → la regla del
+        # dict es no inventar validación (0.0 silencia el mic: cuidado
+        # operativo, no de programación).
+        dev = FakeRWDev()
+        c = XvfController(device=dev)
+        assert c.write_param("AUDIO_MGR_MIC_GAIN", [90.0]) is True
+
+
 class TestDangerousParamsNotExposed:
     """Regla de oro del tuning: SOLO RAM. Nada que persista o rebootee."""
 

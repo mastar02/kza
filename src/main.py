@@ -276,6 +276,15 @@ async def main():
     # Speech-to-Text
     stt = create_stt(config.get("stt", {}))
 
+    # STT shadow (A/B en vivo, opcional): 2º motor que transcribe el mismo
+    # audio del command path solo para comparar/loguear ([STT-shadow]), sin
+    # cambiar el STT activo. Se activa con stt.shadow_engine (default null).
+    shadow_stt = None
+    _shadow_engine = (config.get("stt", {}) or {}).get("shadow_engine")
+    if _shadow_engine:
+        shadow_stt = create_stt({**config.get("stt", {}), "engine": _shadow_engine})
+        logger.info(f"STT shadow habilitado: engine={_shadow_engine} (A/B en vivo)")
+
     # Text-to-Speech
     tts = create_tts(config.get("tts", {}))
 
@@ -1010,6 +1019,7 @@ async def main():
         user_manager=user_manager,
         emotion_detector=emotion_detector,
         sample_rate=16000,
+        shadow_stt=shadow_stt,
     )
 
     # === Plan #3 OpenClaw — Plugin hooks (optional) ===

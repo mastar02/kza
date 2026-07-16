@@ -137,6 +137,15 @@ wake_word:
 # 2026-05-07: movido cuda:0 → cuda:1. GLM-Air consolidó en cuda:0 (6.7 GB);
 # cuda:1 quedó libre y absorbe fast 7B Q4 (~5 GB) + audio (~1.9 GB) con ~1.4 GB margen.
 stt:
+  # engine del fast path (command path). "whisper" (default, faster-whisper
+  # turbo GPU) | "parakeet" (Parakeet-TDT onnx-asr CPU, 0 VRAM, no alucina
+  # sobre no-voz). NO cambiar a parakeet sin datos del benchmark/shadow — el
+  # command path tiene presupuesto <300ms. Ver plan Parakeet fast path.
+  engine: "whisper"
+  # shadow_engine: corre un 2º STT en paralelo SOLO para loguear/comparar
+  # (fire-and-forget, no bloquea la respuesta ni cambia el STT activo).
+  # null = off. "parakeet" = A/B en vivo Whisper vs Parakeet ([STT-shadow]).
+  shadow_engine: null
   model: "./models/whisper-v3-turbo"  # faster-whisper-large-v3-turbo-ct2 (~800MB, 8× más rápido que large-v3)
   device: "cuda:1"
   # 2026-05-07: float16 → int8_float16. FP16 + workspaces cuBLAS de
@@ -1148,6 +1157,18 @@ rooms:
         # voz mide RMS 0.24-0.30 y los comandos transcriben limpios (sesión
         # de recalibración en vivo, validado con comando ejecutado e2e).
         PP_AGCMAXGAIN: [16.0]
+        # --- Fase 3 anti-TV (2026-07-16): CANDIDATOS, descomentar tras el
+        # diagnóstico (--read-all con kza-voice PARADO) y validar por voz de a
+        # UNO. IDs ya soportados por el controller. ⚠️ Interacciones conocidas:
+        # tocar ganancias desajusta la cascada calibrada (endpointing RMS,
+        # wake thr, SPENERGY) — ver incidente 07-05.
+        # PP_ATTNS_MODE: [1]        # reducir gain del AGC durante no-voz
+        # PP_ATTNS_SLOPE: [1.0]     # ruido de salida ~constante ante gain AGC
+        # PP_MIN_NN: [0.4]          # más supresión de ruido NO-estacionario
+        #                           # (habla/música de TV); default a leer
+        # AEC_FIXEDBEAMSONOFF: [1]  # requiere medir azimut del usuario/TV en
+        # AEC_FIXEDBEAMSAZIMUTH_VALUES: [<az_usuario>, <az_usuario>]
+        # AEC_FIXEDBEAMSGATING: [1] # la ventana (AEC_AZIMUTH_VALUES en vivo)
     # Pre-roll de audio (2026-06-02): segundos de audio previos al wake que se
     # prependen al comando. openwakeword tiene latencia de detección (~0.5-1s):
     # decís "Nexa apagá la luz" de corrido y "apagá" se pierde porque la captura

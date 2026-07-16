@@ -64,6 +64,25 @@ PARAMETERS: dict[str, tuple[int, int, int, str, str]] = {
     # Routing de canales de salida USB: <category>, <source> por canal (L-3)
     "AUDIO_MGR_OP_L": (35, 15, 2, "rw", "uint8"),
     "AUDIO_MGR_OP_R": (35, 19, 2, "rw", "uint8"),
+    # --- Fase 3 tuning anti-TV (2026-07-16, IDs verificados contra
+    # python_control/xvf_host.py oficial @ master) ---
+    # Ganancia analógica del array (pre-SHF) — la palanca correcta para "voz
+    # bajo el umbral de endpointing" ANTES de forzar el AGC del post-processor.
+    # ⚠️ Sin rango oficial declarado → sin validación; 0.0 silencia el mic.
+    "AUDIO_MGR_MIC_GAIN": (35, 0, 1, "rw", "float"),
+    # Gain-floors de supresión de ruido del post-processor (MENOR = más
+    # supresión). MIN_NN (no-estacionario) es la perilla contra habla/música
+    # de TV; MIN_NS (estacionario) contra ruido constante.
+    "PP_MIN_NS": (17, 21, 1, "rw", "float"),
+    "PP_MIN_NN": (17, 22, 1, "rw", "float"),
+    # Bajo SPEINDEX Hz se suprime más en double-talk (parámetro de dispositivo,
+    # no de gusto — default Seeed 1300.0 vs guía XMOS 593.75: leer antes).
+    "PP_FMIN_SPEINDEX": (17, 30, 1, "rw", "float"),
+    # ATTNS: reducción EXTRA del gain del AGC durante no-voz. Doma el efecto
+    # "AGC amplifica la TV en los silencios" sin apagar el AGC.
+    "PP_ATTNS_MODE": (17, 32, 1, "rw", "int32"),
+    "PP_ATTNS_NOMINAL": (17, 33, 1, "rw", "float"),
+    "PP_ATTNS_SLOPE": (17, 34, 1, "rw", "float"),
 }
 
 _AUTO_BEAM_IDX = 3  # índice 3 = beam auto-select (el más robusto)
@@ -94,6 +113,14 @@ _VALID_RANGES: dict[str, tuple[float, float]] = {
     "AEC_ASROUTGAIN": (0.0, 1000.0),
     "AEC_FIXEDBEAMSONOFF": (0, 1),
     "AEC_FIXEDBEAMSGATING": (0, 1),
+    # Fase 3 (rangos "Valid range" del xvf_host.py oficial; AUDIO_MGR_MIC_GAIN
+    # no declara rango → sin entrada, por la regla de este dict)
+    "PP_MIN_NS": (0.0, 1.0),
+    "PP_MIN_NN": (0.0, 1.0),
+    "PP_FMIN_SPEINDEX": (0.0, 7999.0),
+    "PP_ATTNS_MODE": (0, 1),
+    "PP_ATTNS_NOMINAL": (0.0, 1.0),
+    "PP_ATTNS_SLOPE": (0.0, 5.0),
 }
 
 
