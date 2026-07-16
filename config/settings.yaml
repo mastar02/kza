@@ -145,7 +145,9 @@ stt:
   # shadow_engine: corre un 2º STT en paralelo SOLO para loguear/comparar
   # (fire-and-forget, no bloquea la respuesta ni cambia el STT activo).
   # null = off. "parakeet" = A/B en vivo Whisper vs Parakeet ([STT-shadow]).
-  shadow_engine: null
+  # ON 2026-07-16 (ventana deploy): juntar días de comandos near-field reales
+  # para decidir el flip — el benchmark offline solo tenía falsos wakes de TV.
+  shadow_engine: "parakeet"
   model: "./models/whisper-v3-turbo"  # faster-whisper-large-v3-turbo-ct2 (~800MB, 8× más rápido que large-v3)
   device: "cuda:1"
   # 2026-05-07: float16 → int8_float16. FP16 + workspaces cuBLAS de
@@ -1157,18 +1159,24 @@ rooms:
         # voz mide RMS 0.24-0.30 y los comandos transcriben limpios (sesión
         # de recalibración en vivo, validado con comando ejecutado e2e).
         PP_AGCMAXGAIN: [16.0]
-        # --- Fase 3 anti-TV (2026-07-16): CANDIDATOS, descomentar tras el
-        # diagnóstico (--read-all con kza-voice PARADO) y validar por voz de a
-        # UNO. IDs ya soportados por el controller. ⚠️ Interacciones conocidas:
-        # tocar ganancias desajusta la cascada calibrada (endpointing RMS,
-        # wake thr, SPENERGY) — ver incidente 07-05.
-        # PP_ATTNS_MODE: [1]        # reducir gain del AGC durante no-voz
-        # PP_ATTNS_SLOPE: [1.0]     # ruido de salida ~constante ante gain AGC
-        # PP_MIN_NN: [0.4]          # más supresión de ruido NO-estacionario
-        #                           # (habla/música de TV); default a leer
-        # AEC_FIXEDBEAMSONOFF: [1]  # requiere medir azimut del usuario/TV en
+        # --- Fase 3 anti-TV, ON 2026-07-16 (ventana deploy). Diagnóstico
+        # previo (snapshot chip 09:43): MIN_NN=0.51 (supresión no-estacionaria
+        # efectivamente OFF) y ATTNS_MODE=0 — las DOS palancas anti-TV estaban
+        # apagadas; el resto del chip ya estaba en valores recomendados.
+        # ⚠️ Si un comando near-field deja de transcribir tras esto, revertir
+        # (re-comentar + restart): tocar el procesamiento de ruido puede mover
+        # el piso que ve el endpointing (lección incidente 07-05).
+        PP_ATTNS_MODE: [1]        # reducir gain del AGC durante no-voz (TV
+                                  # ya no se amplifica en los silencios)
+        PP_ATTNS_SLOPE: [1.0]     # = valor del chip; anclado para que un
+                                  # re-enchufe no lo revierta silenciosamente
+        PP_MIN_NN: [0.4]          # 0.51→0.4: activa supresión de ruido
+                                  # NO-estacionario (habla/música de TV)
+        # Fixed beams: PENDIENTE medir azimut usuario/TV en vivo (ventana
+        # aparte con AEC_AZIMUTH_VALUES; ambient.db tiene azimuth=NULL).
+        # AEC_FIXEDBEAMSONOFF: [1]
         # AEC_FIXEDBEAMSAZIMUTH_VALUES: [<az_usuario>, <az_usuario>]
-        # AEC_FIXEDBEAMSGATING: [1] # la ventana (AEC_AZIMUTH_VALUES en vivo)
+        # AEC_FIXEDBEAMSGATING: [1]
     # Pre-roll de audio (2026-06-02): segundos de audio previos al wake que se
     # prependen al comando. openwakeword tiene latencia de detección (~0.5-1s):
     # decís "Nexa apagá la luz" de corrido y "apagá" se pierde porque la captura
