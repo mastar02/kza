@@ -24,6 +24,7 @@ from src.wakeword.whisper_wake import _text_likely_truncated
 from src.audio.echo_suppressor import EchoSuppressor
 from src.conversation.follow_up_mode import FollowUpMode
 from src.nlu.command_grammar import PartialCommand, parse_partial_command
+from src.rooms.room_context import resolve_mic_usb_port
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,28 @@ def _resolve_capture_channels(max_input_channels: int) -> int:
     return max_input_channels if max_input_channels and max_input_channels >= 1 else 1
 
 
+def detect_stale_streams(
+    states: list[tuple[str, float]], now: float, timeout_s: float
+) -> list[str]:
+    """Return room_ids whose audio stream stopped delivering frames.
+
+    A stream is stale when it has produced at least one frame (last_frame_ts > 0)
+    and more than `timeout_s` seconds elapsed since the last one. Streams that
+    never opened (last_frame_ts == 0.0) are ignored — there is nothing to recover
+    until `run()` opens them.
+
+    Args:
+        states: list of (room_id, last_frame_ts) with monotonic timestamps.
+        now: current monotonic time.
+        timeout_s: seconds without frames before a stream is considered dead.
+    """
+    return [
+        room_id
+        for room_id, last_frame_ts in states
+        if last_frame_ts > 0.0 and (now - last_frame_ts) > timeout_s
+    ]
+
+
 @dataclass
 class RoomStream:
     """Per-room audio capture state."""
@@ -104,6 +127,13 @@ class RoomStream:
     # Score del wake que abrió la captura actual. Se fija al aceptar el wake
     # y se propaga al CommandEvent para que el earcon gate decida humano-plausible.
     wake_score: float = 1.0
+    # Puerto USB físico estable (ej "3-1.4") para re-resolver el índice de
+    # PortAudio si el device se re-enumera. None = no re-resolver por puerto.
+    mic_usb_port: Optional[str] = None
+    # Timestamp monotónico del último frame recibido por el callback. 0.0 hasta
+    # que el stream se abre/recibe el primer frame. Lo vigila _stream_watchdog
+    # para detectar un mic muerto por re-enumeración USB.
+    last_frame_ts: float = 0.0
 
 
 class MultiRoomAudioLoop:
@@ -146,6 +176,11 @@ class MultiRoomAudioLoop:
         xvf_tuning: dict | None = None,
         ambient_guard: AmbientGuard | None = None,
         wake_clip_writer=None,
+        stream_watchdog_enabled: bool = False,
+        stream_watchdog_no_frames_timeout_s: float = 8.0,
+        stream_watchdog_check_interval_s: float = 2.0,
+        stream_watchdog_reopen_backoff_min_s: float = 1.0,
+        stream_watchdog_reopen_backoff_max_s: float = 10.0,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -236,7 +271,15 @@ class MultiRoomAudioLoop:
         self._ambient_transcriber = None
         self._wake_vad_predict = None  # lazy: predictor Silero para wake_vad
 
+        self._watchdog_enabled = stream_watchdog_enabled
+        self._watchdog_timeout_s = stream_watchdog_no_frames_timeout_s
+        self._watchdog_check_interval_s = stream_watchdog_check_interval_s
+        self._watchdog_backoff_min_s = stream_watchdog_reopen_backoff_min_s
+        self._watchdog_backoff_max_s = stream_watchdog_reopen_backoff_max_s
+        self._watchdog_task = None
+
         self._running = False
+        self._streams: dict = {}
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
         self._on_post_command_callback: Callable[[dict, CommandEvent], Awaitable[None]] | None = None
 
@@ -438,6 +481,120 @@ class MultiRoomAudioLoop:
             else:
                 logger.warning(f"[XVF-tuning] {name} no aplicado (write fail-open)")
 
+    def _open_stream(self, rs: "RoomStream"):
+        """Open and start an InputStream for one room. None on PortAudioError."""
+        callback = self._make_audio_callback(rs)
+        try:
+            dev_info = sd.query_devices(rs.device_index)
+            capture_channels = _resolve_capture_channels(
+                int(dev_info.get("max_input_channels", 0))
+            )
+            stream = sd.InputStream(
+                device=rs.device_index,
+                samplerate=self.sample_rate,
+                channels=capture_channels,
+                dtype="float32",
+                blocksize=CHUNK_SIZE,
+                callback=callback,
+            )
+            stream.start()
+            logger.info(
+                f"Room {rs.room_id}: audio stream started "
+                f"(device={rs.device_index}, channels={capture_channels})"
+            )
+            return stream
+        except sd.PortAudioError as e:
+            logger.error(
+                f"Room {rs.room_id}: failed to open device {rs.device_index}: {e}"
+            )
+            return None
+
+    def _reinit_portaudio(self) -> None:
+        """Force PortAudio to re-scan the device list (sync; fail-open).
+
+        PortAudio snapshots devices at Pa_Initialize and never re-scans. After a
+        USB re-enumeration the cached indices point to dead devices, so we must
+        terminate+initialize to see the new ones. This is GLOBAL: it invalidates
+        every open stream, which is why _recover_streams reopens all of them.
+        """
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as e:
+            logger.warning(f"[audio-watchdog] PortAudio reinit failed: {e}")
+
+    async def _reopen_room(self, rs: "RoomStream") -> None:
+        """Re-resolve the device by USB port and reopen its stream, with backoff.
+
+        Waits indefinitely (while self._running) for the device to reappear in
+        sysfs — the service stays alive; only this mic waits. Never raises.
+        """
+        backoff = self._watchdog_backoff_min_s
+        while self._running:
+            new_index = rs.device_index
+            if rs.mic_usb_port:
+                resolved = await asyncio.to_thread(resolve_mic_usb_port, rs.mic_usb_port)
+                if resolved is None:
+                    logger.warning(
+                        f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} "
+                        f"absent, retry in {backoff:.1f}s"
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, self._watchdog_backoff_max_s)
+                    continue
+                new_index = resolved
+            rs.device_index = new_index
+            stream = await asyncio.to_thread(self._open_stream, rs)
+            if stream is not None:
+                self._streams[rs.room_id] = stream
+                rs.last_frame_ts = time.monotonic()
+                logger.info(
+                    f"[audio-watchdog] {rs.room_id}: recovered (device={new_index})"
+                )
+                return
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, self._watchdog_backoff_max_s)
+
+    async def _recover_streams(self, trigger_room_ids: list) -> None:
+        """Close all streams, reinit PortAudio, reopen all rooms.
+
+        sd._terminate() invalidates every stream, so recovery is all-or-nothing
+        even if only one room went stale.
+        """
+        logger.error(
+            f"[audio-watchdog] streams {trigger_room_ids} stopped delivering "
+            f"audio → recovering all streams"
+        )
+        for room_id, stream in list(self._streams.items()):
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+        self._streams.clear()
+        await asyncio.to_thread(self._reinit_portaudio)
+        for room_id, rs in self.room_streams.items():
+            await self._reopen_room(rs)
+
+    async def _stream_watchdog(self) -> None:
+        """Periodically detect mics that stopped delivering frames and recover.
+
+        Reuses detect_stale_streams (pure) for the decision. Runs only while
+        self._running; recovery is awaited so we never overlap two recoveries.
+        """
+        while self._running:
+            await asyncio.sleep(self._watchdog_check_interval_s)
+            if not self._running:
+                break
+            now = time.monotonic()
+            states = [
+                (room_id, rs.last_frame_ts)
+                for room_id, rs in self.room_streams.items()
+            ]
+            stale = detect_stale_streams(states, now, self._watchdog_timeout_s)
+            if stale:
+                await self._recover_streams(stale)
+
     async def run(self):
         """
         Main loop — opens N InputStreams and polls for completed commands.
@@ -450,33 +607,25 @@ class MultiRoomAudioLoop:
         # sounddevice) pueda schedular corrutinas via run_coroutine_threadsafe
         # cuando detecta barge-in.
         self._loop = asyncio.get_running_loop()
-        streams = []
 
+        self._streams = {}
         for room_id, rs in self.room_streams.items():
-            callback = self._make_audio_callback(rs)
-            try:
-                dev_info = sd.query_devices(rs.device_index)
-                capture_channels = _resolve_capture_channels(
-                    int(dev_info.get("max_input_channels", 0))
-                )
-                stream = sd.InputStream(
-                    device=rs.device_index,
-                    samplerate=self.sample_rate,
-                    channels=capture_channels,
-                    dtype="float32",
-                    blocksize=CHUNK_SIZE,
-                    callback=callback,
-                )
-                stream.start()
-                streams.append(stream)
-                logger.info(
-                    f"Room {room_id}: audio stream started "
-                    f"(device={rs.device_index}, channels={capture_channels})"
-                )
-            except sd.PortAudioError as e:
-                logger.error(f"Room {room_id}: failed to open device {rs.device_index}: {e}")
+            stream = self._open_stream(rs)
+            if stream is not None:
+                self._streams[room_id] = stream
+                rs.last_frame_ts = time.monotonic()
 
-        logger.info(f"MultiRoomAudioLoop ready ({len(streams)}/{len(self.room_streams)} streams)")
+        logger.info(
+            f"MultiRoomAudioLoop ready "
+            f"({len(self._streams)}/{len(self.room_streams)} streams)"
+        )
+
+        if self._watchdog_enabled:
+            self._watchdog_task = asyncio.create_task(self._stream_watchdog())
+            logger.info(
+                f"[audio-watchdog] ACTIVO (timeout={self._watchdog_timeout_s}s, "
+                f"check={self._watchdog_check_interval_s}s)"
+            )
 
         try:
             while self._running:
@@ -552,13 +701,22 @@ class MultiRoomAudioLoop:
                         asyncio.create_task(self._dispatch_command(event))
                         self._reset_listening(rs)
         finally:
-            for stream in streams:
-                stream.stop()
-                stream.close()
+            if self._watchdog_task is not None:
+                self._watchdog_task.cancel()
+                self._watchdog_task = None
+            for stream in self._streams.values():
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
 
     async def stop(self):
         """Stop all audio streams."""
         self._running = False
+        if self._watchdog_task is not None:
+            self._watchdog_task.cancel()
+            self._watchdog_task = None
         if self._xvf is not None:
             try:
                 # XvfController.stop() hace thread.join(timeout=1.0) — síncrono.
@@ -578,6 +736,11 @@ class MultiRoomAudioLoop:
         """Create a sounddevice callback closure for one room."""
 
         def audio_callback(indata, frames, time_info, status):
+            # Watchdog heartbeat: marca que el stream entregó un frame. Primera
+            # línea, O(1), nunca lanza — si esto deja de actualizarse, el mic
+            # murió (re-enumeración USB) y _stream_watchdog dispara recovery.
+            rs.last_frame_ts = time.monotonic()
+
             # Tee al ambient path (spec 2026-06-06): SIEMPRE primero — el
             # ambient quiere todo el audio, incluso lo que el barge-in o el
             # echo suppressor descartan para el command path. O(1). El

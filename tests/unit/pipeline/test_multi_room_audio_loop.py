@@ -1018,3 +1018,182 @@ class TestPostSuccessFollowUp:
         event = CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="cocina")
         await loop._dispatch_command(event)
         loop.follow_up.start_conversation.assert_not_called()
+
+
+from src.pipeline.multi_room_audio_loop import detect_stale_streams
+
+
+class TestCallbackStampsFrameTimestamp:
+    def test_fields_default(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        assert rs.last_frame_ts == 0.0
+        assert rs.mic_usb_port is None
+
+    def test_callback_updates_last_frame_ts(self):
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": _make_room_stream("escritorio", device_index=4)}
+        )
+        rs = loop.room_streams["escritorio"]
+        callback = loop._make_audio_callback(rs)
+        indata = np.zeros((160, 2), dtype="float32")
+        assert rs.last_frame_ts == 0.0
+        callback(indata, 160, None, None)
+        assert rs.last_frame_ts > 0.0
+
+
+class TestDetectStaleStreams:
+    def test_marks_stream_past_timeout(self):
+        # last_frame_ts=100.0, now=109.0 → 9s sin frames > 8s
+        assert detect_stale_streams([("escritorio", 100.0)], now=109.0, timeout_s=8.0) == ["escritorio"]
+
+    def test_ignores_fresh_stream(self):
+        # 2s sin frames < 8s
+        assert detect_stale_streams([("escritorio", 100.0)], now=102.0, timeout_s=8.0) == []
+
+    def test_ignores_never_opened_stream(self):
+        # last_frame_ts=0.0 → nunca recibió/abrió, no se marca
+        assert detect_stale_streams([("escritorio", 0.0)], now=999.0, timeout_s=8.0) == []
+
+    def test_multiple_streams_only_stale_returned(self):
+        states = [("a", 100.0), ("b", 108.5), ("c", 0.0)]
+        # now=110: a=10s stale, b=1.5s fresh, c=never
+        assert detect_stale_streams(states, now=110.0, timeout_s=8.0) == ["a"]
+
+
+class TestOpenStream:
+    def test_open_stream_returns_started_stream(self):
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": _make_room_stream("escritorio", device_index=4)}
+        )
+        rs = loop.room_streams["escritorio"]
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+        fake_stream = MagicMock()
+        mock_sd.InputStream.return_value = fake_stream
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd):
+            result = loop._open_stream(rs)
+        assert result is fake_stream
+        fake_stream.start.assert_called_once()
+
+    def test_open_stream_returns_none_on_portaudio_error(self):
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": _make_room_stream("escritorio", device_index=4)}
+        )
+        rs = loop.room_streams["escritorio"]
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.side_effect = mock_sd.PortAudioError("no device")
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd):
+            result = loop._open_stream(rs)
+        assert result is None
+
+
+class TestStreamWatchdog:
+    @pytest.mark.asyncio
+    async def test_watchdog_recovers_when_stream_stale(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        rs.mic_usb_port = "3-1.4"
+        loop = _make_multi_room_loop(rooms={"escritorio": rs})
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 0.05
+        # frame "viejo": monotonic muy atrás → stale
+        rs.last_frame_ts = time.monotonic() - 10.0
+
+        called = {}
+        async def fake_recover(ids):
+            called["ids"] = ids
+            loop._running = False  # corta el loop tras una recuperación
+        loop._recover_streams = fake_recover
+
+        await asyncio.wait_for(loop._stream_watchdog(), timeout=1.0)
+        assert called.get("ids") == ["escritorio"]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_noop_when_fresh(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        loop = _make_multi_room_loop(rooms={"escritorio": rs})
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 5.0
+        rs.last_frame_ts = time.monotonic()  # fresco
+
+        called = {"n": 0}
+        async def fake_recover(ids):
+            called["n"] += 1
+        loop._recover_streams = fake_recover
+
+        async def stop_soon():
+            await asyncio.sleep(0.05)
+            loop._running = False
+        await asyncio.gather(loop._stream_watchdog(), stop_soon())
+        assert called["n"] == 0
+
+
+class TestRecoverStreams:
+    @pytest.mark.asyncio
+    async def test_recover_reinits_portaudio_and_reopens(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        rs.mic_usb_port = "3-1.4"
+        loop = _make_multi_room_loop(rooms={"escritorio": rs})
+        loop._running = True
+        old_stream = MagicMock()
+        loop._streams = {"escritorio": old_stream}
+
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+        new_stream = MagicMock()
+        mock_sd.InputStream.return_value = new_stream
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port",
+            return_value=7,
+        ):
+            await loop._recover_streams(["escritorio"])
+
+        old_stream.close.assert_called_once()          # cerró el muerto
+        assert mock_sd._terminate.called and mock_sd._initialize.called  # reinit
+        assert rs.device_index == 7                    # re-resolvió por puerto
+        assert loop._streams["escritorio"] is new_stream  # reabrió
+        assert rs.last_frame_ts > 0.0                  # re-estampó
+
+    @pytest.mark.asyncio
+    async def test_reopen_waits_with_backoff_when_device_absent(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        rs.mic_usb_port = "3-1.4"
+        loop = _make_multi_room_loop(rooms={"escritorio": rs})
+        loop._running = True
+        loop._watchdog_backoff_min_s = 0.001
+        loop._watchdog_backoff_max_s = 0.004
+
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+        mock_sd.InputStream.return_value = MagicMock()
+        # 1ra resolución None (ausente), 2da devuelve índice → 1 reintento
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port",
+            side_effect=[None, 7],
+        ):
+            await loop._reopen_room(rs)
+
+        assert rs.device_index == 7
+        assert "escritorio" in loop._streams
+
+
+class TestWatchdogConfigContract:
+    def test_disabled_by_default(self):
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": _make_room_stream("escritorio", device_index=4)}
+        )
+        assert loop._watchdog_enabled is False
+
+    def test_enabled_via_kwarg(self):
+        loop = _make_multi_room_loop(
+            rooms={"escritorio": _make_room_stream("escritorio", device_index=4)},
+            stream_watchdog_enabled=True,
+            stream_watchdog_no_frames_timeout_s=8.0,
+        )
+        assert loop._watchdog_enabled is True
+        assert loop._watchdog_timeout_s == 8.0
