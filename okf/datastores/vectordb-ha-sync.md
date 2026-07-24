@@ -22,17 +22,35 @@ The module's own comments document real production tuning history: a
 area, raised from `0.15` to `0.35` on 2026-06-04 after a 2026-05-03 incident
 where cross-room matches won on raw embedding similarity.
 
-Other files in the directory (not read in full for this bundle, listed for
-completeness): embedding client wrapper and sync-trigger logic that reacts to
-Home Assistant entity registry changes pushed over the connection described
-in [`../integrations/home-assistant-client.md`](../integrations/home-assistant-client.md).
+`src/vectordb/` has no other source files: just `chroma_sync.py` (642 lines)
+and an empty `__init__.py`. There is no separate embedding-client wrapper and
+no separate sync-trigger file.
 
-Consumed by the NLU/routing layer in
-[`../pipeline/nlu-command-gate.md`](../pipeline/nlu-command-gate.md) and
-`request_router.py` (part of
-[`../pipeline/voice-pipeline.md`](../pipeline/voice-pipeline.md)) to resolve
-slots extracted from a command into concrete HA entities before dispatching
-an action via [`../integrations/home-assistant-client.md`](../integrations/home-assistant-client.md).
+The sync mechanism itself is not a reactive listener on Home Assistant
+registry/websocket events — `chroma_sync.py` and
+`src/home_assistant/ha_client.py` were grepped for
+`registry|entity_registry_updated|listen|subscribe|websocket` and nothing
+ties a websocket/registry event to a ChromaDB resync (`ha_client.py`'s own
+`subscribe_events`/`state_changed` machinery, around lines 697-855, feeds its
+own internal HA state cache, not `ChromaSync`). Instead, `ChromaSync.sync_commands()`
+(`chroma_sync.py:145`) is a **manual, voice-command-triggered full rebuild**:
+it deletes every existing record in the commands collection
+(`chroma_sync.py:172-176`) and regenerates all phrases from scratch via the
+LLM reasoner (`chroma_sync.py:178-213`). It is invoked from
+`src/pipeline/request_router.py:932-936` once `_is_sync_command(text)`
+(`request_router.py:1371-1378`, matching phrases like "sincroniza" /
+"actualiza los comandos") recognizes the utterance as a sync request.
+
+`chroma.search_command` / `chroma.asearch_command` (the read path used to
+resolve a command to an entity) are called from `src/pipeline/request_router.py:1050,1083`
+(part of [`../pipeline/voice-pipeline.md`](../pipeline/voice-pipeline.md),
+which explicitly covers `request_router.py`) and from `RequestDispatcher` in
+`src/orchestrator/dispatcher.py:730` (part of
+[`../orchestration/multi-user-orchestrator.md`](../orchestration/multi-user-orchestrator.md)).
+There is no such call in `src/nlu/` — the NLU command gate
+([`../pipeline/nlu-command-gate.md`](../pipeline/nlu-command-gate.md)) decides
+whether a transcript is a real command at all, upstream of this vector
+resolution step, but does not itself call into `ChromaSync`.
 
 **Uncertain / scope note:** this is the voice-pipeline's own ChromaDB
 instance. It is unrelated to the separate ChromaDB instance used by
