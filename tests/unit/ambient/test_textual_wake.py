@@ -110,6 +110,13 @@ class TestMatchesWakeFuzzy:
         # (sustitución a↔o) — palabra española común, denylist.
         assert matches_wake("el nexo entre ambos") is False
 
+    def test_rexa_does_not_match_parakeet_reja(self):
+        # "rexa" = transcripción típica de Parakeet para "reja", distancia 1
+        # de "nexa" (sustitución n↔r). 2 fantasmas reales en prod
+        # (auditoría 2026-07-24) — denylist.
+        assert matches_wake("Pasame la rexa y de paso...") is False
+        assert matches_wake("pero de una rexa igual") is False
+
     def test_unrelated_words_do_not_match(self):
         # "apaga"/"la"/"luz" no están a distancia <=1 de "nexa".
         assert matches_wake("apagá la luz") is False

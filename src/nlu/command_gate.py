@@ -33,6 +33,11 @@ _NOISE_PHRASES = (
     # BoH-es (spec 2026-07-05): alucinación de Whisper sobre audio
     # ininteligible; 25 ocurrencias en 48h de prod, 0 comandos reales.
     "aplausos",
+    # Alucinación recurrente del turbo sobre garble (familia "Esto es un
+    # asistente de voz…"). 2026-07-23 15:06 una variante CON verbo ("Esto es
+    # un asistente, apagá, subí.") pasó el gate y EJECUTÓ light.turn_off —
+    # acción fantasma real. Ningún comando legítimo contiene esta frase.
+    "esto es un asistente",
 )
 _FILLER_WORDS = {"gracias", "si", "no", "ok", "bueno", "dale"}
 

@@ -49,6 +49,8 @@ class CommandProcessor:
         emotion_detector=None,
         sample_rate: int = 16000,
         shadow_stt=None,
+        shadow_veto: bool = False,
+        shadow_veto_timeout_s: float = 0.8,
     ):
         """
         Inicializar CommandProcessor.
@@ -60,11 +62,22 @@ class CommandProcessor:
             emotion_detector: EmotionDetector para análisis de emociones
             sample_rate: Sample rate de audio (Hz)
             shadow_stt: STT secundario opcional para A/B en vivo. Si se provee,
-                se transcribe el MISMO audio en paralelo (fire-and-forget, NO
-                bloquea la respuesta ni cambia el texto usado) y se loguea
+                se transcribe el MISMO audio en paralelo y se loguea
                 ``[STT-shadow]`` con ambas transcripciones y latencias. None =
-                off (default). Se usa para comparar Parakeet vs Whisper sobre
-                tráfico real antes de decidir un flip del STT primario.
+                off (default). Base de datos para decidir un flip del primario.
+            shadow_veto: Híbrido (2026-07-24). Con True, el shadow deja de ser
+                solo observador: si el shadow devuelve texto VACÍO y el
+                primario devolvió texto, la captura se descarta (``[STT-veto]``,
+                text=""). Racional: Parakeet (transducer) calla sobre no-voz
+                donde Whisper alucina — en 167/167 vacíos de prod el primario
+                era basura ("¡Gracias!" ×143, 0 con palabra de comando;
+                auditoría 2026-07-24). El shadow corre en PARALELO al primario
+                (arranca antes que el STT, Parakeet ~87ms < Whisper ~179ms) →
+                sin latencia extra. Fail-open: error/timeout del shadow = sin
+                veto. Con False, el shadow es fire-and-forget (solo log).
+            shadow_veto_timeout_s: Techo de espera del shadow en modo veto; al
+                superarlo se procede SIN veto (jamás retrasar un comando por
+                un shadow colgado).
         """
         self.stt = stt
         self.speaker_id = speaker_identifier
@@ -72,6 +85,8 @@ class CommandProcessor:
         self.emotion_detector = emotion_detector
         self.sample_rate = sample_rate
         self.shadow_stt = shadow_stt
+        self.shadow_veto = shadow_veto
+        self.shadow_veto_timeout_s = shadow_veto_timeout_s
         # Referencias fuertes a las tasks de shadow en vuelo: sin esto el GC
         # de asyncio puede cancelar una task fire-and-forget a mitad de camino.
         self._shadow_tasks: set = set()
@@ -131,6 +146,19 @@ class CommandProcessor:
         result = ProcessedCommand(text="")
         pipeline_start = time.perf_counter()
 
+        # Modo veto: el shadow arranca ANTES del STT primario, directo al
+        # executor (progresa aunque el path secuencial bloquee el loop).
+        # Parakeet ~87ms termina antes que Whisper ~179ms → 0 latencia extra.
+        shadow_future = None
+        if self.shadow_stt is not None and self.shadow_veto:
+            try:
+                shadow_future = asyncio.get_running_loop().run_in_executor(
+                    None, self.shadow_stt.transcribe_with_confidence,
+                    audio, self.sample_rate,
+                )
+            except Exception as e:  # fail-open: sin shadow → sin veto
+                logger.debug(f"[STT-veto] shadow no lanzado (sin veto): {e}")
+
         if pretranscribed_text is not None:
             # Shortcut: texto ya venía. Corremos sólo speaker_id + emotion.
             result.timings["stt"] = 0.0
@@ -177,6 +205,11 @@ class CommandProcessor:
                     result.speaker_confidence = confidence
                 result.timings["speaker_id"] = spk_ms
 
+        # Veto híbrido: si Parakeet (shadow) calló y el primario dio texto,
+        # la captura es casi con certeza alucinación → descartar (text="").
+        if shadow_future is not None:
+            text = await self._apply_shadow_veto(shadow_future, text, result)
+
         result.text = text
         result.success = bool(text.strip())
 
@@ -192,12 +225,39 @@ class CommandProcessor:
             f"Emotion={result.emotion.emotion if result.emotion else 'none'}"
         )
 
-        # A/B en vivo: transcribir el mismo audio con el STT shadow SIN bloquear
-        # la respuesta (fire-and-forget). Solo loguea la comparación.
-        if self.shadow_stt is not None:
+        # Modo observador (shadow_veto=False): A/B fire-and-forget, solo log.
+        if self.shadow_stt is not None and shadow_future is None:
             self._dispatch_shadow(audio, text, result.timings.get("stt", 0.0))
 
         return result
+
+    async def _apply_shadow_veto(
+        self, shadow_future, text: str, result: ProcessedCommand
+    ) -> str:
+        """Esperar el shadow y aplicar el veto por vacío. Fail-open siempre.
+
+        Returns:
+            El texto final: "" si el veto descarta la captura, o ``text``
+            intacto (shadow con texto, timeout o error).
+        """
+        try:
+            r = await asyncio.wait_for(
+                shadow_future, timeout=self.shadow_veto_timeout_s
+            )
+        except Exception as e:  # timeout o error del shadow → sin veto
+            logger.warning(f"[STT-veto] shadow no disponible (sin veto): {e}")
+            return text
+        result.timings["stt_shadow"] = r.elapsed_ms
+        # Mismo formato que el modo observador (los scripts de cosecha lo leen)
+        logger.info(
+            f"[STT-shadow] primary={text[:60]!r} "
+            f"primary_ms={result.timings.get('stt', 0.0):.0f} "
+            f"shadow={r.text[:60]!r} shadow_ms={r.elapsed_ms:.0f}"
+        )
+        if text.strip() and not r.text.strip():
+            logger.info(f"[STT-veto] descartado (parakeet=vacío): {text[:60]!r}")
+            return ""
+        return text
 
     def _dispatch_shadow(self, audio: np.ndarray, primary_text: str, primary_ms: float) -> None:
         """Lanzar la transcripción shadow en background (no bloquea el return)."""

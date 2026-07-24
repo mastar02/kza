@@ -148,6 +148,16 @@ stt:
   # ON 2026-07-16 (ventana deploy): juntar días de comandos near-field reales
   # para decidir el flip — el benchmark offline solo tenía falsos wakes de TV.
   shadow_engine: "parakeet"
+  # Veto híbrido (2026-07-24): el shadow deja de ser solo observador — si
+  # Parakeet devuelve VACÍO y Whisper texto, la captura se descarta
+  # ([STT-veto]). Evidencia de la auditoría 07-24: 167/167 vacíos del shadow
+  # eran basura ("¡Gracias!" ×143, "Suscríbete" ×6...), 0 contenían palabra
+  # de comando. Además el flip directo a parakeet quedó NO-GO (inglés
+  # gibberish sobre comandos reales del command path — el pre-roll contamina
+  # su language-ID), así que este híbrido es la forma de capturar su valor
+  # anti-alucinación sin perder la calidad de Whisper. Corre en paralelo
+  # (Parakeet ~87ms < Whisper ~179ms) → 0 latencia extra. Fail-open.
+  shadow_veto: true
   model: "./models/whisper-v3-turbo"  # faster-whisper-large-v3-turbo-ct2 (~800MB, 8× más rápido que large-v3)
   device: "cuda:1"
   # 2026-05-07: float16 → int8_float16. FP16 + workspaces cuBLAS de

@@ -1020,6 +1020,7 @@ async def main():
         emotion_detector=emotion_detector,
         sample_rate=16000,
         shadow_stt=shadow_stt,
+        shadow_veto=bool((config.get("stt", {}) or {}).get("shadow_veto", False)),
     )
 
     # === Plan #3 OpenClaw — Plugin hooks (optional) ===

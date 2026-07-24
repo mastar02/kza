@@ -211,16 +211,35 @@ def test_rejects_aplausos_as_noise():
     assert d.reason.startswith("noise_phrase")
 
 
+def test_rejects_esto_es_un_asistente_hallucination():
+    # Alucinación recurrente del turbo. La variante CON verbo ejecutó un
+    # light.turn_off fantasma en prod (2026-07-23 15:06) — la atrapa
+    # noise_phrase aunque el ratio de prompt_echo quede bajo por las
+    # palabras extra.
+    for text in (
+        "Esto es un asistente, apagá, subí.",
+        "Esto es un asistente de voz en el escritorio.",
+        "Esto es un asistente nuevo, si tiene que tenerlo.",
+    ):
+        d = _gate().evaluate(text)
+        assert d.accept is False, text
+        assert d.reason.startswith("noise_phrase"), text
+
+
 def test_prompt_echo_rejects_prompt_fragment():
+    # El fragmento inicial del prompt ("Esto es un asistente…") ahora lo
+    # atrapa ANTES la noise_phrase; el echo se ejercita con la 2ª oración.
     g = CommandAcceptanceGate(initial_prompt=REAL_PROMPT)
-    d = g.evaluate("Esto es un asistente de voz.")
+    d = g.evaluate("Habla rioplatense con voseo: prendé, apagá, subí, bajá, poné.")
     assert d.accept is False
     assert d.reason == "prompt_echo"
 
 
 def test_prompt_echo_rejects_slightly_garbled_fragment():
+    # Fragmento (truncado) de la 2ª oración del prompt — la 1ª ("Esto es un
+    # asistente…") ahora la atrapa antes noise_phrase (fantasma 2026-07-23).
     g = CommandAcceptanceGate(initial_prompt=REAL_PROMPT)
-    d = g.evaluate("Esto es un asistente de vos")
+    d = g.evaluate("Habla rioplatense con voseo: prendé, apagá")
     assert d.accept is False
     assert d.reason == "prompt_echo"
 
@@ -245,7 +264,11 @@ def test_prompt_echo_skips_short_texts():
 
 
 def test_prompt_echo_inactive_without_prompt():
-    d = CommandAcceptanceGate().evaluate("Esto es un asistente de voz.")
+    # Sin initial_prompt la regla de echo no corre. Texto = 2ª oración del
+    # prompt (la 1ª es noise_phrase incondicional desde 2026-07-24).
+    d = CommandAcceptanceGate().evaluate(
+        "Habla rioplatense con voseo: prendé, apagá, subí, bajá, poné."
+    )
     assert d.accept is True
 
 
@@ -292,9 +315,11 @@ def test_prompt_echo_calibration_against_live_settings_prompt():
 
     g = CommandAcceptanceGate(initial_prompt=live_prompt)
 
-    # Ecos del prompt vivo → reject
+    # Ecos del prompt vivo → reject (la 1ª oración cae en noise_phrase desde
+    # 2026-07-24 — lo que importa acá es que NUNCA llegue al router)
     d = g.evaluate("Esto es un asistente de voz.")
-    assert d.reason == "prompt_echo"
+    assert d.accept is False
+    assert d.reason.startswith(("prompt_echo", "noise_phrase"))
 
     # Comandos reales y enumeración multiroom → accept (margen 0.021 medido)
     for cmd in (

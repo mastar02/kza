@@ -70,7 +70,11 @@ _DEFAULT_VARIANTS: tuple[str, ...] = ("nexa", "next up")
 #   dicho a una persona, no al asistente) — sustitución x↔n de "nexa".
 # - "nexo": palabra española común ("el nexo entre ambos") — sustitución
 #   a↔o de "nexa".
-_FUZZY_DENYLIST: frozenset[str] = frozenset({"next", "nena", "nexo"})
+# - "rexa": transcripción típica de Parakeet para "reja" ("pasame la reja")
+#   — sustitución n↔r de "nexa". 2 disparos fantasma reales en prod
+#   (auditoría 2026-07-24: 'Pasame la rexa y de...', 'pero de una rexa
+#   igual'); no ejecutaron nada (backstop grammar) pero ensucian el canal.
+_FUZZY_DENYLIST: frozenset[str] = frozenset({"next", "nena", "nexo", "rexa"})
 
 
 def normalize_text(text: str) -> str:
