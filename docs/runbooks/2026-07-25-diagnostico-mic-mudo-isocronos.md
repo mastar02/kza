@@ -79,6 +79,38 @@ está corriendo y adaptándose: el AGC lo recalcula en runtime.
 - El salto grande en el número de device (`30` → `100` en minutos) indica decenas de
   intentos de enumeración que no completaron.
 
+## Los resets por software NO alcanzan — hay que cortar VBUS
+
+El mismo día, el mic del **escritorio** cayó en un estado parecido pero peor: `arecord`
+devolvía `pcm_read: read error: Input/output error` en la primera lectura (ni siquiera ceros).
+El DSP seguía vivo (`VERSION 2.0.6`, `PP_AGCGAIN 2.139` calculado en runtime) y los control
+transfers funcionaban — solo el endpoint isócrono estaba muerto.
+
+Se probaron, en orden, y **ninguno lo revivió**:
+
+```bash
+# 1) re-enumerar el device
+echo 0 | sudo tee /sys/bus/usb/devices/3-1.4/authorized; echo 1 | sudo tee ...
+# 2) disable/enable del puerto del hub
+echo 1 | sudo tee /sys/bus/usb/devices/3-1:1.0/3-1-port4/disable; echo 0 | sudo tee ...
+# 3) reset del hub entero (por el "clear tt ... error -71" que lo señalaba)
+echo 0 | sudo tee /sys/bus/usb/devices/3-1/authorized; echo 1 | sudo tee ...
+```
+
+**Lo que lo arregló fue desenchufarlo a mano.** Los hubs Terminus `1a40:0101` del setup no
+tienen conmutación de alimentación por puerto: `authorized` y `port/disable` re-enumeran pero
+**no cortan VBUS**, así que el XVF3800 nunca pierde alimentación y su DSP queda atascado en
+el mismo estado. Tras el replug físico: `ch0 rms 130.6 / ch1 rms 352.1`, 99.6-99.8% no-cero.
+
+**Regla:** para un XVF3800 con el isócrono muerto, el único reset efectivo es el físico.
+No perder tiempo con sysfs. Si el mic es inaccesible, hace falta un hub con per-port power
+switching (PPPS, `uhubctl`) para poder hacerlo remotamente.
+
+**Disparador probable:** perturbación USB al manipular el rack. A las 13:15 aparecieron
+`usb 3-1: clear tt 1 (9032) error -71` y `usb 1-2: clear tt ...` mientras se conectaba el
+extensor de la cocina; a las 13:17:55 el mic del escritorio dejó de entregar frames y el
+audio-watchdog entró en loop cada ~2m46s (recupera → 8s sin frames → cae) durante 2 horas.
+
 ## Fix aplicado
 
 Mover el mic al puerto 4 del mismo hub (`5-5.4`). Mismo cable, mismo extensor, misma
