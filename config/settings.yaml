@@ -1461,7 +1461,10 @@ rooms:
     # no-lineal), igual que el escritorio. Verificado hoy: ch1 -40.2 dBFS vs
     # ch0 -53.5 dBFS, la relación esperada.
     capture_channel: 1
-    bt_adapter: null
+    # UGREEN BT 5.3 cocina (instalado 2026-07-25, cuelga del hub del extensor).
+    # Binding por MAC → hciN al iniciar, así que el adaptador se puede mover de
+    # puerto sin tocar esta config (a diferencia de mic_usb_port).
+    bt_adapter: "F4:4E:FC:B9:59:F7"
     ma1260_zone: 3
     output_mode: "mono"
     default_volume: 55
