@@ -406,17 +406,23 @@ class TestSpenergyGate:
         assert loop._passes_spenergy_gate(self._rs()) is True
 
     def test_peak_none_fail_open_passes(self):
-        loop = _make_multi_room_loop(xvf_controller=_FakeXvf(None), spenergy_threshold=100.0)
+        loop = _make_multi_room_loop(
+            xvf_controllers={"escritorio": _FakeXvf(None)}, spenergy_threshold=100.0
+        )
         assert loop._passes_spenergy_gate(self._rs()) is True
 
     def test_low_peak_blocks(self):
         # secador/silencio = 0 < 100 → descarta
-        loop = _make_multi_room_loop(xvf_controller=_FakeXvf(0.0), spenergy_threshold=100.0)
+        loop = _make_multi_room_loop(
+            xvf_controllers={"escritorio": _FakeXvf(0.0)}, spenergy_threshold=100.0
+        )
         assert loop._passes_spenergy_gate(self._rs()) is False
 
     def test_voice_peak_passes(self):
         # voz medida ~335k ≥ 100 → procesa
-        loop = _make_multi_room_loop(xvf_controller=_FakeXvf(335000.0), spenergy_threshold=100.0)
+        loop = _make_multi_room_loop(
+            xvf_controllers={"escritorio": _FakeXvf(335000.0)}, spenergy_threshold=100.0
+        )
         assert loop._passes_spenergy_gate(self._rs()) is True
 
 
@@ -450,7 +456,7 @@ class TestSpenergyGateEarlyDispatch:
 
         loop = _make_multi_room_loop(
             rooms={"escritorio": rs},
-            xvf_controller=_FakeXvf(xvf_peak),
+            xvf_controllers={"escritorio": _FakeXvf(xvf_peak)},
             spenergy_threshold=100.0,
         )
 
@@ -650,7 +656,7 @@ class TestStop:
         xvf = _FakeXvf(0.0)
         xvf.stopped = False
         xvf.stop = lambda: setattr(xvf, "stopped", True)
-        loop = _make_multi_room_loop(xvf_controller=xvf)
+        loop = _make_multi_room_loop(xvf_controllers={"cocina": xvf})
         loop._running = True
 
         await loop.stop()
@@ -755,7 +761,7 @@ class TestXvfTuningOnStart:
     async def test_tuning_applied_on_start(self):
         xvf = _FakeXvfRW(reads={"PP_AGCMAXGAIN": (64.0,)})
         loop = _make_multi_room_loop(
-            xvf_controller=xvf,
+            xvf_controllers={"cocina": xvf},
             xvf_tuning={
                 "apply_on_start": True,
                 "params": {"PP_AGCMAXGAIN": [16.0], "PP_AGCONOFF": [1]},
@@ -769,7 +775,7 @@ class TestXvfTuningOnStart:
     async def test_tuning_off_by_default_no_writes(self):
         xvf = _FakeXvfRW()
         loop = _make_multi_room_loop(
-            xvf_controller=xvf,
+            xvf_controllers={"cocina": xvf},
             xvf_tuning={"params": {"PP_AGCMAXGAIN": [16.0]}},  # sin apply_on_start
         )
         await loop.start()
@@ -779,7 +785,7 @@ class TestXvfTuningOnStart:
     async def test_tuning_invalid_param_does_not_break_start(self):
         xvf = _FakeXvfRW()
         loop = _make_multi_room_loop(
-            xvf_controller=xvf,
+            xvf_controllers={"cocina": xvf},
             xvf_tuning={
                 "apply_on_start": True,
                 "params": {"NO_EXISTE": [1], "PP_AGCMAXGAIN": [16.0]},
@@ -826,7 +832,7 @@ class TestXvfReviewFixes:
         # sobre el mismo device handle (transfers USB concurrentes sin lock).
         xvf = self._xvf_with_events()
         loop = _make_multi_room_loop(
-            xvf_controller=xvf,
+            xvf_controllers={"cocina": xvf},
             xvf_tuning={"apply_on_start": True, "params": {"PP_AGCMAXGAIN": [16.0]}},
         )
         await loop.start()
@@ -837,7 +843,7 @@ class TestXvfReviewFixes:
         rs = _make_room_stream("escritorio")
         rs.command_start_time = 100.0
         loop = _make_multi_room_loop(
-            xvf_controller=_FakeXvf(0.0),  # pico bajo umbral
+            xvf_controllers={"escritorio": _FakeXvf(0.0)},  # pico bajo umbral
             spenergy_threshold=100.0,
             spenergy_gate_enabled=False,
         )
@@ -849,7 +855,7 @@ class TestXvfReviewFixes:
         # el poller (que alimenta el gate) no debe arrancar.
         xvf = self._xvf_with_events()
         loop = _make_multi_room_loop(
-            xvf_controller=xvf,
+            xvf_controllers={"cocina": xvf},
             spenergy_gate_enabled=False,
             xvf_tuning={"apply_on_start": True, "params": {"PP_AGCONOFF": [0]}},
         )
@@ -1197,3 +1203,78 @@ class TestWatchdogConfigContract:
         )
         assert loop._watchdog_enabled is True
         assert loop._watchdog_timeout_s == 8.0
+
+
+# ============================================================
+# Controllers per-room (2026-07-25): al conectar el SEGUNDO XVF3800 (cocina),
+# un controller compartido tunea/gatea con el mic de OTRA habitación —
+# usb.core.find() devuelve el primero que enumere. Cada room usa el suyo,
+# bindeado por su mic_usb_port.
+# ============================================================
+
+def _two_rooms():
+    return {
+        "cocina": _make_room_stream("cocina", device_index=2),
+        "escritorio": _make_room_stream("escritorio", device_index=3),
+    }
+
+
+class TestPerRoomXvfControllers:
+
+    @pytest.mark.asyncio
+    async def test_tuning_applied_to_each_rooms_own_controller(self):
+        # El bug: con un solo controller, el escritorio se quedaba en preset
+        # de fábrica (MAXGAIN=64) mientras la cocina recibía el tuning.
+        coc = _FakeXvfRW(reads={"PP_AGCMAXGAIN": (64.0,)})
+        esc = _FakeXvfRW(reads={"PP_AGCMAXGAIN": (64.0,)})
+        loop = _make_multi_room_loop(
+            rooms=_two_rooms(),
+            xvf_controllers={"cocina": coc, "escritorio": esc},
+            xvf_tuning={"apply_on_start": True, "params": {"PP_AGCMAXGAIN": [16.0]}},
+        )
+        await loop.start()
+        assert ("PP_AGCMAXGAIN", [16.0]) in coc.writes
+        assert ("PP_AGCMAXGAIN", [16.0]) in esc.writes
+
+    def test_gate_uses_the_rooms_own_controller(self):
+        # cocina en silencio, escritorio con voz: cada gate mira SU mic.
+        loop = _make_multi_room_loop(
+            rooms=_two_rooms(),
+            xvf_controllers={
+                "cocina": _FakeXvf(0.0),
+                "escritorio": _FakeXvf(335000.0),
+            },
+            spenergy_threshold=100.0,
+        )
+        rs_coc = loop.room_streams["cocina"]
+        rs_coc.command_start_time = 100.0
+        rs_esc = loop.room_streams["escritorio"]
+        rs_esc.command_start_time = 100.0
+        assert loop._passes_spenergy_gate(rs_coc) is False
+        assert loop._passes_spenergy_gate(rs_esc) is True
+
+    def test_room_without_controller_fails_open(self):
+        # Sin controller propio NO se gatea con el de otra room: fail-open.
+        loop = _make_multi_room_loop(
+            rooms=_two_rooms(),
+            xvf_controllers={"escritorio": _FakeXvf(0.0)},
+            spenergy_threshold=100.0,
+        )
+        rs = loop.room_streams["cocina"]
+        rs.command_start_time = 100.0
+        assert loop._passes_spenergy_gate(rs) is True
+
+    @pytest.mark.asyncio
+    async def test_stop_stops_every_controller(self):
+        coc, esc = _FakeXvf(0.0), _FakeXvf(0.0)
+        for x in (coc, esc):
+            x.stopped = False
+            x.stop = lambda x=x: setattr(x, "stopped", True)
+        loop = _make_multi_room_loop(
+            rooms=_two_rooms(),
+            xvf_controllers={"cocina": coc, "escritorio": esc},
+        )
+        await loop.start()
+        await loop.stop()
+        assert coc.stopped is True
+        assert esc.stopped is True

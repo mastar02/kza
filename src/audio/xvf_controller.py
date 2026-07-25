@@ -150,6 +150,27 @@ def validate_values(name: str, values: list) -> None:
                 )
 
 
+def parse_usb_port(usb_port: str | None) -> tuple[int, tuple[int, ...]] | None:
+    """Parsear un puerto USB de sysfs a (bus, cadena de puertos).
+
+    Mismo formato que ``mic_usb_port`` de ``RoomConfig``: ``"5-5.4"`` es el bus
+    5, hub en el puerto 5 del root, device en el puerto 4 de ese hub.
+
+    Args:
+        usb_port: Puerto en notación sysfs (``"3-1"``, ``"5-5.4"``).
+
+    Returns:
+        ``(bus, (puerto, ...))``, o None si no se puede parsear.
+    """
+    if not usb_port:
+        return None
+    try:
+        bus_str, ports_str = usb_port.split("-", 1)
+        return int(bus_str), tuple(int(p) for p in ports_str.split("."))
+    except (AttributeError, ValueError):
+        return None
+
+
 class XvfController:
     """Lee SPENERGY del XVF3800 vía pyusb y mantiene un pico móvil para gatear.
 
@@ -166,9 +187,11 @@ class XvfController:
         read_timeout_ms: int = 200,
         max_retries: int = 20,
         device=None,
+        usb_port: str | None = None,
     ):
         self.vid = vid
         self.pid = pid
+        self.usb_port = usb_port
         self.poll_interval_s = poll_interval_s
         self.window_s = window_s
         self.read_timeout_ms = read_timeout_ms
@@ -194,13 +217,33 @@ class XvfController:
         except Exception as e:  # pyusb no instalado
             logger.warning(f"pyusb no disponible — SPENERGY gate OFF: {e}")
             return False
+        target = None
+        if self.usb_port:
+            target = parse_usb_port(self.usb_port)
+            if target is None:
+                logger.warning(
+                    f"XVF3800 usb_port {self.usb_port!r} no parseable — gate OFF"
+                )
+                return False
         try:
-            dev = usb.core.find(idVendor=self.vid, idProduct=self.pid)
+            if target is None:
+                dev = usb.core.find(idVendor=self.vid, idProduct=self.pid)
+            else:
+                bus, ports = target
+                dev = usb.core.find(
+                    idVendor=self.vid,
+                    idProduct=self.pid,
+                    custom_match=lambda d: d.bus == bus
+                    and tuple(getattr(d, "port_numbers", None) or ()) == ports,
+                )
         except Exception as e:  # sin permisos / error de backend
             logger.warning(f"XVF3800 no accesible (¿udev rule?) — SPENERGY gate OFF: {e}")
             return False
         if dev is None:
-            logger.warning("XVF3800 no encontrado — SPENERGY gate OFF")
+            # Con usb_port declarado NO caemos al primer XVF3800 disponible:
+            # gatear una room con el SPENERGY de OTRA es peor que no gatear.
+            where = f" en {self.usb_port}" if self.usb_port else ""
+            logger.warning(f"XVF3800 no encontrado{where} — SPENERGY gate OFF")
             return False
         self._dev = dev
         return True

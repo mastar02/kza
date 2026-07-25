@@ -850,18 +850,18 @@ async def main():
             barge_in_cfg = rooms_config.get("barge_in", {}) or {}
             # Pre-gate SPENERGY (VAD por hardware del XVF3800). Fail-open: si no
             # se puede abrir el device (sin udev/permisos/pyusb), el gate queda OFF.
-            # ⚠️ LIMITACIÓN SINGLE-MIC (review 2026-06-04): se construye UN solo
-            # XvfController compartido y usb.core.find() toma el PRIMER XVF3800
-            # que matchee VID/PID — todas las rooms se gatean con el SPENERGY de
-            # ese único device. Hoy es correcto (solo escritorio tiene mic);
-            # cuando el living recupere su XVF3800 hay que pasar a un controller
-            # por room con binding por puerto USB (análogo a mic_usb_port), o
-            # una room bloquearía comandos válidos con la energía/silencio de OTRA.
+            # UN controller POR ROOM, bindeado al mic_usb_port de esa habitación
+            # (2026-07-25). Antes se construía uno solo y usb.core.find() tomaba
+            # el PRIMER XVF3800 que enumerara: al conectar el segundo mic
+            # (cocina) el tuning podía escribirse sobre el mic equivocado y
+            # dejar al otro en el preset de fábrica (MAXGAIN=64) en silencio.
+            # Una room sin mic_usb_port no recibe gate ni tuning — nunca cae al
+            # controller de otra habitación.
             spe_cfg = early_cfg.get("spenergy_gate", {}) or {}
             tuning_cfg = early_cfg.get("xvf_tuning", {}) or {}
-            xvf_controller = None
-            # Controller compartido por DOS features ortogonales (review Fase 1):
-            # el gate SPENERGY y el tuning del DSP. Se construye si CUALQUIERA
+            xvf_controllers: dict = {}
+            # Los controllers sirven DOS features ortogonales (review Fase 1):
+            # el gate SPENERGY y el tuning del DSP. Se construyen si CUALQUIERA
             # lo necesita — antes, tuning con gate deshabilitado quedaba
             # silenciosamente sin aplicar.
             _need_xvf = spe_cfg.get("enabled", False) or (
@@ -869,10 +869,19 @@ async def main():
             )
             if _need_xvf:
                 from src.audio.xvf_controller import XvfController
-                xvf_controller = XvfController(
-                    poll_interval_s=spe_cfg.get("poll_interval_s", 0.04),
-                    window_s=spe_cfg.get("window_s", 4.0),
-                )
+                for _room_id, _rs in room_streams.items():
+                    if not _rs.mic_usb_port:
+                        logger.warning(
+                            f"[XVF] {_room_id} sin mic_usb_port — sin gate SPENERGY "
+                            f"ni tuning del DSP (declarar rooms.{_room_id}."
+                            f"mic_usb_port para bindear su XVF3800)"
+                        )
+                        continue
+                    xvf_controllers[_room_id] = XvfController(
+                        usb_port=_rs.mic_usb_port,
+                        poll_interval_s=spe_cfg.get("poll_interval_s", 0.04),
+                        window_s=spe_cfg.get("window_s", 4.0),
+                    )
             # AmbientGuard (spec 2026-06-05): compuerta acústica integral.
             # Default enabled=false → pasivo. Umbrales: ver settings.yaml.
             from src.pipeline.ambient_guard import AmbientGuard, AmbientGuardConfig
@@ -926,7 +935,7 @@ async def main():
                 follow_up=FollowUpMode(
                     follow_up_window=early_cfg.get("follow_up_window_s", 4.0)
                 ),
-                xvf_controller=xvf_controller,
+                xvf_controllers=xvf_controllers,
                 spenergy_threshold=spe_cfg.get("threshold", 100.0),
                 spenergy_gate_enabled=spe_cfg.get("enabled", False),
                 xvf_tuning=tuning_cfg,

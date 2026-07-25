@@ -328,3 +328,80 @@ class TestWriteParamRangeValidation:
         c = XvfController(device=FakeRWDev())
         assert hasattr(c, "_usb_lock")
         assert c._usb_lock is not c._lock  # NO reusar el lock del deque
+
+
+# ============================================================
+# Binding por puerto USB (2026-07-25): con DOS XVF3800 conectados,
+# usb.core.find() devuelve el PRIMERO que matchee VID/PID. Sin binding, el
+# gate SPENERGY de una room puede quedar leyendo el mic de OTRA habitación.
+# Formato de puerto = el mismo de `mic_usb_port` en RoomConfig:
+# "5-5.4" → bus 5, cadena de puertos (5, 4).
+# ============================================================
+
+import sys
+import types
+
+from src.audio.xvf_controller import parse_usb_port
+
+
+class FakeUsbDev:
+    """Device pyusb falso: expone bus/port_numbers como los reales."""
+
+    def __init__(self, bus, port_numbers):
+        self.bus = bus
+        self.port_numbers = port_numbers
+
+
+def _install_fake_usb(monkeypatch, devices):
+    """Instala un usb.core falso que replica la semántica de find()."""
+    core = types.ModuleType("usb.core")
+
+    def find(*, idVendor=None, idProduct=None, custom_match=None, **kw):
+        for d in devices:
+            if custom_match is None or custom_match(d):
+                return d
+        return None
+
+    core.find = find
+    pkg = types.ModuleType("usb")
+    pkg.core = core
+    monkeypatch.setitem(sys.modules, "usb", pkg)
+    monkeypatch.setitem(sys.modules, "usb.core", core)
+
+
+class TestUsbPortBinding:
+    def test_parse_usb_port_splits_bus_and_port_chain(self):
+        assert parse_usb_port("5-5.4") == (5, (5, 4))
+
+    def test_parse_usb_port_single_port(self):
+        assert parse_usb_port("3-1") == (3, (1,))
+
+    def test_parse_usb_port_invalid_returns_none(self):
+        assert parse_usb_port("no-es-un-puerto") is None
+        assert parse_usb_port("") is None
+        assert parse_usb_port(None) is None
+
+    def test_open_selects_device_matching_usb_port(self, monkeypatch):
+        escritorio = FakeUsbDev(3, (1, 4))
+        cocina = FakeUsbDev(5, (5, 4))
+        _install_fake_usb(monkeypatch, [escritorio, cocina])
+        c = XvfController(usb_port="5-5.4")
+        assert c.open() is True
+        assert c._dev is cocina  # NO el primero de la lista
+
+    def test_open_without_usb_port_takes_first_device(self, monkeypatch):
+        # Compat: sin puerto declarado, comportamiento actual.
+        escritorio = FakeUsbDev(3, (1, 4))
+        cocina = FakeUsbDev(5, (5, 4))
+        _install_fake_usb(monkeypatch, [escritorio, cocina])
+        c = XvfController()
+        assert c.open() is True
+        assert c._dev is escritorio
+
+    def test_open_fails_when_usb_port_matches_no_device(self, monkeypatch):
+        # Fail-open: mejor SIN gate que gateando con el mic de otra habitación.
+        escritorio = FakeUsbDev(3, (1, 4))
+        _install_fake_usb(monkeypatch, [escritorio])
+        c = XvfController(usb_port="5-5.4")
+        assert c.open() is False
+        assert c._dev is None

@@ -143,6 +143,7 @@ def run_capture(
     channel: int,
     model_path: str,
     out_dir: Path,
+    usb_port: str | None = None,
 ) -> Path:
     """Captura RMS + score wake + SPENERGY durante duration_s. Devuelve el JSONL."""
     import sounddevice as sd
@@ -154,7 +155,7 @@ def run_capture(
     detector = WakeWordDetector(models=[model_path])
     detector.load()
 
-    controller = XvfController()
+    controller = XvfController(usb_port=usb_port)
     spenergy_ok = controller.open()
     if not spenergy_ok:
         print("⚠️  XVF3800 no accesible — se mide sin SPENERGY (RMS + wake igual sirven)")
@@ -268,6 +269,16 @@ def main(argv: list[str] | None = None) -> int:
     # un path relativo solo resuelve desde el app dir y falla en detector.load().
     parser.add_argument("--model", default="/home/kza/kza/models/wakeword/nexa.onnx")
     parser.add_argument("--out", default="data/calibration")
+    parser.add_argument(
+        "--port",
+        metavar="BUS-PUERTOS",
+        help=(
+            'puerto USB del mic ("5-5.4"), mismo formato que '
+            "rooms.<room>.mic_usb_port. SIN esto se polea el SPENERGY del "
+            "primer XVF3800 que enumere — con más de un mic conectado eso "
+            "calibra una habitación con la energía acústica de otra"
+        ),
+    )
     parser.add_argument("--analyze", metavar="DIR", help="solo análisis de JSONLs existentes")
     args = parser.parse_args(argv)
 
@@ -277,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.condition or args.device is None:
         parser.error("--condition y --device son requeridos para capturar (o usar --analyze)")
     run_capture(args.condition, args.duration, args.device, args.channel,
-                args.model, Path(args.out))
+                args.model, Path(args.out), usb_port=args.port)
     return 0
 
 
