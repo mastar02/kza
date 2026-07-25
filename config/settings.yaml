@@ -1446,15 +1446,22 @@ rooms:
     # XVF3800 #2 (serial 101991441254700062) por extensor Cat5e; hub del
     # extensor en 5-5, mic en el puerto 3 de ese hub (movido allí 15:22 al
     # subir el extensor al cielorraso).
-    # ⚠️ EL PUERTO 1 DE ESE HUB (5-5.1) ESTÁ QUEMADO (2026-07-25): enumera
-    # limpio y responde TODOS los control transfers (se leen los parámetros
-    # del DSP sin problema), pero los transfers ISÓCRONOS del audio se caen
-    # en silencio — y los isócronos no tienen reintentos por diseño, así que
+    # ⚠️ MODO DE FALLA A CONOCER (2026-07-25): el XVF3800 se CUELGA con el
+    # endpoint isócrono muerto — enumera limpio, responde TODOS los control
+    # transfers (se leen los parámetros del DSP sin problema) y no entrega
+    # audio. Como los isócronos no tienen reintentos por diseño,
     # snd-usb-audio rellena con ceros, entrega el byte-count exacto y NO
     # reporta ni un error. Medido: 320.000 muestras en cero exacto mientras
-    # el DSP oía con SPENERGY 6.4e7. Es el modo de falla más difícil de
-    # diagnosticar que tiene este hardware: el mic "existe" y no entrega
-    # audio. NO volver a usar 5-5.1.
+    # el DSP oía con SPENERGY 6.4e7. Es el fallo más difícil de diagnosticar
+    # que tiene este hardware: el mic "existe" y no entrega audio.
+    # Se sale SOLO desenchufándolo (perder VBUS). Ver el runbook.
+    # CORRECCIÓN: en el momento se documentó el puerto 5-5.1 como "quemado".
+    # Era una conclusión confundida — al mover el mic al puerto 4 también se
+    # lo desenchufó, y ESO fue lo que lo arregló. El control llegó el mismo
+    # día: el mic del ESCRITORIO cayó en el mismo estado en otro hub y otro
+    # bus, y lo revivió el replug físico sin cambiar de puerto. El 5-5.1
+    # funciona: tiene el adaptador BT de la cocina corriendo. (Salvedad: el
+    # BT es full-speed por interrupción, no prueba high-speed isócrono.)
     mic_usb_port: "5-5.3"
     mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
     # ch1 = ASR (mismo beam, tap pre-post-processor, sin noise suppression

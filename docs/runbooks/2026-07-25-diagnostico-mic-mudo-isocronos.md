@@ -13,15 +13,31 @@ chequeo individual da verde.
 
 ## Causa
 
-Un puerto de hub marginal (acá el puerto 1 del hub del extensor, `5-5.1`).
+**El XVF3800 se cuelga con el endpoint isócrono muerto.** No es el puerto (ver la
+corrección abajo).
 
 Los **control transfers** de USB se reintentan a nivel protocolo: por eso la enumeración
 pasa, se leen producto/serial/descriptores, y hasta se leen todos los parámetros del DSP
 por la vendor interface. Los **transfers isócronos** del audio **no tienen reintentos, por
-diseño**. Un puerto marginal los pierde, `snd-usb-audio` rellena el buffer de ALSA con
+diseño**. Cuando el device deja de emitirlos, `snd-usb-audio` rellena el buffer de ALSA con
 ceros, entrega el byte-count correcto y no reporta nada.
 
 Resultado: el mic "existe", responde todo lo que le preguntes, y no entrega audio.
+
+### ⚠️ Corrección: el puerto NO estaba quemado
+
+La primera conclusión de esta sesión fue que el puerto 1 del hub (`5-5.1`) estaba dañado,
+porque mover el mic al puerto 4 lo arregló. **Estaba confundida**: al mover el mic de puerto
+también se lo **desenchufó**, y el desenchufe es la variable que realmente importa.
+
+El control llegó horas después: el mic del **escritorio** cayó en el mismo estado, en otro
+hub y otro bus, **sin cambiar de puerto**, y lo revivió únicamente el replug físico. Y el
+puerto `5-5.1` quedó con el adaptador BT de la cocina funcionando sin problemas.
+
+Lección metodológica: cambiar de puerto **confunde dos variables** (puerto nuevo + ciclo de
+alimentación). Para culpar a un puerto hay que replugear en el MISMO puerto primero; si con
+eso anda, el puerto está bien. (Salvedad menor: el BT es full-speed por interrupción, así
+que no prueba que ese puerto sostenga high-speed isócrono — solo que no está muerto.)
 
 ## Procedimiento de diagnóstico
 
@@ -113,9 +129,12 @@ audio-watchdog entró en loop cada ~2m46s (recupera → 8s sin frames → cae) d
 
 ## Fix aplicado
 
-Mover el mic al puerto 4 del mismo hub (`5-5.4`). Mismo cable, mismo extensor, misma
-unidad. El puerto 1 queda documentado como quemado en `config/settings.yaml` (room
-`cocina`).
+**Desenchufar y volver a enchufar el mic.** En la cocina se hizo moviéndolo de puerto (lo
+que confundió el diagnóstico inicial); en el escritorio, en el mismo puerto. Mismo cable,
+mismo extensor, misma unidad en ambos casos.
+
+Regla operativa: ante un XVF3800 mudo, **replug físico en el mismo puerto** como primera
+acción. Solo si eso no alcanza, sospechar del puerto o del cable.
 
 ## Bug de software que destapó
 
