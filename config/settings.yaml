@@ -1443,7 +1443,24 @@ rooms:
     name: "Cocina"
     display_name: "la cocina"
     mic_device_name: "XVF3800"
-    mic_device_index: null   # HW pendiente
+    # XVF3800 #2 (serial 101991441254700062) por extensor Cat5e; hub del
+    # extensor en 5-5, mic en el puerto 4 de ese hub.
+    # ⚠️ EL PUERTO 1 DE ESE HUB (5-5.1) ESTÁ QUEMADO (2026-07-25): enumera
+    # limpio y responde TODOS los control transfers (se leen los parámetros
+    # del DSP sin problema), pero los transfers ISÓCRONOS del audio se caen
+    # en silencio — y los isócronos no tienen reintentos por diseño, así que
+    # snd-usb-audio rellena con ceros, entrega el byte-count exacto y NO
+    # reporta ni un error. Medido: 320.000 muestras en cero exacto mientras
+    # el DSP oía con SPENERGY 6.4e7. Es el modo de falla más difícil de
+    # diagnosticar que tiene este hardware: el mic "existe" y no entrega
+    # audio. NO volver a usar 5-5.1. En 5-5.4 captura normal (ch1: rms 321,
+    # -40.2 dBFS, 99.8% de muestras no-cero).
+    mic_usb_port: "5-5.4"
+    mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
+    # ch1 = ASR (mismo beam, tap pre-post-processor, sin noise suppression
+    # no-lineal), igual que el escritorio. Verificado hoy: ch1 -40.2 dBFS vs
+    # ch0 -53.5 dBFS, la relación esperada.
+    capture_channel: 1
     bt_adapter: null
     ma1260_zone: 3
     output_mode: "mono"
