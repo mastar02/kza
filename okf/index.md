@@ -3,6 +3,8 @@ okf_version: "0.1"
 title: KZA OKF Bundle
 description: Open Knowledge Format bundle for the kza local voice-control system for Home Assistant.
 timestamp: "2026-07-24T00:00:00Z"
+source_commit: "f4e1edce533a0af55b21df405a596ce86ef47d56"
+source_branch: "main"
 ---
 
 # KZA OKF Bundle
