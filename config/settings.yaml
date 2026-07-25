@@ -1455,7 +1455,18 @@ rooms:
     # diagnosticar que tiene este hardware: el mic "existe" y no entrega
     # audio. NO volver a usar 5-5.1. En 5-5.4 captura normal (ch1: rms 321,
     # -40.2 dBFS, 99.8% de muestras no-cero).
-    mic_usb_port: "5-5.4"
+    # ⚠️ DESACTIVADO 2026-07-25 15:25 tras el primer deploy: con la cocina como
+    # segunda room, el stream del ESCRITORIO deja de entregar frames a los ~8s
+    # y el audio-watchdog entra en loop de recuperación (reproducido en 3
+    # restarts). Card4 nunca llega a abrirse: muestreo de fds durante 20s da
+    # [pcmC1D0c] 8s y [] 12s, nunca pcmC4D0c.
+    # Además, `resolve_mic_usb_port` re-resuelve el puerto en el watchdog pero
+    # PortAudio CACHEA su lista de devices: al desaparecer card4 el índice 10
+    # pasó a ser el device "hdmi" (in=0) y el watchdog reportó
+    # "cocina: recovered (device=10)" con el mic físicamente desenchufado.
+    # Re-activar (mic_usb_port: "5-5.4") recién con el bug de convivencia de
+    # dos rooms resuelto y con test que lo cubra.
+    mic_usb_port: null
     mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
     # ch1 = ASR (mismo beam, tap pre-post-processor, sin noise suppression
     # no-lineal), igual que el escritorio. Verificado hoy: ch1 -40.2 dBFS vs
