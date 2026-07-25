@@ -170,7 +170,7 @@ class MultiRoomAudioLoop:
         barge_in_min_duration_ms: int = 200,
         min_wake_rms: float = 0.0,
         wake_preroll_s: float = 0.0,
-        xvf_controller=None,
+        xvf_controllers: dict | None = None,
         spenergy_threshold: float = 100.0,
         spenergy_gate_enabled: bool = True,
         xvf_tuning: dict | None = None,
@@ -244,7 +244,12 @@ class MultiRoomAudioLoop:
         # secador/silencio → no transcribir (mata alucinaciones de Whisper).
         # Fail-open: sin controller/datos, procesa siempre. Medido: secador/
         # silencio=0, voz≥52k → umbral 100 separa con margen enorme.
-        self._xvf = xvf_controller
+        # UN controller POR ROOM, bindeado al mic_usb_port de esa habitación
+        # (2026-07-25): con dos XVF3800 conectados, un controller compartido
+        # tunea/gatea con el mic de OTRA room — usb.core.find() devuelve el
+        # primero que enumere, y el orden no es estable. Una room sin
+        # controller propio NO se gatea (fail-open) en vez de usar el ajeno.
+        self._xvf_by_room: dict = dict(xvf_controllers or {})
         self.spenergy_threshold = spenergy_threshold
         # Gate y tuning son features ORTOGONALES sobre el mismo controller
         # (review Fase 1): se puede tunear el DSP con el gate apagado. El
@@ -437,16 +442,23 @@ class MultiRoomAudioLoop:
         # loop (cada ctrl_transfer con retries puede tardar segundos).
         await asyncio.to_thread(self._apply_xvf_tuning)
         # Pre-gate SPENERGY: poller solo si el gate está habilitado (fail-open).
-        if self._xvf is not None and self.spenergy_gate_enabled:
-            try:
-                if self._xvf.start():
-                    logger.info(
-                        f"Pre-gate SPENERGY activo (umbral {self.spenergy_threshold:.0f})"
+        if self.spenergy_gate_enabled:
+            for room_id, ctrl in self._xvf_by_room.items():
+                try:
+                    if ctrl.start():
+                        logger.info(
+                            f"Pre-gate SPENERGY activo en {room_id} "
+                            f"(umbral {self.spenergy_threshold:.0f})"
+                        )
+                    else:
+                        logger.warning(
+                            f"Pre-gate SPENERGY no pudo iniciar en {room_id} — "
+                            f"gate OFF (fail-open)"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Pre-gate SPENERGY error al iniciar en {room_id} — gate OFF: {e}"
                     )
-                else:
-                    logger.warning("Pre-gate SPENERGY no pudo iniciar — gate OFF (fail-open)")
-            except Exception as e:
-                logger.warning(f"Pre-gate SPENERGY error al iniciar — gate OFF: {e}")
 
     def _apply_xvf_tuning(self) -> None:
         """Aplica el tuning configurado al DSP (EN RAM). Fail-open por param.
@@ -456,30 +468,37 @@ class MultiRoomAudioLoop:
         """
         if not self._xvf_tuning.get("apply_on_start", False):
             return
-        if self._xvf is None:
+        if not self._xvf_by_room:
             logger.warning(
                 "[XVF-tuning] xvf_tuning.apply_on_start=true pero no hay "
                 "XvfController — tuning NO aplicado (¿mic XVF3800 presente?)"
             )
             return
         params = self._xvf_tuning.get("params") or {}
-        for name, values in params.items():
-            try:
-                before = self._xvf.read_param(name)
-            except ValueError:
-                before = None
-            try:
-                ok = self._xvf.write_param(name, values)
-            except ValueError as e:  # typo en el yaml: log y seguir
-                logger.error(f"[XVF-tuning] parámetro inválido en config: {e}")
-                continue
-            except Exception as e:  # cualquier otra cosa: fail-open
-                logger.warning(f"[XVF-tuning] {name} no aplicado: {e}")
-                continue
-            if ok:
-                logger.info(f"[XVF-tuning] {name}: {before} → {values} (RAM)")
-            else:
-                logger.warning(f"[XVF-tuning] {name} no aplicado (write fail-open)")
+        # El tuning se aplica al DSP de CADA mic: son chips distintos y cada uno
+        # arranca con el preset persistido de fábrica al re-enchufarse.
+        for room_id, ctrl in self._xvf_by_room.items():
+            for name, values in params.items():
+                try:
+                    before = ctrl.read_param(name)
+                except ValueError:
+                    before = None
+                try:
+                    ok = ctrl.write_param(name, values)
+                except ValueError as e:  # typo en el yaml: log y seguir
+                    logger.error(f"[XVF-tuning] parámetro inválido en config: {e}")
+                    continue
+                except Exception as e:  # cualquier otra cosa: fail-open
+                    logger.warning(f"[XVF-tuning] {room_id}: {name} no aplicado: {e}")
+                    continue
+                if ok:
+                    logger.info(
+                        f"[XVF-tuning] {room_id}: {name}: {before} → {values} (RAM)"
+                    )
+                else:
+                    logger.warning(
+                        f"[XVF-tuning] {room_id}: {name} no aplicado (write fail-open)"
+                    )
 
     def _open_stream(self, rs: "RoomStream"):
         """Open and start an InputStream for one room. None on PortAudioError."""
@@ -717,12 +736,12 @@ class MultiRoomAudioLoop:
         if self._watchdog_task is not None:
             self._watchdog_task.cancel()
             self._watchdog_task = None
-        if self._xvf is not None:
+        for ctrl in self._xvf_by_room.values():
             try:
                 # XvfController.stop() hace thread.join(timeout=1.0) — síncrono.
                 # to_thread evita bloquear el event loop durante el shutdown
                 # (regla del proyecto: nunca llamadas sync en el loop).
-                await asyncio.to_thread(self._xvf.stop)
+                await asyncio.to_thread(ctrl.stop)
             except Exception:
                 pass
         if self._wake_clip_writer is not None:
@@ -951,10 +970,11 @@ class MultiRoomAudioLoop:
         Bloquea solo cuando el pico de SPENERGY durante [command_start_time, now]
         quedó por debajo del umbral = secador/silencio → Whisper alucinaría.
         """
-        if self._xvf is None or not self.spenergy_gate_enabled:
+        ctrl = self._xvf_by_room.get(rs.room_id)
+        if ctrl is None or not self.spenergy_gate_enabled:
             return True
         try:
-            peak = self._xvf.peak_since(rs.command_start_time)
+            peak = ctrl.peak_since(rs.command_start_time)
         except Exception as e:  # fail-open ante cualquier error del controller
             logger.debug(f"SPENERGY gate fail-open ({e})")
             return True

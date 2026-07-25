@@ -101,3 +101,35 @@ class TestLoadCondition:
         assert voz_tv_data["rms"] == [99.0], (
             "load_condition('voz_tv') no cargó sus propios datos"
         )
+
+
+class TestCliPortBinding:
+    """--port (2026-07-25): con dos XVF3800 conectados y sin puerto declarado,
+    el harness poleaba el SPENERGY del mic que enumerara primero — o sea,
+    calibraba una habitación con la energía acústica de OTRA."""
+
+    def _patched(self, monkeypatch):
+        import tools.acoustic_calibration as ac
+
+        captured = {}
+
+        def fake_run_capture(
+            condition, duration_s, device, channel, model_path, out_dir,
+            usb_port=None,
+        ):
+            captured["usb_port"] = usb_port
+            return out_dir
+
+        monkeypatch.setattr(ac, "run_capture", fake_run_capture)
+        return ac, captured
+
+    def test_port_reaches_run_capture(self, monkeypatch):
+        ac, captured = self._patched(monkeypatch)
+        rc = ac.main(["--condition", "silencio", "--device", "4", "--port", "5-5.4"])
+        assert rc == 0
+        assert captured["usb_port"] == "5-5.4"
+
+    def test_without_port_stays_unbound(self, monkeypatch):
+        ac, captured = self._patched(monkeypatch)
+        ac.main(["--condition", "silencio", "--device", "4"])
+        assert captured["usb_port"] is None

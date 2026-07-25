@@ -70,6 +70,16 @@ def main(argv: list[str] | None = None) -> int:
         "--write", nargs="+", metavar=("NAME", "VALUE"),
         help="escribir un parámetro rw (RAM): NAME V1 [V2...]",
     )
+    parser.add_argument(
+        "--port",
+        metavar="BUS-PUERTOS",
+        help=(
+            'puerto USB del mic ("5-5.4"), mismo formato que '
+            "rooms.<room>.mic_usb_port. SIN esto se usa el primer XVF3800 que "
+            "enumere — con más de un mic conectado eso escribe sobre el "
+            "equivocado. Ver el puerto: readlink -f /sys/class/sound/card<N>"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.list:
@@ -93,9 +103,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: {e}")
             return 2
 
-    ctrl = XvfController()
+    ctrl = XvfController(usb_port=args.port)
     if not ctrl.open():
-        print("ERROR: XVF3800 no accesible (¿conectado? ¿pyusb? ¿udev rule MODE=0666?)")
+        where = f" en {args.port}" if args.port else ""
+        print(
+            f"ERROR: XVF3800 no accesible{where} "
+            f"(¿conectado? ¿pyusb? ¿udev rule MODE=0666?)"
+        )
         return 1
 
     if args.read:
