@@ -1117,6 +1117,47 @@ class TestStreamWatchdog:
         assert called.get("ids") == ["escritorio"]
 
     @pytest.mark.asyncio
+    async def test_watchdog_ignores_room_already_awaiting_reopen(self):
+        """Una room que ya espera su device no debe re-disparar el recovery.
+
+        Su `last_frame_ts` no se actualiza nunca (no hay device que entregue
+        frames), así que queda stale para siempre. Sin este filtro el watchdog
+        llamaría a `_recover_streams` en cada ciclo, y como el recovery cierra
+        TODOS los streams, el mic sano se cerraría cada `check_interval`.
+        """
+        ausente = _make_room_stream("cocina", device_index=10)
+        ausente.mic_usb_port = "5-5.3"
+        sana = _make_room_stream("escritorio", device_index=4)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": ausente, "escritorio": sana}
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 0.05
+        ausente.last_frame_ts = time.monotonic() - 10.0  # stale permanente
+        sana.last_frame_ts = time.monotonic()            # sana y fresca
+
+        # La cocina ya tiene una espera de reapertura viva.
+        espera = asyncio.get_running_loop().create_future()
+        loop._reopen_tasks = {"cocina": asyncio.ensure_future(espera)}
+
+        llamadas = []
+        async def fake_recover(ids):
+            llamadas.append(ids)
+            loop._running = False
+        loop._recover_streams = fake_recover
+
+        async def parar():
+            await asyncio.sleep(0.05)
+            loop._running = False
+        await asyncio.gather(loop._stream_watchdog(), parar())
+
+        espera.cancel()
+        assert llamadas == [], (
+            f"no debía dispararse el recovery, pero se llamó con {llamadas}"
+        )
+
+    @pytest.mark.asyncio
     async def test_watchdog_noop_when_fresh(self):
         rs = _make_room_stream("escritorio", device_index=4)
         loop = _make_multi_room_loop(rooms={"escritorio": rs})
@@ -1186,6 +1227,106 @@ class TestRecoverStreams:
 
         assert rs.device_index == 7
         assert "escritorio" in loop._streams
+
+    @pytest.mark.asyncio
+    async def test_recover_reopens_healthy_room_when_another_device_absent(self):
+        """Un mic ausente NO debe impedir que los sanos vuelvan.
+
+        Incidente 2026-07-28: la cocina se desenchufó del USB y
+        `_recover_streams` quedó esperando su device indefinidamente
+        (`_reopen_room` loopea `while self._running`), así que el `for`
+        nunca llegó al escritorio —presente y sano— y el sistema quedó
+        27h sin capturar audio con el servicio `active`.
+
+        La room ausente va PRIMERO en el dict a propósito: reproduce el
+        orden real de `room_streams` que disparó el incidente.
+        """
+        ausente = _make_room_stream("cocina", device_index=10)
+        ausente.mic_usb_port = "5-5.3"
+        sana = _make_room_stream("escritorio", device_index=4)
+        sana.mic_usb_port = "3-1.4"
+        loop = _make_multi_room_loop(
+            rooms={"cocina": ausente, "escritorio": sana}
+        )
+        loop._running = True
+        loop._watchdog_backoff_min_s = 0.001
+        loop._watchdog_backoff_max_s = 0.002
+        loop._streams = {"cocina": MagicMock(), "escritorio": MagicMock()}
+
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+        nuevo = MagicMock()
+        mock_sd.InputStream.return_value = nuevo
+
+        def resolve(port):
+            return None if port == "5-5.3" else 4  # la cocina nunca vuelve
+
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port",
+            side_effect=resolve,
+        ):
+            await asyncio.wait_for(loop._recover_streams(["cocina"]), timeout=2.0)
+
+        assert loop._streams.get("escritorio") is nuevo, (
+            "el mic sano tiene que reabrirse aunque otro siga ausente"
+        )
+        assert "cocina" not in loop._streams  # la ausente sigue sin stream
+
+    @pytest.mark.asyncio
+    async def test_recover_returns_without_waiting_for_absent_device(self):
+        """`_recover_streams` no puede quedarse colgado por un mic ausente.
+
+        Si no retorna, el `await` de `_stream_watchdog` tampoco vuelve y el
+        watchdog deja de vigilar al resto: una sola falla lo apaga entero.
+        """
+        ausente = _make_room_stream("cocina", device_index=10)
+        ausente.mic_usb_port = "5-5.3"
+        loop = _make_multi_room_loop(rooms={"cocina": ausente})
+        loop._running = True
+        loop._watchdog_backoff_min_s = 0.001
+        loop._watchdog_backoff_max_s = 0.002
+        loop._streams = {"cocina": MagicMock()}
+
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port",
+            return_value=None,
+        ):
+            await asyncio.wait_for(loop._recover_streams(["cocina"]), timeout=2.0)
+
+        loop._running = False  # corta cualquier espera en background
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_pending_reopen_tasks(self):
+        """`stop()` no puede dejar esperas de reapertura vivas.
+
+        Si sobreviven, siguen intentando abrir devices mientras el proceso
+        se apaga (y en un restart rápido, contra el proceso nuevo).
+        """
+        ausente = _make_room_stream("cocina", device_index=10)
+        ausente.mic_usb_port = "5-5.3"
+        loop = _make_multi_room_loop(rooms={"cocina": ausente})
+        loop._running = True
+        loop._watchdog_backoff_min_s = 0.01
+        loop._watchdog_backoff_max_s = 0.02
+
+        with patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port",
+            return_value=None,
+        ):
+            loop._schedule_reopen(ausente)
+            await asyncio.sleep(0)  # dejar arrancar la task
+            tarea = loop._reopen_tasks["cocina"]
+            assert not tarea.done()
+
+            await loop.stop()
+
+        assert tarea.cancelled() or tarea.done()
+        assert not loop._reopen_tasks
 
 
 class TestWatchdogConfigContract:

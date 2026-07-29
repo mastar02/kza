@@ -303,6 +303,11 @@ class MultiRoomAudioLoop:
         # (last_acoustic_command_ts_fn) para el dedup cruzado acústico/textual.
         self._last_command_dispatch_ts: dict[str, float] = {}
 
+        # Esperas de reapertura en curso, una por room (incidente 2026-07-28).
+        # Viven fuera de _recover_streams para que un mic ausente no bloquee
+        # ni a las otras rooms ni al watchdog.
+        self._reopen_tasks: dict[str, asyncio.Task] = {}
+
     def attach_response_handler(self, response_handler) -> None:
         """Inyectar ResponseHandler post-init (útil por orden de DI en main.py)."""
         self._response_handler = response_handler
@@ -542,43 +547,91 @@ class MultiRoomAudioLoop:
         except Exception as e:
             logger.warning(f"[audio-watchdog] PortAudio reinit failed: {e}")
 
+    async def _try_reopen_once(self, rs: "RoomStream") -> bool:
+        """Un solo intento de re-resolver el device y reabrir su stream.
+
+        Returns:
+            True si la room quedó con stream abierto; False si el device no
+            está en sysfs o PortAudio no pudo abrirlo. Nunca espera ni raisea.
+        """
+        new_index = rs.device_index
+        if rs.mic_usb_port:
+            resolved = await asyncio.to_thread(resolve_mic_usb_port, rs.mic_usb_port)
+            if resolved is None:
+                return False
+            new_index = resolved
+        rs.device_index = new_index
+        stream = await asyncio.to_thread(self._open_stream, rs)
+        if stream is None:
+            return False
+        self._streams[rs.room_id] = stream
+        rs.last_frame_ts = time.monotonic()
+        return True
+
     async def _reopen_room(self, rs: "RoomStream") -> None:
-        """Re-resolve the device by USB port and reopen its stream, with backoff.
+        """Reintentar la reapertura con backoff hasta que el device vuelva.
 
         Waits indefinitely (while self._running) for the device to reappear in
         sysfs — the service stays alive; only this mic waits. Never raises.
+
+        ⚠️ Por eso NUNCA debe awaitearse en serie sobre varias rooms: ver
+        `_recover_streams`.
         """
         backoff = self._watchdog_backoff_min_s
         while self._running:
-            new_index = rs.device_index
-            if rs.mic_usb_port:
-                resolved = await asyncio.to_thread(resolve_mic_usb_port, rs.mic_usb_port)
-                if resolved is None:
-                    logger.warning(
-                        f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} "
-                        f"absent, retry in {backoff:.1f}s"
-                    )
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, self._watchdog_backoff_max_s)
-                    continue
-                new_index = resolved
-            rs.device_index = new_index
-            stream = await asyncio.to_thread(self._open_stream, rs)
-            if stream is not None:
-                self._streams[rs.room_id] = stream
-                rs.last_frame_ts = time.monotonic()
+            if await self._try_reopen_once(rs):
                 logger.info(
-                    f"[audio-watchdog] {rs.room_id}: recovered (device={new_index})"
+                    f"[audio-watchdog] {rs.room_id}: recovered "
+                    f"(device={rs.device_index})"
                 )
                 return
+            logger.warning(
+                f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} "
+                f"absent, retry in {backoff:.1f}s"
+            )
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, self._watchdog_backoff_max_s)
+
+    def _cancel_reopen_tasks(self) -> list:
+        """Cancelar las esperas de reapertura en curso (shutdown).
+
+        `cancel()` solo la SOLICITA: la task no muere hasta que el loop la
+        procesa. Devuelve las tasks para que quien pueda awaitear (`stop`)
+        confirme que murieron antes de seguir.
+        """
+        tasks = list(self._reopen_tasks.values())
+        for task in tasks:
+            task.cancel()
+        self._reopen_tasks.clear()
+        return tasks
+
+    def _is_awaiting_reopen(self, room_id: str) -> bool:
+        """True si `room_id` ya tiene una espera de reapertura en curso."""
+        task = self._reopen_tasks.get(room_id)
+        return task is not None and not task.done()
+
+    def _schedule_reopen(self, rs: "RoomStream") -> None:
+        """Dejar a `rs` esperando su device en una task propia (idempotente)."""
+        if self._is_awaiting_reopen(rs.room_id):
+            return  # ya hay una espera viva para esta room
+        logger.warning(
+            f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} ausente "
+            f"— esperando en background (las demás rooms siguen operativas)"
+        )
+        self._reopen_tasks[rs.room_id] = asyncio.create_task(self._reopen_room(rs))
 
     async def _recover_streams(self, trigger_room_ids: list) -> None:
         """Close all streams, reinit PortAudio, reopen all rooms.
 
-        sd._terminate() invalidates every stream, so recovery is all-or-nothing
-        even if only one room went stale.
+        `sd._terminate()` invalida TODOS los streams, así que el cierre + reinit
+        sí es all-or-nothing aunque solo una room se haya colgado.
+
+        La REAPERTURA no: se intenta UNA vez por room y las que no responden
+        quedan esperando en su propia task. Awaitear `_reopen_room` en serie
+        —que espera indefinidamente— hacía que un mic desenchufado dejara sin
+        stream a los sanos y colgara al watchdog, porque el `for` nunca pasaba
+        de la primera room (incidente 2026-07-28: 27h sordo con el servicio
+        `active`, la cocina desenchufada y el escritorio presente y sano).
         """
         logger.error(
             f"[audio-watchdog] streams {trigger_room_ids} stopped delivering "
@@ -593,7 +646,12 @@ class MultiRoomAudioLoop:
         self._streams.clear()
         await asyncio.to_thread(self._reinit_portaudio)
         for room_id, rs in self.room_streams.items():
-            await self._reopen_room(rs)
+            if await self._try_reopen_once(rs):
+                logger.info(
+                    f"[audio-watchdog] {room_id}: recovered (device={rs.device_index})"
+                )
+                continue
+            self._schedule_reopen(rs)
 
     async def _stream_watchdog(self) -> None:
         """Periodically detect mics that stopped delivering frames and recover.
@@ -606,9 +664,15 @@ class MultiRoomAudioLoop:
             if not self._running:
                 break
             now = time.monotonic()
+            # Las rooms que ya esperan su device quedan FUERA de la detección:
+            # sin device no entregan frames, así que su last_frame_ts queda
+            # stale para siempre y dispararían un recovery por ciclo. Como el
+            # recovery cierra TODOS los streams, eso cerraría los mics sanos
+            # cada check_interval (peor que el bug que arregla).
             states = [
                 (room_id, rs.last_frame_ts)
                 for room_id, rs in self.room_streams.items()
+                if not self._is_awaiting_reopen(room_id)
             ]
             stale = detect_stale_streams(states, now, self._watchdog_timeout_s)
             if stale:
@@ -723,6 +787,7 @@ class MultiRoomAudioLoop:
             if self._watchdog_task is not None:
                 self._watchdog_task.cancel()
                 self._watchdog_task = None
+            self._cancel_reopen_tasks()
             for stream in self._streams.values():
                 try:
                     stream.stop()
@@ -736,6 +801,9 @@ class MultiRoomAudioLoop:
         if self._watchdog_task is not None:
             self._watchdog_task.cancel()
             self._watchdog_task = None
+        pendientes = self._cancel_reopen_tasks()
+        if pendientes:
+            await asyncio.gather(*pendientes, return_exceptions=True)
         for ctrl in self._xvf_by_room.values():
             try:
                 # XvfController.stop() hace thread.join(timeout=1.0) — síncrono.
