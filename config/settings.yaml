@@ -1262,7 +1262,15 @@ rooms:
     # sin esperar el silencio final (ahorra ~400-800ms de latencia percibida).
     # Costo: Whisper corriendo continuamente en cuda:0 durante el comando.
     # Con sólo 900 MiB de headroom en VRAM, medir con gpu_thermal.sh antes.
-    early_dispatch: true
+    # ⚠️ OFF 2026-07-28: despachaba apenas parse_partial_command daba
+    # quality=full (intent+entity) SIN esperar la room — y en español el
+    # locativo va al final: "prendé la luz | del living" despachaba en la
+    # barra con room=None → caía a la room del micrófono (prendía la cocina).
+    # Carrera estructural, no flake: el poll de 400ms a veces alcanzaba a ver
+    # la room y a veces no. Además hacía INALCANZABLE el endpointing
+    # adaptativo (short_ms=150), que resuelve lo mismo esperando silencio real
+    # por RMS y por eso nunca corta a mitad de frase.
+    early_dispatch: false
     early_dispatch_interval_ms: 400
     early_dispatch_min_audio_s: 0.6
     # Streaming mode (Fase 2) — word-synchronous, menor latencia, más GPU

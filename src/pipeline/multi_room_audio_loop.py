@@ -1113,12 +1113,31 @@ class MultiRoomAudioLoop:
             # al de inicio.
             self._last_command_dispatch_ts[event.room_id] = time.monotonic()
 
+            outcome = classify_outcome(result) if isinstance(result, dict) else None
+
+            # Captura vacía → liberar la supresión del canal textual
+            # (incidente 2026-07-25). El ts se setea al DISPARAR el wake, así
+            # que una captura que no produjo comando —p.ej. el [STT-veto]
+            # dejando Text='' sobre un "prendé la luz" real— dejaba la red de
+            # seguridad textual abajo durante dedup_window_s enteros, justo
+            # después de que el camino acústico falló en silencio. Eso era el
+            # "al tercer intento recién agarró".
+            #
+            # Sólo se libera en "empty": ruido/TV y alucinaciones MANTIENEN la
+            # supresión (ahí el canal textual no debe entrar). Ante cualquier
+            # otra cosa —incluido un callback que explotó— se mantiene.
+            if outcome == "empty":
+                self._last_command_dispatch_ts.pop(event.room_id, None)
+                logger.info(
+                    f"[dedup] captura vacía en {event.room_id} — "
+                    f"libero el canal textual (no hubo comando)"
+                )
+
             # AmbientGuard: el resultado de la captura alimenta la escalera
             # (noise/empty/timeout escalan; accepted/other_fail/hallucination
             # no — alucinaciones de silencio de Whisper no son ambiente
             # hostil y no deben bloquear el quiet timer, 2026-07-05).
-            if self._guard is not None and isinstance(result, dict):
-                outcome = classify_outcome(result)
+            if self._guard is not None and outcome is not None:
                 self._guard.on_capture_result(event.room_id, outcome)
                 logger.debug(
                     f"[AmbientGuard] capture outcome en {event.room_id}: {outcome}"

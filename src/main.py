@@ -1221,6 +1221,9 @@ async def main():
             user_manager=user_manager,
             list_manager=list_manager,
             reminder_manager=reminder_manager,
+            # Sin esto el dispatcher del orquestador no puede avisar de un
+            # fallo de HA y el comando se pierde en silencio (fix 2026-07-25).
+            response_handler=response_handler,
             # Plan #2 OpenClaw
             compactor=compactor,
             persister=persister,

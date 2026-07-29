@@ -1390,12 +1390,20 @@ class RequestDispatcher:
 
         if success:
             return
-        verb = "apagar" if service == "turn_off" else "prender"
+
+        # Fallo real. Earcon (no frase) en la zona donde habló el usuario:
+        # decisión 2026-07-25. La regla "domótica silenciosa" cubre los ÉXITOS
+        # que el usuario valida visualmente; un fallo mudo es justo lo que hizo
+        # invisible el bug del primer comando post-idle.
+        logger.warning(
+            f"[HA-FAIL] {domain}.{service}@{entity_id} ({description}) "
+            f"err={err or 'success=False'}"
+        )
         if self.response_handler is not None:
             try:
-                self.response_handler.speak(f"No pude {verb} {description}")
+                self.response_handler.play_earcon(zone_id=command.get("zone_id"))
             except Exception as e:
-                logger.warning(f"No pude hablar error de reconciliación: {e}")
+                logger.warning(f"No pude reproducir earcon de fallo HA: {e}")
         else:
             logger.warning(
                 f"HA fire-and-forget falló en {domain}.{service}@{entity_id} "
@@ -1455,6 +1463,7 @@ class MultiUserOrchestrator:
         music_dispatcher=None,
         list_manager=None,
         reminder_manager=None,
+        response_handler=None,
         max_context_history: int = 10,
         context_timeout: float = 300,
         auto_cancel_previous: bool = True,
@@ -1471,6 +1480,10 @@ class MultiUserOrchestrator:
         """Initialize the multi-user orchestrator.
 
         Args:
+            response_handler: ResponseHandler para dar feedback al usuario. Se
+                forwardea al RequestDispatcher; sin él, un fallo de HA en el
+                fire-and-forget muere en un WARNING y el usuario no se entera
+                (incidente 2026-07-25).
             hooks: Optional HookRegistry instance (plan #3 OpenClaw). When set,
                 before_ha_action / before_tts_speak hooks fire on each invocation
                 and after-events emit at pipeline checkpoints. Backward-compat:
@@ -1525,6 +1538,7 @@ class MultiUserOrchestrator:
             music_dispatcher=music_dispatcher,
             list_manager=list_manager,
             reminder_manager=reminder_manager,
+            response_handler=response_handler,
             hooks=hooks,
             before_handler_warn_ms=before_handler_warn_ms,
             require_known_speaker_for_actions=require_known_speaker_for_actions,

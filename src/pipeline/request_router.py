@@ -455,11 +455,15 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
-            result["intent"] = "gate_rejected:empty"
+            # Distinguir "el veto híbrido se comió habla real" de "el STT no
+            # oyó nada": el primero merece earcon aunque el RMS sea bajo
+            # (incidente 2026-07-25). Ver earcon_gate._REAL_SPEECH_PREFIXES.
+            _reason = "stt_veto" if getattr(cmd, "stt_vetoed", False) else "empty"
+            result["intent"] = f"gate_rejected:{_reason}"
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             self._earcon_and_log(
-                "empty", text or "", {}, room_id, wake_score, wake_rms,
+                _reason, text or "", {}, room_id, wake_score, wake_rms,
                 outcome="gate_rejected",
             )
             return result
@@ -792,10 +796,13 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
-            result["intent"] = "gate_rejected:empty"
+            # Igual que en el path orchestrated: el veto híbrido no es lo mismo
+            # que una captura muda (incidente 2026-07-25).
+            _reason = "stt_veto" if getattr(cmd, "stt_vetoed", False) else "empty"
+            result["intent"] = f"gate_rejected:{_reason}"
             result["response"] = ""
             self._earcon_and_log(
-                "empty", text or "", {}, room_id, wake_score, wake_rms,
+                _reason, text or "", {}, room_id, wake_score, wake_rms,
                 outcome="gate_rejected",
             )
             return result

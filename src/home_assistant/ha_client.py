@@ -101,6 +101,11 @@ class HomeAssistantClient:
         self._ws_msg_id_events: int = 1
         self._ws_reconnect_attempts = 0
         self._ws_max_reconnect_attempts = 3
+        # Serializa el (re)connect del canal [calls]. Sin esto, dos comandos
+        # concurrentes que encuentran el socket muerto hacen dos handshakes,
+        # los dos asignan self._ws_calls y el perdedor se filtra sin cerrarse
+        # (incidente 2026-07-25).
+        self._ws_connect_lock = asyncio.Lock()
 
         # Health tracking
         self._error_count = 0
@@ -597,15 +602,30 @@ class HomeAssistantClient:
         if self._ws_connected and self._ws_calls and not self._ws_calls.closed:
             return True
 
-        ws = await self._open_ws_authenticated("calls")
-        if ws is None:
-            self._ws_connected = False
-            return False
+        async with self._ws_connect_lock:
+            # Re-chequear adentro del lock: otro caller pudo conectar mientras
+            # esperábamos, y un segundo handshake filtraría ese socket.
+            if self._ws_connected and self._ws_calls and not self._ws_calls.closed:
+                return True
 
-        self._ws_calls = ws
-        self._ws_connected = True
-        self._ws_reconnect_attempts = 0
-        return True
+            previous = self._ws_calls
+            ws = await self._open_ws_authenticated("calls")
+            if ws is None:
+                self._ws_connected = False
+                return False
+
+            self._ws_calls = ws
+            self._ws_connected = True
+            self._ws_reconnect_attempts = 0
+
+            # Cerrar el socket que reemplazamos. aiohttp no libera el fd solo.
+            if previous is not None and previous is not ws:
+                try:
+                    await previous.close()
+                except Exception as e:
+                    logger.debug(f"Error cerrando _ws_calls reemplazado: {e}")
+
+            return True
 
     async def ensure_websocket_connected(self) -> bool:
         """Asegurar que el canal de calls esta conectado, reconectar si es necesario."""
@@ -633,11 +653,99 @@ class HomeAssistantClient:
 
         Latencia tipica: 10-20ms vs 50-100ms de REST.
         Falls back to REST automatically on WS failure.
+
+        Si la conexión tuvo que abrirse dentro de esta misma llamada (primer
+        comando después de un hueco idle, incidente 2026-07-25), un único
+        fallo no es evidencia confiable: se reintenta una vez sobre el socket
+        nuevo antes de darlo por perdido. Sobre una conexión ya establecida NO
+        se reintenta — ahí el fallo es real y un retry dispararía el servicio
+        dos veces.
         """
+        # ¿La conexión ya estaba viva antes de esta llamada?
+        was_established = (
+            self._ws_connected
+            and self._ws_calls is not None
+            and not self._ws_calls.closed
+        )
+
         # Asegurar conexion WebSocket
         if not await self.ensure_websocket_connected():
             logger.debug("WebSocket no disponible, usando REST")
             return await self.call_service(domain, service, entity_id, data)
+
+        result = await self._send_ws_call(domain, service, entity_id, data)
+
+        if result is True:
+            return result
+        if result is False:
+            if was_established:
+                return False
+            logger.info(
+                f"[WS-RETRY] {domain}.{service}@{entity_id} falló sobre una "
+                f"conexión recién abierta — un reintento"
+            )
+            retry = await self._send_ws_call(domain, service, entity_id, data)
+            if retry is not None:
+                return retry
+
+        # result is None (o el retry también fue None) → WS inutilizable.
+        return await self.call_service(domain, service, entity_id, data)
+
+    async def _receive_ws_result(
+        self,
+        ws: aiohttp.ClientWebSocketResponse,
+        msg_id: int,
+    ) -> dict:
+        """Leer frames de `ws` hasta encontrar el result de `msg_id`.
+
+        HA scopea los ids por conexión y puede intercalar frames que no son
+        nuestros: la respuesta tardía de una llamada previa que agotó
+        WS_CALL_TIMEOUT y cayó a REST, o un event si alguien suscribió en este
+        canal. Aceptar el primer frame a ciegas corre el stream un lugar de
+        forma PERMANENTE — cada llamada leería el resultado de la anterior.
+
+        WS_CALL_TIMEOUT acota el total de la espera, no cada frame individual.
+
+        Args:
+            ws: Socket del canal de calls sobre el que se mandó el request.
+            msg_id: Id que mandamos y cuyo result esperamos.
+
+        Returns:
+            El frame cuyo "id" coincide con msg_id.
+
+        Raises:
+            asyncio.TimeoutError: si se agota WS_CALL_TIMEOUT sin encontrarlo.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + WS_CALL_TIMEOUT
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            frame = await asyncio.wait_for(ws.receive_json(), timeout=remaining)
+            if frame.get("id") == msg_id:
+                return frame
+            logger.warning(
+                f"[WS-DESYNC] descarto frame ajeno id={frame.get('id')} "
+                f"type={frame.get('type')} (esperando id={msg_id})"
+            )
+
+    async def _send_ws_call(
+        self,
+        domain: str,
+        service: str,
+        entity_id: str,
+        data: dict | None = None,
+    ) -> bool | None:
+        """Un intento de call_service por el canal WS de calls.
+
+        Returns:
+            True/False según el `success` del result de HA, o None si el WS
+            quedó inutilizable y el caller debe caer a REST.
+        """
+        ws = self._ws_calls
+        if ws is None:
+            return None
 
         t_start = time.perf_counter()
         try:
@@ -649,7 +757,7 @@ class HomeAssistantClient:
             if data:
                 service_data.update(data)
 
-            await self._ws_calls.send_json({
+            await ws.send_json({
                 "id": msg_id,
                 "type": "call_service",
                 "domain": domain,
@@ -657,17 +765,20 @@ class HomeAssistantClient:
                 "service_data": service_data
             })
 
-            # Esperar respuesta (con timeout corto para baja latencia)
-            response = await asyncio.wait_for(
-                self._ws_calls.receive_json(),
-                timeout=WS_CALL_TIMEOUT
-            )
+            response = await self._receive_ws_result(ws, msg_id)
 
             elapsed = (time.perf_counter() - t_start) * 1000
             success = response.get("success", False)
             if success:
                 self._record_success(elapsed)
                 logger.debug(f"WS: {domain}.{service} -> {entity_id} ({elapsed:.0f}ms)")
+            else:
+                # El body es la única evidencia de POR QUÉ falló. Sin esto, un
+                # "success=False took=8ms" es inatribuible (incidente 07-25).
+                logger.warning(
+                    f"[WS-FAIL] {domain}.{service}@{entity_id} success=False "
+                    f"({elapsed:.0f}ms) response={response}"
+                )
             return success
 
         except asyncio.TimeoutError:
@@ -677,13 +788,13 @@ class HomeAssistantClient:
                 f"after {elapsed:.0f}ms (limit {WS_CALL_TIMEOUT}s), fallback to REST"
             )
             self._record_error(asyncio.TimeoutError(), f"call_service_ws({domain}.{service})")
-            return await self.call_service(domain, service, entity_id, data)
+            return None
 
         except Exception as e:
             logger.error(f"Error WebSocket: {e}")
             self._ws_connected = False  # Marcar para reconexion
             self._record_error(e, f"call_service_ws({domain}.{service})")
-            return await self.call_service(domain, service, entity_id, data)
+            return None
 
     # ==================== State Prefetch Cache (S6) ====================
 
