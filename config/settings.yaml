@@ -1091,10 +1091,18 @@ rooms:
   # docs/superpowers/specs/2026-06-24-audio-watchdog-usb-recovery-design.md
   stream_watchdog:
     enabled: true
-    no_frames_timeout_s: 8.0     # sin frames del callback por más de esto → recuperar
+    no_frames_timeout_s: 8.0     # sin AUDIO por más de esto, tras haber entregado → recuperar
     check_interval_s: 2.0        # cada cuánto evalúa el watchdog
     reopen_backoff_min_s: 1.0    # espera inicial entre reintentos de reabrir
     reopen_backoff_max_s: 10.0   # tope del backoff
+    # Margen para el PRIMER frame tras abrir el stream. Separado del timeout
+    # porque "todavía no arrancó" ≠ "dejó de entregar" (2026-07-30): el
+    # heartbeat ahora exige audio real (muestras no-cero), y un XVF3800 puede
+    # tardar en dar señal. Arranques medidos: 1.5-2s lo normal, 135s el peor
+    # observado. Con un margen corto acá, el watchdog dispararía recovery
+    # sobre un mic que todavía está despertando — y como el recovery cierra
+    # TODOS los streams, se llevaría puestos a los sanos.
+    first_frame_grace_s: 180.0
 
   # MA1260 amplifier connection (moved from zones)
   ma1260:

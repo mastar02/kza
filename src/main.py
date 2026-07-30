@@ -967,6 +967,7 @@ async def main():
                 stream_watchdog_check_interval_s=watchdog_cfg.get("check_interval_s", 2.0),
                 stream_watchdog_reopen_backoff_min_s=watchdog_cfg.get("reopen_backoff_min_s", 1.0),
                 stream_watchdog_reopen_backoff_max_s=watchdog_cfg.get("reopen_backoff_max_s", 10.0),
+                stream_watchdog_first_frame_grace_s=watchdog_cfg.get("first_frame_grace_s", 180.0),
             )
             logger.info(
                 f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "

@@ -68,25 +68,40 @@ def _resolve_capture_channels(max_input_channels: int) -> int:
 
 
 def detect_stale_streams(
-    states: list[tuple[str, float]], now: float, timeout_s: float
+    states: list[tuple[str, float, float]],
+    now: float,
+    timeout_s: float,
+    first_frame_grace_s: float,
 ) -> list[str]:
-    """Return room_ids whose audio stream stopped delivering frames.
+    """Return room_ids whose audio stream is not delivering audio.
 
-    A stream is stale when it has produced at least one frame (last_frame_ts > 0)
-    and more than `timeout_s` seconds elapsed since the last one. Streams that
-    never opened (last_frame_ts == 0.0) are ignored — there is nothing to recover
-    until `run()` opens them.
+    Dos regímenes distintos, porque "todavía no arrancó" no es lo mismo que
+    "dejó de entregar":
+
+    - Ya entregó audio alguna vez (``last_frame_ts > 0``): stale si pasaron
+      más de ``timeout_s`` desde el último frame con señal.
+    - Abierto pero sin entregar nunca (``last_frame_ts == 0``): stale recién
+      pasado ``first_frame_grace_s`` desde la apertura. Medido sobre arranques
+      reales (2026-07-29/30): lo normal son 1.5-2s, pero se observó uno de
+      135s. Sin esta gracia el watchdog dispararía recovery sobre un mic que
+      todavía está despertando, y como el recovery cierra TODOS los streams,
+      se llevaría puestos a los sanos.
+    - Nunca abierto (``opened_ts == 0``): se ignora, no hay nada que recuperar.
 
     Args:
-        states: list of (room_id, last_frame_ts) with monotonic timestamps.
+        states: list of (room_id, last_frame_ts, opened_ts), monotónicos.
         now: current monotonic time.
-        timeout_s: seconds without frames before a stream is considered dead.
+        timeout_s: segundos sin audio, tras haber entregado, para darlo por muerto.
+        first_frame_grace_s: margen para el PRIMER frame tras abrir el stream.
     """
-    return [
-        room_id
-        for room_id, last_frame_ts in states
-        if last_frame_ts > 0.0 and (now - last_frame_ts) > timeout_s
-    ]
+    stale = []
+    for room_id, last_frame_ts, opened_ts in states:
+        if last_frame_ts > 0.0:
+            if (now - last_frame_ts) > timeout_s:
+                stale.append(room_id)
+        elif opened_ts > 0.0 and (now - opened_ts) > first_frame_grace_s:
+            stale.append(room_id)
+    return stale
 
 
 @dataclass
@@ -134,6 +149,10 @@ class RoomStream:
     # que el stream se abre/recibe el primer frame. Lo vigila _stream_watchdog
     # para detectar un mic muerto por re-enumeración USB.
     last_frame_ts: float = 0.0
+    # Momento de apertura del stream. Separado de last_frame_ts para que el
+    # watchdog distinga "abrió y todavía no entregó" (gracia larga) de
+    # "entregaba y dejó de entregar" (timeout corto).
+    opened_ts: float = 0.0
 
 
 class MultiRoomAudioLoop:
@@ -181,6 +200,7 @@ class MultiRoomAudioLoop:
         stream_watchdog_check_interval_s: float = 2.0,
         stream_watchdog_reopen_backoff_min_s: float = 1.0,
         stream_watchdog_reopen_backoff_max_s: float = 10.0,
+        stream_watchdog_first_frame_grace_s: float = 180.0,
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -281,6 +301,9 @@ class MultiRoomAudioLoop:
         self._watchdog_check_interval_s = stream_watchdog_check_interval_s
         self._watchdog_backoff_min_s = stream_watchdog_reopen_backoff_min_s
         self._watchdog_backoff_max_s = stream_watchdog_reopen_backoff_max_s
+        # Margen para el PRIMER frame tras abrir (arranques medidos:
+        # 1.5-2s lo normal, 135s el peor observado el 2026-07-29).
+        self._watchdog_first_frame_grace_s = stream_watchdog_first_frame_grace_s
         self._watchdog_task = None
 
         self._running = False
@@ -565,7 +588,10 @@ class MultiRoomAudioLoop:
         if stream is None:
             return False
         self._streams[rs.room_id] = stream
-        rs.last_frame_ts = time.monotonic()
+        # Stream nuevo: todavía no entregó nada. El heartbeat lo estampa el
+        # callback cuando llegue audio real (no la mera invocación).
+        rs.opened_ts = time.monotonic()
+        rs.last_frame_ts = 0.0
         return True
 
     async def _reopen_room(self, rs: "RoomStream") -> None:
@@ -670,11 +696,16 @@ class MultiRoomAudioLoop:
             # recovery cierra TODOS los streams, eso cerraría los mics sanos
             # cada check_interval (peor que el bug que arregla).
             states = [
-                (room_id, rs.last_frame_ts)
+                (room_id, rs.last_frame_ts, rs.opened_ts)
                 for room_id, rs in self.room_streams.items()
                 if not self._is_awaiting_reopen(room_id)
             ]
-            stale = detect_stale_streams(states, now, self._watchdog_timeout_s)
+            stale = detect_stale_streams(
+                states,
+                now,
+                self._watchdog_timeout_s,
+                self._watchdog_first_frame_grace_s,
+            )
             if stale:
                 await self._recover_streams(stale)
 
@@ -696,7 +727,8 @@ class MultiRoomAudioLoop:
             stream = self._open_stream(rs)
             if stream is not None:
                 self._streams[room_id] = stream
-                rs.last_frame_ts = time.monotonic()
+                rs.opened_ts = time.monotonic()
+                rs.last_frame_ts = 0.0
 
         logger.info(
             f"MultiRoomAudioLoop ready "
@@ -823,10 +855,23 @@ class MultiRoomAudioLoop:
         """Create a sounddevice callback closure for one room."""
 
         def audio_callback(indata, frames, time_info, status):
-            # Watchdog heartbeat: marca que el stream entregó un frame. Primera
-            # línea, O(1), nunca lanza — si esto deja de actualizarse, el mic
-            # murió (re-enumeración USB) y _stream_watchdog dispara recovery.
-            rs.last_frame_ts = time.monotonic()
+            # Watchdog heartbeat: marca que el stream entregó AUDIO. Primera
+            # línea, nunca lanza — si esto deja de actualizarse, el mic murió
+            # y _stream_watchdog dispara recovery.
+            #
+            # `indata.any()` y no un refresh incondicional (2026-07-29): un
+            # XVF3800 con el endpoint isócrono degradado enumera, deja abrir el
+            # stream y hace que PortAudio siga invocando este callback — pero
+            # con buffers de CEROS. Marcando cada invocación, el watchdog veía
+            # un stream sano y el sistema quedó sordo ~7 min sin una alerta,
+            # con el servicio en `active`. Misma lección que "arecord exit 0 ≠
+            # audio": contar muestras no-cero, no llamadas.
+            #
+            # El criterio es no-cero, NO un umbral de RMS: el silencio real de
+            # un mic vivo trae un piso de ruido diminuto pero distinto de cero,
+            # y no debe confundirse con un mic muerto.
+            if indata.any():
+                rs.last_frame_ts = time.monotonic()
 
             # Tee al ambient path (spec 2026-06-06): SIEMPRE primero — el
             # ambient quiere todo el audio, incluso lo que el barge-in o el

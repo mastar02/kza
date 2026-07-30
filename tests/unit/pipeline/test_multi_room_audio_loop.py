@@ -1041,29 +1041,85 @@ class TestCallbackStampsFrameTimestamp:
         )
         rs = loop.room_streams["escritorio"]
         callback = loop._make_audio_callback(rs)
+        # Buffer CON señal: desde 2026-07-29 el heartbeat exige audio, no la
+        # mera invocación del callback (ver TestWatchdogHeartbeatRequiresSignal).
         indata = np.zeros((160, 2), dtype="float32")
+        indata[:, 0] = 0.02
         assert rs.last_frame_ts == 0.0
         callback(indata, 160, None, None)
         assert rs.last_frame_ts > 0.0
 
 
 class TestDetectStaleStreams:
+    # states = (room_id, last_frame_ts, opened_ts)
+    GRACE = 180.0
+
     def test_marks_stream_past_timeout(self):
         # last_frame_ts=100.0, now=109.0 → 9s sin frames > 8s
-        assert detect_stale_streams([("escritorio", 100.0)], now=109.0, timeout_s=8.0) == ["escritorio"]
+        assert detect_stale_streams(
+            [("escritorio", 100.0, 90.0)], now=109.0, timeout_s=8.0,
+            first_frame_grace_s=self.GRACE,
+        ) == ["escritorio"]
 
     def test_ignores_fresh_stream(self):
         # 2s sin frames < 8s
-        assert detect_stale_streams([("escritorio", 100.0)], now=102.0, timeout_s=8.0) == []
+        assert detect_stale_streams(
+            [("escritorio", 100.0, 90.0)], now=102.0, timeout_s=8.0,
+            first_frame_grace_s=self.GRACE,
+        ) == []
 
     def test_ignores_never_opened_stream(self):
-        # last_frame_ts=0.0 → nunca recibió/abrió, no se marca
-        assert detect_stale_streams([("escritorio", 0.0)], now=999.0, timeout_s=8.0) == []
+        # opened_ts=0.0 → nunca se abrió, no se marca
+        assert detect_stale_streams(
+            [("escritorio", 0.0, 0.0)], now=999.0, timeout_s=8.0,
+            first_frame_grace_s=self.GRACE,
+        ) == []
 
     def test_multiple_streams_only_stale_returned(self):
-        states = [("a", 100.0), ("b", 108.5), ("c", 0.0)]
-        # now=110: a=10s stale, b=1.5s fresh, c=never
-        assert detect_stale_streams(states, now=110.0, timeout_s=8.0) == ["a"]
+        states = [("a", 100.0, 90.0), ("b", 108.5, 90.0), ("c", 0.0, 0.0)]
+        # now=110: a=10s stale, b=1.5s fresh, c=never opened
+        assert detect_stale_streams(
+            states, now=110.0, timeout_s=8.0, first_frame_grace_s=self.GRACE,
+        ) == ["a"]
+
+
+class TestFirstFrameGrace:
+    """Distinguir "todavía no arrancó" de "dejó de entregar".
+
+    Medido sobre arranques reales (2026-07-29/30): el primer frame llega
+    normalmente en 1.5-2s, pero se observó un arranque que tardó 135s. Sin
+    período de gracia, un mic que todavía está despertando se leería como
+    muerto y el watchdog dispararía recovery cada `timeout_s` — y como el
+    recovery cierra TODOS los streams, se llevaría puestos a los sanos.
+    """
+
+    def test_just_opened_without_frames_is_not_stale(self):
+        # abrió hace 10s, nunca entregó, gracia 180s → todavía despertando
+        assert detect_stale_streams(
+            [("escritorio", 0.0, 100.0)],
+            now=110.0, timeout_s=8.0, first_frame_grace_s=180.0,
+        ) == []
+
+    def test_never_delivering_past_grace_is_stale(self):
+        # abrió hace 200s y nunca entregó un frame → el mic no va a arrancar
+        assert detect_stale_streams(
+            [("escritorio", 0.0, 100.0)],
+            now=300.0, timeout_s=8.0, first_frame_grace_s=180.0,
+        ) == ["escritorio"]
+
+    def test_was_delivering_then_stopped_uses_short_timeout(self):
+        # ya había entregado (ts=150): no hereda la gracia, vale el timeout
+        assert detect_stale_streams(
+            [("escritorio", 150.0, 100.0)],
+            now=160.0, timeout_s=8.0, first_frame_grace_s=180.0,
+        ) == ["escritorio"]
+
+    def test_never_opened_is_still_ignored(self):
+        # opened_ts=0.0 → el stream nunca se abrió, no hay nada que recuperar
+        assert detect_stale_streams(
+            [("escritorio", 0.0, 0.0)],
+            now=999.0, timeout_s=8.0, first_frame_grace_s=180.0,
+        ) == []
 
 
 class TestOpenStream:
@@ -1093,6 +1149,63 @@ class TestOpenStream:
         with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd):
             result = loop._open_stream(rs)
         assert result is None
+
+
+class TestWatchdogHeartbeatRequiresSignal:
+    """El heartbeat del watchdog debe medir AUDIO, no llamadas al callback.
+
+    Incidente 2026-07-29: el XVF3800 quedó con el endpoint isócrono degradado
+    —enumera, el stream abre, PortAudio sigue invocando el callback— pero
+    entregando ceros. Como `last_frame_ts` se refrescaba incondicionalmente en
+    la primera línea, el watchdog vio un stream sano durante ~7 minutos y el
+    sistema quedó sordo sin una sola alerta, con el servicio en `active`.
+
+    Misma lección que [arecord exit 0 ≠ audio]: contar muestras no-cero, no
+    invocaciones.
+    """
+
+    def _loop_and_room(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        loop = _make_multi_room_loop(rooms={"escritorio": rs})
+        return loop, rs
+
+    def test_silent_buffer_does_not_refresh_heartbeat(self):
+        loop, rs = self._loop_and_room()
+        cb = loop._make_audio_callback(rs)
+        rs.last_frame_ts = 0.0
+
+        cb(np.zeros((CHUNK_SIZE, 2), dtype=np.float32), CHUNK_SIZE, None, None)
+
+        assert rs.last_frame_ts == 0.0, (
+            "un buffer de ceros no es audio: el watchdog tiene que poder verlo"
+        )
+
+    def test_real_audio_refreshes_heartbeat(self):
+        loop, rs = self._loop_and_room()
+        cb = loop._make_audio_callback(rs)
+        rs.last_frame_ts = 0.0
+
+        indata = np.zeros((CHUNK_SIZE, 2), dtype=np.float32)
+        indata[:, 0] = 0.02  # ruido de fondo de un mic vivo
+        cb(indata, CHUNK_SIZE, None, None)
+
+        assert rs.last_frame_ts > 0.0
+
+    def test_faint_noise_still_counts_as_signal(self):
+        """El piso de ruido de un mic sano cuenta: el criterio es no-cero.
+
+        No un umbral de RMS — el silencio real de una habitación vacía trae
+        ruido diminuto pero distinto de cero, y no debe leerse como mic muerto.
+        """
+        loop, rs = self._loop_and_room()
+        cb = loop._make_audio_callback(rs)
+        rs.last_frame_ts = 0.0
+
+        indata = np.zeros((CHUNK_SIZE, 2), dtype=np.float32)
+        indata[0, 0] = 1e-6
+        cb(indata, CHUNK_SIZE, None, None)
+
+        assert rs.last_frame_ts > 0.0
 
 
 class TestStreamWatchdog:
@@ -1133,9 +1246,11 @@ class TestStreamWatchdog:
         )
         loop._running = True
         loop._watchdog_check_interval_s = 0.001
-        loop._watchdog_timeout_s = 0.05
-        ausente.last_frame_ts = time.monotonic() - 10.0  # stale permanente
-        sana.last_frame_ts = time.monotonic()            # sana y fresca
+        # timeout amplio: la room sana no puede volverse stale por el propio
+        # tiempo que corre el test (si no, la aserción mediría una carrera).
+        loop._watchdog_timeout_s = 30.0
+        ausente.last_frame_ts = time.monotonic() - 600.0  # stale permanente
+        sana.last_frame_ts = time.monotonic()             # sana y fresca
 
         # La cocina ya tiene una espera de reapertura viva.
         espera = asyncio.get_running_loop().create_future()
@@ -1203,7 +1318,10 @@ class TestRecoverStreams:
         assert mock_sd._terminate.called and mock_sd._initialize.called  # reinit
         assert rs.device_index == 7                    # re-resolvió por puerto
         assert loop._streams["escritorio"] is new_stream  # reabrió
-        assert rs.last_frame_ts > 0.0                  # re-estampó
+        # Stream nuevo: arranca la gracia del primer frame, y el heartbeat
+        # queda en 0 hasta que llegue audio REAL (no la apertura del stream).
+        assert rs.opened_ts > 0.0
+        assert rs.last_frame_ts == 0.0
 
     @pytest.mark.asyncio
     async def test_reopen_waits_with_backoff_when_device_absent(self):
