@@ -108,8 +108,14 @@ _ZONE_TO_AREA: dict[str, str] = {
 # (lowercase + sin acentos) → area canónica. Mantener sincronizado con
 # RoomConfig.aliases en src/rooms/room_context.create_default_rooms().
 _ROOM_ALIASES_TO_AREA: dict[str, str] = {
-    # Living
+    # Living — incluye los destrozos far-field del STT (2026-07-30). Es la
+    # única habitación con nombre en inglés y la única que se rompe: medido
+    # sobre 4 días de log, "del living" 12 veces contra "del libby" 9. Sin
+    # estos alias el comando pierde el prefer_area y cae a la zona del mic
+    # (pedías el living y prendía el escritorio). Mantener alineado con
+    # ROOM_ALIASES de src/nlu/command_grammar.py.
     "living": "Living", "sala": "Living", "salon": "Living",
+    "libby": "Living", "livin": "Living", "libin": "Living",
     # Escritorio
     "escritorio": "Escritorio", "oficina": "Escritorio", "estudio": "Escritorio",
     # Hall

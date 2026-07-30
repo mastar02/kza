@@ -70,6 +70,32 @@ def test_extract_room_fallback_no_preposition():
     assert extract_room("cocina luces") == "cocina"
 
 
+@pytest.mark.parametrize("text,expected", [
+    ("nexa prende la luz del libby", "living"),
+    ("prendé la luz del livin", "living"),
+    ("apagá la luz del libin", "living"),
+])
+def test_extract_room_acepta_el_destrozo_de_living(text, expected):
+    """El STT rompe "living" far-field y el comando termina en otra habitación.
+
+    Medido sobre 4 días de log real: "del living" 12 veces contra "del libby"
+    9 — o sea ~43% de los pedidos al living se transcriben mal. Al no matchear
+    ninguna room, `extract_room` devuelve None, el comando pierde el locativo y
+    cae al fallback del micrófono: pedís el living y prende el escritorio.
+
+    "living" es la única habitación con nombre en inglés, y es la única que el
+    STT rompe — "cocina" y "escritorio" nunca aparecieron destrozados.
+    """
+    assert extract_room(text) == expected
+
+
+def test_destrozos_de_living_no_pisan_otras_rooms():
+    """Los alias fonéticos no pueden robarle comandos a las demás."""
+    assert extract_room("prendé la luz de la cocina") == "cocina"
+    assert extract_room("prendé la luz del escritorio") == "escritorio"
+    assert extract_room("prendé la luz del baño") == "bano"
+
+
 # -----------------------------------------------------------------
 # Wake detection helper
 # -----------------------------------------------------------------

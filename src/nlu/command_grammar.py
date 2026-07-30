@@ -154,6 +154,15 @@ ROOM_ALIASES: dict[str, str] = {
     "living": "living",
     "sala": "living",
     "salon": "living",
+    # Destrozos far-field de "living" (2026-07-30). Es la única habitación con
+    # nombre en inglés y la única que el STT rompe: medido sobre 4 días de log,
+    # "del living" 12 veces contra "del libby" 9 — ~43% de los pedidos al living
+    # se transcribían mal, perdían el locativo y terminaban en la habitación del
+    # micrófono. "cocina" y "escritorio" nunca aparecieron destrozados.
+    # "libby" es el observado; los otros dos son truncamientos a 1 edición.
+    "libby": "living",
+    "livin": "living",
+    "libin": "living",
     "hall": "hall",
     "pasillo": "hall",
     "entrada": "hall",

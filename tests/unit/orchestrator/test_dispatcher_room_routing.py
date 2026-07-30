@@ -189,3 +189,30 @@ class TestDispatcherPassesIntentAsServiceFilter:
         )
         kwargs = chroma_with_search.asearch_command.call_args.kwargs
         assert kwargs.get("query_slots") == {"brightness_pct": 50}
+
+
+class TestLivingMangledBySTT:
+    """El STT rompe "living" far-field; el alias no puede cortarse acá.
+
+    `_resolve_prefer_area` busca los aliases en el TEXTO, así que si la grammar
+    resuelve room=living pero el dispatcher no reconoce "libby", el comando
+    pierde el prefer_area y el vector search cae a la zona del micrófono:
+    pedís el living y prende el escritorio (observado 2026-07-30, ~43% de los
+    pedidos al living).
+    """
+
+    def test_libby_resuelve_a_living(self):
+        from src.orchestrator.dispatcher import _resolve_prefer_area
+        assert _resolve_prefer_area("nexa prende la luz del libby", None) == "Living"
+
+    def test_el_mic_no_le_gana_al_destrozo(self):
+        """Aun hablando desde el escritorio, "libby" manda al living."""
+        from src.orchestrator.dispatcher import _resolve_prefer_area
+        assert _resolve_prefer_area(
+            "prende la luz del libby", "zone_escritorio"
+        ) == "Living"
+
+    def test_las_demas_rooms_siguen_intactas(self):
+        from src.orchestrator.dispatcher import _resolve_prefer_area
+        assert _resolve_prefer_area("prende la luz de la cocina", None) == "Cocina"
+        assert _resolve_prefer_area("prende la luz del escritorio", None) == "Escritorio"
