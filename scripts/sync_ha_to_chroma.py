@@ -143,6 +143,23 @@ def select_syncable(entities: list[dict]) -> tuple[list[dict], list[dict]]:
     que realmente tiene y la indexa con menos frases. Ese índice empobrecido
     sobrevive a la recuperación del dispositivo, porque la cache key del sync no
     mira el estado.
+
+    ⚠️ ASIMETRÍA DELIBERADA con `HomeAssistantClient.is_entity_available`, que
+    solo trata `unavailable` como muerta: acá `unknown` TAMBIÉN queda afuera, y
+    no es un descuido — no lo "armonices". El costo de cada criterio es
+    distinto:
+
+      - Allá (camino de voz, runtime): excluir de más = **comando del usuario
+        rechazado en caliente**. Y `unknown` es un estado sano que HA ejecuta
+        igual, así que excluirlo sería directamente un bug.
+      - Acá (script de sync, manual): excluir de más = el script **aborta con
+        un mensaje explícito** y el operador decide (`--allow-unavailable`).
+        Nadie se queda sin luz por esto, y a cambio evita escribir un índice
+        empobrecido y permanente a partir de atributos que quizá estén
+        amputados.
+
+    Ante la duda, este lado es conservador a propósito: un índice malo es
+    silencioso y persistente; un abort es ruidoso y reversible.
     """
     live, dead = [], []
     for e in entities:

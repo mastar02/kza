@@ -334,14 +334,37 @@ class HomeAssistantClient:
         algo".
 
         Returns:
-            True si está disponible, False si está `unavailable`/`unknown`,
+            True si está disponible, False si está `unavailable`,
             None si no hay entry en cache — el caller debe fallar ABIERTO
             (llamar igual), porque "no sé" no es "está rota".
         """
         entry = self._state_cache.get(entity_id)
         if entry is None:
             return None
-        return entry.get("state") not in ("unavailable", "unknown")
+        # ⚠️ SOLO `unavailable`. `unknown` NO va acá, por más que suene igual
+        # de roto (el error es intuitivo y ya se cometió una vez):
+        #
+        #   - `Entity._stringify_state()` devuelve `unavailable` si y solo si
+        #     `available == False`. `unknown` solo es alcanzable con
+        #     `available == True`.
+        #   - El filtro silencioso que motiva este precheck es
+        #     `[e for e in entity_candidates if e.available]`
+        #     (helpers/service.py). O sea: `unavailable` ⟹ HA descarta la
+        #     llamada en silencio; `unknown` ⟹ HA la ejecuta normalmente.
+        #
+        # Bloquear `unknown` sería una regresión funcional del camino de voz.
+        # Víctima concreta: `Scene.state` es el timestamp de la última
+        # activación, o `None` → `unknown`. Una escena nunca activada queda
+        # `unknown` para siempre, y el bloqueo es AUTOBLOQUEANTE: la única vía
+        # por la que saldría de `unknown` es exactamente la que se estaría
+        # bloqueando. Hay ~25 frases de escenas indexadas en Chroma.
+        #
+        # Este criterio está atado por test al de `smoke_check.entity_problem`
+        # (tests/unit/monitoring/test_smoke_check.py): si cambia uno solo, el
+        # diagnóstico y el dispatcher vuelven a contradecirse.
+        # NO confundir con `select_syncable` del sync a Chroma, que sí excluye
+        # `unknown` a propósito — ver el comentario allá.
+        return entry.get("state") != "unavailable"
 
     def has_domain(self, domain: str) -> bool:
         """¿Hay al menos una entidad del dominio en el cache?

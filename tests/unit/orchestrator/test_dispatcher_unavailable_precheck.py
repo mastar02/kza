@@ -10,11 +10,34 @@ def test_is_entity_available_true_for_live_entity():
     assert ha.is_entity_available("light.grupo_living") is True
 
 
-@pytest.mark.parametrize("state", ["unavailable", "unknown"])
+@pytest.mark.parametrize("state", ["unavailable"])
 def test_is_entity_available_false_for_dead_entity(state):
     ha = HomeAssistantClient.__new__(HomeAssistantClient)
     ha._state_cache = {"light.grupo_cuarto": {"state": state}}
     assert ha.is_entity_available("light.grupo_cuarto") is False
+
+
+@pytest.mark.parametrize(
+    "state", ["unknown", "on", "off", "idle", "playing", "2026-07-31T12:00:00"]
+)
+def test_is_entity_available_true_for_states_ha_would_execute(state):
+    """`unknown` NO es `unavailable`: HA ejecuta el service call igual.
+
+    En HA, `Entity._stringify_state()` devuelve `unavailable` si y solo si
+    `available == False`; `unknown` solo es alcanzable con `available == True`.
+    El filtro silencioso de `helpers/service.py` es
+    `[e for e in entity_candidates if e.available]`, así que `unknown` pasa
+    el filtro y el comando se ejecuta.
+
+    Víctima concreta: `Scene.state` es el timestamp de la última activación o
+    `None` → `unknown`. Una escena nunca activada queda `unknown` para
+    siempre, y bloquearla es autobloqueante: la única vía por la que saldría
+    de `unknown` es exactamente la que se estaría bloqueando. En este HA,
+    `scene.fria` y `scene.relax` están `unknown` ahora mismo.
+    """
+    ha = HomeAssistantClient.__new__(HomeAssistantClient)
+    ha._state_cache = {"scene.fria": {"state": state}}
+    assert ha.is_entity_available("scene.fria") is True
 
 
 def test_is_entity_available_none_when_not_cached():

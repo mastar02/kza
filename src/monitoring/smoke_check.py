@@ -115,6 +115,14 @@ def entity_problem(entity_id: str, ha_states: dict[str, str]) -> str | None:
     if entity_id not in ha_states:
         return f"{entity_id} no existe en Home Assistant"
     state = ha_states[entity_id]
+    # Solo `unavailable`, deliberadamente alineado con
+    # `HomeAssistantClient.is_entity_available` (ver el comentario largo allá:
+    # `unavailable` ⟺ `not entity.available` ⟹ HA descarta la llamada en
+    # silencio; `unknown` es un estado SANO y HA la ejecuta). Los dos criterios
+    # están atados por test en tests/unit/monitoring/test_smoke_check.py: si
+    # divergen, el smoke test reporta sano lo que el dispatcher rechaza —
+    # exactamente lo que pasaba con las escenas, que viven en `unknown` hasta
+    # su primera activación.
     if state == "unavailable":
         return (
             f"{entity_id} está unavailable — HA acepta la llamada y no pasa nada"

@@ -10,6 +10,7 @@ entidad viva y produce un payload que HA aceptaría, sin llamar al servicio.
 
 import pytest
 
+from src.home_assistant.ha_client import HomeAssistantClient
 from src.monitoring.smoke_check import (
     SmokeResult,
     check_phrase,
@@ -52,6 +53,40 @@ class TestEntityProblem:
         problem = entity_problem("light.grupo_bano", {"light.grupo_bano": "unavailable"})
         assert problem is not None
         assert "unavailable" in problem
+
+    @pytest.mark.parametrize(
+        "state", ["unknown", "on", "off", "idle", "2026-07-31T12:00:00"]
+    )
+    def test_unknown_is_not_a_problem(self, state):
+        """`unknown` no bloquea nada: HA ejecuta la llamada igual.
+
+        Las escenas viven en `unknown` hasta la primera activación
+        (`Scene.state` = timestamp de la última, o `None`), y están indexadas
+        en Chroma. Marcarlas como problema haría que el smoke test reporte
+        rojo por entidades perfectamente accionables.
+        """
+        assert entity_problem("scene.fria", {"scene.fria": state}) is None
+
+    @pytest.mark.parametrize(
+        "state",
+        ["unavailable", "unknown", "on", "off", "idle", "2026-07-31T12:00:00"],
+    )
+    def test_agrees_with_the_dispatcher_precheck(self, state):
+        """El veredicto del smoke test y el del dispatcher deben coincidir.
+
+        Son los dos únicos lugares que deciden "esta entidad está muerta", y
+        divergieron: el precheck contaba `unknown` como muerta y el smoke test
+        no, así que el diagnóstico decía "las escenas están sanas" mientras el
+        dispatcher las rechazaba. Este test ata los dos criterios: si alguien
+        cambia uno solo, esto falla.
+        """
+        ha = HomeAssistantClient.__new__(HomeAssistantClient)
+        ha._state_cache = {"scene.fria": {"state": state}}
+
+        smoke_says_dead = entity_problem("scene.fria", {"scene.fria": state}) is not None
+        dispatcher_says_dead = ha.is_entity_available("scene.fria") is False
+
+        assert smoke_says_dead == dispatcher_says_dead
 
 
 class TestCheckPhrase:
