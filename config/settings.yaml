@@ -14,6 +14,34 @@ home_assistant:
     # si algún event se perdió durante una desconexión.
     full_refresh_interval_s: 300
 
+  # Precheck de disponibilidad antes de despachar un service_call (dispatcher
+  # RequestDispatcher._fire_and_reconcile_ha, HomeAssistantClient.is_entity_available).
+  # HA acepta una llamada contra una entidad `unavailable` y la filtra en
+  # silencio (helpers/service.py: `[e for e in candidates if e.available]`),
+  # devolviendo success=true — sin este precheck eso es silencio total (ni
+  # voz, ni earcon, ni luz).
+  #
+  # Bloquea SOLO `unavailable`, a propósito — `unknown` NO (ver el comentario
+  # largo en `is_entity_available`). `unavailable` ⟺ `available == False`;
+  # `unknown` solo es alcanzable con `available == True`, así que HA la
+  # ejecuta normalmente. Bloquear `unknown` acá sería una regresión: una
+  # escena nunca activada queda `unknown` para siempre (`Scene.state` es el
+  # timestamp de la última activación), y la única vía para salir de
+  # `unknown` es justo la que se estaría bloqueando.
+  #
+  # Kill switch, default true (activo). Por qué existe: si Z2M o HA se
+  # reinician (evento recurrente en esta casa, más con la migración
+  # Hue→Z2M en curso), las entidades quedan genuinamente unavailable y el
+  # cache lo registra bien. Cuando vuelven, el cache sana por el WS
+  # (state_changed) o por el snapshot REST de arriba (full_refresh_interval_s,
+  # 300s). Si el socket de events muere en silencio justo en esa ventana —
+  # modo de falla ya documentado en este proyecto — el precheck retiene
+  # comandos (earcon de error, sin luz) contra dispositivos que en realidad
+  # ya volvieron, hasta por 5 minutos. Apagar acá si eso pasa más seguido de
+  # lo tolerable; NO hay hoy una cota de frescura sobre el cache, así que
+  # apagar el flag es la única mitigación sin tocar código.
+  unavailable_precheck_enabled: true
+
 # Audio Settings
 audio:
   sample_rate: 16000
@@ -1091,10 +1119,22 @@ rooms:
   # docs/superpowers/specs/2026-06-24-audio-watchdog-usb-recovery-design.md
   stream_watchdog:
     enabled: true
-    no_frames_timeout_s: 8.0     # sin frames del callback por más de esto → recuperar
+    no_frames_timeout_s: 8.0     # sin AUDIO por más de esto, tras haber entregado → recuperar
     check_interval_s: 2.0        # cada cuánto evalúa el watchdog
     reopen_backoff_min_s: 1.0    # espera inicial entre reintentos de reabrir
     reopen_backoff_max_s: 10.0   # tope del backoff
+    # Margen para el PRIMER frame tras abrir el stream. Separado del timeout
+    # porque "todavía no arrancó" ≠ "dejó de entregar" (2026-07-30): el
+    # heartbeat ahora exige audio real (muestras no-cero), y un XVF3800 puede
+    # tardar en dar señal. Arranques medidos: 1.5-2s lo normal, 135s el peor
+    # observado. Con un margen corto acá, el watchdog dispararía recovery
+    # sobre un mic que todavía está despertando — y como el recovery cierra
+    # TODOS los streams, se llevaría puestos a los sanos.
+    first_frame_grace_s: 180.0
+    # Snapshot del heartbeat para el poller externo (tools/audio_watchdog_alert.py).
+    # Externo a propósito: el modo de falla observado (27h, 7h) es "el proceso
+    # vive y no entrega audio", que un watchdog interno no puede reportar.
+    health_path: "./data/audio_health.json"
 
   # MA1260 amplifier connection (moved from zones)
   ma1260:
@@ -1262,7 +1302,15 @@ rooms:
     # sin esperar el silencio final (ahorra ~400-800ms de latencia percibida).
     # Costo: Whisper corriendo continuamente en cuda:0 durante el comando.
     # Con sólo 900 MiB de headroom en VRAM, medir con gpu_thermal.sh antes.
-    early_dispatch: true
+    # ⚠️ OFF 2026-07-28: despachaba apenas parse_partial_command daba
+    # quality=full (intent+entity) SIN esperar la room — y en español el
+    # locativo va al final: "prendé la luz | del living" despachaba en la
+    # barra con room=None → caía a la room del micrófono (prendía la cocina).
+    # Carrera estructural, no flake: el poll de 400ms a veces alcanzaba a ver
+    # la room y a veces no. Además hacía INALCANZABLE el endpointing
+    # adaptativo (short_ms=150), que resuelve lo mismo esperando silencio real
+    # por RMS y por eso nunca corta a mitad de frase.
+    early_dispatch: false
     early_dispatch_interval_ms: 400
     early_dispatch_min_audio_s: 0.6
     # Streaming mode (Fase 2) — word-synchronous, menor latencia, más GPU

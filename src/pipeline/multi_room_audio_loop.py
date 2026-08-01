@@ -30,6 +30,15 @@ logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1280
 
+# Cota para el `await` de write_audio_health dentro de _stream_watchdog.
+# 1.0s queda cómodamente por debajo del intervalo default del watchdog
+# (stream_watchdog_check_interval_s=2.0s) para no demorar detect_stale_streams
+# / _recover_streams, pero es generoso para una escritura local de pocos KB
+# (mkstemp+json.dump+os.replace normalmente tarda unos pocos ms). Si el
+# thread se cuelga (fs trabado, disco lleno bloqueando I/O, etc.), este
+# timeout evita que la recuperación de mics quede rehén de esa escritura.
+AUDIO_HEALTH_WRITE_TIMEOUT_S = 1.0
+
 
 def compute_wake_vad(audio_chunk, vad_predict) -> float | None:
     """Prob de Silero sobre el audio del wake-trigger (fail-safe → None).
@@ -56,7 +65,11 @@ def _resolve_capture_channels(max_input_channels: int) -> int:
     PortAudio and require forcing 1. Others (XVF3800, 2ch) must be opened
     with their native count: opening a 2ch device as 1ch reads interleaved
     data into a 1ch buffer and garbles the audio, causing Whisper to
-    hallucinate. Channel 0 (indata[:, 0]) is always consumed downstream.
+    hallucinate. The channel actually consumed downstream is NOT hardcoded
+    to 0: it's `rs.capture_channel` (per-room config, e.g. `capture_channel: 1`
+    for cocina/escritorio), read in the InputStream callback with a
+    fallback to channel 0 only if the device doesn't have that many
+    channels. This function only decides how many channels to *open*.
 
     Args:
         max_input_channels: Value from sd.query_devices(index)['max_input_channels'].
@@ -68,25 +81,40 @@ def _resolve_capture_channels(max_input_channels: int) -> int:
 
 
 def detect_stale_streams(
-    states: list[tuple[str, float]], now: float, timeout_s: float
+    states: list[tuple[str, float, float]],
+    now: float,
+    timeout_s: float,
+    first_frame_grace_s: float,
 ) -> list[str]:
-    """Return room_ids whose audio stream stopped delivering frames.
+    """Return room_ids whose audio stream is not delivering audio.
 
-    A stream is stale when it has produced at least one frame (last_frame_ts > 0)
-    and more than `timeout_s` seconds elapsed since the last one. Streams that
-    never opened (last_frame_ts == 0.0) are ignored — there is nothing to recover
-    until `run()` opens them.
+    Dos regímenes distintos, porque "todavía no arrancó" no es lo mismo que
+    "dejó de entregar":
+
+    - Ya entregó audio alguna vez (``last_frame_ts > 0``): stale si pasaron
+      más de ``timeout_s`` desde el último frame con señal.
+    - Abierto pero sin entregar nunca (``last_frame_ts == 0``): stale recién
+      pasado ``first_frame_grace_s`` desde la apertura. Medido sobre arranques
+      reales (2026-07-29/30): lo normal son 1.5-2s, pero se observó uno de
+      135s. Sin esta gracia el watchdog dispararía recovery sobre un mic que
+      todavía está despertando, y como el recovery cierra TODOS los streams,
+      se llevaría puestos a los sanos.
+    - Nunca abierto (``opened_ts == 0``): se ignora, no hay nada que recuperar.
 
     Args:
-        states: list of (room_id, last_frame_ts) with monotonic timestamps.
+        states: list of (room_id, last_frame_ts, opened_ts), monotónicos.
         now: current monotonic time.
-        timeout_s: seconds without frames before a stream is considered dead.
+        timeout_s: segundos sin audio, tras haber entregado, para darlo por muerto.
+        first_frame_grace_s: margen para el PRIMER frame tras abrir el stream.
     """
-    return [
-        room_id
-        for room_id, last_frame_ts in states
-        if last_frame_ts > 0.0 and (now - last_frame_ts) > timeout_s
-    ]
+    stale = []
+    for room_id, last_frame_ts, opened_ts in states:
+        if last_frame_ts > 0.0:
+            if (now - last_frame_ts) > timeout_s:
+                stale.append(room_id)
+        elif opened_ts > 0.0 and (now - opened_ts) > first_frame_grace_s:
+            stale.append(room_id)
+    return stale
 
 
 @dataclass
@@ -134,6 +162,10 @@ class RoomStream:
     # que el stream se abre/recibe el primer frame. Lo vigila _stream_watchdog
     # para detectar un mic muerto por re-enumeración USB.
     last_frame_ts: float = 0.0
+    # Momento de apertura del stream. Separado de last_frame_ts para que el
+    # watchdog distinga "abrió y todavía no entregó" (gracia larga) de
+    # "entregaba y dejó de entregar" (timeout corto).
+    opened_ts: float = 0.0
 
 
 class MultiRoomAudioLoop:
@@ -181,6 +213,8 @@ class MultiRoomAudioLoop:
         stream_watchdog_check_interval_s: float = 2.0,
         stream_watchdog_reopen_backoff_min_s: float = 1.0,
         stream_watchdog_reopen_backoff_max_s: float = 10.0,
+        stream_watchdog_first_frame_grace_s: float = 180.0,
+        audio_health_path: str = "./data/audio_health.json",
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -281,7 +315,22 @@ class MultiRoomAudioLoop:
         self._watchdog_check_interval_s = stream_watchdog_check_interval_s
         self._watchdog_backoff_min_s = stream_watchdog_reopen_backoff_min_s
         self._watchdog_backoff_max_s = stream_watchdog_reopen_backoff_max_s
+        # Margen para el PRIMER frame tras abrir (arranques medidos:
+        # 1.5-2s lo normal, 135s el peor observado el 2026-07-29).
+        self._watchdog_first_frame_grace_s = stream_watchdog_first_frame_grace_s
         self._watchdog_task = None
+        # Snapshot del heartbeat para el poller externo (2026-07-31): el
+        # watchdog interno recupera mics pero no puede AVISAR — si el
+        # proceso se traba, se traba con él. Ver tools/audio_watchdog_alert.py.
+        self._audio_health_path = audio_health_path
+        # Anclas de salud en WALL CLOCK, fuera de RoomStream a propósito: son
+        # lo único que la reapertura de un stream NO puede resetear. Ver
+        # `_update_audio_anchors` para por qué es imprescindible.
+        # room_id -> time.time() del último audio REAL (presencia ⇒ ever=True)
+        self._last_audio_wall: dict[str, float] = {}
+        # room_id -> time.time() en que la room entró en observación; ancla de
+        # la room que todavía no entregó nada.
+        self._room_since_wall: dict[str, float] = {}
 
         self._running = False
         self._streams: dict = {}
@@ -302,6 +351,11 @@ class MultiRoomAudioLoop:
         # dispatch ACÚSTICO por room — consumido por TextualWakeDetector
         # (last_acoustic_command_ts_fn) para el dedup cruzado acústico/textual.
         self._last_command_dispatch_ts: dict[str, float] = {}
+
+        # Esperas de reapertura en curso, una por room (incidente 2026-07-28).
+        # Viven fuera de _recover_streams para que un mic ausente no bloquee
+        # ni a las otras rooms ni al watchdog.
+        self._reopen_tasks: dict[str, asyncio.Task] = {}
 
     def attach_response_handler(self, response_handler) -> None:
         """Inyectar ResponseHandler post-init (útil por orden de DI en main.py)."""
@@ -542,43 +596,94 @@ class MultiRoomAudioLoop:
         except Exception as e:
             logger.warning(f"[audio-watchdog] PortAudio reinit failed: {e}")
 
+    async def _try_reopen_once(self, rs: "RoomStream") -> bool:
+        """Un solo intento de re-resolver el device y reabrir su stream.
+
+        Returns:
+            True si la room quedó con stream abierto; False si el device no
+            está en sysfs o PortAudio no pudo abrirlo. Nunca espera ni raisea.
+        """
+        new_index = rs.device_index
+        if rs.mic_usb_port:
+            resolved = await asyncio.to_thread(resolve_mic_usb_port, rs.mic_usb_port)
+            if resolved is None:
+                return False
+            new_index = resolved
+        rs.device_index = new_index
+        stream = await asyncio.to_thread(self._open_stream, rs)
+        if stream is None:
+            return False
+        self._streams[rs.room_id] = stream
+        # Stream nuevo: todavía no entregó nada. El heartbeat lo estampa el
+        # callback cuando llegue audio real (no la mera invocación).
+        rs.opened_ts = time.monotonic()
+        rs.last_frame_ts = 0.0
+        return True
+
     async def _reopen_room(self, rs: "RoomStream") -> None:
-        """Re-resolve the device by USB port and reopen its stream, with backoff.
+        """Reintentar la reapertura con backoff hasta que el device vuelva.
 
         Waits indefinitely (while self._running) for the device to reappear in
         sysfs — the service stays alive; only this mic waits. Never raises.
+
+        ⚠️ Por eso NUNCA debe awaitearse en serie sobre varias rooms: ver
+        `_recover_streams`.
         """
         backoff = self._watchdog_backoff_min_s
         while self._running:
-            new_index = rs.device_index
-            if rs.mic_usb_port:
-                resolved = await asyncio.to_thread(resolve_mic_usb_port, rs.mic_usb_port)
-                if resolved is None:
-                    logger.warning(
-                        f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} "
-                        f"absent, retry in {backoff:.1f}s"
-                    )
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, self._watchdog_backoff_max_s)
-                    continue
-                new_index = resolved
-            rs.device_index = new_index
-            stream = await asyncio.to_thread(self._open_stream, rs)
-            if stream is not None:
-                self._streams[rs.room_id] = stream
-                rs.last_frame_ts = time.monotonic()
+            if await self._try_reopen_once(rs):
                 logger.info(
-                    f"[audio-watchdog] {rs.room_id}: recovered (device={new_index})"
+                    f"[audio-watchdog] {rs.room_id}: recovered "
+                    f"(device={rs.device_index})"
                 )
                 return
+            logger.warning(
+                f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} "
+                f"absent, retry in {backoff:.1f}s"
+            )
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, self._watchdog_backoff_max_s)
+
+    def _cancel_reopen_tasks(self) -> list:
+        """Cancelar las esperas de reapertura en curso (shutdown).
+
+        `cancel()` solo la SOLICITA: la task no muere hasta que el loop la
+        procesa. Devuelve las tasks para que quien pueda awaitear (`stop`)
+        confirme que murieron antes de seguir.
+        """
+        tasks = list(self._reopen_tasks.values())
+        for task in tasks:
+            task.cancel()
+        self._reopen_tasks.clear()
+        return tasks
+
+    def _is_awaiting_reopen(self, room_id: str) -> bool:
+        """True si `room_id` ya tiene una espera de reapertura en curso."""
+        task = self._reopen_tasks.get(room_id)
+        return task is not None and not task.done()
+
+    def _schedule_reopen(self, rs: "RoomStream") -> None:
+        """Dejar a `rs` esperando su device en una task propia (idempotente)."""
+        if self._is_awaiting_reopen(rs.room_id):
+            return  # ya hay una espera viva para esta room
+        logger.warning(
+            f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} ausente "
+            f"— esperando en background (las demás rooms siguen operativas)"
+        )
+        self._reopen_tasks[rs.room_id] = asyncio.create_task(self._reopen_room(rs))
 
     async def _recover_streams(self, trigger_room_ids: list) -> None:
         """Close all streams, reinit PortAudio, reopen all rooms.
 
-        sd._terminate() invalidates every stream, so recovery is all-or-nothing
-        even if only one room went stale.
+        `sd._terminate()` invalida TODOS los streams, así que el cierre + reinit
+        sí es all-or-nothing aunque solo una room se haya colgado.
+
+        La REAPERTURA no: se intenta UNA vez por room y las que no responden
+        quedan esperando en su propia task. Awaitear `_reopen_room` en serie
+        —que espera indefinidamente— hacía que un mic desenchufado dejara sin
+        stream a los sanos y colgara al watchdog, porque el `for` nunca pasaba
+        de la primera room (incidente 2026-07-28: 27h sordo con el servicio
+        `active`, la cocina desenchufada y el escritorio presente y sano).
         """
         logger.error(
             f"[audio-watchdog] streams {trigger_room_ids} stopped delivering "
@@ -593,7 +698,61 @@ class MultiRoomAudioLoop:
         self._streams.clear()
         await asyncio.to_thread(self._reinit_portaudio)
         for room_id, rs in self.room_streams.items():
-            await self._reopen_room(rs)
+            if await self._try_reopen_once(rs):
+                logger.info(
+                    f"[audio-watchdog] {room_id}: recovered (device={rs.device_index})"
+                )
+                continue
+            self._schedule_reopen(rs)
+
+    def _update_audio_anchors(self, now_mono: float, now_wall: float) -> None:
+        """Refrescar las anclas de salud que la reapertura no puede resetear.
+
+        ⚠️ Por qué existe esto en vez de leer `rs.last_frame_ts`/`rs.opened_ts`
+        directo: `_try_reopen_once` pone `opened_ts = now` y
+        `last_frame_ts = 0.0` en CADA reapertura exitosa. Un XVF3800 con el
+        endpoint isócrono muerto —el modo de falla de los incidentes de 27h y
+        7h— abre perfecto en PortAudio y entrega ceros, así que el watchdog lo
+        detecta a los ~180s, "recupera", y el reset deja `ever=False` con
+        `age_s` en 0. Bucle eterno de ~182s en el que `age_s` solo supera el
+        umbral ~2s por vuelta: la alerta quedaba MÁS DÉBIL justo en el caso
+        primario (simulado: mediana 1,67h hasta detectar, máximo 15,98h,
+        1/200 sin detectar en 24h).
+
+        ⚠️ Y el fix intuitivo empeora las cosas: subir `first_frame_grace_s`
+        del poller hace que NUNCA detecte, porque `age_s` está acotado por el
+        ciclo de recovery. La salida es esta: un ancla que la reapertura no
+        toca, con la que la detección pasa a ser determinística a los
+        `deaf_after_s`.
+
+        Args:
+            now_mono: time.monotonic() del ciclo actual.
+            now_wall: time.time() del ciclo actual.
+        """
+        for room_id, rs in self.room_streams.items():
+            self._room_since_wall.setdefault(room_id, now_wall)
+            if rs.last_frame_ts <= 0.0:
+                continue  # todavía no entregó (o lo acaban de resetear)
+            # Convertir el monotónico del último frame a wall clock. Exacto:
+            # no depende del período del watchdog. El max() es lo que hace el
+            # ancla monótona — una reapertura que pone last_frame_ts=0 cae en
+            # el `continue` de arriba y no puede hacerla retroceder.
+            frame_wall = now_wall - (now_mono - rs.last_frame_ts)
+            previo = self._last_audio_wall.get(room_id)
+            if previo is None or frame_wall > previo:
+                self._last_audio_wall[room_id] = frame_wall
+
+    def _audio_health_rooms(self) -> dict[str, tuple[float, bool]]:
+        """(ancla_wall, ever) por room, tal como lo espera write_audio_health."""
+        return {
+            room_id: (
+                self._last_audio_wall.get(
+                    room_id, self._room_since_wall.get(room_id, 0.0)
+                ),
+                room_id in self._last_audio_wall,
+            )
+            for room_id in self.room_streams
+        }
 
     async def _stream_watchdog(self) -> None:
         """Periodically detect mics that stopped delivering frames and recover.
@@ -606,11 +765,67 @@ class MultiRoomAudioLoop:
             if not self._running:
                 break
             now = time.monotonic()
+            # Las rooms que ya esperan su device quedan FUERA de la detección:
+            # sin device no entregan frames, así que su last_frame_ts queda
+            # stale para siempre y dispararían un recovery por ciclo. Como el
+            # recovery cierra TODOS los streams, eso cerraría los mics sanos
+            # cada check_interval (peor que el bug que arregla).
             states = [
-                (room_id, rs.last_frame_ts)
+                (room_id, rs.last_frame_ts, rs.opened_ts)
                 for room_id, rs in self.room_streams.items()
+                if not self._is_awaiting_reopen(room_id)
             ]
-            stale = detect_stale_streams(states, now, self._watchdog_timeout_s)
+            # Publicar el heartbeat para el poller externo. El watchdog interno
+            # recupera, pero no puede avisar: si el proceso se traba, se traba
+            # con él. Un fallo acá jamás debe romper la recuperación, así que
+            # anclas y escritura van las dos dentro del try.
+            now_wall = time.time()  # UNA sola lectura: las anclas y el
+            # snapshot tienen que datarse contra el mismo instante, o `age_s`
+            # sale corrido respecto de la referencia que el lector compara.
+            try:
+                from src.monitoring.audio_health import write_audio_health
+
+                self._update_audio_anchors(now_mono=now, now_wall=now_wall)
+                # En thread aparte: write_audio_health hace mkstemp + json.dump
+                # + os.replace SÍNCRONOS, y este loop es el mismo que corre el
+                # fast path (<300ms). Son ~43.000 creaciones+renames por día
+                # sobre ./data/, el mismo disco que events.db, latency.db,
+                # ChromaDB y el entrenamiento nocturno. Mismo criterio que
+                # `_try_reopen_once`, que ya usa to_thread.
+                # `wait_for` (no `to_thread` a secas): un thread colgado nunca
+                # retorna, y detect_stale_streams/_recover_streams corren
+                # DESPUÉS de este bloque try — sin cota, un write trabado
+                # apaga la recuperación de mics entera, no solo la métrica.
+                # AUDIO_HEALTH_WRITE_TIMEOUT_S por qué/cuánto: ver constante.
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        write_audio_health,
+                        self._audio_health_path,
+                        self._audio_health_rooms(),
+                        now_wall=now_wall,
+                    ),
+                    timeout=AUDIO_HEALTH_WRITE_TIMEOUT_S,
+                )
+            except Exception as e:
+                # `warning`, no `debug`: en un sistema cuya tesis es que
+                # ninguna señal de salud puede fallar en silencio, el vigilante
+                # que no logra publicar es exactamente el caso a gritar. Un
+                # TimeoutError (write colgado) cae acá también, a propósito.
+                # ⚠️ `except Exception` es deliberado y NO debe ampliarse a
+                # BaseException: ahora que hay un `await` acá adentro, la
+                # cancelación del watchdog se inyecta en este punto, y
+                # CancelledError es BaseException — tiene que propagar para que
+                # `stop()` pueda terminar la task. Hay test que lo fija.
+                # `asyncio.wait_for` respeta esto: una cancelación externa (no
+                # el propio timeout interno) se re-lanza como CancelledError,
+                # no se traga como TimeoutError.
+                logger.warning(f"No pude publicar audio_health: {e}")
+            stale = detect_stale_streams(
+                states,
+                now,
+                self._watchdog_timeout_s,
+                self._watchdog_first_frame_grace_s,
+            )
             if stale:
                 await self._recover_streams(stale)
 
@@ -632,7 +847,8 @@ class MultiRoomAudioLoop:
             stream = self._open_stream(rs)
             if stream is not None:
                 self._streams[room_id] = stream
-                rs.last_frame_ts = time.monotonic()
+                rs.opened_ts = time.monotonic()
+                rs.last_frame_ts = 0.0
 
         logger.info(
             f"MultiRoomAudioLoop ready "
@@ -723,6 +939,7 @@ class MultiRoomAudioLoop:
             if self._watchdog_task is not None:
                 self._watchdog_task.cancel()
                 self._watchdog_task = None
+            self._cancel_reopen_tasks()
             for stream in self._streams.values():
                 try:
                     stream.stop()
@@ -736,6 +953,9 @@ class MultiRoomAudioLoop:
         if self._watchdog_task is not None:
             self._watchdog_task.cancel()
             self._watchdog_task = None
+        pendientes = self._cancel_reopen_tasks()
+        if pendientes:
+            await asyncio.gather(*pendientes, return_exceptions=True)
         for ctrl in self._xvf_by_room.values():
             try:
                 # XvfController.stop() hace thread.join(timeout=1.0) — síncrono.
@@ -755,10 +975,23 @@ class MultiRoomAudioLoop:
         """Create a sounddevice callback closure for one room."""
 
         def audio_callback(indata, frames, time_info, status):
-            # Watchdog heartbeat: marca que el stream entregó un frame. Primera
-            # línea, O(1), nunca lanza — si esto deja de actualizarse, el mic
-            # murió (re-enumeración USB) y _stream_watchdog dispara recovery.
-            rs.last_frame_ts = time.monotonic()
+            # Watchdog heartbeat: marca que el stream entregó AUDIO. Primera
+            # línea, nunca lanza — si esto deja de actualizarse, el mic murió
+            # y _stream_watchdog dispara recovery.
+            #
+            # `indata.any()` y no un refresh incondicional (2026-07-29): un
+            # XVF3800 con el endpoint isócrono degradado enumera, deja abrir el
+            # stream y hace que PortAudio siga invocando este callback — pero
+            # con buffers de CEROS. Marcando cada invocación, el watchdog veía
+            # un stream sano y el sistema quedó sordo ~7 min sin una alerta,
+            # con el servicio en `active`. Misma lección que "arecord exit 0 ≠
+            # audio": contar muestras no-cero, no llamadas.
+            #
+            # El criterio es no-cero, NO un umbral de RMS: el silencio real de
+            # un mic vivo trae un piso de ruido diminuto pero distinto de cero,
+            # y no debe confundirse con un mic muerto.
+            if indata.any():
+                rs.last_frame_ts = time.monotonic()
 
             # Tee al ambient path (spec 2026-06-06): SIEMPRE primero — el
             # ambient quiere todo el audio, incluso lo que el barge-in o el
@@ -1113,12 +1346,31 @@ class MultiRoomAudioLoop:
             # al de inicio.
             self._last_command_dispatch_ts[event.room_id] = time.monotonic()
 
+            outcome = classify_outcome(result) if isinstance(result, dict) else None
+
+            # Captura vacía → liberar la supresión del canal textual
+            # (incidente 2026-07-25). El ts se setea al DISPARAR el wake, así
+            # que una captura que no produjo comando —p.ej. el [STT-veto]
+            # dejando Text='' sobre un "prendé la luz" real— dejaba la red de
+            # seguridad textual abajo durante dedup_window_s enteros, justo
+            # después de que el camino acústico falló en silencio. Eso era el
+            # "al tercer intento recién agarró".
+            #
+            # Sólo se libera en "empty": ruido/TV y alucinaciones MANTIENEN la
+            # supresión (ahí el canal textual no debe entrar). Ante cualquier
+            # otra cosa —incluido un callback que explotó— se mantiene.
+            if outcome == "empty":
+                self._last_command_dispatch_ts.pop(event.room_id, None)
+                logger.info(
+                    f"[dedup] captura vacía en {event.room_id} — "
+                    f"libero el canal textual (no hubo comando)"
+                )
+
             # AmbientGuard: el resultado de la captura alimenta la escalera
             # (noise/empty/timeout escalan; accepted/other_fail/hallucination
             # no — alucinaciones de silencio de Whisper no son ambiente
             # hostil y no deben bloquear el quiet timer, 2026-07-05).
-            if self._guard is not None and isinstance(result, dict):
-                outcome = classify_outcome(result)
+            if self._guard is not None and outcome is not None:
                 self._guard.on_capture_result(event.room_id, outcome)
                 logger.debug(
                     f"[AmbientGuard] capture outcome en {event.room_id}: {outcome}"

@@ -12,6 +12,8 @@ Tests ensure that:
 
 import sys
 import asyncio
+import json
+import threading
 import time
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -25,6 +27,7 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 import numpy as np
 import pytest
 
+import src.pipeline.multi_room_audio_loop as mra_mod
 from src.pipeline.multi_room_audio_loop import (
     MultiRoomAudioLoop,
     RoomStream,
@@ -32,6 +35,8 @@ from src.pipeline.multi_room_audio_loop import (
     _resolve_capture_channels,
 )
 from src.pipeline.command_event import CommandEvent
+import src.monitoring.audio_health as audio_health_mod
+from src.monitoring.audio_health import evaluate_health
 
 
 # ============================================================
@@ -1041,29 +1046,85 @@ class TestCallbackStampsFrameTimestamp:
         )
         rs = loop.room_streams["escritorio"]
         callback = loop._make_audio_callback(rs)
+        # Buffer CON señal: desde 2026-07-29 el heartbeat exige audio, no la
+        # mera invocación del callback (ver TestWatchdogHeartbeatRequiresSignal).
         indata = np.zeros((160, 2), dtype="float32")
+        indata[:, 0] = 0.02
         assert rs.last_frame_ts == 0.0
         callback(indata, 160, None, None)
         assert rs.last_frame_ts > 0.0
 
 
 class TestDetectStaleStreams:
+    # states = (room_id, last_frame_ts, opened_ts)
+    GRACE = 180.0
+
     def test_marks_stream_past_timeout(self):
         # last_frame_ts=100.0, now=109.0 → 9s sin frames > 8s
-        assert detect_stale_streams([("escritorio", 100.0)], now=109.0, timeout_s=8.0) == ["escritorio"]
+        assert detect_stale_streams(
+            [("escritorio", 100.0, 90.0)], now=109.0, timeout_s=8.0,
+            first_frame_grace_s=self.GRACE,
+        ) == ["escritorio"]
 
     def test_ignores_fresh_stream(self):
         # 2s sin frames < 8s
-        assert detect_stale_streams([("escritorio", 100.0)], now=102.0, timeout_s=8.0) == []
+        assert detect_stale_streams(
+            [("escritorio", 100.0, 90.0)], now=102.0, timeout_s=8.0,
+            first_frame_grace_s=self.GRACE,
+        ) == []
 
     def test_ignores_never_opened_stream(self):
-        # last_frame_ts=0.0 → nunca recibió/abrió, no se marca
-        assert detect_stale_streams([("escritorio", 0.0)], now=999.0, timeout_s=8.0) == []
+        # opened_ts=0.0 → nunca se abrió, no se marca
+        assert detect_stale_streams(
+            [("escritorio", 0.0, 0.0)], now=999.0, timeout_s=8.0,
+            first_frame_grace_s=self.GRACE,
+        ) == []
 
     def test_multiple_streams_only_stale_returned(self):
-        states = [("a", 100.0), ("b", 108.5), ("c", 0.0)]
-        # now=110: a=10s stale, b=1.5s fresh, c=never
-        assert detect_stale_streams(states, now=110.0, timeout_s=8.0) == ["a"]
+        states = [("a", 100.0, 90.0), ("b", 108.5, 90.0), ("c", 0.0, 0.0)]
+        # now=110: a=10s stale, b=1.5s fresh, c=never opened
+        assert detect_stale_streams(
+            states, now=110.0, timeout_s=8.0, first_frame_grace_s=self.GRACE,
+        ) == ["a"]
+
+
+class TestFirstFrameGrace:
+    """Distinguir "todavía no arrancó" de "dejó de entregar".
+
+    Medido sobre arranques reales (2026-07-29/30): el primer frame llega
+    normalmente en 1.5-2s, pero se observó un arranque que tardó 135s. Sin
+    período de gracia, un mic que todavía está despertando se leería como
+    muerto y el watchdog dispararía recovery cada `timeout_s` — y como el
+    recovery cierra TODOS los streams, se llevaría puestos a los sanos.
+    """
+
+    def test_just_opened_without_frames_is_not_stale(self):
+        # abrió hace 10s, nunca entregó, gracia 180s → todavía despertando
+        assert detect_stale_streams(
+            [("escritorio", 0.0, 100.0)],
+            now=110.0, timeout_s=8.0, first_frame_grace_s=180.0,
+        ) == []
+
+    def test_never_delivering_past_grace_is_stale(self):
+        # abrió hace 200s y nunca entregó un frame → el mic no va a arrancar
+        assert detect_stale_streams(
+            [("escritorio", 0.0, 100.0)],
+            now=300.0, timeout_s=8.0, first_frame_grace_s=180.0,
+        ) == ["escritorio"]
+
+    def test_was_delivering_then_stopped_uses_short_timeout(self):
+        # ya había entregado (ts=150): no hereda la gracia, vale el timeout
+        assert detect_stale_streams(
+            [("escritorio", 150.0, 100.0)],
+            now=160.0, timeout_s=8.0, first_frame_grace_s=180.0,
+        ) == ["escritorio"]
+
+    def test_never_opened_is_still_ignored(self):
+        # opened_ts=0.0 → el stream nunca se abrió, no hay nada que recuperar
+        assert detect_stale_streams(
+            [("escritorio", 0.0, 0.0)],
+            now=999.0, timeout_s=8.0, first_frame_grace_s=180.0,
+        ) == []
 
 
 class TestOpenStream:
@@ -1095,6 +1156,63 @@ class TestOpenStream:
         assert result is None
 
 
+class TestWatchdogHeartbeatRequiresSignal:
+    """El heartbeat del watchdog debe medir AUDIO, no llamadas al callback.
+
+    Incidente 2026-07-29: el XVF3800 quedó con el endpoint isócrono degradado
+    —enumera, el stream abre, PortAudio sigue invocando el callback— pero
+    entregando ceros. Como `last_frame_ts` se refrescaba incondicionalmente en
+    la primera línea, el watchdog vio un stream sano durante ~7 minutos y el
+    sistema quedó sordo sin una sola alerta, con el servicio en `active`.
+
+    Misma lección que [arecord exit 0 ≠ audio]: contar muestras no-cero, no
+    invocaciones.
+    """
+
+    def _loop_and_room(self):
+        rs = _make_room_stream("escritorio", device_index=4)
+        loop = _make_multi_room_loop(rooms={"escritorio": rs})
+        return loop, rs
+
+    def test_silent_buffer_does_not_refresh_heartbeat(self):
+        loop, rs = self._loop_and_room()
+        cb = loop._make_audio_callback(rs)
+        rs.last_frame_ts = 0.0
+
+        cb(np.zeros((CHUNK_SIZE, 2), dtype=np.float32), CHUNK_SIZE, None, None)
+
+        assert rs.last_frame_ts == 0.0, (
+            "un buffer de ceros no es audio: el watchdog tiene que poder verlo"
+        )
+
+    def test_real_audio_refreshes_heartbeat(self):
+        loop, rs = self._loop_and_room()
+        cb = loop._make_audio_callback(rs)
+        rs.last_frame_ts = 0.0
+
+        indata = np.zeros((CHUNK_SIZE, 2), dtype=np.float32)
+        indata[:, 0] = 0.02  # ruido de fondo de un mic vivo
+        cb(indata, CHUNK_SIZE, None, None)
+
+        assert rs.last_frame_ts > 0.0
+
+    def test_faint_noise_still_counts_as_signal(self):
+        """El piso de ruido de un mic sano cuenta: el criterio es no-cero.
+
+        No un umbral de RMS — el silencio real de una habitación vacía trae
+        ruido diminuto pero distinto de cero, y no debe leerse como mic muerto.
+        """
+        loop, rs = self._loop_and_room()
+        cb = loop._make_audio_callback(rs)
+        rs.last_frame_ts = 0.0
+
+        indata = np.zeros((CHUNK_SIZE, 2), dtype=np.float32)
+        indata[0, 0] = 1e-6
+        cb(indata, CHUNK_SIZE, None, None)
+
+        assert rs.last_frame_ts > 0.0
+
+
 class TestStreamWatchdog:
     @pytest.mark.asyncio
     async def test_watchdog_recovers_when_stream_stale(self):
@@ -1115,6 +1233,49 @@ class TestStreamWatchdog:
 
         await asyncio.wait_for(loop._stream_watchdog(), timeout=1.0)
         assert called.get("ids") == ["escritorio"]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_ignores_room_already_awaiting_reopen(self):
+        """Una room que ya espera su device no debe re-disparar el recovery.
+
+        Su `last_frame_ts` no se actualiza nunca (no hay device que entregue
+        frames), así que queda stale para siempre. Sin este filtro el watchdog
+        llamaría a `_recover_streams` en cada ciclo, y como el recovery cierra
+        TODOS los streams, el mic sano se cerraría cada `check_interval`.
+        """
+        ausente = _make_room_stream("cocina", device_index=10)
+        ausente.mic_usb_port = "5-5.3"
+        sana = _make_room_stream("escritorio", device_index=4)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": ausente, "escritorio": sana}
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        # timeout amplio: la room sana no puede volverse stale por el propio
+        # tiempo que corre el test (si no, la aserción mediría una carrera).
+        loop._watchdog_timeout_s = 30.0
+        ausente.last_frame_ts = time.monotonic() - 600.0  # stale permanente
+        sana.last_frame_ts = time.monotonic()             # sana y fresca
+
+        # La cocina ya tiene una espera de reapertura viva.
+        espera = asyncio.get_running_loop().create_future()
+        loop._reopen_tasks = {"cocina": asyncio.ensure_future(espera)}
+
+        llamadas = []
+        async def fake_recover(ids):
+            llamadas.append(ids)
+            loop._running = False
+        loop._recover_streams = fake_recover
+
+        async def parar():
+            await asyncio.sleep(0.05)
+            loop._running = False
+        await asyncio.gather(loop._stream_watchdog(), parar())
+
+        espera.cancel()
+        assert llamadas == [], (
+            f"no debía dispararse el recovery, pero se llamó con {llamadas}"
+        )
 
     @pytest.mark.asyncio
     async def test_watchdog_noop_when_fresh(self):
@@ -1162,7 +1323,10 @@ class TestRecoverStreams:
         assert mock_sd._terminate.called and mock_sd._initialize.called  # reinit
         assert rs.device_index == 7                    # re-resolvió por puerto
         assert loop._streams["escritorio"] is new_stream  # reabrió
-        assert rs.last_frame_ts > 0.0                  # re-estampó
+        # Stream nuevo: arranca la gracia del primer frame, y el heartbeat
+        # queda en 0 hasta que llegue audio REAL (no la apertura del stream).
+        assert rs.opened_ts > 0.0
+        assert rs.last_frame_ts == 0.0
 
     @pytest.mark.asyncio
     async def test_reopen_waits_with_backoff_when_device_absent(self):
@@ -1186,6 +1350,476 @@ class TestRecoverStreams:
 
         assert rs.device_index == 7
         assert "escritorio" in loop._streams
+
+    @pytest.mark.asyncio
+    async def test_recover_reopens_healthy_room_when_another_device_absent(self):
+        """Un mic ausente NO debe impedir que los sanos vuelvan.
+
+        Incidente 2026-07-28: la cocina se desenchufó del USB y
+        `_recover_streams` quedó esperando su device indefinidamente
+        (`_reopen_room` loopea `while self._running`), así que el `for`
+        nunca llegó al escritorio —presente y sano— y el sistema quedó
+        27h sin capturar audio con el servicio `active`.
+
+        La room ausente va PRIMERO en el dict a propósito: reproduce el
+        orden real de `room_streams` que disparó el incidente.
+        """
+        ausente = _make_room_stream("cocina", device_index=10)
+        ausente.mic_usb_port = "5-5.3"
+        sana = _make_room_stream("escritorio", device_index=4)
+        sana.mic_usb_port = "3-1.4"
+        loop = _make_multi_room_loop(
+            rooms={"cocina": ausente, "escritorio": sana}
+        )
+        loop._running = True
+        loop._watchdog_backoff_min_s = 0.001
+        loop._watchdog_backoff_max_s = 0.002
+        loop._streams = {"cocina": MagicMock(), "escritorio": MagicMock()}
+
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+        nuevo = MagicMock()
+        mock_sd.InputStream.return_value = nuevo
+
+        def resolve(port):
+            return None if port == "5-5.3" else 4  # la cocina nunca vuelve
+
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port",
+            side_effect=resolve,
+        ):
+            await asyncio.wait_for(loop._recover_streams(["cocina"]), timeout=2.0)
+
+        assert loop._streams.get("escritorio") is nuevo, (
+            "el mic sano tiene que reabrirse aunque otro siga ausente"
+        )
+        assert "cocina" not in loop._streams  # la ausente sigue sin stream
+
+    @pytest.mark.asyncio
+    async def test_recover_returns_without_waiting_for_absent_device(self):
+        """`_recover_streams` no puede quedarse colgado por un mic ausente.
+
+        Si no retorna, el `await` de `_stream_watchdog` tampoco vuelve y el
+        watchdog deja de vigilar al resto: una sola falla lo apaga entero.
+        """
+        ausente = _make_room_stream("cocina", device_index=10)
+        ausente.mic_usb_port = "5-5.3"
+        loop = _make_multi_room_loop(rooms={"cocina": ausente})
+        loop._running = True
+        loop._watchdog_backoff_min_s = 0.001
+        loop._watchdog_backoff_max_s = 0.002
+        loop._streams = {"cocina": MagicMock()}
+
+        mock_sd = MagicMock()
+        mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        mock_sd.query_devices.return_value = {"max_input_channels": 2}
+
+        with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port",
+            return_value=None,
+        ):
+            await asyncio.wait_for(loop._recover_streams(["cocina"]), timeout=2.0)
+
+        loop._running = False  # corta cualquier espera en background
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_pending_reopen_tasks(self):
+        """`stop()` no puede dejar esperas de reapertura vivas.
+
+        Si sobreviven, siguen intentando abrir devices mientras el proceso
+        se apaga (y en un restart rápido, contra el proceso nuevo).
+        """
+        ausente = _make_room_stream("cocina", device_index=10)
+        ausente.mic_usb_port = "5-5.3"
+        loop = _make_multi_room_loop(rooms={"cocina": ausente})
+        loop._running = True
+        loop._watchdog_backoff_min_s = 0.01
+        loop._watchdog_backoff_max_s = 0.02
+
+        with patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port",
+            return_value=None,
+        ):
+            loop._schedule_reopen(ausente)
+            await asyncio.sleep(0)  # dejar arrancar la task
+            tarea = loop._reopen_tasks["cocina"]
+            assert not tarea.done()
+
+            await loop.stop()
+
+        assert tarea.cancelled() or tarea.done()
+        assert not loop._reopen_tasks
+
+
+class TestAudioHealthPublication:
+    """El snapshot de salud tiene que SALIR del proceso, no solo calcularse.
+
+    Cobertura que faltaba: borrar el bloque entero que publica el snapshot
+    desde `_stream_watchdog` sobrevivía la suite sin que cayera un solo test
+    (ningún test tocaba `_audio_health_path`, ni la publicación desde el loop,
+    ni la lectura de `rooms.stream_watchdog.health_path` en main.py). O sea,
+    la alerta de sordera entera podía desaparecer en un merge y nadie se
+    enteraba — el mismo fallo silencioso que la alerta existe para atrapar.
+    """
+
+    async def _run_one_watchdog_iteration(self, loop):
+        """Correr exactamente un ciclo del watchdog y frenar."""
+        async def parar():
+            await asyncio.sleep(0.05)
+            loop._running = False
+
+        await asyncio.gather(loop._stream_watchdog(), parar())
+
+    @pytest.mark.asyncio
+    async def test_watchdog_publishes_snapshot_with_every_room(self, tmp_path):
+        health = tmp_path / "audio_health.json"
+        cocina = _make_room_stream("cocina", device_index=2)
+        escritorio = _make_room_stream("escritorio", device_index=4)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": cocina, "escritorio": escritorio},
+            audio_health_path=str(health),
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 30.0
+        loop._watchdog_first_frame_grace_s = 30.0
+        cocina.last_frame_ts = time.monotonic()
+        escritorio.last_frame_ts = time.monotonic()
+
+        await self._run_one_watchdog_iteration(loop)
+
+        assert health.exists(), (
+            "el watchdog no publicó el snapshot: el poller externo "
+            "(tools/audio_watchdog_alert.py) se queda ciego para siempre"
+        )
+        data = json.loads(health.read_text())
+        assert sorted(data["rooms"]) == ["cocina", "escritorio"]
+        assert data["rooms"]["cocina"]["ever"] is True
+        assert data["wall"] > 0
+
+    @pytest.mark.asyncio
+    async def test_published_snapshot_is_readable_by_the_external_poller(
+        self, tmp_path
+    ):
+        """No basta con escribir un archivo: `evaluate_health` —la función que
+        el poller externo usa— tiene que poder leerlo y dar un veredicto. Ata
+        el formato que escribe el loop al que consume el poller."""
+        health = tmp_path / "audio_health.json"
+        sorda = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": sorda}, audio_health_path=str(health)
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        # timeout alto: no queremos que dispare recovery durante el test, solo
+        # que el snapshot refleje una room callada hace rato.
+        loop._watchdog_timeout_s = 9999.0
+        loop._watchdog_first_frame_grace_s = 9999.0
+        sorda.last_frame_ts = time.monotonic() - 600.0
+
+        await self._run_one_watchdog_iteration(loop)
+
+        snapshot = json.loads(health.read_text())
+        deaf = evaluate_health(
+            snapshot, now_wall=snapshot["wall"], deaf_after_s=120.0
+        )
+        assert deaf == ["cocina"]
+
+
+class TestAudioHealthWriteIsOffTheEventLoop:
+    """La escritura del snapshot no puede bloquear el loop del fast path.
+
+    `write_audio_health` hace mkstemp + json.dump + os.replace SÍNCRONOS, y
+    `_stream_watchdog` corre en el mismo event loop que el camino de voz
+    (<300ms). Con check_interval=2s son ~43.000 creaciones+renames por día
+    sobre ./data/, el mismo disco que events.db, latency.db, ChromaDB y el
+    entrenamiento nocturno.
+    """
+
+    @pytest.mark.asyncio
+    async def test_write_runs_in_a_worker_thread(self, tmp_path):
+        health = tmp_path / "audio_health.json"
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": rs}, audio_health_path=str(health)
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 9999.0
+        loop._watchdog_first_frame_grace_s = 9999.0
+        rs.last_frame_ts = time.monotonic()
+
+        hilos = []
+        real_write = audio_health_mod.write_audio_health
+
+        def spy(*args, **kwargs):
+            hilos.append(threading.current_thread())
+            return real_write(*args, **kwargs)
+
+        async def parar():
+            await asyncio.sleep(0.05)
+            loop._running = False
+
+        with patch.object(audio_health_mod, "write_audio_health", spy):
+            await asyncio.gather(loop._stream_watchdog(), parar())
+
+        assert hilos, "no se llegó a escribir el snapshot"
+        principal = threading.current_thread()
+        assert all(h is not principal for h in hilos), (
+            "write_audio_health corrió en el event loop: mkstemp+json.dump+"
+            "os.replace síncronos delante del fast path"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancellation_is_not_swallowed_by_the_write_guard(self, tmp_path):
+        """La cancelación tiene que propagar aunque caiga dentro del try.
+
+        Al meter un `await` dentro del bloque protegido, CancelledError pasa a
+        ser inyectable justo ahí. Es BaseException, así que `except Exception`
+        no la toca — pero si alguien "endurece" ese guard a BaseException o a
+        un `except:` pelado, `stop()` dejaría de poder terminar la task y el
+        watchdog quedaría vivo para siempre. Este test fija el contrato.
+        """
+        health = tmp_path / "audio_health.json"
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": rs}, audio_health_path=str(health)
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 9999.0
+        loop._watchdog_first_frame_grace_s = 9999.0
+        rs.last_frame_ts = time.monotonic()
+
+        entro = asyncio.Event()
+
+        def bloquear(*_args, **_kwargs):
+            """Frena dentro del try para que la cancelación caiga ahí."""
+            loop._loop.call_soon_threadsafe(entro.set)
+            time.sleep(0.5)
+
+        with patch.object(audio_health_mod, "write_audio_health", bloquear):
+            loop._loop = asyncio.get_running_loop()
+            tarea = asyncio.create_task(loop._stream_watchdog())
+            await asyncio.wait_for(entro.wait(), timeout=2.0)
+            tarea.cancel()
+            # `asyncio.wait` y no `await tarea` ni `wait_for`: si el guard SÍ
+            # se traga la cancelación, la task sigue girando para siempre —
+            # `await` colgaría, y `wait_for` también (al vencer el timeout
+            # re-cancela y AWAITEA la misma task insensible). `wait` solo
+            # observa, así que el test falla rápido en vez de colgarse.
+            done, _ = await asyncio.wait({tarea}, timeout=2.0)
+            loop._running = False  # cleanup si la mutación la dejó viva
+
+        assert tarea in done and tarea.cancelled(), (
+            "el guard se tragó la cancelación: stop() no podría terminar el "
+            "watchdog y la task quedaría viva"
+        )
+
+
+class TestAudioHealthWriteTimeoutDoesNotBlockRecovery:
+    """Un write colgado no puede apagar la recuperación de mics.
+
+    `detect_stale_streams` + `_recover_streams` corren DESPUÉS del bloque
+    try que publica `audio_health`. Antes del fix, ese `await
+    asyncio.to_thread(write_audio_health, ...)` no tenía cota: un thread que
+    nunca retorna (fs trabado, disco lleno bloqueando I/O) dejaba el await
+    esperando para siempre, y con él, la recuperación de mics enteros —
+    aunque el proceso siguiera reportando `active`. Mutación probada:
+    sacar el `asyncio.wait_for(...)` y dejar el `await asyncio.to_thread(...)`
+    a secas (el código pre-fix) hace que este test falle (TimeoutError a
+    los 0.5s) en vez de que `_recover_streams` se llame.
+    """
+
+    @pytest.mark.asyncio
+    async def test_hung_write_does_not_block_stale_stream_recovery(
+        self, tmp_path, monkeypatch
+    ):
+        # Timeout de escritura chico para que el test sea rápido: la
+        # constante real (1.0s) sigue probada indirectamente por el hecho
+        # de que este test pasa con cualquier valor finito bien por debajo
+        # del sleep colgado de abajo.
+        monkeypatch.setattr(mra_mod, "AUDIO_HEALTH_WRITE_TIMEOUT_S", 0.05)
+
+        health = tmp_path / "audio_health.json"
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": rs}, audio_health_path=str(health)
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 0.01
+        loop._watchdog_first_frame_grace_s = 0.01
+        rs.last_frame_ts = time.monotonic() - 10.0  # ya stale al arrancar
+
+        def colgado(*_args, **_kwargs):
+            # Sleep finito (no un Event que nunca se setea): así el hilo
+            # real del executor termina solo y no deja el proceso de test
+            # colgado en el join de atexit de ThreadPoolExecutor. Alcanza
+            # con que sea bien mayor al timeout de escritura (0.05s) y al
+            # límite del wait_for de abajo (0.5s) para simular "colgado".
+            time.sleep(1.0)
+
+        recovered = {}
+
+        async def fake_recover(ids):
+            recovered["ids"] = ids
+            loop._running = False
+
+        loop._recover_streams = fake_recover
+
+        with patch.object(audio_health_mod, "write_audio_health", colgado):
+            # `wait_for` acá es la red de seguridad del TEST: contra el
+            # código pre-fix el write cuelga >= 1.0s y este límite de 0.5s
+            # se cumple primero -> TimeoutError, falla rápido en vez de
+            # trabar la suite. Contra el código con el fix, el ciclo
+            # entero (write cortado a los 0.05s + recovery) termina en
+            # milisegundos, muy por debajo de 0.5s.
+            await asyncio.wait_for(loop._stream_watchdog(), timeout=0.5)
+
+        assert recovered.get("ids") == ["cocina"], (
+            "un write colgado no debería impedir _recover_streams: el hilo "
+            "bloqueado queda huérfano, pero el watchdog tiene que seguir"
+        )
+
+
+class TestAudioHealthSurvivesRecovery:
+    """La señal de sordera no puede resetearse cada vez que el mic se reabre.
+
+    Modo de falla que motivó la alerta (incidentes de 27h y 7h): un XVF3800
+    con el endpoint isócrono muerto ABRE perfecto en PortAudio y entrega
+    ceros. El watchdog lo detecta a los ~180s y "recupera", y
+    `_try_reopen_once` pone `opened_ts = now` y `last_frame_ts = 0.0`.
+
+    Derivar `age_s`/`ever` de esos dos campos hacía que el snapshot volviera a
+    cero en cada ciclo: un bucle eterno de ~182s donde `age_s` solo superaba
+    el umbral ~2s por vuelta. Simulado por el revisor (200 corridas, poll cada
+    60s, 24h): mediana 1,67h hasta detectar, máximo 15,98h, 1/200 sin detectar
+    en 24h. O sea, la alerta era MÁS DÉBIL justo en el caso primario.
+
+    ⚠️ El fix intuitivo (subir `first_frame_grace_s` del poller) EMPEORA esto:
+    `age_s` está acotado por el ciclo de recovery, así que un umbral más alto
+    hace que no se detecte NUNCA. Por eso las anclas de acá viven fuera de
+    `RoomStream`, donde la reapertura no las alcanza.
+    """
+
+    def _reabrir(self, rs, now_mono):
+        """Lo que `_try_reopen_once` le hace al RoomStream al reabrir."""
+        rs.opened_ts = now_mono
+        rs.last_frame_ts = 0.0
+
+    def test_never_delivering_mic_keeps_aging_across_recoveries(self):
+        """El mic que nunca entrega: `age_s` tiene que crecer igual."""
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(rooms={"cocina": rs})
+        rs.last_frame_ts = 0.0
+        rs.opened_ts = 500.0
+
+        # t=0: arranca. Nunca entrega un frame.
+        loop._update_audio_anchors(now_mono=500.0, now_wall=1000.0)
+
+        # Tres ciclos de recovery de ~182s: abre bien, entrega ceros, el
+        # watchdog recupera, la reapertura pisa opened_ts/last_frame_ts.
+        for i in range(1, 4):
+            mono = 500.0 + 182.0 * i
+            self._reabrir(rs, mono)
+            loop._update_audio_anchors(now_mono=mono, now_wall=1000.0 + 182.0 * i)
+
+        rooms = loop._audio_health_rooms()
+        anchor, ever = rooms["cocina"]
+        assert ever is False, "nunca entregó audio: `ever` debe seguir en False"
+        age_s = (1000.0 + 182.0 * 3) - anchor
+        assert age_s == pytest.approx(546.0), (
+            f"age_s={age_s}: la reapertura reseteó el ancla. Con el reset, la "
+            f"sordera solo es visible ~2s cada ~182s y el poller la pierde."
+        )
+
+    def test_reopen_does_not_erase_that_the_room_ever_delivered(self):
+        """`ever` no puede volver a False: cambia el umbral del poller.
+
+        `evaluate_health` usa `first_frame_grace_s` (180s) cuando `ever` es
+        False y `deaf_after_s` (300s en producción) cuando es True. Si una
+        reapertura borrara el `ever`, el veredicto cambiaría de umbral solo
+        por haberse reabierto, no por lo que el mic esté haciendo.
+        """
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(rooms={"cocina": rs})
+
+        # La room entregó audio real en t_mono=600 (wall 1100).
+        rs.last_frame_ts = 600.0
+        loop._update_audio_anchors(now_mono=600.0, now_wall=1100.0)
+        assert loop._audio_health_rooms()["cocina"][1] is True
+
+        # Se queda muda y el watchdog la reabre 200s después.
+        self._reabrir(rs, 800.0)
+        loop._update_audio_anchors(now_mono=800.0, now_wall=1300.0)
+
+        anchor, ever = loop._audio_health_rooms()["cocina"]
+        assert ever is True, "la reapertura borró que la room ya había entregado audio"
+        assert 1300.0 - anchor == pytest.approx(200.0), (
+            "el ancla debe seguir marcando el ÚLTIMO audio real, no la reapertura"
+        )
+
+    def test_anchor_advances_when_real_audio_arrives(self):
+        """El ancla no es un cero permanente: audio real la mueve hacia adelante."""
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(rooms={"cocina": rs})
+
+        rs.last_frame_ts = 600.0
+        loop._update_audio_anchors(now_mono=600.0, now_wall=1100.0)
+        primero = loop._audio_health_rooms()["cocina"][0]
+
+        rs.last_frame_ts = 900.0  # llegó audio nuevo
+        loop._update_audio_anchors(now_mono=900.0, now_wall=1400.0)
+        segundo = loop._audio_health_rooms()["cocina"][0]
+
+        assert segundo > primero
+        assert 1400.0 - segundo == pytest.approx(0.0, abs=0.001)
+
+    @pytest.mark.asyncio
+    async def test_poller_flags_the_recovery_cycle_end_to_end(self, tmp_path):
+        """El escenario completo, hasta el veredicto del poller externo.
+
+        Los tests de arriba ejercitan las anclas; este corre el watchdog real,
+        lee el snapshot que quedó en disco y lo pasa por `evaluate_health`
+        —igual que el poller— para confirmar que la room del ciclo de recovery
+        se reporta SORDA en vez de eternamente joven.
+        """
+        health = tmp_path / "audio_health.json"
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": rs}, audio_health_path=str(health)
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 9999.0
+        loop._watchdog_first_frame_grace_s = 9999.0
+
+        # La room nunca entregó audio y ya lleva 40 min bajo observación: es
+        # el estado en que la deja el ciclo de recovery (opened_ts recién
+        # pisado, last_frame_ts en 0).
+        rs.last_frame_ts = 0.0
+        rs.opened_ts = time.monotonic()  # "recién reabierta"
+        loop._room_since_wall = {"cocina": time.time() - 2400.0}
+
+        async def parar():
+            await asyncio.sleep(0.05)
+            loop._running = False
+
+        await asyncio.gather(loop._stream_watchdog(), parar())
+
+        snapshot = json.loads(health.read_text())
+        deaf = evaluate_health(
+            snapshot,
+            now_wall=snapshot["wall"],
+            deaf_after_s=300.0,
+            first_frame_grace_s=180.0,
+        )
+        assert deaf == ["cocina"], (
+            "el poller no ve la sordera: el snapshot se rearmó con el "
+            "opened_ts que la reapertura acaba de pisar"
+        )
 
 
 class TestWatchdogConfigContract:

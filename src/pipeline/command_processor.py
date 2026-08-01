@@ -24,6 +24,11 @@ class ProcessedCommand:
     stt_confidence: STTResult | None = None  # confianza del STT (None = desconocida)
     timings: dict = field(default_factory=dict)
     success: bool = False
+    # True si el veto híbrido (Parakeet vacío) descartó una transcripción que
+    # el motor primario SÍ produjo. Distingue "vetamos habla real" de "el STT
+    # no oyó nada" — sin esta distinción los dos llegan al router como
+    # text='' y el usuario no se entera de ninguno (incidente 2026-07-25).
+    stt_vetoed: bool = False
 
 
 logger = logging.getLogger(__name__)
@@ -256,6 +261,7 @@ class CommandProcessor:
         )
         if text.strip() and not r.text.strip():
             logger.info(f"[STT-veto] descartado (parakeet=vacío): {text[:60]!r}")
+            result.stt_vetoed = True
             return ""
         return text
 

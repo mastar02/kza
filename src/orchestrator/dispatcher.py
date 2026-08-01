@@ -108,8 +108,14 @@ _ZONE_TO_AREA: dict[str, str] = {
 # (lowercase + sin acentos) → area canónica. Mantener sincronizado con
 # RoomConfig.aliases en src/rooms/room_context.create_default_rooms().
 _ROOM_ALIASES_TO_AREA: dict[str, str] = {
-    # Living
+    # Living — incluye los destrozos far-field del STT (2026-07-30). Es la
+    # única habitación con nombre en inglés y la única que se rompe: medido
+    # sobre 4 días de log, "del living" 12 veces contra "del libby" 9. Sin
+    # estos alias el comando pierde el prefer_area y cae a la zona del mic
+    # (pedías el living y prendía el escritorio). Mantener alineado con
+    # ROOM_ALIASES de src/nlu/command_grammar.py.
     "living": "Living", "sala": "Living", "salon": "Living",
+    "libby": "Living", "livin": "Living", "libin": "Living",
     # Escritorio
     "escritorio": "Escritorio", "oficina": "Escritorio", "estudio": "Escritorio",
     # Hall
@@ -392,6 +398,7 @@ class RequestDispatcher:
         hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
         before_handler_warn_ms: float = 5.0,
         require_known_speaker_for_actions: bool = False,
+        unavailable_precheck_enabled: bool = True,
     ):
         """
         Args:
@@ -414,6 +421,11 @@ class RequestDispatcher:
             before_handler_warn_ms: Threshold (ms) for logging slow before-handlers
                 in execute_before_chain. Default 5.0ms — anything above eats into
                 the 300ms fast path budget.
+            unavailable_precheck_enabled: Kill switch para el precheck de
+                `is_entity_available` en `_fire_and_reconcile_ha` (default True).
+                Ver comentario en `config/settings.yaml:home_assistant.
+                unavailable_precheck_enabled` para el escenario de recuperación
+                que justifica poder apagarlo.
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -437,6 +449,12 @@ class RequestDispatcher:
         # que activarlo los corta — pero también bloquea invitados no enrolados.
         # Requiere speaker ID confiable. Ver project_escritorio_light_phantom_toggles.
         self._require_known_for_actions = require_known_speaker_for_actions
+        # Kill switch del precheck de disponibilidad (default True — activo).
+        # Apagalo si un reinicio de Z2M/HA deja el state_cache stale por más
+        # de lo que tarda en sanar (WS state_changed, o el snapshot REST de
+        # home_assistant.state_prefetch.full_refresh_interval_s) y eso empieza
+        # a retener comandos contra dispositivos que en realidad ya volvieron.
+        self._unavailable_precheck_enabled = unavailable_precheck_enabled
 
         # Estadisticas
         self._stats = {
@@ -1345,6 +1363,64 @@ class RequestDispatcher:
             entity_id = result.entity_id
             rewritten_data = result.service_data
 
+        # HA acepta la llamada a una entidad unavailable y la filtra en
+        # silencio (helpers/service.py:720), devolviendo success=true. Sin este
+        # chequeo, "prendé la luz del cuarto" con la bombilla caída produce
+        # silencio absoluto: ni voz, ni earcon, ni luz.
+        # Falla ABIERTO ante None: sin dato en cache, llamamos igual.
+        # Kill switch: self._unavailable_precheck_enabled (default True). Un
+        # reinicio de Z2M/HA (recurrente, más con la migración Hue→Z2M en
+        # curso) deja entidades genuinamente unavailable; si el WS de events
+        # se cae en silencio en esa ventana, el cache no sana hasta el
+        # snapshot REST (home_assistant.state_prefetch.full_refresh_interval_s,
+        # 300s) y este precheck retendría comandos contra dispositivos que ya
+        # volvieron. Apagar el flag en config/settings.yaml si eso pasa.
+        if (
+            self._unavailable_precheck_enabled
+            and entity_id
+            and self.ha.is_entity_available(entity_id) is False
+        ):
+            logger.warning(
+                f"[HA-UNAVAILABLE] {domain}.{service}@{entity_id} "
+                f"({description}) — no se envía la llamada"
+            )
+            if self.response_handler is not None:
+                try:
+                    self.response_handler.play_earcon(zone_id=command.get("zone_id"))
+                except Exception as e:
+                    logger.warning(f"No pude reproducir earcon de entidad caída: {e}")
+            # Plan #3 OpenClaw — el precheck es una tercera forma de retener
+            # un comando (además del before_ha_action block de arriba), y sin
+            # emitir este evento el comando quedaba fuera del audit trail
+            # (src/policies/audit_sqlite.py) — invisible en data/audit.db.
+            if self.hooks is not None and call is not None:
+                from dataclasses import replace
+                from src.hooks import (
+                    BlockResult,
+                    HaActionBlockedPayload,
+                    execute_after_event,
+                )
+                final_call = replace(
+                    call,
+                    domain=domain or "",
+                    service=service or "",
+                    entity_id=entity_id or "",
+                    service_data=rewritten_data or {},
+                )
+                execute_after_event(
+                    self.hooks,
+                    "ha_action_blocked",
+                    HaActionBlockedPayload(
+                        timestamp=time.time(),
+                        call=final_call,
+                        block=BlockResult(
+                            reason=f"{description}: entidad no disponible",
+                            rule_name="entity_unavailable",
+                        ),
+                    ),
+                )
+            return
+
         t0 = time.perf_counter()
         err: str | None = None
         try:
@@ -1390,12 +1466,20 @@ class RequestDispatcher:
 
         if success:
             return
-        verb = "apagar" if service == "turn_off" else "prender"
+
+        # Fallo real. Earcon (no frase) en la zona donde habló el usuario:
+        # decisión 2026-07-25. La regla "domótica silenciosa" cubre los ÉXITOS
+        # que el usuario valida visualmente; un fallo mudo es justo lo que hizo
+        # invisible el bug del primer comando post-idle.
+        logger.warning(
+            f"[HA-FAIL] {domain}.{service}@{entity_id} ({description}) "
+            f"err={err or 'success=False'}"
+        )
         if self.response_handler is not None:
             try:
-                self.response_handler.speak(f"No pude {verb} {description}")
+                self.response_handler.play_earcon(zone_id=command.get("zone_id"))
             except Exception as e:
-                logger.warning(f"No pude hablar error de reconciliación: {e}")
+                logger.warning(f"No pude reproducir earcon de fallo HA: {e}")
         else:
             logger.warning(
                 f"HA fire-and-forget falló en {domain}.{service}@{entity_id} "
@@ -1455,6 +1539,7 @@ class MultiUserOrchestrator:
         music_dispatcher=None,
         list_manager=None,
         reminder_manager=None,
+        response_handler=None,
         max_context_history: int = 10,
         context_timeout: float = 300,
         auto_cancel_previous: bool = True,
@@ -1467,16 +1552,23 @@ class MultiUserOrchestrator:
         hooks=None,
         before_handler_warn_ms: float = 5.0,
         require_known_speaker_for_actions: bool = False,
+        unavailable_precheck_enabled: bool = True,
     ):
         """Initialize the multi-user orchestrator.
 
         Args:
+            response_handler: ResponseHandler para dar feedback al usuario. Se
+                forwardea al RequestDispatcher; sin él, un fallo de HA en el
+                fire-and-forget muere en un WARNING y el usuario no se entera
+                (incidente 2026-07-25).
             hooks: Optional HookRegistry instance (plan #3 OpenClaw). When set,
                 before_ha_action / before_tts_speak hooks fire on each invocation
                 and after-events emit at pipeline checkpoints. Backward-compat:
                 None → no hook calls, behavior identical to baseline.
             before_handler_warn_ms: Threshold (ms) for logging slow before-handlers.
                 Forwarded to RequestDispatcher.
+            unavailable_precheck_enabled: Kill switch del precheck de
+                `is_entity_available` (default True). Forwarded to RequestDispatcher.
         """
         self._hooks = hooks  # plan #3 OpenClaw — exposed for log_hook_stats()
         # Componentes principales
@@ -1525,9 +1617,11 @@ class MultiUserOrchestrator:
             music_dispatcher=music_dispatcher,
             list_manager=list_manager,
             reminder_manager=reminder_manager,
+            response_handler=response_handler,
             hooks=hooks,
             before_handler_warn_ms=before_handler_warn_ms,
             require_known_speaker_for_actions=require_known_speaker_for_actions,
+            unavailable_precheck_enabled=unavailable_precheck_enabled,
         )
 
         self._running = False

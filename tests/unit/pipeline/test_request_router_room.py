@@ -285,10 +285,14 @@ class TestRoomContextInSpeak:
         room_mgr = MagicMock()
         room_mgr.resolve_room = MagicMock(return_value=room_ctx)
 
-        # Mock orchestrator
+        # Mock orchestrator.
+        # intent="simple_query" y no "domotics": desde 2026-07-30 la domótica
+        # EXITOSA no se locuta (el usuario la valida con los ojos y el TTS
+        # síncrono le costaba 308ms al HA call). Este test mide la propagación
+        # de room_context a speak(), así que necesita un intent que sí hable.
         dispatch_result = MagicMock()
-        dispatch_result.intent = "domotics"
-        dispatch_result.response = "Listo"
+        dispatch_result.intent = "simple_query"
+        dispatch_result.response = "Son las tres"
         dispatch_result.success = True
         dispatch_result.action = None
         dispatch_result.path = MagicMock()

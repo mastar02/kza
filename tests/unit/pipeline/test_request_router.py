@@ -258,6 +258,68 @@ class TestProcessCommandOrchestrated:
         orch.process.assert_not_awaited()
 
 
+class TestDomoticsSuccessIsSilent:
+    """Domótica exitosa NO se locuta: el usuario la valida con los ojos.
+
+    Es la regla ya documentada en el dispatcher, que hace fire-and-forget del
+    HA call ("el usuario valida visualmente ... no quiere TTS ack") para bajar
+    `home_assistant` a 0ms en el camino crítico — y después devolvía igual un
+    `response` que el paso 7 del router sintetizaba.
+
+    Medido 2026-07-29 sobre "prendé la luz del living": el TTS tardaba 308ms y,
+    como `speak()` es SÍNCRONO, bloqueaba el event loop justo cuando la task
+    del HA call necesitaba correr. La luz prendía a los 521ms en vez de ~210ms.
+    """
+
+    async def _run(self, dispatch):
+        orch = MagicMock()
+        orch.process = AsyncMock(return_value=dispatch)
+        cp = MagicMock()
+        cp.process_command = AsyncMock(return_value=_make_cmd_result(
+            text="nexa prendé la luz del living",
+            user=_make_mock_user(),
+            emotion=_make_mock_emotion(),
+        ))
+        am = MagicMock()
+        am.detect_source_zone.return_value = "living_room"
+        router = _build_router(
+            command_processor=cp,
+            audio_manager=am,
+            orchestrator=orch,
+            orchestrator_enabled=True,
+        )
+        router.response_handler.speak = MagicMock()
+        await router.process_command(np.zeros(16000, dtype=np.float32))
+        return router
+
+    @pytest.mark.asyncio
+    async def test_successful_domotics_does_not_speak(self):
+        router = await self._run(
+            _make_dispatch_result(intent="domotics", success=True,
+                                  response="Prendé la luz del living")
+        )
+        router.response_handler.speak.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_domotics_still_speaks(self):
+        """El silencio cubre los ÉXITOS. Un fallo mudo es justo lo que hizo
+        invisible el bug del primer comando post-idle (2026-07-25)."""
+        router = await self._run(
+            _make_dispatch_result(intent="domotics", success=False,
+                                  response="No pude prender esa luz")
+        )
+        router.response_handler.speak.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_non_domotics_still_speaks(self):
+        """Una consulta sí necesita respuesta hablada."""
+        router = await self._run(
+            _make_dispatch_result(intent="simple_query", success=True,
+                                  response="Son las tres de la tarde")
+        )
+        router.response_handler.speak.assert_called_once()
+
+
 class TestProcessCommandLegacy:
     """Test legacy (single-user) path."""
 

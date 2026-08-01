@@ -455,11 +455,15 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
-            result["intent"] = "gate_rejected:empty"
+            # Distinguir "el veto híbrido se comió habla real" de "el STT no
+            # oyó nada": el primero merece earcon aunque el RMS sea bajo
+            # (incidente 2026-07-25). Ver earcon_gate._REAL_SPEECH_PREFIXES.
+            _reason = "stt_veto" if getattr(cmd, "stt_vetoed", False) else "empty"
+            result["intent"] = f"gate_rejected:{_reason}"
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             self._earcon_and_log(
-                "empty", text or "", {}, room_id, wake_score, wake_rms,
+                _reason, text or "", {}, room_id, wake_score, wake_rms,
                 outcome="gate_rejected",
             )
             return result
@@ -728,7 +732,25 @@ class RequestRouter:
             }
 
         # 7. Speak response
-        if dispatch_result.path not in [PathType.SLOW_LLM]:
+        #
+        # Domótica EXITOSA = silenciosa (2026-07-30). La regla ya vivía a
+        # medias en el dispatcher, que dispara el HA call fire-and-forget
+        # "porque el usuario valida visualmente ... no quiere TTS ack" y baja
+        # `home_assistant` a 0ms en el camino crítico — pero devolvía igual un
+        # `response` (la description del vector search) que se sintetizaba acá.
+        #
+        # Medido sobre "prendé la luz del living": 308ms de Kokoro, y como
+        # `speak()` es SÍNCRONO bloqueaba el event loop justo cuando corría la
+        # task del HA call. La luz prendía a los 521ms en vez de ~210ms: se
+        # pagaba media latencia por locutar un ack que nadie pidió. Encima la
+        # description es texto variable, así que ni pegaba en el response_cache.
+        #
+        # Los FALLOS sí hablan: un fallo mudo es justo lo que hizo invisible el
+        # bug del primer comando post-idle (2026-07-25).
+        _domotics_ok = (
+            dispatch_result.intent == "domotics" and dispatch_result.success
+        )
+        if dispatch_result.path not in [PathType.SLOW_LLM] and not _domotics_ok:
             emotion_adj = emotion.response_adjustment if emotion else None
             self.response_handler.speak(
                 result["response"],
@@ -792,10 +814,13 @@ class RequestRouter:
         result["timings"].update(cmd.timings)
 
         if not text.strip():
-            result["intent"] = "gate_rejected:empty"
+            # Igual que en el path orchestrated: el veto híbrido no es lo mismo
+            # que una captura muda (incidente 2026-07-25).
+            _reason = "stt_veto" if getattr(cmd, "stt_vetoed", False) else "empty"
+            result["intent"] = f"gate_rejected:{_reason}"
             result["response"] = ""
             self._earcon_and_log(
-                "empty", text or "", {}, room_id, wake_score, wake_rms,
+                _reason, text or "", {}, room_id, wake_score, wake_rms,
                 outcome="gate_rejected",
             )
             return result

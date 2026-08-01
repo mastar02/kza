@@ -22,6 +22,22 @@ SLOT_COLOR_TEMP = "color_temp_kelvin"
 SLOT_EFFECT = "effect"
 SLOT_VOLUME = "volume_pct"
 
+# Únicas claves que pueden viajar como `service_data` a Home Assistant.
+#
+# HA rechaza el service_data ENTERO ante una clave desconocida —no la ignora—,
+# así que un solo slot espurio anula el comando completo. Incidente 2026-07-30:
+# "prendé la luz" en el escritorio murió con
+#   {'code': 'invalid_format', "message": "extra keys not allowed @ data['entity']"}
+# El extractor por regex de este módulo solo puede emitir estas 5 claves, pero
+# el LLM router devuelve JSON libre y su salida llega acá sin validar.
+VALID_SERVICE_DATA_SLOTS = frozenset({
+    SLOT_BRIGHTNESS,
+    SLOT_COLOR,
+    SLOT_COLOR_TEMP,
+    SLOT_EFFECT,
+    SLOT_VOLUME,
+})
+
 
 # ============================================================
 # Intent classifier (turn_on / turn_off)
@@ -210,12 +226,28 @@ def merge_service_data(metadata_service_data: dict, query_slots: dict) -> dict:
     "al 73%" → slots = {"brightness_pct": 73} → resultado = {"brightness_pct": 73}.
     """
     merged = dict(metadata_service_data or {})
+
+    # Filtrar los slots del usuario contra el whitelist antes de tocar nada.
+    # El preset NO se filtra: viene de nuestro propio sync HA→Chroma. Los
+    # query_slots, en cambio, pueden venir del LLM router (JSON libre) y una
+    # sola clave desconocida hace que HA rechace el service_data completo.
+    safe_slots = {
+        k: v for k, v in (query_slots or {}).items()
+        if k in VALID_SERVICE_DATA_SLOTS
+    }
+    descartados = set(query_slots or {}) - set(safe_slots)
+    if descartados:
+        logger.warning(
+            f"[slots] descarto claves que no son service_data de HA: "
+            f"{sorted(descartados)} (habrían hecho fallar el comando entero)"
+        )
+
     # Conflictos mutuamente excluyentes para light:
     #   rgb_color vs color_temp_kelvin — el usuario sólo pide uno a la vez.
     # Si el usuario explicita color, quitar color_temp del default y viceversa.
-    if SLOT_COLOR in query_slots:
+    if SLOT_COLOR in safe_slots:
         merged.pop(SLOT_COLOR_TEMP, None)
-    if SLOT_COLOR_TEMP in query_slots:
+    if SLOT_COLOR_TEMP in safe_slots:
         merged.pop(SLOT_COLOR, None)
-    merged.update(query_slots)
+    merged.update(safe_slots)
     return merged

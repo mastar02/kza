@@ -120,10 +120,67 @@ def is_group_entity(entity_id: str, friendly_name: str) -> bool:
     return entity_id.startswith("light.grupo_") or entity_id == "light.hogar"
 
 
-def cache_key(entity_id: str, friendly_name: str, area: str | None, capability: str, value: str) -> str:
-    """Cache key incluye capability+value para soportar indexación incremental granular."""
+# Estados en los que este script NO indexa una entidad. Único consumidor real:
+# `select_syncable`. `cache_key` NO usa este criterio (no mira `state` en
+# absoluto) porque para cuando corre ya solo ve entidades vivas.
+DEAD_STATES = ("unavailable", "unknown")
+
+
+def cache_key(
+    entity_id: str, friendly_name: str, area: str | None, capability: str, value: str,
+) -> str:
+    """Cache key incluye capability+value para soportar indexación incremental granular.
+
+    La vitalidad de la entidad NO entra en la key, a propósito. `select_syncable`
+    ya excluye las entidades `unavailable`/`unknown` ANTES de que se llegue a
+    calcular ninguna key (ver el call site en main()): para cuando esta función
+    corre, `state` siempre es "vivo". Un bucket vivo/muerto acá sería código
+    muerto que nunca alcanza la rama "muerto" — y si en algún momento se
+    intentó usar el `state` crudo directamente en la key, el costo era real:
+    "on" y "off" dan keys distintas, así que el sync incremental dejaba de
+    acertar casi siempre (las luces conmutan de estado entre corridas, ~100-120
+    llamadas al LLM en cada corrida) y ni siquiera lograba el objetivo, porque
+    `collection.add()` no borra documentos viejos: el cambio de formato de key
+    solo agrega duplicados, nunca invalida los que ya existen.
+
+    La invalidación por recuperación de una entidad la resuelve
+    `select_syncable` (la excluye mientras está muerta) más `--force` cuando
+    hace falta reindexar a mano, no esta función.
+    """
     raw = f"{entity_id}|{friendly_name}|{area or ''}|{capability}|{value}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+def select_syncable(entities: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Separar entidades sanas de las que HA dejó sin atributos.
+
+    Una entidad `unavailable` llega con los atributos amputados (HA la reduce a
+    un stub), así que discover_capabilities le descubre menos capacidades de las
+    que realmente tiene y la indexa con menos frases. Ese índice empobrecido
+    sobrevive a la recuperación del dispositivo, porque la cache key del sync no
+    mira el estado.
+
+    ⚠️ ASIMETRÍA DELIBERADA con `HomeAssistantClient.is_entity_available`, que
+    solo trata `unavailable` como muerta: acá `unknown` TAMBIÉN queda afuera, y
+    no es un descuido — no lo "armonices". El costo de cada criterio es
+    distinto:
+
+      - Allá (camino de voz, runtime): excluir de más = **comando del usuario
+        rechazado en caliente**. Y `unknown` es un estado sano que HA ejecuta
+        igual, así que excluirlo sería directamente un bug.
+      - Acá (script de sync, manual): excluir de más = el script **aborta con
+        un mensaje explícito** y el operador decide (`--allow-unavailable`).
+        Nadie se queda sin luz por esto, y a cambio evita escribir un índice
+        empobrecido y permanente a partir de atributos que quizá estén
+        amputados.
+
+    Ante la duda, este lado es conservador a propósito: un índice malo es
+    silencioso y persistente; un abort es ruidoso y reversible.
+    """
+    live, dead = [], []
+    for e in entities:
+        (dead if e.get("state") in DEAD_STATES else live).append(e)
+    return live, dead
 
 
 # ============================================================
@@ -410,6 +467,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--allow-unavailable", action="store_true",
+                    help="No abortar si hay entidades unavailable/unknown: quedan "
+                         "EXCLUIDAS del sync igual (nunca se indexan con capacidades "
+                         "amputadas), pero el script sigue con el resto en vez de "
+                         "salir con exit 2")
     ap.add_argument("--wipe", action="store_true",
                     help="Borra la colección home_assistant_commands antes de indexar")
     ap.add_argument("--include-individual", action="store_true")
@@ -451,7 +513,7 @@ def main():
         selected.append({
             "entity_id": eid, "friendly_name": fname, "area": area,
             "is_group": is_group, "individual": indiv, "capabilities": caps,
-            "entity_state": e,
+            "entity_state": e, "state": e.get("state"),
         })
 
     if args.limit:
@@ -461,6 +523,35 @@ def main():
     for s in selected:
         tag = "GROUP" if s["is_group"] else f"INDIV n={s['individual'][1]} room={s['individual'][0]}"
         logger.info(f"  {s['entity_id']:40} | caps={s['capabilities']} | {tag}")
+
+    # Guard: una entidad unavailable/unknown llega con atributos amputados, así
+    # que discover_capabilities de arriba ya le vio menos capacidades de las que
+    # realmente tiene. Indexarla así deja un índice empobrecido que sobrevive a
+    # la recuperación del dispositivo (la cache key no alcanza a distinguir "vivo
+    # de antes" de "recién revivido" salvo que se pase --force). Ver Task 4.
+    #
+    # Las entidades caídas SIEMPRE quedan excluidas del sync (nunca se indexan
+    # con capacidades amputadas, con o sin --allow-unavailable) y SIEMPRE se
+    # loguean, con o sin el flag: el flag solo decide si el script aborta o
+    # sigue con el resto. Loguear solo en la rama de abort dejaba el caso
+    # "sync sigue con --allow-unavailable" sin ningún rastro de qué quedó afuera.
+    selected, dead = select_syncable(selected)
+    if dead:
+        print(
+            f"{len(dead)} entidades unavailable/unknown quedan EXCLUIDAS del "
+            f"sync (HA les amputa los atributos; indexarlas así dejaría un "
+            f"índice empobrecido):",
+            file=sys.stderr,
+        )
+        for e in dead:
+            print(f"  - {e['entity_id']} ({e.get('state')})", file=sys.stderr)
+        if not args.allow_unavailable:
+            print(
+                "Corregí el dispositivo y reintentá, o pasá --allow-unavailable "
+                "para seguir el sync con el resto de las entidades igual.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     if not selected:
         logger.warning("Nada que indexar. Saliendo.")
@@ -491,7 +582,9 @@ def main():
         specs = build_command_specs(s["entity_state"], s["capabilities"])
         for spec in specs:
             total_specs += 1
-            key = cache_key(s["entity_id"], s["friendly_name"], s["area"], spec.capability, spec.value_label)
+            key = cache_key(
+                s["entity_id"], s["friendly_name"], s["area"], spec.capability, spec.value_label,
+            )
             if key in existing_keys and not args.force:
                 continue
             to_process.append({"entity": s, "spec": spec, "key": key})

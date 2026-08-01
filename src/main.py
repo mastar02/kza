@@ -967,6 +967,10 @@ async def main():
                 stream_watchdog_check_interval_s=watchdog_cfg.get("check_interval_s", 2.0),
                 stream_watchdog_reopen_backoff_min_s=watchdog_cfg.get("reopen_backoff_min_s", 1.0),
                 stream_watchdog_reopen_backoff_max_s=watchdog_cfg.get("reopen_backoff_max_s", 10.0),
+                stream_watchdog_first_frame_grace_s=watchdog_cfg.get("first_frame_grace_s", 180.0),
+                audio_health_path=watchdog_cfg.get(
+                    "health_path", "./data/audio_health.json"
+                ),
             )
             logger.info(
                 f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "
@@ -1221,6 +1225,9 @@ async def main():
             user_manager=user_manager,
             list_manager=list_manager,
             reminder_manager=reminder_manager,
+            # Sin esto el dispatcher del orquestador no puede avisar de un
+            # fallo de HA y el comando se pierde en silencio (fix 2026-07-25).
+            response_handler=response_handler,
             # Plan #2 OpenClaw
             compactor=compactor,
             persister=persister,
@@ -1230,6 +1237,11 @@ async def main():
             before_handler_warn_ms=self_warn_ms,
             require_known_speaker_for_actions=config.get("security", {}).get(
                 "require_known_speaker_for_actions", False
+            ),
+            # Kill switch del precheck de is_entity_available (default True).
+            # Ver comentario en config/settings.yaml:home_assistant.
+            unavailable_precheck_enabled=config.get("home_assistant", {}).get(
+                "unavailable_precheck_enabled", True
             ),
         )
 

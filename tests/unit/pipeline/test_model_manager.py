@@ -11,15 +11,18 @@ These tests ensure that:
 CRITICAL: These tests run without actual GPUs using mocks.
 """
 
+import importlib.machinery
 import sys
 from unittest.mock import MagicMock, AsyncMock, patch
 
-# Mock system-level modules BEFORE any imports
-sys.modules['sounddevice'] = MagicMock()
-sys.modules['soundfile'] = MagicMock()
+# pyaudio is not installed in this venv, so it needs a stand-in to import this
+# module's dependency chain. sounddevice/soundfile ARE installed and are imported
+# for real by tests/conftest.py before collection starts — mocking them here too
+# would unconditionally overwrite that real import (this line runs at collection
+# time, before this file's tests run) and break importlib.util.find_spec("soundfile")
+# for every test file collected afterwards. See the "Collection-safety imports"
+# block in tests/conftest.py for the full story.
 sys.modules['pyaudio'] = MagicMock()
-sys.modules['torch'] = MagicMock()
-sys.modules['torch.cuda'] = MagicMock()
 
 import pytest
 import asyncio
@@ -28,6 +31,32 @@ from tests.mocks.mock_gpu import (
     MockCUDA, MockTorchModule, MockWhisperModel,
     MockTTSModel, MockSpeakerIDModel, MockEmbeddingsModel
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_torch():
+    """Stub torch for this module only, leaving sys.modules as we found it.
+
+    __spec__ must be set or importlib.util.find_spec("torch") raises, which
+    breaks collection of every module importing transformers.
+    """
+    saved = {name: sys.modules.get(name) for name in ("torch", "torch.cuda")}
+
+    torch_stub = MagicMock()
+    torch_stub.__spec__ = importlib.machinery.ModuleSpec("torch", loader=None)
+    cuda_stub = MagicMock()
+    cuda_stub.__spec__ = importlib.machinery.ModuleSpec("torch.cuda", loader=None)
+
+    sys.modules["torch"] = torch_stub
+    sys.modules["torch.cuda"] = cuda_stub
+    try:
+        yield torch_stub
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
 
 # ============================================================
