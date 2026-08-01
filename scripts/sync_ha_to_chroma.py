@@ -120,10 +120,34 @@ def is_group_entity(entity_id: str, friendly_name: str) -> bool:
     return entity_id.startswith("light.grupo_") or entity_id == "light.hogar"
 
 
-def cache_key(entity_id: str, friendly_name: str, area: str | None, capability: str, value: str) -> str:
-    """Cache key incluye capability+value para soportar indexación incremental granular."""
-    raw = f"{entity_id}|{friendly_name}|{area or ''}|{capability}|{value}"
+def cache_key(
+    entity_id: str, friendly_name: str, area: str | None, capability: str, value: str,
+    state: str | None = None,
+) -> str:
+    """Cache key incluye capability+value para soportar indexación incremental granular.
+
+    `state` entra en la key para que la recuperación de una entidad (p.ej.
+    unavailable → on) invalide el cache_key viejo y fuerce reindexación: si no,
+    una entidad que revive con más capabilities sigue mostrando el índice
+    empobrecido que se generó cuando estaba muerta.
+    """
+    raw = f"{entity_id}|{friendly_name}|{area or ''}|{capability}|{value}|{state or ''}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+def select_syncable(entities: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Separar entidades sanas de las que HA dejó sin atributos.
+
+    Una entidad `unavailable` llega con los atributos amputados (HA la reduce a
+    un stub), así que discover_capabilities le descubre menos capacidades de las
+    que realmente tiene y la indexa con menos frases. Ese índice empobrecido
+    sobrevive a la recuperación del dispositivo, porque la cache key del sync no
+    mira el estado.
+    """
+    live, dead = [], []
+    for e in entities:
+        (dead if e.get("state") in ("unavailable", "unknown") else live).append(e)
+    return live, dead
 
 
 # ============================================================
@@ -410,6 +434,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--allow-unavailable", action="store_true",
+                    help="No abortar si hay entidades unavailable/unknown (se indexan "
+                         "igual, con las capacidades amputadas que HA reporta)")
     ap.add_argument("--wipe", action="store_true",
                     help="Borra la colección home_assistant_commands antes de indexar")
     ap.add_argument("--include-individual", action="store_true")
@@ -451,7 +478,7 @@ def main():
         selected.append({
             "entity_id": eid, "friendly_name": fname, "area": area,
             "is_group": is_group, "individual": indiv, "capabilities": caps,
-            "entity_state": e,
+            "entity_state": e, "state": e.get("state"),
         })
 
     if args.limit:
@@ -461,6 +488,27 @@ def main():
     for s in selected:
         tag = "GROUP" if s["is_group"] else f"INDIV n={s['individual'][1]} room={s['individual'][0]}"
         logger.info(f"  {s['entity_id']:40} | caps={s['capabilities']} | {tag}")
+
+    # Guard: una entidad unavailable/unknown llega con atributos amputados, así
+    # que discover_capabilities de arriba ya le vio menos capacidades de las que
+    # realmente tiene. Indexarla así deja un índice empobrecido que sobrevive a
+    # la recuperación del dispositivo (la cache key no alcanza a distinguir "vivo
+    # de antes" de "recién revivido" salvo que se pase --force). Ver Task 4.
+    selected, dead = select_syncable(selected)
+    if dead and not args.allow_unavailable:
+        print(
+            f"ABORTO: {len(dead)} entidades están unavailable/unknown y se "
+            f"indexarían con capacidades amputadas:",
+            file=sys.stderr,
+        )
+        for e in dead:
+            print(f"  - {e['entity_id']} ({e.get('state')})", file=sys.stderr)
+        print(
+            "Corregí el dispositivo y reintentá, o pasá --allow-unavailable "
+            "si de verdad querés indexarlas así.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     if not selected:
         logger.warning("Nada que indexar. Saliendo.")
@@ -491,7 +539,10 @@ def main():
         specs = build_command_specs(s["entity_state"], s["capabilities"])
         for spec in specs:
             total_specs += 1
-            key = cache_key(s["entity_id"], s["friendly_name"], s["area"], spec.capability, spec.value_label)
+            key = cache_key(
+                s["entity_id"], s["friendly_name"], s["area"], spec.capability, spec.value_label,
+                state=s["entity_state"].get("state"),
+            )
             if key in existing_keys and not args.force:
                 continue
             to_process.append({"entity": s, "spec": spec, "key": key})
