@@ -15,6 +15,7 @@ from src.monitoring.smoke_check import (
     check_phrase,
     entity_problem,
     indexed_entity_ids,
+    indexed_entity_ids_or_problem,
     invalid_payload_keys,
 )
 
@@ -154,3 +155,37 @@ class TestIndexedEntityIds:
             ]})
         })()
         assert indexed_entity_ids(fake_collection) == ["light.grupo_living"]
+
+
+class TestIndexedEntityIdsOrProblem:
+    """Review 2026-08-01: el try/except que envolvía `indexed_entity_ids` en
+    `tools/smoke_test.py` tenía cobertura cero — mutación probó que borrar el
+    `fallos += 1` de ese except sobrevivía la suite entera (80/80 verde). Se
+    movió la lógica acá, a una función pura, para que un smoke test roto de
+    ESTA forma (Chroma explota al leer el índice) quede detectado por un
+    test en vez de depender de que el CLI nunca se toque mal."""
+
+    def test_healthy_collection_returns_ids_and_no_problem(self):
+        fake_collection = type("C", (), {
+            "get": staticmethod(lambda **kw: {"metadatas": [
+                {"entity_id": "light.grupo_living"},
+            ]})
+        })()
+        ids, problem = indexed_entity_ids_or_problem(fake_collection)
+        assert ids == ["light.grupo_living"]
+        assert problem is None
+
+    def test_broken_collection_reports_a_problem_instead_of_raising(self):
+        """El caso que el except protegía: Chroma caído no debe tirar traceback
+        ni, peor, quedar sin contarse como fallo. Mata la mutación de borrar
+        el `fallos += 1`: si `problem` volviera `None` acá, el caller nunca
+        se enteraría de que el índice está roto."""
+
+        class ColeccionRota:
+            def get(self, **kw):
+                raise RuntimeError("chroma no disponible")
+
+        ids, problem = indexed_entity_ids_or_problem(ColeccionRota())
+        assert ids == []
+        assert problem is not None
+        assert "chroma no disponible" in problem

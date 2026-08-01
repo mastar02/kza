@@ -42,7 +42,7 @@ from src.monitoring.smoke_check import (  # noqa: E402
     STAGE_OK,
     check_phrase,
     entity_problem,
-    indexed_entity_ids,
+    indexed_entity_ids_or_problem,
 )
 
 # Frases canónicas: cubren los caminos que más se rompieron. Deliberadamente
@@ -159,12 +159,11 @@ def main() -> int:
     # que quedara fuera del índice (excluido o con drift de config) — algo
     # que hoy SÍ se chequea y que perderíamos si solo mirásemos Chroma.
     print("\nEntidades direccionables por voz (índice + rooms):")
-    try:
-        entity_ids = set(indexed_entity_ids(chroma.commands))
-    except Exception as e:  # noqa: BLE001 — un tool de diagnóstico no debe explotar
-        print(f"  {ROJO}✗ no pude leer el índice de Chroma: {e}{RESET}")
+    entity_ids_list, chroma_problem = indexed_entity_ids_or_problem(chroma.commands)
+    if chroma_problem is not None:
+        print(f"  {ROJO}✗ {chroma_problem}{RESET}")
         fallos += 1
-        entity_ids = set()
+    entity_ids = set(entity_ids_list)
 
     for room_cfg in (config.get("rooms") or {}).values():
         if isinstance(room_cfg, dict) and room_cfg.get("default_light"):

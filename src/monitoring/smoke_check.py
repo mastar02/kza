@@ -78,6 +78,33 @@ def indexed_entity_ids(collection) -> list[str]:
     return sorted(ids)
 
 
+def indexed_entity_ids_or_problem(collection) -> tuple[list[str], str | None]:
+    """Como `indexed_entity_ids`, pero nunca deja escapar una excepción.
+
+    Un tool de diagnóstico que explota con un traceback sin manejar es en sí
+    mismo un fallo silencioso a medias: el operador ve un stacktrace en vez
+    de un veredicto claro, y si el caller no lo recablea con cuidado el
+    smoke test puede terminar contando eso como "no hay problemas" (nunca
+    llegó a incrementar el contador de fallos porque la excepción cortó el
+    flujo antes). Envolver el try/except acá, en vez de en `tools/smoke_test.py`,
+    lo vuelve testeable: `tools/` no se importa desde los tests.
+
+    Args:
+        collection: mismo contrato que `indexed_entity_ids`.
+
+    Returns:
+        `(entity_ids, problema)`. Si la colección responde bien, `problema`
+        es `None`. Si `collection.get(...)` levanta cualquier excepción,
+        `entity_ids` queda vacío y `problema` describe la falla — el caller
+        debe tratar un `problema` no-`None` como un fallo del smoke test,
+        igual que hace con `entity_problem`.
+    """
+    try:
+        return indexed_entity_ids(collection), None
+    except Exception as e:  # noqa: BLE001 — diagnóstico, no debe propagar
+        return [], f"no pude leer el índice de Chroma: {e}"
+
+
 def entity_problem(entity_id: str, ha_states: dict[str, str]) -> str | None:
     """Describe por qué `entity_id` no serviría, o None si está sana.
 
