@@ -10,7 +10,7 @@
 
 Tres correcciones que salieron del reconocimiento y que **modifican el plan original**:
 
-1. **El sync de Chroma queda FUERA de este deploy.** No es "caro", es **destructivo en ambas variantes**. Detalle en §7. El cambio de código es inerte hasta que alguien lo ejecute: deployarlo no obliga a correrlo.
+1. **El sync de Chroma queda FUERA de este deploy — `--wipe` no se corre bajo ninguna circunstancia** (pierde para siempre la cobertura de los 5 `light.grupo_*` caídos). La otra variante (sin `--wipe`, con `--allow-unavailable`) ya NO duplica el índice — ese riesgo lo arregló este mismo branch — pero sigue sin haber motivo para pagar ~100-120 llamadas al LLM en esta ventana si ninguna entidad cambió de valor. Detalle en §7. El cambio de código es inerte hasta que alguien lo ejecute: deployarlo no obliga a correrlo.
 2. **`kza-voice` ocupa las DOS GPUs** ✅ (960 MiB en cuda:0 + **2176 MiB en cuda:1**, medido por PID). Y cuda:1 tiene **423 MiB libres**. El restart libera y re-pide esos 2176 MiB: es el punto más frágil de todo el procedimiento.
 3. **`source` no exporta.** `/home/kza/secrets/*.env` son `EnvironmentFile=` de systemd (`VAR=valor`, **sin `export`**) ✅. Un `source archivo` define variable de *shell*, que Python **no hereda**. Todo source en este runbook usa `set -a; . archivo; set +a`. Esta es la causa raíz mecánica del incidente del 27/7.
 
@@ -676,15 +676,17 @@ Para volver a encenderlo: revertir el YAML a `true` + restart.
 
 ## §7 · SYNC DE CHROMA — **NO EN ESTA VENTANA** 🛑
 
-**Cambio respecto del plan original.** El review lo trataba como "caro" (~100-120 llamadas al LLM). Es peor: **es destructivo en las dos variantes.**
+**Cambio respecto del plan original.** El review lo trataba como "caro" (~100-120 llamadas al LLM). Esa sigue siendo la razón real para NO correrlo en esta ventana — pero el motivo que este runbook documentaba antes (duplicación del índice) **ya no aplica: lo arregló este mismo branch.**
 
-`scripts/sync_ha_to_chroma.py:679` → `doc_id = f"{item['key']}_{j}"` — **el id del documento deriva de la cache key**, y la key cambió para *todas* las entidades (pasó de `f"{eid}|{fname}|{area}|{cap}|{value}"` a `...|{vitality}"`). Y `collection.add()` **no borra los viejos**. Entonces, con 5 de 8 `light.grupo_*` caídos desde hace 5 días:
+`scripts/sync_ha_to_chroma.py:679` → `doc_id = f"{item['key']}_{j}"` — **el id del documento deriva de la cache key**. Un commit intermedio de este branch (`44389e8`) le había agregado un sufijo `|{vitality}` a la key de *todas* las entidades (de `f"{eid}|{fname}|{area}|{cap}|{value}"` a `...|{vitality}"`), lo que iba a romper el matching contra los 337 docs ya indexados en el primer sync post-deploy. **Ese cambio se revirtió dentro del mismo branch** (`f190d18`: el bucket vivo/muerto además era código muerto — para cuando `cache_key()` corre, `select_syncable()` ya filtró a las entidades caídas). La key que se deploya es la ORIGINAL, sin sufijo, y coincide con lo que ya está en Chroma para las entidades vivas.
 
-- **con `--wipe`** → borra los 337 docs y reindexa solo las 3 rooms vivas + escenas (~297). **Balcón, baño, cuarto, escalera y pasillo pasan de 8 docs a CERO**: pierden el control por voz por completo. Hoy funcionan degradadas; después no funcionarían.
-- **sin `--wipe`, con `--allow-unavailable`** → agrega ~276 docs de las rooms vivas + 21 de escenas **encima** de los 337 → **índice duplicado (~613)**, con la búsqueda vectorial devolviendo pares redundantes.
+Con eso corregido, y con 5 de 8 `light.grupo_*` caídos desde hace 5 días:
+
+- **con `--wipe`** → borra los 337 docs y reindexa solo las 3 rooms vivas + escenas (~297). **Balcón, baño, cuarto, escalera y pasillo pasan de 8 docs a CERO**: pierden el control por voz por completo, y el smoke test queda ciego a exactamente lo que está roto (esas entidades dejan de ser `default_light` de ninguna room, así que no hay nada que reportar como caído). Hoy funcionan degradadas; después no funcionarían. **Por esto `--wipe` no se corre en este deploy bajo ninguna circunstancia.**
+- **sin `--wipe`, con `--allow-unavailable`** → con la key restaurada, **ya NO duplica el índice** (ese era el riesgo real antes de `f190d18`): matchea los docs existentes de las rooms vivas — skip, sin reprocesar — y solo reprocesa entidades cuyo valor cambió. Las 5 `light.grupo_*` caídas quedan excluidas y logueadas, con sus 8 docs cada una **intactos** (nadie los toca ni los borra). Sigue sin haber motivo para pagar la corrida (~100-120 llamadas al LLM) en esta ventana si nada cambió — se corre después, junto con el resync post-Zigbee.
 - **sin flags** → exit 2 (el guard hace su trabajo).
 
-**Secuencia correcta:** (1) deployar · (2) resolver los 5 grupos Zigbee caídos · (3) recién ahí `--wipe` + resync completo, que es la única forma de deduplicar **y** devolverles las 92 frases.
+**Secuencia correcta:** (1) deployar · (2) resolver los 5 grupos Zigbee caídos · (3) recién ahí `--wipe` + resync completo, que es la única forma de devolverles las 92 frases con el índice limpio.
 
 Si aun así hay que inspeccionar qué haría el guard — **read-only, no escribe en Chroma**:
 ```bash
