@@ -65,7 +65,11 @@ def _resolve_capture_channels(max_input_channels: int) -> int:
     PortAudio and require forcing 1. Others (XVF3800, 2ch) must be opened
     with their native count: opening a 2ch device as 1ch reads interleaved
     data into a 1ch buffer and garbles the audio, causing Whisper to
-    hallucinate. Channel 0 (indata[:, 0]) is always consumed downstream.
+    hallucinate. The channel actually consumed downstream is NOT hardcoded
+    to 0: it's `rs.capture_channel` (per-room config, e.g. `capture_channel: 1`
+    for cocina/escritorio), read in the InputStream callback with a
+    fallback to channel 0 only if the device doesn't have that many
+    channels. This function only decides how many channels to *open*.
 
     Args:
         max_input_channels: Value from sd.query_devices(index)['max_input_channels'].
