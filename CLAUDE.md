@@ -1,6 +1,6 @@
 # KZA — Asistente de Voz Local para Domótica
 
-Sistema de control por voz local para Home Assistant. Latencia <300ms para domótica (fast path 100% local); razonamiento complejo delegado al gateway LLM `:8200` (MiniMax cloud, decisión 2026-05-30 con `cloud.consent`). **2x RTX 3070 hoy** (cuda:0 audio+TTS+BGE-M3, cuda:1 llama-server 7B fast-path NLU `:8101`) — se irán conectando más GPUs; cualquier reasignación se discute primero. Python 3.13, async/await, ~38K líneas, 617+ tests.
+Sistema de control por voz local para Home Assistant. Latencia <300ms para domótica (fast path 100% local); razonamiento complejo delegado al gateway LLM `:8200` (MiniMax cloud, decisión 2026-05-30 con `cloud.consent`). **2x RTX 3070 hoy** (cuda:1 audio completo + TTS + llama-server 7B fast-path NLU `:8101`; cuda:0 casi libre — Emotion deshabilitado; BGE-M3 vive en CPU, no en GPU) — se irán conectando más GPUs; cualquier reasignación se discute primero. Python 3.13, async/await, ~38K líneas, 2740+ tests.
 
 ## Source of truth cross-project
 
@@ -23,7 +23,7 @@ Este proyecto cubre **solo** el pipeline de voz. Para las convenciones del servi
 - Logging con `logger = logging.getLogger(__name__)` y prefijos descriptivos
 - Mensajes de voz y UI en español, código/logs en inglés
 - Tests con pytest + fixtures en `conftest.py`, mocks en `tests/mocks/`
-- Respetar asignación de GPUs (2 hoy): cuda:0 = STT + SpeakerID + Emotion + TTS + BGE-M3 (todo el audio); cuda:1 = llama-server 7B `:8101` (fast-path NLU). Al conectar GPUs nuevas, la reasignación se discute primero
+- Respetar asignación de GPUs (2 hoy): cuda:1 = STT + SpeakerID + TTS + llama-server 7B `:8101` (todo el audio + fast-path NLU, comparten GPU); cuda:0 = Emotion (deshabilitado) + fallback whisper del ambient path, casi libre. BGE-M3 corre en CPU, no en GPU. Al conectar GPUs nuevas, la reasignación se discute primero
 
 ### NUNCA hacer
 - Herencia profunda (usar composición siempre)
@@ -68,11 +68,11 @@ class MiServicio:
 ## Arquitectura
 
 ```
-Mic → WakeWord(CPU) → STT(GPU0) → Router 7B(GPU1 :8101) → TTS(GPU0) → Speaker
+Mic → WakeWord(CPU) → STT(GPU1) → Router 7B(GPU1 :8101) → TTS(GPU1) → Speaker
                          ↕                  ↕
-                   SpeakerID(GPU0)   Reasoner cloud (gateway :8200)
+                   SpeakerID(GPU1)   Reasoner cloud (gateway :8200)
                    Emotion(GPU0)     ChromaDB
-                   BGE-M3(GPU0)      HomeAssistant
+                   BGE-M3(CPU)       HomeAssistant
 ```
 
 **Paths de ejecución:**
@@ -127,7 +127,7 @@ Mic → WakeWord(CPU) → STT(GPU0) → Router 7B(GPU1 :8101) → TTS(GPU0) → 
 
 ```bash
 # Tests
-pytest tests/                              # Todos los tests (617+)
+pytest tests/                              # Todos los tests (2740+)
 pytest tests/unit/spotify/                 # Tests de un módulo
 pytest tests/ -k "test_speaker"            # Tests por nombre
 pytest tests/ --cov=src --cov-report=html  # Coverage
@@ -157,7 +157,7 @@ python tools/code_search.py "cómo se maneja el timeout de HA al boot"
 
 - **CPU**: Threadripper PRO 7965WX — 24c/48t (el LLM 72B local en CPU se retiró 2026-05-30; el reasoner es cloud vía gateway :8200)
 - **RAM**: 128GB DDR5-5600 RDIMM (8x16GB, 8 canales, ~358 GB/s)
-- **GPUs**: **2x RTX 3070 8GB hoy** — cuda:0 = audio completo (STT/SpeakerID/Emotion/TTS/BGE-M3, ~7.5GB), cuda:1 = llama-server 7B :8101. Se irán conectando más GPUs a futuro; ver contrato en `docs/SERVER_CONVENTIONS.md`
+- **GPUs**: **2x RTX 3070 8GB hoy** — cuda:1 = audio completo + llama-server 7B :8101 (STT/SpeakerID/TTS/fast-path NLU, ~7.4GB), cuda:0 = Emotion (deshabilitado) + fallback ambient, casi libre (~1.9GB). BGE-M3 corre en CPU. Se irán conectando más GPUs a futuro; ver contrato en `docs/SERVER_CONVENTIONS.md`
 - **Audio**: ReSpeaker XVF3800 por habitación + extensores USB Cat5e
 - **Amplificador**: Dayton Audio MA1260 Multi-Zone (12 canales / 6 zonas estéreo, control RS-232)
 - **BLE**: UGREEN BT 5.3 por habitación para presencia
