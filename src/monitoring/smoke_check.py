@@ -55,6 +55,29 @@ def invalid_payload_keys(service_data: dict | None) -> list[str]:
     return sorted(set(service_data or {}) - VALID_SERVICE_DATA_SLOTS)
 
 
+def indexed_entity_ids(collection) -> list[str]:
+    """Los entity_id realmente direccionables por voz, según el índice.
+
+    La cobertura del smoke test tiene que salir de lo que el sistema expone
+    (ChromaDB), no de una lista escrita a mano: el `default_light` de cada
+    room dejaba fuera entidades vivas del índice (2026-07-31: cuarto/balcón/
+    escalera no eran `default_light` de ninguna room), así que el smoke test
+    salía verde para ellas pese a resolver por voz con similitud 0.92-1.00.
+
+    Args:
+        collection: colección de Chroma con comandos indexados (o cualquier
+            objeto con un método `.get(include=[...])` que devuelva
+            `{"metadatas": [...]}` — así queda testeable sin ChromaDB real).
+    """
+    got = collection.get(include=["metadatas"])
+    ids = {
+        m.get("entity_id")
+        for m in (got.get("metadatas") or [])
+        if m and m.get("entity_id")
+    }
+    return sorted(ids)
+
+
 def entity_problem(entity_id: str, ha_states: dict[str, str]) -> str | None:
     """Describe por qué `entity_id` no serviría, o None si está sana.
 

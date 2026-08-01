@@ -14,6 +14,7 @@ from src.monitoring.smoke_check import (
     SmokeResult,
     check_phrase,
     entity_problem,
+    indexed_entity_ids,
     invalid_payload_keys,
 )
 
@@ -116,3 +117,40 @@ class TestCheckPhrase:
         )
         assert r.ok is True
         assert r.service_data == {"brightness_pct": 50}
+
+
+class TestIndexedEntityIds:
+    """La cobertura del smoke test viene de lo que el índice expone, no de
+    una lista escrita a mano (2026-07-31): cuarto/balcón/escalera no eran
+    default_light de ninguna room y quedaban invisibles pese a resolver por
+    voz con similitud 0.92-1.00."""
+
+    def test_indexed_entities_are_derived_from_chroma_not_a_list(self):
+        """Coverage must come from what is addressable, not from a hardcoded list."""
+        fake_collection = type("C", (), {
+            "get": staticmethod(lambda **kw: {"metadatas": [
+                {"entity_id": "light.grupo_living"},
+                {"entity_id": "light.grupo_cuarto"},
+                {"entity_id": "light.grupo_living"},  # duplicado
+            ]})
+        })()
+        assert indexed_entity_ids(fake_collection) == [
+            "light.grupo_cuarto", "light.grupo_living",
+        ]
+
+    def test_empty_collection_returns_empty_list(self):
+        fake_collection = type("C", (), {
+            "get": staticmethod(lambda **kw: {"metadatas": []})
+        })()
+        assert indexed_entity_ids(fake_collection) == []
+
+    def test_metadata_without_entity_id_is_skipped(self):
+        """Metadata de rutinas/docs sin entity_id no debe romper ni colarse."""
+        fake_collection = type("C", (), {
+            "get": staticmethod(lambda **kw: {"metadatas": [
+                {"entity_id": "light.grupo_living"},
+                {"description": "algo sin entity_id"},
+                None,
+            ]})
+        })()
+        assert indexed_entity_ids(fake_collection) == ["light.grupo_living"]

@@ -42,6 +42,7 @@ from src.monitoring.smoke_check import (  # noqa: E402
     STAGE_OK,
     check_phrase,
     entity_problem,
+    indexed_entity_ids,
 )
 
 # Frases canónicas: cubren los caminos que más se rompieron. Deliberadamente
@@ -148,22 +149,35 @@ def main() -> int:
             print(f"  {ROJO}✗{RESET} {frase!r}")
             print(f"      [{r.stage}] {r.detail}")
 
-    # Las rooms configuradas deben apuntar a entidades vivas. Cubre las rooms
-    # nuevas sin tener que acordarse de agregarles una frase acá arriba.
-    print("\nEntidades por defecto de cada room:")
-    for room_id, room_cfg in (config.get("rooms") or {}).items():
-        if not isinstance(room_cfg, dict):
-            continue
-        default_light = room_cfg.get("default_light")
-        if not default_light:
-            continue
-        problem = entity_problem(default_light, ha_states)
+    # La cobertura la define el sistema (qué hay indexado en Chroma, o sea
+    # qué se puede pedir por voz), no una lista a mano: el `default_light`
+    # de cada room dejaba fuera entidades vivas del índice (2026-07-31:
+    # cuarto/balcón/escalera no son `default_light` de ninguna room y
+    # resolvían por voz con similitud 0.92-1.00 sin que el smoke test las
+    # viera). Unimos el índice con los `default_light` del config en vez de
+    # reemplazar uno por otro: así seguimos detectando un `default_light`
+    # que quedara fuera del índice (excluido o con drift de config) — algo
+    # que hoy SÍ se chequea y que perderíamos si solo mirásemos Chroma.
+    print("\nEntidades direccionables por voz (índice + rooms):")
+    try:
+        entity_ids = set(indexed_entity_ids(chroma.commands))
+    except Exception as e:  # noqa: BLE001 — un tool de diagnóstico no debe explotar
+        print(f"  {ROJO}✗ no pude leer el índice de Chroma: {e}{RESET}")
+        fallos += 1
+        entity_ids = set()
+
+    for room_cfg in (config.get("rooms") or {}).values():
+        if isinstance(room_cfg, dict) and room_cfg.get("default_light"):
+            entity_ids.add(room_cfg["default_light"])
+
+    for entity_id in sorted(entity_ids):
+        problem = entity_problem(entity_id, ha_states)
         if problem is None:
-            estado = ha_states[default_light]
-            print(f"  {VERDE}✓{RESET} {room_id:12s} {default_light} ({estado})")
+            estado = ha_states[entity_id]
+            print(f"  {VERDE}✓{RESET} {entity_id} ({estado})")
         else:
             fallos += 1
-            print(f"  {ROJO}✗{RESET} {room_id:12s} {problem}")
+            print(f"  {ROJO}✗{RESET} {problem}")
 
     print()
     if fallos:
