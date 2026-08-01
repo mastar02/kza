@@ -1122,6 +1122,10 @@ rooms:
     # sobre un mic que todavía está despertando — y como el recovery cierra
     # TODOS los streams, se llevaría puestos a los sanos.
     first_frame_grace_s: 180.0
+    # Snapshot del heartbeat para el poller externo (tools/audio_watchdog_alert.py).
+    # Externo a propósito: el modo de falla observado (27h, 7h) es "el proceso
+    # vive y no entrega audio", que un watchdog interno no puede reportar.
+    health_path: "./data/audio_health.json"
 
   # MA1260 amplifier connection (moved from zones)
   ma1260:

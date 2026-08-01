@@ -201,6 +201,7 @@ class MultiRoomAudioLoop:
         stream_watchdog_reopen_backoff_min_s: float = 1.0,
         stream_watchdog_reopen_backoff_max_s: float = 10.0,
         stream_watchdog_first_frame_grace_s: float = 180.0,
+        audio_health_path: str = "./data/audio_health.json",
     ):
         self.room_streams = room_streams
         self.follow_up = follow_up
@@ -305,6 +306,10 @@ class MultiRoomAudioLoop:
         # 1.5-2s lo normal, 135s el peor observado el 2026-07-29).
         self._watchdog_first_frame_grace_s = stream_watchdog_first_frame_grace_s
         self._watchdog_task = None
+        # Snapshot del heartbeat para el poller externo (2026-07-31): el
+        # watchdog interno recupera mics pero no puede AVISAR — si el
+        # proceso se traba, se traba con él. Ver tools/audio_watchdog_alert.py.
+        self._audio_health_path = audio_health_path
 
         self._running = False
         self._streams: dict = {}
@@ -700,6 +705,21 @@ class MultiRoomAudioLoop:
                 for room_id, rs in self.room_streams.items()
                 if not self._is_awaiting_reopen(room_id)
             ]
+            # Publicar el heartbeat para el poller externo. El watchdog interno
+            # recupera, pero no puede avisar: si el proceso se traba, se traba
+            # con él. Un fallo acá jamás debe romper la recuperación.
+            try:
+                from src.monitoring.audio_health import write_audio_health
+
+                write_audio_health(
+                    self._audio_health_path,
+                    {room_id: (rs.last_frame_ts, rs.opened_ts)
+                     for room_id, rs in self.room_streams.items()},
+                    now_wall=time.time(),
+                    now_mono=now,
+                )
+            except Exception as e:
+                logger.debug(f"No pude publicar audio_health: {e}")
             stale = detect_stale_streams(
                 states,
                 now,
