@@ -120,45 +120,34 @@ def is_group_entity(entity_id: str, friendly_name: str) -> bool:
     return entity_id.startswith("light.grupo_") or entity_id == "light.hogar"
 
 
-# Estados en los que este script NO indexa una entidad. Definidos una sola vez
-# porque `select_syncable` (a quién excluir) y `cache_key` (qué invalida la key)
-# TIENEN que usar el mismo criterio: si divergieran, habría entidades cuya
-# recuperación no invalida su cache_key y se reindexarían con el documento
-# empobrecido, en silencio.
+# Estados en los que este script NO indexa una entidad. Único consumidor real:
+# `select_syncable`. `cache_key` NO usa este criterio (no mira `state` en
+# absoluto) porque para cuando corre ya solo ve entidades vivas.
 DEAD_STATES = ("unavailable", "unknown")
 
 
 def cache_key(
     entity_id: str, friendly_name: str, area: str | None, capability: str, value: str,
-    state: str | None = None,
 ) -> str:
     """Cache key incluye capability+value para soportar indexación incremental granular.
 
-    La VITALIDAD de la entidad entra en la key para que su recuperación (p.ej.
-    unavailable → on) invalide el cache_key viejo y fuerce reindexación: si no,
-    una entidad que revive con más capabilities sigue mostrando el índice
-    empobrecido que se generó cuando estaba muerta.
+    La vitalidad de la entidad NO entra en la key, a propósito. `select_syncable`
+    ya excluye las entidades `unavailable`/`unknown` ANTES de que se llegue a
+    calcular ninguna key (ver el call site en main()): para cuando esta función
+    corre, `state` siempre es "vivo". Un bucket vivo/muerto acá sería código
+    muerto que nunca alcanza la rama "muerto" — y si en algún momento se
+    intentó usar el `state` crudo directamente en la key, el costo era real:
+    "on" y "off" dan keys distintas, así que el sync incremental dejaba de
+    acertar casi siempre (las luces conmutan de estado entre corridas, ~100-120
+    llamadas al LLM en cada corrida) y ni siquiera lograba el objetivo, porque
+    `collection.add()` no borra documentos viejos: el cambio de formato de key
+    solo agrega duplicados, nunca invalida los que ya existen.
 
-    ⚠️ Entra el BUCKET (`live`/`dead`), no el `state` crudo. Con el estado crudo
-    `"on"` y `"off"` daban keys distintas, y eso costaba carísimo sin entregar
-    lo prometido:
-
-      - las luces conmutan de estado entre corridas, así que el sync incremental
-        dejaba de acertar casi siempre (~100-120 llamadas al LLM en la primera
-        corrida post-deploy, y de nuevo en cada corrida siguiente);
-      - y ni siquiera lograba el objetivo: `collection.add()` NO borra los
-        documentos viejos, así que los documentos empobrecidos que el cambio
-        existía para invalidar sobrevivían igual.
-
-    El bucket grueso conserva lo único que importaba —que cruzar la frontera
-    muerta↔viva invalide la key— y deja el cache incremental intacto. El
-    criterio de vitalidad es el MISMO que el de `select_syncable`, y hay un test
-    que lo ata (tests/unit/vectordb/test_sync_unavailable_guard.py): si
-    divergieran, habría entidades cuya recuperación no invalida su key y el bug
-    volvería en silencio.
+    La invalidación por recuperación de una entidad la resuelve
+    `select_syncable` (la excluye mientras está muerta) más `--force` cuando
+    hace falta reindexar a mano, no esta función.
     """
-    vitality = "dead" if state in DEAD_STATES else "live"
-    raw = f"{entity_id}|{friendly_name}|{area or ''}|{capability}|{value}|{vitality}"
+    raw = f"{entity_id}|{friendly_name}|{area or ''}|{capability}|{value}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -595,7 +584,6 @@ def main():
             total_specs += 1
             key = cache_key(
                 s["entity_id"], s["friendly_name"], s["area"], spec.capability, spec.value_label,
-                state=s["entity_state"].get("state"),
             )
             if key in existing_keys and not args.force:
                 continue
