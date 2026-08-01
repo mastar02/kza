@@ -15,10 +15,19 @@ home_assistant:
     full_refresh_interval_s: 300
 
   # Precheck de disponibilidad antes de despachar un service_call (dispatcher
-  # RequestDispatcher._fire_and_reconcile_ha, is_entity_available). HA acepta
-  # una llamada contra una entidad `unavailable`/`unknown` y la filtra en
-  # silencio (helpers/service.py), devolviendo success=true — sin este
-  # precheck eso es silencio total (ni voz, ni earcon, ni luz).
+  # RequestDispatcher._fire_and_reconcile_ha, HomeAssistantClient.is_entity_available).
+  # HA acepta una llamada contra una entidad `unavailable` y la filtra en
+  # silencio (helpers/service.py: `[e for e in candidates if e.available]`),
+  # devolviendo success=true — sin este precheck eso es silencio total (ni
+  # voz, ni earcon, ni luz).
+  #
+  # Bloquea SOLO `unavailable`, a propósito — `unknown` NO (ver el comentario
+  # largo en `is_entity_available`). `unavailable` ⟺ `available == False`;
+  # `unknown` solo es alcanzable con `available == True`, así que HA la
+  # ejecuta normalmente. Bloquear `unknown` acá sería una regresión: una
+  # escena nunca activada queda `unknown` para siempre (`Scene.state` es el
+  # timestamp de la última activación), y la única vía para salir de
+  # `unknown` es justo la que se estaría bloqueando.
   #
   # Kill switch, default true (activo). Por qué existe: si Z2M o HA se
   # reinician (evento recurrente en esta casa, más con la migración
