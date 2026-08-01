@@ -30,6 +30,15 @@ logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1280
 
+# Cota para el `await` de write_audio_health dentro de _stream_watchdog.
+# 1.0s queda cómodamente por debajo del intervalo default del watchdog
+# (stream_watchdog_check_interval_s=2.0s) para no demorar detect_stale_streams
+# / _recover_streams, pero es generoso para una escritura local de pocos KB
+# (mkstemp+json.dump+os.replace normalmente tarda unos pocos ms). Si el
+# thread se cuelga (fs trabado, disco lleno bloqueando I/O, etc.), este
+# timeout evita que la recuperación de mics quede rehén de esa escritura.
+AUDIO_HEALTH_WRITE_TIMEOUT_S = 1.0
+
 
 def compute_wake_vad(audio_chunk, vad_predict) -> float | None:
     """Prob de Silero sobre el audio del wake-trigger (fail-safe → None).
@@ -779,21 +788,33 @@ class MultiRoomAudioLoop:
                 # sobre ./data/, el mismo disco que events.db, latency.db,
                 # ChromaDB y el entrenamiento nocturno. Mismo criterio que
                 # `_try_reopen_once`, que ya usa to_thread.
-                await asyncio.to_thread(
-                    write_audio_health,
-                    self._audio_health_path,
-                    self._audio_health_rooms(),
-                    now_wall=now_wall,
+                # `wait_for` (no `to_thread` a secas): un thread colgado nunca
+                # retorna, y detect_stale_streams/_recover_streams corren
+                # DESPUÉS de este bloque try — sin cota, un write trabado
+                # apaga la recuperación de mics entera, no solo la métrica.
+                # AUDIO_HEALTH_WRITE_TIMEOUT_S por qué/cuánto: ver constante.
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        write_audio_health,
+                        self._audio_health_path,
+                        self._audio_health_rooms(),
+                        now_wall=now_wall,
+                    ),
+                    timeout=AUDIO_HEALTH_WRITE_TIMEOUT_S,
                 )
             except Exception as e:
                 # `warning`, no `debug`: en un sistema cuya tesis es que
                 # ninguna señal de salud puede fallar en silencio, el vigilante
-                # que no logra publicar es exactamente el caso a gritar.
+                # que no logra publicar es exactamente el caso a gritar. Un
+                # TimeoutError (write colgado) cae acá también, a propósito.
                 # ⚠️ `except Exception` es deliberado y NO debe ampliarse a
                 # BaseException: ahora que hay un `await` acá adentro, la
                 # cancelación del watchdog se inyecta en este punto, y
                 # CancelledError es BaseException — tiene que propagar para que
                 # `stop()` pueda terminar la task. Hay test que lo fija.
+                # `asyncio.wait_for` respeta esto: una cancelación externa (no
+                # el propio timeout interno) se re-lanza como CancelledError,
+                # no se traga como TimeoutError.
                 logger.warning(f"No pude publicar audio_health: {e}")
             stale = detect_stale_streams(
                 states,
