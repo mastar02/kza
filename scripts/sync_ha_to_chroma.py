@@ -120,18 +120,45 @@ def is_group_entity(entity_id: str, friendly_name: str) -> bool:
     return entity_id.startswith("light.grupo_") or entity_id == "light.hogar"
 
 
+# Estados en los que este script NO indexa una entidad. Definidos una sola vez
+# porque `select_syncable` (a quién excluir) y `cache_key` (qué invalida la key)
+# TIENEN que usar el mismo criterio: si divergieran, habría entidades cuya
+# recuperación no invalida su cache_key y se reindexarían con el documento
+# empobrecido, en silencio.
+DEAD_STATES = ("unavailable", "unknown")
+
+
 def cache_key(
     entity_id: str, friendly_name: str, area: str | None, capability: str, value: str,
     state: str | None = None,
 ) -> str:
     """Cache key incluye capability+value para soportar indexación incremental granular.
 
-    `state` entra en la key para que la recuperación de una entidad (p.ej.
+    La VITALIDAD de la entidad entra en la key para que su recuperación (p.ej.
     unavailable → on) invalide el cache_key viejo y fuerce reindexación: si no,
     una entidad que revive con más capabilities sigue mostrando el índice
     empobrecido que se generó cuando estaba muerta.
+
+    ⚠️ Entra el BUCKET (`live`/`dead`), no el `state` crudo. Con el estado crudo
+    `"on"` y `"off"` daban keys distintas, y eso costaba carísimo sin entregar
+    lo prometido:
+
+      - las luces conmutan de estado entre corridas, así que el sync incremental
+        dejaba de acertar casi siempre (~100-120 llamadas al LLM en la primera
+        corrida post-deploy, y de nuevo en cada corrida siguiente);
+      - y ni siquiera lograba el objetivo: `collection.add()` NO borra los
+        documentos viejos, así que los documentos empobrecidos que el cambio
+        existía para invalidar sobrevivían igual.
+
+    El bucket grueso conserva lo único que importaba —que cruzar la frontera
+    muerta↔viva invalide la key— y deja el cache incremental intacto. El
+    criterio de vitalidad es el MISMO que el de `select_syncable`, y hay un test
+    que lo ata (tests/unit/vectordb/test_sync_unavailable_guard.py): si
+    divergieran, habría entidades cuya recuperación no invalida su key y el bug
+    volvería en silencio.
     """
-    raw = f"{entity_id}|{friendly_name}|{area or ''}|{capability}|{value}|{state or ''}"
+    vitality = "dead" if state in DEAD_STATES else "live"
+    raw = f"{entity_id}|{friendly_name}|{area or ''}|{capability}|{value}|{vitality}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -163,7 +190,7 @@ def select_syncable(entities: list[dict]) -> tuple[list[dict], list[dict]]:
     """
     live, dead = [], []
     for e in entities:
-        (dead if e.get("state") in ("unavailable", "unknown") else live).append(e)
+        (dead if e.get("state") in DEAD_STATES else live).append(e)
     return live, dead
 
 

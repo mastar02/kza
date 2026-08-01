@@ -26,23 +26,71 @@ def test_all_live_returns_no_dead():
     assert len(live) == 1 and dead == []
 
 
-def test_cache_key_changes_with_state():
-    """Distintos estados deben dar cache_keys distintas.
+_BASE_KEY = dict(entity_id="light.grupo_cuarto", friendly_name="Cuarto",
+                 area="cuarto", capability="onoff", value="on")
 
-    Es lo que fuerza la reindexación cuando una entidad revive (unavailable →
-    on): si el estado no entrara en la key, el sync incremental vería la
-    misma key de siempre y saltearía la entidad, dejando el índice
-    empobrecido que se generó mientras estaba caída.
+
+def test_cache_key_changes_when_entity_recovers():
+    """Revivir (muerta → viva) tiene que invalidar la key.
+
+    Es lo que fuerza la reindexación: si la vitalidad no entrara en la key, el
+    sync incremental vería la misma de siempre y saltearía la entidad, dejando
+    el índice empobrecido que se generó mientras estaba caída.
     """
-    base = dict(entity_id="light.grupo_cuarto", friendly_name="Cuarto",
-                area="cuarto", capability="onoff", value="on")
-    key_unavailable = cache_key(**base, state="unavailable")
-    key_on = cache_key(**base, state="on")
-    key_none = cache_key(**base, state=None)
+    key_unavailable = cache_key(**_BASE_KEY, state="unavailable")
+    key_on = cache_key(**_BASE_KEY, state="on")
     assert key_unavailable != key_on
-    assert key_none != key_on
     # Determinismo: mismo estado -> misma key.
-    assert cache_key(**base, state="on") == key_on
+    assert cache_key(**_BASE_KEY, state="on") == key_on
+
+
+@pytest.mark.parametrize("vivo_a, vivo_b", [
+    ("on", "off"),            # el caso que rompía el cache: las luces conmutan
+    ("on", "playing"),
+    ("off", None),            # sin estado != muerta
+    ("unknown_pero_vivo", "idle"),
+])
+def test_cache_key_is_stable_across_live_states(vivo_a, vivo_b):
+    """Dos estados VIVOS distintos deben dar la MISMA key.
+
+    Meter el estado crudo en la key costaba carísimo y no entregaba lo que
+    prometía: `"on"` y `"off"` producían keys distintas, así que el sync
+    incremental dejaba de acertar casi siempre (las luces conmutan entre
+    corridas → ~100-120 llamadas al LLM en la primera corrida post-deploy). Y
+    encima no lograba el objetivo: `collection.add()` NO borra los documentos
+    viejos, así que los documentos empobrecidos que el cambio existía para
+    invalidar sobrevivían igual.
+
+    El bucket grueso vivo/muerta conserva el objetivo real —que la recuperación
+    invalide la key— sin destruir el cache incremental.
+    """
+    assert cache_key(**_BASE_KEY, state=vivo_a) == cache_key(**_BASE_KEY, state=vivo_b)
+
+
+@pytest.mark.parametrize("muerta_a, muerta_b", [("unavailable", "unknown")])
+def test_cache_key_is_stable_across_dead_states(muerta_a, muerta_b):
+    """Los estados que `select_syncable` considera muertos comparten bucket."""
+    assert cache_key(**_BASE_KEY, state=muerta_a) == cache_key(
+        **_BASE_KEY, state=muerta_b
+    )
+
+
+def test_cache_key_bucket_matches_what_select_syncable_excludes():
+    """El bucket y el criterio de exclusión tienen que ser el mismo.
+
+    Si `select_syncable` excluyera un estado que el bucket cuenta como vivo (o
+    al revés), habría entidades cuya recuperación no invalida su key: volverían
+    a indexarse con el documento empobrecido y el bug volvería en silencio.
+    """
+    estados = ["unavailable", "unknown", "on", "off", "idle", None]
+    for estado in estados:
+        excluida_del_sync = select_syncable([{"entity_id": "x", "state": estado}])[0] == []
+        key_de_muerta = cache_key(**_BASE_KEY, state=estado) == cache_key(
+            **_BASE_KEY, state="unavailable"
+        )
+        assert excluida_del_sync == key_de_muerta, (
+            f"state={estado!r}: select_syncable y el bucket de cache_key no coinciden"
+        )
 
 
 def _fake_entity(entity_id: str, state: str, friendly_name: str | None = None):
