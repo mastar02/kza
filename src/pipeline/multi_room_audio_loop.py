@@ -310,6 +310,14 @@ class MultiRoomAudioLoop:
         # watchdog interno recupera mics pero no puede AVISAR — si el
         # proceso se traba, se traba con él. Ver tools/audio_watchdog_alert.py.
         self._audio_health_path = audio_health_path
+        # Anclas de salud en WALL CLOCK, fuera de RoomStream a propósito: son
+        # lo único que la reapertura de un stream NO puede resetear. Ver
+        # `_update_audio_anchors` para por qué es imprescindible.
+        # room_id -> time.time() del último audio REAL (presencia ⇒ ever=True)
+        self._last_audio_wall: dict[str, float] = {}
+        # room_id -> time.time() en que la room entró en observación; ancla de
+        # la room que todavía no entregó nada.
+        self._room_since_wall: dict[str, float] = {}
 
         self._running = False
         self._streams: dict = {}
@@ -684,6 +692,55 @@ class MultiRoomAudioLoop:
                 continue
             self._schedule_reopen(rs)
 
+    def _update_audio_anchors(self, now_mono: float, now_wall: float) -> None:
+        """Refrescar las anclas de salud que la reapertura no puede resetear.
+
+        ⚠️ Por qué existe esto en vez de leer `rs.last_frame_ts`/`rs.opened_ts`
+        directo: `_try_reopen_once` pone `opened_ts = now` y
+        `last_frame_ts = 0.0` en CADA reapertura exitosa. Un XVF3800 con el
+        endpoint isócrono muerto —el modo de falla de los incidentes de 27h y
+        7h— abre perfecto en PortAudio y entrega ceros, así que el watchdog lo
+        detecta a los ~180s, "recupera", y el reset deja `ever=False` con
+        `age_s` en 0. Bucle eterno de ~182s en el que `age_s` solo supera el
+        umbral ~2s por vuelta: la alerta quedaba MÁS DÉBIL justo en el caso
+        primario (simulado: mediana 1,67h hasta detectar, máximo 15,98h,
+        1/200 sin detectar en 24h).
+
+        ⚠️ Y el fix intuitivo empeora las cosas: subir `first_frame_grace_s`
+        del poller hace que NUNCA detecte, porque `age_s` está acotado por el
+        ciclo de recovery. La salida es esta: un ancla que la reapertura no
+        toca, con la que la detección pasa a ser determinística a los
+        `deaf_after_s`.
+
+        Args:
+            now_mono: time.monotonic() del ciclo actual.
+            now_wall: time.time() del ciclo actual.
+        """
+        for room_id, rs in self.room_streams.items():
+            self._room_since_wall.setdefault(room_id, now_wall)
+            if rs.last_frame_ts <= 0.0:
+                continue  # todavía no entregó (o lo acaban de resetear)
+            # Convertir el monotónico del último frame a wall clock. Exacto:
+            # no depende del período del watchdog. El max() es lo que hace el
+            # ancla monótona — una reapertura que pone last_frame_ts=0 cae en
+            # el `continue` de arriba y no puede hacerla retroceder.
+            frame_wall = now_wall - (now_mono - rs.last_frame_ts)
+            previo = self._last_audio_wall.get(room_id)
+            if previo is None or frame_wall > previo:
+                self._last_audio_wall[room_id] = frame_wall
+
+    def _audio_health_rooms(self) -> dict[str, tuple[float, bool]]:
+        """(ancla_wall, ever) por room, tal como lo espera write_audio_health."""
+        return {
+            room_id: (
+                self._last_audio_wall.get(
+                    room_id, self._room_since_wall.get(room_id, 0.0)
+                ),
+                room_id in self._last_audio_wall,
+            )
+            for room_id in self.room_streams
+        }
+
     async def _stream_watchdog(self) -> None:
         """Periodically detect mics that stopped delivering frames and recover.
 
@@ -708,18 +765,32 @@ class MultiRoomAudioLoop:
             # Publicar el heartbeat para el poller externo. El watchdog interno
             # recupera, pero no puede avisar: si el proceso se traba, se traba
             # con él. Un fallo acá jamás debe romper la recuperación.
+            self._update_audio_anchors(now_mono=now, now_wall=time.time())
             try:
                 from src.monitoring.audio_health import write_audio_health
 
-                write_audio_health(
+                # En thread aparte: write_audio_health hace mkstemp + json.dump
+                # + os.replace SÍNCRONOS, y este loop es el mismo que corre el
+                # fast path (<300ms). Son ~43.000 creaciones+renames por día
+                # sobre ./data/, el mismo disco que events.db, latency.db,
+                # ChromaDB y el entrenamiento nocturno. Mismo criterio que
+                # `_try_reopen_once`, que ya usa to_thread.
+                await asyncio.to_thread(
+                    write_audio_health,
                     self._audio_health_path,
-                    {room_id: (rs.last_frame_ts, rs.opened_ts)
-                     for room_id, rs in self.room_streams.items()},
+                    self._audio_health_rooms(),
                     now_wall=time.time(),
-                    now_mono=now,
                 )
             except Exception as e:
-                logger.debug(f"No pude publicar audio_health: {e}")
+                # `warning`, no `debug`: en un sistema cuya tesis es que
+                # ninguna señal de salud puede fallar en silencio, el vigilante
+                # que no logra publicar es exactamente el caso a gritar.
+                # ⚠️ `except Exception` es deliberado y NO debe ampliarse a
+                # BaseException: ahora que hay un `await` acá adentro, la
+                # cancelación del watchdog se inyecta en este punto, y
+                # CancelledError es BaseException — tiene que propagar para que
+                # `stop()` pueda terminar la task. Hay test que lo fija.
+                logger.warning(f"No pude publicar audio_health: {e}")
             stale = detect_stale_streams(
                 states,
                 now,

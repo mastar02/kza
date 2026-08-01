@@ -13,6 +13,7 @@ Tests ensure that:
 import sys
 import asyncio
 import json
+import threading
 import time
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -33,6 +34,7 @@ from src.pipeline.multi_room_audio_loop import (
     _resolve_capture_channels,
 )
 from src.pipeline.command_event import CommandEvent
+import src.monitoring.audio_health as audio_health_mod
 from src.monitoring.audio_health import evaluate_health
 
 
@@ -1522,6 +1524,235 @@ class TestAudioHealthPublication:
             snapshot, now_wall=snapshot["wall"], deaf_after_s=120.0
         )
         assert deaf == ["cocina"]
+
+
+class TestAudioHealthWriteIsOffTheEventLoop:
+    """La escritura del snapshot no puede bloquear el loop del fast path.
+
+    `write_audio_health` hace mkstemp + json.dump + os.replace SÍNCRONOS, y
+    `_stream_watchdog` corre en el mismo event loop que el camino de voz
+    (<300ms). Con check_interval=2s son ~43.000 creaciones+renames por día
+    sobre ./data/, el mismo disco que events.db, latency.db, ChromaDB y el
+    entrenamiento nocturno.
+    """
+
+    @pytest.mark.asyncio
+    async def test_write_runs_in_a_worker_thread(self, tmp_path):
+        health = tmp_path / "audio_health.json"
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": rs}, audio_health_path=str(health)
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 9999.0
+        loop._watchdog_first_frame_grace_s = 9999.0
+        rs.last_frame_ts = time.monotonic()
+
+        hilos = []
+        real_write = audio_health_mod.write_audio_health
+
+        def spy(*args, **kwargs):
+            hilos.append(threading.current_thread())
+            return real_write(*args, **kwargs)
+
+        async def parar():
+            await asyncio.sleep(0.05)
+            loop._running = False
+
+        with patch.object(audio_health_mod, "write_audio_health", spy):
+            await asyncio.gather(loop._stream_watchdog(), parar())
+
+        assert hilos, "no se llegó a escribir el snapshot"
+        principal = threading.current_thread()
+        assert all(h is not principal for h in hilos), (
+            "write_audio_health corrió en el event loop: mkstemp+json.dump+"
+            "os.replace síncronos delante del fast path"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancellation_is_not_swallowed_by_the_write_guard(self, tmp_path):
+        """La cancelación tiene que propagar aunque caiga dentro del try.
+
+        Al meter un `await` dentro del bloque protegido, CancelledError pasa a
+        ser inyectable justo ahí. Es BaseException, así que `except Exception`
+        no la toca — pero si alguien "endurece" ese guard a BaseException o a
+        un `except:` pelado, `stop()` dejaría de poder terminar la task y el
+        watchdog quedaría vivo para siempre. Este test fija el contrato.
+        """
+        health = tmp_path / "audio_health.json"
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": rs}, audio_health_path=str(health)
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 9999.0
+        loop._watchdog_first_frame_grace_s = 9999.0
+        rs.last_frame_ts = time.monotonic()
+
+        entro = asyncio.Event()
+
+        def bloquear(*_args, **_kwargs):
+            """Frena dentro del try para que la cancelación caiga ahí."""
+            loop._loop.call_soon_threadsafe(entro.set)
+            time.sleep(0.5)
+
+        with patch.object(audio_health_mod, "write_audio_health", bloquear):
+            loop._loop = asyncio.get_running_loop()
+            tarea = asyncio.create_task(loop._stream_watchdog())
+            await asyncio.wait_for(entro.wait(), timeout=2.0)
+            tarea.cancel()
+            # `asyncio.wait` y no `await tarea` ni `wait_for`: si el guard SÍ
+            # se traga la cancelación, la task sigue girando para siempre —
+            # `await` colgaría, y `wait_for` también (al vencer el timeout
+            # re-cancela y AWAITEA la misma task insensible). `wait` solo
+            # observa, así que el test falla rápido en vez de colgarse.
+            done, _ = await asyncio.wait({tarea}, timeout=2.0)
+            loop._running = False  # cleanup si la mutación la dejó viva
+
+        assert tarea in done and tarea.cancelled(), (
+            "el guard se tragó la cancelación: stop() no podría terminar el "
+            "watchdog y la task quedaría viva"
+        )
+
+
+class TestAudioHealthSurvivesRecovery:
+    """La señal de sordera no puede resetearse cada vez que el mic se reabre.
+
+    Modo de falla que motivó la alerta (incidentes de 27h y 7h): un XVF3800
+    con el endpoint isócrono muerto ABRE perfecto en PortAudio y entrega
+    ceros. El watchdog lo detecta a los ~180s y "recupera", y
+    `_try_reopen_once` pone `opened_ts = now` y `last_frame_ts = 0.0`.
+
+    Derivar `age_s`/`ever` de esos dos campos hacía que el snapshot volviera a
+    cero en cada ciclo: un bucle eterno de ~182s donde `age_s` solo superaba
+    el umbral ~2s por vuelta. Simulado por el revisor (200 corridas, poll cada
+    60s, 24h): mediana 1,67h hasta detectar, máximo 15,98h, 1/200 sin detectar
+    en 24h. O sea, la alerta era MÁS DÉBIL justo en el caso primario.
+
+    ⚠️ El fix intuitivo (subir `first_frame_grace_s` del poller) EMPEORA esto:
+    `age_s` está acotado por el ciclo de recovery, así que un umbral más alto
+    hace que no se detecte NUNCA. Por eso las anclas de acá viven fuera de
+    `RoomStream`, donde la reapertura no las alcanza.
+    """
+
+    def _reabrir(self, rs, now_mono):
+        """Lo que `_try_reopen_once` le hace al RoomStream al reabrir."""
+        rs.opened_ts = now_mono
+        rs.last_frame_ts = 0.0
+
+    def test_never_delivering_mic_keeps_aging_across_recoveries(self):
+        """El mic que nunca entrega: `age_s` tiene que crecer igual."""
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(rooms={"cocina": rs})
+        rs.last_frame_ts = 0.0
+        rs.opened_ts = 500.0
+
+        # t=0: arranca. Nunca entrega un frame.
+        loop._update_audio_anchors(now_mono=500.0, now_wall=1000.0)
+
+        # Tres ciclos de recovery de ~182s: abre bien, entrega ceros, el
+        # watchdog recupera, la reapertura pisa opened_ts/last_frame_ts.
+        for i in range(1, 4):
+            mono = 500.0 + 182.0 * i
+            self._reabrir(rs, mono)
+            loop._update_audio_anchors(now_mono=mono, now_wall=1000.0 + 182.0 * i)
+
+        rooms = loop._audio_health_rooms()
+        anchor, ever = rooms["cocina"]
+        assert ever is False, "nunca entregó audio: `ever` debe seguir en False"
+        age_s = (1000.0 + 182.0 * 3) - anchor
+        assert age_s == pytest.approx(546.0), (
+            f"age_s={age_s}: la reapertura reseteó el ancla. Con el reset, la "
+            f"sordera solo es visible ~2s cada ~182s y el poller la pierde."
+        )
+
+    def test_reopen_does_not_erase_that_the_room_ever_delivered(self):
+        """`ever` no puede volver a False: cambia el umbral del poller.
+
+        `evaluate_health` usa `first_frame_grace_s` (180s) cuando `ever` es
+        False y `deaf_after_s` (300s en producción) cuando es True. Si una
+        reapertura borrara el `ever`, el veredicto cambiaría de umbral solo
+        por haberse reabierto, no por lo que el mic esté haciendo.
+        """
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(rooms={"cocina": rs})
+
+        # La room entregó audio real en t_mono=600 (wall 1100).
+        rs.last_frame_ts = 600.0
+        loop._update_audio_anchors(now_mono=600.0, now_wall=1100.0)
+        assert loop._audio_health_rooms()["cocina"][1] is True
+
+        # Se queda muda y el watchdog la reabre 200s después.
+        self._reabrir(rs, 800.0)
+        loop._update_audio_anchors(now_mono=800.0, now_wall=1300.0)
+
+        anchor, ever = loop._audio_health_rooms()["cocina"]
+        assert ever is True, "la reapertura borró que la room ya había entregado audio"
+        assert 1300.0 - anchor == pytest.approx(200.0), (
+            "el ancla debe seguir marcando el ÚLTIMO audio real, no la reapertura"
+        )
+
+    def test_anchor_advances_when_real_audio_arrives(self):
+        """El ancla no es un cero permanente: audio real la mueve hacia adelante."""
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(rooms={"cocina": rs})
+
+        rs.last_frame_ts = 600.0
+        loop._update_audio_anchors(now_mono=600.0, now_wall=1100.0)
+        primero = loop._audio_health_rooms()["cocina"][0]
+
+        rs.last_frame_ts = 900.0  # llegó audio nuevo
+        loop._update_audio_anchors(now_mono=900.0, now_wall=1400.0)
+        segundo = loop._audio_health_rooms()["cocina"][0]
+
+        assert segundo > primero
+        assert 1400.0 - segundo == pytest.approx(0.0, abs=0.001)
+
+    @pytest.mark.asyncio
+    async def test_poller_flags_the_recovery_cycle_end_to_end(self, tmp_path):
+        """El escenario completo, hasta el veredicto del poller externo.
+
+        Los tests de arriba ejercitan las anclas; este corre el watchdog real,
+        lee el snapshot que quedó en disco y lo pasa por `evaluate_health`
+        —igual que el poller— para confirmar que la room del ciclo de recovery
+        se reporta SORDA en vez de eternamente joven.
+        """
+        health = tmp_path / "audio_health.json"
+        rs = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": rs}, audio_health_path=str(health)
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 9999.0
+        loop._watchdog_first_frame_grace_s = 9999.0
+
+        # La room nunca entregó audio y ya lleva 40 min bajo observación: es
+        # el estado en que la deja el ciclo de recovery (opened_ts recién
+        # pisado, last_frame_ts en 0).
+        rs.last_frame_ts = 0.0
+        rs.opened_ts = time.monotonic()  # "recién reabierta"
+        loop._room_since_wall = {"cocina": time.time() - 2400.0}
+
+        async def parar():
+            await asyncio.sleep(0.05)
+            loop._running = False
+
+        await asyncio.gather(loop._stream_watchdog(), parar())
+
+        snapshot = json.loads(health.read_text())
+        deaf = evaluate_health(
+            snapshot,
+            now_wall=snapshot["wall"],
+            deaf_after_s=300.0,
+            first_frame_grace_s=180.0,
+        )
+        assert deaf == ["cocina"], (
+            "el poller no ve la sordera: el snapshot se rearmó con el "
+            "opened_ts que la reapertura acaba de pisar"
+        )
 
 
 class TestWatchdogConfigContract:

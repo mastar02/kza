@@ -17,28 +17,32 @@ logger = logging.getLogger(__name__)
 
 def write_audio_health(
     path: str,
-    rooms: dict[str, tuple[float, float]],
+    rooms: dict[str, tuple[float, bool]],
     now_wall: float,
-    now_mono: float,
 ) -> None:
     """Escribir el snapshot de salud de audio de forma atómica.
 
     Args:
         path: destino del JSON.
-        rooms: room_id -> (last_frame_ts, opened_ts), ambos monotónicos.
-            last_frame_ts == 0.0 significa "todavía no entregó ningún frame".
+        rooms: room_id -> (anchor_wall, ever).
+            `anchor_wall` es el `time.time()` del último audio REAL de la room
+            o, si nunca entregó (`ever` False), el del momento en que entró en
+            observación. Es un ancla que la reapertura del stream no puede
+            mover — ver `MultiRoomAudioLoop._update_audio_anchors`, y el
+            comentario de ahí sobre por qué derivar esto de `last_frame_ts` /
+            `opened_ts` volvía la alerta inútil justo en el modo de falla que
+            la motivó.
+            `ever` indica si la room entregó audio real alguna vez desde que
+            arrancó el proceso; el lector lo usa para elegir entre el umbral
+            normal y la gracia de primer frame.
         now_wall: time.time() — referencia para que el lector, que corre en
             otro proceso, pueda detectar un snapshot viejo.
-        now_mono: time.monotonic() — para convertir los ts a edades.
     """
     payload = {
         "wall": now_wall,
         "rooms": {
-            room_id: {
-                "age_s": (now_mono - last_ts) if last_ts > 0.0 else (now_mono - opened_ts),
-                "ever": last_ts > 0.0,
-            }
-            for room_id, (last_ts, opened_ts) in rooms.items()
+            room_id: {"age_s": now_wall - anchor_wall, "ever": ever}
+            for room_id, (anchor_wall, ever) in rooms.items()
         },
     }
     directory = os.path.dirname(path) or "."

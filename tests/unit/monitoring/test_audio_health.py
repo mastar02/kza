@@ -103,9 +103,8 @@ def test_write_audio_health_is_atomic_and_readable(tmp_path):
     path = tmp_path / "audio_health.json"
     write_audio_health(
         str(path),
-        rooms={"cocina": (500.0, 100.0), "escritorio": (0.0, 100.0)},
+        rooms={"cocina": (980.0, True), "escritorio": (900.0, False)},
         now_wall=1000.0,
-        now_mono=520.0,
     )
     data = json.loads(path.read_text())
     assert data["wall"] == 1000.0
@@ -133,7 +132,7 @@ def test_write_audio_health_uses_tempfile_and_atomic_replace(tmp_path, monkeypat
     monkeypatch.setattr(audio_health.os, "replace", spy_replace)
 
     write_audio_health(
-        str(path), rooms={"cocina": (500.0, 100.0)}, now_wall=1000.0, now_mono=520.0
+        str(path), rooms={"cocina": (980.0, True)}, now_wall=1000.0
     )
 
     assert len(replace_calls) == 1
@@ -158,7 +157,7 @@ def test_write_audio_health_cleans_up_tmp_on_write_error(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError):
         write_audio_health(
-            str(path), rooms={"cocina": (500.0, 100.0)}, now_wall=1000.0, now_mono=520.0
+            str(path), rooms={"cocina": (980.0, True)}, now_wall=1000.0
         )
 
     assert not list(tmp_path.glob("*.tmp"))  # el temporal se limpió, no quedó huérfano
@@ -173,7 +172,7 @@ def test_write_audio_health_file_is_readable_by_other_users(tmp_path):
     modo final debe permitir lectura a otros usuarios."""
     path = tmp_path / "audio_health.json"
     write_audio_health(
-        str(path), rooms={"cocina": (500.0, 100.0)}, now_wall=1000.0, now_mono=520.0
+        str(path), rooms={"cocina": (980.0, True)}, now_wall=1000.0
     )
     mode = os.stat(path).st_mode & 0o777
     assert mode & 0o044 == 0o044  # legible por group y other, no solo por el dueño
