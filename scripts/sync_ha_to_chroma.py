@@ -435,8 +435,10 @@ def main():
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--allow-unavailable", action="store_true",
-                    help="No abortar si hay entidades unavailable/unknown (se indexan "
-                         "igual, con las capacidades amputadas que HA reporta)")
+                    help="No abortar si hay entidades unavailable/unknown: quedan "
+                         "EXCLUIDAS del sync igual (nunca se indexan con capacidades "
+                         "amputadas), pero el script sigue con el resto en vez de "
+                         "salir con exit 2")
     ap.add_argument("--wipe", action="store_true",
                     help="Borra la colección home_assistant_commands antes de indexar")
     ap.add_argument("--include-individual", action="store_true")
@@ -494,21 +496,29 @@ def main():
     # realmente tiene. Indexarla así deja un índice empobrecido que sobrevive a
     # la recuperación del dispositivo (la cache key no alcanza a distinguir "vivo
     # de antes" de "recién revivido" salvo que se pase --force). Ver Task 4.
+    #
+    # Las entidades caídas SIEMPRE quedan excluidas del sync (nunca se indexan
+    # con capacidades amputadas, con o sin --allow-unavailable) y SIEMPRE se
+    # loguean, con o sin el flag: el flag solo decide si el script aborta o
+    # sigue con el resto. Loguear solo en la rama de abort dejaba el caso
+    # "sync sigue con --allow-unavailable" sin ningún rastro de qué quedó afuera.
     selected, dead = select_syncable(selected)
-    if dead and not args.allow_unavailable:
+    if dead:
         print(
-            f"ABORTO: {len(dead)} entidades están unavailable/unknown y se "
-            f"indexarían con capacidades amputadas:",
+            f"{len(dead)} entidades unavailable/unknown quedan EXCLUIDAS del "
+            f"sync (HA les amputa los atributos; indexarlas así dejaría un "
+            f"índice empobrecido):",
             file=sys.stderr,
         )
         for e in dead:
             print(f"  - {e['entity_id']} ({e.get('state')})", file=sys.stderr)
-        print(
-            "Corregí el dispositivo y reintentá, o pasá --allow-unavailable "
-            "si de verdad querés indexarlas así.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+        if not args.allow_unavailable:
+            print(
+                "Corregí el dispositivo y reintentá, o pasá --allow-unavailable "
+                "para seguir el sync con el resto de las entidades igual.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     if not selected:
         logger.warning("Nada que indexar. Saliendo.")
