@@ -44,6 +44,15 @@ def write_audio_health(
     directory = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
     try:
+        # mkstemp crea el temporal en 0600 (solo el dueño puede leerlo), pero
+        # el poller externo (tools/audio_watchdog_alert.py) está pensado para
+        # correr bajo OTRO usuario que este proceso — ese es justamente el
+        # punto de que sea externo. Sin este chmod, el poller recibía
+        # PermissionError al leer y lo trataba como "todo bien" para
+        # siempre (ver check_once en audio_watchdog_alert.py). os.replace
+        # es un rename POSIX: preserva los permisos del inodo del
+        # temporal, así que hay que fijarlos ANTES del replace.
+        os.fchmod(fd, 0o644)
         with os.fdopen(fd, "w") as fh:
             json.dump(payload, fh)
         os.replace(tmp, path)

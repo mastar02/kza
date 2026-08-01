@@ -18,6 +18,7 @@ import time
 import requests
 
 DEFAULT_HEALTH = "/home/kza/app/data/audio_health.json"
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def notify_ha(base_url: str, token: str, title: str, message: str) -> bool:
@@ -54,9 +55,14 @@ def check_once(health_path: str, deaf_after_s: float, base_url: str, token: str)
 
     Devuelve la lista de rooms sordas (vacía = todo sano). Importa
     `evaluate_health` en cada llamada, no al nivel de módulo, para no exigir
-    que `src/` esté en el path solo por importar este archivo.
+    que `src/` esté en el path solo por importar este archivo. El insert
+    está guardado por membership: sin el chequeo, cada vuelta del bucle
+    agregaba una entrada nueva a `sys.path` sin límite (medido: 200 vueltas
+    → 201 entradas duplicadas), y cada import subsiguiente escanea esa
+    lista linealmente.
     """
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
     from src.monitoring.audio_health import evaluate_health
 
     try:
@@ -68,8 +74,16 @@ def check_once(health_path: str, deaf_after_s: float, base_url: str, token: str)
         # escribirlo. Eso también es una anomalía que hay que reportar.
         deaf = ["(sin snapshot de audio)"]
     except Exception as e:
-        print(f"error leyendo {health_path}: {e}", file=sys.stderr)
-        deaf = []
+        # Cualquier otra falla de lectura/parseo (JSON corrupto, forma
+        # incorrecta como una lista en vez de un dict, PermissionError si
+        # el poller corre bajo otro usuario, lo que sea) es, en un
+        # vigilante, una anomalía — nunca "todo bien". Antes esta rama
+        # devolvía deaf=[], que apagaba la alarma en silencio para siempre
+        # si el snapshot quedaba ilegible: el mismo patrón de fallo
+        # silencioso que este poller existe para eliminar. El principio:
+        # cualquier cosa que no se pueda confirmar como sana es sorda.
+        print(f"snapshot ilegible en {health_path}: {e}", file=sys.stderr)
+        deaf = ["(snapshot ilegible)"]
 
     if deaf:
         msg = "Sin audio de: " + ", ".join(deaf)
