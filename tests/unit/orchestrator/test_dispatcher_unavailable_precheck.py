@@ -117,3 +117,53 @@ def test_unavailable_precheck_disabled_still_calls_ha():
         "description": "luz del cuarto", "zone_id": "cocina",
     }))
     d.ha.call_service_ws.assert_awaited_once()
+
+
+# --- Re-review: poder de detección sobre el cableado del flag --------------
+#
+# Mutation testing sobre el commit anterior encontró que los tests de arriba
+# usan `dispatcher_cls.__new__(dispatcher_cls)` y setean
+# `_unavailable_precheck_enabled` como atributo crudo — ejercitan el *uso*
+# del flag pero nunca el *constructor real* ni el reenvío
+# MultiUserOrchestrator → RequestDispatcher. Dos mutaciones sobrevivieron:
+#
+# Mutación A: invertir el default de RequestDispatcher.__init__
+#   (True → False). 8/8 tests de este archivo seguían verdes.
+# Mutación B: borrar `unavailable_precheck_enabled=unavailable_precheck_enabled,`
+#   del RequestDispatcher(...) interno de MultiUserOrchestrator.__init__.
+#   Suite completa: mismo resultado que el baseline (ningún test nuevo caía).
+#
+# Los dos tests siguientes construyen los objetos reales vía __init__ (no
+# __new__) para cerrar esa brecha.
+
+def test_dispatcher_default_precheck_is_enabled_via_real_init():
+    """Construcción real de RequestDispatcher, sin pasar el flag: el default
+    vivo debe ser True. Debe ponerse rojo ante la Mutación A (invertir el
+    default en la firma de __init__)."""
+    from unittest.mock import MagicMock as _MM
+
+    from src.orchestrator.dispatcher import RequestDispatcher
+
+    d = RequestDispatcher(
+        chroma_sync=_MM(),
+        ha_client=_MM(),
+        routine_manager=_MM(),
+    )
+    assert d._unavailable_precheck_enabled is True
+
+
+def test_orchestrator_forwards_precheck_flag_to_dispatcher_via_real_init():
+    """Construcción real de MultiUserOrchestrator con el flag en False: debe
+    llegar al RequestDispatcher interno. Debe ponerse rojo ante la
+    Mutación B (borrar el forwarding del kwarg)."""
+    from unittest.mock import MagicMock as _MM
+
+    from src.orchestrator.dispatcher import MultiUserOrchestrator
+
+    orchestrator = MultiUserOrchestrator(
+        chroma_sync=_MM(),
+        ha_client=_MM(),
+        routine_manager=_MM(),
+        unavailable_precheck_enabled=False,
+    )
+    assert orchestrator.dispatcher._unavailable_precheck_enabled is False
