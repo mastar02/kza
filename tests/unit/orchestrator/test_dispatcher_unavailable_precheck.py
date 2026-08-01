@@ -1,4 +1,7 @@
 """An unavailable entity must fail loudly, not be silently swallowed by HA."""
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from src.home_assistant.ha_client import HomeAssistantClient
@@ -45,10 +48,6 @@ def test_is_entity_available_none_when_not_cached():
     ha = HomeAssistantClient.__new__(HomeAssistantClient)
     ha._state_cache = {}
     assert ha.is_entity_available("light.desconocida") is None
-
-
-import asyncio
-from unittest.mock import AsyncMock, MagicMock
 
 
 def _dispatcher_with(ha_available, dispatcher_cls, precheck_enabled=True):
