@@ -12,6 +12,7 @@ Tests ensure that:
 
 import sys
 import asyncio
+import json
 import time
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -32,6 +33,7 @@ from src.pipeline.multi_room_audio_loop import (
     _resolve_capture_channels,
 )
 from src.pipeline.command_event import CommandEvent
+from src.monitoring.audio_health import evaluate_health
 
 
 # ============================================================
@@ -1445,6 +1447,81 @@ class TestRecoverStreams:
 
         assert tarea.cancelled() or tarea.done()
         assert not loop._reopen_tasks
+
+
+class TestAudioHealthPublication:
+    """El snapshot de salud tiene que SALIR del proceso, no solo calcularse.
+
+    Cobertura que faltaba: borrar el bloque entero que publica el snapshot
+    desde `_stream_watchdog` sobrevivía la suite sin que cayera un solo test
+    (ningún test tocaba `_audio_health_path`, ni la publicación desde el loop,
+    ni la lectura de `rooms.stream_watchdog.health_path` en main.py). O sea,
+    la alerta de sordera entera podía desaparecer en un merge y nadie se
+    enteraba — el mismo fallo silencioso que la alerta existe para atrapar.
+    """
+
+    async def _run_one_watchdog_iteration(self, loop):
+        """Correr exactamente un ciclo del watchdog y frenar."""
+        async def parar():
+            await asyncio.sleep(0.05)
+            loop._running = False
+
+        await asyncio.gather(loop._stream_watchdog(), parar())
+
+    @pytest.mark.asyncio
+    async def test_watchdog_publishes_snapshot_with_every_room(self, tmp_path):
+        health = tmp_path / "audio_health.json"
+        cocina = _make_room_stream("cocina", device_index=2)
+        escritorio = _make_room_stream("escritorio", device_index=4)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": cocina, "escritorio": escritorio},
+            audio_health_path=str(health),
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        loop._watchdog_timeout_s = 30.0
+        loop._watchdog_first_frame_grace_s = 30.0
+        cocina.last_frame_ts = time.monotonic()
+        escritorio.last_frame_ts = time.monotonic()
+
+        await self._run_one_watchdog_iteration(loop)
+
+        assert health.exists(), (
+            "el watchdog no publicó el snapshot: el poller externo "
+            "(tools/audio_watchdog_alert.py) se queda ciego para siempre"
+        )
+        data = json.loads(health.read_text())
+        assert sorted(data["rooms"]) == ["cocina", "escritorio"]
+        assert data["rooms"]["cocina"]["ever"] is True
+        assert data["wall"] > 0
+
+    @pytest.mark.asyncio
+    async def test_published_snapshot_is_readable_by_the_external_poller(
+        self, tmp_path
+    ):
+        """No basta con escribir un archivo: `evaluate_health` —la función que
+        el poller externo usa— tiene que poder leerlo y dar un veredicto. Ata
+        el formato que escribe el loop al que consume el poller."""
+        health = tmp_path / "audio_health.json"
+        sorda = _make_room_stream("cocina", device_index=2)
+        loop = _make_multi_room_loop(
+            rooms={"cocina": sorda}, audio_health_path=str(health)
+        )
+        loop._running = True
+        loop._watchdog_check_interval_s = 0.001
+        # timeout alto: no queremos que dispare recovery durante el test, solo
+        # que el snapshot refleje una room callada hace rato.
+        loop._watchdog_timeout_s = 9999.0
+        loop._watchdog_first_frame_grace_s = 9999.0
+        sorda.last_frame_ts = time.monotonic() - 600.0
+
+        await self._run_one_watchdog_iteration(loop)
+
+        snapshot = json.loads(health.read_text())
+        deaf = evaluate_health(
+            snapshot, now_wall=snapshot["wall"], deaf_after_s=120.0
+        )
+        assert deaf == ["cocina"]
 
 
 class TestWatchdogConfigContract:
