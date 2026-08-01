@@ -764,11 +764,15 @@ class MultiRoomAudioLoop:
             ]
             # Publicar el heartbeat para el poller externo. El watchdog interno
             # recupera, pero no puede avisar: si el proceso se traba, se traba
-            # con él. Un fallo acá jamás debe romper la recuperación.
-            self._update_audio_anchors(now_mono=now, now_wall=time.time())
+            # con él. Un fallo acá jamás debe romper la recuperación, así que
+            # anclas y escritura van las dos dentro del try.
+            now_wall = time.time()  # UNA sola lectura: las anclas y el
+            # snapshot tienen que datarse contra el mismo instante, o `age_s`
+            # sale corrido respecto de la referencia que el lector compara.
             try:
                 from src.monitoring.audio_health import write_audio_health
 
+                self._update_audio_anchors(now_mono=now, now_wall=now_wall)
                 # En thread aparte: write_audio_health hace mkstemp + json.dump
                 # + os.replace SÍNCRONOS, y este loop es el mismo que corre el
                 # fast path (<300ms). Son ~43.000 creaciones+renames por día
@@ -779,7 +783,7 @@ class MultiRoomAudioLoop:
                     write_audio_health,
                     self._audio_health_path,
                     self._audio_health_rooms(),
-                    now_wall=time.time(),
+                    now_wall=now_wall,
                 )
             except Exception as e:
                 # `warning`, no `debug`: en un sistema cuya tesis es que
