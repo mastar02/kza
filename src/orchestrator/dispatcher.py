@@ -1351,6 +1351,23 @@ class RequestDispatcher:
             entity_id = result.entity_id
             rewritten_data = result.service_data
 
+        # HA acepta la llamada a una entidad unavailable y la filtra en
+        # silencio (helpers/service.py:720), devolviendo success=true. Sin este
+        # chequeo, "prendé la luz del cuarto" con la bombilla caída produce
+        # silencio absoluto: ni voz, ni earcon, ni luz.
+        # Falla ABIERTO ante None: sin dato en cache, llamamos igual.
+        if entity_id and self.ha.is_entity_available(entity_id) is False:
+            logger.warning(
+                f"[HA-UNAVAILABLE] {domain}.{service}@{entity_id} "
+                f"({description}) — no se envía la llamada"
+            )
+            if self.response_handler is not None:
+                try:
+                    self.response_handler.play_earcon(zone_id=command.get("zone_id"))
+                except Exception as e:
+                    logger.warning(f"No pude reproducir earcon de entidad caída: {e}")
+            return
+
         t0 = time.perf_counter()
         err: str | None = None
         try:

@@ -325,6 +325,24 @@ class HomeAssistantClient:
         """
         return self._state_cache.get(entity_id)
 
+    def is_entity_available(self, entity_id: str) -> bool | None:
+        """¿La entidad puede actuar, según el último estado conocido?
+
+        HA acepta un service_call contra una entidad `unavailable` y lo filtra
+        en silencio (helpers/service.py), devolviendo success=true. Este chequeo
+        existe para no confundir "HA aceptó el mensaje" con "el dispositivo hizo
+        algo".
+
+        Returns:
+            True si está disponible, False si está `unavailable`/`unknown`,
+            None si no hay entry en cache — el caller debe fallar ABIERTO
+            (llamar igual), porque "no sé" no es "está rota".
+        """
+        entry = self._state_cache.get(entity_id)
+        if entry is None:
+            return None
+        return entry.get("state") not in ("unavailable", "unknown")
+
     def has_domain(self, domain: str) -> bool:
         """¿Hay al menos una entidad del dominio en el cache?
 
