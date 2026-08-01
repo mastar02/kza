@@ -14,6 +14,25 @@ home_assistant:
     # si algún event se perdió durante una desconexión.
     full_refresh_interval_s: 300
 
+  # Precheck de disponibilidad antes de despachar un service_call (dispatcher
+  # RequestDispatcher._fire_and_reconcile_ha, is_entity_available). HA acepta
+  # una llamada contra una entidad `unavailable`/`unknown` y la filtra en
+  # silencio (helpers/service.py), devolviendo success=true — sin este
+  # precheck eso es silencio total (ni voz, ni earcon, ni luz).
+  #
+  # Kill switch, default true (activo). Por qué existe: si Z2M o HA se
+  # reinician (evento recurrente en esta casa, más con la migración
+  # Hue→Z2M en curso), las entidades quedan genuinamente unavailable y el
+  # cache lo registra bien. Cuando vuelven, el cache sana por el WS
+  # (state_changed) o por el snapshot REST de arriba (full_refresh_interval_s,
+  # 300s). Si el socket de events muere en silencio justo en esa ventana —
+  # modo de falla ya documentado en este proyecto — el precheck retiene
+  # comandos (earcon de error, sin luz) contra dispositivos que en realidad
+  # ya volvieron, hasta por 5 minutos. Apagar acá si eso pasa más seguido de
+  # lo tolerable; NO hay hoy una cota de frescura sobre el cache, así que
+  # apagar el flag es la única mitigación sin tocar código.
+  unavailable_precheck_enabled: true
+
 # Audio Settings
 audio:
   sample_rate: 16000

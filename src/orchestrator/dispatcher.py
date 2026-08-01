@@ -398,6 +398,7 @@ class RequestDispatcher:
         hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
         before_handler_warn_ms: float = 5.0,
         require_known_speaker_for_actions: bool = False,
+        unavailable_precheck_enabled: bool = True,
     ):
         """
         Args:
@@ -420,6 +421,11 @@ class RequestDispatcher:
             before_handler_warn_ms: Threshold (ms) for logging slow before-handlers
                 in execute_before_chain. Default 5.0ms — anything above eats into
                 the 300ms fast path budget.
+            unavailable_precheck_enabled: Kill switch para el precheck de
+                `is_entity_available` en `_fire_and_reconcile_ha` (default True).
+                Ver comentario en `config/settings.yaml:home_assistant.
+                unavailable_precheck_enabled` para el escenario de recuperación
+                que justifica poder apagarlo.
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -443,6 +449,12 @@ class RequestDispatcher:
         # que activarlo los corta — pero también bloquea invitados no enrolados.
         # Requiere speaker ID confiable. Ver project_escritorio_light_phantom_toggles.
         self._require_known_for_actions = require_known_speaker_for_actions
+        # Kill switch del precheck de disponibilidad (default True — activo).
+        # Apagalo si un reinicio de Z2M/HA deja el state_cache stale por más
+        # de lo que tarda en sanar (WS state_changed, o el snapshot REST de
+        # home_assistant.state_prefetch.full_refresh_interval_s) y eso empieza
+        # a retener comandos contra dispositivos que en realidad ya volvieron.
+        self._unavailable_precheck_enabled = unavailable_precheck_enabled
 
         # Estadisticas
         self._stats = {
@@ -1356,7 +1368,18 @@ class RequestDispatcher:
         # chequeo, "prendé la luz del cuarto" con la bombilla caída produce
         # silencio absoluto: ni voz, ni earcon, ni luz.
         # Falla ABIERTO ante None: sin dato en cache, llamamos igual.
-        if entity_id and self.ha.is_entity_available(entity_id) is False:
+        # Kill switch: self._unavailable_precheck_enabled (default True). Un
+        # reinicio de Z2M/HA (recurrente, más con la migración Hue→Z2M en
+        # curso) deja entidades genuinamente unavailable; si el WS de events
+        # se cae en silencio en esa ventana, el cache no sana hasta el
+        # snapshot REST (home_assistant.state_prefetch.full_refresh_interval_s,
+        # 300s) y este precheck retendría comandos contra dispositivos que ya
+        # volvieron. Apagar el flag en config/settings.yaml si eso pasa.
+        if (
+            self._unavailable_precheck_enabled
+            and entity_id
+            and self.ha.is_entity_available(entity_id) is False
+        ):
             logger.warning(
                 f"[HA-UNAVAILABLE] {domain}.{service}@{entity_id} "
                 f"({description}) — no se envía la llamada"
@@ -1366,6 +1389,36 @@ class RequestDispatcher:
                     self.response_handler.play_earcon(zone_id=command.get("zone_id"))
                 except Exception as e:
                     logger.warning(f"No pude reproducir earcon de entidad caída: {e}")
+            # Plan #3 OpenClaw — el precheck es una tercera forma de retener
+            # un comando (además del before_ha_action block de arriba), y sin
+            # emitir este evento el comando quedaba fuera del audit trail
+            # (src/policies/audit_sqlite.py) — invisible en data/audit.db.
+            if self.hooks is not None and call is not None:
+                from dataclasses import replace
+                from src.hooks import (
+                    BlockResult,
+                    HaActionBlockedPayload,
+                    execute_after_event,
+                )
+                final_call = replace(
+                    call,
+                    domain=domain or "",
+                    service=service or "",
+                    entity_id=entity_id or "",
+                    service_data=rewritten_data or {},
+                )
+                execute_after_event(
+                    self.hooks,
+                    "ha_action_blocked",
+                    HaActionBlockedPayload(
+                        timestamp=time.time(),
+                        call=final_call,
+                        block=BlockResult(
+                            reason=f"{description}: entidad no disponible",
+                            rule_name="entity_unavailable",
+                        ),
+                    ),
+                )
             return
 
         t0 = time.perf_counter()
@@ -1499,6 +1552,7 @@ class MultiUserOrchestrator:
         hooks=None,
         before_handler_warn_ms: float = 5.0,
         require_known_speaker_for_actions: bool = False,
+        unavailable_precheck_enabled: bool = True,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -1513,6 +1567,8 @@ class MultiUserOrchestrator:
                 None → no hook calls, behavior identical to baseline.
             before_handler_warn_ms: Threshold (ms) for logging slow before-handlers.
                 Forwarded to RequestDispatcher.
+            unavailable_precheck_enabled: Kill switch del precheck de
+                `is_entity_available` (default True). Forwarded to RequestDispatcher.
         """
         self._hooks = hooks  # plan #3 OpenClaw — exposed for log_hook_stats()
         # Componentes principales
@@ -1565,6 +1621,7 @@ class MultiUserOrchestrator:
             hooks=hooks,
             before_handler_warn_ms=before_handler_warn_ms,
             require_known_speaker_for_actions=require_known_speaker_for_actions,
+            unavailable_precheck_enabled=unavailable_precheck_enabled,
         )
 
         self._running = False

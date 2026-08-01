@@ -28,13 +28,14 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 
-def _dispatcher_with(ha_available, dispatcher_cls):
+def _dispatcher_with(ha_available, dispatcher_cls, precheck_enabled=True):
     d = dispatcher_cls.__new__(dispatcher_cls)
     d.ha = MagicMock()
     d.ha.is_entity_available = MagicMock(return_value=ha_available)
     d.ha.call_service_ws = AsyncMock(return_value=True)
     d.response_handler = MagicMock()
     d.hooks = None
+    d._unavailable_precheck_enabled = precheck_enabled
     return d
 
 
@@ -60,5 +61,59 @@ def test_unknown_availability_fails_open_and_calls():
         "domain": "light", "service": "turn_on",
         "entity_id": "light.nueva", "service_data": {},
         "description": "luz nueva", "zone_id": "cocina",
+    }))
+    d.ha.call_service_ws.assert_awaited_once()
+
+
+# --- Review findings (post Task 2): audit trail + kill switch --------------
+#
+# Important 1: el precheck era la única salida de _fire_and_reconcile_ha que
+# no emitía evento de hook, dejando el comando retenido invisible para
+# src/policies/audit_sqlite.py. Fix: emitir ha_action_blocked con un
+# BlockResult sintético (rule_name="entity_unavailable") antes del return.
+#
+# Important 2: el precheck podía retener un comando de domótica sin cota de
+# frescura ni kill switch (riesgo: reinicio de Z2M/HA + WS de events caído
+# hasta 5 min). Fix: config/settings.yaml:home_assistant.
+# unavailable_precheck_enabled (default true), forwardeado a
+# RequestDispatcher._unavailable_precheck_enabled.
+
+def test_unavailable_entity_emits_ha_action_blocked_for_audit_trail():
+    """El comando retenido debe quedar en el audit trail (Important 1)."""
+    from src.hooks import HookRegistry, HaActionBlockedPayload
+    from src.orchestrator.dispatcher import RequestDispatcher
+
+    hooks = HookRegistry()
+    captured: list = []
+    hooks.register_after("ha_action_blocked", captured.append)
+
+    d = _dispatcher_with(False, RequestDispatcher)
+    d.hooks = hooks
+    d._before_handler_warn_ms = 5.0
+
+    asyncio.run(d._fire_and_reconcile_ha({
+        "domain": "light", "service": "turn_on",
+        "entity_id": "light.grupo_cuarto", "service_data": {},
+        "description": "luz del cuarto", "zone_id": "cocina",
+    }))
+
+    d.ha.call_service_ws.assert_not_awaited()
+    assert len(captured) == 1
+    payload = captured[0]
+    assert isinstance(payload, HaActionBlockedPayload)
+    assert payload.block.rule_name == "entity_unavailable"
+    assert payload.call.entity_id == "light.grupo_cuarto"
+
+
+def test_unavailable_precheck_disabled_still_calls_ha():
+    """Con el kill switch apagado, se llama a HA aunque la entidad esté
+    unavailable en cache (Important 2)."""
+    from src.orchestrator.dispatcher import RequestDispatcher
+
+    d = _dispatcher_with(False, RequestDispatcher, precheck_enabled=False)
+    asyncio.run(d._fire_and_reconcile_ha({
+        "domain": "light", "service": "turn_on",
+        "entity_id": "light.grupo_cuarto", "service_data": {},
+        "description": "luz del cuarto", "zone_id": "cocina",
     }))
     d.ha.call_service_ws.assert_awaited_once()

@@ -1235,6 +1235,11 @@ async def main():
             require_known_speaker_for_actions=config.get("security", {}).get(
                 "require_known_speaker_for_actions", False
             ),
+            # Kill switch del precheck de is_entity_available (default True).
+            # Ver comentario en config/settings.yaml:home_assistant.
+            unavailable_precheck_enabled=config.get("home_assistant", {}).get(
+                "unavailable_precheck_enabled", True
+            ),
         )
 
     # Request router (command routing: orchestrated + legacy paths)
