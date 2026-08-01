@@ -23,6 +23,45 @@ from unittest.mock import MagicMock, AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
+# ==================== Collection-safety imports ====================
+# ~20 test files guard against importing hardware/audio deps at module level via
+# `sys.modules['torch'] = MagicMock()` (or .setdefault(...) for soundfile/sounddevice),
+# each implicitly assuming it will be the first one collected. Whichever one pytest
+# actually collects first "wins" and leaves a bare MagicMock in sys.modules for the
+# rest of the pytest session. Two failure modes result once a later module is
+# collected and transformers/sentence_transformers touch that name:
+#   1) transformers calls importlib.util.find_spec(name) (e.g. for "torch" or
+#      "soundfile" via is_soundfile_available()), which raises ValueError on a mock
+#      with no __spec__ (see
+#      tests/unit/test_collection_health.py::test_torch_module_has_valid_spec).
+#   2) sentence_transformers does `import torch.distributed as dist`, which
+#      requires torch to be a real, importable package — a MagicMock, even one
+#      with a valid __spec__, is not a package and fails with
+#      "ModuleNotFoundError: No module named 'torch.distributed'".
+#
+# torch and soundfile are genuinely installed in this venv. The correct fix is to
+# import the real modules once, here, before any test file is collected, rather
+# than trying to out-mock every downstream consumer's import needs. conftest.py
+# runs before any test module in this tree is collected, so this makes every
+# `sys.modules.setdefault('torch'/'soundfile', ...)` in individual test files a
+# harmless no-op against an already-valid entry — and torch.cuda.is_available()
+# correctly reports the real hardware state instead of a Mock's meaningless
+# truthiness. NOTE: this only holds for `.setdefault(...)`; an UNCONDITIONAL
+# `sys.modules['soundfile'] = MagicMock()` at module level still clobbers this
+# real import the moment that file is collected (this bit tests/unit/pipeline/
+# test_model_manager.py — fixed there by dropping the sounddevice/soundfile
+# lines, since conftest.py already provides the real modules by then).
+#
+# pyaudio and piper are NOT installed in this venv (no real package to prefer), so
+# their existing per-file mocks are legitimate substitutes and are left alone.
+for _module_name in ("torch", "soundfile"):
+    try:
+        __import__(_module_name)  # side effect: populates sys.modules[_module_name]
+    except ImportError:
+        pass
+del _module_name
+
+
 # ==================== Pytest Configuration ====================
 
 def pytest_configure(config):
