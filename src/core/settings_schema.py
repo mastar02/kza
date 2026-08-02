@@ -21,11 +21,18 @@ logger = logging.getLogger(__name__)
 DEFAULT_LOCAL_LLM_GATEWAY = "http://127.0.0.1:8200/v1"
 """Fallback cuando ``${LLM_GATEWAY_URL}`` no se resuelve (falta .env).
 
-El gateway LiteLLM (:8200) corre en el mismo host físico que kza-voice y
-kza-code-index, así que loopback es una dirección que de hecho funciona
-(no un placeholder inerte) — ver el bloque de rollback comentado en
-config/settings.yaml junto a ``reasoner.http_base_url``. Usarlo como
-default en el punto de consumo evita que el literal sin resolver
+El proceso del gateway LiteLLM (:8200) corre en el mismo host físico que
+kza-voice y kza-code-index, así que loopback es una dirección que de hecho
+responde (no un placeholder inerte) — independientemente de a qué backend
+reenvíe el gateway. (El bloque de rollback comentado junto a
+``reasoner.http_base_url`` en config/settings.yaml usa ese mismo
+``127.0.0.1:8200``, pero es de la era GLM-Air local pre-2026-05-30 — hoy
+ese puerto lo escucha el gateway LiteLLM que reenvía a MiniMax cloud, no
+un modelo local; no citarlo como si "loopback" implicara "sin salir a
+internet", solo implica "el proceso gateway está escuchando ahí". La
+decisión de privacidad la sigue tomando el gate de
+``src.llm.cloud_consent`` sobre la URL real, no este fallback.) Usarlo
+como default en el punto de consumo evita que el literal sin resolver
 ``"${LLM_GATEWAY_URL}"`` llegue a un cliente HTTP (HttpReasoner /
 openai.AsyncOpenAI), que fallaría recién en el primer uso del slow path
 con un error opaco de conexión, lejos del boot.
