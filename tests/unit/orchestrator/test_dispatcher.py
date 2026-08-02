@@ -2,9 +2,12 @@
 Tests for RequestDispatcher - Request routing and classification.
 """
 
+import asyncio
+
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 
+from src.home_assistant.ha_client import HomeAssistantClient
 from src.orchestrator.dispatcher import (
     RequestDispatcher,
     PathType,
@@ -12,6 +15,22 @@ from src.orchestrator.dispatcher import (
 )
 from src.orchestrator.priority_queue import Priority, PriorityRequestQueue
 from src.orchestrator.context_manager import ContextManager
+
+
+async def _drain_background_tasks(timeout: float = 1.0) -> None:
+    """Esperar a las tasks que el dispatcher dispara fire-and-forget.
+
+    ``dispatch()`` NO awaitea la llamada a HA: la manda en background para
+    sacar los ~155ms del camino caliente, así que retorna con la task todavía
+    pendiente. Assertar sobre el mock apenas vuelve ``dispatch()`` da 0
+    llamadas aunque la llamada sí ocurra un tick después — medido: 0 al
+    retornar, 1 tras ceder el loop. Sin este drain el test mide "¿ya
+    terminó?" en vez de "¿se llamó?", que es otro proxy que no mide lo que
+    dice.
+    """
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        await asyncio.wait(pending, timeout=timeout)
 
 
 @pytest.fixture
@@ -33,8 +52,15 @@ def mock_chroma():
 @pytest.fixture
 def mock_ha():
     """Mock Home Assistant client"""
-    ha = MagicMock()
-    ha.call_service = MagicMock(return_value=True)
+    # spec=HomeAssistantClient: hace que los métodos `async def` del cliente
+    # real (call_service, call_service_ws, ...) se auto-mockeen como AsyncMock
+    # en vez de MagicMock. Un MagicMock pelado los devolvía sincrónicos, el
+    # `await` del dispatcher tiraba "object MagicMock can't be used in 'await'
+    # expression", el except lo tragaba y el fallo parecía del dispatcher
+    # cuando era del fixture.
+    ha = MagicMock(spec=HomeAssistantClient)
+    ha.call_service = AsyncMock(return_value=True)
+    ha.call_service_ws = AsyncMock(return_value=True)
     return ha
 
 
@@ -52,8 +78,22 @@ def mock_routine_manager():
 
 @pytest.fixture
 def mock_router():
-    """Mock fast router"""
-    router = MagicMock()
+    """Mock fast router.
+
+    ``spec=FastRouter`` NO es decorativo. El dispatcher elige rama con
+    ``hasattr(self.router, "complete")``; FastRouter SÍ tiene ``complete``
+    (``async def``, reasoner.py:837), así que producción toma esa rama —
+    ``generate`` es el camino legacy para routers que no la tienen. Con un
+    ``MagicMock()`` pelado, ``complete`` existía pero devolvía algo NO
+    awaitable: el ``await`` reventaba, el except mandaba al slow path y
+    ``test_dispatch_router_simple`` fallaba con ``SLOW_LLM != FAST_ROUTER``.
+    Con spec, los ``async def`` del original se auto-mockean como AsyncMock
+    y la rama corre de verdad.
+    """
+    from src.llm.reasoner import FastRouter
+
+    router = MagicMock(spec=FastRouter)
+    router.complete = AsyncMock(return_value="Respuesta rápida")
     router.generate = MagicMock(return_value=["Respuesta rápida"])
     return router
 
@@ -202,7 +242,10 @@ class TestDispatchFastPath:
         assert result.path == PathType.FAST_DOMOTICS
         assert result.intent == "domotics"
         assert "vector_search" in result.timings
-        mock_ha.call_service.assert_called_once()
+        await _drain_background_tasks()
+        # call_service_ws, no call_service: el dispatcher migró al socket
+        # [calls] y el REST quedó sin uso en este camino (dispatcher.py:1426).
+        mock_ha.call_service_ws.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_dispatch_domotics_not_found(self, dispatcher, mock_chroma):
@@ -231,7 +274,8 @@ class TestDispatchFastPath:
 
         assert result.path == PathType.FAST_ROUTER
         assert result.success is True
-        mock_router.generate.assert_called()
+        # complete(), no generate(): ver el docstring del fixture mock_router.
+        mock_router.complete.assert_called()
 
 
 class TestDispatchSpecialCommands:

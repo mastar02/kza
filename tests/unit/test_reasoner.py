@@ -2,7 +2,6 @@
 Tests for LLM Reasoner and FastRouter.
 """
 
-from unittest.mock import MagicMock, patch
 from tests.mocks.mock_llm import MockFastRouter
 
 
@@ -107,22 +106,58 @@ class TestFastRouter:
 
 
 class TestFastRouterLoRA:
-    """Tests for FastRouter LoRA support"""
+    """Qué garantiza FastRouter sobre LoRA tras migrar a cliente HTTP.
 
-    def test_fast_router_lora_init(self):
-        """Verify enable_lora=True is passed to vLLM init"""
+    Ojo con ``test_fast_router_load_unload_lora`` de abajo: corre contra
+    ``MockFastRouter``, así que verifica el mock, no producción. Queda en
+    verde por eso — no porque el hot-swap funcione (ver
+    ``test_lora_hot_swap_is_not_supported_over_http``).
+    """
+
+    def test_legacy_lora_kwargs_do_not_break_construction(self):
+        """FastRouter absorbe los kwargs de la era vLLM sin romper.
+
+        Reemplaza a ``test_fast_router_lora_init``, que asertaba
+        ``router.enable_lora`` / ``router.max_lora_rank``. FastRouter migró a
+        cliente HTTP (:8101) en el reorg de endpoints 2026-05-07 (#6) y esos
+        atributos dejaron de existir: el test fallaba con AttributeError desde
+        entonces, invisible porque la suite no corría en CI.
+
+        Lo que producción SÍ garantiza hoy es que una config vieja que todavía
+        pase esos kwargs no revienta el arranque — se absorben en
+        ``**_ignored``. Este test fija la garantía vigente, no la borrada.
+        """
         from src.llm.reasoner import FastRouter
 
         router = FastRouter(
+            model="test",
             enable_lora=True,
             lora_path="/models/test_adapter",
             max_lora_rank=32,
         )
 
-        assert router.enable_lora is True
-        assert router._lora_path == "/models/test_adapter"
-        assert router.max_lora_rank == 32
-        assert router._lora_active is False
+        # El objeto queda usable...
+        assert router.model_name == "test"
+        assert router.base_url
+        # ...y los kwargs legacy NO se convierten en estado silencioso.
+        assert not hasattr(router, "enable_lora")
+        assert not hasattr(router, "max_lora_rank")
+
+    def test_legacy_kwargs_are_logged_not_swallowed(self, caplog):
+        """Absorberlos no es esconderlos: tienen que quedar en el log.
+
+        Si se absorbieran en silencio, una config obsoleta sería indetectable:
+        el operador cree que el LoRA está activo y no lo está.
+        """
+        import logging
+
+        from src.llm.reasoner import FastRouter
+
+        with caplog.at_level(logging.DEBUG, logger="src.llm.reasoner"):
+            FastRouter(model="test", enable_lora=True, lora_path="/x", max_lora_rank=8)
+
+        assert "ignorando kwargs legacy" in caplog.text
+        assert "enable_lora" in caplog.text
 
     def test_fast_router_load_unload_lora(self):
         """Test LoRA hot-swap via load/unload"""
@@ -137,43 +172,27 @@ class TestFastRouterLoRA:
         router.unload_lora()
         assert router._lora_active is False
 
-    def test_fast_router_generate_with_lora(self):
-        """Test that LoRARequest is passed when LoRA is active"""
-        import sys
+    def test_lora_hot_swap_is_not_supported_over_http(self, caplog):
+        """Reemplaza a ``test_fast_router_generate_with_lora``.
 
-        # Mock vllm modules before importing FastRouter
-        mock_vllm = MagicMock()
-        mock_sampling_params = MagicMock()
-        mock_lora_request_class = MagicMock()
-        mock_vllm.SamplingParams = mock_sampling_params
-        mock_vllm.lora.request.LoRARequest = mock_lora_request_class
+        Ese test parcheaba ``vllm.lora.request.LoRARequest`` en ``sys.modules``
+        y verificaba que se pasara un LoRARequest a ``generate()`` — camino que
+        murió con el cliente HTTP. Además tardaba 3.3s intentando conectar de
+        verdad a :8101 una vez que ``openai`` estuvo instalado: un test
+        unitario haciendo I/O de red.
 
-        with patch.dict(sys.modules, {
-            "vllm": mock_vllm,
-            "vllm.lora": mock_vllm.lora,
-            "vllm.lora.request": mock_vllm.lora.request,
-        }):
-            from src.llm.reasoner import FastRouter
+        Hoy el adapter lo carga el service externo, no el cliente, y
+        ``load_lora`` avisa exactamente eso. Fijar ESE contrato importa: si
+        alguien vuelve a llamarlo esperando hot-swap, el warning es la única
+        señal de que no pasó nada.
+        """
+        import logging
 
-            router = FastRouter(
-                enable_lora=True,
-                lora_path="/tmp/test_adapter",
-                max_lora_rank=32,
-            )
+        from src.llm.reasoner import HttpReasoner
 
-            # Mock internal LLM engine
-            mock_llm_engine = MagicMock()
-            mock_output = MagicMock()
-            mock_output.outputs = [MagicMock(text="test response")]
-            mock_llm_engine.generate.return_value = [mock_output]
-            router._llm = mock_llm_engine
-            router._lora_active = True
+        reasoner = HttpReasoner(base_url="http://127.0.0.1:8101/v1")
 
-            results = router.generate(["test prompt"])
+        with caplog.at_level(logging.WARNING, logger="src.llm.reasoner"):
+            reasoner.load_lora("/models/nightly/latest")
 
-        assert len(results) == 1
-        assert results[0] == "test response"
-
-        # Verify lora_request was passed to generate
-        call_kwargs = mock_llm_engine.generate.call_args
-        assert "lora_request" in call_kwargs.kwargs
+        assert "no carga LoRA" in caplog.text

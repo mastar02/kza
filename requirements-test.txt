@@ -167,3 +167,13 @@ yarl==1.22.0
 # pytest usage error ANTES de coleccionar un solo test -- el mismo tipo de
 # falso "0 tests" que este task existe para eliminar.
 pytest-cov==7.1.0
+
+# openai: cliente OpenAI-compat que `src/llm/reasoner.py` importa dentro de
+# `HttpReasoner._try_connect()` y `FastRouter.load()`. Esta en
+# requirements.txt (linea 22) pero faltaba aca, y CI instala SOLO este
+# archivo -> cualquier test que llegue a esas dos funciones moria con
+# `ModuleNotFoundError: No module named 'openai'` en vez de ejercitar el
+# codigo. No venia de `pip freeze` porque tampoco estaba en el venv local
+# (mismo agujero de los dos lados, que es justo por que nadie lo vio).
+# Agregado 2026-08-02 durante el triage de los 10 tests en rojo.
+openai==2.52.0

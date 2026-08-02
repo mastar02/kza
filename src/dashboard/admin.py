@@ -27,8 +27,12 @@ logger = logging.getLogger(__name__)
 
 # Servicios que un admin puede reiniciar via API. Allowlist explícita —
 # nunca acepta input arbitrario en systemctl.
+# Alineada con el registry de src/dashboard/system_monitor.py:_service_probes.
+# Tenía "vllm-shared" (servicio que dejó de existir en el reorg de endpoints
+# 2026-05-07, 269ed4e) y le faltaba "kza-llm-fast": la API podía reiniciar un
+# fantasma pero no el fast router real. Corregido 2026-08-02.
 RESTARTABLE_SERVICES = frozenset({
-    "kza-voice", "kza-llm-ik", "vllm-shared", "chromadb",
+    "kza-voice", "kza-llm-ik", "kza-llm-fast", "chromadb",
 })
 
 
