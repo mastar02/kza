@@ -131,7 +131,17 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    needs: [unit-tests, safety-tests]
+    # Sin `needs`: cada job de este workflow hace su propio checkout +
+    # install (no hay artifacts compartidos), así que `needs` acá era
+    # gating puro, no una dependencia técnica. Con `needs: [unit-tests,
+    # safety-tests]` este job (y `build`, más abajo) quedaban `skipped`
+    # para siempre en cuanto unit-tests tuviera un solo rojo — y unit-tests
+    # VA a estar rojo por diseño mientras los 10 fallos preexistentes
+    # (triage fuera de alcance, ver docs/superpowers/plans/2026-08-02-ci-a-verde.md)
+    # sigan sin resolverse. Gris leyéndose como "benigno" es la misma
+    # patología que dejó 39/39 nightly-training-test en skipped sin que
+    # nadie lo notara desde marzo — no reintroducirla un nivel más abajo.
+    # Cada job de test corre en paralelo y reporta su propia señal real.
     timeout-minutes: 25
 
     steps:
@@ -196,7 +206,13 @@ jobs:
   build:
     name: Build Check
     runs-on: ubuntu-latest
-    needs: [unit-tests, safety-tests]
+    # Sin `needs` (ver justificación en integration-tests arriba). Este job
+    # en particular solo verifica que los imports y settings.yaml sean
+    # válidos — cero relación con el resultado de unit-tests/safety-tests.
+    # Bloquearlo detrás de unit-tests (rojo por diseño) le costó a este
+    # mismo job el fix de `libportaudio2` (Task 1): se agregó al `apt-get
+    # install` de este step pero, con el `needs` de antes, ese fix nunca
+    # llegaba a ejecutarse.
     timeout-minutes: 10
 
     steps:
