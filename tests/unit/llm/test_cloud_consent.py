@@ -2,7 +2,6 @@
 
 from src.core.settings_schema import DEFAULT_LOCAL_LLM_GATEWAY
 from src.llm.cloud_consent import (
-    DEFAULT_COMPACTION_LOCAL_URL,
     cloud_reasoner_allowed,
     is_cloud_endpoint,
     resolve_compaction_endpoint,
@@ -190,53 +189,59 @@ def test_explicit_cloud_override_does_not_bypass_gate():
 def test_gate_blocked_never_yields_cloud_endpoint():
     """Matriz: con el gate bloqueado, ningún vector de bypass entrega cloud.
 
-    ``gate_allowed`` se pasa YA resuelto (False) en los 4 escenarios —
-    ``resolve_compaction_endpoint`` no re-evalúa el gate (ver su docstring),
-    así que lo que hay que fijar acá es que la función en sí misma nunca deja
-    pasar un endpoint cloud pase lo que pase en compaction_cfg/reasoner_config,
-    dado gate_allowed=False. Cubre los 4 vectores encontrados al inventariar
-    el bypass original: override explícito a cloud, herencia ciega de
-    reasoner_config cloud, placeholder "${...}" sin resolver, y el loopback
-    :8200 (gateway LiteLLM que reenvía a MiniMax pero que is_cloud_endpoint
-    NO detecta como cloud — ese es un bug aparte, fuera de alcance de este PR;
-    lo que este test fija es que, YA CON gate_allowed=False, ninguna forma de
-    http_base_url cambia el resultado: siempre el fallback local pineado).
+    Cruza los DOS ejes que juntos deciden qué rama de
+    ``resolve_compaction_endpoint`` corre y qué credenciales devuelve:
+
+    - ``compaction_cfg["base_url"]`` (el override explícito que dispara la
+      rama (a)) ∈ {ausente, cloud, loopback :8200, local :8101}.
+    - ``gate_allowed`` fijo en False en los 4 casos.
+
+    Versión anterior de este test (Important #3, review 2026-08-02): variaba
+    ``reasoner_config["http_base_url"]`` en vez de ``compaction_cfg["base_url"]``
+    en 3 de los 4 escenarios — con ``compaction_cfg["base_url"]`` ausente, esos
+    3 caían siempre en la rama (c) (que ni lee ``reasoner_config``), así que
+    en la práctica ejercitaban el mismo único camino tres veces y jamás
+    tocaban la rama (a) con un override no-cloud. Por eso no atraparon los
+    Important #1 (override local ``:8101`` heredando la key cloud) y #2
+    (override loopback ``:8200`` heredando la key cloud) — ambos viven
+    exclusivamente en la rama (a).
+
+    Este test SÍ varía ``compaction_cfg["base_url"]`` directamente, así que
+    cubre las 4 combinaciones reales: "ausente" y "cloud" ya pasaban antes de
+    este fix (control — la rama (a) exige ``not is_cloud_endpoint(...) or
+    gate_allowed``, así que un override cloud con el gate bloqueado nunca
+    entra a la rama (a)); "loopback_8200" y "local_8101" SÍ fallaban contra
+    el código sin fix, porque ``is_cloud_endpoint`` los clasifica como
+    no-cloud (correctamente para :8101, por el fail-open ya conocido y fuera
+    de alcance para :8200) y la rama (a) heredaba model/api_key_env de
+    ``reasoner_config`` sin mirar ``gate_allowed``.
 
     Este es el test que atrapa al PRÓXIMO consumidor: si alguien reescribe
-    las condiciones de las ramas (a)/(b) de resolve_compaction_endpoint de
-    forma que alguno de estos 4 vectores se cuele con el gate bloqueado, este
-    test queda rojo.
+    las condiciones o el cuerpo de la rama (a) de forma que alguno de estos 4
+    vectores se cuele con el gate bloqueado, este test queda rojo.
     """
     gate_allowed = False
-    base_reasoner_config = {
+    reasoner_config = {
+        "http_base_url": "https://api.minimax.io/v1",
         "http_model": "MiniMax-M2.7-highspeed",
         "api_key_env": "MINIMAX_API_KEY",
         "api_style": "chat",
         "cloud": {"consent": False},
     }
-    scenarios = {
-        "override_cloud": (
-            {"enabled": True, "base_url": "https://api.minimax.io/v1"},
-            {**base_reasoner_config, "http_base_url": "https://api.minimax.io/v1"},
-        ),
-        "herencia_cloud": (
-            {"enabled": True},
-            {**base_reasoner_config, "http_base_url": "https://api.minimax.io/v1"},
-        ),
-        "placeholder_sin_resolver": (
-            {"enabled": True},
-            {**base_reasoner_config, "http_base_url": "${LLM_GATEWAY_URL}"},
-        ),
-        "loopback_8200": (
-            {"enabled": True},
-            {**base_reasoner_config, "http_base_url": "http://127.0.0.1:8200/v1"},
-        ),
+    base_url_scenarios = {
+        "ausente": None,
+        "cloud": "https://api.minimax.io/v1",
+        "loopback_8200": "http://127.0.0.1:8200/v1",
+        "local_8101": "http://127.0.0.1:8101/v1",
     }
 
-    for label, (compaction_cfg, reasoner_config) in scenarios.items():
+    for label, explicit_base_url in base_url_scenarios.items():
+        compaction_cfg = {"enabled": True}
+        if explicit_base_url is not None:
+            compaction_cfg["base_url"] = explicit_base_url
+
         endpoint = resolve_compaction_endpoint(compaction_cfg, reasoner_config, gate_allowed)
 
         assert is_cloud_endpoint(endpoint.base_url) is False, f"[{label}] {endpoint=}"
-        assert endpoint.base_url == DEFAULT_COMPACTION_LOCAL_URL, f"[{label}] {endpoint=}"
         assert endpoint.api_key_env is None, f"[{label}] {endpoint=}"
         assert endpoint.model != "MiniMax-M2.7-highspeed", f"[{label}] {endpoint=}"

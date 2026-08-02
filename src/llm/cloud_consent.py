@@ -137,9 +137,21 @@ def resolve_compaction_endpoint(
     byte-idéntico al que había antes de este gate):
 
     a. ``compaction.base_url`` explícito Y (no es cloud O ``gate_allowed``)
-       → usarlo. Preserva el override documentado; pero un override cloud
-       con el gate bloqueado NO se honra — si no, sería un bypass del gate
-       por config.
+       → usar ese ``base_url``. Si ``gate_allowed`` es True, hereda
+       model/api_key_env/api_style de ``reasoner_config`` tal cual (camino
+       de producción actual, sin cambios). Si ``gate_allowed`` es False,
+       el override de ``base_url`` se respeta pero model/api_key_env/
+       api_style NO se heredan de ``reasoner_config`` — mismo pineo que la
+       rama (c): ``api_key_env=None`` siempre. Sin esto (Important #1 y #2
+       del review 2026-08-02), un override *local* documentado en este
+       mismo archivo (``local_base_url: "http://127.0.0.1:8101/v1"``,
+       arriba) o el loopback ``:8200`` (que ``is_cloud_endpoint`` clasifica
+       como no-cloud por el fail-open ya conocido, bug aparte y fuera de
+       alcance de este PR) igual heredaban ``api_key_env=MINIMAX_API_KEY``:
+       o revienta ``_resolve_api_key`` contra un endpoint sin esa var (la
+       misma degradación silenciosa que este gate vino a eliminar) o, peor,
+       el :8200 reenvía con la key real a MiniMax — egreso cloud real con
+       ``consent=false``.
     b. ``gate_allowed`` → heredar ``reasoner_config`` tal cual (camino de
        producción actual, sin cambios).
     c. Gate bloqueado (y sin override local) → degradar a LLM local:
@@ -174,11 +186,37 @@ def resolve_compaction_endpoint(
     """
     explicit_base_url = compaction_cfg.get("base_url")
     if explicit_base_url and (not is_cloud_endpoint(explicit_base_url) or gate_allowed):
+        if gate_allowed:
+            model = compaction_cfg.get("model") or reasoner_config.get("http_model")
+            api_key_env = reasoner_config.get("api_key_env")
+            api_style = reasoner_config.get("api_style", "completions")
+        else:
+            # Important #1/#2 (review 2026-08-02): el override de base_url se
+            # respeta (por eso llegamos acá con gate_allowed=False — la
+            # condición de arriba ya filtró los cloud "de verdad"), pero las
+            # credenciales/modelo NO se heredan de reasoner_config. Mismo
+            # pineo que la rama (c) de abajo, mismo motivo: si el override
+            # apunta a un endpoint sin MINIMAX_API_KEY seteada (p.ej. el
+            # :8101 documentado más arriba), _resolve_api_key revienta y el
+            # try/except de main.py lo traga → compactor=None, la misma
+            # degradación silenciosa que este gate existe para eliminar; si
+            # apunta al loopback :8200 (fail-open conocido de
+            # is_cloud_endpoint, bug aparte), heredar la key mandaría la
+            # conversación a MiniMax igual con consent=false.
+            logger.warning(
+                "compaction.base_url=%s con cloud.consent=false: se respeta "
+                "el override de base_url pero NO se heredan credenciales/"
+                "modelo del reasoner cloud.",
+                explicit_base_url,
+            )
+            model = compaction_cfg.get("model") or DEFAULT_COMPACTION_LOCAL_MODEL
+            api_key_env = None
+            api_style = "chat"
         return CompactionEndpoint(
             base_url=explicit_base_url,
-            model=compaction_cfg.get("model") or reasoner_config.get("http_model"),
-            api_key_env=reasoner_config.get("api_key_env"),
-            api_style=reasoner_config.get("api_style", "completions"),
+            model=model,
+            api_key_env=api_key_env,
+            api_style=api_style,
         )
 
     if gate_allowed:
