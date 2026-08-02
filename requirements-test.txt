@@ -2,20 +2,44 @@
 #
 # Dependencias minimas para correr la suite de tests en CI (pytest tests/).
 # Derivado de `.venv/bin/python -m pip freeze` del venv local, que YA corre
-# 2736 tests pasando sin `llama_cpp` ni `vllm` (esos paquetes no estan
-# instalados aca tampoco: nada en tests/ los ejercita, y descargarlos +
-# compilar llama.cpp desde sdist cuesta ~2.07 GB y 10-20 min en CI).
+# 2749 tests pasando sin `llama_cpp` ni `vllm` (esos paquetes no estan
+# instalados aca tampoco: nada en tests/ los ejercita). La ganancia real de
+# no listarlos NO es una cifra de GB (una version previa de este comentario
+# afirmaba ~0.66 GB ahorrados; era falso, medido en darwin donde el freeze
+# no ve las mismas dependencias que trae Linux — ver nota de torch abajo).
+# La ganancia real es evitar compilar llama-cpp-python desde sdist (no hay
+# wheel manylinux para la version que usa este repo, son 10-20 min de
+# compilacion en CI) e instalar vllm entero (paquete pesado, sin uso en
+# tests/).
 #
 # torch es IRREDUCIBLE: tests/conftest.py:57-61 lo importa a proposito para
 # que los `sys.modules.setdefault('torch', MagicMock())` de ~20 test files
 # queden como no-ops (ver comentario ahi). Sin torch real instalado, la
 # suite aborta con `ValueError: torch.__spec__ is not set` antes de correr
-# un solo test.
+# un solo test. Lo que SI es reducible es la variante: el freeze se hizo en
+# darwin/arm64, donde `pip install torch` no trae CUDA. En Linux, el mismo
+# `torch==2.12.0` (indice PyPI normal) arrastra CUDA/cuDNN/NCCL/Triton via
+# markers `platform_system == "Linux"` en sus sub-dependencias — ~2.4 GB
+# que ningun test de este repo ejercita (no hay GPU en los runners de CI).
+# Por eso se fija `torch==2.12.0+cpu` contra el indice CPU-only oficial de
+# PyTorch (ver `--extra-index-url` abajo): mismo torch, mismo comportamiento
+# para conftest.py, sin el peso de CUDA.
+#
+# Medido (2026-08-02, `pip download --only-binary=:all:` real contra
+# linux/cp313/manylinux_2_28+2014, no inferido): 119 wheels, ~398 MB total.
+# Esta cifra va a driftear con bumps de version futuros — no es una garantia,
+# es evidencia de que el pin `+cpu` funciona (sin el, el mismo calculo con
+# torch CUDA da ~2.9 GB por las sub-dependencias de Linux).
 #
 # NO adelgazar esta lista a mano: un intento previo de recortarla "a ojo"
 # convirtio 2 fallos reales de tests/safety/ en 11 failed + 2 errors.
 # Si hay que agregar algo, agregarlo (ver seccion final); si hay que sacar
 # algo, sacarlo solo si `pip freeze` en el venv local deja de listarlo.
+# Excepcion: la version de torch usa el sufijo `+cpu` (ver arriba), que no
+# es lo que devuelve `pip freeze` en darwin — no lo "corrijas" a la version
+# sin sufijo.
+
+--extra-index-url https://download.pytorch.org/whl/cpu
 
 aiohappyeyeballs==2.6.1
 aiohttp==3.14.0
@@ -119,7 +143,7 @@ sympy==1.14.0
 tenacity==9.1.4
 threadpoolctl==3.6.0
 tokenizers==0.22.2
-torch==2.12.0
+torch==2.12.0+cpu
 tqdm==4.67.3
 transformers==5.10.2
 typer==0.25.1
