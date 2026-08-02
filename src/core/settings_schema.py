@@ -11,11 +11,56 @@ configs rotas al boot con un error claro, no modelar las ~1500 líneas.
 """
 
 import logging
+import os
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_LOCAL_LLM_GATEWAY = "http://127.0.0.1:8200/v1"
+"""Fallback cuando ``${LLM_GATEWAY_URL}`` no se resuelve (falta .env).
+
+El gateway LiteLLM (:8200) corre en el mismo host físico que kza-voice y
+kza-code-index, así que loopback es una dirección que de hecho funciona
+(no un placeholder inerte) — ver el bloque de rollback comentado en
+config/settings.yaml junto a ``reasoner.http_base_url``. Usarlo como
+default en el punto de consumo evita que el literal sin resolver
+``"${LLM_GATEWAY_URL}"`` llegue a un cliente HTTP (HttpReasoner /
+openai.AsyncOpenAI), que fallaría recién en el primer uso del slow path
+con un error opaco de conexión, lejos del boot.
+"""
+
+
+def is_unresolved_placeholder(value: object) -> bool:
+    """True si value es un string ``${VAR}`` que replace_env_vars no resolvió."""
+    return isinstance(value, str) and value.startswith("${") and value.endswith("}")
+
+
+def resolve_env_vars(obj):
+    """Reemplazar recursivamente placeholders ``${VAR}`` por su valor de entorno.
+
+    Un placeholder cuya env var no está seteada queda como el literal
+    ``${VAR}`` (comportamiento de ``os.getenv(var, default=obj)``) — el
+    caller decide si eso es fatal (``check_unresolved_env_vars``, solo
+    para paths críticos) o si hay un fallback seguro en el punto de
+    consumo (p. ej. ``DEFAULT_LOCAL_LLM_GATEWAY``).
+
+    Args:
+        obj: Valor de config (dict/list/str/lo que sea) recién leído del YAML.
+
+    Returns:
+        El mismo obj con cada ``${VAR}`` reemplazado por su valor de entorno,
+        recursivamente.
+    """
+    if is_unresolved_placeholder(obj):
+        var_name = obj[2:-1]
+        return os.getenv(var_name, obj)
+    if isinstance(obj, dict):
+        return {k: resolve_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [resolve_env_vars(item) for item in obj]
+    return obj
 
 
 class _Section(BaseModel):
@@ -98,7 +143,7 @@ def check_unresolved_env_vars(
     """
 
     def _walk(obj, path=""):
-        if isinstance(obj, str) and obj.startswith("${") and obj.endswith("}"):
+        if is_unresolved_placeholder(obj):
             return [(path, obj)]
         if isinstance(obj, dict):
             return [

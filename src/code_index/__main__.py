@@ -8,6 +8,7 @@ import yaml
 from aiohttp import web
 
 from src.code_index.service import build_indexer, create_app
+from src.core.settings_schema import resolve_env_vars
 
 
 def main() -> None:
@@ -17,7 +18,13 @@ def main() -> None:
     )
     config_path = os.environ.get("CONFIG_PATH", "config/settings.yaml")
     with open(config_path) as f:
-        cfg = yaml.safe_load(f)["code_index"]
+        raw = yaml.safe_load(f)
+    # Este servicio es independiente de src.main.load_config (ver comentario
+    # en config/settings.yaml sobre code_index) y hasta acá cargaba la config
+    # con yaml.safe_load puro, sin resolver ${VAR} — cards.base_url llegaba
+    # sin resolver a CardGenerator si faltaba el .env. resolve_env_vars()
+    # replica acá el mismo mecanismo que usa main.py.
+    cfg = resolve_env_vars(raw)["code_index"]
 
     indexer = build_indexer(cfg, repo_root=Path.cwd())
     app = create_app(indexer)

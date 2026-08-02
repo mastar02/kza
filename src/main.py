@@ -14,7 +14,13 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from src.core.settings_schema import check_unresolved_env_vars, validate_settings
+from src.core.settings_schema import (
+    DEFAULT_LOCAL_LLM_GATEWAY,
+    check_unresolved_env_vars,
+    is_unresolved_placeholder,
+    resolve_env_vars,
+    validate_settings,
+)
 from src.stt.whisper_fast import create_stt
 from src.tts.piper_tts import create_tts
 from src.vectordb.chroma_sync import ChromaSync
@@ -77,22 +83,12 @@ def load_config(config_path: str = "config/settings.yaml") -> dict:
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    # Reemplazar variables de entorno
-    def replace_env_vars(obj):
-        if isinstance(obj, str) and obj.startswith("${") and obj.endswith("}"):
-            var_name = obj[2:-1]
-            return os.getenv(var_name, obj)
-        elif isinstance(obj, dict):
-            return {k: replace_env_vars(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [replace_env_vars(item) for item in obj]
-        return obj
-
     # Fail-fast al boot: una config rota aborta acá con el detalle de cada
     # campo inválido, en vez de morir a mitad de la cadena de DI. Los
     # placeholders ${VAR} sin resolver abortan solo si son de HA (esencial);
-    # el resto loguea WARNING.
-    config = replace_env_vars(config)
+    # el resto loguea WARNING (p. ej. reasoner.http_base_url tiene su propio
+    # fallback seguro más abajo, en el punto de consumo).
+    config = resolve_env_vars(config)
     check_unresolved_env_vars(config)
     return validate_settings(config)
 
@@ -309,6 +305,18 @@ async def main():
     reasoner_config = config.get("reasoner", {})
     reasoner_mode = reasoner_config.get("mode", "http")
 
+    # ${LLM_GATEWAY_URL} sin resolver (falta .env / EnvironmentFile del
+    # service) no debe llegar tal cual a HttpReasoner: mutamos el dict acá
+    # (reasoner_config es el mismo objeto reusado más abajo por el
+    # compactor) para que el fallback se aplique una sola vez y ambos
+    # consumidores lo hereden.
+    if is_unresolved_placeholder(reasoner_config.get("http_base_url")):
+        logger.warning(
+            "reasoner.http_base_url sin resolver (¿falta LLM_GATEWAY_URL en "
+            f".env?) — usando fallback local {DEFAULT_LOCAL_LLM_GATEWAY}"
+        )
+        reasoner_config["http_base_url"] = DEFAULT_LOCAL_LLM_GATEWAY
+
     if reasoner_mode == "http":
         from src.llm.cloud_consent import cloud_reasoner_allowed
         if not cloud_reasoner_allowed(reasoner_config):
@@ -319,7 +327,7 @@ async def main():
             llm = None
         else:
             llm = HttpReasoner(
-                base_url=reasoner_config.get("http_base_url", "http://127.0.0.1:8200/v1"),
+                base_url=reasoner_config.get("http_base_url", DEFAULT_LOCAL_LLM_GATEWAY),
                 model=reasoner_config.get("http_model"),
                 timeout=reasoner_config.get("http_timeout", 120),
                 idle_timeout_s=reasoner_config.get("idle_timeout_s"),
@@ -1170,7 +1178,7 @@ async def main():
         # explícito vía orchestrator.context.compaction.{base_url,model}.
         compaction_reasoner = HttpReasoner(
             base_url=compaction_cfg.get("base_url")
-            or reasoner_config.get("http_base_url", "http://127.0.0.1:8200/v1"),
+            or reasoner_config.get("http_base_url", DEFAULT_LOCAL_LLM_GATEWAY),
             model=compaction_cfg.get("model") or reasoner_config.get("http_model"),
             api_style=reasoner_config.get("api_style", "completions"),
             api_key_env=reasoner_config.get("api_key_env"),

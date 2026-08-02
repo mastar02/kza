@@ -32,7 +32,7 @@ GPU_ROLES = {
 # Service probe registry. Cada entry: (probe_kind, probe_args)
 # Las URLs pueden venir de env vars en runtime para reflejar el deploy real.
 def _service_probes() -> list[dict]:
-    ha_url = os.environ.get("HOME_ASSISTANT_URL", "http://192.168.1.100:8123")
+    ha_url = os.environ.get("HOME_ASSISTANT_URL", "http://localhost:8123")
     return [
         {"name": "kza-voice", "kind": "systemctl_user"},
         {"name": "kza-llm-ik", "kind": "systemctl_user",

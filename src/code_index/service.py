@@ -10,6 +10,7 @@ from aiohttp import web
 from src.code_index.cards import CardGenerator
 from src.code_index.indexer import CodeIndexer
 from src.code_index.manifest import IndexManifest
+from src.core.settings_schema import DEFAULT_LOCAL_LLM_GATEWAY, is_unresolved_placeholder
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +124,15 @@ def build_indexer(cfg: dict, repo_root: Path) -> CodeIndexer:
     embedder = SentenceTransformer(emb_cfg.get("model", "BAAI/bge-m3"), device=device)
 
     cards_cfg = cfg["cards"]
+    base_url = cards_cfg["base_url"]
+    if is_unresolved_placeholder(base_url):
+        logger.warning(
+            "code_index.cards.base_url sin resolver (¿falta LLM_GATEWAY_URL en "
+            f".env?) — usando fallback local {DEFAULT_LOCAL_LLM_GATEWAY}"
+        )
+        base_url = DEFAULT_LOCAL_LLM_GATEWAY
     card_gen = CardGenerator(
-        base_url=cards_cfg["base_url"],
+        base_url=base_url,
         model=cards_cfg["model"],
         api_key_env=cards_cfg.get("api_key_env", "MINIMAX_API_KEY"),
         timeout=cards_cfg.get("timeout", 120.0),
