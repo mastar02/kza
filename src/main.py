@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 from src.core.settings_schema import (
     DEFAULT_LOCAL_LLM_GATEWAY,
     check_unresolved_env_vars,
-    is_unresolved_placeholder,
     resolve_env_vars,
     validate_settings,
 )
@@ -306,33 +305,33 @@ async def main():
     reasoner_mode = reasoner_config.get("mode", "http")
 
     if reasoner_mode == "http":
-        from src.llm.cloud_consent import cloud_reasoner_allowed
+        from src.llm.cloud_consent import resolve_http_reasoner_base_url
 
-        # El gate evalúa el valor TAL COMO ESTÁ ESCRITO en la config, placeholder
-        # incluido — is_cloud_endpoint clasifica un "${VAR}" sin resolver como
-        # cloud (host vacío ∉ _LOCAL_HOSTS), igual que clasificaría la URL real
-        # una vez resuelta (LAN/gateway, nunca localhost). Si pisáramos el
-        # placeholder por el fallback local ANTES de este check, is_cloud_endpoint
-        # vería "127.0.0.1" y el gate pasaría de fail-closed a fail-open:
-        # alcanzaría con que falte LLM_GATEWAY_URL en el .env para saltear
-        # consent=false y arrancar igual el reasoner cloud (bug real, atrapado en
-        # review — medido con cloud_reasoner_allowed en los dos casos).
-        gate_allowed = cloud_reasoner_allowed(reasoner_config)
-
-        # Recién ACÁ, con el gate ya evaluado contra el valor real, resolvemos el
-        # placeholder si sigue sin resolver. reasoner_config es el mismo dict que
-        # reusa el compactor más abajo (línea ~1180) — ese código bypassea el
-        # gate por diseño preexistente (fuera de alcance acá, ver informe), así
-        # que igual va a leer este http_base_url pase lo que pase con el
-        # consent; que sea el fallback local en vez del literal sin resolver
-        # no cambia esa política existente, solo evita que el literal
-        # "${LLM_GATEWAY_URL}" llegue a CUALQUIER cliente HTTP.
-        if is_unresolved_placeholder(reasoner_config.get("http_base_url")):
-            logger.warning(
-                "reasoner.http_base_url sin resolver (¿falta LLM_GATEWAY_URL en "
-                f".env?) — usando fallback local {DEFAULT_LOCAL_LLM_GATEWAY}"
-            )
-            reasoner_config["http_base_url"] = DEFAULT_LOCAL_LLM_GATEWAY
+        # El orden gate→fallback (y el porqué) está documentado y TESTEADO en
+        # resolve_http_reasoner_base_url (src/llm/cloud_consent.py) — no lo
+        # reimplementes acá inline, ese fue exactamente el bug (Critical
+        # cerrado 2026-08-02, Task 5 "CI a verde"): con el fallback aplicado
+        # antes del gate, is_cloud_endpoint ve "127.0.0.1" en vez del
+        # placeholder y el gate pasa de fail-closed a fail-open.
+        #
+        # reasoner_config es el mismo dict que reusa el compactor más abajo
+        # (línea ~1180) — ese código bypassea el gate por diseño preexistente
+        # (fuera de alcance acá, ver informe Task 5 §8) y va a leer este
+        # http_base_url pase lo que pase con el consent. Resolver acá el
+        # placeholder evita que el literal opaco "${LLM_GATEWAY_URL}" llegue a
+        # CUALQUIER cliente HTTP (mejora de robustez operativa) — pero en el
+        # corner env-var-ausente + compaction.enabled esto NO es
+        # privacy-preserving respecto de dejar el placeholder sin resolver:
+        # sin este fallback, HttpReasoner.load() del compactor recibe el
+        # literal, httpx.URL(...) tira UnsupportedProtocol al no poder
+        # parsearlo, el try/except del compactor lo atrapa y compactor=None
+        # (cero actividad de red). Con el fallback, el compactor recibe una
+        # URL local válida y SÍ intenta conectar — puede pasar de "muerto" a
+        # "vivo" sin que el operador haya elegido ese endpoint para él. Ver
+        # informe Task 5 §8.1 para el análisis completo de esta corrección.
+        gate_allowed, _ = resolve_http_reasoner_base_url(
+            reasoner_config, DEFAULT_LOCAL_LLM_GATEWAY
+        )
 
         if not gate_allowed:
             logger.warning(
