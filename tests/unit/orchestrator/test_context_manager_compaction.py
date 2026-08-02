@@ -1,11 +1,11 @@
 """Tests for ContextManager compaction integration."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
-from src.orchestrator.context_manager import ContextManager, ConversationTurn
+from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.compactor import CompactionResult, CompactionError, CompactionErrorKind
 
 

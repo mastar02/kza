@@ -12,16 +12,15 @@ Tests cover:
 """
 
 import pytest
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from src.spotify.speaker_enrollment import (
-    SpeakerEnrollment, EnrollmentIntent, EnrollmentCommand, PendingDevice
+    SpeakerEnrollment, EnrollmentIntent, PendingDevice
 )
-from src.spotify.speaker_groups import SpeakerGroupManager, Speaker, SpeakerGroup, GroupType
+from src.spotify.speaker_groups import SpeakerGroupManager, Speaker, GroupType
 
 
 # ============================================================

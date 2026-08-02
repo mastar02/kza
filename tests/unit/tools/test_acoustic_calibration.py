@@ -6,7 +6,6 @@ XvfController) es glue fino validado a mano en el server.
 """
 import json
 
-import pytest
 
 from tools.acoustic_calibration import (
     summarize,

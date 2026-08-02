@@ -13,13 +13,12 @@ the LLMRouter classification.
 """
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 from src.orchestrator.dispatcher import (
     RequestDispatcher,
-    PathType,
 )
-from src.orchestrator.priority_queue import Priority, PriorityRequestQueue
+from src.orchestrator.priority_queue import PriorityRequestQueue
 from src.orchestrator.context_manager import ContextManager
 
 

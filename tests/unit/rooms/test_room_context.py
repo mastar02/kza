@@ -3,12 +3,10 @@ Tests para Room Context Module
 """
 
 import pytest
-import time
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 from src.rooms.room_context import (
     RoomConfig,
-    RoomContext,
     RoomContextManager,
     ContextSource,
     create_default_rooms,

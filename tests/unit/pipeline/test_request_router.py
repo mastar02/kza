@@ -13,7 +13,7 @@ Tests ensure that:
 """
 
 import sys
-from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
+from unittest.mock import MagicMock, AsyncMock
 
 # Mock system-level modules BEFORE any imports
 sys.modules.setdefault('sounddevice', MagicMock())

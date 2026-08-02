@@ -15,7 +15,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from src.spotify.speaker_groups import (
-    Speaker, SpeakerGroup, SpeakerGroupManager, GroupType
+    Speaker, SpeakerGroupManager, GroupType
 )
 
 

@@ -6,13 +6,12 @@ Utiliza modelos de clasificación de audio (YAMNet o AudioSet) para detectar
 eventos en tiempo real sin necesidad de wake word.
 """
 
-import asyncio
 import logging
 import time
 import numpy as np
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Callable, Any
+from typing import Callable
 from collections import deque
 from pathlib import Path
 

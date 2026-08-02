@@ -43,7 +43,6 @@ async def test_process_command_populates_confidence_parallel():
     # use_parallel=True pero sin speaker_identifier ni emotion_detector → cae al
     # else-branch (sequential) cuando ambos son None; pasamos un speaker_id fake
     # para forzar el gather path.
-    from unittest.mock import MagicMock
 
     fake_speaker_id = MagicMock()
     fake_speaker_id.identify.return_value = MagicMock(is_known=False, confidence=0.0, user_id=None)

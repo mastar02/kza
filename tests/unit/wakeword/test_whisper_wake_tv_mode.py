@@ -13,7 +13,6 @@ import sys
 import time
 from unittest.mock import MagicMock
 
-import pytest
 
 sys.modules.setdefault("torch", MagicMock())
 sys.modules.setdefault("torch.cuda", MagicMock())

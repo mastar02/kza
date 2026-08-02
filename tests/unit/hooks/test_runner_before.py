@@ -1,8 +1,6 @@
 """Tests for execute_before_chain — block + rewrite + priority + errors."""
 
 import logging
-import pytest
-from dataclasses import replace
 
 from src.hooks.registry import HookRegistry
 from src.hooks.runner import execute_before_chain

@@ -1,9 +1,7 @@
 """Tests for LLMRouter candidate chain."""
 
-import asyncio
 import pytest
 from typing import Optional
-from unittest.mock import AsyncMock
 
 from src.llm.cooldown import CooldownManager
 from src.llm.router import LLMRouter, FallbackSummaryError

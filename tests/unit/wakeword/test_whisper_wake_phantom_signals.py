@@ -15,7 +15,6 @@ texto sin mención literal de room/entity → reject. Combina señales para
 no crear FPs en comandos legítimos en TV-mode.
 """
 
-import pytest
 
 from src.wakeword.whisper_wake import (
     _is_implausible_speech_rate,

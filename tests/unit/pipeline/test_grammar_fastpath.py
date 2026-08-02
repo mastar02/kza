@@ -15,7 +15,6 @@ sys.modules.setdefault('pyaudio', MagicMock())
 sys.modules.setdefault('torch', MagicMock())
 sys.modules.setdefault('torch.cuda', MagicMock())
 
-import pytest
 
 from src.pipeline.request_router import _grammar_fastpath_classification
 

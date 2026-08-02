@@ -10,8 +10,8 @@ Hace 18 grados y lloverá por la tarde. ¿Quieres que prepare tu café?"
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, time as dtime, timedelta
-from typing import Callable, Any
+from datetime import datetime, time as dtime
+from typing import Callable
 from enum import StrEnum
 
 logger = logging.getLogger(__name__)
@@ -317,7 +317,7 @@ class MorningBriefing:
             if data.events_today:
                 n_events = len(data.events_today)
                 if n_events == 1:
-                    sections.append(f"Tienes un evento hoy.")
+                    sections.append("Tienes un evento hoy.")
                 else:
                     sections.append(f"Tienes {n_events} eventos hoy.")
 
@@ -340,7 +340,7 @@ class MorningBriefing:
                     f"Tráfico moderado, unos {data.commute_time_minutes} minutos de viaje."
                 )
             else:
-                sections.append(f"El tráfico está fluido.")
+                sections.append("El tráfico está fluido.")
 
             if data.suggested_departure:
                 sections.append(f"Te sugiero salir {data.suggested_departure}.")

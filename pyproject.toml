@@ -1,0 +1,70 @@
+[tool.bandit]
+# B615 (huggingface_unsafe_download) ya NO se desactiva globalmente (revertido
+# 2026-08-02: el skip repo-wide tapaba código vivo — ver conversation_collector.py
+# y scripts/train_assistant.py). Cada hallazgo se resuelve caso a caso: pineado real
+# con revision= donde el código corre, o `# nosec B615 -- <razón>` línea por línea
+# donde está genuinamente muerto/dormido, igual que el resto de las supresiones
+# de este proyecto (ver src/ambient/store.py, src/code_index/__main__.py, etc).
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+    # --- Estética pura, sin riesgo detrás. El diagnóstico del plan
+    # "CI a verde" los revisó uno por uno y concluyó que no vale la pena
+    # enforzarlos: no cambian comportamiento, solo estilo de sintaxis.
+    # (F841 NO va acá — ver [tool.ruff.lint.per-file-ignores] más abajo:
+    # apagarlo global taparía código nuevo, y esta regla no es estética.)
+    "E712",  # `== True` / `== False` en vez de `if x:` / `if not x:`
+    "E702",  # múltiples statements en una línea con `;`
+    "E741",  # nombre de variable ambiguo (ej. `l`)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Los tests mockean sys.modules ANTES de importar src.* (sounddevice, soundfile,
+# pyaudio, torch). Mover esos imports al tope reintroduce la contaminación que
+# hacía que pytest colectara 2668 tests y abortara con
+# "ValueError: torch.__spec__ is not set" — o sea, CERO tests ejecutados.
+# Se neutraliza acá, jamás editando los archivos.
+"tests/**" = ["E402"]
+
+# F841 (variable local asignada y nunca usada) NO es estética: son señales
+# de código muerto o de lógica que no se está aplicando — el arreglo
+# correcto NO es borrar la variable, es investigar por qué se lee un valor
+# y después se lo tira. Por eso se ignora ARCHIVO POR ARCHIVO (nunca
+# global): un F841 nuevo en cualquier otro archivo del repo tiene que
+# seguir rompiendo el CI, la regla acaba de demostrar que atrapa bugs
+# reales acá mismo. Dos casos concretos ya confirmados, punto de partida
+# del ticket de revisión de código muerto (fuera del alcance de "CI a
+# verde"):
+#   - src/routines/routine_executor.py:289-290 (_execute_spotify_play) lee
+#     `album`/`track` del payload de la rutina, pero el dispatch de abajo
+#     (líneas 296-309) solo mira `playlist`/`artist`/`mood` — una rutina
+#     que pide reproducir un álbum o track específico se ejecuta en
+#     silencio sin hacerlo.
+#   - src/pipeline/response_handler.py:540 calcula `use_streaming` y nunca
+#     lo usa: la rama multi-zona sintetiza completo siempre (el propio
+#     comentario del código lo admite), así que quien llama con
+#     `stream=True` recibe no-streaming en silencio.
+# Lista == los 17 archivos que HOY tienen F841 (medido con
+# `ruff check --select F841`), 7 en src/ y 10 en tests/. No se auditó cada
+# uno de los 26 casos con el mismo detalle que los dos de arriba.
+"src/analytics/suggestion_engine.py" = ["F841"]
+"src/health/health_check.py" = ["F841"]
+"src/pipeline/response_handler.py" = ["F841"]
+"src/routines/routine_executor.py" = ["F841"]
+"src/routines/routine_scheduler.py" = ["F841"]
+"src/spotify/speaker_enrollment.py" = ["F841"]
+"src/wakeword/trainer.py" = ["F841"]
+"tests/safety/test_permissions.py" = ["F841"]
+"tests/unit/llm/test_httpreasoner_chat_style.py" = ["F841"]
+"tests/unit/memory/test_memory_manager.py" = ["F841"]
+"tests/unit/orchestrator/test_context_persister.py" = ["F841"]
+"tests/unit/pipeline/test_command_processor_confidence.py" = ["F841"]
+"tests/unit/pipeline/test_request_router_grammar.py" = ["F841"]
+"tests/unit/pipeline/test_request_router_room.py" = ["F841"]
+"tests/unit/spotify/test_speaker_enrollment.py" = ["F841"]
+"tests/unit/training/test_habit_dataset_generator.py" = ["F841"]
+"tests/unit/training/test_nightly_trainer.py" = ["F841"]

@@ -3,16 +3,12 @@ Tests para PatternLearner - Detección de patrones de comportamiento
 """
 
 import pytest
-import json
 from pathlib import Path
-from datetime import datetime, time as dtime
-from unittest.mock import MagicMock
+from datetime import datetime
 
 from src.learning.pattern_learner import (
     PatternLearner,
     ActionRecord,
-    DetectedPattern,
-    RoutineSuggestion,
 )
 
 

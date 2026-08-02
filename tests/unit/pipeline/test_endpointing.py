@@ -44,7 +44,7 @@ def _import_loop_module():
     Import lazy para no romper collection en Python 3.9 (los tests del loop
     requieren 3.10+ por `np.ndarray | None` sin future annotations).
     """
-    from src.pipeline.multi_room_audio_loop import (  # noqa: WPS433
+    from src.pipeline.multi_room_audio_loop import (
         MultiRoomAudioLoop,
         RoomStream,
     )

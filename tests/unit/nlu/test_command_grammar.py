@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 from src.nlu.command_grammar import (
-    PartialCommand,
     extract_entity,
     extract_room,
     has_wake_word,
@@ -216,7 +215,7 @@ def test_whisper_variant_alexa_still_works():
 # IntentRule + INTENT_RULES + match_intent_rules
 # -----------------------------------------------------------------
 
-from src.nlu.command_grammar import IntentRule, INTENT_RULES, match_intent_rules
+from src.nlu.command_grammar import INTENT_RULES, match_intent_rules
 
 
 def test_intent_rules_cover_expected_intents():
@@ -247,7 +246,7 @@ def test_match_intent_rules_respects_domain(text, domain, expected_intent):
 # ParsedCommand + parse_command
 # -----------------------------------------------------------------
 
-from src.nlu.command_grammar import ParsedCommand, parse_command
+from src.nlu.command_grammar import parse_command
 
 
 @pytest.mark.parametrize("text,intent,domain,target,quality", [

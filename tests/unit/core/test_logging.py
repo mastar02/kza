@@ -2,11 +2,8 @@
 Tests for structured logging system.
 """
 
-import pytest
 import logging
 import json
-from io import StringIO
-from unittest.mock import patch
 
 from src.core.logging import (
     get_logger,

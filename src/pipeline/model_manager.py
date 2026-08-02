@@ -20,9 +20,8 @@ Uso:
 import asyncio
 import gc
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 from typing import Any, Callable
 import time
 
@@ -280,7 +279,6 @@ class ModelManager:
                 return PiperVoice.load(voice_path)
             else:
                 # VITS o alternativa
-                import torch
                 from TTS.api import TTS
                 device = f"cuda:{self.config.tts_gpu}"
                 tts = TTS("tts_models/es/css10/vits").to(device)
@@ -330,8 +328,8 @@ class ModelManager:
 
             device = f"cuda:{self.config.stt_gpu}"
 
-            processor = WhisperProcessor.from_pretrained(self.config.stt_model)
-            model = WhisperForConditionalGeneration.from_pretrained(
+            processor = WhisperProcessor.from_pretrained(self.config.stt_model)  # nosec B615 -- ModelManager sin llamador productivo (init_model_manager() no se invoca desde src/); solo se instancia en tests con loaders parcheados
+            model = WhisperForConditionalGeneration.from_pretrained(  # nosec B615 -- ídem: sin llamador productivo, solo tests con loaders parcheados
                 self.config.stt_model,
                 torch_dtype=torch.float16
             ).to(device)
@@ -344,7 +342,6 @@ class ModelManager:
     async def _load_router(self):
         """Cargar modelo Router (Qwen 7B)"""
         try:
-            import torch
             from vllm import LLM
 
             model = LLM(
@@ -361,15 +358,14 @@ class ModelManager:
     async def _load_emotion(self):
         """Cargar modelo de detección de emociones"""
         try:
-            import torch
             from transformers import Wav2Vec2ForSequenceClassification, Wav2Vec2FeatureExtractor
 
             device = f"cuda:{self.config.emotion_gpu}"
 
-            feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+            feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(  # nosec B615 -- ModelManager sin llamador productivo (init_model_manager() no se invoca desde src/); solo se instancia en tests con loaders parcheados
                 self.config.emotion_model
             )
-            model = Wav2Vec2ForSequenceClassification.from_pretrained(
+            model = Wav2Vec2ForSequenceClassification.from_pretrained(  # nosec B615 -- ídem: sin llamador productivo, solo tests con loaders parcheados
                 self.config.emotion_model
             ).to(device)
 

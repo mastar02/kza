@@ -4,7 +4,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.dashboard import observability, system_monitor
+from src.dashboard import system_monitor
 from src.dashboard.observability import register_observability_routes
 
 

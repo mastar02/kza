@@ -227,7 +227,7 @@ class LLMReasoner:
         logger.info(f"LLM cargado en {elapsed:.1f}s ({model_size_gb:.1f}GB)")
 
         if self._lora_loaded:
-            logger.info(f"  LoRA activo: personalidad adaptada")
+            logger.info("  LoRA activo: personalidad adaptada")
 
     def load_lora(self, lora_path: str, scale: float = 1.0):
         """

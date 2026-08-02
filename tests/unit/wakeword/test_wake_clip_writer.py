@@ -71,17 +71,18 @@ class TestRotation:
     def test_max_files_enforced_oldest_deleted(self, writer, tmp_path):
         out_dir = tmp_path / "captured"
         audio = np.zeros(160, dtype=np.float32)
-        for i in range(8):  # max_files=5
-            writer.submit("escritorio", 0.40 + i / 100, audio)
-            # serializar para que el orden de nombres sea determinístico
-            assert _wait_for(
-                lambda n=i: len(list(out_dir.glob("*.wav"))) >= min(n + 1, 5) - 1
-            )
-        assert _wait_for(
-            lambda: len(list(out_dir.glob("*.wav"))) == 5, timeout=3.0
-        )
+        for i in range(8):  # max_files=5; queue_size=8 default → nunca se llena
+            # submit() descarta en silencio si la cola está llena (nunca
+            # bloquea: corre en el audio callback thread). Si esto da False,
+            # el test debe fallar en vez de seguir con un clip perdido.
+            assert writer.submit("escritorio", 0.40 + i / 100, audio) is True
+        # Drenar la cola y esperar a que el worker termine (join real) en vez
+        # de una barrera de espera basada en contar archivos: esa barrera no
+        # garantiza que la rotación de TODOS los clips ya haya corrido.
+        writer.stop(timeout=10.0)
         # Los que quedan son los más nuevos (scores 0.43..0.47)
         names = sorted(p.name for p in out_dir.glob("*.wav"))
+        assert len(names) == 5
         assert all(f"_0.4{d}.wav" in n for n, d in zip(names, range(3, 8)))
 
 

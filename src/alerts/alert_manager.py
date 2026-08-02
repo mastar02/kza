@@ -31,7 +31,6 @@ Uso:
 """
 
 import asyncio
-import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field

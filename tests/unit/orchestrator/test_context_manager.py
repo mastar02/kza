@@ -2,9 +2,7 @@
 Tests for ContextManager - Per-user conversation context.
 """
 
-import pytest
 import time
-from unittest.mock import patch
 
 from src.orchestrator.context_manager import (
     ContextManager,

@@ -3,8 +3,7 @@ Tests for RequestDispatcher - Request routing and classification.
 """
 
 import pytest
-import asyncio
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 from src.orchestrator.dispatcher import (
     RequestDispatcher,

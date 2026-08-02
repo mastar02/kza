@@ -2,7 +2,6 @@
 Mock Home Assistant Client for testing.
 """
 
-from unittest.mock import AsyncMock
 
 
 class MockHomeAssistantClient:

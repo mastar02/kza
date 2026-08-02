@@ -11,7 +11,6 @@ import logging
 import threading
 import time
 from pathlib import Path
-from dataclasses import asdict
 
 from .context_manager import ContextManager, UserContext, ConversationTurn
 

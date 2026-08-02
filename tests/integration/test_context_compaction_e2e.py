@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.orchestrator.context_manager import ContextManager
-from src.orchestrator.compactor import Compactor, CompactionResult
+from src.orchestrator.compactor import Compactor
 from src.orchestrator.context_persister import ContextPersister
 
 

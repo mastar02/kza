@@ -12,7 +12,6 @@ import pytest
 
 from src.home_assistant.ha_client import HomeAssistantClient
 from src.monitoring.smoke_check import (
-    SmokeResult,
     check_phrase,
     entity_problem,
     indexed_entity_ids,

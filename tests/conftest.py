@@ -17,7 +17,7 @@ import pytest
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -288,7 +288,7 @@ def mock_torch():
 @pytest.fixture
 def mock_model_manager():
     """Mock ModelManager for tests without GPU"""
-    from src.pipeline.model_manager import ModelManager, ModelManagerConfig, ModelState
+    from src.pipeline.model_manager import ModelManager, ModelState
 
     manager = MagicMock(spec=ModelManager)
     manager.models = {
@@ -314,7 +314,6 @@ def mock_model_manager():
 @pytest.fixture
 def temp_training_dirs():
     """Create temporary directories for training tests"""
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
         base = Path(tmpdir)

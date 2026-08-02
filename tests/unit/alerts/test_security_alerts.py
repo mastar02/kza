@@ -3,7 +3,6 @@ Tests for SecurityAlerts module.
 """
 
 import pytest
-from unittest.mock import AsyncMock
 
 from src.alerts import AlertManager, AlertPriority, AlertType, SecurityAlerts
 

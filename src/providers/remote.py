@@ -16,7 +16,7 @@ import asyncio
 import base64
 import io
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 

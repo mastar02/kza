@@ -3,7 +3,7 @@
 import time
 import pytest
 import pytest_asyncio
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 from httpx import AsyncClient, ASGITransport
 
 from src.dashboard.api import DashboardAPI

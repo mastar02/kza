@@ -6,7 +6,7 @@ Ejecuta rutinas basadas en triggers de tiempo, presencia BLE y eventos
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 from enum import StrEnum
 from typing import Callable
 import json

@@ -3,7 +3,7 @@ import pytest
 import pytest_asyncio
 
 from src.lists.list_manager import ListManager
-from src.lists.list_store import ListStore, UserList, ListItem
+from src.lists.list_store import ListStore
 
 
 @pytest_asyncio.fixture

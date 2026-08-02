@@ -2,9 +2,25 @@ name: KZA CI/CD
 
 on:
   push:
-    branches: [main, develop]
+    branches: ['**']
   pull_request:
     branches: [main]
+  workflow_dispatch:
+  schedule:
+    # 07:17 UTC diario, fuera de :00/:30 (evita picos de carga compartida
+    # en runners de GitHub). Sin relacion con el cron de entrenamiento real
+    # del server (ese vive en systemd del server, no en este workflow);
+    # esto solo destraba el job nightly-training-test, que hoy nunca corre
+    # porque su `if:` exige schedule/workflow_dispatch y `on:` no declaraba
+    # ninguno de los dos (29/29 runs skipped).
+    - cron: '17 7 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   PYTHON_VERSION: "3.13"
@@ -16,6 +32,7 @@ jobs:
   lint:
     name: Lint & Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
@@ -27,16 +44,17 @@ jobs:
 
       - name: Install linting tools
         run: |
-          pip install ruff black isort mypy
+          pip install ruff==0.15.1
 
       - name: Run ruff
         run: ruff check src/ tests/
 
-      - name: Check formatting with black
-        run: black --check src/ tests/
-
-      - name: Check import order
-        run: isort --check-only src/ tests/
+      - name: Check formatting with ruff format
+        # Temporal: el commit de formateo (332 archivos, Task 6) todavia no
+        # existe, asi que este sub-chequeo puntual queda en continue-on-error
+        # hasta que se aplique. `ruff check` arriba SI bloquea el job.
+        continue-on-error: true
+        run: ruff format --check src/ tests/
 
   # ============================================================
   # UNIT TESTS
@@ -44,7 +62,7 @@ jobs:
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
-    needs: lint
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -54,11 +72,16 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
+          cache-dependency-path: requirements-test.txt
+
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio pytest-cov
+        run: pip install -r requirements-test.txt
+
+      - name: Collect tests
+        run: python -m pytest tests/ --collect-only -q
 
       - name: Run unit tests
         run: |
@@ -76,7 +99,7 @@ jobs:
   safety-tests:
     name: Safety Tests (CRITICAL)
     runs-on: ubuntu-latest
-    needs: lint
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -86,23 +109,21 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
+          cache-dependency-path: requirements-test.txt
+
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio
+        run: pip install -r requirements-test.txt
+
+      - name: Collect tests
+        run: python -m pytest tests/ --collect-only -q
 
       - name: Run safety tests
         run: |
           pytest tests/safety/ -v --tb=long
         # Safety tests MUST pass - no continue-on-error
-
-      - name: Verify all safety tests passed
-        run: |
-          echo "✅ All safety tests passed!"
-          echo "Permission checks: OK"
-          echo "Command validation: OK"
-          echo "Rate limiting: OK"
 
   # ============================================================
   # INTEGRATION TESTS
@@ -110,14 +131,18 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    needs: [unit-tests, safety-tests]
-
-    services:
-      # Mock Home Assistant for integration tests
-      homeassistant:
-        image: homeassistant/home-assistant:stable
-        ports:
-          - 8123:8123
+    # Sin `needs`: cada job de este workflow hace su propio checkout +
+    # install (no hay artifacts compartidos), así que `needs` acá era
+    # gating puro, no una dependencia técnica. Con `needs: [unit-tests,
+    # safety-tests]` este job (y `build`, más abajo) quedaban `skipped`
+    # para siempre en cuanto unit-tests tuviera un solo rojo — y unit-tests
+    # VA a estar rojo por diseño mientras los 10 fallos preexistentes
+    # (triage fuera de alcance, ver docs/superpowers/plans/2026-08-02-ci-a-verde.md)
+    # sigan sin resolverse. Gris leyéndose como "benigno" es la misma
+    # patología que dejó 39/39 nightly-training-test en skipped sin que
+    # nadie lo notara desde marzo — no reintroducirla un nivel más abajo.
+    # Cada job de test corre en paralelo y reporta su propia señal real.
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -127,22 +152,20 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
+          cache-dependency-path: requirements-test.txt
+
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio
+        run: pip install -r requirements-test.txt
 
-      - name: Wait for Home Assistant
-        run: |
-          timeout 60 bash -c 'until curl -s http://localhost:8123; do sleep 2; done' || true
+      - name: Collect tests
+        run: python -m pytest tests/ --collect-only -q
 
       - name: Run integration tests
         run: |
           pytest tests/integration/ -v --tb=short
-        env:
-          HA_URL: http://localhost:8123
-          HA_TOKEN: test_token
 
   # ============================================================
   # SECURITY SCAN
@@ -150,6 +173,7 @@ jobs:
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
@@ -161,17 +185,20 @@ jobs:
 
       - name: Install security tools
         run: |
-          pip install bandit safety
+          pip install bandit==1.9.4
 
       - name: Run bandit security scan
         run: |
-          bandit -r src/ -f json -o bandit-report.json || true
-          bandit -r src/ -ll  # Fail on medium+ severity
+          bandit -r src/ -c pyproject.toml -f json -o bandit-report.json || true
+          bandit -r src/ -ll -c pyproject.toml  # Fail on medium+ severity (B615 ya no tiene skip global; ver pyproject.toml [tool.bandit] para el pineo/nosec caso a caso)
 
-      - name: Check dependencies for vulnerabilities
-        run: |
-          pip install -r requirements.txt
-          safety check --full-report || true
+      - name: Upload bandit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+          retention-days: 30
 
   # ============================================================
   # BUILD CHECK
@@ -179,7 +206,14 @@ jobs:
   build:
     name: Build Check
     runs-on: ubuntu-latest
-    needs: [unit-tests, safety-tests]
+    # Sin `needs` (ver justificación en integration-tests arriba). Este job
+    # en particular solo verifica que los imports y settings.yaml sean
+    # válidos — cero relación con el resultado de unit-tests/safety-tests.
+    # Bloquearlo detrás de unit-tests (rojo por diseño) le costó a este
+    # mismo job el fix de `libportaudio2` (Task 1): se agregó al `apt-get
+    # install` de este step pero, con el `needs` de antes, ese fix nunca
+    # llegaba a ejecutarse.
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
@@ -189,9 +223,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements-test.txt
 
       - name: Verify imports work
         run: |
@@ -212,6 +249,7 @@ jobs:
     name: Nightly Training Simulation
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -222,9 +260,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio
+        run: pip install -r requirements-test.txt
 
       - name: Simulate nightly training cycle
         run: |

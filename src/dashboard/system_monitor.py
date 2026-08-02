@@ -17,6 +17,7 @@ import shutil
 import socket
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -32,7 +33,7 @@ GPU_ROLES = {
 # Service probe registry. Cada entry: (probe_kind, probe_args)
 # Las URLs pueden venir de env vars en runtime para reflejar el deploy real.
 def _service_probes() -> list[dict]:
-    ha_url = os.environ.get("HOME_ASSISTANT_URL", "http://192.168.1.100:8123")
+    ha_url = os.environ.get("HOME_ASSISTANT_URL", "http://localhost:8123")
     return [
         {"name": "kza-voice", "kind": "systemctl_user"},
         {"name": "kza-llm-ik", "kind": "systemctl_user",
@@ -168,11 +169,20 @@ def _probe_service(probe: dict, have_systemctl: bool) -> dict:
 
 
 def _http_ok(url: str, timeout: float = 1.5) -> bool:
+    # `url` puede venir de HOME_ASSISTANT_URL (env var externa, ver
+    # _service_probes) — no asumimos su esquema, lo validamos antes de
+    # abrir nada. Sin esto, un valor como "file:///etc/passwd" abriría y
+    # leería el archivo local en vez de hacer una request de red.
+    if urllib.parse.urlparse(url).scheme not in ("http", "https"):
+        return False
     try:
         req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            # 2xx + algunos 4xx (HA devuelve 401 sin token, está vivo)
-            return r.status < 500
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310 -- esquema validado arriba (solo http/https admitidos); resto del registry es fijo (_service_probes()) o env var interno, sin input de usuario en el request
+            # 2xx + algunos 4xx (HA devuelve 401 sin token, está vivo).
+            # r.status puede ser None en respuestas/mocks atípicos — TypeError
+            # no está en la tupla de except de abajo, así que lo tratamos
+            # como "no vivo" acá en vez de dejarlo propagar sin capturar.
+            return r.status is not None and r.status < 500
     except urllib.error.HTTPError as e:
         # 401/403 = el servicio responde, está vivo
         return 400 <= e.code < 500

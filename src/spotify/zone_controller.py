@@ -10,13 +10,12 @@ Funcionalidades principales:
 """
 
 import logging
-import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable
 from enum import StrEnum
 
-from .client import SpotifyClient, SpotifyDevice, PlaybackState
-from .speaker_groups import SpeakerGroupManager, Speaker, SpeakerGroup
+from .client import SpotifyClient, SpotifyDevice
+from .speaker_groups import SpeakerGroupManager
 
 logger = logging.getLogger(__name__)
 

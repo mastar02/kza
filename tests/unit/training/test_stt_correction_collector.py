@@ -6,7 +6,6 @@ import json
 import pytest
 import numpy as np
 from pathlib import Path
-from unittest.mock import patch
 
 from src.training.stt_correction_collector import (
     STTCorrectionCollector,

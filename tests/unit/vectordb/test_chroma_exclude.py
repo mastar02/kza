@@ -5,7 +5,6 @@ las bombillas miembro (light.escritorio1/2/3) no deben indexarse para voz;
 solo el grupo (light.escritorio). Filtro por lista explícita + patrones regex,
 configurable desde settings.yaml (vectordb.exclude_entities/exclude_patterns).
 """
-import pytest
 
 from src.vectordb.chroma_sync import ChromaSync
 

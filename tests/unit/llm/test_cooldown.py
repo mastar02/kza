@@ -1,6 +1,5 @@
 """Tests for CooldownManager (in-memory behavior, sin persistence)."""
 
-import time
 import pytest
 from src.llm.cooldown import CooldownManager, BACKOFF_SCHEDULE_S
 from src.llm.types import ErrorKind

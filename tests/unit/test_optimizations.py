@@ -8,11 +8,10 @@ Cubre:
 - asyncio.gather paralelo
 """
 
-import asyncio
 import time
 import pytest
 import numpy as np
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
+from unittest.mock import Mock, MagicMock, patch
 
 from tests.factories import make_emotion_detector
 
@@ -99,7 +98,7 @@ class TestEmotionBatchProcessing:
 
     def test_batch_detect_single_sample_uses_detect(self):
         """Con un solo sample, debe usar detect() directamente"""
-        from src.users.emotion_detector import EmotionDetector, EmotionResult
+        from src.users.emotion_detector import EmotionResult
 
         detector = make_emotion_detector(device="cpu")
         detector._model = Mock()
@@ -123,7 +122,6 @@ class TestEmotionBatchProcessing:
 
     def test_batch_detect_empty_returns_empty(self):
         """Lista vacía debe retornar lista vacía"""
-        from src.users.emotion_detector import EmotionDetector
 
         detector = make_emotion_detector(device="cpu")
         results = detector.batch_detect([])
@@ -132,7 +130,6 @@ class TestEmotionBatchProcessing:
 
     def test_batch_detect_multiple_uses_batch(self):
         """Con múltiples samples, debe usar batch processing"""
-        from src.users.emotion_detector import EmotionDetector
 
         detector = make_emotion_detector(device="cpu")
 

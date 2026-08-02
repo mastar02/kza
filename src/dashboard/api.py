@@ -8,9 +8,7 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-import asyncio
 import json
 import os
 
@@ -816,7 +814,7 @@ class DashboardAPI:
         """Iniciar servidor API"""
         import uvicorn
 
-        if self.host == "0.0.0.0":
+        if self.host == "0.0.0.0":  # nosec B104 -- no es el bind, es la comparación que emite el warning de LAN antes de que uvicorn abra el socket (el bind real usa self.host, una variable, no el literal)
             logger.warning(
                 "Dashboard API binding to 0.0.0.0 — accessible from LAN. "
                 "Set dashboard.host to '127.0.0.1' in settings.yaml for local-only access."

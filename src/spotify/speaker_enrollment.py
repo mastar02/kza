@@ -11,7 +11,6 @@ Auto-descubre dispositivos Spotify y guía al usuario para configurarlos.
 """
 
 import logging
-import asyncio
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -19,7 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from .client import SpotifyClient, SpotifyDevice
-from .speaker_groups import SpeakerGroupManager, Speaker, SpeakerGroup, GroupType
+from .speaker_groups import SpeakerGroupManager, Speaker, GroupType
 
 logger = logging.getLogger(__name__)
 

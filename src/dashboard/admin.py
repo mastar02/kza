@@ -8,13 +8,11 @@ Mantiene la separación con `observability.py`: ese es read-only, este es write.
 import asyncio
 import io
 import logging
-import re
 import shutil
 import subprocess
-from typing import Optional
 
 import numpy as np
-from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from src.dashboard.auth import (

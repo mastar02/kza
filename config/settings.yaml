@@ -370,7 +370,7 @@ command_gate:
 # GLM-Air local de abajo y revertir failover.endpoints.reasoner_cloud.
 reasoner:
   mode: "http"
-  http_base_url: "http://192.168.1.2:8200/v1"  # gateway LiteLLM 2026-05-30 (rollback directo: https://api.minimax.io/v1)
+  http_base_url: "${LLM_GATEWAY_URL}"  # gateway LiteLLM 2026-05-30 (rollback directo: https://api.minimax.io/v1)
   http_timeout: 60
   # 2026-06-06: migrado a -highspeed (registrado en el gateway por infra; la key
   # de KZA lo accede). Bench sostenido 600 tok: ~+15% mediano sobre base con
@@ -1746,7 +1746,7 @@ code_index:
     model: "BAAI/bge-m3"
     device: "cpu"               # NUNCA GPU
   cards:
-    base_url: "http://192.168.1.2:8200/v1"   # gateway LiteLLM → MiniMax
+    base_url: "${LLM_GATEWAY_URL}"   # gateway LiteLLM → MiniMax
     model: "MiniMax-M2.7-highspeed"
     api_key_env: "MINIMAX_API_KEY"            # virtual key del gateway
     timeout: 120

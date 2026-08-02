@@ -4,12 +4,10 @@ Gestiona la captura de audio, detección de wake word, VAD y detección de zonas
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 
 import numpy as np
-import sounddevice as sd
 
 from src.wakeword.detector import WakeWordDetector
 

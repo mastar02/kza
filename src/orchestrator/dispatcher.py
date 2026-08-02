@@ -36,16 +36,15 @@ import re
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Callable
+from typing import Callable
 
-from src.core.logging import get_logger, LogContext, generate_request_id
+from src.core.logging import get_logger
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
     Priority,
     Request,
     PriorityRequestQueue
 )
-from src.orchestrator.cancellation import CancellationToken
 
 logger = get_logger(__name__)
 

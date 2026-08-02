@@ -7,10 +7,9 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
 import time as time_module
 
-from src.home_assistant.circuit_breaker import HACircuitBreaker, get_ha_circuit_breaker
+from src.home_assistant.circuit_breaker import get_ha_circuit_breaker
 
 logger = logging.getLogger(__name__)
 

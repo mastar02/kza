@@ -455,8 +455,8 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
                 # No event loop (uso desde código sync) — desactivar trigger silenciosamente
                 if not self._no_loop_warned:
                     logger.warning(
-                        f"[ContextManager] no event loop running — compaction trigger disabled "
-                        f"for this manager. (Won't log this again until restart.)"
+                        "[ContextManager] no event loop running — compaction trigger disabled "
+                        "for this manager. (Won't log this again until restart.)"
                     )
                     self._no_loop_warned = True
                 with self._lock:

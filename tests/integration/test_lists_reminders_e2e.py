@@ -1,5 +1,4 @@
 """Integration tests for lists and reminders end-to-end flow."""
-import asyncio
 import time
 
 import pytest

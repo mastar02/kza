@@ -4,15 +4,12 @@ Tests para HabitDatasetGenerator - Generador de datasets de hábitos
 
 import pytest
 import json
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-from datetime import datetime, time as dtime
+from unittest.mock import MagicMock
+from datetime import time as dtime
 
 from src.training.habit_dataset_generator import (
     HabitDatasetGenerator,
-    HabitExample,
-    UserProfile,
 )
 
 

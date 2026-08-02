@@ -7,7 +7,7 @@ VoicePipeline receives pre-built components via DI.
 """
 
 import sys
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 # Mock system-level modules BEFORE any imports
 sys.modules.setdefault('sounddevice', MagicMock())
@@ -17,7 +17,6 @@ sys.modules.setdefault('torch', MagicMock())
 sys.modules.setdefault('torch.cuda', MagicMock())
 
 import pytest
-import numpy as np
 
 from src.pipeline.command_processor import ProcessedCommand
 

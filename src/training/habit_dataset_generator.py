@@ -19,10 +19,9 @@ Flujo:
 
 import json
 import logging
-import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -640,7 +639,7 @@ class HabitDatasetGenerator:
             for period, room in profile.room_preferences.items():
                 room_display = room.replace("_", " ")
                 self._examples.append(HabitExample(
-                    instruction=f"Prende la luz",
+                    instruction="Prende la luz",
                     input=f"Usuario: {user_name}, Período: {period}",
                     output=f"Enciendo la luz de {room_display}.",
                     category="contextual",

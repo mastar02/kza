@@ -9,7 +9,7 @@ unavailable so the voice server keeps running.
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 
 import aiohttp

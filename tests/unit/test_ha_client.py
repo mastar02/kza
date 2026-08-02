@@ -3,11 +3,10 @@ Tests for Home Assistant Client.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from tests.mocks.mock_ha_client import MockHomeAssistantClient
 
 
 class TestHomeAssistantClient:
@@ -139,7 +138,6 @@ class TestHAUnavailable:
     @pytest.mark.asyncio
     async def test_ha_unavailable_call_service_returns_false(self):
         """HAClient.call_service returns False (not an exception) when HA is down."""
-        import aiohttp
 
         from src.home_assistant.ha_client import HomeAssistantClient
 

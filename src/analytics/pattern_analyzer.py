@@ -6,9 +6,7 @@ Detecta patrones de uso para sugerir automatizaciones.
 import logging
 import statistics
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 from enum import StrEnum
-import math
 
 from .event_logger import EventLogger, Event
 

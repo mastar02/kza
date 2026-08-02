@@ -1,8 +1,6 @@
 """Tests del lifecycle del WS /ws/live: subscribe → frame → disconnect → unsubscribe."""
 
-import asyncio
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

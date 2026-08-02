@@ -96,6 +96,33 @@ def _make_multi_room_loop(rooms=None, **kwargs) -> MultiRoomAudioLoop:
     )
 
 
+def _far_from_boot_monotonic(monkeypatch):
+    """Desplazar el origen de `time.monotonic()` lejos de 0, sin congelarlo.
+
+    `time.monotonic()` cuenta desde el boot del HOST, no desde que arrancó el
+    test. En un runner de CI recién booteado el valor real puede ser chico
+    (medido en GitHub Actions: ~168s cuando corre esta suite), así que un
+    test que fabrica "hace N segundos" con `time.monotonic() - N` puede dar
+    NEGATIVO si N >= uptime real. El código de producción usa
+    `last_frame_ts <= 0.0` como sentinel de "todavía no entregó ningún
+    frame" (`_update_audio_anchors`/`detect_stale_streams` en
+    multi_room_audio_loop.py), así que un timestamp negativo queda mal
+    leído como "nunca entregó" en vez de "entregó hace N segundos" — el
+    test deja de ejercitar el escenario que dice montar, en silencio (así
+    quedó ciego `test_watchdog_ignores_room_already_awaiting_reopen`).
+
+    Se DESPLAZA el reloj (no se congela: `asyncio.sleep`/timers dependen de
+    que `time.monotonic()` siga avanzando — es la misma función que usa el
+    event loop por debajo) sumando un offset grande y fijo, así cualquier
+    resta razonable de segundos da positivo sin importar el uptime real de
+    la máquina. Mismo mecanismo que el plugin `lowuptime` usado para
+    verificar este fix bajo el reloj del runner.
+    """
+    real_monotonic = time.monotonic
+    offset = 100_000.0 - real_monotonic()
+    monkeypatch.setattr(time, "monotonic", lambda: real_monotonic() + offset)
+
+
 # ============================================================
 # Tests
 # ============================================================
@@ -1215,7 +1242,8 @@ class TestWatchdogHeartbeatRequiresSignal:
 
 class TestStreamWatchdog:
     @pytest.mark.asyncio
-    async def test_watchdog_recovers_when_stream_stale(self):
+    async def test_watchdog_recovers_when_stream_stale(self, monkeypatch):
+        _far_from_boot_monotonic(monkeypatch)
         rs = _make_room_stream("escritorio", device_index=4)
         rs.mic_usb_port = "3-1.4"
         loop = _make_multi_room_loop(rooms={"escritorio": rs})
@@ -1235,7 +1263,7 @@ class TestStreamWatchdog:
         assert called.get("ids") == ["escritorio"]
 
     @pytest.mark.asyncio
-    async def test_watchdog_ignores_room_already_awaiting_reopen(self):
+    async def test_watchdog_ignores_room_already_awaiting_reopen(self, monkeypatch):
         """Una room que ya espera su device no debe re-disparar el recovery.
 
         Su `last_frame_ts` no se actualiza nunca (no hay device que entregue
@@ -1243,6 +1271,7 @@ class TestStreamWatchdog:
         llamaría a `_recover_streams` en cada ciclo, y como el recovery cierra
         TODOS los streams, el mic sano se cerraría cada `check_interval`.
         """
+        _far_from_boot_monotonic(monkeypatch)
         ausente = _make_room_stream("cocina", device_index=10)
         ausente.mic_usb_port = "5-5.3"
         sana = _make_room_stream("escritorio", device_index=4)
@@ -1500,11 +1529,12 @@ class TestAudioHealthPublication:
 
     @pytest.mark.asyncio
     async def test_published_snapshot_is_readable_by_the_external_poller(
-        self, tmp_path
+        self, tmp_path, monkeypatch
     ):
         """No basta con escribir un archivo: `evaluate_health` —la función que
         el poller externo usa— tiene que poder leerlo y dar un veredicto. Ata
         el formato que escribe el loop al que consume el poller."""
+        _far_from_boot_monotonic(monkeypatch)
         health = tmp_path / "audio_health.json"
         sorda = _make_room_stream("cocina", device_index=2)
         loop = _make_multi_room_loop(
@@ -1636,6 +1666,7 @@ class TestAudioHealthWriteTimeoutDoesNotBlockRecovery:
     async def test_hung_write_does_not_block_stale_stream_recovery(
         self, tmp_path, monkeypatch
     ):
+        _far_from_boot_monotonic(monkeypatch)
         # Timeout de escritura chico para que el test sea rápido: la
         # constante real (1.0s) sigue probada indirectamente por el hecho
         # de que este test pasa con cualquier valor finito bien por debajo

@@ -9,8 +9,7 @@ metadata.area matchea reciben un bonus que re-puntúa la elección
 sin descartar ningún candidato.
 """
 
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import pytest
 
 # Skip the whole module if chromadb isn't installed locally — these tests

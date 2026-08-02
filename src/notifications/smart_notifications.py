@@ -11,7 +11,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Callable, Any
 from enum import Enum, StrEnum
 import uuid
@@ -629,7 +629,3 @@ class SmartNotificationManager:
             "quiet_hours_active": self._is_quiet_hours(),
             "quiet_hours": f"{self.quiet_hours[0].strftime('%H:%M')}-{self.quiet_hours[1].strftime('%H:%M')}"
         }
-
-
-# Importación necesaria
-from datetime import timedelta

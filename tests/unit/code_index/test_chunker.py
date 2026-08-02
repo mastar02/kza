@@ -1,6 +1,6 @@
 """Tests del chunker AST del code-index."""
 
-from src.code_index.chunker import CodeChunk, extract_chunks
+from src.code_index.chunker import extract_chunks
 
 SAMPLE = '''\
 import os

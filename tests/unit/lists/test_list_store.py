@@ -1,9 +1,8 @@
 """Tests for ListStore — SQLite persistence for lists and items."""
 import pytest
 import pytest_asyncio
-import aiosqlite
 
-from src.lists.list_store import ListStore, UserList, ListItem
+from src.lists.list_store import ListStore
 
 
 @pytest_asyncio.fixture

@@ -30,7 +30,6 @@ Uso:
 """
 
 import asyncio
-import logging
 from collections.abc import Awaitable
 from typing import Callable, TYPE_CHECKING
 from dataclasses import dataclass

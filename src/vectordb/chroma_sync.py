@@ -10,7 +10,6 @@ import re
 import time
 from datetime import datetime
 import chromadb
-from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)

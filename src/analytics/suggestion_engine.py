@@ -5,8 +5,7 @@ Genera sugerencias de automatizacion basadas en patrones detectados.
 
 import logging
 import json
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 

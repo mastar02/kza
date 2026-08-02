@@ -1,6 +1,5 @@
 """Tests for context Compactor."""
 
-import json
 import pytest
 from unittest.mock import AsyncMock
 

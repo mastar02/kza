@@ -11,7 +11,7 @@ import logging
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, time as dtime
-from typing import Callable, Any
+from typing import Callable
 from collections import defaultdict
 from pathlib import Path
 import statistics

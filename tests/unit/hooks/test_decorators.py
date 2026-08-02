@@ -4,7 +4,6 @@ import pytest
 
 from src.hooks import (
     before_ha_action, before_tts_speak, after_event,
-    BlockResult, HookRegistry,
 )
 from src.hooks.registry import _global_registry
 

@@ -37,8 +37,7 @@ from typing import Any, Callable
 from src.core.logging import get_logger
 from src.orchestrator.cancellation import (
     CancellationToken,
-    CancellationReason,
-    CancellationManager
+    CancellationReason
 )
 
 logger = get_logger(__name__)

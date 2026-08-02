@@ -9,8 +9,7 @@ Verify that:
 
 import logging
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from datetime import datetime
+from unittest.mock import MagicMock, AsyncMock
 
 from src.core.sanitize import sanitize_dict, sanitize_value, mask_string, SENSITIVE_KEYS
 

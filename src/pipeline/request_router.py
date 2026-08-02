@@ -11,7 +11,7 @@ Owns all command routing logic:
 import logging
 import time
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 import numpy as np

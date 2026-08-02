@@ -23,7 +23,6 @@ Uso:
     )
 """
 
-import asyncio
 
 from src.core.logging import get_logger
 from .alert_manager import Alert, AlertManager, AlertPriority, AlertType
