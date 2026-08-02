@@ -154,12 +154,17 @@ def cmd_training_data(args):
 
 def cmd_lora(args):
     """Entrenar modelo con LoRA"""
-    from src.training.conversation_collector import LoRATrainer
+    from src.training.conversation_collector import DEFAULT_BASE_MODEL, LoRATrainer
 
-    trainer = LoRATrainer(
-        base_model=args.base_model or "meta-llama/Llama-3.1-8B-Instruct",
-        output_dir=args.output_dir or "./models/lora_adapters"
-    )
+    try:
+        trainer = LoRATrainer(
+            base_model=args.base_model or DEFAULT_BASE_MODEL,
+            revision=args.revision,
+            output_dir=args.output_dir or "./models/lora_adapters"
+        )
+    except ValueError as e:
+        print(f"\n❌ {e}")
+        return 1
 
     if args.action == "train":
         if not args.data:
@@ -263,6 +268,9 @@ Ejemplos:
     lora_parser.add_argument("--data", help="Ruta a datos de entrenamiento")
     lora_parser.add_argument("--name", help="Nombre del adapter")
     lora_parser.add_argument("--base-model", help="Modelo base")
+    lora_parser.add_argument("--revision",
+                            help="Revision/commit del modelo base en el Hub "
+                                 "(requerida si --base-model no es el default)")
     lora_parser.add_argument("--output-dir", help="Directorio de salida")
     lora_parser.add_argument("--epochs", type=int, default=3)
     lora_parser.add_argument("--batch-size", type=int, default=4)

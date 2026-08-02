@@ -330,8 +330,8 @@ class ModelManager:
 
             device = f"cuda:{self.config.stt_gpu}"
 
-            processor = WhisperProcessor.from_pretrained(self.config.stt_model)
-            model = WhisperForConditionalGeneration.from_pretrained(
+            processor = WhisperProcessor.from_pretrained(self.config.stt_model)  # nosec B615 -- ModelManager sin llamador productivo (init_model_manager() no se invoca desde src/); solo se instancia en tests con loaders parcheados
+            model = WhisperForConditionalGeneration.from_pretrained(  # nosec B615 -- ídem: sin llamador productivo, solo tests con loaders parcheados
                 self.config.stt_model,
                 torch_dtype=torch.float16
             ).to(device)
@@ -366,10 +366,10 @@ class ModelManager:
 
             device = f"cuda:{self.config.emotion_gpu}"
 
-            feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+            feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(  # nosec B615 -- ModelManager sin llamador productivo (init_model_manager() no se invoca desde src/); solo se instancia en tests con loaders parcheados
                 self.config.emotion_model
             )
-            model = Wav2Vec2ForSequenceClassification.from_pretrained(
+            model = Wav2Vec2ForSequenceClassification.from_pretrained(  # nosec B615 -- ídem: sin llamador productivo, solo tests con loaders parcheados
                 self.config.emotion_model
             ).to(device)
 

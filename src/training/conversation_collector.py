@@ -355,6 +355,18 @@ Estos datos se usan para mejorar la IA con el tiempo.
 """
 
 
+# Revision pineada del modelo base default (commit del branch main,
+# verificado 2026-08-02 vía GET
+# https://huggingface.co/api/models/meta-llama/Llama-3.1-8B-Instruct ->
+# campo "sha"). B615 (bandit): from_pretrained/load_dataset sin revision
+# resuelve "latest" en cada descarga, no reproducible y no auditable — un
+# --base-model distinto del default no hereda este pin (no existe un pin
+# "genérico" válido para un repo arbitrario del Hub), por eso LoRATrainer
+# exige revision= explícita en ese caso en vez de caer a "sin pinear".
+DEFAULT_BASE_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+DEFAULT_BASE_MODEL_REVISION = "0e9e39f249a16976918f6564b8830bc894c89659"
+
+
 class LoRATrainer:
     """
     Entrena el modelo con LoRA usando los datos recolectados.
@@ -365,11 +377,25 @@ class LoRATrainer:
 
     def __init__(
         self,
-        base_model: str = "meta-llama/Llama-3.1-8B-Instruct",
+        base_model: str = DEFAULT_BASE_MODEL,
+        revision: str | None = None,
         output_dir: str = "./models/lora_adapters",
         device: str = "cuda:0"
     ):
+        if revision is None:
+            if base_model == DEFAULT_BASE_MODEL:
+                revision = DEFAULT_BASE_MODEL_REVISION
+            else:
+                raise ValueError(
+                    f"LoRATrainer: base_model='{base_model}' distinto del "
+                    f"default ({DEFAULT_BASE_MODEL}) requiere revision= "
+                    "explícita — no hay una revisión pineada válida para un "
+                    "repo arbitrario del Hub (evita reintroducir B615 sin "
+                    "pinear)."
+                )
+
         self.base_model = base_model
+        self.revision = revision
         self.output_dir = Path(output_dir)
         self.device = device
 
@@ -423,11 +449,12 @@ class LoRATrainer:
         logger.info(f"Iniciando entrenamiento LoRA para {self.base_model}")
         logger.info(f"Datos: {training_data_path}")
 
-        # Cargar dataset
-        dataset = load_dataset("json", data_files=training_data_path)
+        # Cargar dataset ("json" es el builder local built-in de datasets,
+        # data_files es un path local: no hay descarga del Hub acá)
+        dataset = load_dataset("json", data_files=training_data_path)  # nosec B615 -- builder local "json", data_files es un path local, no descarga del Hub
 
         # Cargar tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(self.base_model)
+        tokenizer = AutoTokenizer.from_pretrained(self.base_model, revision=self.revision)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
@@ -452,6 +479,7 @@ class LoRATrainer:
         logger.info("Cargando modelo base...")
         model = AutoModelForCausalLM.from_pretrained(
             self.base_model,
+            revision=self.revision,
             torch_dtype=torch.float16,
             device_map="auto"
         )

@@ -663,10 +663,10 @@ class Qwen3TTS:
             logger.info(f"Cargando Qwen3-TTS: {self.model_name}")
             start = time.time()
 
-            self._processor = AutoProcessor.from_pretrained(
+            self._processor = AutoProcessor.from_pretrained(  # nosec B615 -- Qwen3TTS dormido, no muerto: create_tts pasa {} y DualTTS.__init__ deja self.qwen3=None; se re-arma descomentando settings.yaml:255-258 (requiere 3ra GPU)
                 self.model_name, trust_remote_code=True
             )
-            self._model = AutoModelForCausalLM.from_pretrained(
+            self._model = AutoModelForCausalLM.from_pretrained(  # nosec B615 -- ídem: dormido, se re-arma descomentando settings.yaml:255-258 (requiere 3ra GPU), no muerto
                 self.model_name, trust_remote_code=True
             ).to(self.device)
 
