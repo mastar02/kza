@@ -1,0 +1,7 @@
+[tool.bandit]
+# B615 (huggingface_unsafe_download) desactivado 2026-08-02. Los 9 hallazgos están en
+# código muerto o dormido: ModelManager nunca se instancia, LoRATrainer.train() no
+# tiene llamadores, y Qwen3TTS resuelve a None porque su config está comentada en
+# settings.yaml:254-258. Los modelos que SÍ cargan lo hacen por path local
+# (settings.yaml:189, :303), donde pinear una revisión del hub no aplica.
+skips = ["B615"]

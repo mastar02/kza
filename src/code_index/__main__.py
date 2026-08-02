@@ -21,7 +21,7 @@ def main() -> None:
 
     indexer = build_indexer(cfg, repo_root=Path.cwd())
     app = create_app(indexer)
-    web.run_app(app, host=cfg.get("host", "0.0.0.0"), port=cfg.get("port", 9510))
+    web.run_app(app, host=cfg.get("host", "0.0.0.0"), port=cfg.get("port", 9510))  # nosec B104 -- bind a LAN deliberado: el servicio code-index se consume desde la red (tools/code_search.py y agentes remotos), no solo localhost
 
 
 if __name__ == "__main__":

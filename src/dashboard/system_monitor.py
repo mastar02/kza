@@ -170,7 +170,7 @@ def _probe_service(probe: dict, have_systemctl: bool) -> dict:
 def _http_ok(url: str, timeout: float = 1.5) -> bool:
     try:
         req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310 -- url viene de _service_probes()/env var interno (registry fijo de servicios KZA), esquema siempre "http://", no hay input de red ni de usuario
             # 2xx + algunos 4xx (HA devuelve 401 sin token, está vivo)
             return r.status < 500
     except urllib.error.HTTPError as e:

@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}  # nosec B104 -- no es un bind: es el set de hosts locales del gate de privacidad (is_cloud_endpoint compara contra esto, no abre socket)
 
 
 def is_cloud_endpoint(base_url: str) -> bool:

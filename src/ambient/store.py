@@ -194,7 +194,7 @@ class AmbientStore:
             return
         marks = ",".join("?" * len(ids))
         await self._db.execute(
-            f"UPDATE utterances SET distilled=1 WHERE id IN ({marks})", ids
+            f"UPDATE utterances SET distilled=1 WHERE id IN ({marks})", ids  # nosec B608 -- {marks} son solo placeholders "?,?,..." (uno por elemento de ids); los valores van parametrizados en el segundo argumento de execute, no hay interpolación de datos
         )
         await self._db.commit()
 

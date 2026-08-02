@@ -14,9 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 def git_blob_hash(data: bytes) -> str:
-    """SHA1 estilo `git hash-object` (blob) — comparable con el repo."""
+    """SHA1 estilo `git hash-object` (blob) — comparable con el repo.
+
+    SHA1 no es opcional acá: el objetivo es reproducir el hash exacto de
+    `git hash-object`, no protección criptográfica. `usedforsecurity=False`
+    documenta eso para bandit (B324) sin tocar el algoritmo — cambiarlo
+    invalidaría el manifest incremental completo del code-index.
+    """
     header = f"blob {len(data)}\0".encode()
-    return hashlib.sha1(header + data).hexdigest()
+    return hashlib.sha1(header + data, usedforsecurity=False).hexdigest()
 
 
 @dataclass
