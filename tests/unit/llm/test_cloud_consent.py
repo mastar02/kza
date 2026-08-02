@@ -6,6 +6,7 @@ from src.llm.cloud_consent import (
     is_cloud_endpoint,
     resolve_compaction_endpoint,
     resolve_http_reasoner_base_url,
+    resolve_reasoner_gate,
 )
 
 
@@ -299,3 +300,121 @@ def test_gate_blocked_never_yields_cloud_endpoint():
         assert is_cloud_endpoint(endpoint.base_url) is False, f"[{label}] {endpoint=}"
         assert endpoint.api_key_env is None, f"[{label}] {endpoint=}"
         assert endpoint.model != "MiniMax-M2.7-highspeed", f"[{label}] {endpoint=}"
+
+
+# --- Agujeros encontrados en el review fresco 2026-08-02 (ronda 3) ---
+
+
+def test_local_base_url_override_cannot_be_cloud():
+    """El fallback local NO es una puerta trasera al cloud.
+
+    ``compaction.local_base_url`` lo introduce este mismo PR y lo documenta
+    en settings.yaml, pero la rama (c) lo usaba SIN validar: bastaba
+    apuntarlo a MiniMax para que ``consent:false`` egresara igual — y encima
+    el logger anunciaba "degradada a LLM local ... ya no sale a MiniMax"
+    mientras devolvía la URL de MiniMax (log mentiroso, el patrón raíz de
+    los fallos silenciosos de KZA).
+
+    La matriz ``test_gate_blocked_never_yields_cloud_endpoint`` no lo
+    atrapaba porque varía ``compaction_cfg["base_url"]``, nunca
+    ``local_base_url`` — otro eje del mismo parámetro, no un eje nuevo.
+    """
+    reasoner_config = {
+        "http_base_url": "https://api.minimax.io/v1",
+        "http_model": "MiniMax-M2.7-highspeed",
+        "api_key_env": "MINIMAX_API_KEY",
+        "api_style": "chat",
+        "cloud": {"consent": False},
+    }
+    compaction_cfg = {"enabled": True, "local_base_url": "https://api.minimax.io/v1"}
+
+    endpoint = resolve_compaction_endpoint(compaction_cfg, reasoner_config, gate_allowed=False)
+
+    assert is_cloud_endpoint(endpoint.base_url) is False
+    assert endpoint.api_key_env is None
+    # Literal a propósito (mismo motivo que test_compaction_falls_back_to_local_
+    # when_gate_blocks): comparar contra la constante que la mutación mueve es
+    # tautológico.
+    assert endpoint.base_url == "http://127.0.0.1:8101/v1"
+
+
+def test_local_base_url_override_is_honored_when_actually_local():
+    """Contrapeso del test de arriba: un override local legítimo SÍ se respeta.
+
+    Sin este test, "ignorar siempre ``local_base_url``" pasaría el test
+    anterior y rompería la key documentada en settings.yaml en silencio.
+    """
+    reasoner_config = {"http_base_url": "https://api.minimax.io/v1", "cloud": {"consent": False}}
+    compaction_cfg = {"enabled": True, "local_base_url": "http://127.0.0.1:9000/v1"}
+
+    endpoint = resolve_compaction_endpoint(compaction_cfg, reasoner_config, gate_allowed=False)
+
+    assert endpoint.base_url == "http://127.0.0.1:9000/v1"
+
+
+def test_gate_is_evaluated_when_reasoner_mode_is_not_http():
+    """``mode != "http"`` NO implica "no hay nada que bloquear".
+
+    ``main.py`` hardcodeaba ``gate_allowed = True`` para esa rama con el
+    argumento de que sin reasoner cloud no hay egreso que gatear. Falso: el
+    compactor sigue leyendo ``reasoner_config["http_base_url"]`` (que apunta
+    al gateway → MiniMax) por la rama (b). Con ``mode: "local"`` —o un typo
+    en ``mode``, porque la condición es ``== "http"``— ``consent:false``
+    quedaba en no-op y la conversación del hogar salía igual, con la
+    ``MINIMAX_API_KEY`` real.
+    """
+    reasoner_config = {
+        "http_base_url": "http://192.168.1.2:8200/v1",  # LLM_GATEWAY_URL real
+        "http_model": "MiniMax-M2.7-highspeed",
+        "api_key_env": "MINIMAX_API_KEY",
+        "api_style": "chat",
+        "cloud": {"consent": False},
+    }
+
+    for mode in ("local", "htpp", "", "disabled"):
+        gate_allowed, _ = resolve_reasoner_gate(
+            reasoner_config, mode, DEFAULT_LOCAL_LLM_GATEWAY
+        )
+        assert gate_allowed is False, f"[mode={mode!r}] el gate no debe abrirse"
+
+        endpoint = resolve_compaction_endpoint({"enabled": True}, reasoner_config, gate_allowed)
+        assert is_cloud_endpoint(endpoint.base_url) is False, f"[mode={mode!r}] {endpoint=}"
+        assert endpoint.api_key_env is None, f"[mode={mode!r}] {endpoint=}"
+
+
+def test_gate_allows_non_http_mode_when_consent_is_true():
+    """Contrapeso: con consent:true, ``mode != "http"`` no bloquea nada.
+
+    Sin esto, "devolver siempre False fuera de http" pasaría el test de
+    arriba y apagaría el compactor cloud de quien tiene consent dado.
+    """
+    reasoner_config = {
+        "http_base_url": "http://192.168.1.2:8200/v1",
+        "cloud": {"consent": True},
+    }
+
+    gate_allowed, _ = resolve_reasoner_gate(
+        reasoner_config, "local", DEFAULT_LOCAL_LLM_GATEWAY
+    )
+
+    assert gate_allowed is True
+
+
+def test_gate_for_http_mode_still_resolves_placeholder():
+    """``resolve_reasoner_gate`` con mode="http" delega tal cual al resolver viejo.
+
+    Guard de que la extracción no cambió el camino de producción: gate
+    evaluado ANTES del fallback (el Critical de Task 5) y placeholder
+    resuelto después.
+    """
+    reasoner_config = {
+        "http_base_url": "${LLM_GATEWAY_URL}",
+        "cloud": {"consent": False},
+    }
+
+    gate_allowed, resolved = resolve_reasoner_gate(
+        reasoner_config, "http", DEFAULT_LOCAL_LLM_GATEWAY
+    )
+
+    assert gate_allowed is False
+    assert resolved == DEFAULT_LOCAL_LLM_GATEWAY

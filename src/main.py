@@ -304,25 +304,31 @@ async def main():
     reasoner_config = config.get("reasoner", {})
     reasoner_mode = reasoner_config.get("mode", "http")
 
-    # Default para mode="local": no hay reasoner cloud en juego, así que el
-    # gate está trivialmente "permitido" (no hay nada que bloquear). Sin este
-    # default, gate_allowed no existe en absoluto en la rama `else` de abajo
-    # (mode="local") — el compactor lo necesita SIEMPRE (línea ~1180, vía
-    # resolve_compaction_endpoint), y con mode="local" el proceso reventaba
-    # con NameError después de haber levantado audio/STT/TTS. Config sin
-    # cobertura de CI, encontrado en el diseño de cloud.consent para el
-    # compactor (.superpowers/sdd/compactor-consent/diseno.md, LANDMINE 1).
-    gate_allowed = True
+    from src.llm.cloud_consent import resolve_reasoner_gate
+
+    # El compactor necesita gate_allowed SIEMPRE (línea ~1180, vía
+    # resolve_compaction_endpoint), también cuando mode != "http" — ahí no hay
+    # cliente cloud principal, pero reasoner_config conserva http_base_url (el
+    # gateway → MiniMax) y api_key_env, y el compactor los hereda igual. Por
+    # eso el gate se evalúa para CUALQUIER mode, en resolve_reasoner_gate.
+    #
+    # Acá estuvo hardcodeado `gate_allowed = True` "porque sin reasoner cloud
+    # no hay nada que bloquear" (review 2026-08-02 ronda 3): con mode="local"
+    # —o un typo en mode, la condición es == "http"— cloud.consent=false
+    # quedaba en no-op y la conversación del hogar salía igual con la key
+    # real. Tests: test_gate_is_evaluated_when_reasoner_mode_is_not_http.
+    gate_allowed, _ = resolve_reasoner_gate(
+        reasoner_config, reasoner_mode, DEFAULT_LOCAL_LLM_GATEWAY
+    )
 
     if reasoner_mode == "http":
-        from src.llm.cloud_consent import resolve_http_reasoner_base_url
-
         # El orden gate→fallback (y el porqué) está documentado y TESTEADO en
-        # resolve_http_reasoner_base_url (src/llm/cloud_consent.py) — no lo
-        # reimplementes acá inline, ese fue exactamente el bug (Critical
-        # cerrado 2026-08-02, Task 5 "CI a verde"): con el fallback aplicado
-        # antes del gate, is_cloud_endpoint ve "127.0.0.1" en vez del
-        # placeholder y el gate pasa de fail-closed a fail-open.
+        # resolve_http_reasoner_base_url (src/llm/cloud_consent.py), a la que
+        # resolve_reasoner_gate delega en este mode — no lo reimplementes acá
+        # inline, ese fue exactamente el bug (Critical cerrado 2026-08-02,
+        # Task 5 "CI a verde"): con el fallback aplicado antes del gate,
+        # is_cloud_endpoint ve "127.0.0.1" en vez del placeholder y el gate
+        # pasa de fail-closed a fail-open.
         #
         # reasoner_config es el mismo dict que consume el compactor más abajo
         # (línea ~1180, vía resolve_compaction_endpoint) — ese resolver SÍ
@@ -340,10 +346,6 @@ async def main():
         # conectar — puede pasar de "muerto" a "vivo" sin que el operador
         # haya elegido ese endpoint para él. Ver informe Task 5 §8.1 para el
         # análisis completo de esta corrección.
-        gate_allowed, _ = resolve_http_reasoner_base_url(
-            reasoner_config, DEFAULT_LOCAL_LLM_GATEWAY
-        )
-
         if not gate_allowed:
             logger.warning(
                 "Reasoner cloud bloqueado por falta de consent — slow path sin reasoner. "

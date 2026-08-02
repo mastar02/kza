@@ -31,8 +31,23 @@ DEFAULT_COMPACTION_LOCAL_MODEL = "local"
 
 
 def is_cloud_endpoint(base_url: str) -> bool:
-    """True si base_url no es localhost (sale de la máquina)."""
-    host = urlparse(base_url).hostname or ""
+    """True si base_url no es localhost (sale de la máquina).
+
+    Una URL que no se puede parsear cuenta como cloud (fail-closed): esta
+    función decide si algo pasa por el gate de privacidad, así que ante la
+    duda tiene que gatear. ``urlparse`` tira ``ValueError`` con IPv6
+    malformado (``"http://[::1"``) — antes eso propagaba hasta ``main()``,
+    fuera del try/except del compactor, y mataba el proceso con audio/STT/TTS
+    ya levantados.
+    """
+    try:
+        host = urlparse(base_url).hostname or ""
+    except ValueError:
+        logger.warning(
+            "base_url %r no se puede parsear — se trata como cloud (fail-closed).",
+            base_url,
+        )
+        return True
     return host not in _LOCAL_HOSTS
 
 
@@ -79,9 +94,25 @@ def resolve_http_reasoner_base_url(
     que falla si se invierte el orden).
 
     El bypass del compactor (`src/main.py`, que reusaba este mismo dict sin
-    pasar por este gate) YA NO existe: ver `resolve_compaction_endpoint` más
-    abajo, que sí lo cubre desde el PR de `cloud.consent` para el compactor
-    (`.superpowers/sdd/compactor-consent/`).
+    pasar por este gate) YA NO existe: lo cubren `resolve_compaction_endpoint`
+    (a qué endpoint va el compactor) y `resolve_reasoner_gate` (que el gate se
+    evalúe también con `reasoner.mode != "http"`), ambos más abajo.
+
+    Caveat conocido y FUERA de alcance: `is_cloud_endpoint` clasifica
+    cualquier loopback como no-cloud, así que un `http_base_url` LITERAL tipo
+    `http://127.0.0.1:8200/v1` —el bloque de rollback comentado en
+    settings.yaml— abre el gate aunque :8200 reenvíe a MiniMax. Fail-open
+    preexistente, decisión abierta aparte.
+
+    Y NO subestimar ese caveat por creer que la config viva usa una IP de LAN:
+    verificado 2026-08-02, `LLM_GATEWAY_URL` **no está seteada** en
+    `/home/kza/secrets/.env`, así que apenas se deploye el settings.yaml con
+    el placeholder, `http_base_url` va a resolver a `DEFAULT_LOCAL_LLM_GATEWAY`
+    = `http://127.0.0.1:8200/v1`, o sea justo el loopback-que-reenvía-al-cloud.
+    Lo único que sostiene el fail-closed en ese escenario es el ORDEN de esta
+    función (gate sobre el valor tal como está escrito —el placeholder cuenta
+    como cloud— y recién después el fallback). Cualquier consumidor futuro que
+    llame `is_cloud_endpoint` sobre la URL YA RESUELTA va a fallar abierto.
 
     Args:
         reasoner_config: dict de config del reasoner. Se muta in-place si
@@ -102,6 +133,45 @@ def resolve_http_reasoner_base_url(
         reasoner_config["http_base_url"] = default_local_url
 
     return gate_allowed, reasoner_config.get("http_base_url", default_local_url)
+
+
+def resolve_reasoner_gate(
+    reasoner_config: dict, reasoner_mode: str, default_local_url: str
+) -> tuple[bool, str]:
+    """Evalúa el gate de consent para CUALQUIER ``reasoner.mode``.
+
+    Única fuente de verdad para el ``gate_allowed`` de ``main()`` — que lo
+    necesita SIEMPRE, no solo con ``mode="http"``, porque el compactor
+    (``resolve_compaction_endpoint``) lo consume aunque el reasoner
+    principal sea local.
+
+    ``main.py`` hardcodeaba ``gate_allowed = True`` fuera de ``mode="http"``
+    con el argumento de que "sin reasoner cloud no hay nada que bloquear"
+    (review 2026-08-02 ronda 3). Es falso: ``reasoner_config`` conserva
+    ``http_base_url`` (el gateway → MiniMax) y ``api_key_env`` sin importar
+    el ``mode``, y la rama (b) de ``resolve_compaction_endpoint`` los hereda.
+    Con ``mode: "local"`` —o un typo en ``mode``, porque la condición es
+    ``== "http"``— ``cloud.consent=false`` quedaba en no-op y la
+    conversación del hogar salía igual con la key real.
+
+    Args:
+        reasoner_config: dict de ``reasoner`` de settings.yaml.
+        reasoner_mode: valor de ``reasoner.mode``.
+        default_local_url: fallback si el placeholder no se resolvió.
+
+    Returns:
+        Tupla ``(gate_allowed, base_url)``. Con ``mode="http"`` delega en
+        ``resolve_http_reasoner_base_url`` (que además resuelve el
+        placeholder in-place, en ese orden y por ese motivo). Con cualquier
+        otro mode solo evalúa el consent: no hay cliente HTTP principal que
+        construir, así que no se toca la URL.
+    """
+    if reasoner_mode == "http":
+        return resolve_http_reasoner_base_url(reasoner_config, default_local_url)
+    return (
+        cloud_reasoner_allowed(reasoner_config),
+        reasoner_config.get("http_base_url", default_local_url),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,12 +230,17 @@ def resolve_compaction_endpoint(
        ambient distiller para conversación del hogar), model
        ``compaction.local_model`` (default ``DEFAULT_COMPACTION_LOCAL_MODEL``),
        ``api_key_env=None`` SIEMPRE (nunca heredar la key del reasoner
-       cloud: si el compactor hereda ``MINIMAX_API_KEY`` para un endpoint
-       local, ``_resolve_api_key`` revienta con ``RuntimeError`` en
-       ``load()``, el try/except de ``main.py`` lo traga y
-       ``compactor=None`` — exactamente la degradación silenciosa que este
-       gate viene a eliminar), ``api_style="chat"`` pineado (no heredar: el
-       bloque de rollback de emergencia en settings.yaml pondría
+       cloud). Con ``api_key_env=None``, ``_resolve_api_key`` cae en la
+       heurística por puerto y resuelve ``LLAMA_API_KEY`` para :8101 — el
+       bearer correcto para ese endpoint, que sí exige auth. Heredar
+       ``api_key_env="MINIMAX_API_KEY"`` en cambio da uno de dos resultados,
+       los dos malos (verificado 2026-08-02, ronda 3): con la var seteada
+       —el caso de producción— ``_resolve_api_key`` la devuelve sin chistar
+       y el bearer real de MiniMax viaja al endpoint local; con la var
+       ausente revienta con ``RuntimeError`` en ``load()``, el try/except de
+       ``main.py`` lo traga y ``compactor=None``, la degradación silenciosa
+       que este gate viene a eliminar. ``api_style="chat"`` pineado (no
+       heredar: el bloque de rollback de emergencia en settings.yaml pondría
        "completions").
     d. Si (c) falla en ``load()`` → el try/except ya existente en
        ``main.py`` deja ``compactor=None`` (equivale a no compactar).
@@ -228,6 +303,23 @@ def resolve_compaction_endpoint(
         )
 
     local_base_url = compaction_cfg.get("local_base_url") or DEFAULT_COMPACTION_LOCAL_URL
+    if is_cloud_endpoint(local_base_url):
+        # El fallback local NO es una puerta trasera al cloud (review
+        # 2026-08-02 ronda 3). `local_base_url` es una key que este PR
+        # introduce y documenta en settings.yaml, y la rama (a) valida su
+        # propio override con is_cloud_endpoint — dejar ésta sin validar
+        # significaba que apuntarla a MiniMax egresaba igual con
+        # consent=false, mientras el logger de abajo anunciaba "degradada a
+        # LLM local ... ya no sale a MiniMax". Log mentiroso sobre un egreso
+        # real: exactamente el patrón que este gate existe para eliminar.
+        logger.error(
+            "compaction.local_base_url=%s es un endpoint CLOUD y el gate está "
+            "bloqueado (reasoner.cloud.consent=false) — IGNORADO, se usa %s. "
+            "El fallback local no puede saltear el consent.",
+            local_base_url,
+            DEFAULT_COMPACTION_LOCAL_URL,
+        )
+        local_base_url = DEFAULT_COMPACTION_LOCAL_URL
     local_model = compaction_cfg.get("local_model") or DEFAULT_COMPACTION_LOCAL_MODEL
     logger.warning(
         "compaction degradada a LLM local (%s) por cloud.consent=false — "

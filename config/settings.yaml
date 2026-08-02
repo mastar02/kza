@@ -856,9 +856,21 @@ orchestrator:
     # base_url/model (si no se overridean acá) heredan del reasoner principal
     # SOLO cuando reasoner.cloud.consent lo permite — ver
     # resolve_compaction_endpoint (src/llm/cloud_consent.py). Con
-    # consent=false el compactor NO manda la conversación a MiniMax: degrada
-    # automáticamente a local_base_url/local_model de abajo (mismo :8101 que
-    # ya usa el ambient distiller). Ver .superpowers/sdd/compactor-consent/.
+    # consent=false el compactor degrada a local_base_url/local_model de
+    # abajo (mismo :8101 que ya usa el ambient distiller), sin heredar
+    # credenciales del reasoner cloud. El gate se evalúa para cualquier
+    # reasoner.mode, no solo "http" (resolve_reasoner_gate), y ni base_url ni
+    # local_base_url pueden apuntar a un endpoint cloud con el gate
+    # bloqueado: se ignoran y se loguea error.
+    #
+    # ⚠️ Límite conocido: el gate clasifica por host, así que un endpoint
+    # loopback que REENVÍA al cloud (el gateway LiteLLM de 127.0.0.1:8200)
+    # pasa como local y abre el gate. Aplica al bloque de rollback de
+    # emergencia de reasoner — y también, apenas se deploye, al camino normal:
+    # LLM_GATEWAY_URL NO está seteada en el server (verificado 2026-08-02), así
+    # que el placeholder de arriba resuelve a 127.0.0.1:8200. El fail-closed lo
+    # sostiene el ORDEN de resolve_http_reasoner_base_url (gate antes del
+    # fallback), no la URL final. Ver .superpowers/sdd/compactor-consent/.
     compaction:
       enabled: true
       threshold_turns: 6
