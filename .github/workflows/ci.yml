@@ -33,10 +33,6 @@ jobs:
     name: Lint & Format
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Temporal: black --check e isort --check-only se contradicen sin config
-    # compartida, asi que este job es hoy insatisfacible. Task 3 lo deja
-    # solo en el sub-chequeo de formato una vez resuelto el conflicto.
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -48,16 +44,17 @@ jobs:
 
       - name: Install linting tools
         run: |
-          pip install ruff black isort mypy
+          pip install ruff==0.15.1
 
       - name: Run ruff
         run: ruff check src/ tests/
 
-      - name: Check formatting with black
-        run: black --check src/ tests/
-
-      - name: Check import order
-        run: isort --check-only src/ tests/
+      - name: Check formatting with ruff format
+        # Temporal: el commit de formateo (332 archivos, Task 6) todavia no
+        # existe, asi que este sub-chequeo puntual queda en continue-on-error
+        # hasta que se aplique. `ruff check` arriba SI bloquea el job.
+        continue-on-error: true
+        run: ruff format --check src/ tests/
 
   # ============================================================
   # UNIT TESTS
@@ -183,7 +180,7 @@ jobs:
       - name: Run bandit security scan
         run: |
           bandit -r src/ -c pyproject.toml -f json -o bandit-report.json || true
-          bandit -r src/ -ll -c pyproject.toml  # Fail on medium+ severity (pyproject.toml: B615 desactivado, ver justificación ahí)
+          bandit -r src/ -ll -c pyproject.toml  # Fail on medium+ severity (B615 ya no tiene skip global; ver pyproject.toml [tool.bandit] para el pineo/nosec caso a caso)
 
       - name: Upload bandit report
         if: always()

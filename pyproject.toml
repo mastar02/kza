@@ -5,3 +5,17 @@
 # con revision= donde el código corre, o `# nosec B615 -- <razón>` línea por línea
 # donde está genuinamente muerto/dormido, igual que el resto de las supresiones
 # de este proyecto (ver src/ambient/store.py, src/code_index/__main__.py, etc).
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Los tests mockean sys.modules ANTES de importar src.* (sounddevice, soundfile,
+# pyaudio, torch). Mover esos imports al tope reintroduce la contaminación que
+# hacía que pytest colectara 2668 tests y abortara con
+# "ValueError: torch.__spec__ is not set" — o sea, CERO tests ejecutados.
+# Se neutraliza acá, jamás editando los archivos.
+"tests/**" = ["E402"]
