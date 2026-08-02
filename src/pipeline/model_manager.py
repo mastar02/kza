@@ -279,7 +279,6 @@ class ModelManager:
                 return PiperVoice.load(voice_path)
             else:
                 # VITS o alternativa
-                import torch
                 from TTS.api import TTS
                 device = f"cuda:{self.config.tts_gpu}"
                 tts = TTS("tts_models/es/css10/vits").to(device)
@@ -343,7 +342,6 @@ class ModelManager:
     async def _load_router(self):
         """Cargar modelo Router (Qwen 7B)"""
         try:
-            import torch
             from vllm import LLM
 
             model = LLM(
@@ -360,7 +358,6 @@ class ModelManager:
     async def _load_emotion(self):
         """Cargar modelo de detección de emociones"""
         try:
-            import torch
             from transformers import Wav2Vec2ForSequenceClassification, Wav2Vec2FeatureExtractor
 
             device = f"cuda:{self.config.emotion_gpu}"

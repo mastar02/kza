@@ -11,6 +11,31 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
+ignore = [
+    # --- (a) Estética pura, sin riesgo detrás. El diagnóstico del plan
+    # "CI a verde" los revisó uno por uno y concluyó que no vale la pena
+    # enforzarlos: no cambian comportamiento, solo estilo de sintaxis.
+    "E712",  # `== True` / `== False` en vez de `if x:` / `if not x:`
+    "E702",  # múltiples statements en una línea con `;`
+    "E741",  # nombre de variable ambiguo (ej. `l`)
+
+    # --- (b) F841 (variable local asignada y nunca usada) NO es estética:
+    # son señales de código muerto o de lógica que no se está aplicando.
+    # Se ignora la regla (no se auto-arregla ni se borra caso a caso) porque
+    # el arreglo correcto NO es borrar la variable — es investigar por qué
+    # se lee un valor y después se lo tira. Ejemplo concreto, el más
+    # sospechoso del lote: `src/routines/routine_executor.py:289-290`
+    # (`_execute_spotify_play`) lee `album = action.get("album")` y
+    # `track = action.get("track")` del payload de la rutina, pero el
+    # dispatch de abajo (líneas 296-309) solo mira `playlist`/`artist`/
+    # `mood` — una rutina que pide reproducir un álbum o track específico
+    # se ejecuta en silencio sin hacerlo. Borrar esas dos líneas para
+    # callar a ruff cementaría el bug y borraría la evidencia de que falta
+    # el `elif album:` / `elif track:`. Se difiere a un ticket de revisión
+    # de código muerto (no es parte del plan "CI a verde"); quien lo tome
+    # que empiece por ese caso.
+    "F841",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Los tests mockean sys.modules ANTES de importar src.* (sounddevice, soundfile,

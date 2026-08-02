@@ -267,7 +267,7 @@ class BLEScanner:
     async def start(self):
         """Iniciar scanner"""
         try:
-            from bleak import BleakScanner
+            from bleak import BleakScanner  # noqa: F401 -- el import ES la sonda: si bleak no está instalado, esta línea lanza ImportError y cae al except de abajo. `BleakScanner` en sí se reimporta y se usa de verdad en discover_devices/start (líneas ~403 y ~442); acá no hace falta el nombre, solo que la importación no reviente. Borrarlo dejaría `self._bleak_available = True` sin nada que lo pueda hacer fallar -> presencia BLE marcada disponible aunque bleak no esté, rota en silencio.
             self._bleak_available = True
             logger.info(f"BLE Scanner iniciado en {self.adapter}, zona: {self.zone_id}")
         except ImportError:
