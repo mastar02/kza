@@ -1,5 +1,5 @@
 """Tests: CommandAcceptanceGate."""
-from src.nlu.command_gate import CommandAcceptanceGate, AcceptanceDecision
+from src.nlu.command_gate import CommandAcceptanceGate
 from src.stt.whisper_fast import STTResult
 
 

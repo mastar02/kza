@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import time
 import threading
-import queue
 from pathlib import Path
 from typing import Generator, Callable
 import numpy as np

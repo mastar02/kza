@@ -1,13 +1,11 @@
 """Tests for HealthAggregator — subsystem health collection and failure tracking."""
 
-import time
 import pytest
 from unittest.mock import MagicMock
 
 from src.monitoring.health_aggregator import (
     HealthAggregator,
     OverallStatus,
-    SubsystemHealth,
     SystemHealth,
 )
 

@@ -1,6 +1,5 @@
 """Tests del CodeIndexer con Chroma/embedder/cards fake."""
 
-from pathlib import Path
 
 import pytest
 

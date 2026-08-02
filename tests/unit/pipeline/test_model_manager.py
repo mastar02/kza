@@ -25,11 +25,9 @@ from unittest.mock import MagicMock, AsyncMock, patch
 sys.modules['pyaudio'] = MagicMock()
 
 import pytest
-import asyncio
 
 from tests.mocks.mock_gpu import (
-    MockCUDA, MockTorchModule, MockWhisperModel,
-    MockTTSModel, MockSpeakerIDModel, MockEmbeddingsModel
+    MockCUDA, MockTorchModule, MockTTSModel
 )
 
 

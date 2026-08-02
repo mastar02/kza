@@ -1,6 +1,6 @@
 """Tests for ProcessedCommand dataclass and CommandProcessor return type."""
 import sys
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 sys.modules.setdefault("sounddevice", MagicMock())
 sys.modules.setdefault("soundfile", MagicMock())

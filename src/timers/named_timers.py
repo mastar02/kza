@@ -15,7 +15,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Callable, Any
+from typing import Callable
 from enum import StrEnum
 import uuid
 

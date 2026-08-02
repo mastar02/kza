@@ -1,6 +1,5 @@
 """Tests para adapters reales (use_mocks=False)."""
 
-from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 

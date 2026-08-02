@@ -9,15 +9,12 @@ NO hay nada hardcodeado - todo se descubre o aprende:
 - Alias: de la conversación natural
 """
 
-import asyncio
 import logging
 import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
 from pathlib import Path
-from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 

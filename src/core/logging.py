@@ -30,11 +30,10 @@ import logging
 import re
 import sys
 import time
-import threading
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any

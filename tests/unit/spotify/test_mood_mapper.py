@@ -3,7 +3,7 @@ Tests for MoodMapper - Natural language to Spotify audio features mapping.
 """
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 from src.spotify.mood_mapper import (
     MoodMapper,

@@ -6,7 +6,7 @@ For full integration tests, see tests/integration/
 """
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 class TestChromaSyncUnit:

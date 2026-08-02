@@ -3,15 +3,14 @@
 import asyncio
 import sqlite3
 import importlib
-from pathlib import Path
 from unittest.mock import patch
 import pytest
 
 from src.hooks import (
-    HookRegistry, BlockResult,
+    BlockResult,
     HaActionCall, TtsCall,
     execute_before_chain, execute_after_event,
-    HaActionDispatchedPayload, SttPayload,
+    SttPayload,
 )
 
 

@@ -19,7 +19,6 @@ from urllib.parse import urlencode, parse_qs, urlparse
 import threading
 
 import aiohttp
-import asyncio
 
 logger = logging.getLogger(__name__)
 

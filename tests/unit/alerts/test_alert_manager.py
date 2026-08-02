@@ -2,9 +2,8 @@
 Tests for AlertManager module.
 """
 
-import asyncio
 import pytest
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, AsyncMock
 
 from src.alerts import AlertManager, AlertPriority, AlertType, Alert
 

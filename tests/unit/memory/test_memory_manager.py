@@ -3,12 +3,10 @@ Tests for Memory Manager module.
 Tests short-term memory, long-term memory, and preferences storage.
 """
 
-import pytest
-import json
 import time
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock
 from src.memory.memory_manager import (
     ShortTermMemory,
     LongTermMemory,

@@ -6,11 +6,9 @@ Monitorea y reporta latencias del pipeline de voz en tiempo real.
 import json
 import logging
 import sqlite3
-import statistics
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Callable

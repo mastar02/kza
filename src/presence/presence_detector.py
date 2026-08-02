@@ -16,7 +16,6 @@ import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Callable
-from collections import defaultdict
 
 from src.presence.ble_scanner import BLEScanner, BLEDevice, DeviceType
 

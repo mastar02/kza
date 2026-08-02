@@ -5,7 +5,7 @@ Tests speaker embeddings, identification, and verification functionality.
 
 import pytest
 import numpy as np
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 from src.users.speaker_identifier import SpeakerIdentifier, SpeakerMatch
 from tests.factories import make_speaker_identifier
 

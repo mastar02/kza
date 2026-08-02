@@ -5,7 +5,7 @@ Tests para Dual TTS (Kokoro + Qwen3) y factory create_tts()
 import sys
 import pytest
 import numpy as np
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 # Mock sounddevice before importing piper_tts (not available in CI)
 sys.modules.setdefault("sounddevice", MagicMock())

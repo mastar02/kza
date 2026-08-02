@@ -1,9 +1,8 @@
 """Tests para /api/admin/* — auth, users CRUD, enroll, alerts, services."""
 
 import io
-import os
 import wave
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -11,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.dashboard.admin import register_admin_routes
-from src.users.user_manager import PermissionLevel, User
+from src.users.user_manager import User
 
 
 TEST_TOKEN = "test-secret-token-1234567890"

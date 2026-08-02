@@ -20,7 +20,7 @@ import time
 from unittest.mock import AsyncMock
 
 from src.pipeline.command_event import CommandEvent
-from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
+from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop
 from src.orchestrator.priority_queue import (
     Priority,
     PriorityRequestQueue,

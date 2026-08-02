@@ -9,7 +9,6 @@ import asyncio
 import logging
 import time
 
-import numpy as np
 
 from src.llm.buffered_streamer import (
     BufferedLLMStreamer,
@@ -547,7 +546,7 @@ class ResponseHandler:
                     audio_data=audio_data,
                     sample_rate=self.tts.sample_rate
                 )
-                logger.debug(f"Audio reproducido en todas las zonas")
+                logger.debug("Audio reproducido en todas las zonas")
         finally:
             self._is_speaking = False
             self._current_stream = None

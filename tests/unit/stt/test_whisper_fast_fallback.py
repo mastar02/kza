@@ -1,6 +1,6 @@
 # tests/unit/stt/test_whisper_fast_fallback.py
 import numpy as np
-from src.stt.whisper_fast import FastWhisperSTT, STTResult
+from src.stt.whisper_fast import FastWhisperSTT
 
 
 class _FakeSegment:

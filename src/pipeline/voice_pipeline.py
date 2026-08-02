@@ -16,7 +16,6 @@ import logging
 import numpy as np
 
 from src.pipeline.audio_loop import AudioLoop
-from src.pipeline.command_event import CommandEvent
 from src.pipeline.command_processor import CommandProcessor
 from src.pipeline.request_router import RequestRouter
 from src.pipeline.response_handler import ResponseHandler

@@ -9,7 +9,6 @@ Usa modelos de speaker verification/identification para crear
 import logging
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 

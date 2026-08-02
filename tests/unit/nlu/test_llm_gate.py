@@ -9,7 +9,6 @@ Mockeamos FastRouter.generate para validar:
 """
 from __future__ import annotations
 
-import asyncio
 import pytest
 
 from src.nlu.llm_gate import LLMGate

@@ -3,8 +3,7 @@ Tests for MusicDispatcher - Music command routing and execution.
 """
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from dataclasses import dataclass
+from unittest.mock import MagicMock, AsyncMock
 
 from src.spotify.music_dispatcher import (
     MusicDispatcher,

@@ -3,7 +3,7 @@ import time
 import pytest
 import pytest_asyncio
 
-from src.reminders.reminder_store import ReminderStore, Reminder
+from src.reminders.reminder_store import ReminderStore
 
 
 @pytest_asyncio.fixture

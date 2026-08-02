@@ -51,7 +51,6 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -60,7 +59,6 @@ from pathlib import Path
 from typing import Callable
 from enum import StrEnum
 import threading
-import signal
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +207,7 @@ class NightlyTrainer:
         # Cargar historial
         self._load_history()
 
-        logger.info(f"NightlyTrainer inicializado")
+        logger.info("NightlyTrainer inicializado")
         logger.info(f"  Hora programada: {self.config.training_hour:02d}:{self.config.training_minute:02d}")
         logger.info(f"  GPUs: {self.config.gpus}")
         logger.info(f"  Modelo base: {self.config.base_model}")
@@ -1247,7 +1245,7 @@ if __name__ == "__main__":
         if session.error_message:
             report += f"**Error**: {session.error_message}\n"
 
-        report += f"""
+        report += """
 ---
 *Generado automáticamente por KZA NightlyTrainer*
 """

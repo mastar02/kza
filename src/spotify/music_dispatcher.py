@@ -16,7 +16,7 @@ from enum import StrEnum
 from typing import Any, TYPE_CHECKING
 
 from .client import SpotifyClient, SpotifyTrack
-from .mood_mapper import MoodMapper, MoodProfile, AudioFeatures
+from .mood_mapper import MoodMapper, MoodProfile
 
 if TYPE_CHECKING:
     from .zone_controller import SpotifyZoneController

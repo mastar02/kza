@@ -2,7 +2,6 @@
 
 import time
 
-import pytest
 
 from src.llm.metrics import LLMMetricsTracker
 

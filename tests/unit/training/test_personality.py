@@ -7,7 +7,6 @@ import pytest
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 from src.training.personality import (
     PersonalityManager,
     Personality,

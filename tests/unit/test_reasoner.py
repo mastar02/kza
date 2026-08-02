@@ -2,9 +2,8 @@
 Tests for LLM Reasoner and FastRouter.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
-from tests.mocks.mock_llm import MockLLMReasoner, MockFastRouter
+from tests.mocks.mock_llm import MockFastRouter
 
 
 class TestLLMReasoner:
@@ -141,7 +140,6 @@ class TestFastRouterLoRA:
     def test_fast_router_generate_with_lora(self):
         """Test that LoRARequest is passed when LoRA is active"""
         import sys
-        from unittest.mock import MagicMock
 
         # Mock vllm modules before importing FastRouter
         mock_vllm = MagicMock()

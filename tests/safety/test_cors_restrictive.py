@@ -10,7 +10,7 @@ Verify that the DashboardAPI CORS configuration:
 import logging
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 from src.dashboard.api import DashboardAPI
 

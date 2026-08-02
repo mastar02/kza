@@ -7,9 +7,8 @@ in NLU is deferred. Here we only verify:
    result (or None) and logs a debug line about the hints.
 """
 
-import logging
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import inspect
 
 

@@ -15,7 +15,6 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Callable
 
 import numpy as np
 
@@ -388,7 +387,7 @@ class VoiceEnrollment:
             logger.error(f"Error en enrollment: {e}")
             return {
                 "handled": True,
-                "response": f"Hubo un error al registrar. Intenta de nuevo.",
+                "response": "Hubo un error al registrar. Intenta de nuevo.",
                 "state": EnrollmentState.CANCELLED,
                 "completed_user": None
             }

@@ -5,7 +5,6 @@ Tests para NightlyTrainer - Entrenamiento automático nocturno con QLoRA
 import pytest
 import json
 import time
-import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 

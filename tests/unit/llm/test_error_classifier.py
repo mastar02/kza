@@ -1,7 +1,6 @@
 """Tests for LLM error classifier."""
 
 import asyncio
-import pytest
 from src.llm.error_classifier import classify_error
 from src.llm.types import ErrorKind
 

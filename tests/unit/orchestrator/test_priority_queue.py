@@ -5,7 +5,6 @@ Tests for PriorityRequestQueue - Priority-based request queue.
 import pytest
 import asyncio
 import time
-from unittest.mock import MagicMock
 
 from src.orchestrator.priority_queue import (
     Priority,
