@@ -155,6 +155,16 @@ def test_compaction_falls_back_to_local_when_gate_blocks():
     assert is_cloud_endpoint(endpoint.base_url) is False
     assert endpoint.api_key_env is None
     assert endpoint.model != reasoner_config["http_model"]
+    # Literal, NO la constante DEFAULT_COMPACTION_LOCAL_URL (Important
+    # diferido, review 2026-08-02 ronda 2 / Mutación B): is_cloud_endpoint
+    # clasifica CUALQUIER loopback como no-cloud, así que si alguien repunta
+    # la constante de :8101 a :8200 (u otro puerto loopback), el assert de
+    # arriba sigue en verde — comparar contra la constante misma que la
+    # mutación mueve es tautológico y no lo detecta. El literal es la única
+    # forma de que este test grite si el fallback local deja de ser :8101.
+    # No "simplificar" esto de vuelta a la constante sin agregar una
+    # aserción equivalente que fije el valor real.
+    assert endpoint.base_url == "http://127.0.0.1:8101/v1"
 
 
 def test_explicit_cloud_override_does_not_bypass_gate():
@@ -184,6 +194,50 @@ def test_explicit_cloud_override_does_not_bypass_gate():
     assert endpoint.base_url != compaction_cfg["base_url"]
     assert is_cloud_endpoint(endpoint.base_url) is False
     assert endpoint.api_key_env is None
+
+
+def test_explicit_override_inherits_reasoner_credentials_when_gate_allows():
+    """Rama (a) + ``gate_allowed=True``: código nuevo de este PR, sin test propio.
+
+    (Important diferido, review 2026-08-02 ronda 2 / Mutación C.)
+    ``test_compaction_inherits_cloud_endpoint_when_gate_allows`` cubre la
+    rama (b) (sin ``compaction.base_url``); ``test_explicit_cloud_override_
+    does_not_bypass_gate`` y la matriz de arriba cubren la rama (a) con
+    ``gate_allowed=False``. Pero la rama (a) con ``gate_allowed=True`` —el
+    sub-camino que el diff de este PR agrega (antes de esto, cualquier
+    ``base_url`` explícito heredaba credenciales incondicionalmente, sin
+    if/else)— no tenía ningún test que la ejercitara. Una regresión ahí
+    (p.ej. dejar de heredar model/api_key_env/api_style al "simplificar" el
+    if/else) rompería el override documentado de ``compaction.base_url`` con
+    ``consent:true`` EN SILENCIO: la suite completa seguía en verde porque
+    ningún otro test cruza override explícito × gate permitido.
+
+    Usa un ``base_url`` de override que NO coincide con
+    ``reasoner_config["http_base_url"]`` a propósito, para distinguir esta
+    rama (a) de la (b): si el resolver tomara la (b) por error, el
+    ``base_url`` del endpoint sería el del reasoner, no el del override, y
+    el primer assert ya fallaría.
+    """
+    reasoner_config = {
+        "http_base_url": "https://api.minimax.io/v1",
+        "http_model": "MiniMax-M2.7-highspeed",
+        "api_key_env": "MINIMAX_API_KEY",
+        "api_style": "chat",
+        "cloud": {"consent": True},
+    }
+    compaction_cfg = {
+        "enabled": True,
+        "base_url": "http://192.168.1.50:9000/v1",
+    }
+    gate_allowed = cloud_reasoner_allowed(reasoner_config)
+    assert gate_allowed is True
+
+    endpoint = resolve_compaction_endpoint(compaction_cfg, reasoner_config, gate_allowed)
+
+    assert endpoint.base_url == compaction_cfg["base_url"]
+    assert endpoint.model == reasoner_config["http_model"]
+    assert endpoint.api_key_env == reasoner_config["api_key_env"]
+    assert endpoint.api_style == reasoner_config["api_style"]
 
 
 def test_gate_blocked_never_yields_cloud_endpoint():
