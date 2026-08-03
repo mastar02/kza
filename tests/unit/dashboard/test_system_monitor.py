@@ -110,8 +110,17 @@ def test_services_snapshot_http_probe_marks_active(monkeypatch):
     monkeypatch.setattr(system_monitor, "_http_ok", lambda *a, **kw: True)
     snap = system_monitor.services_snapshot()
     by_name = {s["name"]: s for s in snap}
+    # home-assistant es kind="http": ahí el probe HTTP SÍ decide el status.
     assert by_name["home-assistant"]["status"] == "active"
-    assert by_name["vllm-shared"]["status"] == "active"
+    # El assert viejo era sobre "vllm-shared", que dejó de existir en el reorg
+    # de endpoints 2026-05-07 (269ed4e) — KeyError desde entonces. Sus
+    # reemplazos (kza-llm-ik :8200, kza-llm-fast :8101) son kind="systemctl_user",
+    # donde `http_probe` es señal SECUNDARIA: _probe_service solo la consulta
+    # si systemctl ya dijo "active", no como fallback. Con _systemctl_show→None
+    # quedan "missing" aunque el puerto conteste. Fijarlo acá deja explícito
+    # que "el puerto responde" NO alcanza para marcarlos activos.
+    assert by_name["kza-llm-ik"]["status"] == "missing"
+    assert by_name["kza-llm-fast"]["status"] == "missing"
 
 
 def test_services_snapshot_http_probe_marks_unreachable(monkeypatch):
