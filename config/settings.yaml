@@ -389,7 +389,11 @@ reasoner:
   # true es una decisión informada de enviar transcripciones/contexto afuera.
   cloud:
     consent: true
-    strip_home_state: false   # true = no enviar estado del hogar al cloud (follow-up)
+    # strip_home_state existió acá (key muerta, cero lectores en src/) —
+    # borrada 2026-08-02 durante el fix de cloud.consent para el compactor
+    # (.superpowers/sdd/compactor-consent/). Si hace falta filtrar estado del
+    # hogar del payload al reasoner cloud, implementarlo de nuevo como su
+    # propio cambio con tests — no reintroducir la key sin código que la lea.
   # --- Rollback de emergencia (GLM-Air local :8200) ---
   # http_base_url: "http://127.0.0.1:8200/v1"
   # http_model: null
@@ -844,15 +848,37 @@ orchestrator:
 
     # Plan #2 OpenClaw — auto-compaction de contexto.
     # Spec: docs/superpowers/specs/2026-04-28-openclaw-context-compaction-design.md
-    # OFF por defecto — la compactación llama al 30B en background; activar
-    # tras baseline de tok/s con kza-llm-ik bajo carga real (ver Task 10
-    # del plan implementable).
+    # ON por defecto (ver baseline de tok/s con kza-llm-ik bajo carga real,
+    # Task 10 del plan implementable — ya cumplido, no confundir con el
+    # comentario "OFF por defecto" de persistence.enabled más abajo, que es
+    # un flag distinto y sigue en false).
+    #
+    # base_url/model (si no se overridean acá) heredan del reasoner principal
+    # SOLO cuando reasoner.cloud.consent lo permite — ver
+    # resolve_compaction_endpoint (src/llm/cloud_consent.py). Con
+    # consent=false el compactor degrada a local_base_url/local_model de
+    # abajo (mismo :8101 que ya usa el ambient distiller), sin heredar
+    # credenciales del reasoner cloud. El gate se evalúa para cualquier
+    # reasoner.mode, no solo "http" (resolve_reasoner_gate), y ni base_url ni
+    # local_base_url pueden apuntar a un endpoint cloud con el gate
+    # bloqueado: se ignoran y se loguea error.
+    #
+    # ⚠️ Límite conocido: el gate clasifica por host, así que un endpoint
+    # loopback que REENVÍA al cloud (el gateway LiteLLM de 127.0.0.1:8200)
+    # pasa como local y abre el gate. Aplica al bloque de rollback de
+    # emergencia de reasoner — y también, apenas se deploye, al camino normal:
+    # LLM_GATEWAY_URL NO está seteada en el server (verificado 2026-08-02), así
+    # que el placeholder de arriba resuelve a 127.0.0.1:8200. El fail-closed lo
+    # sostiene el ORDEN de resolve_http_reasoner_base_url (gate antes del
+    # fallback), no la URL final. Ver .superpowers/sdd/compactor-consent/.
     compaction:
       enabled: true
       threshold_turns: 6
       keep_recent_turns: 3
       max_summary_tokens: 200
       timeout_s: 30.0            # 30B tarda ~5s en 200 tokens; 30s es safety margin 6x
+      # local_base_url: "http://127.0.0.1:8101/v1"  # default si se omite
+      # local_model: "local"                          # default si se omite
 
     # Plan #2 OpenClaw — persistencia cross-sesión.
     # OFF por defecto. REQUIERE compaction.enabled=true (sin compactación

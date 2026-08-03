@@ -304,35 +304,48 @@ async def main():
     reasoner_config = config.get("reasoner", {})
     reasoner_mode = reasoner_config.get("mode", "http")
 
+    from src.llm.cloud_consent import resolve_reasoner_gate
+
+    # El compactor necesita gate_allowed SIEMPRE (línea ~1180, vía
+    # resolve_compaction_endpoint), también cuando mode != "http" — ahí no hay
+    # cliente cloud principal, pero reasoner_config conserva http_base_url (el
+    # gateway → MiniMax) y api_key_env, y el compactor los hereda igual. Por
+    # eso el gate se evalúa para CUALQUIER mode, en resolve_reasoner_gate.
+    #
+    # Acá estuvo hardcodeado `gate_allowed = True` "porque sin reasoner cloud
+    # no hay nada que bloquear" (review 2026-08-02 ronda 3): con mode="local"
+    # —o un typo en mode, la condición es == "http"— cloud.consent=false
+    # quedaba en no-op y la conversación del hogar salía igual con la key
+    # real. Tests: test_gate_is_evaluated_when_reasoner_mode_is_not_http.
+    gate_allowed, _ = resolve_reasoner_gate(
+        reasoner_config, reasoner_mode, DEFAULT_LOCAL_LLM_GATEWAY
+    )
+
     if reasoner_mode == "http":
-        from src.llm.cloud_consent import resolve_http_reasoner_base_url
-
         # El orden gate→fallback (y el porqué) está documentado y TESTEADO en
-        # resolve_http_reasoner_base_url (src/llm/cloud_consent.py) — no lo
-        # reimplementes acá inline, ese fue exactamente el bug (Critical
-        # cerrado 2026-08-02, Task 5 "CI a verde"): con el fallback aplicado
-        # antes del gate, is_cloud_endpoint ve "127.0.0.1" en vez del
-        # placeholder y el gate pasa de fail-closed a fail-open.
+        # resolve_http_reasoner_base_url (src/llm/cloud_consent.py), a la que
+        # resolve_reasoner_gate delega en este mode — no lo reimplementes acá
+        # inline, ese fue exactamente el bug (Critical cerrado 2026-08-02,
+        # Task 5 "CI a verde"): con el fallback aplicado antes del gate,
+        # is_cloud_endpoint ve "127.0.0.1" en vez del placeholder y el gate
+        # pasa de fail-closed a fail-open.
         #
-        # reasoner_config es el mismo dict que reusa el compactor más abajo
-        # (línea ~1180) — ese código bypassea el gate por diseño preexistente
-        # (fuera de alcance acá, ver informe Task 5 §8) y va a leer este
-        # http_base_url pase lo que pase con el consent. Resolver acá el
-        # placeholder evita que el literal opaco "${LLM_GATEWAY_URL}" llegue a
-        # CUALQUIER cliente HTTP (mejora de robustez operativa) — pero en el
-        # corner env-var-ausente + compaction.enabled esto NO es
-        # privacy-preserving respecto de dejar el placeholder sin resolver:
-        # sin este fallback, HttpReasoner.load() del compactor recibe el
-        # literal, httpx.URL(...) tira UnsupportedProtocol al no poder
-        # parsearlo, el try/except del compactor lo atrapa y compactor=None
-        # (cero actividad de red). Con el fallback, el compactor recibe una
-        # URL local válida y SÍ intenta conectar — puede pasar de "muerto" a
-        # "vivo" sin que el operador haya elegido ese endpoint para él. Ver
-        # informe Task 5 §8.1 para el análisis completo de esta corrección.
-        gate_allowed, _ = resolve_http_reasoner_base_url(
-            reasoner_config, DEFAULT_LOCAL_LLM_GATEWAY
-        )
-
+        # reasoner_config es el mismo dict que consume el compactor más abajo
+        # (línea ~1180, vía resolve_compaction_endpoint) — ese resolver SÍ
+        # respeta gate_allowed (dejó de ser bypass, ver
+        # .superpowers/sdd/compactor-consent/) y va a leer este http_base_url
+        # ya resuelto cuando el gate lo permite. Resolver acá el placeholder
+        # evita que el literal opaco "${LLM_GATEWAY_URL}" llegue a CUALQUIER
+        # cliente HTTP (mejora de robustez operativa) — pero en el corner
+        # env-var-ausente + compaction.enabled esto NO es privacy-preserving
+        # respecto de dejar el placeholder sin resolver: sin este fallback,
+        # HttpReasoner.load() del compactor recibe el literal, httpx.URL(...)
+        # tira UnsupportedProtocol al no poder parsearlo, el try/except del
+        # compactor lo atrapa y compactor=None (cero actividad de red). Con
+        # el fallback, el compactor recibe una URL local válida y SÍ intenta
+        # conectar — puede pasar de "muerto" a "vivo" sin que el operador
+        # haya elegido ese endpoint para él. Ver informe Task 5 §8.1 para el
+        # análisis completo de esta corrección.
         if not gate_allowed:
             logger.warning(
                 "Reasoner cloud bloqueado por falta de consent — slow path sin reasoner. "
@@ -1180,6 +1193,7 @@ async def main():
     keep_recent_turns = compaction_cfg.get("keep_recent_turns", 3)
 
     if compaction_cfg.get("enabled", False):
+        from src.llm.cloud_consent import resolve_compaction_endpoint
         from src.llm.reasoner import HttpReasoner
         from src.orchestrator import Compactor
 
@@ -1190,12 +1204,21 @@ async def main():
         # compactor quedaba disabled. Reusamos el gateway autenticado del
         # reasoner principal (instancia aparte = cache pool propio). Override
         # explícito vía orchestrator.context.compaction.{base_url,model}.
+        #
+        # El endpoint se resuelve vía resolve_compaction_endpoint, que respeta
+        # gate_allowed (cloud.consent) — con consent:false esto degrada a un
+        # LLM local en vez de heredar el reasoner cloud a ciegas (Critical
+        # cerrado, ver .superpowers/sdd/compactor-consent/). Con consent:true
+        # el resultado es byte-idéntico a la construcción de antes de este fix
+        # (test_compaction_inherits_cloud_endpoint_when_gate_allows).
+        compaction_endpoint = resolve_compaction_endpoint(
+            compaction_cfg, reasoner_config, gate_allowed
+        )
         compaction_reasoner = HttpReasoner(
-            base_url=compaction_cfg.get("base_url")
-            or reasoner_config.get("http_base_url", DEFAULT_LOCAL_LLM_GATEWAY),
-            model=compaction_cfg.get("model") or reasoner_config.get("http_model"),
-            api_style=reasoner_config.get("api_style", "completions"),
-            api_key_env=reasoner_config.get("api_key_env"),
+            base_url=compaction_endpoint.base_url,
+            model=compaction_endpoint.model,
+            api_style=compaction_endpoint.api_style,
+            api_key_env=compaction_endpoint.api_key_env,
             timeout=compaction_cfg.get("timeout_s", 30.0),
         )
         try:
