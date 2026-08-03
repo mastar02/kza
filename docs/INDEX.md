@@ -59,6 +59,7 @@
 
 - [2026-06-06-xvf3800-flasheo-6ch.md](runbooks/2026-06-06-xvf3800-flasheo-6ch.md) — Runbook: flasheo del XVF3800 a firmware USB 6 canales.
 - [2026-07-25-diagnostico-mic-mudo-isocronos.md](runbooks/2026-07-25-diagnostico-mic-mudo-isocronos.md) — Mic que enumera y no entrega audio: puerto de hub marginal, isócronos perdidos en silencio. Procedimiento de co-observación SPENERGY vs USB.
+- [2026-08-03-deploy-main-al-server.md](runbooks/2026-08-03-deploy-main-al-server.md) — Deploy de `main` al server (53 commits, 5 merges): cambio de rama desde `feat/comandos-silenciosos`, reinicio de kza-voice **y** kza-code-index, gates de verificación y rollback.
 
 ## Otros
 
