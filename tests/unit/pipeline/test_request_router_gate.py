@@ -112,8 +112,15 @@ async def test_low_confidence_llm_command_rejected():
 
 @pytest.mark.asyncio
 async def test_high_confidence_llm_command_dispatched():
+    # El texto tiene que SER un comando. El default del helper es charla
+    # ambiente ("hola esto es una charla cualquiera") y el router la rechaza
+    # —con razón— por el guard "intent turn_on sin verbo que lo evidencie en
+    # el texto" (anti-acciones-fantasma). Con ese texto, este test afirmaba
+    # que una charla con confianza alta debe ejecutar una acción: lo contrario
+    # de lo que el sistema quiere. El guard lo expuso; el test estaba mal
+    # desde que se escribió.
     cls = CommandClassification(is_command=True, confidence=0.85, intent="turn_on", entity_hint="light")
-    r, orch, llm = _router_with_llm(cls)
+    r, orch, llm = _router_with_llm(cls, text="prendé la luz del living")
     await r.process_command(np.zeros(16000, dtype="float32"))
     assert orch.process.called, "comando de alta confianza SÍ debe dispatchar"
 

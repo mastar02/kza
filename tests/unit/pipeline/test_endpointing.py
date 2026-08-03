@@ -310,4 +310,10 @@ class TestVoiceProb:
 
         prob = det._voice_prob(_loud_chunk(amp=0.3))
         assert prob == pytest.approx(0.92)
-        fake_vad.assert_called_once()
+        # Silero v4/v5 exige EXACTAMENTE 512 samples por llamada, así que
+        # _voice_prob parte el chunk de 1280 (80ms @16k) en sub-chunks y se
+        # queda con el max. Dos llamadas es lo correcto; el assert_called_once()
+        # viejo era de cuando se le pasaba el chunk entero.
+        assert fake_vad.call_count == 2
+        sub_sizes = [len(c.args[0]) for c in fake_torch.from_numpy.call_args_list]
+        assert sub_sizes == [512, 512], f"Silero requiere 512 samples: {sub_sizes}"

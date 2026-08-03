@@ -68,7 +68,14 @@ class TestVADStreaming:
 
         stt = FastWhisperSTT(model="test", device="cpu")
         stt._model = Mock()
-        stt._model.transcribe = Mock(return_value=([Mock(text="hola")], Mock()))
+        # El segment necesita los 3 campos numéricos que _transcribe_impl
+        # agrega (no_speech_prob / avg_logprob / compression_ratio): son la
+        # base del gate de alucinaciones (incidente temperature_fallback
+        # 2026-07-05). Con un Mock() pelado, `sum(s.no_speech_prob ...)`
+        # explotaba con "unsupported operand type(s) for +: 'int' and 'Mock'".
+        _seg = Mock(text="hola", no_speech_prob=0.05, avg_logprob=-0.2,
+                    compression_ratio=1.4)
+        stt._model.transcribe = Mock(return_value=([_seg], Mock()))
 
         # Generador de chunks de audio
         sample_rate = 16000
@@ -211,16 +218,26 @@ class TestPrefixCaching:
         assert response == ""
 
     def test_get_cache_stats(self):
-        """get_cache_stats() debe retornar info del cache"""
+        """get_cache_stats() describe el CLIENTE HTTP, no un cache in-process.
+
+        Antes asertaba `prefix_caching_enabled` / `prefix_cached`: conceptos
+        de la era llama-cpp in-process. Con el cutover a cliente HTTP el
+        prefix caching lo maneja el server (infra) y el cliente ya no puede
+        afirmar nada sobre él — devolver esa key sería un proxy mentiroso.
+        `enable_prefix_caching` sigue aceptándose como kwarg legacy.
+        """
         from src.llm.reasoner import FastRouter
 
         router = FastRouter(model="test", enable_prefix_caching=True)
         stats = router.get_cache_stats()
 
-        assert "prefix_caching_enabled" in stats
-        assert "prefix_cached" in stats
-        assert "system_prompt_tokens" in stats
-        assert stats["prefix_caching_enabled"] == True
+        assert stats["mode"] == "http"
+        assert stats["model"] == "test"
+        assert stats["base_url"]
+        assert stats["available"] is False       # sin load(), no hay cliente
+        assert stats["system_prompt_tokens"] > 0
+        # La key vieja NO debe volver sin un cache real detrás.
+        assert "prefix_caching_enabled" not in stats
 
 
 class TestAsyncGatherParallel:
