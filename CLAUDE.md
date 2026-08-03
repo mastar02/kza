@@ -4,11 +4,17 @@ Sistema de control por voz local para Home Assistant. Latencia <300ms para domó
 
 ## Source of truth cross-project
 
-Este proyecto cubre **solo** el pipeline de voz. Para las convenciones del servidor compartido (usuarios/UID, sub-rangos de puertos, Podman rootless + Quadlets, GPU por CDI, onboarding), consultar **primero** el espejo local `docs/SERVER_CONVENTIONS.md`. **Notion** (workspace KZA, root page_id `345ab24f-c493-80b2-b6f4-ef917e865f26`, vía MCP `mcp__notion__*`) queda como referencia secundaria y fuente canónica si difieren.
+Este proyecto cubre **solo** el pipeline de voz. Para las convenciones del servidor compartido (usuarios/UID, sub-rangos de puertos, Podman rootless + Quadlets, GPU por CDI, onboarding), la fuente operativa es el espejo local **`docs/SERVER_CONVENTIONS.md`**. **Notion** (workspace KZA, root page_id `345ab24f-c493-80b2-b6f4-ef917e865f26`) sigue siendo la fuente canónica si ambas difieren, pero se consulta **bajo demanda**: su MCP ya no se carga en KZA.
 
+- **El MCP de notion NO está disponible en este proyecto** (desde 2026-08-03). Cargaba 24 tools / 20.485 tokens en cada sesión y en 123 sesiones no se llamó ni una vez — el espejo local cubría todo. No escribir código ni instrucciones que asuman `mcp__notion__*` acá.
+- **Para consultar Notion**, dos caminos. El barato: `cd ~/Documents/homelab-infra && claude`, que ya la tiene declarada. El otro, re-declararla acá tomando el token de `~/Documents/.mcp.json` (fuera de todo repo — **nunca pegar el token en este archivo, que sí se commitea**):
+  ```bash
+  claude mcp add-json -s local notion "$(python3 -c "import json;print(json.dumps(json.load(open('/Users/yo/Documents/.mcp.json'))['mcpServers']['notion']))")"
+  claude mcp remove -s local notion   # al terminar, para no volver a pagar los 20.485 tok/sesión
+  ```
 - **No** leer la memoria de `~/Documents/homelab-infra/` ni `~/Documents/homelab-services/`.
-- Para temas de plataforma sin espejo local, ir a Notion: pág 8 (contrato compartido), pág 11 (red), pág 10 (HA), pág 12 (mail), pág 14 (obs).
-- Cuando el código de KZA depende de algo compartido (gateway LLM :8200, sub-rangos puertos 9500-9599), seguir `docs/SERVER_CONVENTIONS.md` y validar contra Notion pág 8 ante dudas.
+- Páginas de Notion por tema, para cuando se consulte: pág 8 (contrato compartido), pág 11 (red), pág 10 (HA), pág 12 (mail), pág 14 (obs).
+- Cuando el código de KZA depende de algo compartido (gateway LLM :8200, sub-rangos puertos 9500-9599), seguir `docs/SERVER_CONVENTIONS.md`; ir a Notion pág 8 solo si el espejo no alcanza.
 
 ## Reglas para Claude — LEER SIEMPRE
 
