@@ -104,12 +104,30 @@ git rev-parse pre-deploy-main-20260803    # ANOTARLO fuera de la terminal
 
 systemctl --user stop kza-voice.service
 
-tar czf ~/kza-backup-20260803.tgz -C /home/kza app data secrets
-tar tzf ~/kza-backup-20260803.tgz > /dev/null && echo "backup LEGIBLE"
+# OJO con las rutas (ver recuadro): /home/kza/app es un SYMLINK a /home/kza/kza,
+# y /home/kza/data NO es /home/kza/app/data.
+tar czf ~/kza-data-20260803.tgz -C /home/kza/kza data      # ~206 M ✅
+tar tzf ~/kza-data-20260803.tgz > /dev/null && echo "backup LEGIBLE"
 ```
 
 El `tar tzf` no es ceremonia: un backup que no se puede leer no es un backup.
 El tag es barato y es lo que convierte el rollback de §5 en un comando.
+
+> ⚠️ **Por qué el tar apunta ahí y no a `app/`** — tres trampas verificadas ✅,
+> las tres detectadas revisando este runbook, no ejecutándolo:
+> 1. **`/home/kza/app` es un symlink** a `/home/kza/kza`. `tar` **no** sigue
+>    symlinks pasados como argumento: `tar ... -C /home/kza app` archiva el
+>    symlink, no el código. Un backup vacío que parece exitoso.
+> 2. **`/home/kza/data` existe y NO es `/home/kza/app/data`.** Son directorios
+>    distintos; el estado del pipeline (`chroma_db`, `events.db`, `users.json`,
+>    `contexts/`, `audio_health.json`) vive en el segundo.
+> 3. **`/home/kza/kza` pesa 99 G** (15 G solo `models/`). Un tar del árbol
+>    entero es absurdo y no aporta: el código lo cubre git (tag + rama), y los
+>    modelos no los toca este deploy.
+>
+> Lo único que git **no** puede restaurar es `data/` (**206 M** ✅), y por eso
+> es lo único que se respalda. `secrets/` no lo toca este deploy, y copiarlo
+> solo multiplicaría tokens en disco.
 
 ---
 
@@ -120,7 +138,10 @@ cd /home/kza/app
 git fetch origin                                   # solo refs; no toca el working tree
 
 # El working tree ES el deploy: este checkout es el deploy.
-git merge-base --is-ancestor main origin/main && echo "ff limpio"   # debe imprimirlo
+# Verificado ✅ hoy (main local del server = 0d0e483, ancestro de origin/main).
+# Si esto imprime "PARAR", el main del server divergió y --ff-only va a fallar:
+# no forzar, reconciliar primero.
+git merge-base --is-ancestor main origin/main && echo "ff limpio" || echo "PARAR: main divergió"
 git checkout main
 git merge --ff-only origin/main
 git rev-parse --short HEAD                         # -> 08ced7e
@@ -129,13 +150,26 @@ git status --porcelain | wc -l                     # -> 0
 
 El hook `post-merge` ✅ existe y dispara el reindex del code-index.
 
+**No hace falta tocar el venv** ✅: `requirements.txt` no cambia entre el server
+y `main` (lo único nuevo es `requirements-test.txt`, que solo usa el CI). Si
+algún deploy futuro sí cambia dependencias de runtime, ese `pip install` va
+acá, entre el checkout y el start — nunca con el servicio arriba.
+
 ---
 
 ## §3 · REINICIO — los DOS servicios
 
 ```bash
+# La captura PRIMERO: el journal rota en ~22 h y el arranque es lo que más
+# importa. Arrancar el tee después del start se pierde justo esos segundos.
+journalctl --user -u kza-voice -f > ~/arranque-20260803.log &
+TEE_PID=$!
+
 systemctl --user start kza-voice.service
 systemctl --user restart kza-code-index.service
+
+systemctl --user is-active kza-voice kza-code-index    # -> active active
+# ...dejar corriendo durante §4.2; al terminar: kill $TEE_PID
 ```
 
 ⚠️ **`kza-code-index` no es opcional y es fácil de olvidar.** Razón verificada ✅:
@@ -145,11 +179,6 @@ entorno actual no la tiene. Tras el deploy su `settings.yaml` pasa a
 `${LLM_GATEWAY_URL}`; sin reiniciar, resuelve al default local y degrada en
 silencio. Exactamente la clase de fallo que este repo viene persiguiendo.
 
-Capturar el arranque a archivo (el journal rota en ~22 h):
-```bash
-journalctl --user -u kza-voice -f | tee ~/arranque-20260803.log
-```
-
 ---
 
 ## §4 · GATES DE VERIFICACIÓN ⏸
@@ -158,8 +187,17 @@ journalctl --user -u kza-voice -f | tee ~/arranque-20260803.log
 Con la config viva (`consent: true`) el compactor debe heredar el gateway;
 con `consent: false` debe degradar a `:8101` **sin** la key cloud:
 
+> 🔑 **`set -a; . archivo; set +a`, nunca `source` a secas.** Los
+> `/home/kza/secrets/*.env` son `EnvironmentFile=` de systemd (`VAR=valor`, sin
+> `export`): un `source` define variable de *shell* y **Python no la hereda**.
+> Sin esto, `load_config` aborta en `check_unresolved_env_vars` por
+> `home_assistant.*` y el chequeo falla por el motivo equivocado. Es la causa
+> raíz mecánica del incidente del 27/7 y está documentada en el §preámbulo del
+> runbook del 2026-08-01 — **la omití al escribir este** y la reintroduje en
+> los dos comandos de abajo.
+
 ```bash
-cd /home/kza/app && .venv/bin/python - <<'EOF'
+cd /home/kza/app && set -a && . /home/kza/secrets/.env && set +a && .venv/bin/python - <<'EOF'
 from src.core.settings_schema import DEFAULT_LOCAL_LLM_GATEWAY
 from src.llm.cloud_consent import resolve_reasoner_gate, resolve_compaction_endpoint, is_cloud_endpoint
 from src.main import load_config
@@ -193,7 +231,8 @@ la captura.
 
 ### 4.3 Smoke test
 ```bash
-cd /home/kza/app && .venv/bin/python tools/smoke_test.py
+cd /home/kza/app && set -a && . /home/kza/secrets/.env && set +a && \
+  .venv/bin/python tools/smoke_test.py; echo "exit=$?"
 ```
 Dry-run frase → vector search → entidad viva → payload, **sin ejecutar**. No
 cubre el path del LLM ni nada de audio: verde acá no dice nada sobre §4.2.
@@ -219,9 +258,27 @@ systemctl --user restart kza-code-index.service
 ```
 
 La rama de vuelta sigue existiendo en el server (no se borra en §2) y el tag
-`pre-deploy-main-20260803` apunta al mismo commit. El `.env` **no se toca** en
-el rollback: `LLM_GATEWAY_URL` es inofensiva para el código viejo, que tiene la
-URL hardcodeada y ni la lee.
+`pre-deploy-main-20260803` apunta al mismo commit. `data/` está gitignoreado ✅
+(`.gitignore:26`), así que el checkout no lo toca y el `wc -l` da 0 aunque el
+código nuevo ya haya escrito `audio_health.json`.
+
+El `.env` **no se toca** en el rollback: `LLM_GATEWAY_URL` es inofensiva para el
+código viejo, que tiene la URL hardcodeada y ni la lee.
+
+### Si volver el código no alcanza
+
+Restaurar `data/` es **escalación, no el paso por defecto**: el estado suele ser
+compatible hacia adelante, y volverlo tira lo que la casa generó desde el
+backup (contextos, eventos, preferencias). Hacerlo solo si el rollback de código
+deja el sistema roto — p. ej. Chroma o `events.db` ilegibles para el código
+viejo:
+
+```bash
+systemctl --user stop kza-voice.service
+mv /home/kza/kza/data /home/kza/kza/data.roto-20260803    # NO borrar: es la evidencia
+tar xzf ~/kza-data-20260803.tgz -C /home/kza/kza
+systemctl --user start kza-voice.service
+```
 
 ---
 
@@ -239,6 +296,18 @@ URL hardcodeada y ni la lee.
 | La rama del server no está en GitHub | `git ls-remote --heads origin` |
 | Suite en `main` verde | `pytest tests/ -q` → 2762 passed, EXIT=0 |
 | CI en `main` verde | los 6 jobs `success` |
+
+### Defectos que encontró el review de este runbook (antes de ejecutarlo)
+
+Cuatro, ninguno detectable leyendo el texto sin ir al server:
+
+1. **El backup era inservible**: `/home/kza/app` es symlink (tar no lo sigue),
+   `/home/kza/data` ≠ `/home/kza/app/data`, y el árbol pesa 99 G.
+2. **Los comandos de verificación no tenían entorno** — `set -a; . .env; set +a`.
+   La lección estaba escrita en el runbook del 2026-08-01 y la omití: el error
+   que ese runbook documenta como causa raíz del incidente del 27/7.
+3. **La captura del journal empezaba después del `start`**, perdiendo el arranque.
+4. **El chequeo de ancestro fallaba en silencio** (`&&` sin `||`).
 
 **No verificado / a mirar durante el deploy**
 - Que el proceso en ejecución corresponda al SHA en disco (el servicio arrancó
