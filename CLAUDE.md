@@ -148,10 +148,16 @@ python tools/code_search.py "cómo se maneja el timeout de HA al boot"
 
 ## Worktrees
 
-- **Regla: nunca trabajar en este repo y en un worktree a la vez** (comparten `.git`: locks de index y refs pueden colisionar; ya pasó con un `index.lock` colgado).
+- **Regla: nunca trabajar en este repo y en un worktree a la vez** (comparten `.git`: locks de index y refs pueden colisionar; ya pasó con un `index.lock` colgado). **Vale igual para dos sesiones de Claude sobre el mismo checkout**: el 2026-08-03 una hizo `checkout main` y le sacó el árbol de abajo a la otra a mitad de trabajo. Antes de arrancar, `lsof -a -p <pid> -d cwd` sobre los `claude` vivos.
 - **Cómo se integra**: el trabajo de un worktree se mergea a `main` desde la laptop (PR o merge local + push); el worktree NO pushea por su cuenta nada que no esté coordinado con la rama principal.
-- **Cuándo se elimina**: cuando `git log <rama-del-worktree> ^main` queda vacío (rama contenida en main), hacer `git worktree remove <path>` y borrar la rama. (Así se eliminó `../kza-wt-escritorio` el 2026-06-09.)
-- Worktree activo: `.claude/worktrees/kza-dashboard` (rama `worktree-kza-dashboard`, dashboard/métricas LLM — tiene commits propios sin integrar).
+- **Cuándo se elimina — NO usar `git log <rama> ^main`.** Ese conteo miente: cuenta commits, y el trabajo se integra reescrito, squasheado o reimplementado. El 2026-08-03 daba 10 y 15 commits "sin integrar" en dos ramas cuyo contenido estaba **entero** en main. Ni `git cherry` (patch-id) alcanza: seguía marcando 2 y 13 ausentes. **Comparar contenido:**
+  ```bash
+  comm -23 <(git ls-tree -r --name-only <rama> -- src/ tests/ | sort) \
+           <(git ls-tree -r --name-only main  -- src/ tests/ | sort)   # archivos que main NO tiene
+  git diff --shortstat main <rama> -- src/ tests/                      # si es casi todo deleciones, la rama está atrás
+  ```
+  Vacío + deleciones masivas ⇒ contenida en main: `git tag archive/<rama> <rama>` (rescate), `git worktree remove <path>`, `git branch -D <rama>`.
+- Worktrees activos: ninguno. `kza-dashboard` y `llm-failover-cooldown` se eliminaron el 2026-08-03 tras verificar por contenido; recuperables en los tags `archive/*`.
 
 ## Hardware Resumen (detalle en docs/architecture/HARDWARE.md)
 
