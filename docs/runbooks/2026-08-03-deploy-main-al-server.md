@@ -309,6 +309,7 @@ systemctl --user start kza-voice.service
 | La rama del server no está en GitHub | `git ls-remote --heads origin` |
 | Suite en `main` verde | `pytest tests/ -q` → 2762 passed, EXIT=0 |
 | CI en `main` verde | los 6 jobs `success` |
+| El proceso en ejecución corresponde al código en disco | 0 archivos de `src/`/`config/`/`tools/` con mtime posterior al arranque del PID, con control de que el `find` funciona (§0.3) |
 
 ### Defectos que encontró el review de este runbook (antes de ejecutarlo)
 
@@ -321,8 +322,6 @@ Cuatro, ninguno detectable leyendo el texto sin ir al server:
    que ese runbook documenta como causa raíz del incidente del 27/7.
 3. **La captura del journal empezaba después del `start`**, perdiendo el arranque.
 4. **El chequeo de ancestro fallaba en silencio** (`&&` sin `||`).
-
-| El proceso en ejecución corresponde al código en disco | 0 archivos de `src/`/`config/`/`tools/` con mtime posterior al arranque del PID, con control de que el `find` funciona (§0.3) |
 
 **No verificado / a mirar durante el deploy**
 - El poller de `audio_health` del runbook del 01-08 **no está instalado** ✅
