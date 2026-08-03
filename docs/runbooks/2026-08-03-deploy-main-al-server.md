@@ -17,7 +17,7 @@
 | | |
 |---|---|
 | Server ahora | rama `feat/comandos-silenciosos` @ `f3c94f1`, working tree **limpio** ✅ |
-| Destino | `main` @ `08ced7e` |
+| Destino | `main` @ `e6ae878` |
 | Entra | **53 commits**, 5 merges (PRs #10, #11, #13, #12) |
 | Servicios a reiniciar | `kza-voice` **y `kza-code-index`** (ver §3 — no es obvio) |
 | Disco libre | 320 G ✅ |
@@ -70,7 +70,7 @@ minutos**, no segundos.
 ### 0.2 Laptop
 ```bash
 cd ~/Documents/kza && git checkout main && git pull --ff-only
-git log --oneline -1                      # -> 08ced7e
+git log --oneline -1                      # -> e6ae878 (o posterior)
 .venv/bin/python -m pytest tests/ -q      # -> 2762 passed, 1 xfailed
 echo "EXIT=$?"                            # -> 0   (NO usar `| tail`: se traga el exit code)
 ```
@@ -85,10 +85,23 @@ systemctl --user is-active kza-voice kza-code-index             # -> active acti
 df -h /home/kza | tail -1                                       # -> ≥ 5 G libres
 ```
 
-⚠️ **El servicio corre desde el 2026-08-01 19:20.** El deploy es in-place, así
-que el código en disco pudo cambiar después de arrancar. Antes de tocar nada,
-dejar registrado el SHA de disco (arriba) — es contra ese que se compara el
-"después", no contra lo que uno recuerde.
+**El proceso en ejecución corresponde al código en disco** ✅ (verificado
+2026-08-03): PID arrancado el 2026-08-01 19:20, cero archivos de `src/`,
+`config/` o `tools/` con mtime posterior, y el último `.git/HEAD` es del 07-29
+—anterior al arranque—. Re-chequearlo si pasan días antes de deployar:
+
+```bash
+PID=$(pgrep -u kza -f '.venv/bin/python -m src.main' | head -1)
+cd /home/kza/app
+find src/ config/ tools/ -type f -newer /proc/$PID          # -> vacío
+find src/ -name '*.py' -newermt '2020-01-01' | wc -l        # control: >0, el find funciona
+```
+
+⚠️ Comparar contra `/proc/$PID`, **no** contra `ps -o lstart=` pasado por
+`date -d`: en locale español devuelve `sáb ago  1` y `date` no lo parsea, así
+que el `find` falla y —si además se traga stderr— "0 archivos" se ve idéntico a
+"todo en orden". Pasó al escribir este chequeo. El control de la segunda línea
+existe justamente para que un `find` roto no se disfrace de resultado limpio.
 
 Fotos ANTES de HA / Chroma / smoke / latencia: usar §0.5 del runbook del
 2026-08-01 tal cual.
@@ -144,7 +157,7 @@ git fetch origin                                   # solo refs; no toca el worki
 git merge-base --is-ancestor main origin/main && echo "ff limpio" || echo "PARAR: main divergió"
 git checkout main
 git merge --ff-only origin/main
-git rev-parse --short HEAD                         # -> 08ced7e
+git rev-parse --short HEAD                         # -> e6ae878 (o posterior)
 git status --porcelain | wc -l                     # -> 0
 ```
 
