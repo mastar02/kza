@@ -322,9 +322,9 @@ Cuatro, ninguno detectable leyendo el texto sin ir al server:
 3. **La captura del journal empezaba después del `start`**, perdiendo el arranque.
 4. **El chequeo de ancestro fallaba en silencio** (`&&` sin `||`).
 
+| El proceso en ejecución corresponde al código en disco | 0 archivos de `src/`/`config/`/`tools/` con mtime posterior al arranque del PID, con control de que el `find` funciona (§0.3) |
+
 **No verificado / a mirar durante el deploy**
-- Que el proceso en ejecución corresponda al SHA en disco (el servicio arrancó
-  el 01-08; el deploy es in-place).
 - El poller de `audio_health` del runbook del 01-08 **no está instalado** ✅
   (`systemctl --user list-timers` no lo lista). Este deploy solo hace que el
   snapshot se escriba; que alguien lo mire sigue pendiente.
