@@ -81,6 +81,33 @@ def test_ac_commands_with_clima_noun_do_not_become_weather(dispatcher, text):
 
 
 @pytest.mark.parametrize("text,expected", [
+    # Finding 3 (re-review 2026-08-04): the Phase-1 guard ("verb anywhere +
+    # climate noun anywhere") was too broad — it also swallowed genuine
+    # weather questions that merely mention a domotics verb in another
+    # clause. The six Critical/collision cases below are the same ones
+    # from test_ac_commands_with_clima_noun_do_not_become_weather (verb
+    # immediately adjacent to the climate noun) and MUST keep routing
+    # fast_domotics; the three hybrid cases are the sharpest counter-
+    # examples the reviewer found (verb and noun co-occur but not
+    # adjacent, and/or the utterance is a question) and MUST route
+    # fast_weather. Parametrized together so neither direction can
+    # silently flip again.
+    ("prendé el clima", PathType.FAST_DOMOTICS),
+    ("poné el clima en 22", PathType.FAST_DOMOTICS),
+    ("apagá el clima del living", PathType.FAST_DOMOTICS),
+    ("apagá el termostato", PathType.FAST_DOMOTICS),
+    ("prendé el termostato", PathType.FAST_DOMOTICS),
+    ("subí los grados", PathType.FAST_DOMOTICS),
+    ("está el clima muy caluroso, tengo que activar el aire?", PathType.FAST_WEATHER),
+    ("está el clima bien, no hace falta prender nada", PathType.FAST_WEATHER),
+    ("¿tengo que prender el clima o hace calor afuera?", PathType.FAST_WEATHER),
+])
+def test_domotics_climate_adjacency_guard_finding_3(dispatcher, text, expected):
+    path, _ = dispatcher._classify_request(text.lower())
+    assert path == expected
+
+
+@pytest.mark.parametrize("text,expected", [
     ("poné música de Spinetta", PathType.FAST_MUSIC),
     ("subí el volumen", PathType.FAST_MUSIC),
     ("prendé la luz del living", PathType.FAST_DOMOTICS),

@@ -34,6 +34,7 @@ Ejemplo:
 import asyncio
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Callable
@@ -154,14 +155,17 @@ _CLIMATE_DOMAIN_NOUNS = frozenset(
 )
 
 
-def _text_has_domain_noun(text_lower: str, nouns: frozenset[str]) -> bool:
-    """Accent-insensitive whole-word match de `nouns` contra `text_lower`."""
-    import re as _re
-    import unicodedata as _ud
+def _strip_accents(text: str) -> str:
+    """Quitar diacríticos (NFD + descartar combining marks).
 
-    norm = _ud.normalize("NFD", text_lower)
-    norm = "".join(c for c in norm if _ud.category(c) != "Mn")
-    return any(_re.search(rf"\b{_re.escape(n)}\b", norm) for n in nouns)
+    Helper compartido: antes había tres copias de este bloque inline
+    (con `import re as _re` / `import unicodedata as _ud` locales pese a
+    que ambos ya están importados a nivel de módulo) en lo que hoy son
+    `_conflicting_domain`, `_resolve_prefer_area` y el guard de
+    `_classify_request` (cleanup 2026-08-04, review de Finding 3).
+    """
+    norm = unicodedata.normalize("NFD", text)
+    return "".join(c for c in norm if unicodedata.category(c) != "Mn")
 
 
 # Sustantivos de luz: si aparecen, confiamos en el match light.* aunque haya
@@ -201,15 +205,11 @@ def _conflicting_domain(text: str, matched_domain: str) -> str | None:
     """
     if matched_domain != "light" or not text:
         return None
-    import re as _re
-    import unicodedata as _ud
-
-    norm = _ud.normalize("NFD", text.lower())
-    norm = "".join(c for c in norm if _ud.category(c) != "Mn")
-    if any(_re.search(rf"\b{_re.escape(noun)}\b", norm) for noun in _LIGHT_NOUNS):
+    norm = _strip_accents(text.lower())
+    if any(re.search(rf"\b{re.escape(noun)}\b", norm) for noun in _LIGHT_NOUNS):
         return None
     for noun, domain in _NON_LIGHT_DOMAIN_NOUNS.items():
-        if _re.search(rf"\b{_re.escape(noun)}\b", norm):
+        if re.search(rf"\b{re.escape(noun)}\b", norm):
             return domain
     return None
 
@@ -229,12 +229,9 @@ def _resolve_prefer_area(text: str, zone_id: str | None) -> str | None:
     discutido en sesión 2026-05-03.
     """
     if text:
-        import re as _re
-        import unicodedata as _ud
-        norm = _ud.normalize("NFD", text.lower())
-        norm = "".join(c for c in norm if _ud.category(c) != "Mn")
+        norm = _strip_accents(text.lower())
         for alias, area in _ROOM_ALIASES_TO_AREA.items():
-            if _re.search(rf"\b{_re.escape(alias)}\b", norm):
+            if re.search(rf"\b{re.escape(alias)}\b", norm):
                 return area
     if zone_id:
         return _ZONE_TO_AREA.get(zone_id)
@@ -413,7 +410,40 @@ class RequestDispatcher:
         "temperatura afuera", "grados hay afuera", "grados hace",
         "llueve", "va a llover", "lloviendo",
         "pronóstico", "pronostico",
+        # Finding 3 (review 2026-08-04): sin esto, una pregunta como "¿tengo
+        # que prender el clima o hace calor afuera?" no matcheaba ningún
+        # WEATHER_KEYWORDS y caía al loop de DOMOTICS_KEYWORDS de abajo, que
+        # matchea "prende" como substring de "prender" -> fast_domotics
+        # incorrecto. "hace calor"/"hace frío" son vocabulario de clima
+        # genérico, no colisionan con ningún comando de domótica.
+        "hace calor", "hace frío", "hace frio",
     ]
+
+    # Guard de adyacencia verbo-sustantivo (Finding 3, review 2026-08-04,
+    # reemplaza el guard anterior "verbo en cualquier lado + sustantivo en
+    # cualquier lado"). Ese guard viejo capturaba preguntas de clima
+    # genuinas que solo mencionaban un verbo de domótica en otra cláusula
+    # (ej: "¿tengo que prender el clima o hace calor afuera?"). Este exige
+    # que el verbo esté INMEDIATAMENTE antes del sustantivo climático (con
+    # a lo sumo un determinante de por medio: "prendé EL clima", "poné LA
+    # temperatura"), que es la forma literal de los 6 casos Critical/
+    # collision reales. No aflojar a "en cualquier lugar de la oración":
+    # eso reintroduce Finding 3.
+    #
+    # Se combina en _classify_request con un segundo signal independiente
+    # (bail-out por "?"/"¿") en vez de confiar solo en que "prender"/
+    # "activar" no sean literales en DOMOTICS_KEYWORDS (los infinitivos NO
+    # curados) — esa ausencia hoy ayuda a los casos híbridos, pero es
+    # accidental: si algún día se agregan esos infinitivos a
+    # DOMOTICS_KEYWORDS (mismo patrón que encender/cerrar/abrir/subir/
+    # bajar/poner), la adyacencia sola dejaría de alcanzar y el signal de
+    # interrogación sigue cubriendo.
+    _DOMOTICS_VERBS_STRIPPED = sorted({_strip_accents(v) for v in DOMOTICS_KEYWORDS})
+    _DOMOTICS_CLIMATE_ADJACENCY_RE = re.compile(
+        r"\b(?:" + "|".join(re.escape(v) for v in _DOMOTICS_VERBS_STRIPPED) + r")\b"
+        r"\s+(?:el|la|los|las)?\s*"
+        r"\b(?:" + "|".join(re.escape(n) for n in sorted(_CLIMATE_DOMAIN_NOUNS)) + r")\b"
+    )
 
     def __init__(
         self,
@@ -672,20 +702,23 @@ class RequestDispatcher:
         # complemento ("hace"/"afuera") es lo que desambigua. Va DESPUES de
         # musica/listas/recordatorios, que son mas especificas.
         #
-        # Guard de defensa en profundidad (hallazgo 2026-08-04): un verbo de
-        # domotica ("prendé", "poné", "apagá"...) junto a un sustantivo de
-        # clima explicito (temperatura/termostato/calefaccion/aire/clima/
-        # grados, ver _CLIMATE_DOMAIN_NOUNS) es SIEMPRE domotica — nunca una
-        # consulta hablada de clima — aunque algun WEATHER_KEYWORDS futuro
-        # matchee sin complemento. No relajar este guard para "arreglar" un
-        # keyword de clima demasiado amplio: acotar el keyword en su lugar.
-        domotics_verb_present = any(
-            _kw_match(kw, text_lower) for kw in self.DOMOTICS_KEYWORDS
+        # Guard de defensa en profundidad (hallazgo 2026-08-04, endurecido
+        # por Finding 3 de la re-review): un verbo de domotica INMEDIATAMENTE
+        # ANTES de un sustantivo de clima explicito (temperatura/termostato/
+        # calefaccion/aire/clima/grados, ver _DOMOTICS_CLIMATE_ADJACENCY_RE)
+        # es SIEMPRE domotica — nunca una consulta hablada de clima — aunque
+        # algun WEATHER_KEYWORDS futuro matchee sin complemento. Segundo
+        # signal independiente: si el texto es una pregunta ("?"/"¿") nunca
+        # es un comando, así que el guard nunca dispara. No relajar a "verbo
+        # y sustantivo en cualquier lado de la oración": eso reintroduce
+        # Finding 3 (preguntas de clima que solo mencionan un verbo de
+        # domótica en otra cláusula, ej. "¿tengo que prender el clima o hace
+        # calor afuera?").
+        is_question = "?" in text_lower or "¿" in text_lower
+        climate_command_adjacent = not is_question and bool(
+            self._DOMOTICS_CLIMATE_ADJACENCY_RE.search(_strip_accents(text_lower))
         )
-        if not (
-            domotics_verb_present
-            and _text_has_domain_noun(text_lower, _CLIMATE_DOMAIN_NOUNS)
-        ):
+        if not climate_command_adjacent:
             for keyword in self.WEATHER_KEYWORDS:
                 if keyword in text_lower:
                     return PathType.FAST_WEATHER, Priority.HIGH
