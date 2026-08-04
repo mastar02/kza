@@ -296,7 +296,13 @@ router:
   # 2026-05-07 (deploy LLM endpoints reorg): el fast router ahora apunta a
   # kza-llm-fast.service en :8101 (Qwen2.5-7B-Instruct Q4_K_M, ik_llama.cpp).
   # Reemplaza al vLLM 7B AWQ que vivía en :8100 (deshabilitado).
-  # Latencia warm medida: 245-272ms para JSON intent (cumple <300ms target).
+  # Latencia warm re-medida 2026-08-04: 71ms p50 / 118ms p95 para una
+  # clasificación binaria (~150 tok de prompt), 124ms con el prefix cache
+  # desalojado. La cifra anterior de 245-272ms correspondía al ExecStart con
+  # -ngl 20; el drop-in de systemd ya corre -ngl 99 (todas las capas en GPU).
+  # Presupuesto de prompt medido en este endpoint: ~0.28ms por token de
+  # prefill, o sea que el fast path aguanta ~250 tokens de prompt en total
+  # (1.000 tokens = 334ms = el presupuesto entero sin generar nada).
   base_url: "http://127.0.0.1:8101/v1"
   # ik_llama.cpp expone como model id el path completo del .gguf cargado.
   # Match exacto requerido por el cliente OpenAI.
@@ -433,8 +439,20 @@ llm:
       persist_path: "./data/llm_cooldowns.json"
 
   # Fallback de startup: el dispatcher arranca contra el fast endpoint :8101.
-  # Si :8101 está caído al boot, el LLMRouter rota al :8200 (GLM-Air) tras
-  # primer error. Si ambos caen, KZA degrada a regex+ChromaDB.
+  # Si :8101 está caído al boot, el LLMRouter rota tras el primer error al
+  # siguiente candidato de la cadena de arriba, que hoy es `reasoner_cloud`
+  # (MiniMax vía gateway LiteLLM, timeout_s: 60). Si ambos caen, KZA degrada
+  # a regex+ChromaDB.
+  #
+  # ATENCIÓN (corregido 2026-08-04): este comentario decía que la rotación
+  # iba a "GLM-Air en :8200", o sea a un modelo LOCAL. Dejó de ser cierto el
+  # 2026-05-29, cuando GLM-Air se reemplazó por MiniMax cloud (ver el bloque
+  # `reasoner:` y su rollback comentado). La diferencia importa y no es
+  # cosmética: el fallback real SALE A INTERNET y tiene timeout de 60s, así
+  # que no sirve para nada con presupuesto de latencia. Medición propia
+  # 2026-06-06: TTFT 0.87-1.56s contra el gateway. Cualquier consumidor que
+  # necesite una respuesta en cientos de ms debe atarse a :8101 directo y
+  # tener su propio degradado local, NO apoyarse en esta cadena.
   http_fallback_base_url: "http://127.0.0.1:8101/v1"
   http_fallback_model: null
 
