@@ -330,6 +330,81 @@ La verificacion end-to-end por voz. El paso 8 de la Task 3 nunca se hizo. Nada d
 esto prueba que `"prendé el clima"` prenda el aire de verdad contra el HA real:
 eso necesita una persona hablandole al dispositivo.
 
+## Resultado del eval: no adoptar
+
+Corrida el 2026-08-04 contra `:8101` en vivo (tunel SSH, bearer auth), set B
+completo (50 casos: 20 corpus + 20 sinteticos CONSULTA + 10 borde ACCION).
+`benchmarks/router/climate_eval.py` construido segun este diseño, sin tocar
+`src/nlu/climate_intent.py` ni el set.
+
+Un defecto del brief se corrigio antes de correr: el `--model` default
+(`qwen2.5-7b-instruct`) no existe en el catalogo de este `:8101` -- el
+`llama-server` de ik_llama.cpp expone como id el path completo del `.gguf`
+cargado, y el cliente OpenAI exige match exacto. Se cambio el default a
+`/home/kza/kza/models/Qwen2.5-7B-Instruct-Q4_K_M/Qwen2.5-7B-Instruct-Q4_K_M.gguf`,
+confirmado contra `/v1/models`.
+
+4 corridas completas (1 inicial + 3 de determinismo), **accuracy y errores de
+clasificacion identicos en las 4** (garantia de `temperature=0.0`, tal como
+predijo este diseño):
+
+| check | valor | piso/techo | resultado |
+|---|---|---|---|
+| accuracy global | 47/50 = 94.0% | >= 90% | OK |
+| consulta -> accion | 2 (`sint-011`, `sint-012`) | == 0 | **NO** |
+| p95 | 118-122ms en 3/4 corridas, 179ms en la primera (cold) | <= 150ms | inconsistente, ver abajo |
+
+**El gate es NO-GO por el segundo criterio, que falla de forma 100%
+reproducible.** La accuracy global (94.0%) supera holgadamente el piso y a las
+reglas de hoy (77.3%), pero el criterio de cero-tolerancia sobre el error caro
+no se sostiene.
+
+### Los dos casos que rompen el gate
+
+Ambos son CONSULTA con el verbo de dominio negado explicitamente:
+
+- `sint-011`: *"no hace falta prender nada, está fresco"* -> clasificado ACCION
+- `sint-012`: *"no hay que tocar el aire, se está bien así"* -> clasificado ACCION
+
+Este diseño ya habia medido el mismo techo para el motor de gramatica (linea
+33 de la tabla de arriba: "falla en... negacion y alcance interrogativo") y lo
+atribuyo a que un regex de verbo no ve negacion. El 7B con este prompt
+hereda el mismo techo: el prompt de pocos ejemplos no ensaya explicitamente la
+negacion de un verbo de accion (el unico ejemplo con negacion en el prompt,
+*"está lindo el día, no prendas nada"*, tiene el verbo ya en imperativo negado
+al lado del sujeto climatico, no un verbo generico como "prender"/"tocar" en
+una clausula de necesidad negada como "no hace falta" / "no hay que").
+
+Ademas, `corpus-011` (*"Nexa bajá la temperatura de la luz del escritorio,"*)
+abstuvo en las 4 corridas -- no cuenta contra ningun check (el degradado cae a
+reglas) pero es la unica abstencion consistente del set.
+
+### Latencia: no concluyente por si sola, pero no cambia el veredicto
+
+p95 vario entre corridas (179ms en la primera contra ~120ms en las 3
+siguientes), consistente con jitter de trafico real en un endpoint de
+produccion que sirve el pipeline de voz en simultaneo, no con no-determinismo
+del clasificador (los labels no se movieron). No se investigo mas a fondo
+porque el criterio de consulta->accion ya es un NO-GO deterministic e
+independiente del ruido de latencia: aunque el p95 hubiera dado OK en las 4
+corridas, el veredicto seguiria siendo NO-GO.
+
+### Decision
+
+**No adoptar** el clasificador por inferencia con el prompt actual. No se
+intento ajustar el prompt para pasar el gate -- hacerlo seria tunear contra el
+held-out (`benchmarks/router/climate_set.yaml`) y invalidaria la medicion. El
+prompt, el modulo `src/nlu/climate_intent.py` y el set quedan tal como estan;
+la Task 5 (integracion en `dispatcher.py`) no se ejecuta.
+
+Lo que sigue vivo de este diseño, sin cambios: el diagnostico raiz (los guards
+por regex son proxies de intencion), el hallazgo de latencia (71-124ms warm en
+`:8101`, no 245-272ms), y el error barato que persiste hoy en la rama
+(`"prendé ya el clima, hace calor"` -> `fast_weather`). Si se retoma esta
+via en el futuro, el punto de partida es resolver la negacion explicita de
+verbos de dominio antes de volver a correr `climate_eval.py` contra el mismo
+set B -- sin tocarlo.
+
 ## Hallazgos laterales (fuera de alcance, anotados para no perderlos)
 
 1. `config/settings.yaml:435-437` dice que si `:8101` cae el router rota al
