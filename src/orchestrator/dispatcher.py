@@ -251,6 +251,7 @@ class PathType(StrEnum):
     FEEDBACK = "feedback"                  # Feedback sobre respuestas
     FAST_LIST = "fast_list"                # List CRUD
     FAST_REMINDER = "fast_reminder"        # Reminder CRUD
+    FAST_WEATHER = "fast_weather"           # Clima desde HA, sin red externa
 
 
 @dataclass
@@ -377,6 +378,19 @@ class RequestDispatcher:
         "música relajante", "música mientras", "ambiente"
     ]
 
+    # Clima. Frases de DOS palabras a proposito: "temperatura" sola mapea a
+    # `climate` (el termostato) en _DOMAIN_KEYWORDS, y "poné la temperatura en
+    # 22" tiene que seguir yendo a domotica. Lo que separa una de otra es el
+    # complemento, no el sustantivo.
+    WEATHER_KEYWORDS = [
+        "qué tiempo hace", "que tiempo hace",
+        "el clima", "está el clima", "esta el clima",
+        "temperatura hace", "temperatura hay",
+        "temperatura afuera", "grados hay afuera", "grados hace",
+        "llueve", "va a llover", "lloviendo",
+        "pronóstico", "pronostico",
+    ]
+
     def __init__(
         self,
         chroma_sync,
@@ -398,6 +412,7 @@ class RequestDispatcher:
         before_handler_warn_ms: float = 5.0,
         require_known_speaker_for_actions: bool = False,
         unavailable_precheck_enabled: bool = True,
+        weather_entity: str = "weather.forecast_home",
     ):
         """
         Args:
@@ -425,6 +440,8 @@ class RequestDispatcher:
                 Ver comentario en `config/settings.yaml:home_assistant.
                 unavailable_precheck_enabled` para el escenario de recuperación
                 que justifica poder apagarlo.
+            weather_entity: Entidad de HA que expone el clima (default
+                "weather.forecast_home"), usada por FAST_WEATHER.
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -441,6 +458,7 @@ class RequestDispatcher:
         self.list_manager = list_manager
         self.reminder_manager = reminder_manager
         self.response_handler = response_handler
+        self.weather_entity = weather_entity
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
         # Voice-auth opcional (default OFF): exige speaker enrolado para ejecutar
@@ -557,6 +575,10 @@ class RequestDispatcher:
             result = await self._fast_reminder_path(text, user_id, zone_id)
             self._stats["fast_path"] += 1
 
+        elif path == PathType.FAST_WEATHER:
+            result = await self._handle_weather(text, priority)
+            self._stats["fast_path"] += 1
+
         else:
             # Slow path - encolar para LLM
             result = await self._slow_path(
@@ -620,6 +642,14 @@ class RequestDispatcher:
         for keyword in self.REMINDER_KEYWORDS:
             if keyword in text_lower:
                 return PathType.FAST_REMINDER, Priority.HIGH
+
+        # Clima -> fuente local en HA. Va ANTES de domotica porque
+        # "qué temperatura hace" comparte sustantivo con el termostato; el
+        # complemento ("hace"/"afuera") es lo que desambigua. Va DESPUES de
+        # musica/listas/recordatorios, que son mas especificas.
+        for keyword in self.WEATHER_KEYWORDS:
+            if keyword in text_lower:
+                return PathType.FAST_WEATHER, Priority.HIGH
 
         # Detectar domotica por keywords
         for keyword in self.DOMOTICS_KEYWORDS:
@@ -1216,6 +1246,34 @@ class RequestDispatcher:
                 path=PathType.FAST_REMINDER, priority=Priority.HIGH,
                 success=False, response="Hubo un error con el recordatorio",
             )
+
+    async def _handle_weather(self, text: str, priority: Priority) -> DispatchResult:
+        """Answer from HA. Cached read: no network hop on the fast path."""
+        from src.world.weather import describe_current, describe_forecast
+
+        text_lower = text.lower()
+        dia = "mañana" if "mañana" in text_lower or "manana" in text_lower else None
+
+        if dia:
+            payload = await self.ha.call_service_with_response(
+                "weather", "get_forecasts", self.weather_entity, {"type": "daily"}
+            )
+            forecast = (
+                (payload or {})
+                .get("service_response", {})
+                .get(self.weather_entity, {})
+                .get("forecast", [])
+            )
+            response = describe_forecast(forecast, dia)
+        else:
+            response = describe_current(
+                self.ha.get_entity_state_cached(self.weather_entity)
+            )
+
+        return DispatchResult(
+            path=PathType.FAST_WEATHER, priority=priority,
+            success=True, response=response, intent="weather",
+        )
 
     def _extract_list_name(self, text: str) -> str | None:
         """Extract list name from text like 'la lista de compras' or 'la lista del hogar'."""
