@@ -62,8 +62,9 @@ _DIA_INDEX = {"hoy": 0, "mañana": 1, "manana": 1}
 def describe_forecast(forecast: list[dict], dia: str) -> str:
     """One spoken sentence for a forecast day.
 
-    Never mentions rain probability: `precipitation_probability` comes back
-    None from this HA integration, so the condition is the only honest signal.
+    Never mentions rain probability: `precipitation_probability` is absent
+    from this HA integration's payload, so the condition is the only honest
+    signal.
     """
     index = _DIA_INDEX.get(dia.lower())
     if index is None or not forecast or index >= len(forecast):

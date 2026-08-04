@@ -96,7 +96,7 @@ def test_forecast_without_requested_day_says_so():
 
 
 def test_forecast_never_mentions_rain_probability():
-    # precipitation_probability comes back None from this HA integration
+    # precipitation_probability is absent from this HA integration's payload
     # (verified 2026-08-04). Answering by percentage would invent data.
     out = describe_forecast(FORECAST, "mañana")
     assert "por ciento de lluvia" not in out.lower()
