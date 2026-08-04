@@ -544,6 +544,27 @@ async def test_no_router_returns_none():
     assert await ClimateIntentClassifier(None).classify("prendé el clima") is None
 
 
+@pytest.mark.asyncio
+async def test_non_string_response_abstains_loudly(caplog):
+    """Wiring an LLMRouter instead of a FastRouter must not fail silently.
+
+    LLMRouter.complete() returns a RouterResult, not str. Without an explicit
+    guard that lands as an AttributeError swallowed by classify(), i.e. a
+    classifier that abstains on 100% of calls while looking wired up.
+    """
+    class _RouterResult:      # stand-in for src.llm.router.RouterResult
+        text = "ACCION_AIRE"
+
+    r = MagicMock()
+    r.complete = AsyncMock(return_value=_RouterResult())
+
+    with caplog.at_level("WARNING"):
+        assert await ClimateIntentClassifier(r).classify("prendé el clima") is None
+
+    assert any("expected str" in rec.message for rec in caplog.records), \
+        "a silent abstention on every call must not be debug-level"
+
+
 # --- call contract --------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -739,12 +760,28 @@ class ClimateIntentClassifier:
         return self._parse(raw)
 
     @staticmethod
-    def _parse(raw: str) -> ClimateIntent | None:
+    def _parse(raw) -> ClimateIntent | None:
         """Strict label parsing. Anything unexpected abstains.
 
         No fuzzy matching on purpose: a substring match here would reintroduce
         the failure mode this module exists to remove.
+
+        `raw` is typed loosely because a misconfigured caller can hand us
+        something that is not a string: LLMRouter.complete() returns a
+        RouterResult, not str. That mistake would otherwise surface as a
+        silent AttributeError swallowed by classify()'s except block, i.e. an
+        abstention on every single call with nothing but a debug log to show
+        for it. It gets its own WARNING instead.
         """
+        if not isinstance(raw, str):
+            if raw is not None:
+                logger.warning(
+                    "climate_intent: router returned %s, expected str -- wire a "
+                    "FastRouter, not an LLMRouter (which returns RouterResult). "
+                    "Abstaining on every call until fixed.",
+                    type(raw).__name__,
+                )
+            return None
         if not raw:
             return None
         head = raw.strip().upper()
@@ -773,7 +810,7 @@ Copiar el hash impreso y reemplazar `PROMPT_FINGERPRINT = "PLACEHOLDER_SET_IN_ST
 - [ ] **Step 5: Correr los tests**
 
 Run: `cd ~/Documents/kza && .venv/bin/python3 -m pytest tests/unit/nlu/test_climate_intent.py -v`
-Expected: PASS, los ~28 tests verdes (8 gate positivos + 6 negativos + 1 substring + 3 parseo + 7 output no reconocido + 4 fallos + 1 contrato + 1 tripwire).
+Expected: PASS, 32 tests verdes (8 gate positivos + 6 negativos + 1 substring + 3 parseo + 7 output no reconocido + 5 fallos + 1 contrato + 1 tripwire).
 
 - [ ] **Step 6: Commit**
 
@@ -1242,13 +1279,13 @@ Cuenta esperada, sumando caso parametrizado por caso parametrizado:
 | Task 2 — `stop` en `complete()` | +3 |
 | Task 3 — gate (8 positivos + 6 negativos + 1 substring) | +15 |
 | Task 3 — parseo (3) + salida no reconocida (7) | +10 |
-| Task 3 — fallos (4) + contrato de llamada (1) + tripwire (1) | +6 |
+| Task 3 — fallos (5, incluye el de respuesta no-str) + contrato (1) + tripwire (1) | +7 |
 | Task 5 — clasificador (1+1+1+1+1+4) | +9 |
 | Task 5 — caso mudado de capa | +1 |
 | Task 5 — caso sacado de la parametrizacion del guard | -1 |
-| **total** | **2875** |
+| **total** | **2876** |
 
-Expected: `2875 passed, 1 xfailed`.
+Expected: `2876 passed, 1 xfailed`.
 
 Si el numero no coincide exacto, **no seguir**: identificar cada test que se
 movio y por que antes de commitear. El baseline es 2832 passed / 1 xfailed.
@@ -1297,24 +1334,60 @@ En `config/settings.yaml`, dentro del bloque `nlu:` existente:
     timeout_s: 0.15   # p95 medido 118ms; moverlo obliga a revisar el umbral del eval
 ```
 
-- [ ] **Step 2: Cablear la DI**
+- [ ] **Step 2: Cablear la DI por la cadena real**
 
-En `src/main.py`, donde se construye el `RequestDispatcher`, crear el clasificador
-reusando el `FastRouter` que ya existe (no instanciar uno nuevo: comparte el
-prefix cache de `:8101`):
+`RequestDispatcher` **no** se construye en `main.py`. La cadena verificada es:
+
+```
+src/main.py:1262        MultiUserOrchestrator(router=llm_router or fast_router, ...)
+src/orchestrator/dispatcher.py:1737    self.dispatcher = RequestDispatcher(...)
+```
+
+**2a.** En `MultiUserOrchestrator.__init__` (`dispatcher.py`, la lista de
+parametros que termina en `unavailable_precheck_enabled: bool = True`), agregar:
 
 ```python
+        climate_classifier=None,
+```
+
+y documentarlo en el docstring de `Args`:
+
+```
+            climate_classifier: Optional ClimateIntentClassifier. Forwarded to
+                RequestDispatcher. Must wrap a FastRouter (see main.py) -- an
+                LLMRouter returns RouterResult, not str, and would abstain on
+                every call.
+```
+
+**2b.** En la construccion de `RequestDispatcher` (`dispatcher.py:1737`), agregar
+la linea `climate_classifier=climate_classifier,` junto a las demas.
+
+**2c.** En `src/main.py`, **antes** de la llamada a `MultiUserOrchestrator`
+(linea 1262), construir el clasificador:
+
+```python
+    # The classifier binds to fast_router directly, never to llm_router. Two
+    # independent reasons: (1) LLMRouter.complete() returns a RouterResult, not
+    # str -- see src/llm/router.py:77; (2) the failover chain's priority-2
+    # endpoint is the cloud reasoner with timeout_s=60, and rotating a 150ms
+    # routing decision onto a cloud endpoint is the exact failure mode this
+    # design exists to avoid. Reuses the existing FastRouter so it shares the
+    # :8101 prefix cache.
     climate_cfg = config.get("nlu", {}).get("climate_intent", {})
     climate_classifier = (
-        ClimateIntentClassifier(router, timeout_s=climate_cfg.get("timeout_s", 0.15))
-        if climate_cfg.get("enabled", False) and router is not None
+        ClimateIntentClassifier(fast_router, timeout_s=climate_cfg.get("timeout_s", 0.15))
+        if climate_cfg.get("enabled", False) and fast_router is not None
         else None
     )
 ```
 
-y pasarlo: `climate_classifier=climate_classifier`.
+y pasarlo en la llamada: `climate_classifier=climate_classifier,`.
 
 Import arriba: `from src.nlu.climate_intent import ClimateIntentClassifier`.
+
+**2d.** Verificar que `fast_router` esta en scope en esa linea. Definido en
+`src/main.py:400-402`; si el bloque esta dentro de un `if` que puede dejarlo
+como `None`, el guard `and fast_router is not None` ya lo cubre.
 
 - [ ] **Step 3: Verificar que el sistema arranca**
 
