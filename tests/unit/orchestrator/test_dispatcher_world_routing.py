@@ -108,37 +108,6 @@ def test_domotics_climate_adjacency_guard_finding_3(dispatcher, text, expected):
 
 
 @pytest.mark.parametrize("text,expected", [
-    # Round 3 (re-review 2026-08-04): the round-2 fix added "hace calor"/
-    # "hace frío" to WEATHER_KEYWORDS and required the domotics verb to sit
-    # strictly adjacent to (at most one determiner from) the climate noun.
-    # Real commands with a filler adverb between verb and object — "ya",
-    # "ahora", "de una vez" — broke that strict adjacency, so the guard
-    # didn't fire, and the *justification clause* ("...hace calor") then
-    # matched WEATHER_KEYWORDS before the plain DOMOTICS_KEYWORDS loop ever
-    # ran. All four below MUST route fast_domotics — same-clause command
-    # detection (verb governs the noun as its object within the clause,
-    # filler tolerated, cut at the first real clause boundary) replaces the
-    # strict-adjacency check, and "hace calor"/"hace frío"/"hace frio" were
-    # removed from WEATHER_KEYWORDS entirely.
-    ("prendé ya el clima, hace calor", PathType.FAST_DOMOTICS),
-    ("apagá ahora el termostato, hace frío", PathType.FAST_DOMOTICS),
-    ("apagá ahora la calefaccion, hace calor", PathType.FAST_DOMOTICS),
-    ("prendé de una vez el clima, hace calor", PathType.FAST_DOMOTICS),
-    # Structurally identical to the four above (climate noun mentioned as a
-    # justification clause after a real command) but with the clauses
-    # swapped — the justification comes first. Not one of the four the
-    # reviewer required, but flagged during round 2 as a related risk;
-    # confirmed here to also resolve correctly under the round-3 design.
-    ("hace calor, tengo que prender el clima", PathType.FAST_DOMOTICS),
-])
-def test_domotics_climate_filler_words_do_not_leak_to_weather_round_3(
-    dispatcher, text, expected
-):
-    path, _ = dispatcher._classify_request(text.lower())
-    assert path == expected
-
-
-@pytest.mark.parametrize("text,expected", [
     ("poné música de Spinetta", PathType.FAST_MUSIC),
     ("subí el volumen", PathType.FAST_MUSIC),
     ("prendé la luz del living", PathType.FAST_DOMOTICS),

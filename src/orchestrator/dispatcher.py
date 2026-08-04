@@ -403,15 +403,6 @@ class RequestDispatcher:
     # cubierta por "está el clima"/"esta el clima", y una entrada bare se
     # comía comandos de AC ("prendé el clima" -> hallazgo 2026-08-04, ver
     # _CLIMATE_DOMAIN_NOUNS y el guard en _classify_request).
-    #
-    # Ronda 3 (review 2026-08-04): "hace calor"/"hace frío"/"hace frio" que
-    # habían entrado acá en la ronda 2 para resolver el caso híbrido 3 se
-    # sacaron. Eran vocabulario de clima genérico en el papel, pero al
-    # correr en un loop plano ANTES de domótica, cualquier comando real que
-    # los mencionara como justificación ("prendé YA el clima, hace calor")
-    # les ganaba de mano a la propia orden. El caso híbrido 3 ahora lo
-    # resuelve el fallback pregunta+sustantivo de abajo en _classify_request,
-    # no un keyword literal.
     WEATHER_KEYWORDS = [
         "qué tiempo hace", "que tiempo hace",
         "está el clima", "esta el clima",
@@ -419,52 +410,38 @@ class RequestDispatcher:
         "temperatura afuera", "grados hay afuera", "grados hace",
         "llueve", "va a llover", "lloviendo",
         "pronóstico", "pronostico",
+        # Finding 3 (review 2026-08-04): sin esto, una pregunta como "¿tengo
+        # que prender el clima o hace calor afuera?" no matcheaba ningún
+        # WEATHER_KEYWORDS y caía al loop de DOMOTICS_KEYWORDS de abajo, que
+        # matchea "prende" como substring de "prender" -> fast_domotics
+        # incorrecto. "hace calor"/"hace frío" son vocabulario de clima
+        # genérico, no colisionan con ningún comando de domótica.
+        "hace calor", "hace frío", "hace frio",
     ]
 
-    # Verbos de domótica, con límite de palabra. Reusa DOMOTICS_KEYWORDS pero
-    # buscados con `\b` en vez de substring: eso es lo que hace que "prende"
-    # (imperativo, literal) NO matchee dentro de "prender" (infinitivo, no
-    # curado) ni "activa" dentro de "activar" — la propia lista mezcla
-    # imperativos e infinitivos curados a propósito (Whisper produce ambas
-    # formas), así que "está en DOMOTICS_KEYWORDS" no alcanza para distinguir
-    # orden de mención informal. El límite de palabra sí: un infinitivo
-    # ("prender", "activar") nunca cierra en el límite del imperativo
-    # recortado, así que solo matchean los imperativos reales y los
-    # infinitivos curados (encender/cerrar/abrir/subir/bajar/poner), que son
-    # palabras completas en sí mismas.
-    _DOMOTICS_VERBS_STRIPPED = sorted({_strip_accents(v) for v in DOMOTICS_KEYWORDS})
-    _CLIMATE_NOUN_RE = re.compile(
-        r"\b(?:" + "|".join(re.escape(n) for n in sorted(_CLIMATE_DOMAIN_NOUNS)) + r")\b"
-    )
-
-    # Guard "misma cláusula" (ronda 3, review 2026-08-04, reemplaza la
-    # adyacencia estricta de la ronda 2). La adyacencia ("verbo + a lo sumo
-    # un determinante + sustantivo") rompía con relleno entre el verbo y el
-    # objeto — "prendé YA el clima", "apagá AHORA el termostato", "prendé DE
-    # UNA VEZ el clima" — y esos comandos reales, al no matchear el guard,
-    # cofan expuestos al loop de WEATHER_KEYWORDS de abajo si el resto de la
-    # frase mencionaba clima como justificación ("...hace calor"). El
-    # reemplazo no exige adyacencia: exige que el verbo RIJA al sustantivo
-    # dentro de la MISMA cláusula, tolerando cualquier relleno en el medio
-    # pero cortando en el primer límite de cláusula real (coma, "?", "¿",
-    # " o ", " pero "). Eso es lo que separa "imperativo actuando sobre un
-    # objeto" (misma cláusula, sin importar el relleno) de "infinitivo o
-    # interrogativo" (el verbo de domótica, si aparece, queda en otra
-    # cláusula o no es un imperativo reconocido — "prender"/"activar"
-    # infinitivos nunca matchean _DOMOTICS_VERBS_STRIPPED por el límite de
-    # palabra, así que ninguna cláusula los cuenta como verbo).
+    # Guard de adyacencia verbo-sustantivo (Finding 3, review 2026-08-04,
+    # reemplaza el guard anterior "verbo en cualquier lado + sustantivo en
+    # cualquier lado"). Ese guard viejo capturaba preguntas de clima
+    # genuinas que solo mencionaban un verbo de domótica en otra cláusula
+    # (ej: "¿tengo que prender el clima o hace calor afuera?"). Este exige
+    # que el verbo esté INMEDIATAMENTE antes del sustantivo climático (con
+    # a lo sumo un determinante de por medio: "prendé EL clima", "poné LA
+    # temperatura"), que es la forma literal de los 6 casos Critical/
+    # collision reales. No aflojar a "en cualquier lugar de la oración":
+    # eso reintroduce Finding 3.
     #
-    # Se probó reordenar (domótica antes que clima) sin este regex: falla en
-    # el caso híbrido 2 ("está el clima bien, no hace falta prender nada"),
-    # porque el loop de DOMOTICS_KEYWORDS de abajo matchea "prende" como
-    # substring de "prender" sin importar el orden de los checks — el
-    # problema nunca fue el orden de las ramas, fue que ese loop final no
-    # distingue infinitivo de imperativo. Ver el fix report para el resto
-    # de las opciones descartadas.
-    _CLAUSE_BREAK = r"[,?¿]|\bo\b|\bpero\b"
-    _DOMOTICS_CLIMATE_SAME_CLAUSE_RE = re.compile(
+    # Se combina en _classify_request con un segundo signal independiente
+    # (bail-out por "?"/"¿") en vez de confiar solo en que "prender"/
+    # "activar" no sean literales en DOMOTICS_KEYWORDS (los infinitivos NO
+    # curados) — esa ausencia hoy ayuda a los casos híbridos, pero es
+    # accidental: si algún día se agregan esos infinitivos a
+    # DOMOTICS_KEYWORDS (mismo patrón que encender/cerrar/abrir/subir/
+    # bajar/poner), la adyacencia sola dejaría de alcanzar y el signal de
+    # interrogación sigue cubriendo.
+    _DOMOTICS_VERBS_STRIPPED = sorted({_strip_accents(v) for v in DOMOTICS_KEYWORDS})
+    _DOMOTICS_CLIMATE_ADJACENCY_RE = re.compile(
         r"\b(?:" + "|".join(re.escape(v) for v in _DOMOTICS_VERBS_STRIPPED) + r")\b"
-        r"(?:(?!" + _CLAUSE_BREAK + r").)*"
+        r"\s+(?:el|la|los|las)?\s*"
         r"\b(?:" + "|".join(re.escape(n) for n in sorted(_CLIMATE_DOMAIN_NOUNS)) + r")\b"
     )
 
@@ -725,39 +702,26 @@ class RequestDispatcher:
         # complemento ("hace"/"afuera") es lo que desambigua. Va DESPUES de
         # musica/listas/recordatorios, que son mas especificas.
         #
-        # Guard de defensa en profundidad (hallazgo 2026-08-04, reescrito en
-        # ronda 3 — ver _DOMOTICS_CLIMATE_SAME_CLAUSE_RE arriba para el
-        # porqué de "misma cláusula" en vez de adyacencia estricta): un
-        # verbo de domótica que RIGE un sustantivo de clima explícito dentro
-        # de la misma cláusula es SIEMPRE un comando — nunca una consulta
-        # hablada de clima — así que el guard salta el loop de
-        # WEATHER_KEYWORDS y deja que el request caiga al loop de
-        # DOMOTICS_KEYWORDS de abajo.
-        #
-        # Si el guard NO dispara (no hay verbo rigiendo un sustantivo de
-        # clima en la misma cláusula), hay dos formas de terminar en
-        # fast_weather: un WEATHER_KEYWORDS literal, o — para preguntas que
-        # no calzan ningún keyword literal pero mencionan clima, ej.
-        # "¿tengo que prender el clima o hace calor afuera?" (caso híbrido
-        # 3) — el solo hecho de ser una pregunta ("?"/"¿") que menciona un
-        # sustantivo de clima. Este segundo fallback está deliberadamente
-        # acotado a preguntas: una afirmación que menciona un sustantivo de
-        # clima sin ningún verbo de domótica reconocido (ej. "hace calor,
-        # tengo que prender el clima") NO es una pregunta y sigue de largo
-        # hasta el loop de DOMOTICS_KEYWORDS de abajo, que la resuelve por
-        # el mecanismo existente (substring "prende" ⊂ "prender") como el
-        # pedido implícito que es.
+        # Guard de defensa en profundidad (hallazgo 2026-08-04, endurecido
+        # por Finding 3 de la re-review): un verbo de domotica INMEDIATAMENTE
+        # ANTES de un sustantivo de clima explicito (temperatura/termostato/
+        # calefaccion/aire/clima/grados, ver _DOMOTICS_CLIMATE_ADJACENCY_RE)
+        # es SIEMPRE domotica — nunca una consulta hablada de clima — aunque
+        # algun WEATHER_KEYWORDS futuro matchee sin complemento. Segundo
+        # signal independiente: si el texto es una pregunta ("?"/"¿") nunca
+        # es un comando, así que el guard nunca dispara. No relajar a "verbo
+        # y sustantivo en cualquier lado de la oración": eso reintroduce
+        # Finding 3 (preguntas de clima que solo mencionan un verbo de
+        # domótica en otra cláusula, ej. "¿tengo que prender el clima o hace
+        # calor afuera?").
         is_question = "?" in text_lower or "¿" in text_lower
-        text_stripped = _strip_accents(text_lower)
-        climate_command_same_clause = bool(
-            self._DOMOTICS_CLIMATE_SAME_CLAUSE_RE.search(text_stripped)
+        climate_command_adjacent = not is_question and bool(
+            self._DOMOTICS_CLIMATE_ADJACENCY_RE.search(_strip_accents(text_lower))
         )
-        if not climate_command_same_clause:
+        if not climate_command_adjacent:
             for keyword in self.WEATHER_KEYWORDS:
                 if keyword in text_lower:
                     return PathType.FAST_WEATHER, Priority.HIGH
-            if is_question and self._CLIMATE_NOUN_RE.search(text_stripped):
-                return PathType.FAST_WEATHER, Priority.HIGH
 
         # Detectar domotica por keywords
         for keyword in self.DOMOTICS_KEYWORDS:
