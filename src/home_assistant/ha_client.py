@@ -453,6 +453,35 @@ class HomeAssistantClient:
             self._record_error(e, f"call_service({domain}.{service})")
             return False
 
+    async def call_service_with_response(
+        self,
+        domain: str,
+        service: str,
+        entity_id: str,
+        data: dict | None = None,
+    ) -> dict | None:
+        """Call a service that returns a body (weather.get_forecasts, etc).
+
+        `call_service` only reports success as a bool. Services declaring
+        SupportsResponse need `?return_response=true` and their body read.
+        """
+        session = await self._ensure_session()
+        payload = {"entity_id": entity_id, **(data or {})}
+        url = f"{self.url}/api/services/{domain}/{service}?return_response=true"
+        try:
+            # No headers= here: _ensure_session already builds the session with
+            # self.headers (verified 2026-08-04, ha_client.py:160).
+            async with session.post(url, json=payload) as resp:
+                if resp.status != 200:
+                    self._record_error(
+                        RuntimeError(f"HTTP {resp.status}"), "call_service_with_response"
+                    )
+                    return None
+                return await resp.json()
+        except Exception as exc:  # noqa: BLE001 - recorded and surfaced as None
+            self._record_error(exc, "call_service_with_response")
+            return None
+
     # ==================== Automatizaciones ====================
 
     async def create_automation(self, automation_id: str, config: dict) -> tuple[bool, str]:

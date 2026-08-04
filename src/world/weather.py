@@ -53,3 +53,34 @@ def describe_current(state: dict | None) -> str:
     if not parts:
         return NO_DATA
     return "Hay " + ", ".join(parts) + "."
+
+
+NO_FORECAST = "No tengo el pronóstico ahora mismo."
+_DIA_INDEX = {"hoy": 0, "mañana": 1, "manana": 1}
+
+
+def describe_forecast(forecast: list[dict], dia: str) -> str:
+    """One spoken sentence for a forecast day.
+
+    Never mentions rain probability: `precipitation_probability` comes back
+    None from this HA integration, so the condition is the only honest signal.
+    """
+    index = _DIA_INDEX.get(dia.lower())
+    if index is None or not forecast or index >= len(forecast):
+        return NO_FORECAST
+
+    day = forecast[index]
+    described = CONDITIONS.get(str(day.get("condition") or "").lower())
+    low, high = day.get("templow"), day.get("temperature")
+
+    parts: list[str] = []
+    if described:
+        parts.append(described)
+    if low is not None and high is not None:
+        parts.append(f"entre {round(float(low))} y {round(float(high))} grados")
+    elif high is not None:
+        parts.append(f"{round(float(high))} grados")
+
+    if not parts:
+        return NO_FORECAST
+    return f"{dia.capitalize()}: " + ", ".join(parts) + "."

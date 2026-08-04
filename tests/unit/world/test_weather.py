@@ -51,3 +51,53 @@ def test_missing_temperature_attribute_does_not_crash():
 def test_includes_humidity_when_present():
     out = describe_current(_state(humidity=81))
     assert "81" in out
+
+
+from src.world.weather import describe_forecast
+
+
+FORECAST = [
+    {"datetime": "2026-08-04T00:00:00", "condition": "fog",
+     "templow": 11.8, "temperature": 12.4},
+    {"datetime": "2026-08-05T00:00:00", "condition": "rainy",
+     "templow": 11.7, "temperature": 13.1},
+    {"datetime": "2026-08-06T00:00:00", "condition": "cloudy",
+     "templow": 10.8, "temperature": 12.9},
+]
+
+
+def test_forecast_today_uses_first_entry():
+    out = describe_forecast(FORECAST, "hoy")
+    assert "niebla" in out.lower()
+    assert "12" in out
+
+
+def test_forecast_tomorrow_uses_second_entry():
+    out = describe_forecast(FORECAST, "mañana")
+    assert "lluvioso" in out.lower()
+    assert "13" in out
+
+
+def test_forecast_reports_min_and_max():
+    out = describe_forecast(FORECAST, "mañana")
+    assert "12" in out  # templow 11.7 -> 12
+    assert "13" in out  # temperature 13.1 -> 13
+
+
+def test_empty_forecast_says_so():
+    out = describe_forecast([], "mañana")
+    assert "no" in out.lower()
+    assert "grados" not in out.lower()
+
+
+def test_forecast_without_requested_day_says_so():
+    out = describe_forecast(FORECAST[:1], "mañana")
+    assert "no" in out.lower()
+
+
+def test_forecast_never_mentions_rain_probability():
+    # precipitation_probability comes back None from this HA integration
+    # (verified 2026-08-04). Answering by percentage would invent data.
+    out = describe_forecast(FORECAST, "mañana")
+    assert "por ciento de lluvia" not in out.lower()
+    assert "probabilidad" not in out.lower()
