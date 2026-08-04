@@ -167,10 +167,20 @@ para que el mecanismo solo pueda tocar dos paths.
 
 ### Costo real
 
-La resolucion de entidad por BGE-M3 ya cuesta ~48ms en CPU (`settings.yaml:286`)
-en ese mismo path. Disparando el clasificador en paralelo con `asyncio.gather`,
-el costo neto es `max(71, 48) - 48 = ~23ms` sobre el 13.5% del trafico, o sea
-**~3ms de promedio**.
+**Version que se implementa (secuencial): +71ms p50 sobre el 13.5% del trafico =
+~9.6ms de promedio.** El subconjunto contestado pasa de 150-280ms a 221-351ms, o
+sea que puede rozar el techo de 300ms en su cola.
+
+Durante el diseño se proyecto solaparlo con el vector search — que ya cuesta
+~48ms en CPU en ese mismo path (`settings.yaml:286`) — para un costo neto de
+`max(71, 48) - 48 = ~23ms`. Al escribir el plan se verifico que **no es posible
+sin reestructurar `_fast_path()`**: el vector search vive dentro de ese metodo
+(`dispatcher.py:611`), o sea despues de la bifurcacion que el arbitraje tiene que
+decidir. Solaparlos mezclaria dos cambios sin relacion.
+
+Queda como follow-up medido: si el p95 del path contestado rompe los 300ms en
+produccion, reestructurar `_fast_path` para solapar. La correccion del ruteo no
+depende de eso.
 
 ## Componentes
 
