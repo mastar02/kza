@@ -144,6 +144,26 @@ _NON_LIGHT_DOMAIN_NOUNS: dict[str, str] = {
     "grados": "climate",
 }
 
+# Sustantivos de _NON_LIGHT_DOMAIN_NOUNS que son termostato/AC. Usado por el
+# guard en _classify_request que evita que un comando de domotica ("prendé
+# el clima", "poné el clima en 22") se clasifique como clima hablado.
+# Hallazgo 2026-08-04: "el clima" bare en WEATHER_KEYWORDS se comia esos
+# comandos porque la rama de clima corre antes que DOMOTICS_KEYWORDS.
+_CLIMATE_DOMAIN_NOUNS = frozenset(
+    noun for noun, domain in _NON_LIGHT_DOMAIN_NOUNS.items() if domain == "climate"
+)
+
+
+def _text_has_domain_noun(text_lower: str, nouns: frozenset[str]) -> bool:
+    """Accent-insensitive whole-word match de `nouns` contra `text_lower`."""
+    import re as _re
+    import unicodedata as _ud
+
+    norm = _ud.normalize("NFD", text_lower)
+    norm = "".join(c for c in norm if _ud.category(c) != "Mn")
+    return any(_re.search(rf"\b{_re.escape(n)}\b", norm) for n in nouns)
+
+
 # Sustantivos de luz: si aparecen, confiamos en el match light.* aunque haya
 # un sustantivo no-luz (ej: 'poné la luz' nunca debe ser rechazado).
 # Nota: el match se hace sobre texto normalizado SIN acentos → entradas sin tilde.
@@ -378,13 +398,17 @@ class RequestDispatcher:
         "música relajante", "música mientras", "ambiente"
     ]
 
-    # Clima. Frases de DOS palabras a proposito: "temperatura" sola mapea a
-    # `climate` (el termostato) en _DOMAIN_KEYWORDS, y "poné la temperatura en
-    # 22" tiene que seguir yendo a domotica. Lo que separa una de otra es el
-    # complemento, no el sustantivo.
+    # Clima. Frases de DOS palabras a proposito: "temperatura"/"clima" solos
+    # mapean a `climate` (el termostato/AC) en _NON_LIGHT_DOMAIN_NOUNS, y
+    # "poné la temperatura en 22" / "prendé el clima" tienen que seguir
+    # yendo a domotica. Lo que separa una de otra es el complemento, no el
+    # sustantivo — por eso NO hay una entrada bare "el clima" acá: ya está
+    # cubierta por "está el clima"/"esta el clima", y una entrada bare se
+    # comía comandos de AC ("prendé el clima" -> hallazgo 2026-08-04, ver
+    # _CLIMATE_DOMAIN_NOUNS y el guard en _classify_request).
     WEATHER_KEYWORDS = [
         "qué tiempo hace", "que tiempo hace",
-        "el clima", "está el clima", "esta el clima",
+        "está el clima", "esta el clima",
         "temperatura hace", "temperatura hay",
         "temperatura afuera", "grados hay afuera", "grados hace",
         "llueve", "va a llover", "lloviendo",
@@ -647,9 +671,24 @@ class RequestDispatcher:
         # "qué temperatura hace" comparte sustantivo con el termostato; el
         # complemento ("hace"/"afuera") es lo que desambigua. Va DESPUES de
         # musica/listas/recordatorios, que son mas especificas.
-        for keyword in self.WEATHER_KEYWORDS:
-            if keyword in text_lower:
-                return PathType.FAST_WEATHER, Priority.HIGH
+        #
+        # Guard de defensa en profundidad (hallazgo 2026-08-04): un verbo de
+        # domotica ("prendé", "poné", "apagá"...) junto a un sustantivo de
+        # clima explicito (temperatura/termostato/calefaccion/aire/clima/
+        # grados, ver _CLIMATE_DOMAIN_NOUNS) es SIEMPRE domotica — nunca una
+        # consulta hablada de clima — aunque algun WEATHER_KEYWORDS futuro
+        # matchee sin complemento. No relajar este guard para "arreglar" un
+        # keyword de clima demasiado amplio: acotar el keyword en su lugar.
+        domotics_verb_present = any(
+            _kw_match(kw, text_lower) for kw in self.DOMOTICS_KEYWORDS
+        )
+        if not (
+            domotics_verb_present
+            and _text_has_domain_noun(text_lower, _CLIMATE_DOMAIN_NOUNS)
+        ):
+            for keyword in self.WEATHER_KEYWORDS:
+                if keyword in text_lower:
+                    return PathType.FAST_WEATHER, Priority.HIGH
 
         # Detectar domotica por keywords
         for keyword in self.DOMOTICS_KEYWORDS:
