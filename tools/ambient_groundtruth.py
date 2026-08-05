@@ -46,7 +46,10 @@ def sample_stratified(
         seed: Semilla del muestreo, para reproducibilidad.
 
     Returns:
-        Filas seleccionadas, ordenadas por bucket y luego por id.
+        Filas seleccionadas, agrupadas por bucket en orden ascendente
+        (``0.00-0.20`` primero). Dentro de cada bucket NO están ordenadas
+        por id: ``random.Random.sample`` devuelve en orden de selección,
+        no en el orden del pool de entrada.
     """
     by_bucket: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -121,12 +124,14 @@ def _export(db_path: str, out_dir: str, per_bucket: int, seed: int) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     items = []
+    fallidas = 0
     for r in sel:
         name = f'{r["id"]}.flac'
         try:
             shutil.copy(r["audio_path"], out / name)
         except OSError as e:
             print(f"  aviso: no se pudo copiar {r['audio_path']}: {e}", file=sys.stderr)
+            fallidas += 1
             continue
         items.append({"id": r["id"], "room_id": r["room_id"],
                       "vad_prob": r["vad_prob"] or 0.0, "audio": name})
@@ -134,7 +139,31 @@ def _export(db_path: str, out_dir: str, per_bucket: int, seed: int) -> None:
     (out / "meta.json").write_text(json.dumps(
         {"seed": seed, "per_bucket": per_bucket, "db": db_path,
          "ids": [i["id"] for i in items]}, indent=2), encoding="utf-8")
-    print(f"{len(items)} utterances exportadas a {out}/")
+
+    # El guard de "sel vacío" de arriba mide un proxy barato (la query
+    # devolvió filas); lo que importa es lo que REALMENTE se copió a disco.
+    # Si audio_path apunta a archivos que ya no existen, sel no está vacío
+    # pero items sí, y sin este chequeo el export "termina bien" sobre un
+    # directorio inútil — el mismo patrón de proxy mentiroso que ya rompió
+    # el watchdog de audio (exit 0 sin haber capturado nada).
+    if not items:
+        print(f"ERROR: {len(sel)} utterances seleccionadas, 0 copiadas "
+              f"({fallidas} fallaron). El export quedó vacío pese a que la "
+              f"query trajo filas — revisá si audio_path apunta a archivos "
+              f"borrados del disco.", file=sys.stderr)
+        raise SystemExit(1)
+    print(f"{len(items)} utterances exportadas a {out}/ "
+          f"({len(sel)} seleccionadas, {fallidas} fallidas)")
+    if fallidas:
+        # Éxito parcial: el set quedó incompleto y puede no alcanzar para
+        # medir bien (p.ej. un bucket entero sin muestras). Ruidoso en
+        # stdout/stderr y con exit code propio para que scripts que
+        # encadenen este export no lo confundan con un éxito limpio.
+        print(f"AVISO: {fallidas} de {len(sel)} seleccionadas NO se "
+              f"copiaron — revisá los avisos de arriba antes de usar este "
+              f"set para medir.", file=sys.stderr)
+        print(f"Abrí {out}/index.html, transcribí, y guardá el groundtruth.json ahí mismo.")
+        raise SystemExit(2)
     print(f"Abrí {out}/index.html, transcribí, y guardá el groundtruth.json ahí mismo.")
 
 
