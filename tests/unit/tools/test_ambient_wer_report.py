@@ -52,3 +52,43 @@ def test_marcadores_se_excluyen_del_wer():
     assert rep["excluidas"] == 1
     assert rep["buckets"]["0.35-0.50"]["n"] == 1
     assert rep["buckets"]["0.35-0.50"]["wer"] == 0.0
+
+
+def test_reponderado_falla_ruidosamente_si_volumes_esta_vacio():
+    """volumes={} no puede traducirse en 'todos los buckets pesan 0' — eso
+    da un wer_reponderado=0.0 falso y creíble."""
+    pairs = [
+        {"id": 1, "vad_prob": 0.90, "reference": "a b", "hypothesis": "x y"},
+    ]
+    rep = build_report(pairs, volumes={})
+    assert rep["wer_reponderado"] is None
+    assert rep["confiable"] is False
+    assert rep["buckets_sin_volumen"] == ["0.80-1.00"]
+
+
+def test_reponderado_falla_ruidosamente_si_falta_un_bucket_presente():
+    """Un bucket evaluado que no aparece como clave en volumes es una
+    desalineación upstream, no un peso legítimo de cero: si se tratara como
+    cero, el bucket malo desaparecería silenciosamente del agregado."""
+    pairs = [
+        {"id": 1, "vad_prob": 0.90, "reference": "a b c d", "hypothesis": "a b c d"},
+        {"id": 2, "vad_prob": 0.10, "reference": "a b c d", "hypothesis": "x y z w"},
+    ]
+    rep = build_report(pairs, volumes={"0.80-1.00": 100})  # falta "0.00-0.20"
+    assert rep["wer_reponderado"] is None
+    assert rep["confiable"] is False
+    assert rep["buckets_sin_volumen"] == ["0.00-0.20"]
+
+
+def test_bucket_con_volumen_real_cero_es_legitimo_no_una_falla():
+    """Distinto del caso anterior: acá el bucket SÍ está en volumes, solo
+    que su volumen real en la DB es 0. Eso es información válida (no
+    inconsistencia) y el reporte debe seguir siendo confiable."""
+    pairs = [
+        {"id": 1, "vad_prob": 0.90, "reference": "a b", "hypothesis": "a b"},
+        {"id": 2, "vad_prob": 0.10, "reference": "a b", "hypothesis": "x y"},
+    ]
+    rep = build_report(pairs, volumes={"0.80-1.00": 100, "0.00-0.20": 0})
+    assert rep["confiable"] is True
+    assert rep["buckets_sin_volumen"] == []
+    assert rep["wer_reponderado"] == 0.0  # el bucket con volumen 0 no aporta peso
