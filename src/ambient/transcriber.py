@@ -161,7 +161,18 @@ class AmbientTranscriber:
                     text_empty=True,
                 )
                 empty_id = await self._store.add(empty)
-                await self._archive_audio(room_id, empty_id, seg.audio)
+                try:
+                    await self._archive_audio(room_id, empty_id, seg.audio)
+                except Exception:
+                    # No re-lanzar acá: el fallo es del puntero al audio, no
+                    # de la utterance (ya persistida). Dejar que escale al
+                    # except externo pondría "segmento descartado" en el log
+                    # cuando en realidad el segmento SÍ quedó guardado.
+                    logger.exception(
+                        f"AmbientTranscriber[{room_id}]: fallo al archivar "
+                        f"audio (utterance {empty_id} ya persistida, sigue "
+                        f"sin audio_path)"
+                    )
                 return
             # Flag de idioma sobre el TEXTO (no la energía): el discriminante
             # real de calidad del rioplatense. FLAG, no drop — la utterance se
@@ -198,8 +209,6 @@ class AmbientTranscriber:
             if source == "tv":
                 self._last_tv[room_id] = time.time()
             utt_id = await self._store.add(utt)
-            if archiving:
-                await self._archive_audio(room_id, utt_id, seg.audio)
             logger.debug(
                 f"[Ambient] {room_id} {source} {speaker}: "
                 f"{utt.text[:60]!r} (az={azimuth}, stab={stability:.2f})"
@@ -207,7 +216,11 @@ class AmbientTranscriber:
             # Wake textual (spec 2026-07-05): SIEMPRE después de persistir —
             # la utterance ya quedó en el store pase lo que pase acá. Fail-open
             # explícito: una excepción del detector (o de dispatch_fn/router)
-            # jamás debe matar el worker de la room.
+            # jamás debe matar el worker de la room. Va ANTES del archivado
+            # (review 2026-08-05): el archivado es puramente instrumentación
+            # (encode FLAC + shutil.disk_usage) y no puede quedar en serie
+            # por delante de un dispatch de cara al usuario, ni un fallo del
+            # UPDATE de audio_path puede tragarse un "nexa" real.
             if self._textual_wake is not None:
                 try:
                     await self._textual_wake.maybe_dispatch(
@@ -218,6 +231,19 @@ class AmbientTranscriber:
                     logger.exception(
                         f"[TextualWake] error al evaluar utterance en {room_id} "
                         f"(best-effort, la utterance ya está persistida)"
+                    )
+            if archiving:
+                try:
+                    await self._archive_audio(room_id, utt_id, seg.audio)
+                except Exception:
+                    # Igual que en la rama de texto vacío: no dejar que esto
+                    # escale al except externo, que loguearía "segmento
+                    # descartado" siendo que la utterance (y el wake) ya se
+                    # procesaron con éxito.
+                    logger.exception(
+                        f"AmbientTranscriber[{room_id}]: fallo al archivar "
+                        f"audio (utterance {utt_id} ya persistida, sigue "
+                        f"sin audio_path)"
                     )
         except Exception:
             # un segmento malo no tira el worker — se pierde ese segmento

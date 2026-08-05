@@ -25,12 +25,26 @@ class FakeAmbientSTT:
 
 
 class FakeTagger:
+    def __init__(self):
+        # Contador de invocaciones: el review 2026-08-05 pidió verificar con
+        # un assert, no solo por estructura del código, que la rama de texto
+        # vacío NUNCA llama al tagger (es GPU, cara, y no aporta nada a una
+        # fila que solo existe para medir).
+        self.calls = 0
+
     async def tag(self, mono):
+        self.calls += 1
         return ("unknown", 0.0)
 
 
 class FakeDoA:
+    def __init__(self):
+        # Mismo motivo que FakeTagger.calls: la rama de texto vacío no debe
+        # llamar GCC-PHAT tampoco.
+        self.calls = 0
+
     def estimate(self, audio):
+        self.calls += 1
         from src.ambient.doa import DoAResult
         return DoAResult(azimuth=1.0, stability=0.95)
 
@@ -288,6 +302,11 @@ def test_segmento_sin_texto_se_persiste_si_hay_archiver(tmp_path):
     assert store.added[0].text == ""
     assert store.added[0].text_empty is True
     assert store.audio_paths[1].endswith("escritorio/1.flac")
+    # Review 2026-08-05: la rama de texto vacío NO debe llamar tagger ni DoA
+    # (GPU + GCC-PHAT) — son operaciones caras que no aportan nada a una fila
+    # que solo existe para medir la tasa de deleción.
+    assert tr._tagger.calls == 0
+    assert tr._doa.calls == 0
 
 
 def test_segmento_sin_texto_NO_se_persiste_sin_archiver():
@@ -310,6 +329,29 @@ def test_segmento_con_texto_archiva_el_audio(tmp_path):
 
     assert store.added[0].text == "hola che"
     assert store.added[0].text_empty is False
+    assert store.audio_paths[1].endswith("escritorio/1.flac")
+
+
+def test_archiver_wired_via_constructor_kwarg(tmp_path):
+    """El wiring real de producción (build_ambient_path) pasa archiver= por
+    keyword al constructor — nunca setea el atributo después de crear el
+    objeto, que es lo único que probaban los tests de arriba. Si `archiver`
+    se hubiera omitido de la firma de __init__, esta es la única prueba que
+    lo hubiera detectado (con un TypeError), en vez de recién en producción."""
+    store = FakeStore()
+    tap = MultiChannelTap(maxlen_chunks=100)
+    clf = SourceClassifier(SourceClassifierConfig(tv_azimuth=2.5))
+    tr = AmbientTranscriber(
+        tap=tap, segmenter_factory=_segmenter_factory,
+        ambient_stt=FakeAmbientSTT(), tagger=FakeTagger(),
+        doa_estimator=FakeDoA(), classifier=clf, store=store,
+        rooms=["escritorio"], poll_interval_s=0.01,
+        archiver=AudioArchiver(base_dir=str(tmp_path), enabled=True),
+    )
+
+    asyncio.run(tr._handle_segment("escritorio", _seg()))
+
+    assert store.added[0].text == "hola che"
     assert store.audio_paths[1].endswith("escritorio/1.flac")
 
 
@@ -339,3 +381,7 @@ def test_update_fallido_borra_el_archivo(tmp_path):
     asyncio.run(tr._handle_segment("escritorio", _seg()))   # no propaga
 
     assert not (tmp_path / "escritorio" / "1.flac").exists()
+    # La otra mitad del requisito (review 2026-08-05): el fallo es del
+    # puntero al audio, no de la utterance — sin esto el test pasaría
+    # vacuamente si write() hubiera devuelto None por cualquier otro motivo.
+    assert store.added[0].text == "hola che"
