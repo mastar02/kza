@@ -114,8 +114,14 @@ esquema abajo.
   `vad_prob`, y se le agrega `text_empty=0` para que nunca las consuma.
 
 **Purga:** `AmbientStore.purge_expired` hoy borra filas. Se extiende para borrar también el
-archivo de audio referenciado. Un archivo huérfano (fila borrada, archivo presente) se limpia
-en el mismo barrido escaneando el directorio contra las filas vivas.
+archivo de audio referenciado.
+
+**Huérfanos: se previenen, no se barren.** Un archivo cuya fila no lo referencia queda fuera
+del alcance de la purga para siempre. La única ventana en que puede pasar es que el FLAC se
+escriba y el `UPDATE` de `audio_path` falle después. Se cierra con una compensación en el
+momento —si el UPDATE falla, se borra el archivo recién escrito— en vez de con un barrido
+periódico del directorio. Un barrido sería más código, correría siempre, y solo existiría para
+un caso que se puede volver imposible.
 
 ### A2 · Set de ground truth (transcripción humana, ciega)
 
@@ -143,7 +149,8 @@ re-ponderando cada bucket por su volumen en la DB, y el runner lo reporta de las
   `groundtruth.json` con `{utt_id, room, vad_prob, audio_path, reference: null}`.
 - Genera además un `index.html` autocontenido (audio + textarea + guardar) para transcribir
   cómodo. Sin red, sin dependencias.
-- `--import` → recibe el JSON completado y lo valida (todas las referencias presentes).
+- `--validate` → recibe el JSON completado y lo verifica (se llama así y no `--import`
+  porque `args.import` no es un atributo accesible en Python).
 
 **Casos especiales que la referencia debe poder expresar:**
 - `""` (vacío) — el segmento no contenía habla inteligible. Necesario para medir inserciones.
@@ -168,7 +175,12 @@ minúsculas, colapso de espacios, quitar puntuación de borde. **Se conservan lo
   texto producido fue vacío. Esta es la métrica que A1 habilita y que hoy es invisible.
 - **Tasa de alucinación**: fracción de segmentos con referencia vacía cuyo texto producido no
   lo fue.
-- Correlación entre `vad_prob` y WER, para validar o refutar que el bucket es buen predictor.
+- La tabla de WER **por bucket** es lo que valida o refuta que `vad_prob` sea buen predictor de
+  fidelidad. No se calcula un coeficiente de correlación: sobre ~42 puntos agrega ruido, no
+  información, y la pregunta ("¿el bucket separa?") se lee directamente de la tabla.
+
+Esa validación es la que **gatea la Pieza B**: si `vad_prob` no predice el WER, elegir el
+micrófono por `vad_prob` no tiene fundamento y B necesita otro criterio.
 
 **Salida:** tabla en consola + `data/wer_report_<fecha>.json` para comparar corridas.
 
