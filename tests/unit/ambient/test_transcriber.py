@@ -5,10 +5,12 @@ import time
 import numpy as np
 import pytest
 
+from src.ambient.audio_archive import AudioArchiver
 from src.ambient.tap import MultiChannelTap
 from src.ambient.segmenter import UtteranceSegmenter
 from src.ambient.source_classifier import SourceClassifier, SourceClassifierConfig
 from src.ambient.transcriber import AmbientTranscriber
+from src.ambient.types import RawSegment
 from src.stt.whisper_fast import STTResult
 
 SR = 16000
@@ -36,10 +38,14 @@ class FakeDoA:
 class FakeStore:
     def __init__(self):
         self.added = []
+        self.audio_paths = {}     # utt_id → path registrado
 
     async def add(self, utt):
         self.added.append(utt)
         return len(self.added)
+
+    async def set_audio_path(self, utt_id, path):
+        self.audio_paths[utt_id] = path
 
     async def purge_expired(self):
         return 0
@@ -255,3 +261,81 @@ def test_empty_text_is_not_stored():
         await tr.stop()
     asyncio.run(inner())
     assert store.added == []
+
+
+def _seg(vad: float = 0.8) -> RawSegment:
+    return RawSegment(t0=100.0, t1=102.0,
+                      audio=np.full((1600, 6), 0.2, dtype=np.float32),
+                      vad_prob=vad)
+
+
+class EmptySTT:
+    async def transcribe(self, audio):
+        return STTResult(text="", elapsed_ms=5.0)
+
+
+def test_segmento_sin_texto_se_persiste_si_hay_archiver(tmp_path):
+    """Sin esto la tasa de deleción es invisible: el modo de falla más
+    importante del ambient es transcribir habla real como vacío."""
+    store = FakeStore()
+    tap, tr = _make(store)
+    tr._stt = EmptySTT()
+    tr._archiver = AudioArchiver(base_dir=str(tmp_path), enabled=True)
+
+    asyncio.run(tr._handle_segment("escritorio", _seg()))
+
+    assert len(store.added) == 1
+    assert store.added[0].text == ""
+    assert store.added[0].text_empty is True
+    assert store.audio_paths[1].endswith("escritorio/1.flac")
+
+
+def test_segmento_sin_texto_NO_se_persiste_sin_archiver():
+    """Regresión: con keep_audio apagado el comportamiento es el de hoy."""
+    store = FakeStore()
+    tap, tr = _make(store)
+    tr._stt = EmptySTT()
+
+    asyncio.run(tr._handle_segment("escritorio", _seg()))
+
+    assert store.added == []
+
+
+def test_segmento_con_texto_archiva_el_audio(tmp_path):
+    store = FakeStore()
+    tap, tr = _make(store)
+    tr._archiver = AudioArchiver(base_dir=str(tmp_path), enabled=True)
+
+    asyncio.run(tr._handle_segment("escritorio", _seg()))
+
+    assert store.added[0].text == "hola che"
+    assert store.added[0].text_empty is False
+    assert store.audio_paths[1].endswith("escritorio/1.flac")
+
+
+def test_fallo_del_archiver_no_rompe_la_utterance(tmp_path):
+    store = FakeStore()
+    tap, tr = _make(store)
+    tr._archiver = AudioArchiver(base_dir=str(tmp_path), enabled=True,
+                                 min_free_bytes=10**18)   # nunca hay lugar
+
+    asyncio.run(tr._handle_segment("escritorio", _seg()))
+
+    assert store.added[0].text == "hola che"
+    assert store.audio_paths == {}      # no se registró ninguna ruta
+
+
+def test_update_fallido_borra_el_archivo(tmp_path):
+    """Una fila sin audio_path deja el archivo fuera del alcance de la purga
+    por TTL — huérfano permanente. Se borra en el momento."""
+    class BrokenStore(FakeStore):
+        async def set_audio_path(self, utt_id, path):
+            raise RuntimeError("db caída")
+
+    store = BrokenStore()
+    tap, tr = _make(store)
+    tr._archiver = AudioArchiver(base_dir=str(tmp_path), enabled=True)
+
+    asyncio.run(tr._handle_segment("escritorio", _seg()))   # no propaga
+
+    assert not (tmp_path / "escritorio" / "1.flac").exists()

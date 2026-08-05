@@ -1697,6 +1697,16 @@ ambient:
   retention_hours: 48   # TTL del texto crudo (destilar-y-descartar)
   poll_interval_s: 0.25
   db_path: "./data/ambient.db"
+  # Persistencia de audio para medir fidelidad (spec 2026-08-05). OFF por
+  # default: se prende SOLO durante la campaña de medición y se apaga al
+  # terminar. Sin el audio no hay referencia posible → no hay WER, y no se
+  # puede re-transcribir el histórico cuando mejore el modelo.
+  # Costo: ~190 MB/día (2 salas, 13,7% de habla), ~380 MB en la ventana de 48h.
+  # ⚠️ Guarda audio crudo de TODO lo que se hable, incluidas terceras personas.
+  keep_audio:
+    enabled: false
+    dir: "./data/ambient_audio"
+    min_free_mb: 1000        # piso de disco; debajo de esto no archiva
   # Flag de idioma del TEXTO al persistir (2026-06-13, flag-no-drop). El
   # discriminante real de calidad del rioplatense es el idioma, no la energía
   # (vad). py3langid + marcadores rioplatenses → (lang, lang_prob, lang_ok) en
