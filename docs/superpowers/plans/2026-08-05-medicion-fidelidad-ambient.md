@@ -1459,8 +1459,37 @@ El código no da números por sí solo. La secuencia operativa, que **se coordin
 2. Verificar espacio libre (`df -h /home`) y prender `keep_audio.enabled: true`. Reiniciar `kza-voice`.
 3. Dejar correr ≥48 h.
 4. `tools/ambient_groundtruth.py --export` → el usuario transcribe a ciegas.
-5. `tools/ambient_wer.py` → números por bucket.
-6. **Apagar `keep_audio` y verificar el borrado del audio.**
+   Deja en `--out` (default `data/gt/`, creado 0700) los FLAC, `index.html`, `meta.json` y
+   `hypotheses.json`. **No abrir `hypotheses.json`**: contiene lo que transcribió el modelo, y
+   verlo antes de transcribir arruina el ciego.
+5. `tools/ambient_groundtruth.py --validate data/gt/groundtruth.json` → tiene que dar exit 0.
+   Si falla, el set está incompleto y los clips no visitados se medirían como "no había habla".
+   Recién con exit 0, `tools/ambient_wer.py` → números por bucket.
+6. **Apagar `keep_audio`, reiniciar `kza-voice`, y borrar TODO el audio.** Son tres cosas
+   distintas y ninguna es opcional:
+
+   a. **Purga por TTL** — esperar el barrido (o forzarlo) y confirmar que `data/ambient_audio/`
+      queda sin los FLAC de las filas expiradas.
+
+   b. **Barrido de huérfanos por mtime.** Un SIGKILL/OOM entre que `sf.write` retorna y el commit
+      de `set_audio_path` deja un FLAC con `audio_path=NULL`: nadie lo referencia, la purga por TTL
+      no lo puede ver, y queda en disco **para siempre**. `kza-voice` tiene `Restart=on-failure` y
+      este proyecto ya tuvo OOMs, así que la ventana se abre sola. Barrer por antigüedad del
+      archivo, que no depende de ninguna fila:
+      ```bash
+      # 2880 min = 48 h = el TTL. Listar primero, borrar después.
+      find /home/kza/app/data/ambient_audio -type f -name '*.flac' -mmin +2880 -print
+      find /home/kza/app/data/ambient_audio -type f -name '*.flac' -mmin +2880 -delete
+      find /home/kza/app/data/ambient_audio -type d -empty -delete
+      ```
+
+   c. **Borrar el directorio de export.** `--out` es una SEGUNDA copia permanente, fuera del TTL:
+      42 FLAC de conversación doméstica más `groundtruth.json`, que es la transcripción humana en
+      texto plano de lo que se habló en la casa, y `hypotheses.json`. Nada lo borra nunca.
+      ```bash
+      rm -rf /home/kza/app/data/gt        # y la copia local si se transcribió en la laptop
+      ```
+      El reporte (`data/wer_report_*.json`) sí se conserva: son números agregados, no contenido.
 7. Con esos números se escribe el plan de la Pieza B (fusión multi-mic) — y recién ahí se sabe si `vad_prob` es un criterio de selección válido.
 
 ## Notas de riesgo para quien implemente
