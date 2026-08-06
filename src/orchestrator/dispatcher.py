@@ -1431,18 +1431,29 @@ class RequestDispatcher:
         # separa "habló el clima" de "habló la disculpa"; el warning (rate-
         # limited, no spamear si el sensor está caído un fin de semana)
         # apunta directo a la config.
-        from src.world.weather import NO_FORECAST
-        if success and response in (NO_DATA, NO_FORECAST):
-            self._stats["weather_no_data"] += 1
-            now = time.monotonic()
-            if now - self._last_weather_nodata_warn > 300:
-                self._last_weather_nodata_warn = now
-                logger.warning(
-                    "FAST_WEATHER answered honestly with no data "
-                    "(entity=%s, dia=%s, count=%d) — if chronic, check that "
-                    "home_assistant.weather_entity exists in HA",
-                    self.weather_entity, dia, self._stats["weather_no_data"],
-                )
+        #
+        # CRÍTICO: esto NO puede levantar una excepción. El método nunca
+        # propaga excepciones; una falla acá atravesaría dispatch() y dejaría
+        # al usuario escuchando NADA. El bloque está protegido para reforzar
+        # la garantía anti-mudo: si observabilidad falla, se loguea y listo.
+        try:
+            from src.world.weather import NO_FORECAST
+            if success and response in (NO_DATA, NO_FORECAST):
+                self._stats["weather_no_data"] += 1
+                now = time.monotonic()
+                if now - self._last_weather_nodata_warn > 300:
+                    self._last_weather_nodata_warn = now
+                    logger.warning(
+                        "FAST_WEATHER answered honestly with no data "
+                        "(entity=%s, dia=%s, count=%d) — if chronic, check that "
+                        "home_assistant.weather_entity exists in HA",
+                        self.weather_entity, dia, self._stats["weather_no_data"],
+                    )
+        except Exception as obs_exc:  # noqa: BLE001 - no silenciar por observabilidad
+            logger.error(
+                "Observabilidad weather_no_data falló (esto no afecta la respuesta): %s",
+                obs_exc, exc_info=True,
+            )
 
         return DispatchResult(
             path=PathType.FAST_WEATHER, priority=priority,
