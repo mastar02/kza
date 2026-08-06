@@ -92,6 +92,21 @@ def test_ac_commands_with_clima_noun_do_not_become_weather(dispatcher, text):
     # adjacent, and/or the utterance is a question) and MUST route
     # fast_weather. Parametrized together so neither direction can
     # silently flip again.
+    #
+    # Los ÚNICOS casos de este parámetro que dependen realmente del guard
+    # (review 2026-08-06): desactivándolo (`climate_command_adjacent = False`)
+    # los 53 tests del archivo seguían verdes. Los demás casos no lo tocan —
+    # los "fast_domotics" porque WEATHER_KEYWORDS no tiene ninguna frase que
+    # los capture, y los "fast_weather" porque son preguntas (`is_question`
+    # ya los neutraliza) o no matchean la regex de adyacencia.
+    #
+    # Estas dos SÍ: cláusula de justificación pospuesta que contiene una
+    # frase LITERAL de WEATHER_KEYWORDS ("hace calor" / "hace frío"). Con el
+    # guard activo el verbo adyacente al sustantivo climático manda y rutea
+    # fast_domotics; sin guard, el keyword de clima gana y la acción pedida
+    # NO se ejecuta. Si alguien apaga el guard, estas dos se ponen rojas.
+    ("prendé el aire, hace calor", PathType.FAST_DOMOTICS),
+    ("prendé la calefacción, hace frío", PathType.FAST_DOMOTICS),
     ("prendé el clima", PathType.FAST_DOMOTICS),
     ("poné el clima en 22", PathType.FAST_DOMOTICS),
     ("apagá el clima del living", PathType.FAST_DOMOTICS),
@@ -119,6 +134,39 @@ def test_domotics_climate_adjacency_guard_finding_3(dispatcher, text, expected):
 def test_existing_paths_do_not_regress(dispatcher, text, expected):
     path, _ = dispatcher._classify_request(text)
     assert path == expected
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Misroute conocido y DELIBERADAMENTE reabierto (commit a513108 + su "
+        "revert ef651e2, 2026-08-04). El guard de adyacencia exige el verbo "
+        "INMEDIATAMENTE antes del sustantivo climático; un adverbio o un "
+        "cuantificador de por medio ('prendé YA el clima', 'subí UN GRADO el "
+        "aire') lo rompe y gana el keyword de clima -> fast_weather. "
+        "Mitigación vigente: hoy NO hay ninguna entidad climate indexada en "
+        "ChromaDB, así que el fast_domotics 'correcto' tampoco ejecutaría "
+        "nada; el costo real es una respuesta de clima en vez de un 'no "
+        "encontré esa entidad'. Este xfail existe para que la limitación "
+        "viva en la suite y no solo en un mensaje de commit: EN CUANTO se "
+        "indexe una entidad climate, esto pasa a ser un bug con consecuencia "
+        "y hay que arreglar el guard. strict=True -> si alguien lo arregla, "
+        "el XPASS obliga a borrar este marcador."
+    ),
+)
+@pytest.mark.parametrize("text", [
+    "prendé ya el clima que hace calor",
+    "apagá ahora el termostato, hace frío",
+    "prendé de una vez el clima, hace calor",
+    "subí un grado el aire porque hace frío",
+])
+def test_climate_commands_with_interposed_adverb_misroute_to_weather(dispatcher, text):
+    """Comandos de AC con una palabra entre el verbo y el sustantivo.
+
+    Deberían ser fast_domotics (son órdenes); hoy rutean fast_weather.
+    """
+    path, _ = dispatcher._classify_request(text.lower())
+    assert path == PathType.FAST_DOMOTICS
 
 
 def test_service_filter_still_wins(dispatcher):
