@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Callable
 from src.ambient.types import AmbientUtterance, RawSegment
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from src.ambient.audio_archive import AudioArchiver
     from src.ambient.textual_wake import TextualWakeDetector
 
@@ -42,7 +44,7 @@ class AmbientTranscriber:
         poll_interval_s: float = 0.25,
         quality_fn: Callable[[str, float | None], tuple[str | None, float | None, bool]]
         | None = None,
-        archiver: "AudioArchiver | None" = None,
+        archiver: AudioArchiver | None = None,
     ):
         self._tap = tap
         self._segmenter_factory = segmenter_factory
