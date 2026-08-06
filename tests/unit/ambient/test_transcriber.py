@@ -385,3 +385,57 @@ def test_update_fallido_borra_el_archivo(tmp_path):
     # puntero al audio, no de la utterance — sin esto el test pasaría
     # vacuamente si write() hubiera devuelto None por cualquier otro motivo.
     assert store.added[0].text == "hola che"
+
+
+def test_orden_persist_wake_archive_y_el_wake_sobrevive_archiver_roto(tmp_path):
+    """Pinea el orden que fijó 8cf4a6a: el archivado (instrumentación) va
+    DESPUÉS del wake textual (cara al usuario), y un UPDATE de audio_path
+    roto jamás se traga un 'nexa' real. Antes de este test, revertir ese
+    orden dejaba la suite verde."""
+    events = []
+
+    class OrderStore(FakeStore):
+        async def add(self, utt):
+            events.append("persist")
+            return await super().add(utt)
+
+        async def set_audio_path(self, utt_id, path):
+            events.append("archive")
+            raise RuntimeError("UPDATE roto")
+
+    class WakeCapableSTT(FakeAmbientSTT):
+        # maybe_dispatch recibe audio=self._stt.asr_mono(...): sin esto el
+        # AttributeError se comería el dispatch y el test mediría otra cosa.
+        def asr_mono(self, audio):
+            return audio[:, 0] if audio.ndim == 2 else audio
+
+    class RecordingWake:
+        async def maybe_dispatch(self, room_id, text, source, speaker, audio=None):
+            events.append("dispatch")
+
+    store = OrderStore()
+    tap, tr = _make(store)
+    tr._stt = WakeCapableSTT()
+    tr._archiver = AudioArchiver(base_dir=str(tmp_path), enabled=True)
+    tr._textual_wake = RecordingWake()
+
+    asyncio.run(tr._handle_segment("escritorio", _seg()))
+
+    assert events == ["persist", "dispatch", "archive"]
+
+
+def test_segmento_sin_texto_NO_se_persiste_con_archiver_deshabilitado(tmp_path):
+    """El wiring real de producción (build_ambient_path) SIEMPRE construye
+    el archiver y pasa enabled=False cuando keep_audio está apagado — el
+    default de la casa. El test vecino con archiver=None no cubre la mitad
+    `.enabled` del gate: borrarla haría persistir una fila text_empty por
+    cada segmento vacío del ambient, siempre-on, hasta el TTL."""
+    store = FakeStore()
+    tap, tr = _make(store)
+    tr._stt = EmptySTT()
+    tr._archiver = AudioArchiver(base_dir=str(tmp_path), enabled=False)
+
+    asyncio.run(tr._handle_segment("escritorio", _seg()))
+
+    assert store.added == []
+    assert list(tmp_path.rglob("*.flac")) == []

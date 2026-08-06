@@ -239,3 +239,24 @@ class TestCallServiceWithResponse:
 
         _, kwargs = mock_session.post.call_args
         assert kwargs["timeout"].total == 1.25
+
+    @pytest.mark.asyncio
+    async def test_the_url_carries_return_response_true(self, client):
+        """El query param ES la razón de ser del método: sin él HA devuelve
+        200 con la lista de changed-states en vez de service_response, el
+        dispatcher degrada a NO_FORECAST y el pronóstico queda roto para
+        siempre con todos los tests verdes."""
+        ctx = _FakeResponseCtx(200)
+        ctx._response.json = AsyncMock(return_value={})
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=ctx)
+        mock_session.closed = False
+        client._session = mock_session
+
+        await client.call_service_with_response(
+            "weather", "get_forecasts", "weather.forecast_home"
+        )
+
+        url = mock_session.post.call_args.args[0]
+        assert url.endswith("/api/services/weather/get_forecasts?return_response=true")
