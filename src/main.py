@@ -1374,6 +1374,7 @@ async def main():
                 dedup_window_s=_textual_wake_cfg.get("dedup_window_s", 8.0),
                 variants=tuple(_textual_wake_cfg.get("variants", ("nexa", "next up"))),
                 max_edit_distance=_textual_wake_cfg.get("max_edit_distance", 1),
+                min_vad=_textual_wake_cfg.get("min_vad", 0.50),
             )
             ambient_path.transcriber.attach_textual_wake(textual_wake_detector)
             logger.info(

@@ -99,7 +99,8 @@ class AmbientTranscriber:
 
         Args:
             detector: `TextualWakeDetector` (o compatible) con
-                `async maybe_dispatch(room_id, text, source, speaker, audio)`.
+                `async maybe_dispatch(room_id, text, source, speaker, audio,
+                vad_prob=None)`.
         """
         self._textual_wake = detector
 
@@ -229,6 +230,7 @@ class AmbientTranscriber:
                     await self._textual_wake.maybe_dispatch(
                         room_id, text, source, speaker,
                         audio=self._stt.asr_mono(seg.audio),
+                        vad_prob=seg.vad_prob,
                     )
                 except Exception:
                     logger.exception(

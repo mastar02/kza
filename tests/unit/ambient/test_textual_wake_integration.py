@@ -91,7 +91,8 @@ class RecordingDetector:
         self._calls = calls
         self._raise = raise_exc
 
-    async def maybe_dispatch(self, room_id, text, source, speaker, audio):
+    async def maybe_dispatch(self, room_id, text, source, speaker, audio,
+                             vad_prob=None):
         self._calls.append(("dispatch", room_id, text, source))
         if self._raise:
             raise RuntimeError("boom del detector (fail-open esperado)")
@@ -211,7 +212,8 @@ def test_textual_wake_receives_mono_audio_not_raw_multichannel_segment():
     captured_audio: list[np.ndarray] = []
 
     class CapturingDetector:
-        async def maybe_dispatch(self, room_id, text, source, speaker, audio):
+        async def maybe_dispatch(self, room_id, text, source, speaker, audio,
+                                 vad_prob=None):
             captured_audio.append(audio)
             return True
 
@@ -226,6 +228,36 @@ def test_textual_wake_receives_mono_audio_not_raw_multichannel_segment():
 
     assert len(captured_audio) == 1
     assert captured_audio[0].ndim == 1
+
+
+def test_textual_wake_receives_vad_prob_of_the_segment():
+    """El gate por vad del detector (2026-08-06) depende de que el hook le
+    pase el vad_prob del segmento; sin él el gate queda fail-open siempre
+    (vad_prob=None) y no filtra nada — un proxy mentiroso silencioso."""
+    store = RecordingStore()
+    captured_vad: list = []
+
+    class CapturingDetector:
+        async def maybe_dispatch(self, room_id, text, source, speaker, audio,
+                                 vad_prob=None):
+            captured_vad.append(vad_prob)
+            return True
+
+    tap, tr = _make_transcriber(store, FakeAmbientSTT("hola nexa"), tv_azimuth=2.5)
+    tr.attach_textual_wake(CapturingDetector())
+
+    async def inner():
+        await tr.start()
+        await _feed_and_wait(tap, store)
+        await tr.stop()
+    asyncio.run(inner())
+
+    assert len(captured_vad) == 1
+    # El vad fake del segmenter da 1.0 sobre chunks de voz y 0.0 sobre
+    # silencio; el segmento promedia ambos. Lo que importa es que llegue el
+    # valor real del segmento (>0), no None.
+    assert captured_vad[0] is not None
+    assert captured_vad[0] > 0.0
 
 
 def test_no_detector_attached_is_pure_noop():

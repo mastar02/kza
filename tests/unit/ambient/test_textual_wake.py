@@ -277,6 +277,118 @@ class TestDetectorSkipConditions:
         assert not any("[TextualWake]" in r.message for r in caplog.records)
 
 
+# ==================== TextualWakeDetector: gate por vad ====================
+
+class TestDetectorVadGate:
+    """Gate por vad_prob (2026-08-06): a vad bajo el texto del ambient es
+    garble inglés (87% en el bucket <0.20, medido 08-04) y "Next up." espurio
+    dispara el canal. Auditoría de ambient.db 08-06: el garble puro vive en
+    vad 0.36-0.49; los comandos reales far-field arrancan en ~0.57. Umbral
+    default 0.50. Gate SOLO por vad, JAMÁS por idioma: los comandos reales
+    salen con lang='fr'/'en' (py3langid sobre "Nexa, prende la luz") — el
+    veto por idioma es NO-GO medido (mata 2/2 comandos reales)."""
+
+    def _detector(self, dispatch, **kwargs):
+        return TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+            now_fn=FakeClock(),
+            **kwargs,
+        )
+
+    async def test_vad_below_threshold_skips(self):
+        dispatch = AsyncMock()
+        detector = self._detector(dispatch, min_vad=0.50)
+
+        result = await detector.maybe_dispatch(
+            room_id="cocina", text="Next up.", source="unknown",
+            speaker=None, audio=make_audio(), vad_prob=0.36,
+        )
+
+        assert result is False
+        dispatch.assert_not_awaited()
+
+    async def test_vad_at_threshold_dispatches(self):
+        # El umbral es inclusivo: vad_prob >= min_vad pasa.
+        dispatch = AsyncMock(return_value={"success": True})
+        detector = self._detector(dispatch, min_vad=0.50)
+
+        result = await detector.maybe_dispatch(
+            room_id="cocina", text="Nexa, prende la luz", source="unknown",
+            speaker=None, audio=make_audio(), vad_prob=0.50,
+        )
+
+        assert result is True
+        dispatch.assert_awaited_once()
+
+    async def test_vad_none_fails_open(self):
+        # Sin señal de vad no se bloquea (mismo criterio que
+        # is_spanish_keepable): la ausencia del instrumento no puede
+        # silenciar la red de seguridad.
+        dispatch = AsyncMock(return_value={"success": True})
+        detector = self._detector(dispatch, min_vad=0.50)
+
+        result = await detector.maybe_dispatch(
+            room_id="salon", text="Nexa, apagá la luz", source="human_direct",
+            speaker=None, audio=make_audio(), vad_prob=None,
+        )
+
+        assert result is True
+
+    async def test_vad_omitted_fails_open(self):
+        # Compat: llamadores que no pasan vad_prob (kwarg con default None).
+        dispatch = AsyncMock(return_value={"success": True})
+        detector = self._detector(dispatch, min_vad=0.50)
+
+        result = await detector.maybe_dispatch(
+            room_id="salon", text="Nexa, apagá la luz", source="human_direct",
+            speaker=None, audio=make_audio(),
+        )
+
+        assert result is True
+
+    async def test_default_threshold_is_050(self):
+        # Pinnea el default: 0.49 (garble ambiguo medido) skip, 0.57 (comando
+        # real medido "Nexa, prende la luz" en cocina) dispara.
+        dispatch = AsyncMock(return_value={"success": True})
+        detector = self._detector(dispatch)
+
+        assert await detector.maybe_dispatch(
+            room_id="escritorio", text="Next up. Los.", source="unknown",
+            speaker=None, audio=make_audio(), vad_prob=0.49,
+        ) is False
+        assert await detector.maybe_dispatch(
+            room_id="cocina", text="Nexa, prende la luz", source="unknown",
+            speaker=None, audio=make_audio(), vad_prob=0.57,
+        ) is True
+
+    async def test_low_vad_skip_logs_info(self, caplog):
+        dispatch = AsyncMock()
+        detector = self._detector(dispatch, min_vad=0.50)
+
+        with caplog.at_level(logging.INFO):
+            await detector.maybe_dispatch(
+                room_id="cocina", text="Next up.", source="unknown",
+                speaker=None, audio=make_audio(), vad_prob=0.36,
+            )
+
+        msgs = [r.message for r in caplog.records if "[TextualWake]" in r.message]
+        assert any("low_vad" in m and "0.36" in m for m in msgs)
+
+    async def test_low_vad_without_match_emits_no_log(self, caplog):
+        # vad bajo + sin wake = el caso común del stream — silencio en logs.
+        dispatch = AsyncMock()
+        detector = self._detector(dispatch, min_vad=0.50)
+
+        with caplog.at_level(logging.INFO):
+            await detector.maybe_dispatch(
+                room_id="cocina", text="so we got a border", source="unknown",
+                speaker=None, audio=make_audio(), vad_prob=0.10,
+            )
+
+        assert not any("[TextualWake]" in r.message for r in caplog.records)
+
+
 # ==================== TextualWakeDetector: dedup acústico ====================
 
 class TestDetectorDedupAcoustic:

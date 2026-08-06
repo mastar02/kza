@@ -1794,6 +1794,14 @@ ambient:
     dedup_window_s: 8.0
     variants: ["nexa", "next up"]
     max_edit_distance: 1
+    # Gate por vad (2026-08-06): a vad bajo el ambient STT emite garble inglés
+    # ("Next up.") que matchea las variantes y dispara comandos fantasma.
+    # Calibrado contra ambient.db: garble puro en vad 0.36-0.49; comandos
+    # reales far-field desde ~0.57 ("Nexa, prende la luz" cocina). Umbral
+    # inclusivo; vad_prob=None no bloquea (fail-open). SOLO vad, JAMÁS gate
+    # por idioma: los comandos reales salen con lang='fr'/'en' (py3langid) —
+    # el veto por idioma mata 2/2 comandos reales (NO-GO medido 08-05).
+    min_vad: 0.50
 
 # Code-Index — búsqueda semántica del codebase para agentes (spec 2026-07-04).
 # Servicio SEPARADO (kza-code-index.service, :9515); el pipeline de voz NO lo

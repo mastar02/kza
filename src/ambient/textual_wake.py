@@ -208,6 +208,7 @@ class TextualWakeDetector:
         dedup_window_s: float = 8.0,
         variants: tuple[str, ...] = _DEFAULT_VARIANTS,
         max_edit_distance: int = 1,
+        min_vad: float = 0.50,
         now_fn: Callable[[], float] = time.monotonic,
     ):
         """Configurar el detector.
@@ -225,6 +226,13 @@ class TextualWakeDetector:
             variants: Variantes del wake word (ver `matches_wake`).
             max_edit_distance: Distancia de edición máxima para el match
                 fuzzy (ver `matches_wake`).
+            min_vad: Piso de ``vad_prob`` para disparar (inclusivo). A vad
+                bajo el ambient STT emite garble inglés ("Next up.") que
+                matchea las variantes y dispara comandos fantasma. Umbral
+                calibrado contra ambient.db (2026-08-06): garble puro en
+                0.36-0.49, comandos reales desde ~0.57. Gate SOLO por vad —
+                el veto por idioma es NO-GO medido (mata comandos reales,
+                ver language_quality.py).
             now_fn: Reloj inyectable (default `time.monotonic`) — permite
                 FakeClock en tests, cero sleeps.
         """
@@ -234,6 +242,7 @@ class TextualWakeDetector:
         self._dedup_window_s = dedup_window_s
         self._variants = variants
         self._max_edit_distance = max_edit_distance
+        self._min_vad = min_vad
         self._now_fn = now_fn
         # Último dispatch TEXTUAL propio por room (0.0 = nunca) — dedup contra
         # re-transcripciones solapadas de la misma utterance.
@@ -246,6 +255,7 @@ class TextualWakeDetector:
         source: str,
         speaker: str | None,
         audio: np.ndarray,
+        vad_prob: float | None = None,
     ) -> bool:
         """Evaluar una utterance y despachar un comando si corresponde.
 
@@ -255,11 +265,14 @@ class TextualWakeDetector:
            de un televisor de fondo; "self" = eco de la propia TTS del
            asistente reproduciéndose (`SourceClassifier` durante `during_tts`).
         3. Sin match del wake word -> no dispara (sin log, caso común).
-        4. Wake acústico disparó hace menos de `dedup_window_s` en esta
+        4. `vad_prob < min_vad` -> no dispara (log INFO): a vad bajo el texto
+           es garble del STT, no habla dirigida. `None` no bloquea (fail-open:
+           la ausencia del instrumento no silencia la red de seguridad).
+        5. Wake acústico disparó hace menos de `dedup_window_s` en esta
            room -> no dispara (log INFO).
-        5. Este mismo canal ya disparó hace menos de `dedup_window_s` en
+        6. Este mismo canal ya disparó hace menos de `dedup_window_s` en
            esta room -> no dispara (log INFO).
-        6. Si no aplica ninguna de las anteriores: construye un
+        7. Si no aplica ninguna de las anteriores: construye un
            `CommandEvent` con el texto ya transcripto y lo despacha.
 
         Args:
@@ -270,6 +283,7 @@ class TextualWakeDetector:
             speaker: Hablante identificado, o None. Solo se usa para logging.
             audio: Audio del segmento (misma vista usada para el ASR
                 ambient), se adjunta al CommandEvent sin copiar.
+            vad_prob: Mean de Silero del segmento (None = sin señal).
 
         Returns:
             True si se despachó un comando, False en cualquier otro caso
@@ -289,6 +303,14 @@ class TextualWakeDetector:
         if not matches_wake(
             text, variants=self._variants, max_edit_distance=self._max_edit_distance
         ):
+            return False
+
+        if vad_prob is not None and vad_prob < self._min_vad:
+            logger.info(
+                f"[TextualWake] skip room={room_id} source={source} "
+                f"speaker={speaker} decision=low_vad vad={vad_prob:.2f} "
+                f"min_vad={self._min_vad:.2f} text={text!r}"
+            )
             return False
 
         now = self._now_fn()
