@@ -34,7 +34,6 @@ rules decide". The caller keeps its rule-based answer as the default.
 """
 
 import asyncio
-import hashlib
 import logging
 import re
 import unicodedata
