@@ -122,6 +122,37 @@ def test_domotics_climate_adjacency_guard_finding_3(dispatcher, text, expected):
     assert path == expected
 
 
+@pytest.mark.parametrize("text", [
+    # Verificados contra main en la review del PR #14 (2026-08-06): todos
+    # ruteaban FAST_WEATHER — el usuario escuchaba el pronóstico y la
+    # acción pedida nunca se ejecutaba (fallo domótico silencioso). El
+    # discriminante: la cláusula de clima es JUSTIFICACIÓN del comando,
+    # no consulta. Regla: un fragmento de WEATHER_CLAUSE_FRAGMENTS solo
+    # rutea a clima si no hay ningún verbo domótico en el texto (o si es
+    # pregunta).
+    "prendé la luz que hace frío",
+    "apagá la luz, hace calor",
+    "prendé el ventilador que hace calor",
+    "prendé la estufa, hace frío",
+    "cerrá la persiana que llueve",
+    "cerrá las ventanas que está lloviendo",
+    "prendé la luz del living porque va a llover",
+    "encender la luz, hace frío",
+    "apagá todo, hace calor",
+])
+def test_non_climate_commands_with_weather_clause_stay_domotics(dispatcher, text):
+    path, _ = dispatcher._classify_request(text)
+    assert path == PathType.FAST_DOMOTICS
+
+
+def test_weather_clause_fragments_is_a_subset_of_weather_keywords():
+    # El tier de fragmentos no puede inventar keywords: si alguien saca un
+    # fragmento de WEATHER_KEYWORDS y olvida el frozenset, esto lo detecta.
+    assert RequestDispatcher.WEATHER_CLAUSE_FRAGMENTS <= set(
+        RequestDispatcher.WEATHER_KEYWORDS
+    )
+
+
 @pytest.mark.parametrize("text,expected", [
     ("poné música de Spinetta", PathType.FAST_MUSIC),
     ("subí el volumen", PathType.FAST_MUSIC),
@@ -136,34 +167,21 @@ def test_existing_paths_do_not_regress(dispatcher, text, expected):
     assert path == expected
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Misroute conocido y DELIBERADAMENTE reabierto (commit a513108 + su "
-        "revert ef651e2, 2026-08-04). El guard de adyacencia exige el verbo "
-        "INMEDIATAMENTE antes del sustantivo climático; un adverbio o un "
-        "cuantificador de por medio ('prendé YA el clima', 'subí UN GRADO el "
-        "aire') lo rompe y gana el keyword de clima -> fast_weather. "
-        "Mitigación vigente: hoy NO hay ninguna entidad climate indexada en "
-        "ChromaDB, así que el fast_domotics 'correcto' tampoco ejecutaría "
-        "nada; el costo real es una respuesta de clima en vez de un 'no "
-        "encontré esa entidad'. Este xfail existe para que la limitación "
-        "viva en la suite y no solo en un mensaje de commit: EN CUANTO se "
-        "indexe una entidad climate, esto pasa a ser un bug con consecuencia "
-        "y hay que arreglar el guard. strict=True -> si alguien lo arregla, "
-        "el XPASS obliga a borrar este marcador."
-    ),
-)
 @pytest.mark.parametrize("text", [
     "prendé ya el clima que hace calor",
     "apagá ahora el termostato, hace frío",
     "prendé de una vez el clima, hace calor",
     "subí un grado el aire porque hace frío",
 ])
-def test_climate_commands_with_interposed_adverb_misroute_to_weather(dispatcher, text):
+def test_climate_commands_with_interposed_adverb_route_to_domotics(dispatcher, text):
     """Comandos de AC con una palabra entre el verbo y el sustantivo.
 
-    Deberían ser fast_domotics (son órdenes); hoy rutean fast_weather.
+    Misroute conocido desde 2026-08-04 (commit a513108 + revert ef651e2):
+    el guard de adyacencia no los cubría y ganaba el keyword de clima.
+    Cerrado por el veto de WEATHER_CLAUSE_FRAGMENTS (review PR #14,
+    2026-08-06): todos estos casos contienen un fragmento de cláusula +
+    un verbo domótico, así que el fragmento ya no captura y el loop de
+    DOMOTICS_KEYWORDS resuelve.
     """
     path, _ = dispatcher._classify_request(text.lower())
     assert path == PathType.FAST_DOMOTICS

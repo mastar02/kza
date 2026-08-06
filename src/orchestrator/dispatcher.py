@@ -430,6 +430,23 @@ class RequestDispatcher:
         "hace calor", "hace frío", "hace frio",
     ]
 
+    # Subconjunto de WEATHER_KEYWORDS que son FRAGMENTOS DE CLÁUSULA, no
+    # consultas completas: aparecen igual de seguido como justificación
+    # colgada de un comando ("prendé la estufa, hace frío") que como
+    # consulta de clima. Review PR #14 (2026-08-06): con un tier único
+    # esos comandos ruteaban FAST_WEATHER y la acción nunca se ejecutaba
+    # (fallo domótico silencioso, verificado contra main). Un fragmento
+    # solo rutea a clima si NINGÚN verbo de DOMOTICS_KEYWORDS aparece en
+    # el texto, o si el texto es pregunta ("¿tengo que prender el clima o
+    # hace calor afuera?" sigue siendo clima). Las consultas explícitas
+    # ("qué tiempo hace", "pronóstico", "está el clima") NO llevan veto:
+    # "está el clima bien, no hace falta prender nada" sigue en clima
+    # aunque "prende" matchee como substring de "prender".
+    WEATHER_CLAUSE_FRAGMENTS = frozenset({
+        "hace calor", "hace frío", "hace frio",
+        "llueve", "va a llover", "lloviendo",
+    })
+
     # Guard de adyacencia verbo-sustantivo (Finding 3, review 2026-08-04,
     # reemplaza el guard anterior "verbo en cualquier lado + sustantivo en
     # cualquier lado"). Ese guard viejo capturaba preguntas de clima
@@ -732,8 +749,17 @@ class RequestDispatcher:
             self._DOMOTICS_CLIMATE_ADJACENCY_RE.search(_strip_accents(text_lower))
         )
         if not climate_command_adjacent:
+            domotics_verb = any(
+                _kw_match(k, text_lower) for k in self.DOMOTICS_KEYWORDS
+            )
             for keyword in self.WEATHER_KEYWORDS:
                 if keyword in text_lower:
+                    if (not is_question and domotics_verb
+                            and keyword in self.WEATHER_CLAUSE_FRAGMENTS):
+                        # "prendé la luz que hace frío": la cláusula es
+                        # justificación de un comando — dejar que el loop
+                        # de DOMOTICS_KEYWORDS de abajo lo capture.
+                        continue
                     return PathType.FAST_WEATHER, Priority.HIGH
 
         # Detectar domotica por keywords
