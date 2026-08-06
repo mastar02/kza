@@ -1,5 +1,6 @@
 """Tests: reporte de WER por bucket con agregado re-ponderado."""
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -320,6 +321,15 @@ def test_reporte_no_confiable_sale_con_exit_2(tmp_path, monkeypatch):
 def test_snapshot_corrupto_es_error_duro_no_fallback_silencioso(
     tmp_path, monkeypatch, capsys
 ):
+    """OJO con este test: no basta con --db apuntando a un archivo que no
+    existe, porque el código VIEJO (que trataba corrupto como ausente) ya
+    salía con exit 1 por ese lado ("ni snapshot ni DB") — un falso positivo.
+    Y ``tmp_path`` se nombra a partir del nombre de ESTA función, que
+    contiene la palabra "corrupto"; si el assert buscara esa palabra en el
+    path impreso, pasaría por coincidencia sin que el fix hiciera nada. Por
+    eso el assert busca "NO se cae a la DB", frase que SOLO el mensaje
+    nuevo de main() emite (el AVISO viejo de "sin snapshot" dice "se cae a
+    la DB", sin el "NO")."""
     (tmp_path / "groundtruth.json").write_text(
         json.dumps({"1": "hola"}), encoding="utf-8")
     (tmp_path / "hypotheses.json").write_text("{trunc", encoding="utf-8")
@@ -330,4 +340,51 @@ def test_snapshot_corrupto_es_error_duro_no_fallback_silencioso(
     with pytest.raises(SystemExit) as ex:
         wer_mod.main()
     assert ex.value.code == 1
-    assert "corrupto" in capsys.readouterr().err
+    assert "NO se cae a la DB" in capsys.readouterr().err
+
+
+def test_snapshot_corrupto_no_cae_a_una_db_poblada(tmp_path, monkeypatch, capsys):
+    """El caso que la regresión real hubiera producido: snapshot corrupto Y
+    una ambient.db real, abierta y con una fila usable para el mismo id.
+    Antes del fix, ``load_snapshot`` tragaba el ``JSONDecodeError`` y
+    devolvía ``({}, {})`` — main() lo leía como "sin snapshot" y caía
+    derecho a esta DB poblada, armando un reporte con datos de una corrida
+    vieja o purgada a medias, exit 0, sin avisar nada. Acá la DB está sana
+    a propósito: si el fix se rompe, este test vería un reporte armado con
+    exit 0 en vez de SystemExit(1), y la DB SÍ se habría tocado."""
+    db_path = tmp_path / "ambient.db"
+    db = sqlite3.connect(db_path)
+    db.execute(
+        "CREATE TABLE utterances (id INTEGER PRIMARY KEY, room_id TEXT, "
+        "vad_prob REAL, text TEXT, audio_path TEXT, source TEXT)"
+    )
+    db.execute(
+        "INSERT INTO utterances (id, room_id, vad_prob, text, audio_path, "
+        "source) VALUES (1, 'escritorio', 0.9, 'hola', '/tmp/1.flac', 'mic')"
+    )
+    db.commit()
+    db.close()
+
+    (tmp_path / "groundtruth.json").write_text(
+        json.dumps({"1": "hola"}), encoding="utf-8")
+    (tmp_path / "hypotheses.json").write_text("{trunc", encoding="utf-8")
+
+    connect_calls = []
+    real_connect = sqlite3.connect
+
+    def spy_connect(*a, **kw):
+        connect_calls.append((a, kw))
+        return real_connect(*a, **kw)
+
+    monkeypatch.setattr(sqlite3, "connect", spy_connect)
+    monkeypatch.setattr(sys, "argv", [
+        "ambient_wer.py", "--groundtruth", str(tmp_path / "groundtruth.json"),
+        "--db", str(db_path),
+        "--out", str(tmp_path / "rep.json"),
+    ])
+    with pytest.raises(SystemExit) as ex:
+        wer_mod.main()
+    assert ex.value.code == 1
+    assert connect_calls == []                    # la DB poblada NUNCA se tocó
+    assert not (tmp_path / "rep.json").exists()    # no quedó un reporte a medias
+    assert "NO se cae a la DB" in capsys.readouterr().err
