@@ -103,7 +103,7 @@ def _edit_ops(ref: list[str], hyp: list[str]) -> tuple[int, int, int]:
         (sustituciones, inserciones, deleciones) del alineamiento óptimo.
     """
     n, m = len(ref), len(hyp)
-    # d[i][j] = costo; op[i][j] = operación elegida para llegar ahí
+    # d[i][j] = costo; la operación se reconstruye en el backtrace comparando costos
     d = [[0] * (m + 1) for _ in range(n + 1)]
     for i in range(n + 1):
         d[i][0] = i

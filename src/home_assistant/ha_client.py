@@ -486,7 +486,7 @@ class HomeAssistantClient:
         try:
             session = await self._ensure_session()
             # No headers= here: _ensure_session already builds the session with
-            # self.headers (verified 2026-08-04, ha_client.py:160).
+            # self.headers (verified 2026-08-04, see _ensure_session).
             async with session.post(
                 url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)
             ) as resp:
@@ -510,9 +510,13 @@ class HomeAssistantClient:
                     )
                     return None
                 if resp.status != 200:
+                    try:
+                        body_snippet = (await resp.text())[:300]
+                    except Exception:
+                        body_snippet = "<unreadable body>"
                     logger.warning(
                         f"Error {resp.status}: {domain}.{service} on {entity_id} "
-                        f"({elapsed:.0f}ms)"
+                        f"({elapsed:.0f}ms): {body_snippet}"
                     )
                     self._record_error(RuntimeError(f"HTTP {resp.status}"), label)
                     return None
@@ -532,7 +536,10 @@ class HomeAssistantClient:
             self._record_error(e, label)
             return None
         except Exception as exc:  # noqa: BLE001 - logged and surfaced as None
-            logger.error(f"Error llamando servicio con respuesta: {exc}")
+            logger.error(
+                f"Unexpected error in {label} on {entity_id}: {exc}",
+                exc_info=True,
+            )
             self._record_error(exc, label)
             return None
 

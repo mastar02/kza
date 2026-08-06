@@ -428,7 +428,7 @@ llm:
       # 2026-05-07 reorg: dos endpoints separados por velocidad.
       # priority=1 fast (Qwen 7B Q4 full GPU :8101) — usado por dispatcher
       # cuando el query es clasificable / one-shot JSON / fast path.
-      # priority=1 slow (MiniMax-M2.7-highspeed cloud) — reemplazo total 2026-05-29
+      # priority=2 slow (MiniMax-M2.7-highspeed cloud) — reemplazo total 2026-05-29
       # del GLM-Air local; usado cuando el fast endpoint falla o el caller pide reasoning.
       # IDs canónicos que main.py registra al dict clients (NO renombrar
       # sin actualizar también main.py:320-322). reasoner_cloud reemplaza reasoner_72b.

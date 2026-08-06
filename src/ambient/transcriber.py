@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Callable
 from src.ambient.types import AmbientUtterance, RawSegment
 
 if TYPE_CHECKING:
+    from src.ambient.audio_archive import AudioArchiver
     from src.ambient.textual_wake import TextualWakeDetector
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ class AmbientTranscriber:
         poll_interval_s: float = 0.25,
         quality_fn: Callable[[str, float | None], tuple[str | None, float | None, bool]]
         | None = None,
-        archiver=None,
+        archiver: "AudioArchiver | None" = None,
     ):
         self._tap = tap
         self._segmenter_factory = segmenter_factory
@@ -249,7 +250,7 @@ class AmbientTranscriber:
             # un segmento malo no tira el worker — se pierde ese segmento
             logger.exception(f"AmbientTranscriber[{room_id}]: segmento descartado")
 
-    async def _archive_audio(self, room_id: str, utt_id: int, audio) -> None:
+    async def _archive_audio(self, room_id: str, utt_id: int, audio: np.ndarray) -> None:
         """Guardar el audio del segmento y apuntar la fila al archivo.
 
         Si el UPDATE falla, borra el archivo antes de propagar: una fila con

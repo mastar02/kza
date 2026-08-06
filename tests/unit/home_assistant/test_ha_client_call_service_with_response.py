@@ -241,6 +241,29 @@ class TestCallServiceWithResponse:
         assert kwargs["timeout"].total == 1.25
 
     @pytest.mark.asyncio
+    async def test_non_200_logs_the_ha_error_body(self, client, caplog):
+        """El body del 400/500 de HA trae el POR QUÉ (entidad inexistente,
+        servicio sin response). Tirarlo repite el incidente de Chroma: el
+        diagnóstico estaba en el body de un 400 silencioso."""
+        ctx = _FakeResponseCtx(400)
+        ctx._response.text = AsyncMock(
+            return_value='{"message": "Service weather.get_forecasts does not support response"}'
+        )
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=ctx)
+        mock_session.closed = False
+        client._session = mock_session
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = await client.call_service_with_response(
+                "weather", "get_forecasts", "weather.bad_entity"
+            )
+
+        assert result is None
+        assert any("does not support response" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_the_url_carries_return_response_true(self, client):
         """El query param ES la razón de ser del método: sin él HA devuelve
         200 con la lista de changed-states en vez de service_response, el
