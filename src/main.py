@@ -47,6 +47,7 @@ from src.audio.ma1260_controller import MA1260Controller, MA1260Source
 from src.audio.echo_suppressor import EchoSuppressor
 from src.conversation.follow_up_mode import FollowUpMode
 from src.orchestrator import MultiUserOrchestrator
+from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
 from src.timers.named_timers import NamedTimerManager
 from src.intercom.intercom_system import IntercomSystem
 from src.notifications.smart_notifications import SmartNotificationManager
@@ -1287,6 +1288,10 @@ async def main():
             # Ver comentario en config/settings.yaml:home_assistant.
             unavailable_precheck_enabled=config.get("home_assistant", {}).get(
                 "unavailable_precheck_enabled", True
+            ),
+            # Entidad del clima. Ver config/settings.yaml:home_assistant.
+            weather_entity=config.get("home_assistant", {}).get(
+                "weather_entity", DEFAULT_WEATHER_ENTITY
             ),
         )
 

@@ -101,3 +101,86 @@ def test_forecast_never_mentions_rain_probability():
     out = describe_forecast(FORECAST, "mañana")
     assert "por ciento de lluvia" not in out.lower()
     assert "probabilidad" not in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-08-06, bloqueante 1: payloads malformados NO pueden levantar una
+# excepción. Desde `_handle_weather` una excepción atraviesa `dispatch()`,
+# `MultiUserOrchestrator.process()`, `request_router` y `voice_pipeline` sin
+# que nadie la atrape -> el usuario pregunta y no escucha NADA. El degradado
+# obligatorio es el mismo que el módulo ya usa para vacío/None: NO_FORECAST /
+# NO_DATA, hablado.
+#
+# Mutación que estos tests deben atrapar: volver a
+#   day = forecast[index]; day.get("condition")   (sin isinstance)
+#   round(float(low))                             (sin _as_number)
+#   if not state / attrs = state.get("attributes") or {}   (sin isinstance)
+# ---------------------------------------------------------------------------
+
+import pytest
+
+from src.world.weather import NO_DATA, NO_FORECAST
+
+
+@pytest.mark.parametrize("bad_forecast", [
+    None,
+    "no soy una lista",
+    {"forecast": []},          # dict: len() funciona, indexar por int no
+    [None, None],              # elementos no-dict en la posición pedida
+    [{}, "mañana soleado"],    # string donde se espera un dict
+    [{}, 42],
+    [{}, ["condition", "sunny"]],
+])
+def test_malformed_forecast_degrades_instead_of_raising(bad_forecast):
+    assert describe_forecast(bad_forecast, "mañana") == NO_FORECAST
+
+
+@pytest.mark.parametrize("bad_temps", [
+    {"condition": "rainy", "templow": "unknown", "temperature": "unknown"},
+    {"condition": "rainy", "templow": None, "temperature": "n/a"},
+    {"condition": "rainy", "templow": {}, "temperature": []},
+])
+def test_non_numeric_forecast_temps_are_omitted_not_raised(bad_temps):
+    # La condición sí se conoce, así que la frase se dice igual — solo se cae
+    # el tramo de grados. Lo inaceptable sería el ValueError de float().
+    out = describe_forecast([{}, bad_temps], "mañana")
+    assert "lluvioso" in out.lower()
+    assert "grados" not in out.lower()
+
+
+def test_forecast_with_only_bad_temps_and_unknown_condition_says_no_forecast():
+    out = describe_forecast([{}, {"condition": "no-existe", "temperature": "x"}], "mañana")
+    assert out == NO_FORECAST
+
+
+@pytest.mark.parametrize("bad_state", [
+    "no soy un dict",
+    42,
+    [],
+    ("state", "sunny"),
+])
+def test_malformed_current_state_degrades_instead_of_raising(bad_state):
+    assert describe_current(bad_state) == NO_DATA
+
+
+@pytest.mark.parametrize("bad_attrs", ["no soy un dict", None, 42, ["temperature", 20]])
+def test_malformed_attributes_still_speak_the_condition(bad_attrs):
+    # La condición vive en `state`, no en `attributes`: si el bloque de
+    # atributos viene roto se pierden grados y humedad, pero la frase sale.
+    # Lo inaceptable sería el AttributeError de `.get` sobre un no-dict.
+    assert describe_current({"state": "sunny", "attributes": bad_attrs}) == "Hay soleado."
+
+
+def test_non_numeric_current_temperature_is_omitted_not_raised():
+    out = describe_current({
+        "state": "sunny",
+        "attributes": {"temperature": "unknown", "humidity": "n/a"},
+    })
+    assert out == "Hay soleado."
+
+
+def test_boolean_temperature_is_not_spoken_as_a_number():
+    # float(True) == 1.0 -> "1 grados". Un bool nunca es una temperatura.
+    out = describe_current({"state": "sunny", "attributes": {"temperature": True}})
+    assert "1 grados" not in out
+    assert out == "Hay soleado."

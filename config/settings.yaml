@@ -42,6 +42,14 @@ home_assistant:
   # apagar el flag es la única mitigación sin tocar código.
   unavailable_precheck_enabled: true
 
+  # Entidad de HA de la que sale el clima hablado (path FAST_WEATHER del
+  # dispatcher: "qué tiempo hace" lee su estado cacheado, "...mañana" le pide
+  # weather.get_forecasts). Si el nombre real de la entidad en HA no es este,
+  # el asistente responde "No tengo el dato del clima ahora mismo" SIEMPRE, y
+  # eso se ve igual que un sensor caído — verificar el entity_id en HA antes
+  # de dar por muerto el clima.
+  weather_entity: "weather.forecast_home"
+
 # Audio Settings
 audio:
   sample_rate: 16000

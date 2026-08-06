@@ -46,8 +46,19 @@ from src.orchestrator.priority_queue import (
     Request,
     PriorityRequestQueue
 )
+from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
 
 logger = get_logger(__name__)
+
+
+# Techo del POST a `weather.get_forecasts` (rama "mañana" de _handle_weather).
+# Explícito y propio de este path a propósito: heredar el timeout de sesión
+# (`home_assistant.timeout`, hoy 2.0s) ataba la ventana de mudez del clima a
+# una config que se toca por motivos ajenos al clima. Es ~7x el presupuesto de
+# 300ms del fast path, y está bien: esta rama NO es cacheada, hace un salto de
+# red real y no puede entrar en 300ms. Lo que se acota acá es cuánto puede
+# tardar el usuario en escuchar el degradado honesto.
+WEATHER_FORECAST_TIMEOUT_S = 2.0
 
 
 # Stems cortos que colisionan como SUBcadena dentro de palabras comunes y
@@ -466,7 +477,7 @@ class RequestDispatcher:
         before_handler_warn_ms: float = 5.0,
         require_known_speaker_for_actions: bool = False,
         unavailable_precheck_enabled: bool = True,
-        weather_entity: str = "weather.forecast_home",
+        weather_entity: str = DEFAULT_WEATHER_ENTITY,
     ):
         """
         Args:
@@ -495,7 +506,9 @@ class RequestDispatcher:
                 unavailable_precheck_enabled` para el escenario de recuperación
                 que justifica poder apagarlo.
             weather_entity: Entidad de HA que expone el clima (default
-                "weather.forecast_home"), usada por FAST_WEATHER.
+                `src.world.weather.DEFAULT_ENTITY`), usada por FAST_WEATHER.
+                Se configura en `config/settings.yaml:home_assistant.
+                weather_entity` y llega por MultiUserOrchestrator.
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -1320,31 +1333,65 @@ class RequestDispatcher:
             )
 
     async def _handle_weather(self, text: str, priority: Priority) -> DispatchResult:
-        """Answer from HA. Cached read: no network hop on the fast path."""
-        from src.world.weather import describe_current, describe_forecast
+        """Answer from HA. Two branches with very different costs.
+
+        - "hoy" (default): cached read via `get_entity_state_cached`, no
+          network hop — fits inside the 300ms fast path budget.
+        - "mañana": a REAL POST to `weather.get_forecasts`, awaited inline.
+          NOT cached; it necessarily blows the fast path budget, and
+          WEATHER_FORECAST_TIMEOUT_S is what bounds by how much.
+
+        Nunca propaga una excepción. Un turno de voz mudo es el peor
+        degradado posible: desde acá una excepción atraviesa `dispatch()`,
+        `MultiUserOrchestrator.process()`, `request_router` y `voice_pipeline`
+        sin que nadie la atrape, y el usuario no escucha NADA — ni respuesta,
+        ni error, ni beep. Los FALLOS sí hablan (ver request_router.py).
+
+        Args:
+            text: Texto del usuario (ya identificado como consulta de clima).
+            priority: Prioridad con la que se clasificó la petición.
+
+        Returns:
+            DispatchResult siempre hablable; `success=False` solo si hubo
+            una excepción inesperada (que además se loguea a ERROR).
+        """
+        from src.world.weather import NO_DATA, describe_current, describe_forecast
 
         text_lower = text.lower()
         dia = "mañana" if "mañana" in text_lower or "manana" in text_lower else None
 
-        if dia:
-            payload = await self.ha.call_service_with_response(
-                "weather", "get_forecasts", self.weather_entity, {"type": "daily"}
+        try:
+            if dia:
+                payload = await self.ha.call_service_with_response(
+                    "weather", "get_forecasts", self.weather_entity,
+                    {"type": "daily"},
+                    timeout=WEATHER_FORECAST_TIMEOUT_S,
+                )
+                # `or {}` en CADA nivel, no `.get(clave, {})`: el default de
+                # `dict.get` solo aplica cuando la CLAVE FALTA, no cuando la
+                # clave existe con valor None. HA puede responder 200 con
+                # {"service_response": null} (el servicio corrió y no tiene
+                # nada que devolver) y ahí `.get("service_response", {})`
+                # devuelve None -> AttributeError en el `.get` siguiente.
+                service_response = (payload or {}).get("service_response") or {}
+                entity_block = service_response.get(self.weather_entity) or {}
+                forecast = entity_block.get("forecast") or []
+                response = describe_forecast(forecast, dia)
+            else:
+                response = describe_current(
+                    self.ha.get_entity_state_cached(self.weather_entity)
+                )
+            success = True
+        except Exception as exc:  # noqa: BLE001 - red de seguridad anti-mudo
+            logger.error(
+                "Weather handler failed (entity=%s, dia=%s): %s",
+                self.weather_entity, dia, exc, exc_info=True,
             )
-            forecast = (
-                (payload or {})
-                .get("service_response", {})
-                .get(self.weather_entity, {})
-                .get("forecast", [])
-            )
-            response = describe_forecast(forecast, dia)
-        else:
-            response = describe_current(
-                self.ha.get_entity_state_cached(self.weather_entity)
-            )
+            response, success = NO_DATA, False
 
         return DispatchResult(
             path=PathType.FAST_WEATHER, priority=priority,
-            success=True, response=response, intent="weather",
+            success=success, response=response, intent="weather",
         )
 
     def _extract_list_name(self, text: str) -> str | None:
@@ -1682,6 +1729,7 @@ class MultiUserOrchestrator:
         before_handler_warn_ms: float = 5.0,
         require_known_speaker_for_actions: bool = False,
         unavailable_precheck_enabled: bool = True,
+        weather_entity: str = DEFAULT_WEATHER_ENTITY,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -1698,6 +1746,12 @@ class MultiUserOrchestrator:
                 Forwarded to RequestDispatcher.
             unavailable_precheck_enabled: Kill switch del precheck de
                 `is_entity_available` (default True). Forwarded to RequestDispatcher.
+            weather_entity: Entidad de HA que expone el clima. Viene de
+                `config/settings.yaml:home_assistant.weather_entity`. Sin este
+                forward el dispatcher se quedaba siempre con el literal por
+                defecto y, si la entidad de HA se llamaba distinto, el
+                asistente contestaba "No tengo el dato del clima ahora mismo"
+                para siempre — indistinguible de un sensor caído.
         """
         self._hooks = hooks  # plan #3 OpenClaw — exposed for log_hook_stats()
         # Componentes principales
@@ -1751,6 +1805,7 @@ class MultiUserOrchestrator:
             before_handler_warn_ms=before_handler_warn_ms,
             require_known_speaker_for_actions=require_known_speaker_for_actions,
             unavailable_precheck_enabled=unavailable_precheck_enabled,
+            weather_entity=weather_entity,
         )
 
         self._running = False

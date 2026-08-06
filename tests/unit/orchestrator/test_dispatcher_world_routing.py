@@ -229,3 +229,169 @@ async def test_dispatch_wires_fast_weather_end_to_end_with_missing_data(dispatch
     assert result.path == PathType.FAST_WEATHER
     assert result.success is True
     assert result.response == NO_DATA
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-08-06, bloqueante 1: el caso que la batería de arriba NO cubría.
+# `.get(clave, {})` solo usa el default cuando la CLAVE FALTA — no cuando la
+# clave existe con valor None. HA puede responder 200 con
+# {"service_response": null} (el servicio corrió y no tiene nada que
+# devolver): ahí el `.get("service_response", {})` devuelve None y el `.get`
+# encadenado siguiente levanta AttributeError, que atraviesa cinco capas sin
+# que nadie la atrape -> TURNO DE VOZ MUDO.
+#
+# Mutación que estos tests deben atrapar: volver `or {}` a `.get(k, {})`.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("null_valued_payload", [
+    {"service_response": None},
+    {"service_response": {"weather.forecast_home": None}},
+    {"service_response": {"weather.forecast_home": {"forecast": None}}},
+])
+async def test_handle_weather_null_valued_keys_do_not_raise(
+    dispatcher_with_async_ha, null_valued_payload
+):
+    d = dispatcher_with_async_ha
+    d.ha.call_service_with_response = AsyncMock(return_value=null_valued_payload)
+
+    result = await d._handle_weather("qué tiempo hace mañana", Priority.HIGH)
+
+    assert result.response == NO_FORECAST
+    assert "None" not in result.response
+
+
+@pytest.mark.parametrize("forecast", [
+    [None, None],
+    [{}, "mañana soleado"],
+    [{}, 42],
+    [{}, {"condition": "rainy", "temperature": "unknown", "templow": "unknown"}],
+])
+async def test_handle_weather_non_dict_forecast_items_do_not_raise(
+    dispatcher_with_async_ha, forecast
+):
+    d = dispatcher_with_async_ha
+    d.ha.call_service_with_response = AsyncMock(
+        return_value={"service_response": {"weather.forecast_home": {"forecast": forecast}}}
+    )
+
+    result = await d._handle_weather("va a llover mañana", Priority.HIGH)
+
+    assert isinstance(result.response, str) and result.response
+    assert "None" not in result.response
+
+
+async def test_handle_weather_never_propagates_an_exception(dispatcher_with_async_ha):
+    """Red de seguridad final: aunque el cliente de HA explote, el turno habla.
+
+    Un turno mudo es peor que un 'no tengo el dato': el usuario no distingue
+    'falló' de 'no me escuchó'. Debe ponerse rojo si se saca el try/except de
+    `_handle_weather`.
+    """
+    d = dispatcher_with_async_ha
+    d.ha.call_service_with_response = AsyncMock(side_effect=RuntimeError("boom"))
+
+    result = await d._handle_weather("va a llover mañana", Priority.HIGH)
+
+    assert result.path == PathType.FAST_WEATHER
+    assert result.response == NO_DATA
+    assert result.success is False  # el fallo se reporta, no se disfraza
+
+
+async def test_handle_weather_forecast_uses_an_explicit_per_request_timeout(
+    dispatcher_with_async_ha
+):
+    """El POST del pronóstico no puede heredar `home_assistant.timeout`.
+
+    Ese valor se toca por razones ajenas al clima; el techo de esta rama es
+    propio (WEATHER_FORECAST_TIMEOUT_S). Rojo si se borra el kwarg.
+    """
+    from src.orchestrator.dispatcher import WEATHER_FORECAST_TIMEOUT_S
+
+    d = dispatcher_with_async_ha
+    d.ha.call_service_with_response = AsyncMock(return_value=None)
+
+    await d._handle_weather("va a llover mañana", Priority.HIGH)
+
+    assert d.ha.call_service_with_response.await_args.kwargs["timeout"] == (
+        WEATHER_FORECAST_TIMEOUT_S
+    )
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-08-06, bloqueante 3: `weather_entity` no llegaba desde la config.
+# MultiUserOrchestrator es la ÚNICA construcción de producción del dispatcher
+# y no reenviaba el kwarg -> en producción siempre ganaba el literal por
+# defecto. Si la entidad de HA se llama distinto, el asistente contesta "No
+# tengo el dato del clima" para siempre, indistinguible de un sensor caído.
+#
+# Mutaciones que estos tests deben atrapar:
+#   A) borrar `weather_entity=weather_entity` del RequestDispatcher(...)
+#      interno de MultiUserOrchestrator.__init__
+#   B) hardcodear la entidad de vuelta en _handle_weather
+# ---------------------------------------------------------------------------
+
+def test_orchestrator_forwards_weather_entity_to_dispatcher_via_real_init():
+    from src.orchestrator.dispatcher import MultiUserOrchestrator
+
+    orchestrator = MultiUserOrchestrator(
+        chroma_sync=MagicMock(),
+        ha_client=MagicMock(),
+        routine_manager=MagicMock(),
+        weather_entity="weather.casa_de_prueba",
+    )
+    assert orchestrator.dispatcher.weather_entity == "weather.casa_de_prueba"
+
+
+def test_dispatcher_default_weather_entity_matches_the_shipped_config():
+    """El default vivo debe ser el mismo valor que trae config/settings.yaml.
+
+    Un default que diverja del YAML es exactamente el fallo silencioso que
+    este bloqueante describe.
+    """
+    import yaml
+
+    from src.orchestrator.dispatcher import RequestDispatcher
+
+    d = RequestDispatcher(
+        chroma_sync=MagicMock(), ha_client=MagicMock(), routine_manager=MagicMock()
+    )
+    with open("config/settings.yaml") as fh:
+        configured = yaml.safe_load(fh)["home_assistant"]["weather_entity"]
+
+    assert d.weather_entity == configured
+
+
+async def test_configured_weather_entity_is_the_one_queried(dispatcher_with_async_ha):
+    """La entidad configurada llega hasta la llamada a HA, en las dos ramas."""
+    d = dispatcher_with_async_ha
+    d.weather_entity = "weather.casa_de_prueba"
+    d.ha.get_entity_state_cached = MagicMock(return_value=None)
+    d.ha.call_service_with_response = AsyncMock(return_value=None)
+
+    await d._handle_weather("qué tiempo hace", Priority.HIGH)
+    assert d.ha.get_entity_state_cached.call_args.args[0] == "weather.casa_de_prueba"
+
+    await d._handle_weather("qué tiempo hace mañana", Priority.HIGH)
+    assert d.ha.call_service_with_response.await_args.args[2] == "weather.casa_de_prueba"
+
+
+async def test_forecast_is_read_from_the_configured_entity_key(dispatcher_with_async_ha):
+    """El payload de HA viene indexado por entity_id: leer la clave correcta.
+
+    Rojo si `_handle_weather` vuelve a indexar por el literal por defecto.
+    """
+    d = dispatcher_with_async_ha
+    d.weather_entity = "weather.casa_de_prueba"
+    d.ha.call_service_with_response = AsyncMock(return_value={
+        "service_response": {
+            "weather.casa_de_prueba": {
+                "forecast": [{}, {"condition": "rainy", "temperature": 13}]
+            },
+            "weather.forecast_home": {"forecast": [{}, {"condition": "sunny"}]},
+        }
+    })
+
+    result = await d._handle_weather("va a llover mañana", Priority.HIGH)
+
+    assert "lluvioso" in result.response.lower()
+    assert "soleado" not in result.response.lower()
