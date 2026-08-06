@@ -158,6 +158,17 @@ def test_el_html_ofrece_sin_habla_como_estado_explicito():
     assert "if (box.checked)" in save
     assert "faltan++" in save
     assert save.index("if (box.checked)") < save.index("out[id] = ''")
+    # El cuerpo del `else` FINAL (no visitado) no puede escribir en `out`:
+    # ``.index`` de arriba solo encuentra la PRIMERA ocurrencia de
+    # `out[id] = ''` (la de la rama `if (box.checked)`) y no ve nada de lo
+    # que pasa en la rama `else` — un `out[id] = ''` reintroducido ahí
+    # sobrevive esa aserción sin que se note. Aislar el cuerpo del último
+    # `else` (el que sigue al `} else {` que abre la rama de "no visitado")
+    # y verificar que no toca `out` en absoluto es lo único que detecta esa
+    # mutación.
+    else_final = save.partition("} else {")[2].split("}", 1)[0]
+    assert "faltan++" in else_final
+    assert "out[" not in else_final
 
 
 def test_export_falla_si_ninguna_copia_tuvo_exito(tmp_path):

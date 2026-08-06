@@ -269,6 +269,17 @@ def main() -> None:
         except sqlite3.Error as e:
             print(f"AVISO: no se pudo abrir {args.db} ({e})", file=sys.stderr)
 
+    if not snap_utts and db is None:
+        # Ni snapshot (hypotheses.json) ni DB: no hay de dónde sacar UNA
+        # sola hipótesis, así que no hay nada que medir. El reporte de más
+        # abajo lo marcaría igual como NO CONFIABLE — fail-loud para un
+        # humano leyendo la consola — pero eso solo, sin exit 1, deja pasar
+        # un `--validate && ambient_wer && …` encadenado: exit 0 ES el
+        # contrato que ese encadenado lee como éxito.
+        print("ERROR: no hay de dónde sacar las hipótesis (ni snapshot ni "
+              "DB) — nada que medir.", file=sys.stderr)
+        raise SystemExit(1)
+
     pairs = []
     perdidas = []
     for uid, reference in refs.items():

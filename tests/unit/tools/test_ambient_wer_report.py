@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import tools.ambient_wer as wer_mod
@@ -253,3 +255,28 @@ def test_los_pesos_salen_del_mismo_universo_que_la_muestra():
 
 def test_docstring_documenta_los_exit_codes():
     assert "Exit codes:" in wer_mod.__doc__
+
+
+def test_main_exit_1_si_no_hay_ni_snapshot_ni_db(tmp_path, monkeypatch):
+    """El docstring promete exit 1 cuando no hay de dónde sacar las
+    hipótesis (ni snapshot ni DB). Sin este chequeo, ``main()`` sigue de
+    largo, arma un reporte ``confiable=False`` (fail-loud en stdout/stderr)
+    pero devuelve el mismo exit 0 que una corrida exitosa — un
+    `--validate && ambient_wer && …` encadenado lo lee como éxito, que es
+    justo el contrato que los exit codes existen para fijar.
+    """
+    gt_path = tmp_path / "groundtruth.json"
+    gt_path.write_text(json.dumps({"1": "prendé la luz"}), encoding="utf-8")
+    db_path = tmp_path / "no_existe.db"  # nunca se crea: la apertura falla
+
+    monkeypatch.setattr(sys, "argv", [
+        "ambient_wer.py",
+        "--groundtruth", str(gt_path),
+        "--db", str(db_path),
+        "--out", str(tmp_path / "reporte.json"),
+    ])
+    with pytest.raises(SystemExit) as exc:
+        wer_mod.main()
+    assert exc.value.code == 1
+    # y no dejó un reporte a medio armar detrás: falló ANTES de escribirlo
+    assert not (tmp_path / "reporte.json").exists()
