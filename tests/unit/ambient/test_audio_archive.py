@@ -68,3 +68,30 @@ def test_disco_lleno_desactiva_la_escritura(tmp_path):
                          min_free_bytes=10**18)  # piso imposible de cumplir
     assert _run(arch.write("escritorio", 1, _audio())) is None
     assert not (tmp_path / "escritorio").exists()
+
+
+def test_piso_de_disco_corta_en_el_thread_y_cuenta_skipped(tmp_path):
+    # min_free_bytes imposible (1 exabyte): _has_room da False sin monkeypatch.
+    arch = AudioArchiver(base_dir=str(tmp_path), enabled=True,
+                         min_free_bytes=10**18)
+    audio = np.full(1600, 0.1, dtype=np.float32)
+    path = _run(arch.write("cocina", 1, audio))
+    assert path is None
+    assert list(tmp_path.rglob("*.flac")) == []
+    assert arch.stats == {"written": 0, "skipped_disk": 1, "failed": 0}
+
+
+def test_escritura_ok_cuenta_written(tmp_path):
+    arch = AudioArchiver(base_dir=str(tmp_path), enabled=True)
+    audio = np.full(1600, 0.1, dtype=np.float32)
+    path = _run(arch.write("cocina", 2, audio))
+    assert path is not None and path.endswith("cocina/2.flac")
+    assert arch.stats == {"written": 1, "skipped_disk": 0, "failed": 0}
+
+
+def test_fallo_de_escritura_cuenta_failed(tmp_path):
+    arch = AudioArchiver(base_dir=str(tmp_path), enabled=True)
+    audio = np.zeros((0,), dtype=np.float32)   # audio vacío → ValueError interna
+    path = _run(arch.write("cocina", 3, audio))
+    assert path is None
+    assert arch.stats["failed"] == 1
