@@ -430,9 +430,11 @@ def build_ambient_path(
         require_known_speaker_for_live=clf_cfg.get("require_known_speaker_for_live", False),
     ))
 
+    ka_cfg = ambient_cfg.get("keep_audio", {}) or {}
     store = AmbientStore(
         db_path=ambient_cfg.get("db_path", "./data/ambient.db"),
         retention_hours=ambient_cfg.get("retention_hours", 12.0),
+        audio_dir=ka_cfg.get("dir", "./data/ambient_audio"),
     )
 
     # Regla "español conservable" (flag-no-drop): marca cada utterance con
@@ -449,7 +451,6 @@ def build_ambient_path(
             min_vad=q_cfg.get("min_vad", 0.45),
         )
 
-    ka_cfg = ambient_cfg.get("keep_audio", {}) or {}
     archiver = AudioArchiver(
         base_dir=ka_cfg.get("dir", "./data/ambient_audio"),
         enabled=bool(ka_cfg.get("enabled", False)),

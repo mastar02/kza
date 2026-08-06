@@ -1,5 +1,6 @@
 """Tests: AmbientStore — SQLite TTL para utterances ambientales."""
 import asyncio
+import os
 import time
 
 from src.ambient.store import AmbientStore
@@ -317,5 +318,65 @@ def test_purge_sobrevive_archivo_faltante(tmp_path):
         await store.set_audio_path(uid, str(tmp_path / "no_existe.flac"))
         n = await store.purge_expired()   # no debe lanzar
         assert n == 1
+        await store.close()
+    _run(inner())
+
+
+def test_purga_barre_huerfanos_fuera_del_ttl_y_respeta_lo_vivo(tmp_path):
+    async def inner():
+        audio_dir = tmp_path / "ambient_audio"
+        (audio_dir / "cocina").mkdir(parents=True)
+        store = AmbientStore(db_path=str(tmp_path / "a.db"),
+                             retention_hours=1.0, audio_dir=str(audio_dir))
+        await store.init()
+        old = time.time() - 7200  # 2h > TTL de 1h
+
+        # Huérfano real: archivo sin fila, más viejo que el TTL → se barre.
+        orphan = audio_dir / "cocina" / "999.flac"
+        orphan.write_bytes(b"x")
+        os.utime(orphan, (old, old))
+
+        # Carrera write→set_audio_path: archivo sin fila pero FRESCO → vive.
+        fresh = audio_dir / "cocina" / "998.flac"
+        fresh.write_bytes(b"x")
+
+        # Archivo viejo PERO con fila viva → vive (la fila manda).
+        utt_id = await store.add(AmbientUtterance(
+            room_id="cocina", t0=time.time(), t1=time.time() + 1.0, text="hola",
+        ))
+        ref = audio_dir / "cocina" / f"{utt_id}.flac"
+        ref.write_bytes(b"x")
+        os.utime(ref, (old, old))
+        await store.set_audio_path(utt_id, str(ref))
+
+        await store.purge_expired()
+        assert not orphan.exists()
+        assert fresh.exists()
+        assert ref.exists()
+        await store.close()
+    _run(inner())
+
+
+def test_purga_sin_audio_dir_no_barre_nada(tmp_path):
+    # Compat: el store sin audio_dir (default) purga filas igual que antes.
+    async def inner():
+        store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=1.0)
+        await store.init()
+        await store.add(AmbientUtterance(
+            room_id="cocina", t0=time.time() - 7200, t1=time.time() - 7199,
+            text="vieja",
+        ))
+        assert await store.purge_expired() == 1
+        await store.close()
+    _run(inner())
+
+
+def test_set_audio_path_con_id_inexistente_loguea_warning(tmp_path, caplog):
+    async def inner():
+        store = AmbientStore(db_path=str(tmp_path / "a.db"))
+        await store.init()
+        with caplog.at_level("WARNING"):
+            await store.set_audio_path(424242, "/no/existe.flac")
+        assert any("424242" in r.message for r in caplog.records)
         await store.close()
     _run(inner())
