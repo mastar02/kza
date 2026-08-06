@@ -461,3 +461,37 @@ async def test_forecast_is_read_from_the_configured_entity_key(dispatcher_with_a
 
     assert "lluvioso" in result.response.lower()
     assert "soleado" not in result.response.lower()
+
+
+async def test_pasado_manana_requests_day_after_tomorrow(dispatcher_with_async_ha):
+    d = dispatcher_with_async_ha
+    d.ha.call_service_with_response = AsyncMock(return_value={
+        "service_response": {"weather.forecast_home": {"forecast": [
+            {"condition": "sunny", "temperature": 20, "templow": 10},
+            {"condition": "rainy", "temperature": 18, "templow": 9},
+            {"condition": "cloudy", "temperature": 15, "templow": 7},
+        ]}}
+    })
+    result = await d._handle_weather("qué tiempo hace pasado mañana", Priority.HIGH)
+    assert result.response.startswith("Pasado mañana:")
+
+
+async def test_no_data_increments_stat_and_warns(dispatcher_with_async_ha, caplog):
+    d = dispatcher_with_async_ha
+    d.ha.get_entity_state_cached = MagicMock(return_value=None)
+    with caplog.at_level("WARNING"):
+        result = await d._handle_weather("qué tiempo hace", Priority.HIGH)
+    assert result.success is True          # el degradado honesto NO es fallo
+    assert result.response == NO_DATA
+    assert d._stats["weather_no_data"] == 1
+    assert any("weather_entity" in r.message for r in caplog.records)
+
+
+async def test_data_present_does_not_touch_the_no_data_stat(dispatcher_with_async_ha):
+    d = dispatcher_with_async_ha
+    d.ha.get_entity_state_cached = MagicMock(return_value={
+        "state": "sunny", "attributes": {"temperature": 22.0},
+    })
+    result = await d._handle_weather("qué tiempo hace", Priority.HIGH)
+    assert "22 grados" in result.response
+    assert d._stats["weather_no_data"] == 0

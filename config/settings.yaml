@@ -43,11 +43,13 @@ home_assistant:
   unavailable_precheck_enabled: true
 
   # Entidad de HA de la que sale el clima hablado (path FAST_WEATHER del
-  # dispatcher: "qué tiempo hace" lee su estado cacheado, "...mañana" le pide
-  # weather.get_forecasts). Si el nombre real de la entidad en HA no es este,
-  # el asistente responde "No tengo el dato del clima ahora mismo" SIEMPRE, y
-  # eso se ve igual que un sensor caído — verificar el entity_id en HA antes
-  # de dar por muerto el clima.
+  # dispatcher: "qué tiempo hace" lee su estado cacheado, "...mañana"/"...
+  # pasado mañana" le piden weather.get_forecasts). Si el nombre real de la
+  # entidad en HA no es este, el asistente responde el degradado honesto
+  # SIEMPRE ("No tengo el dato del clima..." para hoy, "No tengo el
+  # pronóstico..." para el resto), igual que un sensor caído. Señales para
+  # distinguirlo (review PR #14): el contador _stats["weather_no_data"] y
+  # el warning rate-limited "FAST_WEATHER answered honestly with no data".
   weather_entity: "weather.forecast_home"
 
 # Audio Settings

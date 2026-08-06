@@ -563,11 +563,15 @@ class RequestDispatcher:
             "fast_path": 0,
             "slow_path": 0,
             "music_requests": 0,
+            "weather_no_data": 0,
             "by_path": {p: 0 for p in PathType}
         }
 
         # Callback para respuestas del slow path
         self._slow_path_callbacks: dict[str, Callable] = {}
+
+        # Rate-limiting para el warning del weather_no_data (review PR #14)
+        self._last_weather_nodata_warn = float("-inf")
 
     async def dispatch(
         self,
@@ -1384,7 +1388,12 @@ class RequestDispatcher:
         from src.world.weather import NO_DATA, describe_current, describe_forecast
 
         text_lower = text.lower()
-        dia = "mañana" if "mañana" in text_lower or "manana" in text_lower else None
+        if "pasado mañana" in text_lower or "pasado manana" in text_lower:
+            dia = "pasado mañana"
+        elif "mañana" in text_lower or "manana" in text_lower:
+            dia = "mañana"
+        else:
+            dia = None
 
         try:
             if dia:
@@ -1414,6 +1423,26 @@ class RequestDispatcher:
                 self.weather_entity, dia, exc, exc_info=True,
             )
             response, success = NO_DATA, False
+
+        # Observabilidad (review PR #14, 2026-08-06): un weather_entity mal
+        # configurado, un boot sin prefetch o un WS muerto degradan TODOS a
+        # la misma respuesta honesta con success=True — sin esto son
+        # invisibles para siempre: cero logs, stats de éxito. El contador
+        # separa "habló el clima" de "habló la disculpa"; el warning (rate-
+        # limited, no spamear si el sensor está caído un fin de semana)
+        # apunta directo a la config.
+        from src.world.weather import NO_FORECAST
+        if success and response in (NO_DATA, NO_FORECAST):
+            self._stats["weather_no_data"] += 1
+            now = time.monotonic()
+            if now - self._last_weather_nodata_warn > 300:
+                self._last_weather_nodata_warn = now
+                logger.warning(
+                    "FAST_WEATHER answered honestly with no data "
+                    "(entity=%s, dia=%s, count=%d) — if chronic, check that "
+                    "home_assistant.weather_entity exists in HA",
+                    self.weather_entity, dia, self._stats["weather_no_data"],
+                )
 
         return DispatchResult(
             path=PathType.FAST_WEATHER, priority=priority,

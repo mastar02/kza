@@ -184,3 +184,21 @@ def test_boolean_temperature_is_not_spoken_as_a_number():
     out = describe_current({"state": "sunny", "attributes": {"temperature": True}})
     assert "1 grados" not in out
     assert out == "Hay soleado."
+
+
+def test_describe_forecast_pasado_manana_uses_index_2():
+    forecast = [
+        {"condition": "sunny", "temperature": 20, "templow": 10},
+        {"condition": "rainy", "temperature": 18, "templow": 9},
+        {"condition": "cloudy", "temperature": 15, "templow": 7},
+    ]
+    out = describe_forecast(forecast, "pasado mañana")
+    assert out.startswith("Pasado mañana:")
+    assert "nublado" in out and "entre 7 y 15 grados" in out
+
+
+def test_describe_forecast_pasado_manana_short_forecast_is_honest():
+    # Solo 2 días de pronóstico: índice 2 no existe → NO_FORECAST, no IndexError.
+    forecast = [{"condition": "sunny", "temperature": 20},
+                {"condition": "rainy", "temperature": 18}]
+    assert describe_forecast(forecast, "pasado mañana") == NO_FORECAST
