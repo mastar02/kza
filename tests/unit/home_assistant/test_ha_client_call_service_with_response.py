@@ -264,6 +264,32 @@ class TestCallServiceWithResponse:
         assert any("does not support response" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
+    async def test_non_200_with_unreadable_body_still_logs_the_placeholder(
+        self, client, caplog
+    ):
+        """M12 (review PR #15): si `resp.text()` en sí revienta (body no-UTF8,
+        conexión cortada a mitad de lectura) el warning no debe desaparecer
+        junto con el body — debe salir igual con el placeholder `<unreadable
+        body>` en vez de dejar el error completamente mudo."""
+        ctx = _FakeResponseCtx(500)
+        ctx._response.text = AsyncMock(side_effect=UnicodeDecodeError(
+            "utf-8", b"\xff", 0, 1, "invalid start byte"
+        ))
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=ctx)
+        mock_session.closed = False
+        client._session = mock_session
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = await client.call_service_with_response(
+                "weather", "get_forecasts", "weather.forecast_home"
+            )
+
+        assert result is None
+        assert any("<unreadable body>" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_the_url_carries_return_response_true(self, client):
         """El query param ES la razón de ser del método: sin él HA devuelve
         200 con la lista de changed-states en vez de service_response, el
