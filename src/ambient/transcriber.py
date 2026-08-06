@@ -256,8 +256,13 @@ class AmbientTranscriber:
         """Guardar el audio del segmento y apuntar la fila al archivo.
 
         Si el UPDATE falla, borra el archivo antes de propagar: una fila con
-        audio_path NULL deja el archivo fuera del alcance de la purga por TTL,
-        o sea un huérfano permanente en disco.
+        audio_path NULL deja el archivo fuera del alcance de la purga por TTL.
+        Ya no es un huérfano permanente (M5, review PR #15): AmbientStore
+        ahora barre huérfanos por mtime en cada purge_expired() (ver
+        `_sweep_orphans`), así que el borrado inmediato acá acota la ventana
+        de exposición a prácticamente cero en vez de dejarlo colgado hasta
+        que alguien note el archivo suelto — el sweep de todos modos lo
+        habría alcanzado, esto solo evita esperar el TTL entero.
 
         Args:
             room_id: Habitación de origen.
@@ -278,6 +283,12 @@ class AmbientTranscriber:
             try:
                 await asyncio.sleep(_PURGE_INTERVAL_S)
                 await self._store.purge_expired()
+                # I3 (review PR #15): AudioArchiver.stats se incrementaba pero
+                # nadie lo leía ni lo logueaba — write-only, cero visibilidad
+                # para la campaña de medición. Loguear en cada ciclo de purga
+                # (1/hora) es suficiente cadencia sin agregar un endpoint.
+                if self._archiver is not None and self._archiver.enabled:
+                    logger.info("AudioArchiver stats: %s", self._archiver.stats)
             except asyncio.CancelledError:
                 return
             except Exception:

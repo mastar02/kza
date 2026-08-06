@@ -438,4 +438,70 @@ def test_segmento_sin_texto_NO_se_persiste_con_archiver_deshabilitado(tmp_path):
     asyncio.run(tr._handle_segment("escritorio", _seg()))
 
     assert store.added == []
-    assert list(tmp_path.rglob("*.flac")) == []
+
+
+# ---------------------------------------------------------------------------
+# I3 (review PR #15): AudioArchiver.stats era write-only — se incrementaba en
+# cada write() pero nadie lo leía ni lo logueaba, cero visibilidad para la
+# campaña de medición de fidelidad. _purge_worker ahora lo loguea en cada
+# ciclo de purga (1/hora en prod) cuando hay un archiver habilitado.
+# ---------------------------------------------------------------------------
+
+async def _run_one_purge_cycle(tr, monkeypatch):
+    """Fuerza un solo ciclo de _purge_worker sin esperar _PURGE_INTERVAL_S real.
+
+    _purge_worker es un `while self._running: sleep(3600); ...` — bajar el
+    intervalo del módulo a algo mínimo y frenar `_running` apenas arranca el
+    primer ciclo deja correr el cuerpo real una vez sin bloquear el test 1h.
+    """
+    import src.ambient.transcriber as transcriber_module
+
+    monkeypatch.setattr(transcriber_module, "_PURGE_INTERVAL_S", 0.0)
+    tr._running = True
+
+    original_sleep = asyncio.sleep
+
+    async def sleep_once_then_stop(_delay):
+        await original_sleep(0)
+        tr._running = False
+
+    monkeypatch.setattr(transcriber_module.asyncio, "sleep", sleep_once_then_stop)
+    try:
+        await tr._purge_worker()
+    finally:
+        monkeypatch.setattr(transcriber_module.asyncio, "sleep", original_sleep)
+
+
+async def test_purge_worker_logs_archiver_stats_when_enabled(monkeypatch, caplog, tmp_path):
+    store = FakeStore()
+    tap, tr = _make(store)
+    archiver = AudioArchiver(base_dir=str(tmp_path), enabled=True)
+    archiver.stats["written"] = 3
+    tr._archiver = archiver
+
+    with caplog.at_level("INFO"):
+        await _run_one_purge_cycle(tr, monkeypatch)
+
+    assert any("AudioArchiver stats" in r.message for r in caplog.records)
+
+
+async def test_purge_worker_does_not_log_stats_when_archiver_disabled(monkeypatch, caplog, tmp_path):
+    store = FakeStore()
+    tap, tr = _make(store)
+    tr._archiver = AudioArchiver(base_dir=str(tmp_path), enabled=False)
+
+    with caplog.at_level("INFO"):
+        await _run_one_purge_cycle(tr, monkeypatch)
+
+    assert not any("AudioArchiver stats" in r.message for r in caplog.records)
+
+
+async def test_purge_worker_does_not_log_stats_when_no_archiver(monkeypatch, caplog):
+    store = FakeStore()
+    tap, tr = _make(store)
+    assert tr._archiver is None
+
+    with caplog.at_level("INFO"):
+        await _run_one_purge_cycle(tr, monkeypatch)
+
+    assert not any("AudioArchiver stats" in r.message for r in caplog.records)

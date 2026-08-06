@@ -284,12 +284,22 @@ class AmbientStore:
         return cur.rowcount
 
     def _unlink_batch(self, paths: list[str]) -> int:
-        """Borrar archivos best-effort. Devuelve cuántos se borraron de verdad."""
+        """Borrar archivos best-effort. Devuelve cuántos se borraron de verdad.
+
+        `missing_ok=False` a propósito (M1, review PR #15): con
+        `missing_ok=True` un archivo YA ausente (borrado en una purga
+        anterior, o nunca escrito) contaba como "borrado" en el log —
+        "%d/%d audios borrados" mentía sobre cuántos unlinks reales pasaron.
+        Ausente no es un fallo (no se loguea ni se cuenta); cualquier otro
+        OSError sí es un fallo real y se loguea.
+        """
         ok = 0
         for path in paths:
             try:
-                Path(path).unlink(missing_ok=True)
+                Path(path).unlink(missing_ok=False)
                 ok += 1
+            except FileNotFoundError:
+                pass  # ya no estaba — no cuenta como borrado, no es un fallo
             except OSError as e:
                 logger.warning(
                     "AmbientStore purga: no se pudo borrar %s: %s", path, e
@@ -301,8 +311,10 @@ class AmbientStore:
 
         La guarda de mtime protege la carrera write()→set_audio_path(): un
         FLAC recién escrito todavía sin puntero NO es huérfano. Un archivo
-        cuyo unlink falló en una purga anterior (fila ya borrada) sí lo es,
-        y cae acá en el siguiente ciclo.
+        cuyo unlink acaba de fallar en `_unlink_batch` (fila ya borrada) es
+        huérfano YA en este mismo `purge_expired()` — el sweep corre
+        DESPUÉS de `_unlink_batch` en la misma llamada, así que lo reintenta
+        de inmediato; no hace falta esperar al próximo ciclo de purga.
         """
         if self.audio_dir is None or not self.audio_dir.is_dir():
             return 0
@@ -313,12 +325,21 @@ class AmbientStore:
             except ValueError:
                 continue  # archivo ajeno a la convención <id>.flac — no tocar
             try:
+                # Guarda de seguridad (M4): `utt_id in live_ids` es correcta
+                # entre purgas porque `utterances.id` es AUTOINCREMENT — SQLite
+                # nunca reusa un rowid mientras la tabla exista, así que un id
+                # que ya no está en live_ids no puede "revivir" con otro
+                # contenido. Límite conocido: si la DB se borra y se recrea
+                # desde cero (no un ALTER, un archivo nuevo), AUTOINCREMENT
+                # reinicia en 1 y un FLAC viejo puede quedar sombreado por una
+                # fila nueva homónima (mismo id, contenido distinto) — ese
+                # caso no lo cubre esta guarda.
                 if utt_id in live_ids or f.stat().st_mtime >= cutoff:
                     continue
                 f.unlink(missing_ok=True)
                 swept += 1
             except OSError as e:
                 logger.warning(
-                    "AmbientStore sweep: no se pudo borrar %s: %s", f, e
+                    "AmbientStore sweep: no se pudo borrar/inspeccionar %s: %s", f, e
                 )
         return swept

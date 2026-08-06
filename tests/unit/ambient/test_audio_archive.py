@@ -33,6 +33,15 @@ def test_deshabilitado_no_escribe_nada(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_deshabilitado_no_cuenta_en_stats(tmp_path):
+    """M14 (review PR #15): el docstring de write() promete que
+    deshabilitado 'retorna None sin contar ni loguear' — sin este test esa
+    mitad del contrato no tenía cobertura, solo el efecto en disco."""
+    arch = AudioArchiver(base_dir=str(tmp_path), enabled=False)
+    _run(arch.write("escritorio", 1, _audio()))
+    assert arch.stats == {"written": 0, "skipped_disk": 0, "failed": 0}
+
+
 def test_audio_mono_1d_tambien_funciona(tmp_path):
     arch = AudioArchiver(base_dir=str(tmp_path), enabled=True)
     mono = _audio(ch=1).reshape(-1)

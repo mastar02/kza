@@ -5,7 +5,9 @@ audio no hay referencia posible y no se puede calcular WER ni re-transcribir.
 Apagado por default.
 
 Best-effort por diseño: cualquier fallo devuelve None. Los fallos de escritura
-se loguean siempre, el rechazo por piso de disco a lo sumo una vez por hora, y
+se loguean siempre, el rechazo por piso de disco ~una vez por hora
+(best-effort entre threads: `_last_disk_warn` se muta desde threads del pool
+sin lock, así que la ventana puede duplicar bajo carrera — no es estricto), y
 enabled=False retorna None en silencio. NUNCA propaga — el pipeline de voz no
 se cae porque no se pudo guardar un FLAC.
 """
@@ -53,10 +55,10 @@ class AudioArchiver:
 
         Returns:
             La ruta del archivo escrito, o None si está deshabilitado, no
-            hay disco por encima del piso, o falló la escritura. Los tres
-            casos se distinguen en ``self.stats`` (skipped_disk / failed;
-            deshabilitado no cuenta) y los dos últimos se loguean — el
-            rechazo por piso de disco como máximo una vez por hora.
+            hay disco por encima del piso, o falló la escritura.
+            ``skipped_disk`` y ``failed`` se distinguen en ``self.stats`` y
+            ambos se loguean (el rechazo por piso de disco como máximo una
+            vez por hora); deshabilitado retorna None sin contar ni loguear.
         """
         if not self.enabled:
             return None

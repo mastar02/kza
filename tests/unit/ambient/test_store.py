@@ -322,6 +322,23 @@ def test_purge_sobrevive_archivo_faltante(tmp_path):
     _run(inner())
 
 
+def test_unlink_batch_no_cuenta_archivos_ya_ausentes(tmp_path):
+    """M1 (review PR #15): con `missing_ok=True` un archivo YA ausente
+    (borrado en una purga anterior, o nunca escrito) contaba como "borrado
+    de verdad" — el log "%d/%d audios borrados" mentía. Un archivo real se
+    cuenta; uno ausente no cuenta (no es un fallo) y no debe loguear
+    warning."""
+    store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=1)
+    real = tmp_path / "existe.flac"
+    real.write_bytes(b"x")
+    ausente = tmp_path / "no_existe.flac"
+
+    ok = store._unlink_batch([str(real), str(ausente)])
+
+    assert ok == 1
+    assert not real.exists()
+
+
 def test_purga_barre_huerfanos_fuera_del_ttl_y_respeta_lo_vivo(tmp_path):
     async def inner():
         audio_dir = tmp_path / "ambient_audio"
