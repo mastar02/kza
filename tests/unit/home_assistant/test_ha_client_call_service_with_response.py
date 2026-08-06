@@ -111,3 +111,131 @@ class TestCallServiceWithResponse:
         _, kwargs = mock_session.post.call_args
         assert "headers" not in kwargs
         assert kwargs["json"]["entity_id"] == "weather.forecast_home"
+
+    # -----------------------------------------------------------------
+    # Review 2026-08-06, bloqueante 4: este método era CIEGO a fallos de
+    # auth y no logueaba nada, a diferencia de sus dos hermanos del mismo
+    # archivo (`call_service`, `_get_entity_state_rest`). Escenario: se
+    # vence el token de HA, cada weather.get_forecasts devuelve 401, el
+    # usuario escucha "No tengo el pronóstico" —igual que si faltara el
+    # sensor— y `_has_auth_error`, que existe justamente para poder decir
+    # "mi token está muerto", nunca se prende.
+    #
+    # Mutaciones que estos tests deben atrapar: colapsar 401/403 de vuelta
+    # en el `if resp.status != 200` genérico; borrar los logger.*; borrar
+    # el `_record_success`.
+    # -----------------------------------------------------------------
+
+    @pytest.mark.parametrize("status", [401, 403])
+    @pytest.mark.asyncio
+    async def test_auth_error_sets_the_auth_flag(self, client, status, caplog):
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=_FakeResponseCtx(status))
+        mock_session.closed = False
+        client._session = mock_session
+        assert client._has_auth_error is False
+
+        with caplog.at_level("ERROR"):
+            result = await client.call_service_with_response(
+                "weather", "get_forecasts", "weather.forecast_home"
+            )
+
+        assert result is None
+        assert client._has_auth_error is True
+        assert any(
+            r.levelname == "ERROR" and "auth error" in r.message.lower()
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_200_is_logged_not_just_swallowed(self, client, caplog):
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=_FakeResponseCtx(500))
+        mock_session.closed = False
+        client._session = mock_session
+
+        with caplog.at_level("WARNING"):
+            await client.call_service_with_response(
+                "weather", "get_forecasts", "weather.forecast_home"
+            )
+
+        assert any("500" in r.message for r in caplog.records)
+        # Un 500 no es un problema de credenciales.
+        assert client._has_auth_error is False
+
+    @pytest.mark.asyncio
+    async def test_transport_exception_is_logged(self, client, caplog):
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=_RaisingCtx())
+        mock_session.closed = False
+        client._session = mock_session
+
+        with caplog.at_level("ERROR"):
+            await client.call_service_with_response(
+                "weather", "get_forecasts", "weather.forecast_home"
+            )
+
+        assert any(r.levelname == "ERROR" for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_logged_and_returns_none(self, client, caplog):
+        import asyncio
+
+        class _TimeoutCtx:
+            async def __aenter__(self):
+                raise asyncio.TimeoutError()
+
+            async def __aexit__(self, *args):
+                return False
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=_TimeoutCtx())
+        mock_session.closed = False
+        client._session = mock_session
+
+        with caplog.at_level("ERROR"):
+            result = await client.call_service_with_response(
+                "weather", "get_forecasts", "weather.forecast_home"
+            )
+
+        assert result is None
+        assert any("timeout" in r.message.lower() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_success_feeds_the_latency_ema(self, client):
+        """El camino feliz nunca llamaba a `_record_success`: su latencia no
+        entraba al EMA y el método era invisible para el health status."""
+        ctx = _FakeResponseCtx(200)
+        ctx._response.json = AsyncMock(return_value={})
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=ctx)
+        mock_session.closed = False
+        client._session = mock_session
+
+        assert client.get_health_status().success_count == 0
+        await client.call_service_with_response(
+            "weather", "get_forecasts", "weather.forecast_home"
+        )
+
+        health = client.get_health_status()
+        assert health.success_count == 1
+        assert health.avg_latency_ms > 0.0
+
+    @pytest.mark.asyncio
+    async def test_caller_supplied_timeout_reaches_the_request(self, client):
+        """Techo por request explícito, no el de sesión (bloqueante 5)."""
+        ctx = _FakeResponseCtx(200)
+        ctx._response.json = AsyncMock(return_value={})
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=ctx)
+        mock_session.closed = False
+        client._session = mock_session
+
+        await client.call_service_with_response(
+            "weather", "get_forecasts", "weather.forecast_home", timeout=1.25
+        )
+
+        _, kwargs = mock_session.post.call_args
+        assert kwargs["timeout"].total == 1.25

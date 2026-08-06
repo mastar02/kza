@@ -459,27 +459,81 @@ class HomeAssistantClient:
         service: str,
         entity_id: str,
         data: dict | None = None,
+        timeout: float = REST_TIMEOUT_DEFAULT,
     ) -> dict | None:
         """Call a service that returns a body (weather.get_forecasts, etc).
 
         `call_service` only reports success as a bool. Services declaring
         SupportsResponse need `?return_response=true` and their body read.
+
+        Args:
+            domain: Dominio del servicio (weather, climate, ...).
+            service: Servicio a invocar (get_forecasts, ...).
+            entity_id: Entidad objetivo.
+            data: Datos extra del payload.
+            timeout: Techo por request, en segundos. Explícito para que el
+                caller lo elija según su presupuesto de latencia en vez de
+                heredar el timeout de sesión.
+
+        Returns:
+            El body decodificado, o None ante cualquier fallo (siempre
+            logueado). Un 401/403 además prende `_has_auth_error`.
         """
-        session = await self._ensure_session()
         payload = {"entity_id": entity_id, **(data or {})}
         url = f"{self.url}/api/services/{domain}/{service}?return_response=true"
+        label = f"call_service_with_response({domain}.{service})"
+        t_start = time.perf_counter()
         try:
+            session = await self._ensure_session()
             # No headers= here: _ensure_session already builds the session with
             # self.headers (verified 2026-08-04, ha_client.py:160).
-            async with session.post(url, json=payload) as resp:
-                if resp.status != 200:
+            async with session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as resp:
+                elapsed = (time.perf_counter() - t_start) * 1000
+                # Mismo trato que call_service / _get_entity_state_rest: sin
+                # esto un token de HA vencido es indistinguible de un sensor
+                # caído, y `_has_auth_error` —que existe justamente para poder
+                # decir "mi token está muerto"— nunca se prende.
+                if resp.status in (401, 403):
+                    self._has_auth_error = True
+                    logger.error(
+                        f"HA auth error {resp.status}: {domain}.{service} on {entity_id}"
+                    )
                     self._record_error(
-                        RuntimeError(f"HTTP {resp.status}"), "call_service_with_response"
+                        aiohttp.ClientResponseError(
+                            request_info=resp.request_info,
+                            history=resp.history,
+                            status=resp.status,
+                        ),
+                        label,
                     )
                     return None
-                return await resp.json()
-        except Exception as exc:  # noqa: BLE001 - recorded and surfaced as None
-            self._record_error(exc, "call_service_with_response")
+                if resp.status != 200:
+                    logger.warning(
+                        f"Error {resp.status}: {domain}.{service} on {entity_id} "
+                        f"({elapsed:.0f}ms)"
+                    )
+                    self._record_error(RuntimeError(f"HTTP {resp.status}"), label)
+                    return None
+                body = await resp.json()
+                self._record_success(elapsed)
+                return body
+        except asyncio.TimeoutError:
+            elapsed = (time.perf_counter() - t_start) * 1000
+            logger.error(
+                f"HA timeout calling {domain}.{service} on {entity_id} "
+                f"after {elapsed:.0f}ms (limit {timeout}s)"
+            )
+            self._record_error(asyncio.TimeoutError(), label)
+            return None
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"HA unavailable ({domain}.{service} with response): {e}")
+            self._record_error(e, label)
+            return None
+        except Exception as exc:  # noqa: BLE001 - logged and surfaced as None
+            logger.error(f"Error llamando servicio con respuesta: {exc}")
+            self._record_error(exc, label)
             return None
 
     # ==================== Automatizaciones ====================
