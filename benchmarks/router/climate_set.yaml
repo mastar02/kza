@@ -1,0 +1,274 @@
+# Set B — held-out para el clasificador binario clima/AC.
+#
+# Escrito ANTES de que exista el clasificador y sin ver su prompt. Este es el
+# unico archivo del que sale el numero que se reporta. Si lo editas despues de
+# haber corrido el eval, deja de ser held-out y el numero pierde validez.
+#
+# Etiquetas:
+#   ACCION   = ordena encender/apagar/ajustar el aire, termostato o calefaccion
+#   CONSULTA = pregunta o comenta como esta el tiempo afuera
+#
+# Las frases con source=corpus son transcripciones LITERALES de Whisper sacadas
+# de events.db en produccion. El ruido es parte del caso: no limpiarlas.
+#
+# Las frases con source=sintetico se escribieron sin haber visto el prompt del
+# clasificador (docs/superpowers/specs/2026-08-04-ruteo-clima-por-modelo-design.md
+# y src/nlu/ no se leyeron para redactar este archivo).
+
+cases:
+  # --- Step 1: 20 frases reales del corpus, todas ACCION (aire acondicionado) ---
+  - id: corpus-001
+    utterance: "Nexa bajá la temperatura del aire."
+    expected: ACCION
+    source: corpus
+    note: "la frase mas frecuente del corpus (113 ocurrencias)"
+  - id: corpus-002
+    utterance: "Nexa bajá la temperatura."
+    expected: ACCION
+    source: corpus
+    note: "sin objeto explicito"
+  - id: corpus-003
+    utterance: "Nexa bajá la temperatura del escritorio."
+    expected: ACCION
+    source: corpus
+    note: "objeto = habitacion, no aparato"
+  - id: corpus-004
+    utterance: "Nexa bajá la temperatura del aire acondicionado,"
+    expected: ACCION
+    source: corpus
+    note: "aparato nombrado completo, corte de STT al final"
+  - id: corpus-005
+    utterance: "Nexa apagá la temperatura del aire."
+    expected: ACCION
+    source: corpus
+    note: "verbo semanticamente raro sobre temperatura"
+  - id: corpus-006
+    utterance: "Nexa apagá la luz del aire."
+    expected: ACCION
+    source: corpus
+    note: "STT mezcla dominios luz/aire"
+  - id: corpus-007
+    utterance: "Nexa bajá la luz del aire."
+    expected: ACCION
+    source: corpus
+    note: "STT mezcla dominios luz/aire"
+  - id: corpus-008
+    utterance: "Nexa poné la luz del aire."
+    expected: ACCION
+    source: corpus
+    note: "STT mezcla dominios luz/aire"
+  - id: corpus-009
+    utterance: "Nexa apagá la luz del aire acondicionado."
+    expected: ACCION
+    source: corpus
+    note: "STT mezcla dominios, aparato completo"
+  - id: corpus-010
+    utterance: "Nexa, prendela luces, aire acondicionado."
+    expected: ACCION
+    source: corpus
+    note: "palabras pegadas por el STT"
+  - id: corpus-011
+    utterance: "Nexa bajá la temperatura de la luz del escritorio,"
+    expected: ACCION
+    source: corpus
+    note: "tres dominios mezclados por el STT"
+  - id: corpus-012
+    utterance: "Nexa prendé la luz del escritorio, Nexa bajá la temperatura del escritorio,"
+    expected: ACCION
+    source: corpus
+    note: "dos comandos concatenados en una captura"
+  - id: corpus-013
+    utterance: "Nexa bajá la temperatura del aire, Nexa bajá la temperatura del aire,"
+    expected: ACCION
+    source: corpus
+    note: "repeticion del wake dentro de la captura"
+  - id: corpus-014
+    utterance: "Nexa bajá la temperatura, Nexa bajá la temperatura, Nexa bajá la temperatura,"
+    expected: ACCION
+    source: corpus
+    note: "triple repeticion"
+  - id: corpus-015
+    utterance: "Comandos típicos, Nexa bajá la temperatura del aire, Nexa bajá la temperatura del aire,"
+    expected: ACCION
+    source: corpus
+    note: "preambulo de TV o charla + comando real"
+  - id: corpus-016
+    utterance: "Nexa de luz del espíritu, Nexa bajá la temperatura del aire."
+    expected: ACCION
+    source: corpus
+    note: "alucinacion del STT antes del comando real"
+  - id: corpus-017
+    utterance: "Nexa bajá la luz del aire, desde la base del cláneo."
+    expected: ACCION
+    source: corpus
+    note: "cola alucinada por el STT"
+  - id: corpus-018
+    utterance: "Nexa bajá la luz del aire.  Vámonos."
+    expected: ACCION
+    source: corpus
+    note: "habla ambiente pegada al comando"
+  - id: corpus-019
+    utterance: "Nexa bajá la luz del aire al amor de la comida.  O sea, ponte redonda."
+    expected: ACCION
+    source: corpus
+    note: "comando + cola larga alucinada"
+  - id: corpus-020
+    utterance: "Nexa bajá la temperatura del aire,"
+    expected: ACCION
+    source: corpus
+    note: "corte de STT al final"
+
+  # --- Step 2: 20 casos sinteticos de CONSULTA (no hay ninguno en el corpus) ---
+  - id: sint-001
+    utterance: "qué tiempo hace afuera"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta directa por el tiempo, sin signos (Whisper se los come)"
+  - id: sint-002
+    utterance: "¿qué tiempo hace hoy?"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta directa por el tiempo, con signos"
+  - id: sint-003
+    utterance: "cuántos grados hay afuera"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta por temperatura exterior, sin signos"
+  - id: sint-004
+    utterance: "¿cuál es la temperatura afuera?"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta por temperatura exterior, con signos"
+  - id: sint-005
+    utterance: "va a llover hoy"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta por lluvia, sin signos"
+  - id: sint-006
+    utterance: "¿va a llover esta tarde?"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta por lluvia, con signos"
+  - id: sint-007
+    utterance: "qué pronóstico hay para mañana"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta por pronostico de mañana, sin signos"
+  - id: sint-008
+    utterance: "¿cómo va a estar el clima mañana?"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta por pronostico de mañana, con signos, usa la palabra clima"
+  - id: sint-009
+    utterance: "está lindo el día"
+    expected: CONSULTA
+    source: sintetico
+    note: "comentario sin pregunta"
+  - id: sint-010
+    utterance: "qué calor que hace hoy"
+    expected: CONSULTA
+    source: sintetico
+    note: "comentario sin pregunta, forma exclamativa sin signos"
+  - id: sint-011
+    utterance: "no hace falta prender nada, está fresco"
+    expected: CONSULTA
+    source: sintetico
+    note: "comentario con negacion explicita de accion"
+  - id: sint-012
+    utterance: "no hay que tocar el aire, se está bien así"
+    expected: CONSULTA
+    source: sintetico
+    note: "comentario con negacion explicita de accion, menciona el aparato"
+  - id: sint-013
+    utterance: "¿el aire acondicionado marca cuántos grados hace afuera?"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta que menciona el aparato pero pide informacion, no accion"
+  - id: sint-014
+    utterance: "el termostato, ¿vos sabés qué temperatura hay en la calle?"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta que menciona el aparato pero pide informacion"
+  - id: sint-015
+    utterance: "che, si prendo el aire, ¿va a seguir haciendo este frío afuera?"
+    expected: CONSULTA
+    source: sintetico
+    note: "verbo de domotica en clausula subordinada hipotetica, la pregunta real es sobre el clima exterior"
+  - id: sint-016
+    utterance: "antes de apagar el aire quiero saber si va a refrescar"
+    expected: CONSULTA
+    source: sintetico
+    note: "verbo de domotica en otra clausula, lo que se pide es informacion del tiempo"
+  - id: sint-017
+    utterance: "hace mucho frío afuera hoy"
+    expected: CONSULTA
+    source: sintetico
+    note: "comentario sin pregunta sobre el tiempo exterior"
+  - id: sint-018
+    utterance: "¿está nublado?"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta directa por el tiempo, corta"
+  - id: sint-019
+    utterance: "cuánta humedad hay"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta por condicion exterior, sin signos"
+  - id: sint-020
+    utterance: "¿llovió anoche?"
+    expected: CONSULTA
+    source: sintetico
+    note: "pregunta por lluvia, tiempo pasado"
+
+  # --- Step 3: 10 casos borde de ACCION con el tiempo como justificacion ---
+  # Esta es la clase que rompio tres rondas de intentos previos del clasificador.
+  - id: sint-101
+    utterance: "prendé ya el clima"
+    expected: ACCION
+    source: sintetico
+    note: "filler 'ya' entre verbo y objeto; 'el clima' referido coloquialmente al aparato de aire"
+  - id: sint-102
+    utterance: "apagá ahora el termostato"
+    expected: ACCION
+    source: sintetico
+    note: "filler 'ahora' entre verbo y objeto"
+  - id: sint-103
+    utterance: "encendé por favor el aire acondicionado"
+    expected: ACCION
+    source: sintetico
+    note: "filler 'por favor' entre verbo y objeto"
+  - id: sint-104
+    utterance: "subí un poquito la calefacción"
+    expected: ACCION
+    source: sintetico
+    note: "filler 'un poquito' entre verbo y objeto"
+  - id: sint-105
+    utterance: "prendé el aire, hace calor"
+    expected: ACCION
+    source: sintetico
+    note: "clausula de justificacion climatica pospuesta a la orden"
+  - id: sint-106
+    utterance: "subí la calefacción, hace un frío terrible"
+    expected: ACCION
+    source: sintetico
+    note: "clausula de justificacion climatica pospuesta a la orden"
+  - id: sint-107
+    utterance: "bajá el aire, está refrescando afuera"
+    expected: ACCION
+    source: sintetico
+    note: "clausula de justificacion climatica pospuesta a la orden"
+  - id: sint-108
+    utterance: "poné el termostato en veintidós, hace mucho calor"
+    expected: ACCION
+    source: sintetico
+    note: "orden con valor numerico + clausula de justificacion climatica"
+  - id: sint-109
+    utterance: "che, prendé ya el clima, tengo mucho calor"
+    expected: ACCION
+    source: sintetico
+    note: "combina filler entre verbo y objeto con clausula de justificacion climatica"
+  - id: sint-110
+    utterance: "apagá el aire, ya refrescó bastante"
+    expected: ACCION
+    source: sintetico
+    note: "clausula de justificacion climatica en pasado, pospuesta a la orden"

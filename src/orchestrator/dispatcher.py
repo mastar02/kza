@@ -34,6 +34,7 @@ Ejemplo:
 import asyncio
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Callable
@@ -45,8 +46,19 @@ from src.orchestrator.priority_queue import (
     Request,
     PriorityRequestQueue
 )
+from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
 
 logger = get_logger(__name__)
+
+
+# Techo del POST a `weather.get_forecasts` (rama "mañana" de _handle_weather).
+# Explícito y propio de este path a propósito: heredar el timeout de sesión
+# (`home_assistant.timeout`, hoy 2.0s) ataba la ventana de mudez del clima a
+# una config que se toca por motivos ajenos al clima. Es ~7x el presupuesto de
+# 300ms del fast path, y está bien: esta rama NO es cacheada, hace un salto de
+# red real y no puede entrar en 300ms. Lo que se acota acá es cuánto puede
+# tardar el usuario en escuchar el degradado honesto.
+WEATHER_FORECAST_TIMEOUT_S = 2.0
 
 
 # Stems cortos que colisionan como SUBcadena dentro de palabras comunes y
@@ -144,6 +156,29 @@ _NON_LIGHT_DOMAIN_NOUNS: dict[str, str] = {
     "grados": "climate",
 }
 
+# Sustantivos de _NON_LIGHT_DOMAIN_NOUNS que son termostato/AC. Usado por el
+# guard en _classify_request que evita que un comando de domotica ("prendé
+# el clima", "poné el clima en 22") se clasifique como clima hablado.
+# Hallazgo 2026-08-04: "el clima" bare en WEATHER_KEYWORDS se comia esos
+# comandos porque la rama de clima corre antes que DOMOTICS_KEYWORDS.
+_CLIMATE_DOMAIN_NOUNS = frozenset(
+    noun for noun, domain in _NON_LIGHT_DOMAIN_NOUNS.items() if domain == "climate"
+)
+
+
+def _strip_accents(text: str) -> str:
+    """Quitar diacríticos (NFD + descartar combining marks).
+
+    Helper compartido: antes había tres copias de este bloque inline
+    (con `import re as _re` / `import unicodedata as _ud` locales pese a
+    que ambos ya están importados a nivel de módulo) en lo que hoy son
+    `_conflicting_domain`, `_resolve_prefer_area` y el guard de
+    `_classify_request` (cleanup 2026-08-04, review de Finding 3).
+    """
+    norm = unicodedata.normalize("NFD", text)
+    return "".join(c for c in norm if unicodedata.category(c) != "Mn")
+
+
 # Sustantivos de luz: si aparecen, confiamos en el match light.* aunque haya
 # un sustantivo no-luz (ej: 'poné la luz' nunca debe ser rechazado).
 # Nota: el match se hace sobre texto normalizado SIN acentos → entradas sin tilde.
@@ -181,15 +216,11 @@ def _conflicting_domain(text: str, matched_domain: str) -> str | None:
     """
     if matched_domain != "light" or not text:
         return None
-    import re as _re
-    import unicodedata as _ud
-
-    norm = _ud.normalize("NFD", text.lower())
-    norm = "".join(c for c in norm if _ud.category(c) != "Mn")
-    if any(_re.search(rf"\b{_re.escape(noun)}\b", norm) for noun in _LIGHT_NOUNS):
+    norm = _strip_accents(text.lower())
+    if any(re.search(rf"\b{re.escape(noun)}\b", norm) for noun in _LIGHT_NOUNS):
         return None
     for noun, domain in _NON_LIGHT_DOMAIN_NOUNS.items():
-        if _re.search(rf"\b{_re.escape(noun)}\b", norm):
+        if re.search(rf"\b{re.escape(noun)}\b", norm):
             return domain
     return None
 
@@ -209,12 +240,9 @@ def _resolve_prefer_area(text: str, zone_id: str | None) -> str | None:
     discutido en sesión 2026-05-03.
     """
     if text:
-        import re as _re
-        import unicodedata as _ud
-        norm = _ud.normalize("NFD", text.lower())
-        norm = "".join(c for c in norm if _ud.category(c) != "Mn")
+        norm = _strip_accents(text.lower())
         for alias, area in _ROOM_ALIASES_TO_AREA.items():
-            if _re.search(rf"\b{_re.escape(alias)}\b", norm):
+            if re.search(rf"\b{re.escape(alias)}\b", norm):
                 return area
     if zone_id:
         return _ZONE_TO_AREA.get(zone_id)
@@ -251,6 +279,7 @@ class PathType(StrEnum):
     FEEDBACK = "feedback"                  # Feedback sobre respuestas
     FAST_LIST = "fast_list"                # List CRUD
     FAST_REMINDER = "fast_reminder"        # Reminder CRUD
+    FAST_WEATHER = "fast_weather"           # Clima desde HA, sin red externa
 
 
 @dataclass
@@ -377,6 +406,56 @@ class RequestDispatcher:
         "música relajante", "música mientras", "ambiente"
     ]
 
+    # Clima. Frases de DOS palabras a proposito: "temperatura"/"clima" solos
+    # mapean a `climate` (el termostato/AC) en _NON_LIGHT_DOMAIN_NOUNS, y
+    # "poné la temperatura en 22" / "prendé el clima" tienen que seguir
+    # yendo a domotica. Lo que separa una de otra es el complemento, no el
+    # sustantivo — por eso NO hay una entrada bare "el clima" acá: ya está
+    # cubierta por "está el clima"/"esta el clima", y una entrada bare se
+    # comía comandos de AC ("prendé el clima" -> hallazgo 2026-08-04, ver
+    # _CLIMATE_DOMAIN_NOUNS y el guard en _classify_request).
+    WEATHER_KEYWORDS = [
+        "qué tiempo hace", "que tiempo hace",
+        "está el clima", "esta el clima",
+        "temperatura hace", "temperatura hay",
+        "temperatura afuera", "grados hay afuera", "grados hace",
+        "llueve", "va a llover", "lloviendo",
+        "pronóstico", "pronostico",
+        # Finding 3 (review 2026-08-04): sin esto, una pregunta como "¿tengo
+        # que prender el clima o hace calor afuera?" no matcheaba ningún
+        # WEATHER_KEYWORDS y caía al loop de DOMOTICS_KEYWORDS de abajo, que
+        # matchea "prende" como substring de "prender" -> fast_domotics
+        # incorrecto. "hace calor"/"hace frío" son vocabulario de clima
+        # genérico, no colisionan con ningún comando de domótica.
+        "hace calor", "hace frío", "hace frio",
+    ]
+
+    # Guard de adyacencia verbo-sustantivo (Finding 3, review 2026-08-04,
+    # reemplaza el guard anterior "verbo en cualquier lado + sustantivo en
+    # cualquier lado"). Ese guard viejo capturaba preguntas de clima
+    # genuinas que solo mencionaban un verbo de domótica en otra cláusula
+    # (ej: "¿tengo que prender el clima o hace calor afuera?"). Este exige
+    # que el verbo esté INMEDIATAMENTE antes del sustantivo climático (con
+    # a lo sumo un determinante de por medio: "prendé EL clima", "poné LA
+    # temperatura"), que es la forma literal de los 6 casos Critical/
+    # collision reales. No aflojar a "en cualquier lugar de la oración":
+    # eso reintroduce Finding 3.
+    #
+    # Se combina en _classify_request con un segundo signal independiente
+    # (bail-out por "?"/"¿") en vez de confiar solo en que "prender"/
+    # "activar" no sean literales en DOMOTICS_KEYWORDS (los infinitivos NO
+    # curados) — esa ausencia hoy ayuda a los casos híbridos, pero es
+    # accidental: si algún día se agregan esos infinitivos a
+    # DOMOTICS_KEYWORDS (mismo patrón que encender/cerrar/abrir/subir/
+    # bajar/poner), la adyacencia sola dejaría de alcanzar y el signal de
+    # interrogación sigue cubriendo.
+    _DOMOTICS_VERBS_STRIPPED = sorted({_strip_accents(v) for v in DOMOTICS_KEYWORDS})
+    _DOMOTICS_CLIMATE_ADJACENCY_RE = re.compile(
+        r"\b(?:" + "|".join(re.escape(v) for v in _DOMOTICS_VERBS_STRIPPED) + r")\b"
+        r"\s+(?:el|la|los|las)?\s*"
+        r"\b(?:" + "|".join(re.escape(n) for n in sorted(_CLIMATE_DOMAIN_NOUNS)) + r")\b"
+    )
+
     def __init__(
         self,
         chroma_sync,
@@ -398,6 +477,7 @@ class RequestDispatcher:
         before_handler_warn_ms: float = 5.0,
         require_known_speaker_for_actions: bool = False,
         unavailable_precheck_enabled: bool = True,
+        weather_entity: str = DEFAULT_WEATHER_ENTITY,
     ):
         """
         Args:
@@ -425,6 +505,10 @@ class RequestDispatcher:
                 Ver comentario en `config/settings.yaml:home_assistant.
                 unavailable_precheck_enabled` para el escenario de recuperación
                 que justifica poder apagarlo.
+            weather_entity: Entidad de HA que expone el clima (default
+                `src.world.weather.DEFAULT_ENTITY`), usada por FAST_WEATHER.
+                Se configura en `config/settings.yaml:home_assistant.
+                weather_entity` y llega por MultiUserOrchestrator.
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -441,6 +525,7 @@ class RequestDispatcher:
         self.list_manager = list_manager
         self.reminder_manager = reminder_manager
         self.response_handler = response_handler
+        self.weather_entity = weather_entity
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
         # Voice-auth opcional (default OFF): exige speaker enrolado para ejecutar
@@ -557,6 +642,10 @@ class RequestDispatcher:
             result = await self._fast_reminder_path(text, user_id, zone_id)
             self._stats["fast_path"] += 1
 
+        elif path == PathType.FAST_WEATHER:
+            result = await self._handle_weather(text, priority)
+            self._stats["fast_path"] += 1
+
         else:
             # Slow path - encolar para LLM
             result = await self._slow_path(
@@ -620,6 +709,32 @@ class RequestDispatcher:
         for keyword in self.REMINDER_KEYWORDS:
             if keyword in text_lower:
                 return PathType.FAST_REMINDER, Priority.HIGH
+
+        # Clima -> fuente local en HA. Va ANTES de domotica porque
+        # "qué temperatura hace" comparte sustantivo con el termostato; el
+        # complemento ("hace"/"afuera") es lo que desambigua. Va DESPUES de
+        # musica/listas/recordatorios, que son mas especificas.
+        #
+        # Guard de defensa en profundidad (hallazgo 2026-08-04, endurecido
+        # por Finding 3 de la re-review): un verbo de domotica INMEDIATAMENTE
+        # ANTES de un sustantivo de clima explicito (temperatura/termostato/
+        # calefaccion/aire/clima/grados, ver _DOMOTICS_CLIMATE_ADJACENCY_RE)
+        # es SIEMPRE domotica — nunca una consulta hablada de clima — aunque
+        # algun WEATHER_KEYWORDS futuro matchee sin complemento. Segundo
+        # signal independiente: si el texto es una pregunta ("?"/"¿") nunca
+        # es un comando, así que el guard nunca dispara. No relajar a "verbo
+        # y sustantivo en cualquier lado de la oración": eso reintroduce
+        # Finding 3 (preguntas de clima que solo mencionan un verbo de
+        # domótica en otra cláusula, ej. "¿tengo que prender el clima o hace
+        # calor afuera?").
+        is_question = "?" in text_lower or "¿" in text_lower
+        climate_command_adjacent = not is_question and bool(
+            self._DOMOTICS_CLIMATE_ADJACENCY_RE.search(_strip_accents(text_lower))
+        )
+        if not climate_command_adjacent:
+            for keyword in self.WEATHER_KEYWORDS:
+                if keyword in text_lower:
+                    return PathType.FAST_WEATHER, Priority.HIGH
 
         # Detectar domotica por keywords
         for keyword in self.DOMOTICS_KEYWORDS:
@@ -1217,6 +1332,68 @@ class RequestDispatcher:
                 success=False, response="Hubo un error con el recordatorio",
             )
 
+    async def _handle_weather(self, text: str, priority: Priority) -> DispatchResult:
+        """Answer from HA. Two branches with very different costs.
+
+        - "hoy" (default): cached read via `get_entity_state_cached`, no
+          network hop — fits inside the 300ms fast path budget.
+        - "mañana": a REAL POST to `weather.get_forecasts`, awaited inline.
+          NOT cached; it necessarily blows the fast path budget, and
+          WEATHER_FORECAST_TIMEOUT_S is what bounds by how much.
+
+        Nunca propaga una excepción. Un turno de voz mudo es el peor
+        degradado posible: desde acá una excepción atraviesa `dispatch()`,
+        `MultiUserOrchestrator.process()`, `request_router` y `voice_pipeline`
+        sin que nadie la atrape, y el usuario no escucha NADA — ni respuesta,
+        ni error, ni beep. Los FALLOS sí hablan (ver request_router.py).
+
+        Args:
+            text: Texto del usuario (ya identificado como consulta de clima).
+            priority: Prioridad con la que se clasificó la petición.
+
+        Returns:
+            DispatchResult siempre hablable; `success=False` solo si hubo
+            una excepción inesperada (que además se loguea a ERROR).
+        """
+        from src.world.weather import NO_DATA, describe_current, describe_forecast
+
+        text_lower = text.lower()
+        dia = "mañana" if "mañana" in text_lower or "manana" in text_lower else None
+
+        try:
+            if dia:
+                payload = await self.ha.call_service_with_response(
+                    "weather", "get_forecasts", self.weather_entity,
+                    {"type": "daily"},
+                    timeout=WEATHER_FORECAST_TIMEOUT_S,
+                )
+                # `or {}` en CADA nivel, no `.get(clave, {})`: el default de
+                # `dict.get` solo aplica cuando la CLAVE FALTA, no cuando la
+                # clave existe con valor None. HA puede responder 200 con
+                # {"service_response": null} (el servicio corrió y no tiene
+                # nada que devolver) y ahí `.get("service_response", {})`
+                # devuelve None -> AttributeError en el `.get` siguiente.
+                service_response = (payload or {}).get("service_response") or {}
+                entity_block = service_response.get(self.weather_entity) or {}
+                forecast = entity_block.get("forecast") or []
+                response = describe_forecast(forecast, dia)
+            else:
+                response = describe_current(
+                    self.ha.get_entity_state_cached(self.weather_entity)
+                )
+            success = True
+        except Exception as exc:  # noqa: BLE001 - red de seguridad anti-mudo
+            logger.error(
+                "Weather handler failed (entity=%s, dia=%s): %s",
+                self.weather_entity, dia, exc, exc_info=True,
+            )
+            response, success = NO_DATA, False
+
+        return DispatchResult(
+            path=PathType.FAST_WEATHER, priority=priority,
+            success=success, response=response, intent="weather",
+        )
+
     def _extract_list_name(self, text: str) -> str | None:
         """Extract list name from text like 'la lista de compras' or 'la lista del hogar'."""
         import re
@@ -1552,6 +1729,7 @@ class MultiUserOrchestrator:
         before_handler_warn_ms: float = 5.0,
         require_known_speaker_for_actions: bool = False,
         unavailable_precheck_enabled: bool = True,
+        weather_entity: str = DEFAULT_WEATHER_ENTITY,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -1568,6 +1746,12 @@ class MultiUserOrchestrator:
                 Forwarded to RequestDispatcher.
             unavailable_precheck_enabled: Kill switch del precheck de
                 `is_entity_available` (default True). Forwarded to RequestDispatcher.
+            weather_entity: Entidad de HA que expone el clima. Viene de
+                `config/settings.yaml:home_assistant.weather_entity`. Sin este
+                forward el dispatcher se quedaba siempre con el literal por
+                defecto y, si la entidad de HA se llamaba distinto, el
+                asistente contestaba "No tengo el dato del clima ahora mismo"
+                para siempre — indistinguible de un sensor caído.
         """
         self._hooks = hooks  # plan #3 OpenClaw — exposed for log_hook_stats()
         # Componentes principales
@@ -1621,6 +1805,7 @@ class MultiUserOrchestrator:
             before_handler_warn_ms=before_handler_warn_ms,
             require_known_speaker_for_actions=require_known_speaker_for_actions,
             unavailable_precheck_enabled=unavailable_precheck_enabled,
+            weather_entity=weather_entity,
         )
 
         self._running = False

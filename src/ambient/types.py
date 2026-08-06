@@ -61,3 +61,9 @@ class AmbientUtterance:
     lang_ok: bool | None = None         # ¿español conservable? (markers OR lang==es)
     during_tts: bool = False
     distilled: bool = False
+    # Medición de fidelidad (spec 2026-08-05). text_empty marca los segmentos
+    # que el STT transcribió como vacío: hoy se descartan antes de persistir,
+    # y por eso la tasa de deleción es invisible. Solo se insertan cuando
+    # ambient.keep_audio está activo (campaña de medición).
+    text_empty: bool = False
+    audio_path: str | None = None   # ruta del FLAC, o None si no se archivó

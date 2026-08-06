@@ -254,3 +254,68 @@ def test_init_migrates_old_schema_adding_lang_columns(tmp_path):
         assert by == {"fila vieja": None, "fila nueva": 1}
         await store.close()
     _run(inner())
+
+
+def test_audio_path_roundtrip(tmp_path):
+    async def inner():
+        store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=12)
+        await store.init()
+        uid = await store.add(_utt(time.time()))
+        await store.set_audio_path(uid, "data/ambient_audio/escritorio/1.flac")
+        rows = await store.utterances_between("escritorio", 0, time.time() + 10)
+        assert rows[0]["audio_path"] == "data/ambient_audio/escritorio/1.flac"
+        await store.close()
+    _run(inner())
+
+
+def test_text_empty_default_es_cero(tmp_path):
+    async def inner():
+        store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=12)
+        await store.init()
+        uid = await store.add(_utt(time.time()))
+        rows = await store.utterances_between("escritorio", 0, time.time() + 10)
+        assert rows[0]["text_empty"] == 0
+        assert rows[0]["audio_path"] is None
+        assert uid > 0
+        await store.close()
+    _run(inner())
+
+
+def test_undistilled_live_excluye_text_empty(tmp_path):
+    async def inner():
+        store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=12)
+        await store.init()
+        now = time.time()
+        await store.add(_utt(now, text="con texto", vad_prob=0.9))
+        await store.add(_utt(now, text="", vad_prob=0.9, text_empty=True))
+        rows = await store.undistilled_live(limit=10)
+        assert [r["text"] for r in rows] == ["con texto"]
+        await store.close()
+    _run(inner())
+
+
+def test_purge_borra_el_archivo_de_audio(tmp_path):
+    async def inner():
+        audio = tmp_path / "viejo.flac"
+        audio.write_bytes(b"fake")
+        store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=1)
+        await store.init()
+        uid = await store.add(_utt(time.time() - 7200))
+        await store.set_audio_path(uid, str(audio))
+        n = await store.purge_expired()
+        assert n == 1
+        assert not audio.exists()
+        await store.close()
+    _run(inner())
+
+
+def test_purge_sobrevive_archivo_faltante(tmp_path):
+    async def inner():
+        store = AmbientStore(db_path=str(tmp_path / "a.db"), retention_hours=1)
+        await store.init()
+        uid = await store.add(_utt(time.time() - 7200))
+        await store.set_audio_path(uid, str(tmp_path / "no_existe.flac"))
+        n = await store.purge_expired()   # no debe lanzar
+        assert n == 1
+        await store.close()
+    _run(inner())

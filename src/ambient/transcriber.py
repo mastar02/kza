@@ -12,6 +12,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from src.ambient.types import AmbientUtterance, RawSegment
@@ -40,6 +41,7 @@ class AmbientTranscriber:
         poll_interval_s: float = 0.25,
         quality_fn: Callable[[str, float | None], tuple[str | None, float | None, bool]]
         | None = None,
+        archiver=None,
     ):
         self._tap = tap
         self._segmenter_factory = segmenter_factory
@@ -54,6 +56,10 @@ class AmbientTranscriber:
         # cada utterance con (lang, lang_prob, lang_ok) al persistir — FLAG, no
         # drop. Opcional (None = sin clasificar, campos quedan None).
         self._quality_fn = quality_fn
+        # AudioArchiver opcional (spec 2026-08-05). None = comportamiento
+        # histórico exacto: no se guarda audio y los segmentos sin texto se
+        # descartan sin persistir.
+        self._archiver = archiver
 
         self._running = False
         self._tasks: list[asyncio.Task] = []
@@ -140,7 +146,33 @@ class AmbientTranscriber:
         try:
             stt_result = await self._stt.transcribe(seg.audio)
             text = stt_result.text.strip()
+            archiving = self._archiver is not None and self._archiver.enabled
             if not text:
+                # Sin archiver: comportamiento histórico (descartar y salir).
+                # Con archiver: se persiste una fila mínima + el audio, porque
+                # la tasa de deleción —habla real transcripta como vacío— es
+                # el modo de falla que ninguna otra señal deja ver.
+                if not archiving:
+                    return
+                empty = AmbientUtterance(
+                    room_id=room_id, t0=seg.t0, t1=seg.t1, text="",
+                    source="self" if seg.during_tts else "unknown",
+                    vad_prob=seg.vad_prob, during_tts=seg.during_tts,
+                    text_empty=True,
+                )
+                empty_id = await self._store.add(empty)
+                try:
+                    await self._archive_audio(room_id, empty_id, seg.audio)
+                except Exception:
+                    # No re-lanzar acá: el fallo es del puntero al audio, no
+                    # de la utterance (ya persistida). Dejar que escale al
+                    # except externo pondría "segmento descartado" en el log
+                    # cuando en realidad el segmento SÍ quedó guardado.
+                    logger.exception(
+                        f"AmbientTranscriber[{room_id}]: fallo al archivar "
+                        f"audio (utterance {empty_id} ya persistida, sigue "
+                        f"sin audio_path)"
+                    )
                 return
             # Flag de idioma sobre el TEXTO (no la energía): el discriminante
             # real de calidad del rioplatense. FLAG, no drop — la utterance se
@@ -176,7 +208,7 @@ class AmbientTranscriber:
             )
             if source == "tv":
                 self._last_tv[room_id] = time.time()
-            await self._store.add(utt)
+            utt_id = await self._store.add(utt)
             logger.debug(
                 f"[Ambient] {room_id} {source} {speaker}: "
                 f"{utt.text[:60]!r} (az={azimuth}, stab={stability:.2f})"
@@ -184,7 +216,11 @@ class AmbientTranscriber:
             # Wake textual (spec 2026-07-05): SIEMPRE después de persistir —
             # la utterance ya quedó en el store pase lo que pase acá. Fail-open
             # explícito: una excepción del detector (o de dispatch_fn/router)
-            # jamás debe matar el worker de la room.
+            # jamás debe matar el worker de la room. Va ANTES del archivado
+            # (review 2026-08-05): el archivado es puramente instrumentación
+            # (encode FLAC + shutil.disk_usage) y no puede quedar en serie
+            # por delante de un dispatch de cara al usuario, ni un fallo del
+            # UPDATE de audio_path puede tragarse un "nexa" real.
             if self._textual_wake is not None:
                 try:
                     await self._textual_wake.maybe_dispatch(
@@ -196,9 +232,43 @@ class AmbientTranscriber:
                         f"[TextualWake] error al evaluar utterance en {room_id} "
                         f"(best-effort, la utterance ya está persistida)"
                     )
+            if archiving:
+                try:
+                    await self._archive_audio(room_id, utt_id, seg.audio)
+                except Exception:
+                    # Igual que en la rama de texto vacío: no dejar que esto
+                    # escale al except externo, que loguearía "segmento
+                    # descartado" siendo que la utterance (y el wake) ya se
+                    # procesaron con éxito.
+                    logger.exception(
+                        f"AmbientTranscriber[{room_id}]: fallo al archivar "
+                        f"audio (utterance {utt_id} ya persistida, sigue "
+                        f"sin audio_path)"
+                    )
         except Exception:
             # un segmento malo no tira el worker — se pierde ese segmento
             logger.exception(f"AmbientTranscriber[{room_id}]: segmento descartado")
+
+    async def _archive_audio(self, room_id: str, utt_id: int, audio) -> None:
+        """Guardar el audio del segmento y apuntar la fila al archivo.
+
+        Si el UPDATE falla, borra el archivo antes de propagar: una fila con
+        audio_path NULL deja el archivo fuera del alcance de la purga por TTL,
+        o sea un huérfano permanente en disco.
+
+        Args:
+            room_id: Habitación de origen.
+            utt_id: rowid devuelto por store.add().
+            audio: Audio multicanal del segmento.
+        """
+        path = await self._archiver.write(room_id, utt_id, audio)
+        if not path:
+            return
+        try:
+            await self._store.set_audio_path(utt_id, path)
+        except Exception:
+            Path(path).unlink(missing_ok=True)
+            raise
 
     async def _purge_worker(self) -> None:
         while self._running:
@@ -284,6 +354,7 @@ def build_ambient_path(
             None (sin memoria → sin distiller, solo buffer TTL).
     """
     from src.ambient.ambient_stt import AmbientSTT
+    from src.ambient.audio_archive import AudioArchiver
     from src.ambient.distiller import Distiller, make_langid_fn, make_local_chat_fn
     from src.ambient.doa import DoAEstimator
     from src.ambient.language_quality import make_quality_fn
@@ -378,6 +449,13 @@ def build_ambient_path(
             min_vad=q_cfg.get("min_vad", 0.45),
         )
 
+    ka_cfg = ambient_cfg.get("keep_audio", {}) or {}
+    archiver = AudioArchiver(
+        base_dir=ka_cfg.get("dir", "./data/ambient_audio"),
+        enabled=bool(ka_cfg.get("enabled", False)),
+        min_free_bytes=int(ka_cfg.get("min_free_mb", 1000)) * 1_000_000,
+    )
+
     tap = MultiChannelTap()
     transcriber = AmbientTranscriber(
         tap=tap,
@@ -390,6 +468,7 @@ def build_ambient_path(
         rooms=room_ids,
         poll_interval_s=ambient_cfg.get("poll_interval_s", 0.25),
         quality_fn=quality_fn,
+        archiver=archiver,
     )
 
     distiller = None

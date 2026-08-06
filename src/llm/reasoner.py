@@ -839,6 +839,7 @@ REGLAS:
         prompt: str,
         max_tokens: int = 256,
         temperature: float = 0.3,
+        stop: list[str] | None = None,
         **_ignored,
     ) -> str:
         """API unificada para LLMRouter — async, single prompt, retorna texto.
@@ -857,11 +858,15 @@ REGLAS:
             if self._client is None:
                 self.load()
             t0 = time.perf_counter()
+            # `stop` is opt-in: omitting the key keeps the request byte-identical
+            # to the pre-2026-08-04 behaviour for every existing caller.
+            extra = {"stop": stop} if stop else {}
             resp = self._client.completions.create(
                 model=self.model_name,
                 prompt=prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                **extra,
             )
             elapsed_ms = (time.perf_counter() - t0) * 1000
             usage = getattr(resp, "usage", None)

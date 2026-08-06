@@ -2,7 +2,10 @@
 
 Política del spec: destilar-y-descartar. El texto crudo vive acá
 retention_hours y la purga lo borra; los hechos destilados viven en la
-memoria de largo plazo (ChromaDB). Solo texto — jamás audio.
+memoria de largo plazo (ChromaDB). Solo texto por default. Con
+``ambient.keep_audio`` activo se guarda además el FLAC del segmento
+(columna ``audio_path``) para poder medir WER y re-transcribir; la purga
+por TTL borra fila y archivo juntos.
 
 Nota de diseño (purga):
   purge_expired() borra por `t0 < cutoff`, NO por `created_at`.
@@ -43,6 +46,8 @@ CREATE TABLE IF NOT EXISTS utterances (
   lang_ok INTEGER,
   during_tts INTEGER NOT NULL DEFAULT 0,
   distilled INTEGER NOT NULL DEFAULT 0,
+  text_empty INTEGER NOT NULL DEFAULT 0,
+  audio_path TEXT,
   created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_utt_room_time ON utterances(room_id, t0);
@@ -59,6 +64,9 @@ _MIGRATIONS: dict[str, str] = {
     "lang": "ALTER TABLE utterances ADD COLUMN lang TEXT",
     "lang_prob": "ALTER TABLE utterances ADD COLUMN lang_prob REAL",
     "lang_ok": "ALTER TABLE utterances ADD COLUMN lang_ok INTEGER",
+    # Medición de fidelidad (2026-08-05): la DB de prod ya existe.
+    "text_empty": "ALTER TABLE utterances ADD COLUMN text_empty INTEGER NOT NULL DEFAULT 0",
+    "audio_path": "ALTER TABLE utterances ADD COLUMN audio_path TEXT",
 }
 
 
@@ -110,8 +118,8 @@ class AmbientStore:
                (room_id, t0, t1, text, speaker, speaker_confidence, azimuth,
                 azimuth_stability, source, confidence, no_speech_prob,
                 vad_prob, lang, lang_prob, lang_ok, during_tts, distilled,
-                created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                text_empty, audio_path, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 utt.room_id, utt.t0, utt.t1, utt.text, utt.speaker,
                 utt.speaker_confidence, utt.azimuth, utt.azimuth_stability,
@@ -119,11 +127,27 @@ class AmbientStore:
                 utt.vad_prob, utt.lang, utt.lang_prob,
                 None if utt.lang_ok is None else int(utt.lang_ok),
                 int(utt.during_tts), int(utt.distilled),
+                int(utt.text_empty), utt.audio_path,
                 time.time(),
             ),
         )
         await self._db.commit()
         return cur.lastrowid
+
+    async def set_audio_path(self, utt_id: int, path: str) -> None:
+        """Registrar la ruta del FLAC archivado para una utterance.
+
+        Se llama después de escribir el archivo, porque el nombre depende del
+        id que devuelve add(). Un fallo de escritura deja audio_path en NULL.
+
+        Args:
+            utt_id: rowid devuelto por add().
+            path: ruta del archivo, tal como la devolvió el AudioArchiver.
+        """
+        await self._db.execute(
+            "UPDATE utterances SET audio_path=? WHERE id=?", (path, utt_id)
+        )
+        await self._db.commit()
 
     async def utterances_between(
         self, room_id: str, t0: float, t1: float
@@ -159,6 +183,9 @@ class AmbientStore:
         anti-alucinación validada sobre ambient.db (cruce español-hogar /
         bleed-TV ≈ 0.45). ``no_speech_prob`` quedó muerto (degenerado ~0).
 
+        Excluye ``text_empty=1``: son filas que existen solo para medir la
+        tasa de deleción (segmentos sin texto) y no tienen nada que destilar.
+
         Args:
             limit: Máximo de filas a devolver.
             min_vad_prob: Umbral inferior de vad_prob (vad NULL cuenta como 0).
@@ -174,6 +201,7 @@ class AmbientStore:
         query = (
             "SELECT * FROM utterances WHERE distilled=0 "
             "AND source NOT IN ('self','tv') "
+            "AND COALESCE(text_empty, 0) = 0 "
             "AND COALESCE(vad_prob, 0) >= ? "
         )
         params: list = [min_vad_prob]
@@ -210,10 +238,22 @@ class AmbientStore:
         """
         cutoff = time.time() - self.retention_hours * 3600
         cur = await self._db.execute(
+            "SELECT audio_path FROM utterances WHERE t0 < ? AND audio_path IS NOT NULL",
+            (cutoff,),
+        )
+        doomed = [row["audio_path"] for row in await cur.fetchall()]
+        cur = await self._db.execute(
             "DELETE FROM utterances WHERE t0 < ?", (cutoff,)
         )
         await self._db.commit()
+        for path in doomed:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning("AmbientStore purga: no se pudo borrar %s: %s", path, e)
         if cur.rowcount:
-            logger.info("AmbientStore purga: %d utterances borradas (TTL %.1fh)",
-                        cur.rowcount, self.retention_hours)
+            logger.info(
+                "AmbientStore purga: %d utterances borradas (TTL %.1fh), %d audios",
+                cur.rowcount, self.retention_hours, len(doomed),
+            )
         return cur.rowcount
