@@ -49,7 +49,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from src.ambient.wer import UNINTELLIGIBLE, bucket_of
+from src.ambient.wer import UNINTELLIGIBLE, bucket_of, is_excluded
 
 # Universo muestreable. UNA sola constante a propósito: es la población de la
 # que sale la muestra Y la población sobre la que se calculan los pesos del
@@ -422,16 +422,20 @@ def _validate(path: str, meta_path: str | None = None) -> None:
 
     textos = [v for v in data.values() if isinstance(v, str)]
     sin_habla = sum(1 for v in textos if v.strip() == "")
-    marcadores = sum(
-        1 for v in textos
-        if v.strip().lower() in {UNINTELLIGIBLE, "[tv]", "[media]"}
-    )
+    marcadores = sum(1 for v in textos if is_excluded(v))
     con_texto = len(textos) - sin_habla - marcadores
     total = len(esperados) if esperados else len(data)
     print(f"{len(data)} de {total} clips resueltos")
     print(f"  con transcripción      : {con_texto}")
     print(f"  sin habla (explícito)  : {sin_habla}")
     print(f"  marcadores excluidos   : {marcadores}")
+
+    inline = [uid for uid, v in data.items()
+              if isinstance(v, str) and "[" in v and not is_excluded(v)]
+    if inline:
+        print(f"  AVISO: {len(inline)} referencia(s) con marcador INLINE — el "
+              f"scorer las puntúa como palabras; un marcador vale solo como "
+              f"referencia COMPLETA. Ids: {inline[:10]}")
 
     if problemas:
         print("\n" + "!" * 60, file=sys.stderr)

@@ -234,13 +234,28 @@ def test_load_snapshot_lee_hipotesis_y_pesos(tmp_path):
         "utterances": {"1": {"text": "hola", "vad_prob": 0.9, "room_id": "x"}},
         "volumes": {"0.80-1.00": 3},
     }))
-    utts, vols = load_snapshot(p)
+    utts, vols, error = load_snapshot(p)
     assert utts["1"]["text"] == "hola"
     assert vols == {"0.80-1.00": 3}
+    assert error is None
 
 
 def test_load_snapshot_ausente_no_lanza(tmp_path):
-    assert load_snapshot(tmp_path / "no_existe.json") == ({}, {})
+    assert load_snapshot(tmp_path / "no_existe.json") == ({}, {}, None)
+
+
+def test_load_snapshot_corrupto_devuelve_error_no_fallback_silencioso(tmp_path):
+    """Un hypotheses.json que EXISTE pero no parsea no es lo mismo que uno
+    ausente: el snapshot de una campaña se escribe una sola vez, y tratar
+    'corrupto' como 'ausente' manda al operador a la DB (purga 48h) en vez
+    de al backup del archivo."""
+    p = tmp_path / "hypotheses.json"
+    p.write_text("{trunc", encoding="utf-8")
+    utts, vols, error = load_snapshot(p)
+    assert utts == {}
+    assert vols == {}
+    assert error is not None
+    assert "corrupto" in error
 
 
 def test_los_pesos_salen_del_mismo_universo_que_la_muestra():
@@ -280,3 +295,39 @@ def test_main_exit_1_si_no_hay_ni_snapshot_ni_db(tmp_path, monkeypatch):
     assert exc.value.code == 1
     # y no dejó un reporte a medio armar detrás: falló ANTES de escribirlo
     assert not (tmp_path / "reporte.json").exists()
+
+
+def test_reporte_no_confiable_sale_con_exit_2(tmp_path, monkeypatch):
+    from src.ambient.wer import bucket_of
+    b_alto, b_bajo = bucket_of(0.9), bucket_of(0.1)
+    (tmp_path / "groundtruth.json").write_text(
+        json.dumps({"1": "hola che"}), encoding="utf-8")
+    (tmp_path / "hypotheses.json").write_text(json.dumps({
+        "utterances": {"1": {"text": "hola che", "vad_prob": 0.9}},
+        # Volumen real concentrado en un bucket sin ningún par evaluado →
+        # cobertura muy por debajo del piso → confiable=False.
+        "volumes": {b_alto: 1, b_bajo: 99},
+    }), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [
+        "ambient_wer.py", "--groundtruth", str(tmp_path / "groundtruth.json"),
+        "--out", str(tmp_path / "rep.json"),
+    ])
+    with pytest.raises(SystemExit) as ex:
+        wer_mod.main()
+    assert ex.value.code == 2
+
+
+def test_snapshot_corrupto_es_error_duro_no_fallback_silencioso(
+    tmp_path, monkeypatch, capsys
+):
+    (tmp_path / "groundtruth.json").write_text(
+        json.dumps({"1": "hola"}), encoding="utf-8")
+    (tmp_path / "hypotheses.json").write_text("{trunc", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [
+        "ambient_wer.py", "--groundtruth", str(tmp_path / "groundtruth.json"),
+        "--db", str(tmp_path / "nonexistent.db"),
+    ])
+    with pytest.raises(SystemExit) as ex:
+        wer_mod.main()
+    assert ex.value.code == 1
+    assert "corrupto" in capsys.readouterr().err

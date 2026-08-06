@@ -21,10 +21,12 @@ Uso:
     # (lo escribe el --export); la DB es solo el fallback.
 
 Exit codes:
-    0   Se pudo construir el reporte (mirá `confiable` antes de creerle al
-        agregado: 0 no significa que el número sea usable).
-    1   No se pudo leer el ground truth, o no hay de dónde sacar las
-        hipótesis (ni snapshot ni DB).
+    0   Reporte construido y agregado confiable.
+    1   No se pudo leer el ground truth, no hay de dónde sacar las
+        hipótesis (ni snapshot ni DB), o el snapshot de hipótesis existe
+        pero está corrupto (no se cae a la DB en silencio: ver `load_snapshot`).
+    2   Reporte construido pero NO CONFIABLE (mirá `motivos` en el JSON) —
+        no publicar el agregado.
 """
 from __future__ import annotations
 
@@ -194,23 +196,28 @@ def build_report(
     }
 
 
-def load_snapshot(path: Path) -> tuple[dict[str, dict], dict[str, int]]:
+def load_snapshot(path: Path) -> tuple[dict[str, dict], dict[str, int], str | None]:
     """Leer el ``hypotheses.json`` que escribió el export.
 
-    Args:
-        path: Ruta al snapshot.
-
     Returns:
-        ``(utterances, volumes)``; ``({}, {})`` si el archivo no existe o no
-        se puede parsear.
+        ``(utterances, volumes, error)``. ``error`` es None si el archivo no
+        existe (fallback a DB esperado) o si se leyó bien; si el archivo
+        EXISTE pero no parsea, ``error`` describe el problema — el snapshot
+        de una campaña se escribe una sola vez, y confundir "corrupto" con
+        "ausente" manda al operador a una DB que purga a las 48h en vez de
+        al backup del archivo.
     """
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}, {}
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}, {}, None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        return {}, {}, f"snapshot corrupto: {e}"
     utts = data.get("utterances") or {}
     vols = {k: int(v) for k, v in (data.get("volumes") or {}).items()}
-    return utts, vols
+    return utts, vols, None
 
 
 def _fmt(x: float | None) -> str:
@@ -253,7 +260,12 @@ def main() -> None:
         raise SystemExit(1)
 
     snap_path = Path(args.hypotheses) if args.hypotheses else gt_path.parent / "hypotheses.json"
-    snap_utts, snap_vols = load_snapshot(snap_path)
+    snap_utts, snap_vols, snap_error = load_snapshot(snap_path)
+    if snap_error:
+        print(f"ERROR: {snap_path} — {snap_error}. NO se cae a la DB (purga "
+              f"48h, ventana corrida): recuperá el snapshot del backup.",
+              file=sys.stderr)
+        raise SystemExit(1)
     if snap_utts:
         print(f"hipótesis desde el snapshot {snap_path} ({len(snap_utts)} filas)")
     else:
@@ -361,6 +373,12 @@ def main() -> None:
     out = args.out or f"data/wer_report_{gt_path.stem}.json"
     Path(out).write_text(json.dumps(rep, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nreporte guardado en {out}")
+
+    if not rep["confiable"]:
+        # exit 0 acá sería el mismo proxy mentiroso que el export ya cerró:
+        # un `--validate && ambient_wer && publicar` encadenado leería un
+        # agregado inusable como éxito.
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":
