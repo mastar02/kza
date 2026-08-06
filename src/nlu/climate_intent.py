@@ -1,5 +1,22 @@
 """Binary intent classifier for the climate/AC ambiguity.
 
+⚠️ NO-GO (2026-08-04) — CÓDIGO MUERTO, NO ADOPTAR SIN RE-EVALUAR. ⚠️
+
+Este módulo NO está cableado a nada: fuera de su test y su benchmark, nadie lo
+importa. El eval contra el set B held-out dio 94% de acierto pero produjo 2
+casos consulta→acción (el asistente OPERA el aire cuando el usuario solo estaba
+comentando el tiempo), y ese error es asimétrico: el criterio de go/no-go
+—fijado antes de ver el resultado— lo declaraba inaceptable. La clase que
+rompe es la negación usada como cláusula de necesidad ("no hace falta prender"),
+y le rompe IGUAL al modelo y a la gramática de reglas: cualquier enfoque nuevo
+tiene que atacar eso, no "clima" en general.
+
+Se conserva como instrumento reusable (junto al set B y su runner), no como
+diseño vivo. Antes de tocarlo leer el resultado completo en
+`docs/superpowers/specs/2026-08-04-ruteo-clima-por-modelo-design.md`.
+
+Lo que sigue describe el diseño tal como se evaluó:
+
 In Rioplatense Spanish "clima" means both the weather and the air conditioner:
 
     "prendé el clima"      -> turn the AC on   (command)
