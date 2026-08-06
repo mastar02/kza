@@ -200,23 +200,42 @@ def load_snapshot(path: Path) -> tuple[dict[str, dict], dict[str, int], str | No
     """Leer el ``hypotheses.json`` que escribió el export.
 
     Returns:
-        ``(utterances, volumes, error)``. ``error`` es None si el archivo no
-        existe (fallback a DB esperado) o si se leyó bien; si el archivo
-        EXISTE pero no parsea, ``error`` describe el problema — el snapshot
-        de una campaña se escribe una sola vez, y confundir "corrupto" con
+        ``(utterances, volumes, error)``. ``error`` es None si el archivo NO
+        EXISTE (fallback a DB esperado — ahora es literalmente cierto, I2
+        review PR #15) o si se leyó bien; si el archivo EXISTE pero no
+        parsea, no es un objeto JSON, o tiene un volumen no numérico,
+        ``error`` describe el problema — el snapshot de una campaña se
+        escribe una sola vez, y confundir "ilegible"/"corrupto" con
         "ausente" manda al operador a una DB que purga a las 48h en vez de
         al backup del archivo.
     """
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError:
+    except FileNotFoundError:
         return {}, {}, None
+    except OSError as e:
+        # Permission denied, EIO (disco muriéndose — justo el escenario que
+        # también corrompe el archivo): esto NO es "ausente", es "no pude
+        # leerlo". Antes caía junto con FileNotFoundError a (None) y el
+        # caller lo trataba como "sin snapshot, uso la DB purgable" en
+        # silencio.
+        return {}, {}, f"snapshot ilegible: {e}"
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
         return {}, {}, f"snapshot corrupto: {e}"
+    if not isinstance(data, dict):
+        # Un snapshot que parsea a lista o string (JSON válido, forma
+        # incorrecta) reventaba con AttributeError crudo en data.get() más
+        # abajo en vez de un error curado.
+        return {}, {}, "snapshot corrupto: no es un objeto JSON"
     utts = data.get("utterances") or {}
-    vols = {k: int(v) for k, v in (data.get("volumes") or {}).items()}
+    try:
+        vols = {k: int(v) for k, v in (data.get("volumes") or {}).items()}
+    except (TypeError, ValueError) as e:
+        # Un volumen no numérico ("cinco" en vez de 5) reventaba en int(v)
+        # con un ValueError crudo — curarlo acá en vez de en cada caller.
+        return {}, {}, f"snapshot corrupto: volumen no numérico ({e})"
     return utts, vols, None
 
 

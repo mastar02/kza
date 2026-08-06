@@ -343,6 +343,106 @@ def test_snapshot_corrupto_es_error_duro_no_fallback_silencioso(
     assert "NO se cae a la DB" in capsys.readouterr().err
 
 
+def test_load_snapshot_no_dict_devuelve_error_curado(tmp_path):
+    """I2 (review PR #15): un snapshot que parsea a JSON válido pero de forma
+    incorrecta (lista, string) reventaba con AttributeError crudo en
+    data.get() más abajo en vez de un error curado como el resto de los
+    casos de 'existe pero está mal'."""
+    p = tmp_path / "hypotheses.json"
+    p.write_text("[]", encoding="utf-8")
+    utts, vols, error = load_snapshot(p)
+    assert utts == {}
+    assert vols == {}
+    assert error == "snapshot corrupto: no es un objeto JSON"
+
+
+def test_load_snapshot_volumen_no_numerico_devuelve_error_curado(tmp_path):
+    """I2 (review PR #15): un volumen no numérico ('cinco' en vez de 5)
+    reventaba en int(v) con un ValueError crudo."""
+    p = tmp_path / "hypotheses.json"
+    p.write_text(json.dumps({
+        "utterances": {},
+        "volumes": {"0.80-1.00": "cinco"},
+    }), encoding="utf-8")
+    utts, vols, error = load_snapshot(p)
+    assert utts == {}
+    assert vols == {}
+    assert error is not None
+    assert "volumen no numérico" in error
+
+
+def test_main_sale_con_exit_1_si_el_snapshot_no_es_un_objeto_json(
+    tmp_path, monkeypatch, capsys
+):
+    """I2 (review PR #15) vía main(): un `hypotheses.json` que parsea a lista
+    (JSON válido, forma incorrecta) tiene que fallar tan duro como uno
+    truncado — no caer a la DB en silencio con un AttributeError a mitad de
+    camino."""
+    (tmp_path / "groundtruth.json").write_text(
+        json.dumps({"1": "hola"}), encoding="utf-8")
+    (tmp_path / "hypotheses.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [
+        "ambient_wer.py", "--groundtruth", str(tmp_path / "groundtruth.json"),
+        "--db", str(tmp_path / "nonexistent.db"),
+    ])
+    with pytest.raises(SystemExit) as ex:
+        wer_mod.main()
+    assert ex.value.code == 1
+    err = capsys.readouterr().err
+    assert "no es un objeto JSON" in err
+    assert "NO se cae a la DB" in err
+
+
+def test_main_sale_con_exit_1_si_el_volumen_no_es_numerico(
+    tmp_path, monkeypatch, capsys
+):
+    """I2 (review PR #15) vía main(): mismo contrato de fallo duro, ahora
+    para el caso de volumen corrupto en vez de forma de snapshot corrupta."""
+    (tmp_path / "groundtruth.json").write_text(
+        json.dumps({"1": "hola"}), encoding="utf-8")
+    (tmp_path / "hypotheses.json").write_text(json.dumps({
+        "utterances": {"1": {"text": "hola", "vad_prob": 0.9}},
+        "volumes": {"0.80-1.00": "cinco"},
+    }), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [
+        "ambient_wer.py", "--groundtruth", str(tmp_path / "groundtruth.json"),
+        "--db", str(tmp_path / "nonexistent.db"),
+    ])
+    with pytest.raises(SystemExit) as ex:
+        wer_mod.main()
+    assert ex.value.code == 1
+    err = capsys.readouterr().err
+    assert "volumen no numérico" in err
+    assert "NO se cae a la DB" in err
+
+
+def test_main_happy_path_writes_reliable_report_and_exits_cleanly(
+    tmp_path, monkeypatch
+):
+    """M11 (review PR #15): hasta ahora `main()` solo tenía cobertura del
+    lado de los fallos (exit 1 / exit 2) — cierra la otra mitad del
+    contrato: un snapshot completo con cobertura total sale limpio (return
+    normal, sin SystemExit) y deja el reporte escrito en disco."""
+    (tmp_path / "groundtruth.json").write_text(
+        json.dumps({"1": "hola che"}), encoding="utf-8")
+    (tmp_path / "hypotheses.json").write_text(json.dumps({
+        "utterances": {"1": {"text": "hola che", "vad_prob": 0.9}},
+        "volumes": {"0.80-1.00": 1},
+    }), encoding="utf-8")
+    out_path = tmp_path / "rep.json"
+    monkeypatch.setattr(sys, "argv", [
+        "ambient_wer.py",
+        "--groundtruth", str(tmp_path / "groundtruth.json"),
+        "--out", str(out_path),
+    ])
+
+    wer_mod.main()  # no SystemExit levantado == exit code 0
+
+    assert out_path.exists()
+    rep = json.loads(out_path.read_text(encoding="utf-8"))
+    assert rep["confiable"] is True
+
+
 def test_snapshot_corrupto_no_cae_a_una_db_poblada(tmp_path, monkeypatch, capsys):
     """El caso que la regresión real hubiera producido: snapshot corrupto Y
     una ambient.db real, abierta y con una fila usable para el mismo id.

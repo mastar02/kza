@@ -331,6 +331,19 @@ def test_validate_avisa_marcador_inline(tmp_path, capsys):
     assert "INLINE" in capsys.readouterr().out
 
 
+def test_validate_no_avisa_marcador_completo(tmp_path, capsys):
+    """M13 (review PR #15): caso negativo del AVISO inline — una referencia
+    que ES exactamente '[ininteligible]' o '[tv]' completa (sin texto
+    alrededor) es justo lo que is_excluded() sabe manejar; no debe
+    contarse como INLINE ni generar el aviso."""
+    path = _escribir_set(tmp_path, {
+        "1": "[ininteligible]",
+        "2": "[tv]",
+    })
+    _validate(path)          # no lanza
+    assert "INLINE" not in capsys.readouterr().out
+
+
 def test_validate_falla_con_json_malformado(tmp_path):
     (tmp_path / "groundtruth.json").write_text("{no es json")
     with pytest.raises(SystemExit) as exc:
