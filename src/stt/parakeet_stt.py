@@ -44,8 +44,15 @@ class ParakeetSTT:
         Args:
             model_name: Modelo del hub de onnx-asr (descarga/caché en
                 ~/.cache/huggingface la primera vez).
-            language: Idioma forzado para recognize() (Parakeet v3 es
-                multilingüe con autodetección; fijarlo evita drift).
+            language: Hint de idioma para recognize(). ⚠️ NO-OP con Parakeet
+                TDT: en onnx-asr solo la clase AED (Canary, p.ej.
+                ``nemo-canary-1b-v2``) consume el kwarg; el TDT lo ignora y
+                autodetecta por diseño — no hay forma de forzar idioma
+                (NVIDIA remite a Canary para eso). Con SNR bajo la
+                autodetección deriva a garble inglés; el gate real es por
+                ``vad_prob`` aguas abajo (language_quality / textual_wake),
+                no acá. Se conserva el parámetro porque sí aplicaría si
+                ``model_name`` fuera un Canary.
         """
         self.model_name = model_name
         self.language = language
