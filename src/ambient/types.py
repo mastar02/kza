@@ -67,3 +67,14 @@ class AmbientUtterance:
     # ambient.keep_audio está activo (campaña de medición).
     text_empty: bool = False
     audio_path: str | None = None   # ruta del FLAC, o None si no se archivó
+
+    def __post_init__(self):
+        # text_empty es derivado de text: la única fuente legal es el
+        # transcriber persistiendo un segmento que el STT devolvió vacío.
+        # Un segundo call-site (backfill, fixture) que los haga divergir
+        # produciría o una fila "vacía" con texto destilable o un fantasma
+        # sin marcar — mejor reventar acá (review PR #14, 2026-08-06).
+        if self.text_empty and self.text:
+            raise ValueError(
+                f"text_empty=True con text no vacío ({self.text[:30]!r})"
+            )

@@ -318,6 +318,32 @@ def test_validate_falla_si_no_encuentra_el_meta(tmp_path):
     assert exc.value.code == 1
 
 
+def test_validate_avisa_marcador_inline(tmp_path, capsys):
+    """Referencia con "[ininteligible]" INCRUSTADO en una frase más larga:
+    el scorer lo bracket-stripea y lo puntúa como la palabra 'ininteligible'
+    (sustitución/deleción falsa). _validate debe avisar nombrando el id,
+    SIN invalidar el set (sigue siendo usable, solo distorsiona ese par)."""
+    path = _escribir_set(tmp_path, {
+        "1": "hola",
+        "2": "dijo algo [ininteligible] y se fue",
+    })
+    _validate(path)          # no lanza
+    assert "INLINE" in capsys.readouterr().out
+
+
+def test_validate_no_avisa_marcador_completo(tmp_path, capsys):
+    """M13 (review PR #15): caso negativo del AVISO inline — una referencia
+    que ES exactamente '[ininteligible]' o '[tv]' completa (sin texto
+    alrededor) es justo lo que is_excluded() sabe manejar; no debe
+    contarse como INLINE ni generar el aviso."""
+    path = _escribir_set(tmp_path, {
+        "1": "[ininteligible]",
+        "2": "[tv]",
+    })
+    _validate(path)          # no lanza
+    assert "INLINE" not in capsys.readouterr().out
+
+
 def test_validate_falla_con_json_malformado(tmp_path):
     (tmp_path / "groundtruth.json").write_text("{no es json")
     with pytest.raises(SystemExit) as exc:

@@ -60,6 +60,13 @@ logger = get_logger(__name__)
 # tardar el usuario en escuchar el degradado honesto.
 WEATHER_FORECAST_TIMEOUT_S = 2.0
 
+# Ventana del rate-limit del warning "FAST_WEATHER answered honestly with no
+# data" (M8, review PR #15). No evita el spam de un fin de semana entero con
+# el sensor caído — a 300s son ~288 warnings/día igual — el objetivo real es
+# no repetir el warning por CADA request individual mientras el problema
+# sigue vivo, no acotar el volumen diario total.
+_WEATHER_NODATA_WARN_INTERVAL_S = 300.0
+
 
 # Stems cortos que colisionan como SUBcadena dentro de palabras comunes y
 # disparaban acciones fantasma sobre charla ambiente (2026-06-02):
@@ -430,6 +437,50 @@ class RequestDispatcher:
         "hace calor", "hace frío", "hace frio",
     ]
 
+    # Subconjunto de WEATHER_KEYWORDS que son FRAGMENTOS DE CLÁUSULA, no
+    # consultas completas: aparecen igual de seguido como justificación
+    # colgada de un comando ("prendé la estufa, hace frío") que como
+    # consulta de clima. Review PR #14 (2026-08-06): con un tier único
+    # esos comandos ruteaban FAST_WEATHER y la acción nunca se ejecutaba
+    # (fallo domótico silencioso, verificado contra main). Un fragmento
+    # solo rutea a clima si NINGÚN verbo de DOMOTICS_KEYWORDS aparece en
+    # el texto, o si el texto es pregunta ("¿tengo que prender el clima o
+    # hace calor afuera?" sigue siendo clima). Las consultas explícitas
+    # ("qué tiempo hace", "pronóstico", "está el clima") NO llevan veto:
+    # "está el clima bien, no hace falta prender nada" sigue en clima
+    # aunque "prende" matchee como substring de "prender".
+    WEATHER_CLAUSE_FRAGMENTS = frozenset({
+        "hace calor", "hace frío", "hace frio",
+        "llueve", "va a llover", "lloviendo",
+    })
+
+    # Marcadores de no-imperativo (Finding I1, review PR #15). El veto de
+    # WEATHER_CLAUSE_FRAGMENTS de arriba asume que "fragmento + verbo
+    # domótico sin '?'" es un comando con una cláusula de justificación
+    # colgada ("prendé la estufa, hace frío"). Esa asunción se rompe cuando
+    # el STT no transcribió la puntuación de una pregunta/observación real:
+    # "puedo abrir las ventanas o va a llover", "tengo que prender el clima
+    # o hace calor afuera", "no hace falta prender nada, hace calor" NO son
+    # comandos aunque tengan verbo domótico + fragmento de clima sin "?".
+    # La última es la clase más dura — negación como cláusula de necesidad,
+    # documentada como el fallo que canceló el ruteo de clima por modelo
+    # (NO-GO 2026-08-04): "no hace falta" niega el comando, no lo justifica.
+    #
+    # Si el texto contiene alguno de estos hints, el veto NO aplica — el
+    # fragmento sigue ruteando a FAST_WEATHER en vez de caer al loop de
+    # DOMOTICS_KEYWORDS. Asimetría de costo a propósito: sin hint y sin "?",
+    # sesgar a domótica arriesga ejecutar una acción no pedida (fantasma);
+    # con hint, sesgar a clima arriesga como mucho contestar con el
+    # pronóstico una pregunta que no se hizo — mucho más barato. Solo se usa
+    # DENTRO del veto (ver _classify_request): NO toca `is_question` global
+    # ni el guard de adyacencia de más abajo — ensancharlo ahí reabriría
+    # Finding 3 (preguntas de clima que el guard de adyacencia debe seguir
+    # ignorando).
+    _NON_COMMAND_HINTS = frozenset({
+        "tengo que", "tenemos que", "hay que", "puedo", "podemos",
+        "conviene", "no hace falta", "no hay que",
+    })
+
     # Guard de adyacencia verbo-sustantivo (Finding 3, review 2026-08-04,
     # reemplaza el guard anterior "verbo en cualquier lado + sustantivo en
     # cualquier lado"). Ese guard viejo capturaba preguntas de clima
@@ -546,11 +597,15 @@ class RequestDispatcher:
             "fast_path": 0,
             "slow_path": 0,
             "music_requests": 0,
+            "weather_no_data": 0,
             "by_path": {p: 0 for p in PathType}
         }
 
         # Callback para respuestas del slow path
         self._slow_path_callbacks: dict[str, Callable] = {}
+
+        # Rate-limiting para el warning del weather_no_data (review PR #14)
+        self._last_weather_nodata_warn = float("-inf")
 
     async def dispatch(
         self,
@@ -732,8 +787,28 @@ class RequestDispatcher:
             self._DOMOTICS_CLIMATE_ADJACENCY_RE.search(_strip_accents(text_lower))
         )
         if not climate_command_adjacent:
+            domotics_verb = any(
+                _kw_match(k, text_lower) for k in self.DOMOTICS_KEYWORDS
+            )
+            # Finding I1 (review PR #15): ver _NON_COMMAND_HINTS. Un hint de
+            # no-imperativo presente desactiva el veto de más abajo — el
+            # fragmento + verbo domótico deja de leerse como "comando con
+            # justificación colgada" y vuelve a leerse como lo que
+            # probablemente es: una pregunta u observación sin "?"
+            # transcrita.
+            non_command_hint = any(h in text_lower for h in self._NON_COMMAND_HINTS)
             for keyword in self.WEATHER_KEYWORDS:
                 if keyword in text_lower:
+                    if (not is_question and domotics_verb
+                            and keyword in self.WEATHER_CLAUSE_FRAGMENTS
+                            and not non_command_hint):
+                        # "prendé la luz que hace frío": la cláusula es
+                        # justificación de un comando — dejar que el loop
+                        # de DOMOTICS_KEYWORDS de abajo lo capture. Con un
+                        # _NON_COMMAND_HINTS presente ("no hace falta
+                        # prender nada, hace calor") el veto NO aplica: cae
+                        # al `return` de abajo y rutea FAST_WEATHER.
+                        continue
                     return PathType.FAST_WEATHER, Priority.HIGH
 
         # Detectar domotica por keywords
@@ -1337,9 +1412,9 @@ class RequestDispatcher:
 
         - "hoy" (default): cached read via `get_entity_state_cached`, no
           network hop — fits inside the 300ms fast path budget.
-        - "mañana": a REAL POST to `weather.get_forecasts`, awaited inline.
-          NOT cached; it necessarily blows the fast path budget, and
-          WEATHER_FORECAST_TIMEOUT_S is what bounds by how much.
+        - "mañana"/"pasado mañana": a REAL POST to `weather.get_forecasts`,
+          awaited inline. NOT cached; it necessarily blows the fast path
+          budget, and WEATHER_FORECAST_TIMEOUT_S is what bounds by how much.
 
         Nunca propaga una excepción. Un turno de voz mudo es el peor
         degradado posible: desde acá una excepción atraviesa `dispatch()`,
@@ -1358,7 +1433,12 @@ class RequestDispatcher:
         from src.world.weather import NO_DATA, describe_current, describe_forecast
 
         text_lower = text.lower()
-        dia = "mañana" if "mañana" in text_lower or "manana" in text_lower else None
+        if "pasado mañana" in text_lower or "pasado manana" in text_lower:
+            dia = "pasado mañana"
+        elif "mañana" in text_lower or "manana" in text_lower:
+            dia = "mañana"
+        else:
+            dia = None
 
         try:
             if dia:
@@ -1388,6 +1468,38 @@ class RequestDispatcher:
                 self.weather_entity, dia, exc, exc_info=True,
             )
             response, success = NO_DATA, False
+
+        # Observabilidad (review PR #14, 2026-08-06): un weather_entity mal
+        # configurado, un boot sin prefetch o un WS muerto degradan TODOS a
+        # la misma respuesta honesta con success=True — sin esto son
+        # invisibles para siempre: cero logs, stats de éxito. El contador
+        # separa "habló el clima" de "habló la disculpa"; el warning
+        # (rate-limited a _WEATHER_NODATA_WARN_INTERVAL_S, no repetir por
+        # CADA request mientras el problema sigue vivo) apunta a la config.
+        #
+        # CRÍTICO: esto NO puede levantar una excepción. El método nunca
+        # propaga excepciones; una falla acá atravesaría dispatch() y dejaría
+        # al usuario escuchando NADA. El bloque está protegido para reforzar
+        # la garantía anti-mudo: si observabilidad falla, se loguea y listo.
+        try:
+            from src.world.weather import NO_FORECAST
+            if success and response in (NO_DATA, NO_FORECAST):
+                self._stats["weather_no_data"] += 1
+                now = time.monotonic()
+                if now - self._last_weather_nodata_warn > _WEATHER_NODATA_WARN_INTERVAL_S:
+                    self._last_weather_nodata_warn = now
+                    logger.warning(
+                        "FAST_WEATHER answered honestly with no data "
+                        "(entity=%s, dia=%s, count=%d) — if chronic, check that "
+                        "home_assistant.weather_entity exists in HA and that "
+                        "the integration serves the requested horizon",
+                        self.weather_entity, dia, self._stats["weather_no_data"],
+                    )
+        except Exception as obs_exc:  # noqa: BLE001 - no silenciar por observabilidad
+            logger.error(
+                "weather_no_data observability failed (response unaffected): %s",
+                obs_exc, exc_info=True,
+            )
 
         return DispatchResult(
             path=PathType.FAST_WEATHER, priority=priority,

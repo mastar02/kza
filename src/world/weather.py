@@ -82,7 +82,7 @@ def describe_current(state: dict | None) -> str:
 
 
 NO_FORECAST = "No tengo el pronóstico ahora mismo."
-_DIA_INDEX = {"hoy": 0, "mañana": 1, "manana": 1}
+_DIA_INDEX = {"hoy": 0, "mañana": 1, "manana": 1, "pasado mañana": 2, "pasado manana": 2}
 
 
 def describe_forecast(forecast: list[dict] | None, dia: str) -> str:

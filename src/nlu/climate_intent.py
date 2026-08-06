@@ -120,6 +120,9 @@ def has_contested_vocabulary(text: str) -> bool:
 class ClimateIntentClassifier:
     """Resolves climate/AC ambiguity via the local 7B on :8101.
 
+    NO-GO 2026-08-04 — código muerto preservado como instrumento; ver el
+    header del módulo antes de cablear esto a nada.
+
     Args:
         router: Object exposing `async complete(prompt, max_tokens, temperature,
             stop) -> str`. Typically FastRouter. None disables the classifier.

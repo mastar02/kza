@@ -16,6 +16,7 @@ Nota de diseño (purga):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -73,9 +74,26 @@ _MIGRATIONS: dict[str, str] = {
 class AmbientStore:
     """CRUD async sobre la tabla utterances, con TTL."""
 
-    def __init__(self, db_path: str = "./data/ambient.db", retention_hours: float = 12.0):
+    def __init__(
+        self,
+        db_path: str = "./data/ambient.db",
+        retention_hours: float = 12.0,
+        audio_dir: str | None = None,
+    ):
+        """Inicializar el store.
+
+        Args:
+            db_path: Ruta al archivo SQLite.
+            retention_hours: TTL en horas para la purga.
+            audio_dir: Raíz de los FLACs de keep_audio. Si se pasa, la purga
+                además barre huérfanos (archivos sin fila viva y más viejos
+                que el TTL): un unlink fallido o un crash entre write() y
+                set_audio_path() dejaban audio crudo del hogar fuera de la
+                política de retención para siempre (review PR #14).
+        """
         self.db_path = db_path
         self.retention_hours = retention_hours
+        self.audio_dir = Path(audio_dir) if audio_dir else None
         self._db: aiosqlite.Connection | None = None
 
     async def init(self) -> None:
@@ -144,10 +162,15 @@ class AmbientStore:
             utt_id: rowid devuelto por add().
             path: ruta del archivo, tal como la devolvió el AudioArchiver.
         """
-        await self._db.execute(
+        cur = await self._db.execute(
             "UPDATE utterances SET audio_path=? WHERE id=?", (path, utt_id)
         )
         await self._db.commit()
+        if cur.rowcount == 0:
+            logger.warning(
+                "AmbientStore.set_audio_path: id %d no existe — %s queda "
+                "huérfano hasta el sweep de la purga", utt_id, path,
+            )
 
     async def utterances_between(
         self, room_id: str, t0: float, t1: float
@@ -246,14 +269,77 @@ class AmbientStore:
             "DELETE FROM utterances WHERE t0 < ?", (cutoff,)
         )
         await self._db.commit()
-        for path in doomed:
-            try:
-                Path(path).unlink(missing_ok=True)
-            except OSError as e:
-                logger.warning("AmbientStore purga: no se pudo borrar %s: %s", path, e)
-        if cur.rowcount:
+        unlinked = await asyncio.to_thread(self._unlink_batch, doomed)
+        orphans = 0
+        if self.audio_dir is not None:
+            id_cur = await self._db.execute("SELECT id FROM utterances")
+            live_ids = {row["id"] for row in await id_cur.fetchall()}
+            orphans = await asyncio.to_thread(self._sweep_orphans, live_ids, cutoff)
+        if cur.rowcount or orphans:
             logger.info(
-                "AmbientStore purga: %d utterances borradas (TTL %.1fh), %d audios",
-                cur.rowcount, self.retention_hours, len(doomed),
+                "AmbientStore purga: %d utterances borradas (TTL %.1fh), "
+                "%d/%d audios borrados, %d huérfanos barridos",
+                cur.rowcount, self.retention_hours, unlinked, len(doomed), orphans,
             )
         return cur.rowcount
+
+    def _unlink_batch(self, paths: list[str]) -> int:
+        """Borrar archivos best-effort. Devuelve cuántos se borraron de verdad.
+
+        `missing_ok=False` a propósito (M1, review PR #15): con
+        `missing_ok=True` un archivo YA ausente (borrado en una purga
+        anterior, o nunca escrito) contaba como "borrado" en el log —
+        "%d/%d audios borrados" mentía sobre cuántos unlinks reales pasaron.
+        Ausente no es un fallo (no se loguea ni se cuenta); cualquier otro
+        OSError sí es un fallo real y se loguea.
+        """
+        ok = 0
+        for path in paths:
+            try:
+                Path(path).unlink(missing_ok=False)
+                ok += 1
+            except FileNotFoundError:
+                pass  # ya no estaba — no cuenta como borrado, no es un fallo
+            except OSError as e:
+                logger.warning(
+                    "AmbientStore purga: no se pudo borrar %s: %s", path, e
+                )
+        return ok
+
+    def _sweep_orphans(self, live_ids: set[int], cutoff: float) -> int:
+        """Borrar FLACs sin fila viva y más viejos que el TTL.
+
+        La guarda de mtime protege la carrera write()→set_audio_path(): un
+        FLAC recién escrito todavía sin puntero NO es huérfano. Un archivo
+        cuyo unlink acaba de fallar en `_unlink_batch` (fila ya borrada) es
+        huérfano YA en este mismo `purge_expired()` — el sweep corre
+        DESPUÉS de `_unlink_batch` en la misma llamada, así que lo reintenta
+        de inmediato; no hace falta esperar al próximo ciclo de purga.
+        """
+        if self.audio_dir is None or not self.audio_dir.is_dir():
+            return 0
+        swept = 0
+        for f in self.audio_dir.rglob("*.flac"):
+            try:
+                utt_id = int(f.stem)
+            except ValueError:
+                continue  # archivo ajeno a la convención <id>.flac — no tocar
+            try:
+                # Guarda de seguridad (M4): `utt_id in live_ids` es correcta
+                # entre purgas porque `utterances.id` es AUTOINCREMENT — SQLite
+                # nunca reusa un rowid mientras la tabla exista, así que un id
+                # que ya no está en live_ids no puede "revivir" con otro
+                # contenido. Límite conocido: si la DB se borra y se recrea
+                # desde cero (no un ALTER, un archivo nuevo), AUTOINCREMENT
+                # reinicia en 1 y un FLAC viejo puede quedar sombreado por una
+                # fila nueva homónima (mismo id, contenido distinto) — ese
+                # caso no lo cubre esta guarda.
+                if utt_id in live_ids or f.stat().st_mtime >= cutoff:
+                    continue
+                f.unlink(missing_ok=True)
+                swept += 1
+            except OSError as e:
+                logger.warning(
+                    "AmbientStore sweep: no se pudo borrar/inspeccionar %s: %s", f, e
+                )
+        return swept

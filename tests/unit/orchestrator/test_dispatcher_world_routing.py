@@ -122,6 +122,57 @@ def test_domotics_climate_adjacency_guard_finding_3(dispatcher, text, expected):
     assert path == expected
 
 
+@pytest.mark.parametrize("text", [
+    # Verificados contra main en la review del PR #14 (2026-08-06): todos
+    # ruteaban FAST_WEATHER — el usuario escuchaba el pronóstico y la
+    # acción pedida nunca se ejecutaba (fallo domótico silencioso). El
+    # discriminante: la cláusula de clima es JUSTIFICACIÓN del comando,
+    # no consulta. Regla: un fragmento de WEATHER_CLAUSE_FRAGMENTS solo
+    # rutea a clima si no hay ningún verbo domótico en el texto (o si es
+    # pregunta).
+    "prendé la luz que hace frío",
+    "apagá la luz, hace calor",
+    "prendé el ventilador que hace calor",
+    "prendé la estufa, hace frío",
+    "cerrá la persiana que llueve",
+    "cerrá las ventanas que está lloviendo",
+    "prendé la luz del living porque va a llover",
+    "encender la luz, hace frío",
+    "apagá todo, hace calor",
+])
+def test_non_climate_commands_with_weather_clause_stay_domotics(dispatcher, text):
+    path, _ = dispatcher._classify_request(text)
+    assert path == PathType.FAST_DOMOTICS
+
+
+def test_weather_clause_fragments_is_a_subset_of_weather_keywords():
+    # El tier de fragmentos no puede inventar keywords: si alguien saca un
+    # fragmento de WEATHER_KEYWORDS y olvida el frozenset, esto lo detecta.
+    assert RequestDispatcher.WEATHER_CLAUSE_FRAGMENTS <= set(
+        RequestDispatcher.WEATHER_KEYWORDS
+    )
+
+
+@pytest.mark.parametrize("text", [
+    # Finding I1 (review PR #15): el veto de WEATHER_CLAUSE_FRAGMENTS asume
+    # que "fragmento + verbo domótico sin '?'" es un comando con una
+    # cláusula de justificación colgada. Esa asunción se rompe cuando el
+    # STT no transcribió la puntuación de una pregunta/observación real —
+    # estos tres son los ejemplos del finding, uno por marcador de
+    # _NON_COMMAND_HINTS. La tercera es la clase más dura: negación como
+    # cláusula de NECESIDAD (no de comando) — el mismo fallo que canceló
+    # el ruteo de clima por modelo (NO-GO 2026-08-04). Antes del fix los
+    # tres caían al loop de DOMOTICS_KEYWORDS y ejecutaban una acción
+    # fantasma nunca pedida.
+    "puedo abrir las ventanas o va a llover",
+    "tengo que prender el clima o hace calor afuera",
+    "no hace falta prender nada, hace calor",
+])
+def test_non_command_hints_exempt_the_clause_fragment_veto(dispatcher, text):
+    path, _ = dispatcher._classify_request(text)
+    assert path == PathType.FAST_WEATHER
+
+
 @pytest.mark.parametrize("text,expected", [
     ("poné música de Spinetta", PathType.FAST_MUSIC),
     ("subí el volumen", PathType.FAST_MUSIC),
@@ -136,34 +187,21 @@ def test_existing_paths_do_not_regress(dispatcher, text, expected):
     assert path == expected
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Misroute conocido y DELIBERADAMENTE reabierto (commit a513108 + su "
-        "revert ef651e2, 2026-08-04). El guard de adyacencia exige el verbo "
-        "INMEDIATAMENTE antes del sustantivo climático; un adverbio o un "
-        "cuantificador de por medio ('prendé YA el clima', 'subí UN GRADO el "
-        "aire') lo rompe y gana el keyword de clima -> fast_weather. "
-        "Mitigación vigente: hoy NO hay ninguna entidad climate indexada en "
-        "ChromaDB, así que el fast_domotics 'correcto' tampoco ejecutaría "
-        "nada; el costo real es una respuesta de clima en vez de un 'no "
-        "encontré esa entidad'. Este xfail existe para que la limitación "
-        "viva en la suite y no solo en un mensaje de commit: EN CUANTO se "
-        "indexe una entidad climate, esto pasa a ser un bug con consecuencia "
-        "y hay que arreglar el guard. strict=True -> si alguien lo arregla, "
-        "el XPASS obliga a borrar este marcador."
-    ),
-)
 @pytest.mark.parametrize("text", [
     "prendé ya el clima que hace calor",
     "apagá ahora el termostato, hace frío",
     "prendé de una vez el clima, hace calor",
     "subí un grado el aire porque hace frío",
 ])
-def test_climate_commands_with_interposed_adverb_misroute_to_weather(dispatcher, text):
+def test_climate_commands_with_interposed_adverb_route_to_domotics(dispatcher, text):
     """Comandos de AC con una palabra entre el verbo y el sustantivo.
 
-    Deberían ser fast_domotics (son órdenes); hoy rutean fast_weather.
+    Misroute conocido desde 2026-08-04 (commit a513108 + revert ef651e2):
+    el guard de adyacencia no los cubría y ganaba el keyword de clima.
+    Cerrado por el veto de WEATHER_CLAUSE_FRAGMENTS (review PR #14,
+    2026-08-06): todos estos casos contienen un fragmento de cláusula +
+    un verbo domótico, así que el fragmento ya no captura y el loop de
+    DOMOTICS_KEYWORDS resuelve.
     """
     path, _ = dispatcher._classify_request(text.lower())
     assert path == PathType.FAST_DOMOTICS
@@ -211,6 +249,10 @@ async def test_handle_weather_forecast_none_response_is_honest_fallback(dispatch
     assert result.success is True
     assert result.response == NO_FORECAST
     assert "None" not in result.response
+    # I5(a), review PR #15: la otra mitad del contador (rama NO_FORECAST de
+    # "mañana"/"pasado mañana") no tenía cobertura — solo la rama NO_DATA de
+    # "hoy" la ejercitaba (test_no_data_increments_stat_and_warns).
+    assert d._stats["weather_no_data"] == 1
 
 
 @pytest.mark.parametrize("malformed_payload", [
@@ -343,6 +385,12 @@ async def test_handle_weather_never_propagates_an_exception(dispatcher_with_asyn
     assert result.path == PathType.FAST_WEATHER
     assert result.response == NO_DATA
     assert result.success is False  # el fallo se reporta, no se disfraza
+    # I5(b), review PR #15: weather_no_data cuenta "habló la disculpa con
+    # éxito" (success=True), no "cualquier respuesta genérica". La rama de
+    # excepción es un fallo real (success=False) y NO debe sumar al mismo
+    # contador que un weather_entity mal configurado — mezclarlos haría
+    # invisible cuál de los dos problemas está pasando.
+    assert d._stats["weather_no_data"] == 0
 
 
 async def test_handle_weather_forecast_uses_an_explicit_per_request_timeout(
@@ -443,3 +491,61 @@ async def test_forecast_is_read_from_the_configured_entity_key(dispatcher_with_a
 
     assert "lluvioso" in result.response.lower()
     assert "soleado" not in result.response.lower()
+
+
+async def test_pasado_manana_requests_day_after_tomorrow(dispatcher_with_async_ha):
+    d = dispatcher_with_async_ha
+    d.ha.call_service_with_response = AsyncMock(return_value={
+        "service_response": {"weather.forecast_home": {"forecast": [
+            {"condition": "sunny", "temperature": 20, "templow": 10},
+            {"condition": "rainy", "temperature": 18, "templow": 9},
+            {"condition": "cloudy", "temperature": 15, "templow": 7},
+        ]}}
+    })
+    result = await d._handle_weather("qué tiempo hace pasado mañana", Priority.HIGH)
+    assert result.response.startswith("Pasado mañana:")
+
+
+async def test_no_data_increments_stat_and_warns(dispatcher_with_async_ha, caplog):
+    d = dispatcher_with_async_ha
+    d.ha.get_entity_state_cached = MagicMock(return_value=None)
+    with caplog.at_level("WARNING"):
+        result = await d._handle_weather("qué tiempo hace", Priority.HIGH)
+    assert result.success is True          # el degradado honesto NO es fallo
+    assert result.response == NO_DATA
+    assert d._stats["weather_no_data"] == 1
+    assert any("weather_entity" in r.message for r in caplog.records)
+
+
+async def test_data_present_does_not_touch_the_no_data_stat(dispatcher_with_async_ha):
+    d = dispatcher_with_async_ha
+    d.ha.get_entity_state_cached = MagicMock(return_value={
+        "state": "sunny", "attributes": {"temperature": 22.0},
+    })
+    result = await d._handle_weather("qué tiempo hace", Priority.HIGH)
+    assert "22 grados" in result.response
+    assert d._stats["weather_no_data"] == 0
+
+
+async def test_no_data_warning_is_rate_limited_but_stat_is_not(
+    dispatcher_with_async_ha, caplog
+):
+    """M15, review PR #15: fija la ventana del rate-limit y el init en -inf.
+
+    Dos requests consecutivos sin dato deben sumar 2 al contador (cada
+    request sin dato ES un evento real) pero loguear el warning una sola
+    vez (segunda llamada dentro de _WEATHER_NODATA_WARN_INTERVAL_S). Si el
+    init de `_last_weather_nodata_warn` dejara de ser `float("-inf")`, la
+    PRIMERA llamada silenciosamente podría no loguear tampoco.
+    """
+    d = dispatcher_with_async_ha
+    d.ha.get_entity_state_cached = MagicMock(return_value=None)
+
+    with caplog.at_level("WARNING"):
+        r1 = await d._handle_weather("qué tiempo hace", Priority.HIGH)
+        r2 = await d._handle_weather("qué tiempo hace", Priority.HIGH)
+
+    assert r1.success is True and r2.success is True
+    assert d._stats["weather_no_data"] == 2
+    warnings = [r for r in caplog.records if "answered honestly with no data" in r.message]
+    assert len(warnings) == 1

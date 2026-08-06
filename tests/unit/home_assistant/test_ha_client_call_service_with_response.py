@@ -239,3 +239,73 @@ class TestCallServiceWithResponse:
 
         _, kwargs = mock_session.post.call_args
         assert kwargs["timeout"].total == 1.25
+
+    @pytest.mark.asyncio
+    async def test_non_200_logs_the_ha_error_body(self, client, caplog):
+        """El body del 400/500 de HA trae el POR QUÉ (entidad inexistente,
+        servicio sin response). Tirarlo repite el incidente de Chroma: el
+        diagnóstico estaba en el body de un 400 silencioso."""
+        ctx = _FakeResponseCtx(400)
+        ctx._response.text = AsyncMock(
+            return_value='{"message": "Service weather.get_forecasts does not support response"}'
+        )
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=ctx)
+        mock_session.closed = False
+        client._session = mock_session
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = await client.call_service_with_response(
+                "weather", "get_forecasts", "weather.bad_entity"
+            )
+
+        assert result is None
+        assert any("does not support response" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_non_200_with_unreadable_body_still_logs_the_placeholder(
+        self, client, caplog
+    ):
+        """M12 (review PR #15): si `resp.text()` en sí revienta (body no-UTF8,
+        conexión cortada a mitad de lectura) el warning no debe desaparecer
+        junto con el body — debe salir igual con el placeholder `<unreadable
+        body>` en vez de dejar el error completamente mudo."""
+        ctx = _FakeResponseCtx(500)
+        ctx._response.text = AsyncMock(side_effect=UnicodeDecodeError(
+            "utf-8", b"\xff", 0, 1, "invalid start byte"
+        ))
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=ctx)
+        mock_session.closed = False
+        client._session = mock_session
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = await client.call_service_with_response(
+                "weather", "get_forecasts", "weather.forecast_home"
+            )
+
+        assert result is None
+        assert any("<unreadable body>" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_the_url_carries_return_response_true(self, client):
+        """El query param ES la razón de ser del método: sin él HA devuelve
+        200 con la lista de changed-states en vez de service_response, el
+        dispatcher degrada a NO_FORECAST y el pronóstico queda roto para
+        siempre con todos los tests verdes."""
+        ctx = _FakeResponseCtx(200)
+        ctx._response.json = AsyncMock(return_value={})
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=ctx)
+        mock_session.closed = False
+        client._session = mock_session
+
+        await client.call_service_with_response(
+            "weather", "get_forecasts", "weather.forecast_home"
+        )
+
+        url = mock_session.post.call_args.args[0]
+        assert url.endswith("/api/services/weather/get_forecasts?return_response=true")
