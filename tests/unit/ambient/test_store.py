@@ -349,10 +349,18 @@ def test_purga_barre_huerfanos_fuera_del_ttl_y_respeta_lo_vivo(tmp_path):
         os.utime(ref, (old, old))
         await store.set_audio_path(utt_id, str(ref))
 
+        # Stem no parseable a int y viejo: ni la guarda de fila viva ni la de
+        # mtime lo protegen — solo la guarda de convención de nombre. Debe
+        # sobrevivir (no tocar archivos ajenos a <id>.flac).
+        not_a_utt = audio_dir / "cocina" / "readme.flac"
+        not_a_utt.write_bytes(b"x")
+        os.utime(not_a_utt, (old, old))
+
         await store.purge_expired()
         assert not orphan.exists()
         assert fresh.exists()
         assert ref.exists()
+        assert not_a_utt.exists()
         await store.close()
     _run(inner())
 
