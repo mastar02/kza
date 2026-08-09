@@ -91,8 +91,10 @@ class RecordingDetector:
         self._calls = calls
         self._raise = raise_exc
 
-    async def maybe_dispatch(self, room_id, text, source, speaker, audio,
-                             vad_prob=None):
+    async def maybe_dispatch(self, room_id, text, source, speaker, **kwargs):
+        # **kwargs: este stub no inspecciona audio/vad_prob — así un kwarg
+        # nuevo en el detector real no obliga a tocar cada fake (review
+        # 2026-08-09: agregar vad_prob rompió 4 stubs en 2 archivos).
         self._calls.append(("dispatch", room_id, text, source))
         if self._raise:
             raise RuntimeError("boom del detector (fail-open esperado)")
@@ -212,8 +214,8 @@ def test_textual_wake_receives_mono_audio_not_raw_multichannel_segment():
     captured_audio: list[np.ndarray] = []
 
     class CapturingDetector:
-        async def maybe_dispatch(self, room_id, text, source, speaker, audio,
-                                 vad_prob=None):
+        async def maybe_dispatch(self, room_id, text, source, speaker,
+                                 audio, **kwargs):
             captured_audio.append(audio)
             return True
 

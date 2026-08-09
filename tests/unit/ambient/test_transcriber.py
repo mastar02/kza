@@ -410,8 +410,7 @@ def test_orden_persist_wake_archive_y_el_wake_sobrevive_archiver_roto(tmp_path):
             return audio[:, 0] if audio.ndim == 2 else audio
 
     class RecordingWake:
-        async def maybe_dispatch(self, room_id, text, source, speaker,
-                                 audio=None, vad_prob=None):
+        async def maybe_dispatch(self, room_id, text, source, speaker, **kwargs):
             events.append("dispatch")
 
     store = OrderStore()

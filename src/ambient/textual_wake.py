@@ -265,13 +265,17 @@ class TextualWakeDetector:
            de un televisor de fondo; "self" = eco de la propia TTS del
            asistente reproduciéndose (`SourceClassifier` durante `during_tts`).
         3. Sin match del wake word -> no dispara (sin log, caso común).
-        4. `vad_prob < min_vad` -> no dispara (log INFO): a vad bajo el texto
+        4. Wake acústico disparó hace menos de `dedup_window_s` en esta
+           room -> no dispara (log INFO).
+        5. Este mismo canal ya disparó hace menos de `dedup_window_s` en
+           esta room -> no dispara (log INFO).
+        6. `vad_prob < min_vad` -> no dispara (log INFO): a vad bajo el texto
            es garble del STT, no habla dirigida. `None` no bloquea (fail-open:
            la ausencia del instrumento no silencia la red de seguridad).
-        5. Wake acústico disparó hace menos de `dedup_window_s` en esta
-           room -> no dispara (log INFO).
-        6. Este mismo canal ya disparó hace menos de `dedup_window_s` en
-           esta room -> no dispara (log INFO).
+           Va DESPUÉS de los dedups a propósito (review 2026-08-09): las
+           re-transcripciones solapadas de un comando ya despachado llegan
+           con vad diluido, y loguearlas como `low_vad` contaminaría la señal
+           del journal que el runbook usa para recalibrar el umbral.
         7. Si no aplica ninguna de las anteriores: construye un
            `CommandEvent` con el texto ya transcripto y lo despacha.
 
@@ -305,14 +309,6 @@ class TextualWakeDetector:
         ):
             return False
 
-        if vad_prob is not None and vad_prob < self._min_vad:
-            logger.info(
-                f"[TextualWake] skip room={room_id} source={source} "
-                f"speaker={speaker} decision=low_vad vad={vad_prob:.2f} "
-                f"min_vad={self._min_vad:.2f} text={text!r}"
-            )
-            return False
-
         now = self._now_fn()
 
         last_acoustic = self._last_acoustic_command_ts_fn(room_id)
@@ -328,6 +324,14 @@ class TextualWakeDetector:
             logger.info(
                 f"[TextualWake] skip room={room_id} source={source} "
                 f"speaker={speaker} decision=dedup_self text={text!r}"
+            )
+            return False
+
+        if vad_prob is not None and vad_prob < self._min_vad:
+            logger.info(
+                f"[TextualWake] skip room={room_id} source={source} "
+                f"speaker={speaker} decision=low_vad vad={vad_prob:.2f} "
+                f"min_vad={self._min_vad:.2f} text={text!r}"
             )
             return False
 
