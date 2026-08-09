@@ -270,6 +270,29 @@ class TestSetIntentRoutesFastDomotics:
         assert kwargs["query_slots"] == {"rgb_color": [255, 0, 0]}
 
     @pytest.mark.asyncio
+    async def test_textual_slot_overrides_llm_hallucinated_value(self):
+        # Review 2026-08-09: la evidencia textual no solo habilita el mapeo,
+        # REEMPLAZA los slots del LLM — si el texto dice 30 y el 7B devolvió
+        # 80, a HA viaja el 30.
+        classification = CommandClassification(
+            is_command=True, confidence=0.9, intent="set_brightness",
+            entity_hint="light", rejection_reason=None,
+            slots={"brightness_pct": 80},   # valor alucinado
+        )
+        router, orch = _make_router_for(
+            "Nexa, la lu del living al 30 por ciento.", classification
+        )
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, la lu del living al 30 por ciento.",
+        )
+        await router.process_command(event)
+
+        kwargs = orch.process.call_args.kwargs
+        assert kwargs["service_filter"] == "turn_on"
+        assert kwargs["query_slots"] == {"brightness_pct": 30}
+
+    @pytest.mark.asyncio
     async def test_llm_set_without_textual_slot_does_not_map(self):
         # Guard de evidencia (review 2026-08-09): un set_brightness del LLM
         # cuyo slot NO es extraíble del texto es la firma de una alucinación

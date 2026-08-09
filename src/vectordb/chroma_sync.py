@@ -479,7 +479,9 @@ Solo JSON, sin explicaciones:"""
                 preset_data = json.loads(metadata["data"])
             except (json.JSONDecodeError, TypeError):
                 preset_data = {}
-        final_data = merge_service_data(preset_data, query_slots or {})
+        final_data = merge_service_data(
+            preset_data, query_slots or {}, service=metadata["service"]
+        )
 
         capability = metadata.get("capability", "onoff")
         value_label = metadata.get("value_label", "")

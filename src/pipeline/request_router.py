@@ -19,7 +19,8 @@ import numpy as np
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.nlu.command_grammar import PartialCommand, parse_partial_command
 from src.nlu.sensitive_actions import is_sensitive
-from src.nlu.slot_extractor import extract_slots
+from src.nlu.slot_extractor import LIGHT_SLOT_KEYS, extract_slots
+from src.orchestrator.dispatcher import FAST_PATH_SERVICES
 from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
 from src.analytics.asr_quality import log_asr_outcome
@@ -704,19 +705,17 @@ class RequestRouter:
         _query_slots = None
         if _llm_classification is not None:
             _intent = _llm_classification.intent
+            _query_slots = dict(_llm_classification.slots or {}) or None
             # Solo propagar intents que el chroma_sync conoce como `service`
             # de HA. Intents de alto nivel (set_temperature) no son services
-            # HA — el chroma_sync los rechazaría.
-            # ⚠️ Contrato con dispatcher._classify_request: SOLO los strings
-            # literales "turn_on"/"turn_off" ganan FAST_DOMOTICS allá. Un
-            # valor nuevo de service_filter fuera de ese par filtra el vector
-            # search pero pierde el fast path en silencio.
-            if _intent in ("turn_on", "turn_off"):
+            # HA — el chroma_sync los rechazaría. Contrato con
+            # dispatcher._classify_request: FAST_PATH_SERVICES es lo único
+            # que gana FAST_DOMOTICS allá.
+            if _intent in FAST_PATH_SERVICES:
                 _service_filter = _intent
             elif (
                 _intent in _SET_LIGHT_INTENTS
                 and _llm_classification.entity_hint == "light"
-                and extract_slots(text)
             ):
                 # Bug 2026-08-06: "luz al 100% del living" no tiene verbo →
                 # DOMOTICS_KEYWORDS (solo verbos) no matchea y sin
@@ -726,17 +725,24 @@ class RequestRouter:
                 # color/temperatura de luz ES el service light.turn_on con
                 # atributos, así que el mapeo es exacto — y de paso filtra el
                 # vector search al doc turn_on (el retrieval denso no
-                # distingue el antónimo). Las dos guardas (review 2026-08-09):
+                # distingue el antónimo). Guardas (review 2026-08-09):
                 # - entity_hint=="light": el set_brightness del LLM no tiene
                 #   restricción de dominio ("bajá el brillo de la tele") y un
                 #   filtro turn_on domain-agnóstico habría prendido la tele.
-                # - extract_slots(text): evidencia TEXTUAL determinística —
-                #   llm_intent_evidenced solo cubre el par binario, y un
-                #   set_brightness alucinado por el 7B sobre garble ganaría
-                #   actuación fast-path sin que el texto contenga slot alguno.
-                #   (El set del grammar ya exige slots por construcción.)
-                _service_filter = "turn_on"
-            _query_slots = dict(_llm_classification.slots or {}) or None
+                # - slot DE LUZ extraíble del texto: evidencia determinística
+                #   (llm_intent_evidenced solo cubre el par binario; un
+                #   set_brightness alucinado por el 7B sobre garble, o uno
+                #   cuyo único slot textual es de volumen —"poné la música
+                #   bajito"—, no gana actuación fast-path).
+                # - y esa evidencia textual REEMPLAZA los slots del LLM: si
+                #   el texto dice 30 y el 7B devolvió 80, viaja el 30.
+                _light_slots = {
+                    k: v for k, v in extract_slots(text).items()
+                    if k in LIGHT_SLOT_KEYS
+                }
+                if _light_slots:
+                    _service_filter = "turn_on"
+                    _query_slots = _light_slots
 
         dispatch_result = await self._orchestrator.process(
             user_id=user_id,

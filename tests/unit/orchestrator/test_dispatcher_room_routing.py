@@ -263,3 +263,73 @@ class TestGlobalScopeMergesQuerySlots:
             query_slots={"brightness_pct": 50, "modo_fiesta": True},
         )
         assert result.action["data"] == {"brightness_pct": 50}
+
+
+class TestGlobalScopeRespectsServiceFilter:
+    """El sniff de verbos del bloque global no conoce cortá/desactivá:
+    'cortá las luces de toda la casa' PRENDÍA todo (review 2026-08-09). El
+    service_filter upstream (grammar/LLM) manda; el sniff queda de fallback."""
+
+    @pytest.mark.asyncio
+    async def test_corta_global_respeta_el_service_filter(self, dispatcher):
+        result = await dispatcher.dispatch(
+            user_id="unknown",
+            text="nexa cortá las luces de toda la casa",
+            zone_id="zone_escritorio",
+            service_filter="turn_off",
+        )
+        assert result.action["entity_id"] == "light.hogar"
+        assert result.action["service"] == "turn_off"
+
+    @pytest.mark.asyncio
+    async def test_sniff_de_verbos_sigue_como_fallback(self, dispatcher):
+        # Sin clasificación upstream, 'apagá' se detecta por texto como antes.
+        result = await dispatcher.dispatch(
+            user_id="unknown",
+            text="nexa apagá las luces de toda la casa",
+            zone_id="zone_escritorio",
+        )
+        assert result.action["entity_id"] == "light.hogar"
+        assert result.action["service"] == "turn_off"
+
+
+class TestLightSlotMismatchGuard:
+    """Guarda inversa (review 2026-08-09): slots DE LUZ en la query + match
+    no-luz = misfire del retrieval (el filtro por service es domain-agnóstico
+    y un texto mangled sin 'luz' puede matchear switch/media_player.turn_on)."""
+
+    @pytest.mark.asyncio
+    async def test_slots_de_luz_con_match_no_luz_rechaza(
+        self, dispatcher, chroma_with_search,
+    ):
+        chroma_with_search.asearch_command = AsyncMock(return_value={
+            "domain": "switch",
+            "service": "turn_on",
+            "entity_id": "switch.cafetera",
+            "description": "cafetera",
+            "similarity": 0.72,
+            "data": {},
+            "capability": "onoff",
+            "value_label": "prender",
+        })
+        result = await dispatcher.dispatch(
+            user_id="unknown",
+            text="nexa la lu del living al 80 por ciento",
+            zone_id="zone_escritorio",
+            service_filter="turn_on",
+            query_slots={"brightness_pct": 80},
+        )
+        assert result.success is False
+        assert result.intent == "light_slot_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_match_de_luz_con_slots_pasa(self, dispatcher):
+        # El doc default del fixture es light.escritorio → no dispara.
+        result = await dispatcher.dispatch(
+            user_id="unknown",
+            text="nexa luz al 80 por ciento",
+            zone_id="zone_escritorio",
+            service_filter="turn_on",
+            query_slots={"brightness_pct": 80},
+        )
+        assert result.intent != "light_slot_mismatch"

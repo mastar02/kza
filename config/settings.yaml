@@ -1802,11 +1802,17 @@ ambient:
     # por idioma: los comandos reales salen con lang='fr'/'en' (py3langid) —
     # el veto por idioma mata 2/2 comandos reales (NO-GO medido 08-05).
     # ⚠️ vad_prob es la MEDIA del segmento e incluye la cola de silencio de
-    # cierre (~700ms de probs ≈0 antes de close_silence_ms): comandos muy
-    # cortos llegan diluidos. La calibración de arriba ya es sobre esa misma
-    # estadística, pero con n chico — vigilar los skips `decision=low_vad`
-    # en el journal: si aparece un comando real ahí, bajar este umbral antes
-    # que tocar el matcher. min_vad: 0.0 = gate off (rollback sin deploy).
+    # cierre (~700ms de probs ≈0 antes de close_silence_ms). Limitación
+    # ESTRUCTURAL (review 2026-08-09): un comando con <~0.75s de voz no puede
+    # llegar a 0.50 ni con prob perfecta — este canal NO cubre comandos muy
+    # cortos ("Nexa, apagá"); para esos el wake acústico sigue siendo el
+    # único camino. La calibración de arriba es sobre la misma estadística
+    # diluida (n chico). Vigilar los skips `decision=low_vad` del journal
+    # (van DESPUÉS del dedup, así no los contaminan re-transcripciones de
+    # comandos ya despachados): si aparece un comando real ahí, bajar este
+    # umbral antes que tocar el matcher. Alternativa futura: que el segmenter
+    # exponga la media de voz sin cola. min_vad: 0.0 = gate off (rollback
+    # sin deploy).
     min_vad: 0.50
 
 # Code-Index — búsqueda semántica del codebase para agentes (spec 2026-07-04).

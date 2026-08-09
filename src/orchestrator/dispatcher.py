@@ -40,7 +40,7 @@ from enum import StrEnum
 from typing import Callable
 
 from src.core.logging import get_logger
-from src.nlu.slot_extractor import merge_service_data
+from src.nlu.slot_extractor import LIGHT_SLOT_KEYS, merge_service_data
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
     Priority,
@@ -50,6 +50,14 @@ from src.orchestrator.priority_queue import (
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
 
 logger = get_logger(__name__)
+
+
+# Los únicos valores de service_filter que ganan FAST_DOMOTICS en
+# _classify_request. Es EL contrato con el mapeo intent→service_filter de
+# request_router (que también importa esta constante): un valor nuevo fuera
+# del par filtra el vector search pero pierde el fast path — si se agrega un
+# service (p.ej. open_cover), extender ACÁ y en el mapeo a la vez.
+FAST_PATH_SERVICES: tuple[str, ...] = ("turn_on", "turn_off")
 
 
 # Techo del POST a `weather.get_forecasts` (rama "mañana" de _handle_weather).
@@ -742,12 +750,10 @@ class RequestDispatcher:
         Returns:
             (PathType, Priority)
         """
-        # ⚠️ Contrato con request_router: el mapeo intent→service_filter de
-        # allá (incluye set/set_brightness/set_color→"turn_on", review
-        # 2026-08-09) cuenta con que ESTE par literal gana el fast path. Si
-        # el mapeo emite un valor nuevo fuera del par, filtra el vector
-        # search pero pierde FAST_DOMOTICS en silencio — extender acá también.
-        if service_filter in ("turn_on", "turn_off"):
+        # Contrato con el mapeo intent→service_filter de request_router
+        # (incluye set/set_brightness/set_color→"turn_on", review 2026-08-09):
+        # ver FAST_PATH_SERVICES arriba.
+        if service_filter in FAST_PATH_SERVICES:
             return PathType.FAST_DOMOTICS, Priority.HIGH
 
         # Detectar música - contexto complejo (slow path)
@@ -957,20 +963,22 @@ class RequestDispatcher:
             global_kw = ("toda la casa", "todas las luces", "todo el hogar",
                          "del hogar", "en toda la", "la casa entera")
             if any(kw in tl for kw in global_kw):
-                svc = "turn_off" if any(v in tl for v in ("apaga", "apagá", "apagar")) else "turn_on"
+                # El service_filter upstream (grammar/LLM) manda: el sniff de
+                # verbos de acá abajo no conoce cortá/desactivá y "cortá las
+                # luces de toda la casa" PRENDÍA todo (review 2026-08-09).
+                # El sniff queda solo como fallback sin clasificación previa.
+                if service_filter in FAST_PATH_SERVICES:
+                    svc = service_filter
+                else:
+                    svc = "turn_off" if any(v in tl for v in ("apaga", "apagá", "apagar")) else "turn_on"
                 logger.info(f"Global scope detected → {svc}@light.hogar")
                 # Este bloque bypassa el vector search, que es donde se
                 # mergean los query_slots (chroma_sync → merge_service_data).
                 # Sin este merge, "luces de toda la casa al 50%" prendía todo
                 # al brillo anterior y descartaba el 50% en silencio (review
-                # 2026-08-09; alcanzable desde que set/set_brightness rutean
-                # FAST_DOMOTICS). Solo aplica a turn_on: brightness/color no
-                # son service_data de turn_off.
-                data = (
-                    merge_service_data({}, query_slots or {})
-                    if svc == "turn_on"
-                    else {}
-                )
+                # 2026-08-09). merge_service_data(service=svc) filtra por
+                # schema: turn_off no admite slots, turn_on descarta volumen.
+                data = merge_service_data({}, query_slots or {}, service=svc)
                 command = {
                     "entity_id": "light.hogar",
                     "domain": "light",
@@ -1005,6 +1013,30 @@ class RequestDispatcher:
                         intent="domain_conflict",
                         timings=timings,
                     )
+
+            # Guarda inversa (review 2026-08-09): query con slots DE LUZ
+            # (brightness/color — solo se propagan cuando el upstream
+            # clasificó un set de luz con evidencia textual) pero el match no
+            # es una luz ⇒ misfire del retrieval: el filtro por service es
+            # domain-agnóstico y un texto mangled sin "luz" puede matchear
+            # switch/media_player.turn_on. Ejecutarlo prendería otro
+            # dispositivo o HA rechazaría el service_data en silencio.
+            if command and command.get("domain") != "light" and (
+                set(query_slots or {}) & LIGHT_SLOT_KEYS
+            ):
+                logger.info(
+                    f"[Dispatcher] Light-slot mismatch: query has light slots "
+                    f"{sorted(set(query_slots) & LIGHT_SLOT_KEYS)} but vector "
+                    f"match is {command.get('entity_id')!r}; rejecting"
+                )
+                return DispatchResult(
+                    path=path,
+                    priority=Priority.HIGH,
+                    success=False,
+                    response="Entendí un ajuste de luz, pero no encontré qué luz. Decime cuál.",
+                    intent="light_slot_mismatch",
+                    timings=timings,
+                )
 
             # Voice-auth opcional (default OFF): si está activo y el speaker no
             # está enrolado, NO ejecutamos la acción de domótica (todos los

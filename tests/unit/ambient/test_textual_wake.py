@@ -364,6 +364,31 @@ class TestDetectorVadGate:
         msgs = [r.message for r in caplog.records if "[TextualWake]" in r.message]
         assert any("low_vad" in m and "0.36" in m for m in msgs)
 
+    async def test_dedup_acoustic_wins_over_low_vad_in_log(self, caplog):
+        # El gate corre DESPUÉS de los dedups (review 2026-08-09): la
+        # re-transcripción solapada de un comando ya despachado llega con vad
+        # diluido, y loguearla como low_vad contaminaría la señal del journal
+        # que el runbook usa para recalibrar el umbral.
+        clock = FakeClock(t=1000.0)
+        dispatch = AsyncMock()
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 999.0,  # hace 1s
+            min_vad=0.50,
+            now_fn=clock,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = await detector.maybe_dispatch(
+                room_id="salon", text="Nexa, prende la luz", source="unknown",
+                speaker=None, audio=make_audio(), vad_prob=0.30,
+            )
+
+        assert result is False
+        msgs = [r.message for r in caplog.records if "[TextualWake]" in r.message]
+        assert any("dedup_acoustic" in m for m in msgs)
+        assert not any("low_vad" in m for m in msgs)
+
     async def test_low_vad_without_match_emits_no_log(self, caplog):
         # vad bajo + sin wake = el caso común del stream — silencio en logs.
         dispatch = AsyncMock()

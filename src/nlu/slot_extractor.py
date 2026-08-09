@@ -38,6 +38,12 @@ VALID_SERVICE_DATA_SLOTS = frozenset({
     SLOT_VOLUME,
 })
 
+# Slots que solo tienen sentido sobre una luz. Los comparten el mapeo
+# set→turn_on del request_router (evidencia textual de un set de luz) y la
+# guarda inversa del dispatcher (slots de luz + match no-luz = misfire del
+# retrieval). volume_pct queda afuera a propósito.
+LIGHT_SLOT_KEYS = frozenset({SLOT_BRIGHTNESS, SLOT_COLOR, SLOT_COLOR_TEMP})
+
 
 # ============================================================
 # Intent classifier (turn_on / turn_off)
@@ -217,13 +223,36 @@ def extract_slots(text: str) -> dict:
     return slots
 
 
-def merge_service_data(metadata_service_data: dict, query_slots: dict) -> dict:
+# Slots que HA acepta como service_data del par on/off. `turn_off` no admite
+# atributos de luz ni volumen (schema: transition/flash); `turn_on` de luz
+# admite brillo/color pero NUNCA volume_pct (el volumen es su propio service,
+# volume_set — en cualquier dominio). Un slot fuera de schema anula el comando
+# ENTERO (HA rechaza, no ignora): "poné las luces fuerte" extrae brightness Y
+# volume ("fuerte" vive en los dos vocabularios) y sin este filtro el volumen
+# espurio mataba el turn_on completo (review 2026-08-09).
+_SLOTS_BY_SERVICE = {
+    "turn_on": frozenset({SLOT_BRIGHTNESS, SLOT_COLOR, SLOT_COLOR_TEMP, SLOT_EFFECT}),
+    "turn_off": frozenset(),
+}
+
+
+def merge_service_data(
+    metadata_service_data: dict, query_slots: dict, service: str | None = None
+) -> dict:
     """
     Combina el service_data default (del metadata de Chroma — valor canónico del preset)
     con los slots extraídos de la query del usuario. Los slots del usuario ganan.
 
     Ej: metadata dice {"brightness_pct": 50} (preset "al 50%"), pero el usuario dijo
     "al 73%" → slots = {"brightness_pct": 73} → resultado = {"brightness_pct": 73}.
+
+    Args:
+        metadata_service_data: Preset del doc de Chroma (no se filtra: viene
+            del propio sync HA→Chroma).
+        query_slots: Slots del NLU/LLM (se filtran contra whitelist y schema).
+        service: Service HA de destino ("turn_on"/"turn_off"). Si se conoce,
+            los slots del usuario se filtran además contra el schema de ese
+            service (_SLOTS_BY_SERVICE). None = solo whitelist (legacy).
     """
     merged = dict(metadata_service_data or {})
 
@@ -231,23 +260,30 @@ def merge_service_data(metadata_service_data: dict, query_slots: dict) -> dict:
     # El preset NO se filtra: viene de nuestro propio sync HA→Chroma. Los
     # query_slots, en cambio, pueden venir del LLM router (JSON libre) y una
     # sola clave desconocida hace que HA rechace el service_data completo.
+    allowed = VALID_SERVICE_DATA_SLOTS
+    if service in _SLOTS_BY_SERVICE:
+        allowed = allowed & _SLOTS_BY_SERVICE[service]
     safe_slots = {
         k: v for k, v in (query_slots or {}).items()
-        if k in VALID_SERVICE_DATA_SLOTS
+        if k in allowed
     }
     descartados = set(query_slots or {}) - set(safe_slots)
     if descartados:
         logger.warning(
-            f"[slots] descarto claves que no son service_data de HA: "
-            f"{sorted(descartados)} (habrían hecho fallar el comando entero)"
+            f"[slots] descarto claves fuera del schema de "
+            f"{service or 'service_data'}: {sorted(descartados)} "
+            f"(habrían hecho fallar el comando entero)"
         )
 
     # Conflictos mutuamente excluyentes para light:
     #   rgb_color vs color_temp_kelvin — el usuario sólo pide uno a la vez.
-    # Si el usuario explicita color, quitar color_temp del default y viceversa.
+    # También DENTRO de los slots del usuario: "amarilla" vive en COLOR_MAP y
+    # en TEMP_WORDS_K, así que el extractor emite los dos; HA los trata como
+    # excluyentes y rechazaría el comando entero. El color explícito gana.
     if SLOT_COLOR in safe_slots:
         merged.pop(SLOT_COLOR_TEMP, None)
-    if SLOT_COLOR_TEMP in safe_slots:
+        safe_slots.pop(SLOT_COLOR_TEMP, None)
+    elif SLOT_COLOR_TEMP in safe_slots:
         merged.pop(SLOT_COLOR, None)
     merged.update(safe_slots)
     return merged
