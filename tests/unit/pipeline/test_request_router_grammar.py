@@ -233,9 +233,53 @@ class TestSetIntentRoutesFastDomotics:
             intent="set_brightness",
             entity_hint="light",
             rejection_reason=None,
-            slots={"brightness_pct": 50},
+            slots={"brightness_pct": 80},
         )
-        # Texto que el grammar NO parsea full (sin slots ni verbo) → path LLM.
+        # Texto que el grammar NO parsea full ("lu" mangled → sin dominio)
+        # pero con slot textual real → path LLM con evidencia.
+        router, orch = _make_router_for(
+            "Nexa, la lu del living al 80 por ciento.", classification
+        )
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, la lu del living al 80 por ciento.",
+        )
+        await router.process_command(event)
+
+        orch.process.assert_awaited_once()
+        kwargs = orch.process.call_args.kwargs
+        assert kwargs["service_filter"] == "turn_on"
+        assert kwargs["query_slots"] == {"brightness_pct": 80}
+
+    @pytest.mark.asyncio
+    async def test_grammar_set_color_maps_turn_on(self):
+        # Color también es light.turn_on con atributos (review 2026-08-09:
+        # la primera versión del fix dejaba color muriendo en el SLOW_LLM).
+        router, llm = _make_router_with_llm(wake_acoustically_confirmed=True)
+        router.command_processor.process_command = AsyncMock(
+            return_value=_make_cmd_stub("Nexa, luz del living en rojo.")
+        )
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, luz del living en rojo.",
+        )
+        await router.process_command(event)
+
+        kwargs = router._orchestrator.process.call_args.kwargs
+        assert kwargs["service_filter"] == "turn_on"
+        assert kwargs["query_slots"] == {"rgb_color": [255, 0, 0]}
+
+    @pytest.mark.asyncio
+    async def test_llm_set_without_textual_slot_does_not_map(self):
+        # Guard de evidencia (review 2026-08-09): un set_brightness del LLM
+        # cuyo slot NO es extraíble del texto es la firma de una alucinación
+        # del 7B sobre garble — sin evidencia textual no gana fast path
+        # (antes de este fix moría en el SLOW_LLM; se preserva ese destino).
+        classification = CommandClassification(
+            is_command=True, confidence=0.9, intent="set_brightness",
+            entity_hint="light", rejection_reason=None,
+            slots={"brightness_pct": 50},   # alucinado: el texto no trae slot
+        )
         router, orch = _make_router_for(
             "Nexa, quiero las luces distintas.", classification
         )
@@ -246,9 +290,29 @@ class TestSetIntentRoutesFastDomotics:
         await router.process_command(event)
 
         orch.process.assert_awaited_once()
-        kwargs = orch.process.call_args.kwargs
-        assert kwargs["service_filter"] == "turn_on"
-        assert kwargs["query_slots"] == {"brightness_pct": 50}
+        assert orch.process.call_args.kwargs["service_filter"] is None
+
+    @pytest.mark.asyncio
+    async def test_llm_set_brightness_non_light_entity_does_not_map(self):
+        # Guard de dominio (review 2026-08-09): "bajá el brillo de la tele"
+        # con filtro turn_on domain-agnóstico habría matcheado el doc
+        # media_player.turn_on y PRENDIDO la tele en vez de bajarle el brillo.
+        classification = CommandClassification(
+            is_command=True, confidence=0.9, intent="set_brightness",
+            entity_hint="media_player", rejection_reason=None,
+            slots={"brightness_pct": 20},
+        )
+        router, orch = _make_router_for(
+            "Nexa, bajá el brillo de la tele al 20 por ciento.", classification
+        )
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, bajá el brillo de la tele al 20 por ciento.",
+        )
+        await router.process_command(event)
+
+        orch.process.assert_awaited_once()
+        assert orch.process.call_args.kwargs["service_filter"] is None
 
     @pytest.mark.asyncio
     async def test_turn_off_propagation_unchanged(self):

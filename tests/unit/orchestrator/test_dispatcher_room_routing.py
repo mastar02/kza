@@ -215,3 +215,51 @@ class TestLivingMangledBySTT:
         from src.orchestrator.dispatcher import _resolve_prefer_area
         assert _resolve_prefer_area("prende la luz de la cocina", None) == "Cocina"
         assert _resolve_prefer_area("prende la luz del escritorio", None) == "Escritorio"
+
+
+class TestGlobalScopeMergesQuerySlots:
+    """El bloque de scope global ("toda la casa") bypassa el vector search,
+    que es donde se mergean los query_slots (review 2026-08-09): "luces de
+    toda la casa al 50%" prendía todo al brillo anterior y tiraba el 50% en
+    silencio. Alcanzable desde que set/set_brightness rutean FAST_DOMOTICS."""
+
+    @pytest.mark.asyncio
+    async def test_turn_on_global_lleva_los_slots(self, dispatcher):
+        result = await dispatcher.dispatch(
+            user_id="unknown",
+            text="nexa luces de toda la casa al 50 por ciento",
+            zone_id="zone_escritorio",
+            service_filter="turn_on",
+            query_slots={"brightness_pct": 50},
+        )
+        assert result.action["entity_id"] == "light.hogar"
+        assert result.action["service"] == "turn_on"
+        assert result.action["data"] == {"brightness_pct": 50}
+
+    @pytest.mark.asyncio
+    async def test_turn_off_global_no_arrastra_slots(self, dispatcher):
+        # brightness no es service_data de turn_off — un slot residual del
+        # NLU no debe colarse en el apagado.
+        result = await dispatcher.dispatch(
+            user_id="unknown",
+            text="nexa apagá las luces de toda la casa",
+            zone_id="zone_escritorio",
+            service_filter="turn_off",
+            query_slots={"brightness_pct": 50},
+        )
+        assert result.action["entity_id"] == "light.hogar"
+        assert result.action["service"] == "turn_off"
+        assert result.action["data"] == {}
+
+    @pytest.mark.asyncio
+    async def test_slots_desconocidos_no_llegan_a_ha(self, dispatcher):
+        # merge_service_data filtra contra el whitelist: una clave libre del
+        # LLM haría que HA rechace el service_data completo.
+        result = await dispatcher.dispatch(
+            user_id="unknown",
+            text="nexa luces de toda la casa al 50 por ciento",
+            zone_id="zone_escritorio",
+            service_filter="turn_on",
+            query_slots={"brightness_pct": 50, "modo_fiesta": True},
+        )
+        assert result.action["data"] == {"brightness_pct": 50}

@@ -40,6 +40,7 @@ from enum import StrEnum
 from typing import Callable
 
 from src.core.logging import get_logger
+from src.nlu.slot_extractor import merge_service_data
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
     Priority,
@@ -741,6 +742,11 @@ class RequestDispatcher:
         Returns:
             (PathType, Priority)
         """
+        # ⚠️ Contrato con request_router: el mapeo intent→service_filter de
+        # allá (incluye set/set_brightness/set_color→"turn_on", review
+        # 2026-08-09) cuenta con que ESTE par literal gana el fast path. Si
+        # el mapeo emite un valor nuevo fuera del par, filtra el vector
+        # search pero pierde FAST_DOMOTICS en silencio — extender acá también.
         if service_filter in ("turn_on", "turn_off"):
             return PathType.FAST_DOMOTICS, Priority.HIGH
 
@@ -953,12 +959,24 @@ class RequestDispatcher:
             if any(kw in tl for kw in global_kw):
                 svc = "turn_off" if any(v in tl for v in ("apaga", "apagá", "apagar")) else "turn_on"
                 logger.info(f"Global scope detected → {svc}@light.hogar")
+                # Este bloque bypassa el vector search, que es donde se
+                # mergean los query_slots (chroma_sync → merge_service_data).
+                # Sin este merge, "luces de toda la casa al 50%" prendía todo
+                # al brillo anterior y descartaba el 50% en silencio (review
+                # 2026-08-09; alcanzable desde que set/set_brightness rutean
+                # FAST_DOMOTICS). Solo aplica a turn_on: brightness/color no
+                # son service_data de turn_off.
+                data = (
+                    merge_service_data({}, query_slots or {})
+                    if svc == "turn_on"
+                    else {}
+                )
                 command = {
                     "entity_id": "light.hogar",
                     "domain": "light",
                     "service": svc,
                     "description": "toda la casa",
-                    "data": {},
+                    "data": data,
                 }
 
             # Guarda de conflicto de dominio (bug fantasma 2026-05-29): si el

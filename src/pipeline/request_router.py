@@ -19,6 +19,7 @@ import numpy as np
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.nlu.command_grammar import PartialCommand, parse_partial_command
 from src.nlu.sensitive_actions import is_sensitive
+from src.nlu.slot_extractor import extract_slots
 from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
 from src.analytics.asr_quality import log_asr_outcome
@@ -40,6 +41,12 @@ _INTENT_REQUIRED_DOMAINS: dict[str, str] = {
     "media_next": "media_player",
     "media_previous": "media_player",
 }
+
+# Intents "set" de luz (brillo / color / temperatura de color). En HA todos
+# son el service light.turn_on con atributos; el mapeo a service_filter vive
+# en process_command con dos guardas (entity light + slot textual). "set" lo
+# emite el grammar (light-only por IntentRule); los otros tres, el LLMRouter.
+_SET_LIGHT_INTENTS = ("set", "set_brightness", "set_color", "set_color_temp")
 
 # Mensajes de respuesta cuando el dominio no existe en HA. En español
 # rioplatense neutro, brevemente — no queremos sermonear al usuario.
@@ -698,21 +705,36 @@ class RequestRouter:
         if _llm_classification is not None:
             _intent = _llm_classification.intent
             # Solo propagar intents que el chroma_sync conoce como `service`
-            # de HA. Intents de alto nivel (set_brightness, set_temperature)
-            # no son services HA — el chroma_sync los rechazaría.
+            # de HA. Intents de alto nivel (set_temperature) no son services
+            # HA — el chroma_sync los rechazaría.
+            # ⚠️ Contrato con dispatcher._classify_request: SOLO los strings
+            # literales "turn_on"/"turn_off" ganan FAST_DOMOTICS allá. Un
+            # valor nuevo de service_filter fuera de ese par filtra el vector
+            # search pero pierde el fast path en silencio.
             if _intent in ("turn_on", "turn_off"):
                 _service_filter = _intent
-            elif _intent in ("set", "set_brightness"):
+            elif (
+                _intent in _SET_LIGHT_INTENTS
+                and _llm_classification.entity_hint == "light"
+                and extract_slots(text)
+            ):
                 # Bug 2026-08-06: "luz al 100% del living" no tiene verbo →
                 # DOMOTICS_KEYWORDS (solo verbos) no matchea y sin
                 # service_filter _classify_request lo mandaba al SLOW_LLM
                 # (timeout 5s; el slow path no tiene tool-calling a HA, así
                 # que un set por ahí no ejecuta NUNCA). En HA setear brillo/
-                # color ES el service light.turn_on con atributos, así que el
-                # mapeo es exacto — y de paso filtra el vector search al doc
-                # turn_on (el retrieval denso no distingue el antónimo).
-                # "set" es light-only por regla del grammar (IntentRule);
-                # brightness_pct/rgb viajan por _query_slots.
+                # color/temperatura de luz ES el service light.turn_on con
+                # atributos, así que el mapeo es exacto — y de paso filtra el
+                # vector search al doc turn_on (el retrieval denso no
+                # distingue el antónimo). Las dos guardas (review 2026-08-09):
+                # - entity_hint=="light": el set_brightness del LLM no tiene
+                #   restricción de dominio ("bajá el brillo de la tele") y un
+                #   filtro turn_on domain-agnóstico habría prendido la tele.
+                # - extract_slots(text): evidencia TEXTUAL determinística —
+                #   llm_intent_evidenced solo cubre el par binario, y un
+                #   set_brightness alucinado por el 7B sobre garble ganaría
+                #   actuación fast-path sin que el texto contenga slot alguno.
+                #   (El set del grammar ya exige slots por construcción.)
                 _service_filter = "turn_on"
             _query_slots = dict(_llm_classification.slots or {}) or None
 

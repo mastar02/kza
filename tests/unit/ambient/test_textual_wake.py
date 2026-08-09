@@ -321,22 +321,11 @@ class TestDetectorVadGate:
         assert result is True
         dispatch.assert_awaited_once()
 
-    async def test_vad_none_fails_open(self):
-        # Sin señal de vad no se bloquea (mismo criterio que
-        # is_spanish_keepable): la ausencia del instrumento no puede
-        # silenciar la red de seguridad.
-        dispatch = AsyncMock(return_value={"success": True})
-        detector = self._detector(dispatch, min_vad=0.50)
-
-        result = await detector.maybe_dispatch(
-            room_id="salon", text="Nexa, apagá la luz", source="human_direct",
-            speaker=None, audio=make_audio(), vad_prob=None,
-        )
-
-        assert result is True
-
     async def test_vad_omitted_fails_open(self):
-        # Compat: llamadores que no pasan vad_prob (kwarg con default None).
+        # Llamadores que no pasan vad_prob (kwarg con default None) no se
+        # bloquean — mismo criterio que is_spanish_keepable: la ausencia del
+        # instrumento no puede silenciar la red de seguridad. (Cubre también
+        # vad_prob=None explícito: es el mismo branch con el mismo default.)
         dispatch = AsyncMock(return_value={"success": True})
         detector = self._detector(dispatch, min_vad=0.50)
 

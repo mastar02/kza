@@ -1801,6 +1801,12 @@ ambient:
     # inclusivo; vad_prob=None no bloquea (fail-open). SOLO vad, JAMÁS gate
     # por idioma: los comandos reales salen con lang='fr'/'en' (py3langid) —
     # el veto por idioma mata 2/2 comandos reales (NO-GO medido 08-05).
+    # ⚠️ vad_prob es la MEDIA del segmento e incluye la cola de silencio de
+    # cierre (~700ms de probs ≈0 antes de close_silence_ms): comandos muy
+    # cortos llegan diluidos. La calibración de arriba ya es sobre esa misma
+    # estadística, pero con n chico — vigilar los skips `decision=low_vad`
+    # en el journal: si aparece un comando real ahí, bajar este umbral antes
+    # que tocar el matcher. min_vad: 0.0 = gate off (rollback sin deploy).
     min_vad: 0.50
 
 # Code-Index — búsqueda semántica del codebase para agentes (spec 2026-07-04).
