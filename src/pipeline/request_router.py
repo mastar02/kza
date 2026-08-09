@@ -702,6 +702,18 @@ class RequestRouter:
             # no son services HA — el chroma_sync los rechazaría.
             if _intent in ("turn_on", "turn_off"):
                 _service_filter = _intent
+            elif _intent in ("set", "set_brightness"):
+                # Bug 2026-08-06: "luz al 100% del living" no tiene verbo →
+                # DOMOTICS_KEYWORDS (solo verbos) no matchea y sin
+                # service_filter _classify_request lo mandaba al SLOW_LLM
+                # (timeout 5s; el slow path no tiene tool-calling a HA, así
+                # que un set por ahí no ejecuta NUNCA). En HA setear brillo/
+                # color ES el service light.turn_on con atributos, así que el
+                # mapeo es exacto — y de paso filtra el vector search al doc
+                # turn_on (el retrieval denso no distingue el antónimo).
+                # "set" es light-only por regla del grammar (IntentRule);
+                # brightness_pct/rgb viajan por _query_slots.
+                _service_filter = "turn_on"
             _query_slots = dict(_llm_classification.slots or {}) or None
 
         dispatch_result = await self._orchestrator.process(

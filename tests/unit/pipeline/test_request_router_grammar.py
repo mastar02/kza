@@ -193,6 +193,83 @@ def _make_router_for(text: str, classification):
     return router, orch
 
 
+class TestSetIntentRoutesFastDomotics:
+    """Bug 2026-08-06: 'Nexa, luz al 100% del living' — el grammar clasificó
+    intent=set conf=1.00, pero el router solo propagaba service_filter para
+    turn_on/turn_off. Sin verbo, DOMOTICS_KEYWORDS (solo verbos) no matchea y
+    _classify_request mandaba el comando al SLOW_LLM → timeout de 5s — y el
+    slow path no tiene tool-calling a HA, así que el brillo por ahí no puede
+    ejecutar NUNCA. En HA setear brillo/color ES light.turn_on con atributos,
+    por eso set/set_brightness mapean a service_filter='turn_on' (que además
+    filtra el vector search al doc correcto, esquivando el antónimo turn_off
+    que el retrieval denso no distingue)."""
+
+    @pytest.mark.asyncio
+    async def test_grammar_set_propagates_turn_on_service_filter(self):
+        # El texto real del bug: sin verbo, con room y slot de brillo.
+        router, llm = _make_router_with_llm(wake_acoustically_confirmed=True)
+        router.command_processor.process_command = AsyncMock(
+            return_value=_make_cmd_stub("Nexa, luz al 100% del living.")
+        )
+
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32),
+            room_id="escritorio",
+            wake_text="Nexa, luz al 100% del living.",
+        )
+        await router.process_command(event)
+
+        assert not llm.classify.called, "el grammar debe ganar (conf 1.00)"
+        router._orchestrator.process.assert_awaited_once()
+        kwargs = router._orchestrator.process.call_args.kwargs
+        assert kwargs["service_filter"] == "turn_on"
+        assert kwargs["query_slots"] == {"brightness_pct": 100}
+
+    @pytest.mark.asyncio
+    async def test_llm_set_brightness_propagates_turn_on_service_filter(self):
+        classification = CommandClassification(
+            is_command=True,
+            confidence=0.9,
+            intent="set_brightness",
+            entity_hint="light",
+            rejection_reason=None,
+            slots={"brightness_pct": 50},
+        )
+        # Texto que el grammar NO parsea full (sin slots ni verbo) → path LLM.
+        router, orch = _make_router_for(
+            "Nexa, quiero las luces distintas.", classification
+        )
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, quiero las luces distintas.",
+        )
+        await router.process_command(event)
+
+        orch.process.assert_awaited_once()
+        kwargs = orch.process.call_args.kwargs
+        assert kwargs["service_filter"] == "turn_on"
+        assert kwargs["query_slots"] == {"brightness_pct": 50}
+
+    @pytest.mark.asyncio
+    async def test_turn_off_propagation_unchanged(self):
+        # Regresión: el par binario sigue propagando su propio service.
+        classification = CommandClassification(
+            is_command=True, confidence=0.9, intent="turn_off",
+            entity_hint="light", rejection_reason=None,
+        )
+        router, orch = _make_router_for(
+            "Nexa, apagá la luz.", classification
+        )
+        event = CommandEvent(
+            audio=np.zeros(16000, dtype=np.float32), room_id="escritorio",
+            wake_text="Nexa, apagá la luz.",
+        )
+        await router.process_command(event)
+
+        orch.process.assert_awaited_once()
+        assert orch.process.call_args.kwargs["service_filter"] == "turn_off"
+
+
 class TestUnverifiedIntentGuard:
     """El intent binario del LLM debe estar evidenciado por un verbo del texto
     (caso real 2026-06-06: 'apagá'→STT 'pero a la luz'→LLM turn_on conf alta
