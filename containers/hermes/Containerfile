@@ -3,9 +3,12 @@
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
+# git: el installer clona el repo de hermes. xz-utils: baja Node como .tar.xz
+# (sin xz, tar muere con "Child returned status 2" — visto en el primer build
+# 2026-08-10). Los indices apt se CONSERVAN a proposito: el installer hace sus
+# propios `sudo apt-get install` (via el shim fake-sudo) y sin indices fallan.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash ca-certificates coreutils curl \
-    && rm -rf /var/lib/apt/lists/*
+        bash ca-certificates coreutils curl git xz-utils
 
 COPY fake-sudo /usr/local/bin/sudo
 RUN chmod 0755 /usr/local/bin/sudo
