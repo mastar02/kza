@@ -60,3 +60,22 @@ def test_hermes_cli_reasoner_construction_uses_defaults_when_keys_missing():
     )
     assert r.binary_path == "hermes"
     assert r.timeout_s == 90.0
+
+
+def test_hermes_cli_compaction_reasoner_construction():
+    """El compactor con mode=hermes_cli usa la misma clase que el reasoner principal."""
+    reasoner_cfg = {
+        "mode": "hermes_cli",
+        "hermes_binary_path": "hermes",
+        "hermes_provider": "openai-codex",
+        "hermes_model": None,
+        "hermes_timeout_s": 90,
+    }
+    compaction_reasoner = HermesCliReasoner(
+        binary_path=reasoner_cfg.get("hermes_binary_path", "hermes"),
+        provider=reasoner_cfg.get("hermes_provider", "openai-codex"),
+        model=reasoner_cfg.get("hermes_model"),
+        timeout_s=reasoner_cfg.get("hermes_timeout_s", 90.0),
+    )
+    assert isinstance(compaction_reasoner, HermesCliReasoner)
+    assert compaction_reasoner.provider == "openai-codex"

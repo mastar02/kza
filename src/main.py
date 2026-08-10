@@ -1220,51 +1220,90 @@ async def main():
     keep_recent_turns = compaction_cfg.get("keep_recent_turns", 3)
 
     if compaction_cfg.get("enabled", False):
-        from src.llm.cloud_consent import resolve_compaction_endpoint
-        from src.llm.reasoner import HttpReasoner
         from src.orchestrator import Compactor
 
-        # Cutover 2026-05-30 (Notion pág 8): el modelo local kza-llm-ik (:8200)
-        # fue reemplazado por el gateway LiteLLM → MiniMax, que exige la virtual
-        # key (api_key_env). Antes :8200 era local sin auth y este reasoner se
-        # construía sin key → tras el cutover daba 400 "No connected db" y el
-        # compactor quedaba disabled. Reusamos el gateway autenticado del
-        # reasoner principal (instancia aparte = cache pool propio). Override
-        # explícito vía orchestrator.context.compaction.{base_url,model}.
-        #
-        # El endpoint se resuelve vía resolve_compaction_endpoint, que respeta
-        # gate_allowed (cloud.consent) — con consent:false esto degrada a un
-        # LLM local en vez de heredar el reasoner cloud a ciegas (Critical
-        # cerrado, ver .superpowers/sdd/compactor-consent/). Con consent:true
-        # el resultado es byte-idéntico a la construcción de antes de este fix
-        # (test_compaction_inherits_cloud_endpoint_when_gate_allows).
-        compaction_endpoint = resolve_compaction_endpoint(
-            compaction_cfg, reasoner_config, gate_allowed
-        )
-        compaction_reasoner = HttpReasoner(
-            base_url=compaction_endpoint.base_url,
-            model=compaction_endpoint.model,
-            api_style=compaction_endpoint.api_style,
-            api_key_env=compaction_endpoint.api_key_env,
-            timeout=compaction_cfg.get("timeout_s", 30.0),
-        )
-        try:
-            compaction_reasoner.load()
-            compactor = Compactor(
-                reasoner=compaction_reasoner,
-                max_summary_tokens=compaction_cfg.get("max_summary_tokens", 200),
-                timeout_s=compaction_cfg.get("timeout_s", 30.0),
+        if reasoner_mode == "hermes_cli":
+            # Sin base_url que resolver — resolve_compaction_endpoint asume HTTP
+            # (ver su docstring) y no aplica acá. El compactor usa la MISMA clase
+            # y config que el reasoner principal cuando el gate lo permite; si no,
+            # no hay compactación (no tiene sentido forzar un segundo subproceso
+            # hermes solo para esto cuando el reasoner principal ya está apagado
+            # por falta de consent).
+            from src.llm.hermes_reasoner import HermesCliReasoner
+            if not gate_allowed:
+                logger.warning(
+                    "[main] Compactor (hermes_cli) deshabilitado — reasoner.cloud.consent=false."
+                )
+                compactor = None
+            else:
+                compaction_reasoner = HermesCliReasoner(
+                    binary_path=reasoner_config.get("hermes_binary_path", "hermes"),
+                    provider=reasoner_config.get("hermes_provider", "openai-codex"),
+                    model=reasoner_config.get("hermes_model"),
+                    timeout_s=compaction_cfg.get("timeout_s", 30.0),
+                )
+                try:
+                    compaction_reasoner.load()
+                    compactor = Compactor(
+                        reasoner=compaction_reasoner,
+                        max_summary_tokens=compaction_cfg.get("max_summary_tokens", 200),
+                        timeout_s=compaction_cfg.get("timeout_s", 30.0),
+                    )
+                    logger.info(
+                        f"[main] Compactor enabled vía Hermes CLI (threshold={compaction_threshold}, "
+                        f"keep_recent={keep_recent_turns})"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[main] Compactor disabled — could not load Hermes reasoner: {e}",
+                        exc_info=True,
+                    )
+                    compactor = None
+        else:
+            from src.llm.cloud_consent import resolve_compaction_endpoint
+            from src.llm.reasoner import HttpReasoner
+
+            # Cutover 2026-05-30 (Notion pág 8): el modelo local kza-llm-ik (:8200)
+            # fue reemplazado por el gateway LiteLLM → MiniMax, que exige la virtual
+            # key (api_key_env). Antes :8200 era local sin auth y este reasoner se
+            # construía sin key → tras el cutover daba 400 "No connected db" y el
+            # compactor quedaba disabled. Reusamos el gateway autenticado del
+            # reasoner principal (instancia aparte = cache pool propio). Override
+            # explícito vía orchestrator.context.compaction.{base_url,model}.
+            #
+            # El endpoint se resuelve vía resolve_compaction_endpoint, que respeta
+            # gate_allowed (cloud.consent) — con consent:false esto degrada a un
+            # LLM local en vez de heredar el reasoner cloud a ciegas (Critical
+            # cerrado, ver .superpowers/sdd/compactor-consent/). Con consent:true
+            # el resultado es byte-idéntico a la construcción de antes de este fix
+            # (test_compaction_inherits_cloud_endpoint_when_gate_allows).
+            compaction_endpoint = resolve_compaction_endpoint(
+                compaction_cfg, reasoner_config, gate_allowed
             )
-            logger.info(
-                f"[main] Compactor enabled (threshold={compaction_threshold}, "
-                f"keep_recent={keep_recent_turns})"
+            compaction_reasoner = HttpReasoner(
+                base_url=compaction_endpoint.base_url,
+                model=compaction_endpoint.model,
+                api_style=compaction_endpoint.api_style,
+                api_key_env=compaction_endpoint.api_key_env,
+                timeout=compaction_cfg.get("timeout_s", 30.0),
             )
-        except Exception as e:
-            logger.error(
-                f"[main] Compactor disabled — could not load reasoner: {e}",
-                exc_info=True,
-            )
-            compactor = None
+            try:
+                compaction_reasoner.load()
+                compactor = Compactor(
+                    reasoner=compaction_reasoner,
+                    max_summary_tokens=compaction_cfg.get("max_summary_tokens", 200),
+                    timeout_s=compaction_cfg.get("timeout_s", 30.0),
+                )
+                logger.info(
+                    f"[main] Compactor enabled (threshold={compaction_threshold}, "
+                    f"keep_recent={keep_recent_turns})"
+                )
+            except Exception as e:
+                logger.error(
+                    f"[main] Compactor disabled — could not load reasoner: {e}",
+                    exc_info=True,
+                )
+                compactor = None
 
     # Persistence sin compaction guardaría el conversation_history crudo en
     # cada snapshot (los turnos no se compactan nunca), inflando el JSON sin
