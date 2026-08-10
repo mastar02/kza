@@ -80,6 +80,19 @@ def test_load_ok_when_provider_ready(mock_run):
 
 
 @patch("src.llm.hermes_reasoner.subprocess.run")
+def test_load_uses_explicit_utf8_encoding(mock_run):
+    """No locale-dependent decoding — systemd --user con LANG sin setear no
+    garantiza UTF-8 para la salida es-AR de `hermes auth status`."""
+    mock_run.return_value = _completed(stdout="openai-codex: ready (oauth)\n")
+    r = HermesCliReasoner()
+    r.load()
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    assert "text" not in kwargs
+
+
+@patch("src.llm.hermes_reasoner.subprocess.run")
 def test_load_raises_when_provider_not_listed(mock_run):
     mock_run.return_value = _completed(stdout="nous: ready\nxai: ready\n")
     r = HermesCliReasoner()
@@ -115,7 +128,12 @@ def test_run_builds_correct_command_and_starts_new_session(mock_popen):
     assert "--provider" in cmd and cmd[cmd.index("--provider") + 1] == "openai-codex"
     assert "-m" in cmd and cmd[cmd.index("-m") + 1] == "gpt-5.1-codex"
     assert "--usage-file" in cmd
-    assert kwargs["text"] is True
+    # encoding= (no text=True) porque solo encoding= fija explícitamente UTF-8 —
+    # text=True solo decodifica con el encoding del locale, que bajo systemd
+    # --user con LANG sin setear puede no ser UTF-8-safe.
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    assert "text" not in kwargs
     # start_new_session=True es lo que permite matar el process group entero
     # en timeout (Step 3) — sin esto, os.killpg no tiene un grupo propio que matar.
     assert kwargs["start_new_session"] is True
@@ -136,6 +154,36 @@ def test_run_raises_on_nonzero_exit_with_stderr_in_message(mock_popen):
     r = HermesCliReasoner()
     with pytest.raises(RuntimeError, match="rate limit"):
         r._run("hola")
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_run_raises_on_empty_stdout_even_with_exit_zero(mock_popen):
+    """exit=0 con stdout vacío/whitespace es una forma de falla silenciosa —
+    el patrón que este proyecto evita explícitamente en todos lados (ver
+    feedback_proxies_mentirosos): un proxy (returncode) dice "éxito" mientras
+    la realidad (sin texto de respuesta) dice lo contrario."""
+    mock_popen.return_value = _fake_popen(stdout="   \n", stderr="", returncode=0)
+    r = HermesCliReasoner()
+    with pytest.raises(RuntimeError, match="empty"):
+        r._run("hola")
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_run_empty_stdout_still_cleans_up_usage_file(mock_popen):
+    written_path = {}
+
+    def _side_effect(cmd, **kwargs):
+        idx = cmd.index("--usage-file")
+        written_path["path"] = cmd[idx + 1]
+        Path(written_path["path"]).write_text(json.dumps({"tokens": {"total": 1}}))
+        return _fake_popen(stdout="", stderr="", returncode=0)
+
+    mock_popen.side_effect = _side_effect
+    r = HermesCliReasoner()
+    with pytest.raises(RuntimeError, match="empty"):
+        r._run("hola")
+
+    assert not Path(written_path["path"]).exists()
 
 
 @patch("src.llm.hermes_reasoner.os.killpg")
@@ -267,6 +315,29 @@ def test_run_survives_usage_file_without_tokens_key(mock_popen):
 
     assert text == "respuesta igual"
     assert r._last_metrics["tokens"] == 0
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_run_resets_stale_metrics_when_later_run_has_no_usage_file(mock_popen):
+    """Bug que esto previene: una corrida exitosa puebla _last_metrics con
+    números reales; si una corrida POSTERIOR tiene --usage-file faltante o
+    malformado (_record_usage degrada en silencio, por diseño), sin este
+    reset _last_metrics seguiría reportando las métricas de la corrida
+    VIEJA como si fueran de la corrida actual — __call__ las usa tal cual
+    para el dict `usage`."""
+    r = HermesCliReasoner()
+
+    mock_popen.side_effect = _fake_popen_writing_usage_file(
+        stdout="primera respuesta", usage_content=json.dumps({"tokens": {"total": 999}})
+    )
+    r._run("primera")
+    assert r._last_metrics["tokens"] == 999
+
+    mock_popen.side_effect = _fake_popen_writing_usage_file(
+        stdout="segunda respuesta", usage_content=None
+    )
+    r._run("segunda")
+    assert r._last_metrics is None
 
 
 def test_has_drop_in_interface():

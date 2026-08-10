@@ -77,7 +77,7 @@ class HermesCliReasoner:
         try:
             result = subprocess.run(
                 [self.binary_path, "auth", "status"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, encoding="utf-8", errors="replace", timeout=10,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             raise RuntimeError(
@@ -113,11 +113,13 @@ class HermesCliReasoner:
         `hermes` en su propio process group para que `os.killpg` lo pueda
         matar entero.
 
-        Lanza RuntimeError con el motivo en el mensaje (stderr del proceso, o
-        "timed out") — src/llm/error_classifier.py clasifica por texto
-        (rate-limit/timeout/auth/etc.), así que no hace falta un tipo de
-        excepción especial para que el LLMRouter reaccione igual que con
-        HttpReasoner.
+        Lanza RuntimeError con el motivo en el mensaje (stderr del proceso,
+        "timed out", o exit=0 con stdout vacío/solo-whitespace — degradación
+        silenciosa que este proyecto evita explícitamente, ver
+        feedback_proxies_mentirosos) — src/llm/error_classifier.py clasifica
+        por texto (rate-limit/timeout/auth/etc.), así que no hace falta un
+        tipo de excepción especial para que el LLMRouter reaccione igual que
+        con HttpReasoner.
 
         Args:
             prompt: Texto de entrada.
@@ -125,6 +127,7 @@ class HermesCliReasoner:
         Returns:
             Texto de respuesta (stdout del subproceso, trimeado).
         """
+        self._last_metrics = None
         fd, usage_path = tempfile.mkstemp(suffix=".json", prefix="hermes-usage-")
         os.close(fd)
         try:
@@ -134,20 +137,25 @@ class HermesCliReasoner:
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 start_new_session=True,
             )
             try:
                 stdout, stderr = proc.communicate(timeout=self.timeout_s)
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as e:
                 self._kill_process_group(proc)
-                raise RuntimeError(f"hermes -z timed out after {self.timeout_s}s")
+                raise RuntimeError(f"hermes -z timed out after {self.timeout_s}s") from e
             elapsed_ms = (time.perf_counter() - start) * 1000
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"hermes -z failed (exit={proc.returncode}): {stderr.strip()}"
                 )
             self._record_usage(usage_path, elapsed_ms)
+            if not stdout.strip():
+                raise RuntimeError(
+                    f"hermes -z returned empty output (exit=0), stderr={stderr.strip()!r}"
+                )
             return stdout.strip()
         finally:
             Path(usage_path).unlink(missing_ok=True)
