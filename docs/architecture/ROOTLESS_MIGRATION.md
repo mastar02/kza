@@ -101,6 +101,13 @@ por lo que se pudo verificar, **puramente histórica/heredada**, no funcional.
    instalarlo nativo en la cuenta compartida — así su huella queda contenida a su propio
    contenedor y límites de recursos, y no vuelve a depender de que alguien apruebe `sudo apt
    install` a mano cada vez.
+   ✅ Ejecutado 2026-08-10: Hermes CLI (`kza-hermes` + wrapper `~/bin/hermes-ctr`), ChromaDB
+   (`kza-chroma` :9516) y code-index (`kza-code-index-ctr` :9515) corren como containers
+   rootless bajo kza vía Quadlet. Spec:
+   `docs/superpowers/specs/2026-08-10-podman-rootless-satellites-design.md`; runbook con
+   rollback por componente: `docs/runbooks/2026-08-10-deploy-satellites-podman.md`.
+   `kza-voice` y el llama-server `:8101` siguen nativos con justificación (R10 #4 y VRAM al
+   límite — mismo criterio que la excepción vLLM).
 
 ## Riesgos y cosas para confirmar ANTES de tocar nada
 
