@@ -5,6 +5,7 @@ que necesita el process group real para el timeout) y subprocess.run (para load(
 chequeo simple sin ese requisito).
 """
 
+import asyncio
 import json
 import subprocess
 from pathlib import Path
@@ -265,3 +266,105 @@ def test_run_survives_usage_file_without_tokens_key(mock_popen):
 
     assert text == "respuesta igual"
     assert r._last_metrics["tokens"] == 0
+
+
+def test_has_drop_in_interface():
+    # _process_llm_request hace hasattr(self.llm, 'generate_stream') / .generate
+    assert hasattr(HermesCliReasoner, "generate")
+    assert hasattr(HermesCliReasoner, "generate_stream")
+    assert hasattr(HermesCliReasoner, "complete")
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_call_returns_choices_shape(mock_popen):
+    mock_popen.return_value = _fake_popen(stdout="la luz está prendida")
+    r = HermesCliReasoner()
+    result = r("¿está prendida la luz?")
+    assert result["choices"][0]["text"] == "la luz está prendida"
+    assert "usage" in result
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_generate_returns_text(mock_popen):
+    mock_popen.return_value = _fake_popen(stdout="hola mundo")
+    r = HermesCliReasoner()
+    assert r.generate("hi") == "hola mundo"
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_generate_stream_yields_single_chunk_with_full_text(mock_popen):
+    mock_popen.return_value = _fake_popen(stdout="respuesta completa")
+    r = HermesCliReasoner()
+    out = list(r.generate_stream("hi"))
+    assert len(out) == 1
+    assert out[0]["token"] == "respuesta completa"
+    assert out[0]["text"] == "respuesta completa"
+    assert out[0]["token_count"] == 1
+
+
+def test_generate_stream_is_a_plain_sync_generator_not_async():
+    # el orchestrator hace `for chunk in llm.generate_stream(prompt)` sin await
+    import inspect
+    assert inspect.isgeneratorfunction(HermesCliReasoner.generate_stream)
+    assert not inspect.isasyncgenfunction(HermesCliReasoner.generate_stream)
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_complete_is_async_and_returns_text(mock_popen):
+    mock_popen.return_value = _fake_popen(stdout="respuesta async")
+    r = HermesCliReasoner()
+    result = asyncio.run(r.complete("hi"))
+    assert result == "respuesta async"
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_complete_does_not_block_event_loop(mock_popen):
+    # simula un proceso "lento" — complete() tiene que ceder el loop mientras
+    # communicate() bloquea en el thread secundario (asyncio.to_thread)
+    import time as time_mod
+
+    def slow_communicate(timeout=None):
+        time_mod.sleep(0.05)
+        return ("ok", "")
+
+    def make_slow_proc(cmd, **kwargs):
+        proc = _fake_popen(stdout="ok")
+        proc.communicate.side_effect = slow_communicate
+        return proc
+
+    mock_popen.side_effect = make_slow_proc
+
+    async def run_concurrently():
+        r = HermesCliReasoner()
+        ticks = []
+
+        async def ticker():
+            for _ in range(3):
+                await asyncio.sleep(0.01)
+                ticks.append(1)
+
+        results = await asyncio.gather(r.complete("hi"), ticker())
+        return results, ticks
+
+    results, ticks = asyncio.run(run_concurrently())
+    assert results[0] == "ok"
+    assert len(ticks) == 3  # el ticker corrió mientras complete() esperaba el thread
+
+
+def test_get_info():
+    r = HermesCliReasoner(model="gpt-5.1-codex")
+    info = r.get_info()
+    assert info["mode"] == "hermes_cli"
+    assert info["provider"] == "openai-codex"
+    assert info["model"] == "gpt-5.1-codex"
+
+
+def test_lora_stubs_are_noop():
+    r = HermesCliReasoner()
+    r.load_lora("/some/path")  # no debe lanzar
+    r.unload_lora()  # no debe lanzar
+
+
+def test_hermes_cli_reasoner_importable_from_package():
+    from src.llm import HermesCliReasoner as FromPackage
+    assert FromPackage is HermesCliReasoner

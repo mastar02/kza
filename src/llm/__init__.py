@@ -4,6 +4,7 @@ Modelos de lenguaje para razonamiento y clasificacion.
 """
 
 from src.llm.reasoner import LLMReasoner, FastRouter, HttpReasoner
+from src.llm.hermes_reasoner import HermesCliReasoner
 from src.llm.buffered_streamer import (
     BufferedLLMStreamer,
     BufferConfig,
@@ -26,6 +27,7 @@ from src.llm.router_factory import build_llm_router
 __all__ = [
     "LLMReasoner",
     "HttpReasoner",
+    "HermesCliReasoner",
     "FastRouter",
     "BufferedLLMStreamer",
     "BufferConfig",

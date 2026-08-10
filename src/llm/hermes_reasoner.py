@@ -189,3 +189,72 @@ class HermesCliReasoner:
                 self._metrics_tracker.record(self._endpoint_id, tokens, elapsed_ms)
         except (OSError, json.JSONDecodeError, AttributeError, TypeError) as e:
             logger.debug(f"No se pudo parsear --usage-file de hermes -z: {e}")
+
+    def __call__(
+        self,
+        prompt: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        repeat_penalty: float = 1.1,
+        stop: list[str] | None = None,
+    ) -> dict:
+        """Completions-style: {choices: [{text: ...}], usage: {...}}.
+
+        max_tokens/temperature/top_p/top_k/repeat_penalty/stop no se pueden
+        pasar a `hermes -z` (no hay flags documentados para eso) — se
+        aceptan solo por compat de firma con HttpReasoner/LLMReasoner, no
+        se usan. El control de longitud/temperatura queda del lado de la
+        config de Hermes, no de KZA.
+        """
+        text = self._run(prompt)
+        tokens = self._last_metrics["tokens"] if self._last_metrics else 0
+        return {
+            "choices": [{"text": text}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": tokens},
+        }
+
+    def generate(self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7) -> str:
+        """Generar solo el texto (drop-in de LLMReasoner.generate/HttpReasoner.generate)."""
+        return self(prompt, max_tokens=max_tokens, temperature=temperature)["choices"][0]["text"]
+
+    def generate_stream(self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7, **_ignored):
+        """Streaming "falso": un solo chunk con la respuesta completa.
+
+        `hermes -z` no da streaming token-por-token ("final response text
+        out, nothing else"). El orchestrator ya tolera reasoners sin
+        streaming real (cae a `generate()` si `generate_stream` no está, y
+        acá optamos por implementarlo igual para que el pooling de
+        `_process_llm_request` — que asume UN reasoner con streaming
+        opcional — no necesite un branch nuevo).
+
+        Yields:
+            Un único dict {"token", "text", "token_count": 1} con la
+            respuesta completa.
+        """
+        text = self._run(prompt)
+        yield {"token": text, "text": text, "token_count": 1}
+
+    async def complete(self, prompt: str, max_tokens: int = 512, temperature: float = 0.7, **_ignored) -> str:
+        """API unificada para LLMRouter — async, retorna texto plano.
+
+        `_run` es síncrono (subprocess.run bloqueante) — se envuelve en
+        `asyncio.to_thread` para no bloquear el event loop mientras el
+        subproceso corre, mismo patrón que el path sin idle-watchdog de
+        `HttpReasoner.complete()`.
+        """
+        import asyncio
+        return await asyncio.to_thread(self._run, prompt)
+
+    def get_info(self) -> dict:
+        """Retorna información del reasoner para logging/debugging."""
+        return {"mode": "hermes_cli", "provider": self.provider, "model": self.model}
+
+    def load_lora(self, *a, **kw):
+        """Stub: HermesCliReasoner no soporta LoRA (el binario es externo)."""
+        logger.warning("HermesCliReasoner no soporta LoRA (el binario es externo).")
+
+    def unload_lora(self):
+        """Stub: no-op."""
+        pass
