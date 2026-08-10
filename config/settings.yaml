@@ -422,6 +422,41 @@ reasoner:
   #   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
   #   hermes auth add openai-codex   # device-code flow, completar desde otro browser
   # Para activar: comentar el bloque "mode: http" de arriba y descomentar esto.
+  #
+  # ⚠️ CHECKLIST pre-flip (final review 2026-08-10, no automatizado — a mano):
+  #
+  # 1. Subir llm.failover.endpoints[reasoner_cloud].timeout_s (línea ~458 de
+  #    este archivo, HOY 60.0) a >= hermes_timeout_s de abajo (90). Si no, el
+  #    `asyncio.wait_for` del LLMRouter cancela la task ANTES de que el
+  #    timeout propio del subproceso (HermesCliReasoner._run) llegue a
+  #    dispararse — y cancelar una task de `asyncio.to_thread` NO mata el
+  #    thread/subproceso de abajo (asyncio no tiene forma de interrumpir un
+  #    thread nativo), así que el `hermes` real queda corriendo huérfano en
+  #    el server hasta que SU PROPIO timeout (más largo) lo termine. Mismo
+  #    riesgo de proceso zombie que el process-group-kill de _run() ya evita
+  #    para el timeout propio — pero ese mecanismo no se llega a ejecutar si
+  #    el router cancela primero desde afuera.
+  #
+  # 2. Con `cloud.consent: false` en este modo, el compactor queda TOTALMENTE
+  #    deshabilitado (main.py ~línea 1233: sin gate_allowed, compactor=None,
+  #    sin fallback local) — a diferencia de `mode: "http"`, donde
+  #    resolve_compaction_endpoint SÍ degrada a un compactor local-only
+  #    cuando el gate bloquea el cloud. Como `context.persistence.enabled`
+  #    exige `compactor is not None` (mismo main.py, ~línea 1312),
+  #    compactación Y persistencia de conversación se apagan juntas en la
+  #    combinación mode=hermes_cli + consent=false. Es la conducta esperada
+  #    por diseño (spec §5-6), pero es una diferencia de comportamiento real
+  #    frente a `mode: "http"` — si alguien apaga consent pensando que solo
+  #    corta el reasoner cloud, también está cortando la memoria de contexto.
+  #
+  # 3. Acceso a herramientas de `-z` NO está restringido (ver corrección de
+  #    docs/superpowers/specs/2026-08-10-hermes-cli-reasoner-design.md §2):
+  #    cada corrida es el agente Hermes completo con su toolset por defecto
+  #    activo (archivos, terminal/shell, browsing web) — no hay flag
+  #    documentado para acotarlo en `-z`. Riesgo aceptado explícitamente por
+  #    el usuario porque este deploy es un server doméstico privado sin
+  #    exposición a red externa. Si el threat model cambia (exposición
+  #    externa, multi-tenant, etc.), re-evaluar ANTES de activar este modo.
   # mode: "hermes_cli"
   # hermes_binary_path: "hermes"       # ruta absoluta si systemd --user no hereda PATH
   # hermes_provider: "openai-codex"
