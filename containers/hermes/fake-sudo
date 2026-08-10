@@ -1,0 +1,6 @@
+#!/bin/bash
+# Shim para el build de la imagen: el installer de Hermes llama a sudo, pero en
+# el build ya somos root. Ejecuta el comando tal cual, ignorando flags de sudo
+# tipo -E/-H (no los usa el installer segun el incidente registrado en
+# docs/architecture/ROOTLESS_MIGRATION.md; si aparecieran, fallara ruidoso).
+exec "$@"

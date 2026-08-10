@@ -1,0 +1,23 @@
+# Quadlet (podman rootless, usuario kza). Instalar en ~/.config/containers/systemd/
+# con el tag reemplazado: sed "s/@SHA@/$SHA/". Container residente sin puertos:
+# el trabajo entra por `podman exec` via /home/kza/bin/hermes-ctr.
+[Unit]
+Description=KZA Hermes CLI runtime — reasoner slow path (via wrapper hermes-ctr)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=localhost/kza/hermes:@SHA@
+ContainerName=kza-hermes
+# Auth OAuth persistente (device flow, una vez): HOME del proceso hermes
+Volume=%h/data/hermes-auth:/data
+Environment=HOME=/data
+# Sin PublishPort (solo salida HTTPS), sin GPU, sin red interna (no la necesita)
+
+[Service]
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+
+[Install]
+WantedBy=default.target

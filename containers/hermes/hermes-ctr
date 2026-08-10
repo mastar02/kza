@@ -1,0 +1,13 @@
+#!/bin/bash
+# Puente host->container para HermesCliReasoner (hermes_binary_path apunta aca).
+# Contrato: mismo CLI que `hermes` (args/exit code/stdout/stderr passthrough).
+#
+# El `timeout` corre DENTRO del container: si este cliente muere (kill del
+# process group del reasoner, ssh cortado), el proceso hermes igual muere
+# server-side — cierra la clase "huerfanos colgados" documentada en
+# src/llm/hermes_reasoner.py.
+#
+# 95 = hermes_timeout_s (90 en settings.yaml) + 5 de margen. El timeout local
+# del reasoner dispara primero; este es la red de seguridad. Si cambia
+# hermes_timeout_s, actualizar este numero a mano.
+exec podman exec -i kza-hermes timeout -k 5 95 hermes "$@"

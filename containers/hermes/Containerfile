@@ -1,0 +1,26 @@
+# Hermes CLI aislado: TODO su stack (Xvfb/browser/mesa que su installer traiga)
+# vive aca adentro. Nunca mas `sudo apt install` en el host por Hermes.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash ca-certificates coreutils curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY fake-sudo /usr/local/bin/sudo
+RUN chmod 0755 /usr/local/bin/sudo
+
+# Instalar con HOME de build separado del HOME de runtime (/data es el volumen
+# de auth y taparia lo instalado si el installer escribiera ahi).
+ENV HOME=/opt/hermes-home
+RUN mkdir -p /opt/hermes-home \
+    && curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+
+# El installer puede dejar el binario en $HOME/.local/bin o /usr/local/bin.
+# Cubrimos ambos; el paso de verificacion del deploy corre `hermes --version`.
+ENV PATH=/opt/hermes-home/.local/bin:/opt/hermes-home/bin:$PATH
+
+# HOME de runtime = volumen de auth (persistente entre restarts y rebuilds)
+ENV HOME=/data
+
+CMD ["sleep", "infinity"]
