@@ -197,7 +197,9 @@ class TextualWakeDetector:
 
     Fail-safe: una excepción de `dispatch_fn` se loguea (ERROR) y se traduce
     en `return False` — nunca se re-propaga; el worker del ambient no debe
-    morir por esto.
+    morir por esto. Mismo criterio para `on_missed_fn` (WARNING, se traga):
+    la clase sigue sin hacer I/O propia, el callback inyectado es cosa del
+    llamador (spec 2026-07-25 Etapa A).
     """
 
     def __init__(
@@ -210,6 +212,7 @@ class TextualWakeDetector:
         max_edit_distance: int = 1,
         min_vad: float = 0.50,
         now_fn: Callable[[], float] = time.monotonic,
+        on_missed_fn: Callable[[str, np.ndarray], None] | None = None,
     ):
         """Configurar el detector.
 
@@ -235,6 +238,15 @@ class TextualWakeDetector:
                 ver language_quality.py).
             now_fn: Reloj inyectable (default `time.monotonic`) — permite
                 FakeClock en tests, cero sleeps.
+            on_missed_fn: Callback opcional (spec 2026-07-25 Etapa A) llamado
+                con (room_id, audio) en cada disparo textual que pasó TODOS
+                los gates (match, no dedup_acoustic, no dedup_self, vad OK).
+                Ese disparo ES la prueba de que el wake acústico falló esa
+                "nexa" — el llamador lo usa para alimentar el bucket missed/
+                de WakeClipWriter. Se llama ANTES de `dispatch_fn` y pase lo
+                que pase con él (el miss ya ocurrió, independiente de que el
+                router downstream falle). Fail-open: una excepción se loguea
+                (WARNING) y se traga — nunca tumba el canal textual.
         """
         self._dispatch_fn = dispatch_fn
         self._last_acoustic_command_ts_fn = last_acoustic_command_ts_fn
@@ -244,6 +256,7 @@ class TextualWakeDetector:
         self._max_edit_distance = max_edit_distance
         self._min_vad = min_vad
         self._now_fn = now_fn
+        self._on_missed_fn = on_missed_fn
         # Último dispatch TEXTUAL propio por room (0.0 = nunca) — dedup contra
         # re-transcripciones solapadas de la misma utterance.
         self._last_dispatch_ts: dict[str, float] = {}
@@ -256,6 +269,7 @@ class TextualWakeDetector:
         speaker: str | None,
         audio: np.ndarray,
         vad_prob: float | None = None,
+        utterance_started_ts: float | None = None,
     ) -> bool:
         """Evaluar una utterance y despachar un comando si corresponde.
 
@@ -288,6 +302,23 @@ class TextualWakeDetector:
             audio: Audio del segmento (misma vista usada para el ASR
                 ambient), se adjunta al CommandEvent sin copiar.
             vad_prob: Mean de Silero del segmento (None = sin señal).
+            utterance_started_ts: Timestamp (mismo reloj que `now_fn`, por
+                default `time.monotonic`) de cuándo ocurrió REALMENTE la
+                utterance — no cuándo se la evalúa acá. `now` (arriba) se
+                muestrea al llamar esta función, que puede ser 30s+ DESPUÉS
+                de la utterance real (el segmento ambient puede tardar hasta
+                `max_segment_s` en cerrar + STT + DoA + persist antes de que
+                el caller llegue a esta llamada — review PR #16, medido:
+                9.2% de utterances reales duran >8s). Usado SOLO para la
+                comparación de dedup_acoustic (regla 4) — comparar `now`
+                (tiempo de evaluación textual) contra `last_acoustic`
+                (tiempo real del dispatch acústico) tiene una asimetría que
+                puede fallar en no-dedupear un wake que el acústico SÍ cazó.
+                `None` (default) cae a `now_fn()` — comportamiento idéntico
+                al de antes de este parámetro. Las reglas 5 (dedup_self) y
+                el bookkeeping de `_last_dispatch_ts` siguen usando `now`
+                a propósito: comparan tiempo-textual contra tiempo-textual,
+                sin la asimetría cruzada de la regla 4.
 
         Returns:
             True si se despachó un comando, False en cualquier otro caso
@@ -310,9 +341,12 @@ class TextualWakeDetector:
             return False
 
         now = self._now_fn()
+        acoustic_ref_ts = (
+            utterance_started_ts if utterance_started_ts is not None else now
+        )
 
         last_acoustic = self._last_acoustic_command_ts_fn(room_id)
-        if last_acoustic > 0.0 and (now - last_acoustic) < self._dedup_window_s:
+        if last_acoustic > 0.0 and (acoustic_ref_ts - last_acoustic) < self._dedup_window_s:
             logger.info(
                 f"[TextualWake] skip room={room_id} source={source} "
                 f"speaker={speaker} decision=dedup_acoustic text={text!r}"
@@ -334,6 +368,14 @@ class TextualWakeDetector:
                 f"min_vad={self._min_vad:.2f} text={text!r}"
             )
             return False
+
+        if self._on_missed_fn is not None:
+            try:
+                self._on_missed_fn(room_id, audio)
+            except Exception as e:
+                logger.warning(
+                    f"[TextualWake] on_missed_fn error room={room_id}: {e}"
+                )
 
         event = CommandEvent(audio=audio, room_id=room_id, wake_text=text, wake_score=1.0)
         try:
