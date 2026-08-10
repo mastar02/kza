@@ -459,7 +459,7 @@ reasoner:
   #    exposición a red externa. Si el threat model cambia (exposición
   #    externa, multi-tenant, etc.), re-evaluar ANTES de activar este modo.
   # mode: "hermes_cli"
-  # hermes_binary_path: "hermes"       # ruta absoluta si systemd --user no hereda PATH
+  # hermes_binary_path: "/home/kza/bin/hermes-ctr"  # wrapper podman exec -> container kza-hermes
   # hermes_provider: "openai-codex"
   # hermes_model: null                  # sin pin — default de Hermes/Codex
   # hermes_timeout_s: 90                # suma el arranque del proceso hermes sobre HTTP
@@ -1886,6 +1886,12 @@ code_index:
   host: "0.0.0.0"
   port: 9515                    # sub-rango KZA 9500-9599 (:9500=obs; :9510 y :9587 ocupados no-declarados, auditoría 2026-05-01)
   chroma_path: "/home/kza/code-index/chroma"
+  chroma:
+    # http = servicio kza-chroma en container (deploy actual, DNS interno podman).
+    # embedded = PersistentClient local en chroma_path (rollback a la unit nativa;
+    #   el hostname kza-chroma NO resuelve fuera de la red kza-internal).
+    mode: "http"
+    url: "http://kza-chroma:8000"
   manifest_path: "/home/kza/code-index/manifest.json"
   include_globs:
     - "src/**/*.py"             # v1: solo código productivo (sin tests/docs)
