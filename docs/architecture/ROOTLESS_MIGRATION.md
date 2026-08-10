@@ -125,12 +125,19 @@ algo en uso:
 Cada paso es independiente y reversible hasta el punto en que se ejecuta; no hace falta hacerlos
 todos de una sentada.
 
-1. **Corregir `scripts/setup_ubuntu.sh`** (cambio solo en el repo, cero riesgo en el server, PR
-   normal).
-2. **Actualizar el mapa de puertos de `SERVER_CONVENTIONS.md`** para cerrar la línea de Postgres
-   legacy si ya no existe (doc-only).
-3. **Reubicar el cron de trading** fuera de `crontab -u kza` — copiarlo a donde corresponda
-   (`trading-bot`) y confirmar que corre ahí antes de borrar el original.
+1. ✅ **Corregir `scripts/setup_ubuntu.sh`** — hecho 2026-08-10 (`082d3cd`): el script instala
+   user unit + linger, layout real (`~/kza` + symlink `~/app`, `~/secrets`), y
+   `systemd/kza-voice.service` en el repo es ahora espejo del unit real del server.
+2. ✅ **Actualizar el mapa de puertos de `SERVER_CONVENTIONS.md`** — hecho 2026-08-10
+   (`e04ca67`): la Postgres legacy `:5432` ya no existe (verificado en vivo); línea cerrada.
+   Pendiente reflejarlo en Notion pág 8 desde una sesión de homelab-infra.
+3. ✅ **Reubicar el cron de trading** — resuelto 2026-08-10 dándolo de baja: apuntaba a
+   `/home/kza/trading`, que **ya no existe** (el proyecto migró a `/home/trading-bot` en junio),
+   así que el cron llevaba semanas fallando en el `cd` sin loguear nada — no había nada que
+   reubicar. Backup de la línea en `~kza/backups/crontab-kza-2026-08-10.bak`; `crontab -u kza`
+   quedó vacío. Nota: `trading-bot` no tiene hoy ningún retrain semanal propio (solo el timer
+   `trading-carry-monitor`) — si el retrain se quiere de vuelta, es una decisión del proyecto
+   trading, no de KZA.
 4. **Responder las preguntas de la sección anterior** (mailcow/libvirt vía `kza`) — esto
    determina si los pasos 5-6 son seguros tal cual o necesitan un intermedio.
 5. **Sacar los grupos** `docker`, `lxd`, `kvm`, `libvirt`, `sudo` de `kza`
@@ -150,5 +157,7 @@ Verificación final post-migración: repetir exactamente los chequeos de la tabl
 - `ha-core` (Home Assistant) sigue corriendo rootful por diseño — es una excepción R10 propia
   (#2), de un proyecto distinto (`ha`), no de KZA. No es parte de esta migración.
 - mailcow bajo root — excepción R10 #3, proyecto `mail`, tampoco es KZA.
-- No se tocó nada del server durante esta investigación — todo lo de arriba es lectura pura.
-  Ningún paso de la sección "Pasos de la transición" se ejecutó todavía.
+- Durante la investigación original (2026-08-10 AM) no se tocó nada del server. Los pasos 1-3
+  de la transición se ejecutaron ese mismo día (ver checkmarks arriba); el único cambio de
+  estado en el server fue la baja del cron muerto de trading (con backup). Los pasos 4-6
+  siguen pendientes.
