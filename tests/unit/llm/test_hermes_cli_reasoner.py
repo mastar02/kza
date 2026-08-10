@@ -7,6 +7,7 @@ chequeo simple sin ese requisito).
 
 import asyncio
 import json
+import logging
 import subprocess
 import time
 from pathlib import Path
@@ -14,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.llm.hermes_reasoner import HermesCliReasoner
+from src.llm.hermes_reasoner import HermesCliReasoner, warn_if_router_timeout_misaligned
 
 
 def _completed(stdout="", stderr="", returncode=0):
@@ -112,7 +113,8 @@ def test_load_raises_when_auth_command_fails(mock_run):
 def test_run_returns_stripped_stdout(mock_popen):
     mock_popen.return_value = _fake_popen(stdout="  la luz del living está prendida  \n")
     r = HermesCliReasoner()
-    assert r._run("¿está prendida la luz?") == "la luz del living está prendida"
+    text, _tokens = r._run("¿está prendida la luz?")
+    assert text == "la luz del living está prendida"
 
 
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
@@ -137,6 +139,10 @@ def test_run_builds_correct_command_and_starts_new_session(mock_popen):
     # start_new_session=True es lo que permite matar el process group entero
     # en timeout (Step 3) — sin esto, os.killpg no tiene un grupo propio que matar.
     assert kwargs["start_new_session"] is True
+    # stdin=DEVNULL — sin esto, un prompt interactivo (approval/auth) del agente
+    # se cuelga leyendo el stdin heredado del padre hasta el timeout completo,
+    # y si KZA corre interactivo desde una terminal el hijo puede robar teclado.
+    assert kwargs["stdin"] == subprocess.DEVNULL
 
 
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
@@ -154,6 +160,20 @@ def test_run_raises_on_nonzero_exit_with_stderr_in_message(mock_popen):
     r = HermesCliReasoner()
     with pytest.raises(RuntimeError, match="rate limit"):
         r._run("hola")
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen", side_effect=FileNotFoundError("no such file: 'hermes'"))
+def test_run_wraps_popen_oserror_in_runtime_error(mock_popen):
+    """Si el binario `hermes` no existe/no es ejecutable, Popen() tira un OSError
+    crudo — sin envolverlo, esa excepción se escapa del contrato de RuntimeError
+    que _run() promete, y error_classifier.py la clasifica PERMANENT en vez de
+    darle al LLMRouter la chance de rotar a fast_router_7b (finding Important,
+    code-reviewer)."""
+    r = HermesCliReasoner()
+    with pytest.raises(RuntimeError, match="could not start") as exc_info:
+        r._run("hola")
+    assert "no such file" in str(exc_info.value)
+    assert not isinstance(exc_info.value, FileNotFoundError)
 
 
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
@@ -238,9 +258,10 @@ def test_run_populates_last_metrics_from_usage_file(mock_popen):
         usage_content=json.dumps({"tokens": {"total": 123}})
     )
     r = HermesCliReasoner()
-    text = r._run("hola")
+    text, tokens = r._run("hola")
 
     assert text == "respuesta"
+    assert tokens == 123
     assert r._last_metrics["tokens"] == 123
     assert r._last_metrics["ms"] > 0
 
@@ -287,9 +308,10 @@ def test_run_survives_missing_usage_file(mock_popen):
         stdout="respuesta igual", usage_content=None
     )
     r = HermesCliReasoner()
-    text = r._run("hola")
+    text, tokens = r._run("hola")
 
     assert text == "respuesta igual"
+    assert tokens == 0
     assert r._last_metrics is None
 
 
@@ -299,9 +321,10 @@ def test_run_survives_malformed_usage_file(mock_popen):
         stdout="respuesta igual", usage_content="esto no es json{{{"
     )
     r = HermesCliReasoner()
-    text = r._run("hola")
+    text, tokens = r._run("hola")
 
     assert text == "respuesta igual"
+    assert tokens == 0
     assert r._last_metrics is None
 
 
@@ -311,10 +334,54 @@ def test_run_survives_usage_file_without_tokens_key(mock_popen):
         stdout="respuesta igual", usage_content=json.dumps({"model": "gpt-5.1-codex"})
     )
     r = HermesCliReasoner()
-    text = r._run("hola")
+    text, tokens = r._run("hola")
 
     assert text == "respuesta igual"
+    assert tokens == 0
     assert r._last_metrics["tokens"] == 0
+
+
+@pytest.mark.parametrize(
+    "bad_tokens_value",
+    ["not-a-number", [1, 2, 3]],
+    ids=["non-numeric-string", "list"],
+)
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_run_survives_non_numeric_tokens_in_usage_file(mock_popen, bad_tokens_value):
+    """'tokens' con forma inesperada (schema no confirmado contra el binario real,
+    ver docstring de _record_usage) degrada igual que un usage-file malformado —
+    _last_metrics queda None, NO se filtra un valor no-int que después rompería
+    __call__'s usage.completion_tokens ni src/llm/router.py (lm.get("tokens", 0) > 0)."""
+    mock_popen.side_effect = _fake_popen_writing_usage_file(
+        stdout="respuesta igual", usage_content=json.dumps({"tokens": bad_tokens_value})
+    )
+    r = HermesCliReasoner()
+    text, tokens = r._run("hola")
+
+    assert text == "respuesta igual"
+    assert tokens == 0
+    assert r._last_metrics is None
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_run_survives_metrics_tracker_record_raising(mock_popen):
+    """Un _metrics_tracker.record() roto es un problema DISTINTO de un usage-file
+    malformado (finding Medium, silent-failure-hunter) — no debe impedir que
+    _run() devuelva la respuesta real."""
+    mock_popen.side_effect = _fake_popen_writing_usage_file(
+        stdout="respuesta real", usage_content=json.dumps({"tokens": {"total": 55}})
+    )
+    r = HermesCliReasoner()
+    tracker = MagicMock()
+    tracker.record.side_effect = RuntimeError("tracker roto")
+    r._metrics_tracker = tracker
+    r._endpoint_id = "hermes_codex"
+
+    text, tokens = r._run("hola")
+
+    assert text == "respuesta real"
+    assert tokens == 55
+    assert r._last_metrics["tokens"] == 55
 
 
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
@@ -354,6 +421,26 @@ def test_call_returns_choices_shape(mock_popen):
     result = r("¿está prendida la luz?")
     assert result["choices"][0]["text"] == "la luz está prendida"
     assert "usage" in result
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_call_usage_tokens_reflect_current_run_not_stale_last_metrics(mock_popen):
+    """Concurrency-safety (finding Important, code-reviewer): __call__ debe leer
+    los tokens del valor LOCAL que devuelve _run(), no releer self._last_metrics
+    — si dos llamadas pisaran la misma instancia concurrentemente, releer el
+    atributo de instancia podría devolver los tokens de la OTRA corrida. Se
+    simula acá seteando self._last_metrics a un valor viejo/falso ANTES de la
+    llamada y confirmando que el resultado usa el usage-file de ESTA corrida."""
+    mock_popen.side_effect = _fake_popen_writing_usage_file(
+        stdout="respuesta nueva", usage_content=json.dumps({"tokens": {"total": 777}})
+    )
+    r = HermesCliReasoner()
+    r._last_metrics = {"tokens": 999999, "ms": 1.0}  # métricas "viejas"/de otra corrida
+
+    result = r("¿está prendida la luz?")
+
+    assert result["choices"][0]["text"] == "respuesta nueva"
+    assert result["usage"]["completion_tokens"] == 777
 
 
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
@@ -451,3 +538,39 @@ def test_lora_stubs_are_noop():
 def test_hermes_cli_reasoner_importable_from_package():
     from src.llm import HermesCliReasoner as FromPackage
     assert FromPackage is HermesCliReasoner
+
+
+# --- warn_if_router_timeout_misaligned (finding Important #4, boot-time guard) ---
+
+
+def test_warn_if_router_timeout_misaligned_warns_when_router_timeout_lower(caplog):
+    """hermes_timeout_s=90, router_timeout_s=60 → el asyncio.wait_for externo del
+    LLMRouter cancelaría la task antes de que el subproceso hermes llegue a su
+    propio timeout — debe loguear ERROR y devolver True."""
+    with caplog.at_level(logging.ERROR, logger="src.llm.hermes_reasoner"):
+        result = warn_if_router_timeout_misaligned(hermes_timeout_s=90.0, router_timeout_s=60.0)
+    assert result is True
+    assert any(
+        "reasoner_cloud" in rec.message and "timeout" in rec.message.lower()
+        for rec in caplog.records
+    )
+
+
+def test_warn_if_router_timeout_misaligned_silent_when_router_timeout_higher():
+    """hermes_timeout_s=90, router_timeout_s=120 → el wait_for externo nunca
+    dispara antes que el timeout propio del subproceso — config correcta,
+    sin warning."""
+    result = warn_if_router_timeout_misaligned(hermes_timeout_s=90.0, router_timeout_s=120.0)
+    assert result is False
+
+
+def test_warn_if_router_timeout_misaligned_silent_when_equal():
+    result = warn_if_router_timeout_misaligned(hermes_timeout_s=90.0, router_timeout_s=90.0)
+    assert result is False
+
+
+def test_warn_if_router_timeout_misaligned_silent_when_router_timeout_none():
+    """router_timeout_s=None (LLMRouter deshabilitado, o sin entry reasoner_cloud
+    en llm.failover.endpoints) — nada que comparar, no debe lanzar ni loguear."""
+    result = warn_if_router_timeout_misaligned(hermes_timeout_s=90.0, router_timeout_s=None)
+    assert result is False

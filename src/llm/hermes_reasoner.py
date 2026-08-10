@@ -19,6 +19,59 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def warn_if_router_timeout_misaligned(
+    hermes_timeout_s: float, router_timeout_s: float | None
+) -> bool:
+    """Loguea un ERROR si el timeout externo del LLMRouter es menor al del subproceso hermes.
+
+    `HermesCliReasoner.timeout_s` (default 90s) gobierna el `proc.communicate(timeout=...)`
+    síncrono DENTRO de `_run()` — cuando vence, `_kill_process_group` mata el process
+    group entero, sin huérfanos. Pero cuando `complete()` corre bajo `LLMRouter`
+    (`src/main.py`, branch `hermes_cli`), hay un SEGUNDO timeout por afuera: el
+    `asyncio.wait_for(...)` que `LLMRouter` envuelve alrededor de la task
+    `asyncio.to_thread`-wrapped, con el valor de `llm.failover.endpoints[reasoner_cloud]
+    .timeout_s` en `settings.yaml` — una key independiente, editable por separado.
+
+    Si ese timeout externo es MENOR al de `_run()`, `asyncio.wait_for` cancela la task
+    ANTES de que el timeout propio del subproceso llegue a dispararse. Cancelar una task
+    de `asyncio.to_thread` NO mata el thread nativo de abajo (asyncio no tiene forma de
+    interrumpirlo) — así que el proceso `hermes` real sigue corriendo huérfano hasta SU
+    PROPIO (más largo) timeout, Y el thread que ocupa queda retenido del pool compartido
+    de `asyncio.to_thread` ese tiempo extra, potencialmente hambreando otras llamadas
+    `asyncio.to_thread` de partes no relacionadas del codebase.
+
+    Deliberadamente solo un log — NO levanta excepción ni frena el boot: es una
+    advertencia de misconfiguración, no un fallo duro (el reasoner puede andar bien la
+    mayoría de las corridas, que no llegan al timeout). Ver checklist item 1 en
+    `config/settings.yaml` (bloque comentado `hermes_cli`) para el mismo aviso en forma
+    de instrucción manual — esta función es la versión enforcida en código.
+
+    Args:
+        hermes_timeout_s: `timeout_s` configurado en el `HermesCliReasoner` (subproceso).
+        router_timeout_s: `timeout_s` del entry `reasoner_cloud` en
+            `llm.failover.endpoints` (el `asyncio.wait_for` externo de `LLMRouter`).
+            `None` si `LLMRouter`/ese entry no está configurado — nada que chequear.
+
+    Returns:
+        `True` si logueó el aviso (config desalineada), `False` si está OK o no aplica.
+    """
+    if router_timeout_s is not None and router_timeout_s < hermes_timeout_s:
+        logger.error(
+            "Config desalineada: llm.failover.endpoints[reasoner_cloud].timeout_s "
+            f"({router_timeout_s}s) < reasoner.hermes_timeout_s ({hermes_timeout_s}s). "
+            "El asyncio.wait_for externo del LLMRouter puede cancelar la llamada a "
+            "HermesCliReasoner ANTES de que el subproceso 'hermes' termine solo — "
+            "cancelar una task de asyncio.to_thread NO mata el thread/subproceso de "
+            "abajo, así que 'hermes' queda corriendo huérfano hasta SU PROPIO timeout, "
+            "y el thread pool compartido de asyncio.to_thread queda hambreado ese "
+            "tiempo extra para el resto del codebase. Fix: subir "
+            "llm.failover.endpoints[reasoner_cloud].timeout_s a >= "
+            f"{hermes_timeout_s}s en config/settings.yaml."
+        )
+        return True
+    return False
+
+
 class HermesCliReasoner:
     """Reasoner que delega en el CLI de Hermes Agent (`hermes -z`).
 
@@ -102,8 +155,8 @@ class HermesCliReasoner:
             cmd += ["-m", self.model]
         return cmd
 
-    def _run(self, prompt: str) -> str:
-        """Corre `hermes -z` síncrono y devuelve el texto de respuesta.
+    def _run(self, prompt: str) -> tuple[str, int]:
+        """Corre `hermes -z` síncrono y devuelve (texto de respuesta, tokens).
 
         Usa Popen (no subprocess.run) porque el timeout necesita matar el
         process group ENTERO, no solo el proceso hijo directo: `hermes` puede
@@ -111,21 +164,33 @@ class HermesCliReasoner:
         `Popen.kill()` no los alcanza — dejaría procesos huérfanos colgados
         del slow path indefinidamente. `start_new_session=True` pone a
         `hermes` en su propio process group para que `os.killpg` lo pueda
-        matar entero.
+        matar entero. `stdin=DEVNULL` evita que un prompt interactivo
+        (approval/auth) del agente se cuelgue leyendo el stdin heredado del
+        proceso padre en vez de fallar rápido — y, si KZA corre interactivo
+        desde una terminal (dev), que el hijo robe el teclado del operador.
 
         Lanza RuntimeError con el motivo en el mensaje (stderr del proceso,
-        "timed out", o exit=0 con stdout vacío/solo-whitespace — degradación
-        silenciosa que este proyecto evita explícitamente, ver
+        "timed out", "could not start", o exit=0 con stdout vacío/solo-whitespace
+        — degradación silenciosa que este proyecto evita explícitamente, ver
         feedback_proxies_mentirosos) — src/llm/error_classifier.py clasifica
         por texto (rate-limit/timeout/auth/etc.), así que no hace falta un
         tipo de excepción especial para que el LLMRouter reaccione igual que
-        con HttpReasoner.
+        con HttpReasoner. Esto incluye el propio `Popen()`: si el binario no
+        existe o no es ejecutable, Python tira FileNotFoundError/OSError
+        crudo, no RuntimeError — sin envolverlo acá esa excepción se escapa
+        del contrato de esta clase y error_classifier la cae en PERMANENT
+        (no failover-worthy) en vez de darle al LLMRouter la chance de rotar
+        a fast_router_7b.
 
         Args:
             prompt: Texto de entrada.
 
         Returns:
-            Texto de respuesta (stdout del subproceso, trimeado).
+            Tupla (texto de respuesta trimeado, tokens de la corrida — 0 si
+            --usage-file no se pudo leer/parsear). Devolver los tokens acá
+            (en vez de solo dejarlos en self._last_metrics) es lo que permite
+            a __call__ leer el valor de SU PROPIA corrida sin una carrera si
+            dos llamadas pisan la misma instancia concurrentemente.
         """
         self._last_metrics = None
         fd, usage_path = tempfile.mkstemp(suffix=".json", prefix="hermes-usage-")
@@ -133,14 +198,18 @@ class HermesCliReasoner:
         try:
             cmd = self._build_cmd(prompt, usage_path)
             start = time.perf_counter()
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                encoding="utf-8",
-                errors="replace",
-                start_new_session=True,
-            )
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL,
+                    encoding="utf-8",
+                    errors="replace",
+                    start_new_session=True,
+                )
+            except OSError as e:
+                raise RuntimeError(f"hermes -z could not start: {e}") from e
             try:
                 stdout, stderr = proc.communicate(timeout=self.timeout_s)
             except subprocess.TimeoutExpired as e:
@@ -151,12 +220,12 @@ class HermesCliReasoner:
                 raise RuntimeError(
                     f"hermes -z failed (exit={proc.returncode}): {stderr.strip()}"
                 )
-            self._record_usage(usage_path, elapsed_ms)
+            tokens = self._record_usage(usage_path, elapsed_ms)
             if not stdout.strip():
                 raise RuntimeError(
                     f"hermes -z returned empty output (exit=0), stderr={stderr.strip()!r}"
                 )
-            return stdout.strip()
+            return stdout.strip(), tokens
         finally:
             Path(usage_path).unlink(missing_ok=True)
 
@@ -174,29 +243,56 @@ class HermesCliReasoner:
             pass
         proc.wait()
 
-    def _record_usage(self, usage_path: str, elapsed_ms: float) -> None:
+    def _record_usage(self, usage_path: str, elapsed_ms: float) -> int:
         """Best-effort: parsea --usage-file para métricas. Nunca rompe la respuesta.
 
         El schema exacto del JSON no está confirmado contra el binario real
         (solo documentado como "cost, tokens, model, provider, session_id,
-        completed/failed") — cualquier forma inesperada degrada a no-op con un
-        debug log, no una excepción. Verificar contra un `hermes -z` real en el
-        server y ajustar las claves leídas acá si hace falta (ver Task 8).
+        completed/failed") — cualquier forma inesperada (incluyendo un
+        "tokens" que no es dict/int/str-numérico) degrada a no-op con un
+        debug log, no una excepción. Verificar contra un `hermes -z` real en
+        el server y ajustar las claves leídas acá si hace falta (ver Task 8).
+
+        `encoding="utf-8", errors="replace"` en el open() — mismo motivo que
+        los dos subprocess calls de este módulo (systemd --user con LANG sin
+        setear no garantiza UTF-8 para lo que --usage-file escribió). Sin
+        esto, un UnicodeDecodeError no cae en el except tuple (no es
+        json.JSONDecodeError) y se escapa de _run(), tirando abajo una
+        respuesta por lo demás exitosa — por eso ValueError (superclase de
+        UnicodeDecodeError, y también lo que tira int() sobre un string no
+        numérico) está en el tuple.
+
+        Dos try/except separados a propósito: el primero (leer+parsear el
+        archivo) es la degradación silenciosa "by design" documentada arriba
+        — logger.debug. El segundo (self._metrics_tracker.record(...)) es un
+        problema DISTINTO y más accionable (el tracker en sí está roto) — si
+        compartiera el except del primero, un fallo del tracker se loguearía
+        como si el usage-file no se hubiese podido parsear, lo cual es
+        engañoso para debug. logger.warning, no silencioso.
+
+        Returns:
+            Tokens de esta corrida (int, 0 si no se pudo determinar).
         """
+        tokens = 0
         try:
-            with open(usage_path) as f:
+            with open(usage_path, encoding="utf-8", errors="replace") as f:
                 usage = json.load(f)
-            tokens = (
+            raw_tokens = (
                 usage.get("tokens", {}).get("total")
                 if isinstance(usage.get("tokens"), dict)
                 else usage.get("total_tokens") or usage.get("tokens") or 0
             )
-            tokens = tokens or 0
+            tokens = int(raw_tokens or 0)
             self._last_metrics = {"tokens": tokens, "ms": elapsed_ms}
+        except (OSError, json.JSONDecodeError, AttributeError, TypeError, ValueError) as e:
+            logger.debug(f"No se pudo parsear --usage-file de hermes -z: {e}")
+            return 0
+        try:
             if self._metrics_tracker is not None and self._endpoint_id and tokens:
                 self._metrics_tracker.record(self._endpoint_id, tokens, elapsed_ms)
-        except (OSError, json.JSONDecodeError, AttributeError, TypeError) as e:
-            logger.debug(f"No se pudo parsear --usage-file de hermes -z: {e}")
+        except Exception as e:
+            logger.warning(f"metrics tracker .record() falló (usage-file sí se parseó OK): {e}")
+        return tokens
 
     def __call__(
         self,
@@ -215,9 +311,16 @@ class HermesCliReasoner:
         aceptan solo por compat de firma con HttpReasoner/LLMReasoner, no
         se usan. El control de longitud/temperatura queda del lado de la
         config de Hermes, no de KZA.
+
+        Lee los tokens del valor LOCAL que devuelve _run(), no de
+        self._last_metrics — self._last_metrics es un atributo de instancia
+        compartido; si dos llamadas pisan la misma instancia de
+        HermesCliReasoner concurrentemente (main.py la registra en el dict
+        de clients de LLMRouter), releer el atributo acá podría devolver los
+        tokens de la OTRA corrida. HttpReasoner.__call__ evita esto mismo
+        armando su dict `usage` desde una variable local (`resp.usage`).
         """
-        text = self._run(prompt)
-        tokens = self._last_metrics["tokens"] if self._last_metrics else 0
+        text, tokens = self._run(prompt)
         return {
             "choices": [{"text": text}],
             "usage": {"prompt_tokens": 0, "completion_tokens": tokens},
@@ -237,11 +340,23 @@ class HermesCliReasoner:
         `_process_llm_request` — que asume UN reasoner con streaming
         opcional — no necesite un branch nuevo).
 
+        NOTA: este método es completamente síncrono — el call site real
+        (`MultiUserOrchestrator._process_llm_request`, `src/orchestrator/
+        dispatcher.py`: `for chunk in self.llm.generate_stream(prompt):`,
+        sin `await`) bloquea el event loop ENTERO durante toda la duración
+        del subproceso `hermes -z` (hasta `timeout_s`, default 90s).
+        `HttpReasoner.generate_stream()` — el sibling que esta clase
+        reemplaza en drop-in — documenta la misma limitación en su propio
+        docstring, pero acá la ventana de bloqueo es MAYOR: HttpReasoner
+        al menos cede el loop en los reads incrementales de la red
+        (streaming real), mientras que acá no hay nada incremental debajo —
+        es una única llamada bloqueante de punta a punta.
+
         Yields:
             Un único dict {"token", "text", "token_count": 1} con la
             respuesta completa.
         """
-        text = self._run(prompt)
+        text, _tokens = self._run(prompt)
         yield {"token": text, "text": text, "token_count": 1}
 
     async def complete(self, prompt: str, max_tokens: int = 512, temperature: float = 0.7, **_ignored) -> str:
@@ -253,7 +368,8 @@ class HermesCliReasoner:
         `HttpReasoner.complete()`.
         """
         import asyncio
-        return await asyncio.to_thread(self._run, prompt)
+        text, _tokens = await asyncio.to_thread(self._run, prompt)
+        return text
 
     def get_info(self) -> dict:
         """Retorna información del reasoner para logging/debugging."""
