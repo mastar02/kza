@@ -8,6 +8,7 @@ chequeo simple sin ese requisito).
 import asyncio
 import json
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -320,7 +321,12 @@ def test_complete_is_async_and_returns_text(mock_popen):
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
 def test_complete_does_not_block_event_loop(mock_popen):
     # simula un proceso "lento" — complete() tiene que ceder el loop mientras
-    # communicate() bloquea en el thread secundario (asyncio.to_thread)
+    # communicate() bloquea en el thread secundario (asyncio.to_thread).
+    # La prueba mide wall-clock time: si complete() fuera bloqueante (sin
+    # asyncio.to_thread), el gather tomaría ~0.05s [subprocess] + ~0.03s [ticker]
+    # = 0.08s+ serializados. Con asyncio.to_thread, ambos corren concurrentemente,
+    # elapsed ≈ max(0.05, 0.03) ≈ 0.05s. Asertamos elapsed < 0.075s para capturar
+    # regresiones donde se remueva asyncio.to_thread accidentalmente.
     import time as time_mod
 
     def slow_communicate(timeout=None):
@@ -346,9 +352,15 @@ def test_complete_does_not_block_event_loop(mock_popen):
         results = await asyncio.gather(r.complete("hi"), ticker())
         return results, ticks
 
+    start = time.perf_counter()
     results, ticks = asyncio.run(run_concurrently())
+    elapsed = time.perf_counter() - start
+
     assert results[0] == "ok"
-    assert len(ticks) == 3  # el ticker corrió mientras complete() esperaba el thread
+    assert len(ticks) == 3  # ticker ran while complete() waited on thread
+    # Validate actual concurrency via wall-clock time: sequential execution would
+    # take ~0.08s, concurrent ~0.05s. Assert we're close to concurrent (< 0.075s).
+    assert elapsed < 0.075, f"expected concurrent execution (~0.05s), got {elapsed:.3f}s"
 
 
 def test_get_info():
