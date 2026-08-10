@@ -11,10 +11,14 @@
 **Se contenerizan (bajo el usuario `kza`, Podman rootless + Quadlet):**
 
 1. **`kza-hermes`** — Hermes CLI con su stack de dependencias (Xvfb/browser) aislado.
-2. **`kza-chroma`** — ChromaDB como servicio en `127.0.0.1:9500` (reactivación del quadlet
+2. **`kza-chroma`** — ChromaDB como servicio en `127.0.0.1:9516` (reactivación del quadlet
    `kza-chroma.container.disabled-2026-05-30`).
 3. **`kza-code-index`** — el servicio `:9515`, hoy nativo, pasa a imagen propia y consume el
    Chroma servicio.
+
+> **Corrección post-aprobación (exploración del plan):** el spec aprobado decía `:9500`, pero
+> ese puerto está ocupado por el dashboard de obs (verificado con `ss -ltnp`; el quadlet
+> deshabilitado de 05-30 quedó stale). Se usa **`:9516`** (libre, contiguo al 9515).
 
 **Quedan nativos, con justificación documentada (NO son deuda):**
 
@@ -42,7 +46,7 @@ tools/code_search.py / agentes
 ```
 
 - Red: `kza-internal.network` (ya existe). `kza-chroma` y `kza-code-index` se resuelven por
-  DNS interno de Podman; solo `:9515` y `:9500` se publican, ambos bind `127.0.0.1`.
+  DNS interno de Podman; solo `:9515` y `:9516` se publican, ambos bind `127.0.0.1`.
 - `kza-hermes` no publica puertos ni usa GPU; solo salida HTTPS (slirp/pasta).
 - Nada de esto requiere sudo, CDI ni grupos: 100% rootless bajo `kza`.
 
@@ -79,11 +83,11 @@ tools/code_search.py / agentes
 - **Cero cambios en `src/llm/hermes_reasoner.py`**: el contrato subprocess se mantiene
   (exit codes, stdout/stderr, timeout local + kill de process group).
 
-### 2. `kza-chroma` (servicio :9500)
+### 2. `kza-chroma` (servicio :9516)
 
 - **Imagen**: `docker.io/chromadb/chroma` **pinneada por versión exacta** (elegir la última
   estable al implementar y fijarla en el quadlet; R12).
-- **Quadlet**: reactivar/reescribir `kza-chroma.container`: `PublishPort=127.0.0.1:9500:8000`,
+- **Quadlet**: reactivar/reescribir `kza-chroma.container`: `PublishPort=127.0.0.1:9516:8000`,
   `Volume=/home/kza/data/chroma-svc:/chroma/chroma:Z`, `Network=kza-internal.network`, R8.
 - **Datos**: directorio nuevo `~/data/chroma-svc/` — no comparte nada con
   `~/app/data/chroma_db/` (vectordb del pipeline, intocado).
@@ -92,8 +96,9 @@ tools/code_search.py / agentes
 
 - **Imagen**: `localhost/kza/code-index:<git-sha>`, `containers/code-index/Containerfile`:
   python 3.13 slim + subset de requirements del servicio (BGE-M3 en CPU — sin CUDA, imagen
-  chica). El modelo de embeddings NO se hornea en la imagen: se monta read-only desde
-  `~/models/` (la imagen queda chica y el modelo se comparte con el resto del sistema).
+  chica). El modelo de embeddings NO se hornea en la imagen: se monta read-only el cache de
+  HuggingFace del host (`~/.cache/huggingface` → `HF_HOME` del container) — ahí es donde
+  `SentenceTransformer("BAAI/bge-m3")` lo resuelve hoy; la imagen queda chica.
 - **Quadlet**: `kza-code-index.container`: `PublishPort=127.0.0.1:9515:9515`,
   `Volume=/home/kza/app:/app:ro,Z` (fuente a indexar, read-only),
   `Network=kza-internal.network`, R8. El plan debe verificar qué variables de entorno lee
@@ -134,7 +139,7 @@ tools/code_search.py / agentes
   1. `podman ps` muestra `kza-hermes`, `kza-chroma`, `kza-code-index` healthy.
   2. `/home/kza/bin/hermes-ctr --version` responde.
   3. Query conocida contra `:9515` devuelve resultados del repo real.
-  4. `curl 127.0.0.1:9500/api/v2/heartbeat` responde.
+  4. `curl 127.0.0.1:9516/api/v2/heartbeat` responde.
   5. `systemctl --user is-active kza-voice kza-llm-fast` = active y
      `tools/benchmark_latency.py` dentro del rango (~150-280ms): la voz no se enteró.
 - **Rollback por componente**: quadlet → tag de imagen anterior; code-index → re-habilitar la
