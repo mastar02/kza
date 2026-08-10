@@ -227,10 +227,23 @@ class AmbientTranscriber:
             # UPDATE de audio_path puede tragarse un "nexa" real.
             if self._textual_wake is not None:
                 try:
+                    # review PR #16: `seg.t0` es wall-clock (tap.py stampea
+                    # time.time()); TextualWakeDetector compara en
+                    # time.monotonic(). Lectura dual fresca en el punto de
+                    # uso — sin estado persistido, sin drift acumulado — para
+                    # derivar el equivalente monotónico de seg.t0. Clamp a
+                    # 0.0: un salto de reloj hacia atrás no debe producir un
+                    # ts "futuro" (eso sub-estimaría la brecha real y
+                    # des-suprimiría el dedup acústico, la dirección
+                    # peligrosa del bug original).
+                    mono_now = time.monotonic()
+                    wall_now = time.time()
+                    utterance_started_ts = mono_now - max(0.0, wall_now - seg.t0)
                     await self._textual_wake.maybe_dispatch(
                         room_id, text, source, speaker,
                         audio=self._stt.asr_mono(seg.audio),
                         vad_prob=seg.vad_prob,
+                        utterance_started_ts=utterance_started_ts,
                     )
                 except Exception:
                     logger.exception(

@@ -241,7 +241,7 @@ def test_textual_wake_receives_vad_prob_of_the_segment():
 
     class CapturingDetector:
         async def maybe_dispatch(self, room_id, text, source, speaker, audio,
-                                 vad_prob=None):
+                                 vad_prob=None, **kwargs):
             captured_vad.append(vad_prob)
             return True
 

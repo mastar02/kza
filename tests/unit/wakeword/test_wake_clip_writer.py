@@ -122,6 +122,36 @@ class TestRejectedClips:
             w.stop()
 
 
+class TestMissedClips:
+    def test_missed_clip_goes_to_subdir(self, writer, tmp_path):
+        # El wake textual disparó pero el acústico NO — falso negativo real,
+        # con el audio en la mano (spec 2026-07-25 Etapa A). Bucket propio,
+        # simétrico a rejected/, para no mezclarse con positivos ni negativos.
+        writer.submit_missed("escritorio", -1.0, np.zeros(1600, dtype=np.float32))
+        missed = tmp_path / "captured" / "missed"
+        assert _wait_for(lambda: missed.is_dir() and len(list(missed.glob("*.wav"))) == 1)
+        # no contamina ni el dir de aceptados ni rejected/
+        assert list((tmp_path / "captured").glob("*.wav")) == []
+        assert not (tmp_path / "captured" / "rejected").exists()
+        # el sentinel -1.0 debe quedar visible en el nombre — un score real
+        # (0.00-1.00) ahí sería mentir sobre una medición que no existe.
+        assert "_-1.00.wav" in next(missed.glob("*.wav")).name
+
+    def test_missed_rotation_independent(self, tmp_path):
+        # missed/ rota con su propio tope (max_missed_files), sin tocar
+        # accepted/rejected — mismo patrón que TestRejectedClips.
+        w = WakeClipWriter(tmp_path / "captured", max_files=5,
+                            max_rejected_files=5, max_missed_files=3)
+        try:
+            for i in range(6):
+                w.submit_missed("escritorio", -1.0, np.zeros(160, dtype=np.float32))
+                time.sleep(0.01)  # timestamps distintos → rotación determinística
+            missed = tmp_path / "captured" / "missed"
+            assert _wait_for(lambda: len(list(missed.glob("*.wav"))) == 3, timeout=3.0)
+        finally:
+            w.stop()
+
+
 class TestNeverBlocks:
     def test_submit_returns_false_when_queue_full(self, tmp_path):
         w = WakeClipWriter(tmp_path / "c", queue_size=1)
