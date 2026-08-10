@@ -1,5 +1,6 @@
 """B3: verify HttpReasoner can be constructed with the MiniMax cloud config."""
 
+from src.llm.hermes_reasoner import HermesCliReasoner
 from src.llm.reasoner import HttpReasoner
 
 
@@ -26,3 +27,55 @@ def test_httpreasoner_cloud_construction_from_config():
     assert r.api_style == "chat"
     assert r.api_key_env == "MINIMAX_API_KEY"
     assert r.idle_timeout_s == 25.0
+
+
+def test_hermes_cli_reasoner_construction_from_config():
+    """Mismo patrón que test_httpreasoner_cloud_construction_from_config, para el modo nuevo."""
+    reasoner_cfg = {
+        "mode": "hermes_cli",
+        "hermes_binary_path": "/opt/hermes/bin/hermes",
+        "hermes_provider": "openai-codex",
+        "hermes_model": None,
+        "hermes_timeout_s": 90,
+    }
+    r = HermesCliReasoner(
+        binary_path=reasoner_cfg.get("hermes_binary_path", "hermes"),
+        provider=reasoner_cfg.get("hermes_provider", "openai-codex"),
+        model=reasoner_cfg.get("hermes_model"),
+        timeout_s=reasoner_cfg.get("hermes_timeout_s", 90.0),
+    )
+    assert r.binary_path == "/opt/hermes/bin/hermes"
+    assert r.provider == "openai-codex"
+    assert r.model is None
+    assert r.timeout_s == 90
+
+
+def test_hermes_cli_reasoner_construction_uses_defaults_when_keys_missing():
+    reasoner_cfg = {"mode": "hermes_cli"}
+    r = HermesCliReasoner(
+        binary_path=reasoner_cfg.get("hermes_binary_path", "hermes"),
+        provider=reasoner_cfg.get("hermes_provider", "openai-codex"),
+        model=reasoner_cfg.get("hermes_model"),
+        timeout_s=reasoner_cfg.get("hermes_timeout_s", 90.0),
+    )
+    assert r.binary_path == "hermes"
+    assert r.timeout_s == 90.0
+
+
+def test_hermes_cli_compaction_reasoner_construction():
+    """El compactor con mode=hermes_cli usa la misma clase que el reasoner principal."""
+    reasoner_cfg = {
+        "mode": "hermes_cli",
+        "hermes_binary_path": "hermes",
+        "hermes_provider": "openai-codex",
+        "hermes_model": None,
+        "hermes_timeout_s": 90,
+    }
+    compaction_reasoner = HermesCliReasoner(
+        binary_path=reasoner_cfg.get("hermes_binary_path", "hermes"),
+        provider=reasoner_cfg.get("hermes_provider", "openai-codex"),
+        model=reasoner_cfg.get("hermes_model"),
+        timeout_s=reasoner_cfg.get("hermes_timeout_s", 90.0),
+    )
+    assert isinstance(compaction_reasoner, HermesCliReasoner)
+    assert compaction_reasoner.provider == "openai-codex"

@@ -8,7 +8,8 @@ por **Hermes Agent** (Nous Research, MIT), autenticado contra la cuenta de ChatG
 el flujo OAuth de OpenAI Codex (`hermes auth add openai-codex`) — el mismo device-code flow que
 usa el propio Codex CLI de OpenAI. Motivación combinada: costo (cuota de la suscripción ya pagada
 en vez de facturación por token), calidad de razonamiento (GPT-5.x vs MiniMax-M2.7) y, a futuro
-(Pieza 2, fuera de alcance de este documento), acceso a las herramientas nativas del agente.
+(Pieza 2, fuera de alcance de este documento), el *wiring* de KZA hacia las herramientas nativas
+del agente — las herramientas en sí ya están activas desde esta Pieza 1, ver corrección en §2.
 
 ## 2. Objetivo / No-objetivos
 
@@ -17,8 +18,18 @@ vuelta — ningún cambio en `MultiUserOrchestrator._process_llm_request` ni en 
 prompt. Solo cambia quién genera la respuesta.
 
 **No-objetivos (explícitos):**
-- Tool-calling de Hermes (búsqueda web, ejecución de código, etc.) — Pieza 2, spec aparte, después
-  de ver esta pieza funcionando en producción.
+- **KZA *wiring into* el tool-calling de Hermes** (manejo estructurado de request/response de
+  herramientas del lado de KZA) — Pieza 2, spec aparte, después de ver esta pieza funcionando en
+  producción. ⚠️ **Corrección post-review final (2026-08-10):** esto NO significa que `-z` corra
+  sin herramientas hoy. `hermes -z` invoca el **mismo agente completo**, con **todo su toolset por
+  defecto activo** (acceso a archivos, terminal/shell, browsing web) — la doc de Nous Research lo
+  dice explícito: *"Same agent, same tools, same skills — just strips every interactive/cosmetic
+  layer"*. No hay flag `--toolsets`/`--no-tools`/`--sandbox` documentado que aplique a `-z`
+  específicamente (esos flags existen solo para `hermes chat`). Lo que "Pieza 2" agregaría es que
+  KZA *use* ese tool-calling de forma estructurada — no la mera existencia de las herramientas, que
+  ya está activa desde Pieza 1. **Riesgo aceptado explícitamente por el usuario** dado que el
+  deploy es un server doméstico privado sin exposición a red externa; no hay mecanismo en código
+  para restringir el toolset de `-z` (no existe ese flag), así que no se intenta.
 - Fallback automático a MiniMax si Hermes falla — decisión explícita: reemplazo total. Ver §6 y §9.
 - Streaming token-por-token real — no existe en el mecanismo elegido (§3). El slow path ya tolera
   reasoners no-streaming.
@@ -37,6 +48,13 @@ Hermes Agent tiene dos mecanismos distintos, y solo uno de los dos sirve acá:
   *"single prompt in, final response text out, nothing else on stdout or stderr"*. No expone HTTP,
   es invocación de proceso por request. Es el mecanismo elegido.
 
+  ⚠️ **Aclaración post-review final (2026-08-10):** esa cita describe la *forma del I/O*
+  (stdout/stderr limpios, un prompt entra, un texto final sale) — **no** dice nada sobre qué hace
+  el agente puertas adentro para llegar a esa respuesta. No hay que leerla como "text in, text
+  out, sin herramientas". Como se corrige en §2, `-z` corre el agente completo con su toolset
+  normal activo (archivos, terminal, web); lo único que cambia frente a `hermes chat` es la capa
+  interactiva/cosmética del CLI, no el acceso a herramientas.
+
 Consecuencia: no hay puerto nuevo que reservar en el sub-rango 9500-9599, no hay servicio HTTP que
 correr — pero tampoco hay streaming, y cada request paga el overhead de arrancar el proceso
 `hermes`.
@@ -51,20 +69,31 @@ Clase nueva `HermesCliReasoner` en `src/llm/hermes_reasoner.py`, duck-typed idé
   bloqueante — es un chequeo único al arranque, no en el hot path — y valida que reporta
   `openai-codex` con credenciales válidas. Falla ruidosamente si no (mismo espíritu que
   `_resolve_api_key`: un deploy mal configurado se ve al boot, no como un 401 opaco en producción).
-- `__call__` / `generate()` / `complete()` (async) — arman el comando
+- `__call__` / `generate()` / `generate_stream()` — **síncronos** (el slow path ya tolera un worker
+  bloqueado, mismo espíritu que `HttpReasoner.generate_stream()`). Por dentro arman el comando
   `hermes -z "<prompt>" --provider openai-codex [-m <hermes_model>] --usage-file <tmpfile>` y lo
-  corren vía `asyncio.create_subprocess_exec` (no bloquea el event loop). Devuelven el stdout
-  decodificado y trimeado como texto de respuesta.
-- `generate_stream()` — yield de un único chunk con el texto completo una vez que el subproceso
-  termina. `MultiUserOrchestrator._process_llm_request` ya tiene el fallback a `generate()` para
-  reasoners sin streaming real (documentado en el docstring actual de `HttpReasoner.generate`) —
-  no hace falta tocar el orchestrator.
+  corren con `subprocess.Popen(...)` + `proc.communicate(timeout=...)` **bloqueante** (no
+  `asyncio.create_subprocess_exec` — ese API async se evaluó y se descartó durante la
+  implementación a favor de reusar el mecanismo de process-group-kill de forma síncrona; ver
+  `complete()` abajo para cómo se evita bloquear el event loop en el único call site que lo
+  necesita). Devuelven el stdout decodificado y trimeado como texto de respuesta.
+  `generate_stream()` en particular yield-ea un único chunk con el texto completo una vez que el
+  subproceso termina — sin streaming real debajo (mismo mecanismo síncrono que `__call__`).
+  `MultiUserOrchestrator._process_llm_request` ya tiene el fallback a `generate()` para reasoners
+  sin streaming real (documentado en el docstring actual de `HttpReasoner.generate`) — no hace
+  falta tocar el orchestrator.
+- `complete()` — la única variante **async** de las cuatro (es la que usa `LLMRouter`/el path que
+  sí corre dentro del event loop). Envuelve la llamada síncrona completa (`_run()`, que hace
+  `Popen`+`communicate`) en `asyncio.to_thread(...)` — mismo patrón que ya usa
+  `HttpReasoner.complete()` — para no bloquear el loop mientras el subproceso corre en un thread
+  aparte.
 - Métricas: `--usage-file` escribe un JSON (tokens, costo, modelo, provider, session_id,
   completed/failed) por corrida, incluso en fallo. Se parsea a `_last_metrics` / se reenvía a
   `_metrics_tracker` — mismo patrón que ya usan `HttpReasoner`/`FastRouter`.
-- Timeout: `asyncio.wait_for(...)` sobre la espera del subproceso; al vencer, se mata el
-  process group completo (`proc.kill()` no alcanza si `hermes` forkea hijos) para no dejar
-  procesos huérfanos colgados del slow path.
+- Timeout: `proc.communicate(timeout=self.timeout_s)` **síncrono** (no `asyncio.wait_for` — ese
+  mecanismo async no aplica a un `Popen.communicate()` bloqueante); al vencer, captura
+  `subprocess.TimeoutExpired` y mata el process group completo vía `os.killpg` (`proc.kill()` no
+  alcanza si `hermes` forkea hijos) para no dejar procesos huérfanos colgados del slow path.
 
 ## 5. Config (`reasoner:` en `settings.yaml`)
 
@@ -201,7 +230,9 @@ TDD por convención del proyecto:
 
 ## 13. Relacionado
 
-Pieza 2 (fuera de alcance): cablear el tool-calling nativo de Hermes (búsqueda web, ejecución de
-código) al slow path — requiere esta pieza funcionando y midiendo bien en producción primero,
-mismo patrón secuencial que Pieza A → Pieza B en la campaña de fidelidad del ambient
+Pieza 2 (fuera de alcance): cablear el manejo estructurado del tool-calling nativo de Hermes
+(búsqueda web, ejecución de código) del lado de KZA — las herramientas en sí ya corren activas
+desde Pieza 1 (§2), esto es sobre *usarlas* desde el orchestrator, no sobre habilitarlas. Requiere
+esta pieza funcionando y midiendo bien en producción primero, mismo patrón secuencial que Pieza A →
+Pieza B en la campaña de fidelidad del ambient
 (`docs/superpowers/specs/2026-08-05-fidelidad-transcripcion-ambient-design.md`).

@@ -416,6 +416,58 @@ reasoner:
   # api_style: "completions"
   # api_key_env: null
   # idle_timeout_s: 8.0
+  # --- Hermes CLI (Pieza 1, 2026-08-10) — NO activar sin correr el smoke test
+  # del plan primero (docs/superpowers/plans/2026-08-10-hermes-cli-reasoner.md §10-11).
+  # Bootstrap manual UNA VEZ en el server antes de activar:
+  #   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+  #   hermes auth add openai-codex   # device-code flow, completar desde otro browser
+  # Para activar: comentar el bloque "mode: http" de arriba y descomentar esto.
+  #
+  # ⚠️ CHECKLIST pre-flip (final review 2026-08-10, no automatizado — a mano):
+  #
+  # 1. Subir, en la sección `llm: failover: endpoints:`, el entry con id
+  #    `reasoner_cloud`, key `timeout_s` (HOY 60.0) a >= hermes_timeout_s de
+  #    abajo (90). Si no, el `asyncio.wait_for` del LLMRouter cancela la
+  #    task ANTES de que el timeout propio del subproceso
+  #    (HermesCliReasoner._run) llegue a dispararse — y cancelar una task de
+  #    `asyncio.to_thread` NO mata el thread/subproceso de abajo (asyncio no
+  #    tiene forma de interrumpir un
+  #    thread nativo), así que el `hermes` real queda corriendo huérfano en
+  #    el server hasta que SU PROPIO timeout (más largo) lo termine. Mismo
+  #    riesgo de proceso zombie que el process-group-kill de _run() ya evita
+  #    para el timeout propio — pero ese mecanismo no se llega a ejecutar si
+  #    el router cancela primero desde afuera.
+  #
+  # 2. Con `cloud.consent: false` en este modo, el compactor queda TOTALMENTE
+  #    deshabilitado (main.py ~línea 1233: sin gate_allowed, compactor=None,
+  #    sin fallback local) — a diferencia de `mode: "http"`, donde
+  #    resolve_compaction_endpoint SÍ degrada a un compactor local-only
+  #    cuando el gate bloquea el cloud. Como `context.persistence.enabled`
+  #    exige `compactor is not None` (mismo main.py, ~línea 1312),
+  #    compactación Y persistencia de conversación se apagan juntas en la
+  #    combinación mode=hermes_cli + consent=false. Es la conducta esperada
+  #    por diseño (spec §5-6), pero es una diferencia de comportamiento real
+  #    frente a `mode: "http"` — si alguien apaga consent pensando que solo
+  #    corta el reasoner cloud, también está cortando la memoria de contexto.
+  #
+  # 3. Acceso a herramientas de `-z` NO está restringido (ver corrección de
+  #    docs/superpowers/specs/2026-08-10-hermes-cli-reasoner-design.md §2):
+  #    cada corrida es el agente Hermes completo con su toolset por defecto
+  #    activo (archivos, terminal/shell, browsing web) — no hay flag
+  #    documentado para acotarlo en `-z`. Riesgo aceptado explícitamente por
+  #    el usuario porque este deploy es un server doméstico privado sin
+  #    exposición a red externa. Si el threat model cambia (exposición
+  #    externa, multi-tenant, etc.), re-evaluar ANTES de activar este modo.
+  # mode: "hermes_cli"
+  # hermes_binary_path: "hermes"       # ruta absoluta si systemd --user no hereda PATH
+  # hermes_provider: "openai-codex"
+  # hermes_model: null                  # sin pin — default de Hermes/Codex
+  # hermes_timeout_s: 90                # suma el arranque del proceso hermes sobre HTTP
+  # El consent de reasoner.cloud (definido arriba, línea ~406) ya aplica a este modo
+  # sin cambios — a propósito NO hay un segundo sub-mapping "cloud" acá abajo: dos
+  # claves iguales en la misma sección reasoner harían que yaml.safe_load descarte
+  # en silencio la primera y se quede con la última (ver finding Crítico de la
+  # review, 2026-08-10).
 
 # LLM Failover — candidate chain con cooldown y skip automático.
 # Patrón: OpenClaw model-failover.md. Cuando un endpoint falla con error

@@ -418,3 +418,51 @@ def test_gate_for_http_mode_still_resolves_placeholder():
 
     assert gate_allowed is False
     assert resolved == DEFAULT_LOCAL_LLM_GATEWAY
+
+
+# --- resolve_reasoner_gate: branch nuevo para mode="hermes_cli" ---
+#
+# Hermes corre como subproceso local (no HTTP client): no hay base_url que
+# is_cloud_endpoint pueda evaluar. Igual sale de la máquina siempre (a la
+# cuenta ChatGPT del usuario), así que se trata como cloud incondicional,
+# gateado SOLO por reasoner.cloud.consent.
+
+
+def test_hermes_cli_mode_blocked_without_consent():
+    """hermes_cli es cloud incondicional — sin URL que evaluar, solo consent."""
+    cfg = {"cloud": {"consent": False}}
+    gate_allowed, resolved = resolve_reasoner_gate(cfg, "hermes_cli", DEFAULT_LOCAL_LLM_GATEWAY)
+    assert gate_allowed is False
+
+
+def test_hermes_cli_mode_allowed_with_consent():
+    cfg = {"cloud": {"consent": True}}
+    gate_allowed, resolved = resolve_reasoner_gate(cfg, "hermes_cli", DEFAULT_LOCAL_LLM_GATEWAY)
+    assert gate_allowed is True
+
+
+def test_hermes_cli_mode_returns_no_url():
+    """No hay http_base_url que resolver para este modo — a diferencia de mode='http'."""
+    cfg = {"cloud": {"consent": True}}
+    _, resolved = resolve_reasoner_gate(cfg, "hermes_cli", DEFAULT_LOCAL_LLM_GATEWAY)
+    assert resolved is None
+
+
+def test_hermes_cli_mode_ignores_leftover_http_base_url():
+    """Si reasoner_config todavía tiene http_base_url (config vieja sin limpiar),
+    el gate de hermes_cli no lo usa para nada — is_cloud_endpoint nunca se llama.
+    """
+    cfg = {
+        "http_base_url": "http://127.0.0.1:8200/v1",  # no debería importar acá
+        "cloud": {"consent": False},
+    }
+    gate_allowed, resolved = resolve_reasoner_gate(cfg, "hermes_cli", DEFAULT_LOCAL_LLM_GATEWAY)
+    assert gate_allowed is False  # si is_cloud_endpoint se colara, esto daría True (fail-open)
+    assert resolved is None
+
+
+def test_hermes_cli_mode_defaults_to_blocked_when_consent_key_missing():
+    """Fail-closed: sin la key cloud.consent, hermes_cli no se habilita solo."""
+    cfg = {}
+    gate_allowed, _ = resolve_reasoner_gate(cfg, "hermes_cli", DEFAULT_LOCAL_LLM_GATEWAY)
+    assert gate_allowed is False
