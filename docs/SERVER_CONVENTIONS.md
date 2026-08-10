@@ -77,7 +77,7 @@ Cuando un proyecto tiene su propio reverse proxy contenedorizado dentro de su re
 | :631 | cupsd | sistema |
 | :1883 | Mosquitto MQTT (Quadlet) | infra |
 | :5053 | unbound recursivo (0.0.0.0 con access-control) | dns |
-| :5432 | PostgreSQL (Docker nativo legacy, pendiente cleanup) | kza |
+| ~~:5432~~ | ~~PostgreSQL (Docker nativo legacy)~~ — **limpiado; verificado 2026-08-10** (sin contenedor en `docker ps -a`, nada escucha en :5432) | — |
 | :5514 | Logstash syslog (UDP+TCP, bind LAN para OPNsense) | obs |
 | :5900 | QEMU/KVM VNC (consola OPNsense) — cerrado a LAN vía nftables 2026-05-30, solo localhost/SSH | sistema |
 | :8000 | trading-bot API | trading (bajo kza, migración pendiente) |
