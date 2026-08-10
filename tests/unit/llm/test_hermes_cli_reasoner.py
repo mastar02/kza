@@ -5,7 +5,9 @@ que necesita el process group real para el timeout) y subprocess.run (para load(
 chequeo simple sin ese requisito).
 """
 
+import json
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,6 +29,23 @@ def _fake_popen(stdout="", stderr="", returncode=0, pid=4242):
     proc.returncode = returncode
     proc.communicate.return_value = (stdout, stderr)
     return proc
+
+
+def _fake_popen_writing_usage_file(stdout="respuesta", usage_content=None):
+    """side_effect de subprocess.Popen que escribe --usage-file antes de volver,
+    igual que haría el binario real. usage_content=None simula que hermes NO
+    llegó a escribir el archivo (falla antes de ese punto)."""
+
+    def _side_effect(cmd, **kwargs):
+        idx = cmd.index("--usage-file")
+        path = cmd[idx + 1]
+        if usage_content is not None:
+            Path(path).write_text(usage_content)
+        else:
+            Path(path).unlink(missing_ok=True)
+        return _fake_popen(stdout=stdout)
+
+    return _side_effect
 
 
 def test_init_defaults():
@@ -161,3 +180,88 @@ def test_run_timeout_survives_process_already_dead(mock_popen, mock_getpgid, moc
     r = HermesCliReasoner()
     with pytest.raises(RuntimeError, match="timed out"):
         r._run("hola")
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_run_populates_last_metrics_from_usage_file(mock_popen):
+    mock_popen.side_effect = _fake_popen_writing_usage_file(
+        usage_content=json.dumps({"tokens": {"total": 123}})
+    )
+    r = HermesCliReasoner()
+    text = r._run("hola")
+
+    assert text == "respuesta"
+    assert r._last_metrics["tokens"] == 123
+    assert r._last_metrics["ms"] > 0
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_run_deletes_temp_usage_file_after_reading(mock_popen):
+    written_path = {}
+
+    def _side_effect(cmd, **kwargs):
+        idx = cmd.index("--usage-file")
+        written_path["path"] = cmd[idx + 1]
+        Path(written_path["path"]).write_text(json.dumps({"tokens": {"total": 1}}))
+        return _fake_popen(stdout="ok")
+
+    mock_popen.side_effect = _side_effect
+    r = HermesCliReasoner()
+    r._run("hola")
+
+    assert not Path(written_path["path"]).exists()
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_run_calls_metrics_tracker_when_attached(mock_popen):
+    mock_popen.side_effect = _fake_popen_writing_usage_file(
+        usage_content=json.dumps({"tokens": {"total": 42}})
+    )
+    r = HermesCliReasoner()
+    tracker = MagicMock()
+    r._metrics_tracker = tracker
+    r._endpoint_id = "hermes_codex"
+    r._run("hola")
+
+    assert tracker.record.call_count == 1
+    call_args = tracker.record.call_args[0]
+    assert call_args[0] == "hermes_codex"
+    assert call_args[1] == 42
+    assert call_args[2] >= 0  # ms
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_run_survives_missing_usage_file(mock_popen):
+    # hermes no llega a escribir el archivo (falla antes) — no debe romper la respuesta
+    mock_popen.side_effect = _fake_popen_writing_usage_file(
+        stdout="respuesta igual", usage_content=None
+    )
+    r = HermesCliReasoner()
+    text = r._run("hola")
+
+    assert text == "respuesta igual"
+    assert r._last_metrics is None
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_run_survives_malformed_usage_file(mock_popen):
+    mock_popen.side_effect = _fake_popen_writing_usage_file(
+        stdout="respuesta igual", usage_content="esto no es json{{{"
+    )
+    r = HermesCliReasoner()
+    text = r._run("hola")
+
+    assert text == "respuesta igual"
+    assert r._last_metrics is None
+
+
+@patch("src.llm.hermes_reasoner.subprocess.Popen")
+def test_run_survives_usage_file_without_tokens_key(mock_popen):
+    mock_popen.side_effect = _fake_popen_writing_usage_file(
+        stdout="respuesta igual", usage_content=json.dumps({"model": "gpt-5.1-codex"})
+    )
+    r = HermesCliReasoner()
+    text = r._run("hola")
+
+    assert text == "respuesta igual"
+    assert r._last_metrics["tokens"] == 0
