@@ -137,7 +137,7 @@ def resolve_http_reasoner_base_url(
 
 def resolve_reasoner_gate(
     reasoner_config: dict, reasoner_mode: str, default_local_url: str
-) -> tuple[bool, str]:
+) -> tuple[bool, str | None]:
     """Evalúa el gate de consent para CUALQUIER ``reasoner.mode``.
 
     Única fuente de verdad para el ``gate_allowed`` de ``main()`` — que lo
@@ -154,6 +154,29 @@ def resolve_reasoner_gate(
     ``== "http"``— ``cloud.consent=false`` quedaba en no-op y la
     conversación del hogar salía igual con la key real.
 
+    Con ``mode="hermes_cli"`` no hay cliente HTTP ni ``base_url`` — Hermes
+    corre como subproceso, siempre sale de la máquina hacia la cuenta
+    ChatGPT del usuario. Se trata como cloud incondicional: el gate depende
+    SOLO de ``reasoner.cloud.consent``, sin pasar por ``is_cloud_endpoint``
+    (que asume una URL parseable y no aplica acá). Devuelve ``None`` como
+    segundo elemento de la tupla — no hay URL que un caller pueda usar.
+
+    Ojo con reusar ``cloud_reasoner_allowed`` acá: pasarle
+    ``reasoner_config`` tal cual reabriría el mismo fail-open documentado
+    arriba, con un vector distinto. ``cloud_reasoner_allowed`` primero mira
+    ``reasoner_config["http_base_url"]`` y, si *ese* valor es localhost,
+    devuelve ``True`` SIN mirar el consent. Un ``reasoner_config`` de
+    ``hermes_cli`` no debería tener ``http_base_url`` — pero si quedó uno
+    viejo sin limpiar (p.ej. de un ``mode="http"`` anterior apuntando al
+    gateway local ``127.0.0.1:8200``), ese leftover clasificaría como
+    "no-cloud" y saltearía el consent aunque sea ``False``, pese a que
+    Hermes en sí siempre sale de la máquina. Por eso se le pasa a
+    ``cloud_reasoner_allowed`` un dict que SOLO conserva ``cloud`` — así su
+    chequeo de ``http_base_url`` ve siempre ``""`` (cadena vacía, que
+    ``is_cloud_endpoint`` clasifica como cloud) y el resultado depende
+    exclusivamente de ``reasoner.cloud.consent``, sin importar qué otra
+    basura tenga ``reasoner_config``.
+
     Args:
         reasoner_config: dict de ``reasoner`` de settings.yaml.
         reasoner_mode: valor de ``reasoner.mode``.
@@ -162,12 +185,17 @@ def resolve_reasoner_gate(
     Returns:
         Tupla ``(gate_allowed, base_url)``. Con ``mode="http"`` delega en
         ``resolve_http_reasoner_base_url`` (que además resuelve el
-        placeholder in-place, en ese orden y por ese motivo). Con cualquier
-        otro mode solo evalúa el consent: no hay cliente HTTP principal que
-        construir, así que no se toca la URL.
+        placeholder in-place, en ese orden y por ese motivo). Con
+        ``mode="hermes_cli"`` el segundo elemento es siempre ``None`` (no
+        hay URL). Con cualquier otro mode solo evalúa el consent: no hay
+        cliente HTTP principal que construir, así que no se toca la URL.
     """
     if reasoner_mode == "http":
         return resolve_http_reasoner_base_url(reasoner_config, default_local_url)
+    if reasoner_mode == "hermes_cli":
+        # Ver docstring: NO pasar reasoner_config completo — un http_base_url
+        # leftover apuntando a localhost saltearía el consent (fail-open).
+        return cloud_reasoner_allowed({"cloud": reasoner_config.get("cloud", {})}), None
     return (
         cloud_reasoner_allowed(reasoner_config),
         reasoner_config.get("http_base_url", default_local_url),
