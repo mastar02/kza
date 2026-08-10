@@ -8,7 +8,8 @@ por **Hermes Agent** (Nous Research, MIT), autenticado contra la cuenta de ChatG
 el flujo OAuth de OpenAI Codex (`hermes auth add openai-codex`) — el mismo device-code flow que
 usa el propio Codex CLI de OpenAI. Motivación combinada: costo (cuota de la suscripción ya pagada
 en vez de facturación por token), calidad de razonamiento (GPT-5.x vs MiniMax-M2.7) y, a futuro
-(Pieza 2, fuera de alcance de este documento), acceso a las herramientas nativas del agente.
+(Pieza 2, fuera de alcance de este documento), el *wiring* de KZA hacia las herramientas nativas
+del agente — las herramientas en sí ya están activas desde esta Pieza 1, ver corrección en §2.
 
 ## 2. Objetivo / No-objetivos
 
@@ -17,8 +18,18 @@ vuelta — ningún cambio en `MultiUserOrchestrator._process_llm_request` ni en 
 prompt. Solo cambia quién genera la respuesta.
 
 **No-objetivos (explícitos):**
-- Tool-calling de Hermes (búsqueda web, ejecución de código, etc.) — Pieza 2, spec aparte, después
-  de ver esta pieza funcionando en producción.
+- **KZA *wiring into* el tool-calling de Hermes** (manejo estructurado de request/response de
+  herramientas del lado de KZA) — Pieza 2, spec aparte, después de ver esta pieza funcionando en
+  producción. ⚠️ **Corrección post-review final (2026-08-10):** esto NO significa que `-z` corra
+  sin herramientas hoy. `hermes -z` invoca el **mismo agente completo**, con **todo su toolset por
+  defecto activo** (acceso a archivos, terminal/shell, browsing web) — la doc de Nous Research lo
+  dice explícito: *"Same agent, same tools, same skills — just strips every interactive/cosmetic
+  layer"*. No hay flag `--toolsets`/`--no-tools`/`--sandbox` documentado que aplique a `-z`
+  específicamente (esos flags existen solo para `hermes chat`). Lo que "Pieza 2" agregaría es que
+  KZA *use* ese tool-calling de forma estructurada — no la mera existencia de las herramientas, que
+  ya está activa desde Pieza 1. **Riesgo aceptado explícitamente por el usuario** dado que el
+  deploy es un server doméstico privado sin exposición a red externa; no hay mecanismo en código
+  para restringir el toolset de `-z` (no existe ese flag), así que no se intenta.
 - Fallback automático a MiniMax si Hermes falla — decisión explícita: reemplazo total. Ver §6 y §9.
 - Streaming token-por-token real — no existe en el mecanismo elegido (§3). El slow path ya tolera
   reasoners no-streaming.
@@ -36,6 +47,13 @@ Hermes Agent tiene dos mecanismos distintos, y solo uno de los dos sirve acá:
 - **`hermes -z "<prompt>" --provider openai-codex`**: el "purest scripted entry point" del CLI —
   *"single prompt in, final response text out, nothing else on stdout or stderr"*. No expone HTTP,
   es invocación de proceso por request. Es el mecanismo elegido.
+
+  ⚠️ **Aclaración post-review final (2026-08-10):** esa cita describe la *forma del I/O*
+  (stdout/stderr limpios, un prompt entra, un texto final sale) — **no** dice nada sobre qué hace
+  el agente puertas adentro para llegar a esa respuesta. No hay que leerla como "text in, text
+  out, sin herramientas". Como se corrige en §2, `-z` corre el agente completo con su toolset
+  normal activo (archivos, terminal, web); lo único que cambia frente a `hermes chat` es la capa
+  interactiva/cosmética del CLI, no el acceso a herramientas.
 
 Consecuencia: no hay puerto nuevo que reservar en el sub-rango 9500-9599, no hay servicio HTTP que
 correr — pero tampoco hay streaming, y cada request paga el overhead de arrancar el proceso
@@ -201,7 +219,9 @@ TDD por convención del proyecto:
 
 ## 13. Relacionado
 
-Pieza 2 (fuera de alcance): cablear el tool-calling nativo de Hermes (búsqueda web, ejecución de
-código) al slow path — requiere esta pieza funcionando y midiendo bien en producción primero,
-mismo patrón secuencial que Pieza A → Pieza B en la campaña de fidelidad del ambient
+Pieza 2 (fuera de alcance): cablear el manejo estructurado del tool-calling nativo de Hermes
+(búsqueda web, ejecución de código) del lado de KZA — las herramientas en sí ya corren activas
+desde Pieza 1 (§2), esto es sobre *usarlas* desde el orchestrator, no sobre habilitarlas. Requiere
+esta pieza funcionando y midiendo bien en producción primero, mismo patrón secuencial que Pieza A →
+Pieza B en la campaña de fidelidad del ambient
 (`docs/superpowers/specs/2026-08-05-fidelidad-transcripcion-ambient-design.md`).
