@@ -12,8 +12,10 @@ Wants=network-online.target
 Image=docker.io/chromadb/chroma:1.5.9
 ContainerName=kza-chroma
 Network=kza-internal.network
-Volume=%h/data/chroma-svc:/chroma/chroma:Z
-Environment=IS_PERSISTENT=TRUE
+# /data (NO /chroma/chroma — ese path es de la linea 0.x). La imagen 1.5.9
+# pinneada persiste en /data; IS_PERSISTENT tambien es legacy 0.x y se ignora
+# en 1.x (persistencia es el default del server 1.x, no hace falta declararla).
+Volume=%h/data/chroma-svc:/data:Z
 Environment=ANONYMIZED_TELEMETRY=FALSE
 # Sub-rango KZA 9500-9599; :9516 libre (auditoria 2026-08-10). Bind solo localhost:
 # los consumidores en la red kza-internal entran por DNS interno, no por este puerto.

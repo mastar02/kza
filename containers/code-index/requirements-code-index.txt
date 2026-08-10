@@ -3,3 +3,6 @@ PyYAML>=6.0
 chromadb>=1.5,<2
 sentence-transformers>=3.0
 openai>=1.30
+# Explicito: src/core/settings_schema.py usa API v2 (import directo). Hoy llega
+# solo transitivo via chromadb — pinnear evita romper si chromadb lo dropea.
+pydantic>=2

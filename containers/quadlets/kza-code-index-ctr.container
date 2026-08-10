@@ -1,7 +1,12 @@
 # Quadlet (podman rootless, usuario kza). Instalar en ~/.config/containers/systemd/
 # con el tag de imagen reemplazado por el deploy: sed "s/@SHA@/$SHA/".
-# Reemplaza a la unit nativa ~/.config/systemd/user/kza-code-index.service
-# (deshabilitarla antes de arrancar este; mismo puerto :9515).
+# Nombre del archivo con sufijo -ctr (unit generada: kza-code-index-ctr.service),
+# DELIBERADO: la unit nativa ~/.config/systemd/user/kza-code-index.service sigue
+# instalada para rollback (ver runbook), y esa unit nativa tiene precedencia sobre
+# una unit generada por Quadlet con el mismo nombre — si el archivo se llamara
+# kza-code-index.container, un daemon-reload/restart accidental reengancharía la
+# nativa (mode: http, crash-loop) en vez de este container. ContainerName sigue
+# siendo kza-code-index (no cambia; solo cambia el nombre de la unit systemd).
 [Unit]
 Description=KZA code-index :9515 (container) — indice semantico del codebase
 After=network-online.target kza-chroma.service

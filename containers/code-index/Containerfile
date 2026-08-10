@@ -4,6 +4,11 @@
 # mismo commit que esta deployado en el checkout del server.
 FROM python:3.13-slim
 
+# git: CodeIndexer._git_head() reporta el sha indexado en /health; sin git el
+# repo montado en /home/kza/app queda sin HEAD legible y ese campo da null.
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
 COPY requirements-code-index.txt /tmp/requirements-code-index.txt
 RUN pip install --no-cache-dir -r /tmp/requirements-code-index.txt
