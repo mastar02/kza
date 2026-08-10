@@ -138,15 +138,27 @@ todos de una sentada.
    quedó vacío. Nota: `trading-bot` no tiene hoy ningún retrain semanal propio (solo el timer
    `trading-carry-monitor`) — si el retrain se quiere de vuelta, es una decisión del proyecto
    trading, no de KZA.
-4. **Responder las preguntas de la sección anterior** (mailcow/libvirt vía `kza`) — esto
-   determina si los pasos 5-6 son seguros tal cual o necesitan un intermedio.
-5. **Sacar los grupos** `docker`, `lxd`, `kvm`, `libvirt`, `sudo` de `kza`
-   (`sudo gpasswd -d kza <grupo>` por cada uno) — reiniciar la sesión SSH después para que el
-   cambio de grupos tome efecto, y volver a correr el smoke test + verificar que `kza-voice`
-   sigue sano (no debería tocarlo en absoluto, pero es la verificación barata).
-6. **Borrar `/etc/sudoers.d/kza`** (o reemplazarlo por una regla acotada si el paso 4 reveló una
-   necesidad real y puntual) — último paso, el de mayor blast radius si algo se pasó por alto en
-   los pasos anteriores.
+4. ✅ **Responder las preguntas de la sección anterior** — respondidas 2026-08-10 con evidencia
+   del history de shell: mailcow NO se administra desde `kza` (3 `docker ps` triviales en todo
+   el history); OPNsense se gestiona siempre vía `sudo virsh` (44 usos — la membresía en
+   `libvirt`/`kvm` nunca se usó); el hábito de sudo SÍ existe y es fuerte (113 usos: la sesión
+   de `kza` funciona como consola admin del server, `sudo su <proyecto>` incluido). Ningún
+   script fuera del repo depende de sudo.
+5. ✅ **Sacar los grupos** — ejecutado 2026-08-10: `docker`, `lxd`, `kvm`, `libvirt` fuera
+   (`gpasswd -d`, verificado con `id` + servicios sanos + regla acotada funcionando). El grupo
+   `sudo` se **conserva a propósito**: el recon mostró que `kza` es la única vía a root del
+   server (root tiene la password locked `*` y no hay ningún otro sudoer) — sacarlo habría
+   dejado el host sin camino a root fuera de recovery mode.
+6. ⚠️ **Resuelto distinto al plan** (decisión del usuario 2026-08-10): `NOPASSWD: ALL` se
+   **conserva** — no quiso perder el root sin fricción desde su sesión — mitigado con
+   `Defaults:kza requiretty`: sudo queda bloqueado desde sesiones sin TTY (la vía de los
+   comandos ssh no-interactivos de agentes y scripts; verificado en vivo en ambas direcciones).
+   **Límite conocido y aceptado**: `ssh -tt` o un script corriendo en una terminal interactiva
+   pasan igual — es fricción contra automatismos, no un muro; el incidente Hermes original
+   (instalador corrido en terminal) habría pasado. Además quedó `/etc/sudoers.d/kza-scoped`
+   (Runas_Alias `PROYECTOS`, NOPASSWD solo hacia cuentas de proyecto): hoy es redundante con el
+   ALL, pero es la base lista si en el futuro se decide cortar el ALL. Backup de la regla
+   original en `~kza/backups/sudoers-kza-2026-08-10.bak`.
 
 Verificación final post-migración: repetir exactamente los chequeos de la tabla de arriba
 (`sudo -l`, `id kza`, `ps` filtrado por root) y confirmar que el pipeline de voz sigue sano
@@ -157,7 +169,14 @@ Verificación final post-migración: repetir exactamente los chequeos de la tabl
 - `ha-core` (Home Assistant) sigue corriendo rootful por diseño — es una excepción R10 propia
   (#2), de un proyecto distinto (`ha`), no de KZA. No es parte de esta migración.
 - mailcow bajo root — excepción R10 #3, proyecto `mail`, tampoco es KZA.
-- Durante la investigación original (2026-08-10 AM) no se tocó nada del server. Los pasos 1-3
-  de la transición se ejecutaron ese mismo día (ver checkmarks arriba); el único cambio de
-  estado en el server fue la baja del cron muerto de trading (con backup). Los pasos 4-6
-  siguen pendientes.
+- Durante la investigación original (2026-08-10 AM) no se tocó nada del server. Los 6 pasos se
+  resolvieron ese mismo día (ver checkmarks arriba). Estado final de la cuenta `kza`: sin
+  grupos root-equivalentes; `sudo` root sin password conservado pero solo con TTY
+  (`requiretty`); regla acotada a cuentas de proyecto lista como plan B. Riesgo residual
+  (script interactivo puede escalar) documentado y aceptado.
+- Idea a futuro planteada por el usuario: contenerizar el sistema kza-voice en Podman rootless.
+  Ojo: la excepción R10 #4 existe porque el pipeline necesita USB ReSpeaker + serial MA1260 +
+  <300ms — un contenedor puede recibir esos devices (`--device`), pero AEC/latencia/audio son
+  exactamente lo que motivó correr nativo. Si se explora, empezar por los satélites
+  (llama-server :8101, code-index, futuro Chroma :9500 — el Quadlet ya existe), no por
+  `kza-voice`.
