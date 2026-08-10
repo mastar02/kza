@@ -133,6 +133,9 @@ class TestMissedClips:
         # no contamina ni el dir de aceptados ni rejected/
         assert list((tmp_path / "captured").glob("*.wav")) == []
         assert not (tmp_path / "captured" / "rejected").exists()
+        # el sentinel -1.0 debe quedar visible en el nombre — un score real
+        # (0.00-1.00) ahí sería mentir sobre una medición que no existe.
+        assert "_-1.00.wav" in next(missed.glob("*.wav")).name
 
     def test_missed_rotation_independent(self, tmp_path):
         # missed/ rota con su propio tope (max_missed_files), sin tocar

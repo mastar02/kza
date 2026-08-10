@@ -723,6 +723,36 @@ class TestDetectorOnMissedFn:
 
         assert calls == []
 
+    async def test_not_called_when_dedup_self(self):
+        # El propio canal textual ya disparó hace poco para esta room — la
+        # re-transcripción solapada sería un clip casi-duplicado del mismo
+        # evento de habla, no un miss nuevo.
+        clock = FakeClock(t=1000.0)
+        dispatch = AsyncMock(return_value={"success": True})
+        calls = []
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+            now_fn=clock,
+            on_missed_fn=lambda room_id, aud: calls.append((room_id, aud)),
+        )
+
+        await detector.maybe_dispatch(
+            room_id="salon", text="Nexa, apagá la luz", source="human_direct",
+            speaker=None, audio=make_audio(),
+        )
+        clock.advance(3.0)  # < dedup_window_s=8.0
+        second_audio = make_audio()
+        await detector.maybe_dispatch(
+            room_id="salon", text="Nexa, prendé la luz", source="human_direct",
+            speaker=None, audio=second_audio,
+        )
+
+        # Solo el primer disparo cuenta como miss — el segundo fue absorbido
+        # por dedup_self, no debe agregar un segundo call.
+        assert len(calls) == 1
+        assert calls[0][0] == "salon"
+
     async def test_not_called_when_source_is_tv(self):
         dispatch = AsyncMock()
         calls = []
@@ -776,6 +806,14 @@ class TestDetectorOnMissedFn:
 
         assert result is True
         dispatch.assert_awaited_once()
+        # No alcanza con "no rompió" — el WARNING es la ÚNICA señal de que
+        # on_missed_fn falló (sin esto, un logger.warning borrado por error
+        # se volvería silencioso de verdad y ningún test lo detectaría).
+        assert any(
+            r.levelno == logging.WARNING and "[TextualWake]" in r.message
+            and "on_missed_fn error" in r.message
+            for r in caplog.records
+        )
 
     async def test_called_even_when_dispatch_fn_raises(self):
         # El miss acústico ya ocurrió en cuanto pasamos los gates — es

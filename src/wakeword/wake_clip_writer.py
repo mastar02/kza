@@ -15,6 +15,11 @@ Restricción de diseño: submit() se llama desde el AUDIO CALLBACK THREAD de
 sounddevice → jamás bloquea ni lanza (cola bounded + worker thread propio;
 si la cola está llena, el clip se descarta en silencio). Lección 2026-06-12:
 cualquier bloqueo en ese thread congela la captura de todo el pipeline.
+
+submit_missed() (spec 2026-07-25 Etapa A) NO corre en ese thread — lo llama
+el worker asyncio del ambient path (vía TextualWakeDetector.on_missed_fn),
+un contexto distinto. El contrato "nunca bloquea ni lanza" se mantiene
+igual (misma cola, mismo worker), pero no hay que asumir el mismo hilo.
 """
 
 import logging
@@ -32,9 +37,14 @@ logger = logging.getLogger(__name__)
 
 class _Bucket(Enum):
     """Subcarpeta de destino de un clip. Interno — la API pública sigue
-    siendo submit()/submit_missed(), no expone este enum."""
+    siendo submit()/submit_missed(), no expone este enum.
 
-    ACCEPTED = None       # dir raíz, comportamiento previo
+    ACCEPTED = "" (no None): `Path("x") / ""` da `Path("x")` sin rama
+    especial en `_write`, y evita que un futuro miembro con value=None se
+    alias-ee silenciosamente a ACCEPTED (comportamiento real de Enum,
+    verificado en review — un segundo `= None` no crea un miembro nuevo)."""
+
+    ACCEPTED = ""          # dir raíz, comportamiento previo
     REJECTED = "rejected"
     MISSED = "missed"
 
@@ -48,7 +58,7 @@ class WakeClipWriter:
         sample_rate: int = 16000,
         max_files: int = 2000,
         max_rejected_files: int = 4000,
-        max_missed_files: int = 2000,
+        max_missed_files: int = 300,
         queue_size: int = 8,
     ):
         self._dir = Path(directory)
@@ -64,6 +74,15 @@ class WakeClipWriter:
         # propio, simétrico a rejected/, para no purgarlo con el volumen de
         # cualquiera de los otros dos buckets.
         self._max_missed_files = max_missed_files
+        self._caps = {
+            _Bucket.ACCEPTED: self._max_files,
+            _Bucket.REJECTED: self._max_rejected_files,
+            _Bucket.MISSED: self._max_missed_files,
+        }
+        assert set(self._caps) == set(_Bucket), (
+            "falta un tope de rotación para algún _Bucket — "
+            "agregar un bucket exige agregar su cap acá"
+        )
         self._queue: queue.Queue = queue.Queue(maxsize=queue_size)
         self._running = True
         self._worker = threading.Thread(
@@ -144,7 +163,7 @@ class WakeClipWriter:
         self, room_id: str, score: float, clip: np.ndarray, ts: float,
         bucket: "_Bucket" = _Bucket.ACCEPTED,
     ) -> None:
-        target = self._dir if bucket.value is None else self._dir / bucket.value
+        target = self._dir / bucket.value
         target.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(ts))
         millis = int((ts % 1) * 1000)
@@ -155,12 +174,7 @@ class WakeClipWriter:
             f.setsampwidth(2)
             f.setframerate(self._sample_rate)
             f.writeframes(pcm.tobytes())
-        caps = {
-            _Bucket.ACCEPTED: self._max_files,
-            _Bucket.REJECTED: self._max_rejected_files,
-            _Bucket.MISSED: self._max_missed_files,
-        }
-        self._rotate(target, caps[bucket])
+        self._rotate(target, self._caps[bucket])
 
     def _rotate(self, target: Path, cap: int) -> None:
         files = sorted(target.glob("*.wav"))

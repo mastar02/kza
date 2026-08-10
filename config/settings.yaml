@@ -1308,8 +1308,13 @@ rooms:
       # §2): dir/missed/ — el wake textual disparó y el acústico NO. Es el
       # ÚNICO bucket con falsos negativos reales (captured/ y rejected/ solo
       # tienen clips que ya cruzaron el threshold del detector, ≥0.4 — nunca
-      # arreglan la sordera sub-umbral). Tope propio, simétrico a rejected/.
-      max_missed_files: 2000
+      # arreglan la sordera sub-umbral).
+      # ⚠️ NO es "simétrico a rejected/" en bytes (review PR #16): estos
+      # clips son el segmento ambient COMPLETO (hasta segmenter.max_segment_s
+      # = 30s ≈ 960KB c/u, no el preroll de ~1s de captured/rejected ≈ 35KB).
+      # 300 * 960KB peor caso ≈ 288MB — realista, mucho menos (la mayoría de
+      # las utterances no llegan a 30s).
+      max_missed_files: 300
     # (follow_up_window_s ya existe más abajo en este mismo bloque — 2026-06-02
     # main.py ahora lo CABLEA, antes hardcodeaba 8.0 e ignoraba el config.)
     # Porcupine (engine: porcupine) — wake-word dedicado "Nexa" (Picovoice).

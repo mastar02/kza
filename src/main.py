@@ -961,7 +961,7 @@ async def main():
                     ),
                     max_files=int(clip_cfg.get("max_files", 2000)),
                     max_rejected_files=int(clip_cfg.get("max_rejected_files", 4000)),
-                    max_missed_files=int(clip_cfg.get("max_missed_files", 2000)),
+                    max_missed_files=int(clip_cfg.get("max_missed_files", 300)),
                 )
                 logger.info(
                     f"WakeClipWriter ACTIVO: dir={clip_cfg.get('dir')} "
@@ -1371,12 +1371,24 @@ async def main():
 
             # Etapa A (docs/plans/2026-07-25-reentrenamiento-wake-nexa.md §2):
             # cada disparo textual que llega hasta acá es un falso negativo
-            # real del wake acústico. -1.0 = sentinel explícito: el detector
-            # acústico nunca corrió sobre esta ventana, no hay score real que
-            # ponerle al nombre del archivo (ver WakeClipWriter.submit_missed).
+            # real del wake acústico. -1.0 = sentinel explícito: el score
+            # acústico real (WakeWordDetector.predict() corre continuo en el
+            # command path, ver [oww-dbg] en detector.py) no está plomeado
+            # hasta acá — no hay accessor tipo last_wake_score(room_id) como
+            # sí existe last_command_dispatch_ts(room_id). No es "no existe",
+            # es "no está expuesto" (review PR #16). El nombre del archivo no
+            # debe fingir un score que no se pudo obtener.
+            #
+            # 7 días de campaña para juntar unos cientos de eventos raros: un
+            # drop silencioso por cola llena arruina el conteo. Loguear.
             def _submit_missed(room_id: str, audio) -> None:
-                if wake_clip_writer is not None:
-                    wake_clip_writer.submit_missed(room_id, -1.0, audio)
+                if wake_clip_writer is None:
+                    return
+                if not wake_clip_writer.submit_missed(room_id, -1.0, audio):
+                    logger.warning(
+                        f"[TextualWake] missed clip descartado (cola llena) "
+                        f"room={room_id} — dataset de Etapa A subcuenta"
+                    )
 
             textual_wake_detector = TextualWakeDetector(
                 dispatch_fn=request_router.process_command,
