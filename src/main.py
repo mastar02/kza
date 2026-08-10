@@ -377,7 +377,7 @@ async def main():
         # sin base_url — ver resolve_reasoner_gate branch hermes_cli
         # (src/llm/cloud_consent.py) y docs/superpowers/specs/
         # 2026-08-10-hermes-cli-reasoner-design.md.
-        from src.llm.hermes_reasoner import HermesCliReasoner
+        from src.llm.hermes_reasoner import HermesCliReasoner, warn_if_router_timeout_misaligned
         if not gate_allowed:
             logger.warning(
                 "Reasoner cloud (hermes_cli) bloqueado por falta de consent — slow path sin reasoner. "
@@ -385,11 +385,29 @@ async def main():
             )
             llm = None
         else:
+            hermes_timeout_s = reasoner_config.get("hermes_timeout_s", 90.0)
+            # Boot-time guard (finding #4, review 2026-08-10): el checklist pre-flip
+            # comentado más arriba en settings.yaml pide a mano subir
+            # llm.failover.endpoints[reasoner_cloud].timeout_s a >= hermes_timeout_s
+            # — acá lo enforzamos con un log ruidoso si alguien lo pisa, en vez de
+            # confiar solo en que se lea el comentario. failover_cfg todavía no se
+            # parseó a esta altura de main() (eso pasa más abajo, al construir
+            # LLMRouter) — se lee el dict crudo de config acá porque es lo único
+            # que hace falta para esta comparación.
+            _router_ep_timeout_s = next(
+                (
+                    ep.get("timeout_s")
+                    for ep in (config.get("llm", {}).get("failover", {}) or {}).get("endpoints", []) or []
+                    if ep.get("id") == "reasoner_cloud"
+                ),
+                None,
+            )
+            warn_if_router_timeout_misaligned(hermes_timeout_s, _router_ep_timeout_s)
             llm = HermesCliReasoner(
                 binary_path=reasoner_config.get("hermes_binary_path", "hermes"),
                 provider=reasoner_config.get("hermes_provider", "openai-codex"),
                 model=reasoner_config.get("hermes_model"),
-                timeout_s=reasoner_config.get("hermes_timeout_s", 90.0),
+                timeout_s=hermes_timeout_s,
             )
             try:
                 llm.load()
@@ -1236,18 +1254,35 @@ async def main():
                 )
                 compactor = None
             else:
+                # timeout_s del subproceso: usar hermes_timeout_s (90s default, el mismo
+                # valor que el reasoner principal), NO compaction_cfg.timeout_s (30s) —
+                # ese 30s está tuneado para una llamada HTTP a un gateway ya caliente
+                # (el path mode="http" preexistente), no para arrancar un proceso hermes
+                # nuevo. El costo de arranque de hermes es el mismo compactando que
+                # razonando.
+                compaction_hermes_timeout_s = reasoner_config.get("hermes_timeout_s", 90.0)
                 compaction_reasoner = HermesCliReasoner(
                     binary_path=reasoner_config.get("hermes_binary_path", "hermes"),
                     provider=reasoner_config.get("hermes_provider", "openai-codex"),
                     model=reasoner_config.get("hermes_model"),
-                    timeout_s=compaction_cfg.get("timeout_s", 30.0),
+                    timeout_s=compaction_hermes_timeout_s,
                 )
                 try:
                     compaction_reasoner.load()
+                    # El timeout_s del Compactor es el asyncio.wait_for EXTERNO que
+                    # envuelve compaction_reasoner.complete() — mismo riesgo que finding
+                    # #4 (main.py, branch hermes_cli del reasoner principal) si es menor
+                    # al timeout_s del subproceso de arriba: el wait_for cancela la task
+                    # antes de que el subproceso/su kill de process-group lleguen a
+                    # dispararse, y hermes queda huérfano hasta SU PROPIO timeout. Usar
+                    # el máximo entre lo configurado y el timeout del subproceso hermes.
                     compactor = Compactor(
                         reasoner=compaction_reasoner,
                         max_summary_tokens=compaction_cfg.get("max_summary_tokens", 200),
-                        timeout_s=compaction_cfg.get("timeout_s", 30.0),
+                        timeout_s=max(
+                            compaction_cfg.get("timeout_s", 30.0),
+                            compaction_hermes_timeout_s,
+                        ),
                     )
                     logger.info(
                         f"[main] Compactor enabled vía Hermes CLI (threshold={compaction_threshold}, "
