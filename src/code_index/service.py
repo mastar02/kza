@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from aiohttp import web
 
@@ -105,12 +106,33 @@ def create_app(indexer: CodeIndexer) -> web.Application:
     return app
 
 
+def build_chroma_client(cfg: dict):
+    """Build the Chroma client per config: embedded (local dir) or http (service).
+
+    ``embedded`` (default) preserves today's behavior (PersistentClient on
+    ``chroma_path``). ``http`` targets the kza-chroma container via
+    ``code_index.chroma.url`` (resolved by Podman's internal DNS).
+    """
+    import chromadb
+
+    chroma_cfg = cfg.get("chroma") or {}
+    mode = chroma_cfg.get("mode", "embedded")
+    if mode == "embedded":
+        return chromadb.PersistentClient(path=cfg["chroma_path"])
+    if mode == "http":
+        url = chroma_cfg.get("url", "")
+        parsed = urlparse(url)
+        if not parsed.hostname or not parsed.port:
+            raise ValueError(f"code_index.chroma.url must be host:port, got: {url!r}")
+        return chromadb.HttpClient(host=parsed.hostname, port=parsed.port)
+    raise ValueError(f"code_index.chroma.mode unknown: {mode!r}")
+
+
 def build_indexer(cfg: dict, repo_root: Path) -> CodeIndexer:
     """Factory con dependencias reales (Chroma persistente, BGE-M3 CPU, MiniMax)."""
-    import chromadb
     from sentence_transformers import SentenceTransformer
 
-    client = chromadb.PersistentClient(path=cfg["chroma_path"])
+    client = build_chroma_client(cfg)
     chunks = client.get_or_create_collection(
         "code_chunks", metadata={"hnsw:space": "cosine"}
     )
