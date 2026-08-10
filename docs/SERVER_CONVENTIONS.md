@@ -93,6 +93,8 @@ Cuando un proyecto tiene su propio reverse proxy contenedorizado dentro de su re
 | :3000 | Grafana (loopback; LAN vía :8081) | obs |
 | :9200 | Elasticsearch (loopback + red obs-internal) | obs |
 | :9501 | Kibana (loopback; LAN vía :8080) | obs |
+| :9515 | code-index KZA (container kza-code-index; nativo hasta 2026-08-10) | kza |
+| :9516 | ChromaDB servicio (container kza-chroma, bind 127.0.0.1; backend del code-index) | kza |
 | :9520/:9521 | Open-WebUI (→:8200) / SearXNG | kza |
 | :18554 | go2rtc cámaras | video/HA |
 
