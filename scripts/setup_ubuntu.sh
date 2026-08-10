@@ -2,13 +2,18 @@
 #
 # KZA Voice Assistant - Ubuntu Setup Script
 # For Ubuntu 22.04/24.04 LTS Server
-# Hardware: Threadripper PRO 7965WX + 4x RTX 3070 8GB
+# Hardware: Threadripper PRO 7965WX + 2x RTX 3070 8GB (more GPUs may be added)
 #
 # Usage: sudo ./scripts/setup_ubuntu.sh
 #
+# Run once as root to provision the host. After that, KZA runs ROOTLESS:
+# everything is managed as the kza user via `systemctl --user` + linger.
+# The kza account must NOT have sudo nor root-equivalent groups
+# (docker/lxd/kvm/libvirt) — see docs/architecture/ROOTLESS_MIGRATION.md.
+#
 # Environment variables (optional overrides):
 #   KZA_USER     - service user (default: kza)
-#   INSTALL_DIR  - installation path (default: /opt/kza)
+#   INSTALL_DIR  - installation path (default: /home/kza/kza, symlinked as ~/app)
 #
 
 set -euo pipefail
@@ -28,7 +33,7 @@ log_error(){ echo -e "${RED}[FAIL]${NC} $1"; }
 echo ""
 echo "============================================================"
 echo "  KZA Voice Assistant - Ubuntu Setup"
-echo "  Target: Ubuntu 22.04/24.04 + Threadripper PRO + 4x RTX 3070"
+echo "  Target: Ubuntu 22.04/24.04 + Threadripper PRO + 2x RTX 3070"
 echo "  Python: 3.13 (deadsnakes PPA)"
 echo "============================================================"
 echo ""
@@ -43,7 +48,8 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 KZA_USER="${KZA_USER:-kza}"
-INSTALL_DIR="${INSTALL_DIR:-/opt/kza}"
+KZA_HOME="/home/${KZA_USER}"
+INSTALL_DIR="${INSTALL_DIR:-${KZA_HOME}/kza}"
 PYTHON_VERSION="3.13"
 PYTHON_BIN="python${PYTHON_VERSION}"
 
@@ -141,11 +147,11 @@ fi
 
 GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 log_info "GPUs detected: ${GPU_COUNT}"
-if [ "$GPU_COUNT" -lt 4 ]; then
-    log_warn "Expected 4 GPUs, found: ${GPU_COUNT} — some features may be limited"
-    summary_warn "GPUs: ${GPU_COUNT}/4 detected"
+if [ "$GPU_COUNT" -lt 2 ]; then
+    log_warn "Expected at least 2 GPUs, found: ${GPU_COUNT} — some features may be limited"
+    summary_warn "GPUs: ${GPU_COUNT}/2 detected"
 else
-    summary_ok "GPUs: ${GPU_COUNT} detected (4x RTX 3070 expected)"
+    summary_ok "GPUs: ${GPU_COUNT} detected (2x RTX 3070 baseline; assignment in config/settings.yaml)"
 fi
 
 # CUDA Toolkit
@@ -176,15 +182,19 @@ fi
 # ----------------------------------------------------------
 log_info "Configuring user ${KZA_USER}..."
 
+# Regular (non-system) user. Groups: audio (ReSpeaker mics), dialout (MA1260
+# RS-232), bluetooth (BLE presence), video (GPU device nodes on some installs).
+# NEVER add sudo/docker/lxd/kvm/libvirt — the account must stay non-privileged
+# (docs/architecture/ROOTLESS_MIGRATION.md).
 if ! id "$KZA_USER" &>/dev/null; then
-    useradd -r -m -s /bin/bash -G audio,video,bluetooth "$KZA_USER"
+    useradd -m -s /bin/bash -G audio,video,dialout,bluetooth "$KZA_USER"
     log_ok "User ${KZA_USER} created"
 else
     log_ok "User ${KZA_USER} already exists"
 fi
 
-usermod -a -G audio,video,bluetooth "$KZA_USER"
-summary_ok "Service user: ${KZA_USER}"
+usermod -a -G audio,video,dialout,bluetooth "$KZA_USER"
+summary_ok "Service user: ${KZA_USER} (non-privileged; audio,video,dialout,bluetooth)"
 
 # ----------------------------------------------------------
 # 6. Create installation directory and required subdirs
@@ -196,6 +206,14 @@ mkdir -p "${INSTALL_DIR}/data/memory_db"
 mkdir -p "${INSTALL_DIR}/data/contexts"
 mkdir -p "${INSTALL_DIR}/logs"
 mkdir -p "${INSTALL_DIR}/models/lora_adapters"
+mkdir -p "${KZA_HOME}/secrets"
+chmod 700 "${KZA_HOME}/secrets"
+
+# Canonical layout: ~/app is a symlink to the checkout (systemd units and docs
+# reference /home/kza/app)
+if [ ! -e "${KZA_HOME}/app" ]; then
+    ln -s "$INSTALL_DIR" "${KZA_HOME}/app"
+fi
 
 # Copy project files if running from repo checkout
 if [ -f "$PROJECT_DIR/src/main.py" ]; then
@@ -209,9 +227,10 @@ if [ -f "$PROJECT_DIR/src/main.py" ]; then
     log_ok "Project files copied"
 fi
 
-chown -R "${KZA_USER}:${KZA_USER}" "$INSTALL_DIR"
+chown -R "${KZA_USER}:${KZA_USER}" "$INSTALL_DIR" "${KZA_HOME}/secrets"
+chown -h "${KZA_USER}:${KZA_USER}" "${KZA_HOME}/app" 2>/dev/null || true
 log_ok "Directory ${INSTALL_DIR} configured"
-summary_ok "Install dir: ${INSTALL_DIR} (data/, models/, logs/ created)"
+summary_ok "Install dir: ${INSTALL_DIR} (~/app symlink, data/, models/, logs/, ~/secrets/)"
 
 # ----------------------------------------------------------
 # 7. Create Python 3.13 venv and install pip dependencies
@@ -222,9 +241,9 @@ sudo -u "$KZA_USER" bash << VENVEOF
 set -e
 cd "$INSTALL_DIR"
 
-# Create venv with Python 3.13
-${PYTHON_BIN} -m venv venv
-source venv/bin/activate
+# Create venv with Python 3.13 (.venv — the path the systemd user unit executes)
+${PYTHON_BIN} -m venv .venv
+source .venv/bin/activate
 
 # Upgrade pip
 pip install --upgrade pip wheel setuptools -q
@@ -241,48 +260,55 @@ echo "Python venv ready: \$(python --version), torch \$(python -c 'import torch;
 VENVEOF
 
 log_ok "Python ${PYTHON_VERSION} venv created and dependencies installed"
-summary_ok "Python venv: ${INSTALL_DIR}/venv (Python ${PYTHON_VERSION})"
+summary_ok "Python venv: ${INSTALL_DIR}/.venv (Python ${PYTHON_VERSION})"
 
 # ----------------------------------------------------------
-# 8. Copy .env.example to .env if not exists
+# 8. Seed ~/secrets/.env if not exists (units read it from there, chmod 600)
 # ----------------------------------------------------------
-if [ ! -f "$INSTALL_DIR/.env" ]; then
+ENV_FILE="${KZA_HOME}/secrets/.env"
+if [ ! -f "$ENV_FILE" ]; then
     if [ -f "$INSTALL_DIR/.env.example" ]; then
-        cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
-        chown "${KZA_USER}:${KZA_USER}" "$INSTALL_DIR/.env"
-        chmod 600 "$INSTALL_DIR/.env"
-        log_warn ".env created from .env.example — EDIT IT with your HA token and Spotify credentials"
-        summary_warn ".env copied from .env.example — NEEDS EDITING"
+        cp "$INSTALL_DIR/.env.example" "$ENV_FILE"
+        chown "${KZA_USER}:${KZA_USER}" "$ENV_FILE"
+        chmod 600 "$ENV_FILE"
+        log_warn "${ENV_FILE} created from .env.example — EDIT IT with your HA token and Spotify credentials"
+        summary_warn "${ENV_FILE} copied from .env.example — NEEDS EDITING"
     else
-        log_warn ".env.example not found; create .env manually"
-        summary_warn ".env not created — no .env.example found"
+        log_warn ".env.example not found; create ${ENV_FILE} manually"
+        summary_warn "${ENV_FILE} not created — no .env.example found"
     fi
 else
-    log_ok ".env already exists"
-    summary_ok ".env already configured"
+    log_ok "${ENV_FILE} already exists"
+    summary_ok "${ENV_FILE} already configured"
 fi
 
 # ----------------------------------------------------------
-# 9. Install systemd service
+# 9. Install systemd USER unit + linger (rootless model)
 # ----------------------------------------------------------
-log_info "Installing systemd service..."
+# kza-voice runs as a user unit (`systemctl --user`), never as a system unit.
+# `loginctl enable-linger` keeps the user manager (and the service) running
+# without an open session and across reboots.
+log_info "Installing systemd user unit..."
 
+USER_UNIT_DIR="${KZA_HOME}/.config/systemd/user"
 if [ -f "$INSTALL_DIR/systemd/kza-voice.service" ]; then
-    cp "$INSTALL_DIR/systemd/kza-voice.service" /etc/systemd/system/
+    install -d -o "$KZA_USER" -g "$KZA_USER" "$USER_UNIT_DIR"
+    cp "$INSTALL_DIR/systemd/kza-voice.service" "$USER_UNIT_DIR/"
 
-    # Adjust paths if INSTALL_DIR is not /opt/kza
-    if [ "$INSTALL_DIR" != "/opt/kza" ]; then
-        sed -i "s|/opt/kza|${INSTALL_DIR}|g" /etc/systemd/system/kza-voice.service
+    # Adjust paths if the user/home differs from the canonical /home/kza
+    if [ "$KZA_HOME" != "/home/kza" ]; then
+        sed -i "s|/home/kza|${KZA_HOME}|g" "$USER_UNIT_DIR/kza-voice.service"
     fi
-    sed -i "s|User=kza|User=${KZA_USER}|g" /etc/systemd/system/kza-voice.service
-    sed -i "s|Group=kza|Group=${KZA_USER}|g" /etc/systemd/system/kza-voice.service
+    chown "${KZA_USER}:${KZA_USER}" "$USER_UNIT_DIR/kza-voice.service"
 
-    systemctl daemon-reload
-    log_ok "systemd service installed (kza-voice.service)"
-    summary_ok "systemd service: kza-voice"
+    loginctl enable-linger "$KZA_USER"
+    sudo -u "$KZA_USER" XDG_RUNTIME_DIR="/run/user/$(id -u "$KZA_USER")" \
+        systemctl --user daemon-reload
+    log_ok "systemd user unit installed (kza-voice.service) + linger enabled"
+    summary_ok "systemd user unit: kza-voice (rootless, linger on)"
 else
     log_warn "systemd/kza-voice.service not found — skipped"
-    summary_warn "systemd service not installed"
+    summary_warn "systemd user unit not installed"
 fi
 
 # ----------------------------------------------------------
@@ -327,7 +353,7 @@ if [ ! -f /etc/security/limits.d/audio.conf ]; then
 AUDIOEOF
 fi
 
-# Hugepages for LLM 70B (optional, helps with large memory allocations)
+# Hugepages (optional, helps with large model memory allocations)
 if ! grep -q "kza" /etc/sysctl.d/99-kza.conf 2>/dev/null; then
     cat > /etc/sysctl.d/99-kza.conf << SYSEOF
 # KZA Voice Assistant — system tuning
@@ -355,25 +381,24 @@ for item in "${SUMMARY[@]}"; do
     echo -e "    ${item}"
 done
 echo ""
-echo "  Next steps:"
+echo "  Next steps (run as ${KZA_USER} — e.g. 'ssh ${KZA_USER}@<host>'; no sudo needed):"
 echo ""
 echo "    1. Edit configuration:"
-echo "       sudo -u ${KZA_USER} nano ${INSTALL_DIR}/.env"
+echo "       nano ${KZA_HOME}/secrets/.env"
 echo ""
 echo "    2. Download models:"
-echo "       sudo -u ${KZA_USER} ${INSTALL_DIR}/scripts/download_models.sh"
+echo "       ${INSTALL_DIR}/scripts/download_models.sh"
 echo ""
 echo "    3. Run smoke test:"
-echo "       sudo -u ${KZA_USER} ${INSTALL_DIR}/scripts/smoke_test.sh"
+echo "       ${INSTALL_DIR}/scripts/smoke_test.sh"
 echo ""
 echo "    4. Test manually:"
-echo "       sudo -u ${KZA_USER} ${INSTALL_DIR}/scripts/start.sh"
+echo "       ${INSTALL_DIR}/scripts/start.sh"
 echo ""
-echo "    5. Enable and start the service:"
-echo "       sudo systemctl enable kza-voice"
-echo "       sudo systemctl start kza-voice"
+echo "    5. Enable and start the service (user unit, rootless):"
+echo "       systemctl --user enable --now kza-voice"
 echo ""
 echo "    6. View logs:"
-echo "       journalctl -u kza-voice -f"
+echo "       journalctl --user-unit kza-voice -f"
 echo ""
 echo "============================================================"

@@ -1,75 +1,34 @@
+# USER unit — se instala en ~kza/.config/systemd/user/kza-voice.service y se
+# gestiona con `systemctl --user` desde la sesión de kza. NO es una unit de
+# sistema: kza-voice corre rootless como el usuario kza (sin sudo, sin root),
+# ver docs/architecture/ROOTLESS_MIGRATION.md. Sobrevive logout/reboot vía
+# `loginctl enable-linger kza`.
+#
+# En el server puede existir un drop-in kza-voice.service.d/llm-auth.conf con
+# EnvironmentFile=- adicionales para las API keys de los LLM locales.
+
 [Unit]
-Description=KZA Voice Assistant - Home Automation
-Documentation=https://github.com/tu-repo/kza
-After=network-online.target sound.target
-Wants=network-online.target
+Description=KZA Voice Pipeline — asistente domótico (STT+NLU+TTS+HA)
+Documentation=file:///home/kza/app/CLAUDE.md
+# Excepción R10 #3 (Notion pág 8): USB ReSpeaker + MA1260 serial + <300ms latency
+After=network-online.target kza-llm-ik.service
+Wants=network-online.target kza-llm-ik.service
+# Requires removed: 72B is optional (fast path works without it)
+StartLimitBurst=3
 StartLimitIntervalSec=300
-StartLimitBurst=5
 
 [Service]
 Type=simple
-User=kza
-Group=kza
-WorkingDirectory=/opt/kza
+WorkingDirectory=/home/kza/app
+EnvironmentFile=/home/kza/secrets/.env
+EnvironmentFile=-/home/kza/secrets/vllm-api-key.env
+EnvironmentFile=-/home/kza/secrets/llama-api-key.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/kza/app/.venv/bin/python -m src.main
 
-# Python 3.13 venv — ensure the venv was created with python3.13
-Environment="PATH=/opt/kza/venv/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin"
-Environment="PYTHONUNBUFFERED=1"
-Environment="PYTHONDONTWRITEBYTECODE=1"
-EnvironmentFile=/opt/kza/.env
-
-# All 4 GPUs visible; each component selects its own via config/settings.yaml
-# cuda:0=STT, cuda:1=Embeddings/Speaker, cuda:2=Router, cuda:3=TTS
-Environment="CUDA_VISIBLE_DEVICES=0,1,2,3"
-
-# CUDA library paths
-Environment="LD_LIBRARY_PATH=/usr/local/cuda/lib64:%h/.local/lib"
-
-# Resource limits — GPU workloads need high file descriptors and unlocked memory
-LimitNOFILE=65535
-LimitMEMLOCK=infinity
-LimitNPROC=4096
-LimitSTACK=67108864
-
-# Audio — access to sound devices
-SupplementaryGroups=audio video
-
-# Execution
-ExecStartPre=/opt/kza/scripts/smoke_test.sh --quick
-ExecStart=/opt/kza/venv/bin/python3.13 -m src.main
-ExecReload=/bin/kill -HUP $MAINPID
-
-# Restart policy
 Restart=on-failure
-RestartSec=5
-RestartPreventExitStatus=78
-
-# Timeout for graceful shutdown (LLM may need time to unload)
-TimeoutStopSec=30
-KillMode=mixed
-KillSignal=SIGTERM
-
-# Logging — all output to journald
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=kza-voice
-
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/opt/kza/data /opt/kza/logs /opt/kza/models/lora_adapters
-PrivateTmp=true
-
-# GPU device access
-DeviceAllow=/dev/nvidia0 rw
-DeviceAllow=/dev/nvidia1 rw
-DeviceAllow=/dev/nvidia2 rw
-DeviceAllow=/dev/nvidia3 rw
-DeviceAllow=/dev/nvidiactl rw
-DeviceAllow=/dev/nvidia-uvm rw
-DeviceAllow=/dev/nvidia-uvm-tools rw
-DeviceAllow=/dev/snd/* rw
+RestartSec=10s
+TimeoutStartSec=120s
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
