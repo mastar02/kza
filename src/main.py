@@ -372,6 +372,32 @@ async def main():
                 # Si el reasoner cloud no responde, llm queda None — el LLMRouter rota al 7B.
                 logger.error(f"HttpReasoner cloud no contactable: {e}. llm=None — failover via LLMRouter")
                 llm = None
+    elif reasoner_mode == "hermes_cli":
+        # Reasoner cloud vía subproceso (hermes -z --provider openai-codex),
+        # sin base_url — ver resolve_reasoner_gate branch hermes_cli
+        # (src/llm/cloud_consent.py) y docs/superpowers/specs/
+        # 2026-08-10-hermes-cli-reasoner-design.md.
+        from src.llm.hermes_reasoner import HermesCliReasoner
+        if not gate_allowed:
+            logger.warning(
+                "Reasoner cloud (hermes_cli) bloqueado por falta de consent — slow path sin reasoner. "
+                "Setear reasoner.cloud.consent=true en settings.yaml para activarlo."
+            )
+            llm = None
+        else:
+            llm = HermesCliReasoner(
+                binary_path=reasoner_config.get("hermes_binary_path", "hermes"),
+                provider=reasoner_config.get("hermes_provider", "openai-codex"),
+                model=reasoner_config.get("hermes_model"),
+                timeout_s=reasoner_config.get("hermes_timeout_s", 90.0),
+            )
+            try:
+                llm.load()
+                info = llm.get_info()
+                logger.info(f"LLM reasoner (cloud) vía Hermes CLI → provider={info['provider']} modelo={info['model']}")
+            except Exception as e:
+                logger.error(f"HermesCliReasoner no disponible: {e}. llm=None — failover via LLMRouter")
+                llm = None
     else:
         model_path = reasoner_config.get("model_path")
         if not model_path or not Path(model_path).exists():
