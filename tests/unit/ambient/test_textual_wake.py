@@ -642,6 +642,161 @@ class TestDetectorDispatchErrors:
         )
 
 
+# ==================== TextualWakeDetector: oráculo de misses (Etapa A) ====================
+
+class TestDetectorOnMissedFn:
+    """on_missed_fn (spec 2026-07-25 Etapa A): un disparo textual EXITOSO
+    (pasó tv/self, match, dedup_acoustic, dedup_self y el gate de vad) es por
+    construcción la prueba de que el wake acústico falló esa "nexa" — el
+    callback alimenta el bucket missed/ de WakeClipWriter. NO se llama en
+    ningún camino de skip: esos casos no prueban nada sobre el acústico."""
+
+    async def test_called_on_successful_dispatch_with_room_and_audio(self):
+        dispatch = AsyncMock(return_value={"success": True})
+        calls = []
+        audio = make_audio()
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+            on_missed_fn=lambda room_id, aud: calls.append((room_id, aud)),
+        )
+
+        result = await detector.maybe_dispatch(
+            room_id="salon", text="Nexa, apagá la luz", source="human_direct",
+            speaker=None, audio=audio,
+        )
+
+        assert result is True
+        assert calls == [("salon", audio)]
+
+    async def test_not_called_when_dedup_acoustic(self):
+        # El acústico SÍ disparó hace poco — no es un miss.
+        clock = FakeClock(t=1000.0)
+        dispatch = AsyncMock()
+        calls = []
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: clock.t - 3.0,
+            now_fn=clock,
+            on_missed_fn=lambda room_id, aud: calls.append((room_id, aud)),
+        )
+
+        await detector.maybe_dispatch(
+            room_id="salon", text="Nexa, apagá la luz", source="human_direct",
+            speaker=None, audio=make_audio(),
+        )
+
+        assert calls == []
+
+    async def test_not_called_when_low_vad(self):
+        # Gate de vad bloqueado = probable garble del STT, no habla dirigida
+        # — capturarlo como "miss" contaminaría el dataset con no-positivos.
+        dispatch = AsyncMock()
+        calls = []
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+            min_vad=0.50,
+            on_missed_fn=lambda room_id, aud: calls.append((room_id, aud)),
+        )
+
+        await detector.maybe_dispatch(
+            room_id="cocina", text="Next up.", source="unknown",
+            speaker=None, audio=make_audio(), vad_prob=0.36,
+        )
+
+        assert calls == []
+
+    async def test_not_called_when_no_match(self):
+        dispatch = AsyncMock()
+        calls = []
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+            on_missed_fn=lambda room_id, aud: calls.append((room_id, aud)),
+        )
+
+        await detector.maybe_dispatch(
+            room_id="salon", text="apagá la luz", source="human_direct",
+            speaker=None, audio=make_audio(),
+        )
+
+        assert calls == []
+
+    async def test_not_called_when_source_is_tv(self):
+        dispatch = AsyncMock()
+        calls = []
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+            on_missed_fn=lambda room_id, aud: calls.append((room_id, aud)),
+        )
+
+        await detector.maybe_dispatch(
+            room_id="salon", text="Nexa, apagá la luz", source="tv",
+            speaker=None, audio=make_audio(),
+        )
+
+        assert calls == []
+
+    async def test_none_is_safe_default(self):
+        # Default None (nadie inyectó el writer) no debe romper el dispatch.
+        dispatch = AsyncMock(return_value={"success": True})
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+        )
+
+        result = await detector.maybe_dispatch(
+            room_id="salon", text="Nexa, apagá la luz", source="human_direct",
+            speaker=None, audio=make_audio(),
+        )
+
+        assert result is True
+
+    async def test_exception_in_callback_does_not_break_dispatch(self, caplog):
+        # Fail-open, mismo patrón que dispatch_fn: un writer roto jamás debe
+        # tumbar el canal textual.
+        dispatch = AsyncMock(return_value={"success": True})
+
+        def broken(room_id, audio):
+            raise RuntimeError("disco lleno")
+
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+            on_missed_fn=broken,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = await detector.maybe_dispatch(
+                room_id="salon", text="Nexa, apagá la luz", source="human_direct",
+                speaker=None, audio=make_audio(),
+            )
+
+        assert result is True
+        dispatch.assert_awaited_once()
+
+    async def test_called_even_when_dispatch_fn_raises(self):
+        # El miss acústico ya ocurrió en cuanto pasamos los gates — es
+        # independiente de que el router downstream falle.
+        dispatch = AsyncMock(side_effect=RuntimeError("router down"))
+        calls = []
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch,
+            last_acoustic_command_ts_fn=lambda room_id: 0.0,
+            on_missed_fn=lambda room_id, aud: calls.append((room_id, aud)),
+        )
+
+        result = await detector.maybe_dispatch(
+            room_id="salon", text="Nexa, apagá la luz", source="human_direct",
+            speaker=None, audio=make_audio(),
+        )
+
+        assert result is False
+        assert len(calls) == 1
+
+
 # ==================== TextualWakeDetector: wiring del matcher ====================
 
 class TestDetectorMatcherWiring:

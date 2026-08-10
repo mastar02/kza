@@ -22,11 +22,21 @@ import queue
 import threading
 import time
 import wave
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+class _Bucket(Enum):
+    """Subcarpeta de destino de un clip. Interno — la API pública sigue
+    siendo submit()/submit_missed(), no expone este enum."""
+
+    ACCEPTED = None       # dir raíz, comportamiento previo
+    REJECTED = "rejected"
+    MISSED = "missed"
 
 
 class WakeClipWriter:
@@ -38,6 +48,7 @@ class WakeClipWriter:
         sample_rate: int = 16000,
         max_files: int = 2000,
         max_rejected_files: int = 4000,
+        max_missed_files: int = 2000,
         queue_size: int = 8,
     ):
         self._dir = Path(directory)
@@ -48,6 +59,11 @@ class WakeClipWriter:
         # mató) son mucho más voluminosos → tope propio en rejected/, rota
         # independiente para no purgar los aceptados (raros y valiosos).
         self._max_rejected_files = max_rejected_files
+        # missed/ (spec 2026-07-25 Etapa A): el wake textual disparó y el
+        # acústico NO — falso negativo real, con el audio en la mano. Tope
+        # propio, simétrico a rejected/, para no purgarlo con el volumen de
+        # cualquiera de los otros dos buckets.
+        self._max_missed_files = max_missed_files
         self._queue: queue.Queue = queue.Queue(maxsize=queue_size)
         self._running = True
         self._worker = threading.Thread(
@@ -69,10 +85,34 @@ class WakeClipWriter:
         Returns:
             True si se encoló; False si la cola estaba llena (clip descartado).
         """
+        bucket = _Bucket.ACCEPTED if accepted else _Bucket.REJECTED
+        return self._enqueue(room_id, score, audio, bucket)
+
+    def submit_missed(self, room_id: str, score: float, audio) -> bool:
+        """Encolar un clip MISSED: el wake textual disparó, el acústico no.
+
+        Falso negativo real del wake acústico, con el audio en la mano
+        (spec 2026-07-25 Etapa A, oráculo = TextualWakeDetector). Nunca
+        bloquea ni lanza — mismo contrato que submit().
+
+        Args:
+            room_id: Habitación de origen.
+            score: Score acústico si se conoce, o un sentinel fuera de
+                [0, 1] (p. ej. -1.0) si el detector acústico nunca corrió
+                sobre esta ventana — el nombre del archivo no debe fingir
+                un score que no existe.
+            audio: Samples float32 en [-1, 1] (ndarray o lista).
+
+        Returns:
+            True si se encoló; False si la cola estaba llena (clip descartado).
+        """
+        return self._enqueue(room_id, score, audio, _Bucket.MISSED)
+
+    def _enqueue(self, room_id: str, score: float, audio, bucket: "_Bucket") -> bool:
         try:
             clip = np.asarray(audio, dtype=np.float32)
             self._queue.put_nowait(
-                (room_id, float(score), clip, time.time(), bool(accepted))
+                (room_id, float(score), clip, time.time(), bucket)
             )
             return True
         except queue.Full:
@@ -102,9 +142,9 @@ class WakeClipWriter:
 
     def _write(
         self, room_id: str, score: float, clip: np.ndarray, ts: float,
-        accepted: bool = True,
+        bucket: "_Bucket" = _Bucket.ACCEPTED,
     ) -> None:
-        target = self._dir if accepted else self._dir / "rejected"
+        target = self._dir if bucket.value is None else self._dir / bucket.value
         target.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(ts))
         millis = int((ts % 1) * 1000)
@@ -115,7 +155,12 @@ class WakeClipWriter:
             f.setsampwidth(2)
             f.setframerate(self._sample_rate)
             f.writeframes(pcm.tobytes())
-        self._rotate(target, self._max_files if accepted else self._max_rejected_files)
+        caps = {
+            _Bucket.ACCEPTED: self._max_files,
+            _Bucket.REJECTED: self._max_rejected_files,
+            _Bucket.MISSED: self._max_missed_files,
+        }
+        self._rotate(target, caps[bucket])
 
     def _rotate(self, target: Path, cap: int) -> None:
         files = sorted(target.glob("*.wav"))

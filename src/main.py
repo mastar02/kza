@@ -961,6 +961,7 @@ async def main():
                     ),
                     max_files=int(clip_cfg.get("max_files", 2000)),
                     max_rejected_files=int(clip_cfg.get("max_rejected_files", 4000)),
+                    max_missed_files=int(clip_cfg.get("max_missed_files", 2000)),
                 )
                 logger.info(
                     f"WakeClipWriter ACTIVO: dir={clip_cfg.get('dir')} "
@@ -1368,6 +1369,15 @@ async def main():
         try:
             from src.ambient.textual_wake import TextualWakeDetector
 
+            # Etapa A (docs/plans/2026-07-25-reentrenamiento-wake-nexa.md §2):
+            # cada disparo textual que llega hasta acá es un falso negativo
+            # real del wake acústico. -1.0 = sentinel explícito: el detector
+            # acústico nunca corrió sobre esta ventana, no hay score real que
+            # ponerle al nombre del archivo (ver WakeClipWriter.submit_missed).
+            def _submit_missed(room_id: str, audio) -> None:
+                if wake_clip_writer is not None:
+                    wake_clip_writer.submit_missed(room_id, -1.0, audio)
+
             textual_wake_detector = TextualWakeDetector(
                 dispatch_fn=request_router.process_command,
                 last_acoustic_command_ts_fn=multi_room_loop.last_command_dispatch_ts,
@@ -1375,6 +1385,7 @@ async def main():
                 variants=tuple(_textual_wake_cfg.get("variants", ("nexa", "next up"))),
                 max_edit_distance=_textual_wake_cfg.get("max_edit_distance", 1),
                 min_vad=_textual_wake_cfg.get("min_vad", 0.50),
+                on_missed_fn=_submit_missed,
             )
             ambient_path.transcriber.attach_textual_wake(textual_wake_detector)
             logger.info(

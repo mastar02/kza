@@ -197,7 +197,9 @@ class TextualWakeDetector:
 
     Fail-safe: una excepción de `dispatch_fn` se loguea (ERROR) y se traduce
     en `return False` — nunca se re-propaga; el worker del ambient no debe
-    morir por esto.
+    morir por esto. Mismo criterio para `on_missed_fn` (WARNING, se traga):
+    la clase sigue sin hacer I/O propia, el callback inyectado es cosa del
+    llamador (spec 2026-07-25 Etapa A).
     """
 
     def __init__(
@@ -210,6 +212,7 @@ class TextualWakeDetector:
         max_edit_distance: int = 1,
         min_vad: float = 0.50,
         now_fn: Callable[[], float] = time.monotonic,
+        on_missed_fn: Callable[[str, np.ndarray], None] | None = None,
     ):
         """Configurar el detector.
 
@@ -235,6 +238,15 @@ class TextualWakeDetector:
                 ver language_quality.py).
             now_fn: Reloj inyectable (default `time.monotonic`) — permite
                 FakeClock en tests, cero sleeps.
+            on_missed_fn: Callback opcional (spec 2026-07-25 Etapa A) llamado
+                con (room_id, audio) en cada disparo textual que pasó TODOS
+                los gates (match, no dedup_acoustic, no dedup_self, vad OK).
+                Ese disparo ES la prueba de que el wake acústico falló esa
+                "nexa" — el llamador lo usa para alimentar el bucket missed/
+                de WakeClipWriter. Se llama ANTES de `dispatch_fn` y pase lo
+                que pase con él (el miss ya ocurrió, independiente de que el
+                router downstream falle). Fail-open: una excepción se loguea
+                (WARNING) y se traga — nunca tumba el canal textual.
         """
         self._dispatch_fn = dispatch_fn
         self._last_acoustic_command_ts_fn = last_acoustic_command_ts_fn
@@ -244,6 +256,7 @@ class TextualWakeDetector:
         self._max_edit_distance = max_edit_distance
         self._min_vad = min_vad
         self._now_fn = now_fn
+        self._on_missed_fn = on_missed_fn
         # Último dispatch TEXTUAL propio por room (0.0 = nunca) — dedup contra
         # re-transcripciones solapadas de la misma utterance.
         self._last_dispatch_ts: dict[str, float] = {}
@@ -334,6 +347,14 @@ class TextualWakeDetector:
                 f"min_vad={self._min_vad:.2f} text={text!r}"
             )
             return False
+
+        if self._on_missed_fn is not None:
+            try:
+                self._on_missed_fn(room_id, audio)
+            except Exception as e:
+                logger.warning(
+                    f"[TextualWake] on_missed_fn error room={room_id}: {e}"
+                )
 
         event = CommandEvent(audio=audio, room_id=room_id, wake_text=text, wake_score=1.0)
         try:
