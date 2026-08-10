@@ -1,0 +1,12 @@
+# Imagen de runtime del code-index: SOLO dependencias (torch CPU explicito).
+# El codigo NO se hornea: /home/kza/app se monta read-only en el mismo path que
+# en el host, asi settings.yaml funciona sin cambios y el servicio corre el
+# mismo commit que esta deployado en el checkout del server.
+FROM python:3.13-slim
+
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
+COPY requirements-code-index.txt /tmp/requirements-code-index.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-code-index.txt
+
+WORKDIR /home/kza/app
+CMD ["python", "-m", "src.code_index"]

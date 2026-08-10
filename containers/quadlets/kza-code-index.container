@@ -1,0 +1,35 @@
+# Quadlet (podman rootless, usuario kza). Instalar en ~/.config/containers/systemd/
+# con el tag de imagen reemplazado por el deploy: sed "s/@SHA@/$SHA/".
+# Reemplaza a la unit nativa ~/.config/systemd/user/kza-code-index.service
+# (deshabilitarla antes de arrancar este; mismo puerto :9515).
+[Unit]
+Description=KZA code-index :9515 (container) — indice semantico del codebase
+After=network-online.target kza-chroma.service
+Wants=network-online.target kza-chroma.service
+
+[Container]
+Image=localhost/kza/code-index:@SHA@
+ContainerName=kza-code-index
+Network=kza-internal.network
+# Codigo + config, read-only, mismo path que el host (settings.yaml sin cambios)
+Volume=%h/app:/home/kza/app:ro
+# Estado del indice (manifest.json); chroma_path queda sin uso en mode=http
+Volume=%h/code-index:/home/kza/code-index
+# Cache HF del host: ahi vive BAAI/bge-m3. rw: HF puede escribir locks/refs.
+Volume=%h/.cache/huggingface:/hf-cache
+Environment=HF_HOME=/hf-cache
+Environment=CONFIG_PATH=config/settings.yaml
+Environment=PYTHONUNBUFFERED=1
+# LLM_GATEWAY_URL + MINIMAX_API_KEY (cards del indexer los leen del entorno)
+EnvironmentFile=%h/secrets/.env
+# 0.0.0.0 deliberado: tools/code_search.py y agentes lo consumen desde la LAN
+# (mismo contrato que la unit nativa; ver nosec B104 en src/code_index/__main__.py)
+PublishPort=9515:9515
+
+[Service]
+Restart=on-failure
+RestartSec=10s
+StartLimitBurst=5
+
+[Install]
+WantedBy=default.target
