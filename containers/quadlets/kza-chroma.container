@@ -1,0 +1,28 @@
+# Quadlet (podman rootless, usuario kza). Instalar en ~/.config/containers/systemd/
+# Reemplaza al viejo kza-chroma.container.disabled-2026-05-30 (que publicaba :9500,
+# hoy ocupado por obs — verificado 2026-08-10).
+[Unit]
+Description=KZA ChromaDB service — backend del code-index
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+# Pin exacto (R12). 1.5.9 = version del client chromadb instalado en el venv;
+# si el tag no existe en el registry, ver paso de verificacion del deploy.
+Image=docker.io/chromadb/chroma:1.5.9
+ContainerName=kza-chroma
+Network=kza-internal.network
+Volume=%h/data/chroma-svc:/chroma/chroma:Z
+Environment=IS_PERSISTENT=TRUE
+Environment=ANONYMIZED_TELEMETRY=FALSE
+# Sub-rango KZA 9500-9599; :9516 libre (auditoria 2026-08-10). Bind solo localhost:
+# los consumidores en la red kza-internal entran por DNS interno, no por este puerto.
+PublishPort=127.0.0.1:9516:8000
+
+[Service]
+Restart=on-failure
+RestartSec=10s
+StartLimitBurst=5
+
+[Install]
+WantedBy=default.target
