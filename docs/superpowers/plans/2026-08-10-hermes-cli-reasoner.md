@@ -15,10 +15,14 @@ envuelto en `asyncio.to_thread` para el path async — mismo patrón que ya usa
 un modo sin URL (`reasoner.mode == "hermes_cli"`, cloud incondicional). Compactor también usa
 `HermesCliReasoner` cuando el gate lo permite.
 
-**Tech Stack:** Python 3.13, `subprocess` + `asyncio.to_thread` (sin dependencias nuevas — el
-proyecto ya usa este patrón en `src/training/nightly_trainer.py`), pytest + `unittest.mock`
-(`asyncio_mode = auto` en `pytest.ini`, no hace falta `@pytest.mark.asyncio` pero el codebase lo
-usa igual por claridad).
+**Tech Stack:** Python 3.13, `subprocess` (sync, sin dependencias nuevas) + `asyncio.to_thread`
+para el único call site async (`complete()`) — mismo uso de `asyncio.to_thread` que ya tiene
+`HttpReasoner.complete()` (`src/llm/reasoner.py`), aunque ahí envuelve una llamada HTTP, no un
+subproceso. La combinación específica "subprocess sync envuelto en `asyncio.to_thread`" no tiene
+precedente previo en el codebase — `src/training/nightly_trainer.py`, que sí corre subprocesos
+desde código async, usa el API nativo `asyncio.create_subprocess_exec` en vez de este patrón.
+pytest + `unittest.mock` (`asyncio_mode = auto` en `pytest.ini`, no hace falta
+`@pytest.mark.asyncio` pero el codebase lo usa igual por claridad).
 
 ## Global Constraints
 
