@@ -1,6 +1,7 @@
 """Tests: AmbientTranscriber — integración tap→segmenter→STT→store con fakes."""
 import asyncio
 import time
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -422,6 +423,65 @@ def test_orden_persist_wake_archive_y_el_wake_sobrevive_archiver_roto(tmp_path):
     asyncio.run(tr._handle_segment("escritorio", _seg()))
 
     assert events == ["persist", "dispatch", "archive"]
+
+
+class UtteranceTsRecordingWake:
+    """Como RecordingWake pero guarda el kwarg utterance_started_ts."""
+
+    def __init__(self):
+        self.received_kwargs = None
+
+    async def maybe_dispatch(self, room_id, text, source, speaker, **kwargs):
+        self.received_kwargs = kwargs
+
+
+def test_handle_segment_computes_utterance_started_ts_from_seg_t0(tmp_path):
+    # review PR #16: maybe_dispatch no recibía NINGÚN timestamp de cuándo
+    # ocurrió la utterance real — solo `now` al momento de evaluarla, que
+    # puede ser 30s+ después (segmento largo + STT + DoA + persist).
+    # transcriber.py debe derivar el equivalente monotónico de seg.t0 con
+    # una lectura dual de reloj en el punto de uso.
+    store = FakeStore()
+    tap, tr = _make(store)
+
+    class WakeCapableSTT(FakeAmbientSTT):
+        def asr_mono(self, audio):
+            return audio[:, 0] if audio.ndim == 2 else audio
+
+    tr._stt = WakeCapableSTT()
+    wake = UtteranceTsRecordingWake()
+    tr._textual_wake = wake
+
+    with patch("src.ambient.transcriber.time.monotonic", return_value=5000.0), \
+         patch("src.ambient.transcriber.time.time", return_value=2_000_000_000.0):
+        asyncio.run(tr._handle_segment("escritorio", _seg()))  # seg.t0=100.0
+
+    expected = 5000.0 - (2_000_000_000.0 - 100.0)
+    assert wake.received_kwargs["utterance_started_ts"] == expected
+
+
+def test_handle_segment_clamps_when_seg_t0_is_after_wall_now(tmp_path):
+    # Clamp defensivo: un salto de reloj hacia atrás (o cualquier caso
+    # donde seg.t0 quede "después" del wall_now leído acá) no debe producir
+    # un ts "futuro" — esa es la dirección peligrosa (des-supresión, el bug
+    # original en otra forma). Debe quedar exactamente en mono_now.
+    store = FakeStore()
+    tap, tr = _make(store)
+
+    class WakeCapableSTT(FakeAmbientSTT):
+        def asr_mono(self, audio):
+            return audio[:, 0] if audio.ndim == 2 else audio
+
+    tr._stt = WakeCapableSTT()
+    wake = UtteranceTsRecordingWake()
+    tr._textual_wake = wake
+
+    # seg.t0=100.0 > wall_now=50.0 parcheado → salto hacia atrás simulado.
+    with patch("src.ambient.transcriber.time.monotonic", return_value=5000.0), \
+         patch("src.ambient.transcriber.time.time", return_value=50.0):
+        asyncio.run(tr._handle_segment("escritorio", _seg()))
+
+    assert wake.received_kwargs["utterance_started_ts"] == 5000.0
 
 
 def test_segmento_sin_texto_NO_se_persiste_con_archiver_deshabilitado(tmp_path):

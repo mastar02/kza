@@ -269,6 +269,7 @@ class TextualWakeDetector:
         speaker: str | None,
         audio: np.ndarray,
         vad_prob: float | None = None,
+        utterance_started_ts: float | None = None,
     ) -> bool:
         """Evaluar una utterance y despachar un comando si corresponde.
 
@@ -301,6 +302,23 @@ class TextualWakeDetector:
             audio: Audio del segmento (misma vista usada para el ASR
                 ambient), se adjunta al CommandEvent sin copiar.
             vad_prob: Mean de Silero del segmento (None = sin señal).
+            utterance_started_ts: Timestamp (mismo reloj que `now_fn`, por
+                default `time.monotonic`) de cuándo ocurrió REALMENTE la
+                utterance — no cuándo se la evalúa acá. `now` (arriba) se
+                muestrea al llamar esta función, que puede ser 30s+ DESPUÉS
+                de la utterance real (el segmento ambient puede tardar hasta
+                `max_segment_s` en cerrar + STT + DoA + persist antes de que
+                el caller llegue a esta llamada — review PR #16, medido:
+                9.2% de utterances reales duran >8s). Usado SOLO para la
+                comparación de dedup_acoustic (regla 4) — comparar `now`
+                (tiempo de evaluación textual) contra `last_acoustic`
+                (tiempo real del dispatch acústico) tiene una asimetría que
+                puede fallar en no-dedupear un wake que el acústico SÍ cazó.
+                `None` (default) cae a `now_fn()` — comportamiento idéntico
+                al de antes de este parámetro. Las reglas 5 (dedup_self) y
+                el bookkeeping de `_last_dispatch_ts` siguen usando `now`
+                a propósito: comparan tiempo-textual contra tiempo-textual,
+                sin la asimetría cruzada de la regla 4.
 
         Returns:
             True si se despachó un comando, False en cualquier otro caso
@@ -323,9 +341,12 @@ class TextualWakeDetector:
             return False
 
         now = self._now_fn()
+        acoustic_ref_ts = (
+            utterance_started_ts if utterance_started_ts is not None else now
+        )
 
         last_acoustic = self._last_acoustic_command_ts_fn(room_id)
-        if last_acoustic > 0.0 and (now - last_acoustic) < self._dedup_window_s:
+        if last_acoustic > 0.0 and (acoustic_ref_ts - last_acoustic) < self._dedup_window_s:
             logger.info(
                 f"[TextualWake] skip room={room_id} source={source} "
                 f"speaker={speaker} decision=dedup_acoustic text={text!r}"
