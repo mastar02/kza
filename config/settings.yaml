@@ -425,12 +425,13 @@ reasoner:
   #
   # ⚠️ CHECKLIST pre-flip (final review 2026-08-10, no automatizado — a mano):
   #
-  # 1. Subir llm.failover.endpoints[reasoner_cloud].timeout_s (línea ~458 de
-  #    este archivo, HOY 60.0) a >= hermes_timeout_s de abajo (90). Si no, el
-  #    `asyncio.wait_for` del LLMRouter cancela la task ANTES de que el
-  #    timeout propio del subproceso (HermesCliReasoner._run) llegue a
-  #    dispararse — y cancelar una task de `asyncio.to_thread` NO mata el
-  #    thread/subproceso de abajo (asyncio no tiene forma de interrumpir un
+  # 1. Subir, en la sección `llm: failover: endpoints:`, el entry con id
+  #    `reasoner_cloud`, key `timeout_s` (HOY 60.0) a >= hermes_timeout_s de
+  #    abajo (90). Si no, el `asyncio.wait_for` del LLMRouter cancela la
+  #    task ANTES de que el timeout propio del subproceso
+  #    (HermesCliReasoner._run) llegue a dispararse — y cancelar una task de
+  #    `asyncio.to_thread` NO mata el thread/subproceso de abajo (asyncio no
+  #    tiene forma de interrumpir un
   #    thread nativo), así que el `hermes` real queda corriendo huérfano en
   #    el server hasta que SU PROPIO timeout (más largo) lo termine. Mismo
   #    riesgo de proceso zombie que el process-group-kill de _run() ya evita
@@ -462,8 +463,11 @@ reasoner:
   # hermes_provider: "openai-codex"
   # hermes_model: null                  # sin pin — default de Hermes/Codex
   # hermes_timeout_s: 90                # suma el arranque del proceso hermes sobre HTTP
-  # cloud:
-  #   consent: true                     # misma semántica que el bloque http de arriba
+  # El consent de reasoner.cloud (definido arriba, línea ~406) ya aplica a este modo
+  # sin cambios — a propósito NO hay un segundo sub-mapping "cloud" acá abajo: dos
+  # claves iguales en la misma sección reasoner harían que yaml.safe_load descarte
+  # en silencio la primera y se quede con la última (ver finding Crítico de la
+  # review, 2026-08-10).
 
 # LLM Failover — candidate chain con cooldown y skip automático.
 # Patrón: OpenClaw model-failover.md. Cuando un endpoint falla con error
