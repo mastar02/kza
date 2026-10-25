@@ -3,7 +3,8 @@
 
   const PREFIX = 'kza:routine-attempt:';
   const TIMEZONE = 'America/Montevideo';
-  const OPERATIONS = { turn_on: 'Encender', turn_off: 'Apagar', brightness: 'Ajustar brillo' };
+  const home = typeof module !== 'undefined' && module.exports ? require('./home.js') : host.HomeUI;
+  const OPERATIONS = home.OPERATION_LABELS;
   const TERMINAL = ['succeeded', 'failed', 'uncertain', 'skipped', 'interrupted'];
   const LABELS = { running: 'En curso', succeeded: 'Confirmada', confirmed: 'Confirmada', failed: 'Fallida', uncertain: 'Incierta', not_executed: 'No ejecutada', skipped: 'Omitida por condición', interrupted: 'Interrumpida', pending: 'Pendiente', sending: 'Enviando', active: 'En curso', terminal: 'Finalizada', unresolved: 'Resultado pendiente de consulta', rejected: 'Intento rechazado', auth_required: 'Requiere iniciar sesión' };
   const copy = value => value == null ? value : JSON.parse(JSON.stringify(value));
@@ -16,7 +17,7 @@
     return { name: value.name, description: value.description, enabled: value.enabled, timezone: value.timezone,
       schedule: value.schedule == null ? null : { at: value.schedule.at, weekdays: copy(value.schedule.weekdays) },
       conditions: (value.conditions || []).map(item => ({ entity_id: item.entity_id, state: item.state })),
-      actions: (value.actions || []).map(item => ({ entity_id: item.entity_id, operation: item.operation, ...(item.operation === 'brightness' ? { brightness_pct: item.brightness_pct } : {}) })) };
+      actions: (value.actions || []).map(item => ({ entity_id: item.entity_id, operation: item.operation, ...Object.fromEntries((home.OPERATION_PARAMETERS[item.operation] || []).filter(name => item[name] !== undefined && item[name] !== null).map(name => [name, item[name]])) })) };
   }
 
   function validateRoutineDraft(draft, catalog) {
@@ -35,7 +36,7 @@
     else value.actions.forEach((item, index) => {
       const entity = entityList(catalog).find(entry => entry.entity_id === item?.entity_id);
       if (!item || typeof item.entity_id !== 'string' || !item.entity_id || !Object.hasOwn(OPERATIONS, item.operation) || (catalog && (!entity || !entity.capabilities?.includes(item.operation)))) errors.push(`Revisá la entidad y operación de la acción ${index + 1}`);
-      if (item?.operation === 'brightness' && (!Number.isInteger(item.brightness_pct) || item.brightness_pct < 0 || item.brightness_pct > 100)) errors.push(`El brillo de la acción ${index + 1} debe estar entre 0 y 100`);
+      for (const field of home.controlFields(entity, item?.operation)) if (!home.validControlValue(field, item?.[field.name])) errors.push(`Revisá ${field.label.toLowerCase()} de la acción ${index + 1}`);
     });
     return { valid: errors.length === 0, errors };
   }
@@ -303,8 +304,13 @@
         const options = Object.entries(OPERATIONS).filter(([key]) => entity?.capabilities?.includes(key));
         if (item.operation && !options.some(([key]) => key === item.operation)) options.unshift([item.operation, (OPERATIONS[item.operation] || item.operation) + ' (no disponible)']);
         row.append(field('Dispositivo de la acción ' + (index + 1), entitySelect(item.entity_id, state.catalog, id => update(d => { const target = entityList(state.catalog).find(entry => entry.entity_id === id); d.actions[index] = { entity_id: id, operation: target?.capabilities?.find(cap => Object.hasOwn(OPERATIONS, cap)) || '' }; }, true), true)));
-        row.append(field('Operación ' + (index + 1), select([['', 'Elegí una operación'], ...options], item.operation, operation => update(d => { d.actions[index] = { entity_id: item.entity_id, operation, ...(operation === 'brightness' ? { brightness_pct: 50 } : {}) }; }, true))));
-        if (item.operation === 'brightness') { const control = input('number', item.brightness_pct, text => update(d => { d.actions[index].brightness_pct = text === '' ? null : Number(text); })); control.min = '0'; control.max = '100'; control.step = '1'; row.append(field('Brillo de la acción ' + (index + 1) + ' (%)', control)); }
+        row.append(field('Operación ' + (index + 1), select([['', 'Elegí una operación'], ...options], item.operation, operation => update(d => { d.actions[index] = { entity_id: item.entity_id, operation }; }, true))));
+        for (const descriptor of home.controlFields(entity, item.operation)) {
+          const change = text => update(d => { d.actions[index][descriptor.name] = text === '' ? null : descriptor.options ? text : Number(text); });
+          const control = descriptor.options ? select([['', 'Elegí un modo'], ...descriptor.options], item[descriptor.name] || '', change) : input('number', item[descriptor.name] ?? '', change);
+          if (!descriptor.options) { control.min = descriptor.min; control.max = descriptor.max; control.step = descriptor.step || 1; }
+          row.append(field(descriptor.label + ' de la acción ' + (index + 1), control));
+        }
         const controls = node('div', 'entity-controls');
         function move(offset) { update(d => { const entry = d.actions.splice(index, 1)[0]; d.actions.splice(index + offset, 0, entry); }, true); }
         controls.append(button('Subir acción ' + (index + 1), () => move(-1), index === 0), button('Bajar acción ' + (index + 1), () => move(1), index === value.actions.length - 1), button('Quitar acción ' + (index + 1), () => update(d => { d.actions.splice(index, 1); }, true))); row.append(controls); actions.append(row);

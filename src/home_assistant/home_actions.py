@@ -9,7 +9,10 @@ import re
 import uuid
 
 from src.home_assistant.control_policy import ActionOrigin, HomeActor, HomeControlPolicy
-from src.home_assistant.ha_client import HomeAssistantClient, ServiceCallStatus, get_home_capabilities
+from src.home_assistant.ha_client import HomeAssistantClient, ServiceCallStatus
+from src.home_assistant.operations import (
+    PARAMETER_FIELDS, action_parameters, compile_effect, validate_observation, validate_parameters,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -24,6 +27,10 @@ class HomeActionRequest:
     request_id: str
     brightness_pct: int | None = None
     origin: ActionOrigin = ActionOrigin.HTTP
+    color_temp_kelvin: int | None = None
+    temperature: float | None = None
+    hvac_mode: str | None = None
+    position: int | None = None
 
 
 @dataclass(frozen=True)
@@ -64,21 +71,13 @@ def validate_home_action(request: HomeActionRequest) -> None:
     """
     if (
         not isinstance(request.entity_id, str)
-        or re.fullmatch(r"(?:light|switch)\.[a-z0-9_]+", request.entity_id) is None
+        or not isinstance(request.operation, str)
+        or re.fullmatch(r"(?:light|switch|climate|cover)\.[a-z0-9_]+", request.entity_id) is None
         or not isinstance(request.request_id, str)
         or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", request.request_id) is None
-        or request.operation not in ("turn_on", "turn_off", "brightness")
     ):
         raise ValueError("invalid_home_action")
-    if request.operation == "brightness":
-        if (
-            not request.entity_id.startswith("light.")
-            or type(request.brightness_pct) is not int
-            or not 0 <= request.brightness_pct <= 100
-        ):
-            raise ValueError("invalid_brightness")
-    elif request.brightness_pct is not None:
-        raise ValueError("unexpected_brightness")
+    validate_parameters(request.entity_id, request.operation, action_parameters(request))
 
 
 class HomeActionService:
@@ -191,32 +190,29 @@ class HomeActionService:
         try:
             async with lock:
                 fresh = await self.ha.get_entity_state_fresh(request.entity_id)
-                if (
-                    not isinstance(fresh, dict) or fresh.get("entity_id") != request.entity_id
-                    or fresh.get("state") not in ("on", "off")
-                    or request.operation not in get_home_capabilities(fresh)
-                ):
-                    return HomeActionResult(request.request_id, request.entity_id, "failed", "entity_not_controllable")
-                if fresh.get("attributes", {}).get("entity_id") is not None:
-                    return HomeActionResult(request.request_id, request.entity_id, "failed", "group_effects_unverified")
-                # A queued request or fresh-state read cannot freeze an old grant.
+                unit = await self.ha.get_temperature_unit_fresh() if request.temperature is not None else None
                 try:
-                    await self.policy.require_allowed(request, actor)
+                    validate_observation(request, fresh, temperature_unit=unit)
+                    grant = await self.policy.require_allowed(request, actor)
+                    if request.entity_id.startswith("cover.") and fresh["attributes"].get("device_class") != grant.cover_device_class:
+                        raise ValueError("cover_class_changed")
                 except ValueError as error:
                     return HomeActionResult(request.request_id, request.entity_id, "failed", str(error))
-                brightness = request.brightness_pct
-                service = "turn_off" if request.operation == "turn_off" or brightness == 0 else "turn_on"
-                data = {"brightness_pct": brightness} if brightness else None
+                effect = compile_effect(request)
+                initial_state = fresh["state"]
                 attempted = True
                 outcome = await self.ha.call_service_once(
-                    request.entity_id.partition(".")[0], service, request.entity_id, data,
+                    effect.domain, effect.service, request.entity_id, effect.data,
                 )
                 if outcome.status != ServiceCallStatus.ACCEPTED:
                     status = "failed" if outcome.status == ServiceCallStatus.REJECTED else "uncertain"
                     return HomeActionResult(request.request_id, request.entity_id, status, outcome.reason)
-                confirmed = await self.ha.confirm_entity_state(
-                    request.entity_id, "off" if service == "turn_off" else "on", brightness_pct=brightness,
-                )
+                if request.operation in {"turn_on", "turn_off", "brightness"}:
+                    confirmed = await self.ha.confirm_entity_state(
+                        request.entity_id, "off" if effect.service == "turn_off" else "on", brightness_pct=request.brightness_pct,
+                    )
+                else:
+                    confirmed = await self.ha.confirm_home_action(request, initial_state=initial_state)
                 return HomeActionResult(
                     request.request_id, request.entity_id,
                     "confirmed" if confirmed else "uncertain",
@@ -248,17 +244,18 @@ def request_from_service(
     if not isinstance(data, Mapping):
         raise ValueError("unsupported_action_parameters")
     data = dict(data)
-    if data.keys() - {"brightness_pct", "brightness"} or len(data) > 1:
-        raise ValueError("unsupported_action_parameters")
-    brightness = data.get("brightness_pct")
     if "brightness" in data:
-        raw = data["brightness"]
+        if "brightness_pct" in data:
+            raise ValueError("conflicting_brightness")
+        raw = data.pop("brightness")
         if type(raw) is not int or not 0 <= raw <= 255:
             raise ValueError("invalid_brightness")
-        brightness = max(1, round(raw * 100 / 255)) if raw else 0
-    if data and (service != "turn_on" or brightness is None):
-        raise ValueError("unexpected_brightness")
-    operation = "brightness" if data else service
-    request = HomeActionRequest(entity_id, operation, request_id, brightness, origin)
+        data["brightness_pct"] = max(1, round(raw * 100 / 255)) if raw else 0
+    operation = service
+    if domain == "light" and service == "turn_on":
+        operation = "color_temp_kelvin" if "color_temp_kelvin" in data else ("brightness" if "brightness_pct" in data else "turn_on")
+    if data.keys() - set(PARAMETER_FIELDS):
+        raise ValueError("unsupported_action_parameters")
+    request = HomeActionRequest(entity_id, operation, request_id, origin=origin, **data)
     validate_home_action(request)
     return request

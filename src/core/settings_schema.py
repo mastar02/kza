@@ -12,7 +12,7 @@ configs rotas al boot con un error claro, no modelar las ~1500 líneas.
 
 import logging
 import os
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -79,6 +79,10 @@ class _Section(BaseModel):
 class HomeAssistantSettings(_Section):
     url: str
     control_selection_path: str = Field(default="", strict=True)
+    operation_confirmation_timeouts: dict[
+        Literal["color_temp_kelvin", "set_temperature", "set_hvac_mode", "open_cover", "close_cover", "stop_cover", "set_cover_position"],
+        Annotated[float, Field(strict=True, gt=0, le=120, allow_inf_nan=False)],
+    ] = Field(default_factory=dict)
 
 
 class CloudConsentSettings(_Section):

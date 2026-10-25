@@ -352,7 +352,8 @@ async def _run_main(shutdown: AsyncExitStack):
         url=ha_url,
         token=ha_token,
         timeout=ha_config.get("timeout", 2.0),
-        state_confirmation_timeout_s=ha_config.get("state_confirmation_timeout_s", 0.3)
+        state_confirmation_timeout_s=ha_config.get("state_confirmation_timeout_s", 0.3),
+        operation_confirmation_timeouts=ha_config.get("operation_confirmation_timeouts"),
     )
     shutdown.push_async_callback(ha_client.close)
     home_action_service = HomeActionService(

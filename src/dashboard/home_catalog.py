@@ -9,7 +9,25 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from src.home_assistant.ha_client import HomeAssistantClient, get_home_capabilities
+from src.home_assistant.control_policy import EntityGrant, HomeActionDenied, HomeControlPolicy
+from src.home_assistant.operations import finite_number
 from src.rooms.room_context import RoomConfig
+
+
+@dataclass(frozen=True)
+class HomeControlLimits:
+    """Intersection of reviewed limits and currently observed capabilities."""
+
+    brightness_min: int | None = None
+    brightness_max: int | None = None
+    color_temp_min: int | None = None
+    color_temp_max: int | None = None
+    temperature_min: float | None = None
+    temperature_max: float | None = None
+    temperature_step: float | None = None
+    hvac_modes: tuple[str, ...] = ()
+    position_min: int | None = None
+    position_max: int | None = None
 
 
 @dataclass(frozen=True)
@@ -27,6 +45,10 @@ class HomeEntity:
     state_changed_at: str | None
     observed_at: datetime | None
     available: bool
+    control_limits: HomeControlLimits = HomeControlLimits()
+    temperature: float | None = None
+    color_temp_kelvin: int | None = None
+    position: int | None = None
 
 
 @dataclass(frozen=True)
@@ -80,9 +102,10 @@ def _normalize_alias(value: str) -> str:
 class HomeCatalogService:
     """Compose typed HA observations and configured rooms without synthetic data."""
 
-    def __init__(self, ha_client: HomeAssistantClient | None, rooms: Mapping[str, RoomConfig]):
+    def __init__(self, ha_client: HomeAssistantClient | None, rooms: Mapping[str, RoomConfig], *, policy: HomeControlPolicy | None = None):
         self._ha_client = ha_client
         self._rooms = dict(rooms)
+        self._policy = policy if policy is not None else HomeControlPolicy()
 
     async def snapshot(self) -> HomeCatalogSnapshot:
         """Build one reduced catalog from bounded bulk HA reads.
@@ -97,6 +120,12 @@ class HomeCatalogService:
             self._ha_client.get_state_snapshot(), self._ha_client.get_area_assignments(),
         )
         reasons = [reason for reason in (states.reason, areas.reason) if reason]
+        try:
+            grants = {grant.entity_id: grant for grant in await self._policy.snapshot_grants()}
+        except HomeActionDenied:
+            grants = {}
+            reasons.append("control_selection_unavailable")
+        unit = await self._ha_client.get_temperature_unit_fresh() if any("set_temperature" in grant.operations for grant in grants.values()) else None
         explicit: dict[str, list[str]] = defaultdict(list)
         alias_rooms: dict[str, set[str]] = defaultdict(set)
         for room_id, room in self._rooms.items():
@@ -132,12 +161,12 @@ class HomeCatalogService:
             )
             if len(set(explicit_ids)) > 1:
                 reasons.append(f"explicit_room_conflict:{entity_id}")
-            capabilities = get_home_capabilities(state)
+            capabilities, limits = selected_capabilities(state, grants.get(entity_id), unit)
             attributes = state.get("attributes", {})
             brightness = attributes.get("brightness")
             brightness_pct = None
             if (
-                "brightness" in capabilities
+                "brightness" in get_home_capabilities(state)
                 and type(brightness) in (int, float)
                 and math.isfinite(brightness)
                 and 0 <= brightness <= 255
@@ -153,6 +182,10 @@ class HomeCatalogService:
                 state_changed_at=changed_at if isinstance(changed_at, str) else None,
                 observed_at=states.observed_at,
                 available=states.available and state["state"] not in {"unknown", "unavailable"},
+                control_limits=limits,
+                temperature=attributes.get("temperature") if unit == "°C" and finite_number(attributes.get("temperature")) else None,
+                color_temp_kelvin=attributes.get("color_temp_kelvin") if type(attributes.get("color_temp_kelvin")) is int else None,
+                position=attributes.get("current_position") if type(attributes.get("current_position")) is int else None,
             )
             entities.append(entity)
             if room_id is not None:
@@ -169,3 +202,49 @@ class HomeCatalogService:
             HomeRoom(room_id, room.name, tuple(entity_ids.get(room_id, ())))
             for room_id, room in self._rooms.items()
         )
+
+
+def selected_capabilities(state: dict, grant: EntityGrant | None, unit: str | None) -> tuple[tuple[str, ...], HomeControlLimits]:
+    """Project controls without exposing an implicit grant for a whole domain."""
+    attributes = state.get("attributes", {})
+    if grant is None or attributes.get("entity_id") is not None:
+        return (), HomeControlLimits()
+    capabilities = set(get_home_capabilities(state)) & grant.operations
+    values = {}
+    if "brightness" in capabilities:
+        values.update(brightness_min=grant.brightness_min, brightness_max=grant.brightness_max)
+    if "color_temp_kelvin" in capabilities:
+        low, high = attributes.get("min_color_temp_kelvin"), attributes.get("max_color_temp_kelvin")
+        if not finite_number(low) or not finite_number(high) or max(low, grant.color_temp_min) > min(high, grant.color_temp_max):
+            capabilities.remove("color_temp_kelvin")
+        else:
+            values.update(color_temp_min=max(low, grant.color_temp_min), color_temp_max=min(high, grant.color_temp_max))
+    if "set_temperature" in capabilities:
+        low, high, step = (attributes.get(name) for name in ("min_temp", "max_temp", "target_temp_step"))
+        if unit != "°C" or attributes.get("temperature_unit") not in (None, "°C") or not finite_number(low) or not finite_number(high) or max(low, grant.temperature_min) > min(high, grant.temperature_max) or (step is not None and (not finite_number(step) or step <= 0)):
+            capabilities.remove("set_temperature")
+        else:
+            selected_low, selected_high = max(low, grant.temperature_min), min(high, grant.temperature_max)
+            if step is not None:
+                selected_low = low + math.ceil((selected_low - low) / step - 1e-9) * step
+                selected_high = low + math.floor((selected_high - low) / step + 1e-9) * step
+            else:
+                selected_low, selected_high = math.ceil(selected_low), math.floor(selected_high)
+            if selected_low > selected_high:
+                capabilities.remove("set_temperature")
+            else:
+                values.update(temperature_min=selected_low, temperature_max=selected_high, temperature_step=step if step is not None else 1)
+    if "set_hvac_mode" in capabilities:
+        modes = tuple(mode for mode in attributes["hvac_modes"] if mode in grant.hvac_modes)
+        if not modes:
+            capabilities.remove("set_hvac_mode")
+        values["hvac_modes"] = modes
+    if state["entity_id"].startswith("cover."):
+        if attributes.get("device_class") != grant.cover_device_class:
+            return (), HomeControlLimits()
+        values.update(position_min=grant.position_min, position_max=grant.position_max)
+        if grant.position_max < 100:
+            capabilities.discard("open_cover")
+        if grant.position_min > 0:
+            capabilities.discard("close_cover")
+    return tuple(operation for operation in get_home_capabilities(state) if operation in capabilities), HomeControlLimits(**values)

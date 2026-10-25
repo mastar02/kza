@@ -86,8 +86,9 @@ la sesión antes de cargar datos. Los consumidores de inferencia aplican destino
 de procesamiento y consentimiento explícitos, también detrás de gateways
 loopback. Los productores de controles comparten servicio, actores de procedencia
 y selección privada revisada antes del envío, incluidas acciones diferidas.
-Siguen pendientes operaciones ampliadas y efectos de escenas; la configuración
-real se contrasta durante H6.
+Los contratos, servicio y formularios cubren operaciones ampliadas. Siguen
+pendientes su interpretación desde el NLU de voz y los efectos de escenas; la
+configuración real se contrasta durante H6.
 
 **Entregables:** protección uniforme de HTTP y WebSocket, bind local detrás del
 proxy y una política de acciones compartida por voz, dashboard, rutinas y
@@ -95,7 +96,8 @@ recordatorios. La política queda activa aunque se deshabiliten hooks opcionales
 
 La lista permitida incluye los equipos seleccionados de clima y persianas.
 Extender las operaciones tipadas y su confirmación antes de exponerlas: el
-`HomeActionService` actual solo cubre luces e interruptores. Validar parámetros
+`HomeActionService` y los formularios ya tienen contratos ampliados; falta cerrar
+su interpretación desde voz y su expansión de efectos. Validar parámetros
 contra las capacidades de cada entidad; no convertir la salida libre de un LLM
 en un servicio arbitrario de HA. Una escena no puede saltar la política por
 ocultar una acción restringida; si sus efectos no se pueden verificar, se

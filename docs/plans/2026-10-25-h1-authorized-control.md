@@ -14,8 +14,8 @@ contratos y pruebas sintéticas sin habilitar dispositivos ni modificar producci
 | Semántica | Corpus de pasado, estado, preguntas informativas, negación, condición, reporte y diferidos. Gate, gramática, evidencia del LLM y routers conectados deben rechazar; los pedidos inmediatos conservan dirección e infinitivos/cortesía válidos. | Primera implementación y regresiones sobre texto completo. |
 | Captura parcial | Early-dispatch es preparseo especulativo: espera el endpoint, mantiene el texto ligado al audio y nunca ejecuta un prefijo. Una captura cortada por timeout no es una orden completa. | Implementado y probado con ambos routers y modo ambiental; validación acústica real en H6. |
 | Sesión | HTTP y WebSocket privados comparten autenticación cerrada sin token, incluyendo listas, recordatorios, presencia, observabilidad y `/ws/live`. Orígenes inválidos se rechazan con sesión válida. Login y recursos estáticos tienen excepciones explícitas. Bind loopback detrás del proxy y token vacío en `.env.example`. | Implementado y probado; proxy y unit reales se validan en H6. |
-| Política | Un servicio de acciones y un actor de procedencia por productor. Política obligatoria después de rewrites y antes de todo envío; permisos revisados también al disparar acciones diferidas. Tests sin hooks, con rewrite y revocación. | Frontera compartida implementada para las operaciones actuales; tipos ampliados y expansión de efectos siguen pendientes. |
-| Operaciones | Extender DTOs, validación y confirmación a clima y cover. Agregar temperatura de color para reproducir las escenas seleccionadas sin perder parámetros. Usar rangos, modos y entidades del inventario privado aprobado. | Pendiente. |
+| Política | Un servicio de acciones y un actor de procedencia por productor. Política obligatoria después de rewrites y antes de todo envío; permisos revisados también al disparar acciones diferidas. Tests sin hooks, con rewrite y revocación. | Frontera compartida implementada; faltan integración del NLU y expansión verificada. |
+| Operaciones | Extender DTOs, validación y confirmación a clima y cover. Agregar temperatura de color para reproducir las escenas seleccionadas sin perder parámetros. Usar rangos, modos y entidades del inventario privado aprobado. | Contratos, servicio, persistencia y formularios implementados. Falta interpretar y resolver estas órdenes desde el NLU de voz, e integrar expansión de efectos. |
 | Grupos y escenas | Expandir definiciones verificadas a hojas autorizadas y operaciones tipadas. Rechazar macros opacas, templates sin contexto y efectos indirectos no verificados. Pruebas de escena que oculta lock/alarm, grupos no autorizados y parámetros desconocidos. | Pendiente. |
 | Consentimiento | Destino cloud explícito, independiente de host/transporte. Denegación probada en reasoner, compactor y cada consumidor; loopback no elude consentimiento. | Implementado; validación offline conectada y límites descritos abajo. |
 
@@ -227,9 +227,61 @@ envío incierto reintentándolo sin evidencia. La política rechaza locks y alar
 incluso desde una escena o una sesión del dashboard. Los nombres de grupos y
 perfiles vocales nunca alteran ese resultado.
 
-Las operaciones ampliadas todavía necesitan capacidades y confirmación propias,
-además de propagarse por todos los DTOs y productores. Los modos/rangos acordados
-siguen en la revisión privada del inventario, junto con su evidencia pendiente.
+Los modos/rangos acordados siguen en la revisión privada del inventario,
+junto con su evidencia pendiente. La demo de IDs infantiles por SpeakerID ya
+no se importa al cargar las políticas predeterminadas; se conserva sólo como
+instrumento de tests explícitos. El servicio común sigue siendo obligatorio.
+
+## Operaciones ampliadas y formularios
+
+`HomeOperation` comparte el vocabulario de operaciones con rutinas. Los DTOs
+conservan `temperature`, `hvac_mode`, `position`, `color_temp_kelvin` y brillo
+opcional al ajustar color. Los parsers rechazan campos de otra operación,
+parámetros libres, booleanos numéricos, NaN e infinitos. No se habilitan fan,
+preset, swing, tilt ni rangos dobles de temperatura como consecuencia de elegir
+un dominio.
+
+La consigna de clima usa límites domésticos seleccionados y capacidades frescas
+del equipo. Se comprueban feature, mínimo, máximo y paso; no se recorta un valor
+inválido. La unidad de instalación se consulta en `/api/config` antes de enviar y
+durante la confirmación: debe ser °C. Se confirma `temperature` como setpoint y
+el modo HVAC previo, sin confundirlo con temperatura ambiente ni aceptar un
+cambio de modo no solicitado. Los modos se comprueban contra selección y
+`hvac_modes` actuales. Referencias: [REST](https://developers.home-assistant.io/docs/api/rest/)
+y [climate en HA 2026.4.3](https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/climate/__init__.py).
+
+Cover admite abrir, cerrar, detener y posición. Exige una clase de persiana
+seleccionada (`blind`, `curtain`, `shade` o `shutter`) y los flags observados de
+cada operación; no habilita puertas, portones o garajes. Posición se confirma
+contra `current_position`. Abrir/cerrar exige el extremo si HA informa posición;
+si no, sólo confirma el estado terminal informado. Detener necesita dos lecturas
+sin movimiento y posición estable si está informada. El YAML candidato fija
+60 s para recorrido/posición, con validación estricta de timeouts; los demás
+controles conservan el plazo existente. Son límites por validar en H6, no tiempos
+de equipo medidos. Agotarlos deja un resultado incierto sin reenvío. Referencia:
+[cover en HA 2026.4.3](https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/cover/__init__.py).
+
+Temperatura de color exige soporte `color_temp` y rango Kelvin observado y
+seleccionado. El envío conserva brillo cuando se pide junto al color; la
+confirmación exige modo de color y Kelvin exactos, además de brillo cuando
+corresponde. Un dispositivo que redondee sin reportar el objetivo exacto queda
+incierto; la validación de efectos reales sigue pendiente. Referencia:
+[light en HA 2026.4.3](https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/light/__init__.py).
+
+HTTP, el adaptador de servicios de los productores, persistencia de rutinas y
+recibos de recordatorios conservan estos campos. Los tests del dispatcher parten
+de órdenes ya normalizadas: todavía no prueban que una frase acústica llegue a
+la entidad y parámetros correctos. No se conectó el clasificador experimental
+de clima que tenía evaluación NO-GO. La selección privada real sigue sin grants
+efectivos; estos contratos se prueban con entidades sintéticas.
+
+El catálogo usa la misma selección que el servicio. Sus controles son la
+intersección con capacidades y límites actuales; sin selección quedan de lectura.
+La UI de Casa y el editor de rutinas muestran unidades, modos seleccionados y
+límites. El recibo conserva los valores solicitados. El smoke manual
+`python -m tests.frontend.browser_typed_controls` usa Chromium, HTTP autenticado,
+el servicio real y SQLite temporal con HA simulado: elige consigna y color con
+brillo, y guarda una rutina decimal sin ejecutarla. No usa HA ni audio reales.
 
 Verificación del commit `d49fa2f`: **3651 passed, 5 failed, 1 xfailed** en
 105,16 s, sin IDs de fallo nuevos. Pasan 516 pruebas enfocadas, incluidas 48 de
@@ -247,6 +299,6 @@ aplicado. La nueva frontera cierra cuatro fallos del dispatcher mediante fixture
 con selección explícita, estado fresco e intento único, conservando confirmación.
 Siguen abiertos los cuatro fallos de búsqueda por habitación; no se restaurará
 fallback a otra habitación para volverlos verdes. El quinto fallo, de idioma/VAD,
-corresponde a H3. H1 aún necesita operaciones ampliadas y expansión de efectos,
-además de revisar las restricciones de demostración basadas en SpeakerID.
+corresponde a H3. H1 aún necesita integrar las órdenes ampliadas desde el NLU de
+voz y expandir los efectos verificados de grupos y escenas.
 No hay publicación intermedia.

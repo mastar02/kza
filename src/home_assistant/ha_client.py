@@ -17,6 +17,8 @@ from time import monotonic
 
 import aiohttp
 
+from src.home_assistant.operations import ActionIntent, DOMAIN_OPERATIONS, action_capabilities, finite_number, matches_observation
+
 
 class ServiceCallStatus(StrEnum):
     """Certainty of a single REST service attempt, independent of state."""
@@ -62,23 +64,9 @@ def get_home_capabilities(entity: dict) -> tuple[str, ...]:
         entity: HA state object, including the reduced capability attributes.
 
     Returns:
-        Actions supported by the light or switch; other domains are read-only.
+        Operations evidenced by light, switch, climate or blind capabilities.
     """
-    entity_id = entity.get("entity_id")
-    attributes = entity.get("attributes", {})
-    if not isinstance(entity_id, str) or "." not in entity_id or not isinstance(attributes, dict):
-        return ()
-    domain = entity_id.partition(".")[0]
-    if domain not in {"light", "switch"}:
-        return ()
-    capabilities = ("turn_on", "turn_off")
-    modes = attributes.get("supported_color_modes") or []
-    brightness_modes = {"brightness", "color_temp", "hs", "xy", "rgb", "rgbw", "rgbww", "white"}
-    if domain == "light" and isinstance(modes, list) and any(
-        isinstance(mode, str) and mode in brightness_modes for mode in modes
-    ):
-        capabilities += ("brightness",)
-    return capabilities
+    return action_capabilities(entity)
 
 
 def _optional_registry_id(value: object) -> str | None:
@@ -156,11 +144,18 @@ class HomeAssistantClient:
     """
 
     def __init__(self, url: str, token: str, timeout: float = REST_TIMEOUT_DEFAULT,
-                 state_confirmation_timeout_s: float = 0.3):
+                 state_confirmation_timeout_s: float = 0.3, operation_confirmation_timeouts: dict[str, float] | None = None):
         self.url = url.rstrip("/")
         self.token = token
         self.timeout = timeout
         self.state_confirmation_timeout_s = state_confirmation_timeout_s
+        if operation_confirmation_timeouts is not None and type(operation_confirmation_timeouts) is not dict:
+            raise ValueError("invalid_operation_confirmation_timeout")
+        timeouts = dict(operation_confirmation_timeouts or {})
+        supported = set().union(*DOMAIN_OPERATIONS.values()) - {"turn_on", "turn_off", "brightness"}
+        if timeouts.keys() - supported or any(not finite_number(value) or not 0 < value <= 120 for value in timeouts.values()):
+            raise ValueError("invalid_operation_confirmation_timeout")
+        self._operation_confirmation_timeouts = timeouts
         self.headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
@@ -550,6 +545,60 @@ class HomeAssistantClient:
             if state.get("state") in ("unknown", "unavailable"):
                 return False
             remaining = deadline - asyncio.get_running_loop().time()
+            if remaining > 0:
+                await asyncio.sleep(min(0.025, remaining))
+        return False
+
+    async def get_temperature_unit_fresh(self, timeout: float = 0.15) -> str | None:
+        """Read the installation unit used by climate REST state and service data."""
+        try:
+            session = await self._ensure_session()
+            async with session.get(
+                f"{self.url}/api/config", timeout=aiohttp.ClientTimeout(total=timeout), allow_redirects=False,
+            ) as response:
+                if response.status in (401, 403):
+                    self._has_auth_error = True
+                if response.status != 200:
+                    return None
+                config = await response.json()
+                unit = config.get("unit_system", {}).get("temperature")
+                return unit if unit in {"°C", "°F"} else None
+        except (aiohttp.ClientError, TimeoutError, ValueError, TypeError, AttributeError):
+            return None
+
+    async def confirm_home_action(
+        self, request: ActionIntent, *, initial_state: str | None = None, timeout: float | None = None,
+    ) -> bool:
+        """Poll operation-specific state under one deadline, without repeating a send.
+
+        Temperature confirms the setpoint and unchanged HVAC mode, never room
+        temperature. Stop-cover requires two nonmoving observations with stable
+        position when reported. All confirmations describe HA, not physical sensing.
+        """
+        duration = getattr(self, "_operation_confirmation_timeouts", {}).get(request.operation, self.state_confirmation_timeout_s) if timeout is None else timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + duration
+        previous_stop = None
+        while (remaining := deadline - loop.time()) > 0:
+            state = await self.get_entity_state_fresh(request.entity_id, timeout=remaining)
+            if state is None or state.get("state") in {"unknown", "unavailable"}:
+                return False
+            if request.temperature is not None:
+                remaining = deadline - loop.time()
+                if remaining <= 0 or await self.get_temperature_unit_fresh(timeout=remaining) != "°C":
+                    return False
+                if state.get("attributes", {}).get("temperature_unit") not in (None, "°C"):
+                    return False
+            if matches_observation(request, state, initial_state=initial_state):
+                if request.operation != "stop_cover":
+                    return loop.time() <= deadline
+                observed = (state["state"], state.get("attributes", {}).get("current_position"))
+                if previous_stop == observed:
+                    return loop.time() <= deadline
+                previous_stop = observed
+            else:
+                previous_stop = None
+            remaining = deadline - loop.time()
             if remaining > 0:
                 await asyncio.sleep(min(0.025, remaining))
         return False

@@ -1,6 +1,24 @@
 /* KZA home — classic script, also loadable by the native Node test runner. */
 (function (root) {
   'use strict';
+  const OPERATION_LABELS = { turn_on: 'Encender', turn_off: 'Apagar', brightness: 'Brillo', color_temp_kelvin: 'Temperatura de color', set_temperature: 'Temperatura objetivo', set_hvac_mode: 'Modo del aire', open_cover: 'Abrir', close_cover: 'Cerrar', stop_cover: 'Detener', set_cover_position: 'Posición' };
+  const OPERATION_PARAMETERS = { brightness: ['brightness_pct'], color_temp_kelvin: ['color_temp_kelvin', 'brightness_pct'], set_temperature: ['temperature'], set_hvac_mode: ['hvac_mode'], set_cover_position: ['position'] };
+  const MODE_LABELS = { off: 'Apagado', cool: 'Frío', heat: 'Calor', dry: 'Deshumidificar', fan_only: 'Ventilación', auto: 'Automático', heat_cool: 'Frío y calor' };
+  function controlFields(entity, operation) {
+    const limits = entity?.control_limits || {};
+    const number = (name, label, min, max, step = 1, optional = false) => ({ name, label, min, max, step, optional });
+    if (operation === 'brightness') return [number('brightness_pct', 'Brillo (%)', limits.brightness_min ?? 0, limits.brightness_max ?? 100)];
+    if (operation === 'color_temp_kelvin') return [number('color_temp_kelvin', 'Temperatura de color (K)', limits.color_temp_min, limits.color_temp_max), ...(entity?.capabilities?.includes('brightness') ? [number('brightness_pct', 'Brillo opcional (%)', Math.max(1, limits.brightness_min), limits.brightness_max, 1, true)] : [])];
+    if (operation === 'set_temperature') return [number('temperature', 'Temperatura objetivo (°C)', limits.temperature_min, limits.temperature_max, limits.temperature_step)];
+    if (operation === 'set_hvac_mode') return [{ name: 'hvac_mode', label: 'Modo', options: (limits.hvac_modes || []).map(mode => [mode, MODE_LABELS[mode] || mode]) }];
+    if (operation === 'set_cover_position') return [number('position', 'Posición (% abierto)', limits.position_min, limits.position_max)];
+    return [];
+  }
+  function validControlValue(field, value) {
+    if (field.optional && (value === null || value === undefined || value === '')) return true;
+    if (field.options) return field.options.some(([option]) => option === value);
+    return Number.isFinite(value) && Number.isFinite(field.min) && Number.isFinite(field.max) && value >= field.min && value <= field.max && (field.name === 'temperature' ? Number.isFinite(field.step) && field.step > 0 && Math.abs((value - field.min) / field.step - Math.round((value - field.min) / field.step)) <= 1e-7 : Number.isInteger(value));
+  }
   function selectFreshResponse(currentSeq, incomingSeq) { return incomingSeq >= currentSeq; }
   function actionLabel(status) {
     return ({ confirmed: 'Confirmado por HA', failed: 'Falló', uncertain: 'Sin confirmar', missing: 'Resultado desconocido', in_progress: 'En curso' })[status] || 'Resultado desconocido';
@@ -82,7 +100,9 @@
     };
   }
   function entityCanControl(entity, operation, stale) {
-    return !stale && entity.available === true && ['on', 'off'].includes(entity.state) && Array.isArray(entity.capabilities) && entity.capabilities.includes(operation);
+    const domain = entity.domain || entity.entity_id?.split('.')[0];
+    const states = { light: ['on', 'off'], switch: ['on', 'off'], climate: Object.keys(MODE_LABELS), cover: ['open', 'closed', 'opening', 'closing'] };
+    return !stale && entity.available === true && states[domain]?.includes(entity.state) && Array.isArray(entity.capabilities) && entity.capabilities.includes(operation);
   }
   function createApi({ fetch: fetcher = root.fetch.bind(root), onDemo = () => {}, onUnauthorized = () => {}, timeoutMs = 12000 } = {}) {
     let sessionGeneration = 0;
@@ -161,15 +181,16 @@
     }
     return {
       get(entity, operation) { return records.get(keyFor(entity, operation)); },
-      async execute(entity, operation, brightness) {
+      async execute(entity, operation, parameters) {
         const key = keyFor(entity, operation);
         if (records.get(key)?.pending) return;
         const epoch = generation;
-        const record = { entity_id: entity, operation, request_id: makeId(), pending: true, sending: true, status: 'in_progress' };
+        if (operation === 'brightness' && typeof parameters === 'number') parameters = { brightness_pct: parameters };
+        const selected = Object.fromEntries((OPERATION_PARAMETERS[operation] || []).filter(name => parameters?.[name] !== undefined && parameters[name] !== null).map(name => [name, parameters[name]]));
+        const record = { entity_id: entity, operation, parameters: selected, request_id: makeId(), pending: true, sending: true, status: 'in_progress' };
         publish(key, record);
         try {
-          const body = { entity_id: entity, operation, request_id: record.request_id };
-          if (operation === 'brightness') body.brightness_pct = brightness;
+          const body = { entity_id: entity, operation, request_id: record.request_id, ...selected };
           const result = await api('/api/home/actions', { method: 'POST', body });
           if (epoch !== generation) return;
           const status = ['confirmed', 'failed', 'uncertain', 'in_progress'].includes(result?.status) ? result.status : 'missing';
@@ -232,7 +253,7 @@
   }
   const views = new Map();
   let application = null;
-  const exported = { selectFreshResponse, actionLabel, directionLabel, describeMicrophone, entityCanControl, createApi, createPoller, createActionController, createViewLifecycle, createLazyView, clearRoutineSession, observationMillis, createSnapshotClock, createFreshnessTicker,
+  const exported = { OPERATION_LABELS, OPERATION_PARAMETERS, controlFields, validControlValue, selectFreshResponse, actionLabel, directionLabel, describeMicrophone, entityCanControl, createApi, createPoller, createActionController, createViewLifecycle, createLazyView, clearRoutineSession, observationMillis, createSnapshotClock, createFreshnessTicker,
     /** Register a synchronous renderer(container, context), mounted once per activation.
      * It may return {refresh, destroy}. Refresh delegates without remounting; destroy
      * runs before leaving/replacing the view, on logout, and on pagehide. The view
@@ -322,12 +343,12 @@
     function renderEntity(entity) {
       const card = node('div', 'entity'); card.append(node('div', 'entity-name', known(entity.name)), node('div', 'entity-id', known(entity.entity_id)));
       const row = node('div', 'entity-row');
-      const state = entity.available !== true ? 'No disponible' : ({ on: 'Encendido', off: 'Apagado', unavailable: 'No disponible', unknown: 'Desconocido' })[entity.state] || 'Desconocido';
+      const state = entity.available !== true ? 'No disponible' : ({ on: 'Encendido', off: 'Apagado', open: 'Abierto', closed: 'Cerrado', opening: 'Abriendo', closing: 'Cerrando', ...MODE_LABELS, unavailable: 'No disponible', unknown: 'Desconocido' })[entity.state] || 'Desconocido';
       const stateBadge = badge(state);
       bindTemporal(freshness => { stateBadge.className = `badge${!freshness.stale && entity.available === true && entity.state === 'on' ? ' good' : ''}`; });
       row.append(stateBadge);
       const controls = node('div', 'entity-controls');
-      for (const [operation, label] of [['turn_on', 'Encender'], ['turn_off', 'Apagar']]) {
+      for (const [operation, label] of [['turn_on', 'Encender'], ['turn_off', 'Apagar'], ['open_cover', 'Abrir'], ['close_cover', 'Cerrar'], ['stop_cover', 'Detener']]) {
         if (!entity.capabilities?.includes(operation)) continue;
         const control = button(label, () => {
           if (entityCanControl(entity, operation, isStale(stateFor())) && !actions.get(entity.entity_id, operation)?.pending) actions.execute(entity.entity_id, operation);
@@ -338,7 +359,7 @@
       }
       row.append(controls); card.append(row);
       if (entity.capabilities?.includes('brightness')) {
-        const brightness = node('div', 'brightness'), input = node('input'); input.type = 'range'; input.min = '0'; input.max = '100'; input.step = '1';
+        const brightness = node('div', 'brightness'), input = node('input'); input.type = 'range'; input.min = entity.control_limits?.brightness_min ?? 0; input.max = entity.control_limits?.brightness_max ?? 100; input.step = '1';
         const valid = Number.isFinite(entity.brightness_pct) && entity.brightness_pct >= 0 && entity.brightness_pct <= 100;
         input.value = valid ? entity.brightness_pct : 50; // A starting choice is not an observed value.
         input.setAttribute('aria-label', `Elegir brillo de ${known(entity.name)}`);
@@ -350,10 +371,31 @@
         input.addEventListener('input', () => { selected = true; output.textContent = `${input.value}% elegido`; apply.disabled = !allowed(); });
         brightness.append(node('label', '', 'Brillo · elegí un valor y aplicalo'), input, output, apply); card.append(brightness);
       }
-      for (const operation of ['turn_on', 'turn_off', 'brightness']) {
+      for (const operation of ['color_temp_kelvin', 'set_temperature', 'set_hvac_mode', 'set_cover_position']) {
+        if (!entity.capabilities?.includes(operation)) continue;
+        const form = node('div', 'typed-controls'), values = {}, fields = controlFields(entity, operation), inputs = [];
+        const allowed = () => entityCanControl(entity, operation, isStale(stateFor())) && !actions.get(entity.entity_id, operation)?.pending;
+        const valid = () => fields.every(field => validControlValue(field, values[field.name]));
+        const apply = button('Aplicar ' + OPERATION_LABELS[operation].toLowerCase(), () => { if (allowed() && valid()) actions.execute(entity.entity_id, operation, values); });
+        for (const field of fields) {
+          const label = node('label', 'typed-field', field.label), input = node(field.options ? 'select' : 'input');
+          if (field.options) {
+            const blank = node('option', '', 'Elegí un modo'); blank.value = ''; input.append(blank);
+            for (const [value, text] of field.options) { const option = node('option', '', text); option.value = value; input.append(option); }
+          } else { input.type = 'number'; input.min = field.min; input.max = field.max; input.step = field.step || 1; }
+          input.setAttribute('aria-label', field.label + ' de ' + known(entity.name));
+          input.addEventListener('input', () => { values[field.name] = input.value === '' ? null : field.options ? input.value : Number(input.value); apply.disabled = !allowed() || !valid(); });
+          label.append(input); inputs.push(input); form.append(label);
+        }
+        bindTemporal(() => { inputs.forEach(input => { input.disabled = !allowed(); }); apply.disabled = !allowed() || !valid(); });
+        form.append(apply); card.append(form);
+      }
+      for (const operation of Object.keys(OPERATION_LABELS)) {
         const record = actions.get(entity.entity_id, operation);
         if (!record) continue;
-        const text = node('p', `action-result ${record.status === 'confirmed' ? 'confirmed' : ''}`, `${({ turn_on: 'Encender', turn_off: 'Apagar', brightness: 'Brillo' })[operation]} · ${actionLabel(record.status)}`);
+        const text = node('p', `action-result ${record.status === 'confirmed' ? 'confirmed' : ''}`, `${OPERATION_LABELS[operation]} · ${actionLabel(record.status)}`);
+        const requested = Object.entries(record.parameters || {}).map(([name, value]) => name === 'temperature' ? `${value} °C` : name === 'color_temp_kelvin' ? `${value} K` : name === 'hvac_mode' ? MODE_LABELS[value] || value : `${value}%`);
+        if (requested.length) text.append(node('span', '', ' · ' + requested.join(', ')));
         text.setAttribute('role', 'status');
         if (['uncertain', 'missing'].includes(record.status)) text.append(node('span', '', '. Actualizá el estado antes de decidir. Una nueva orden necesita otro toque.'));
         card.append(text);

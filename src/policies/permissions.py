@@ -1,4 +1,7 @@
-"""Multi-user permission gating: niños no pueden controlar dominios sensibles.
+"""Historical demo, not imported by the runtime policy package.
+
+Do not use acoustic user IDs as authenticated permissions. The active control
+boundary is HomeControlPolicy; this module is retained for explicit demo tests.
 
 Plan #3 OpenClaw — use case 2 (block puro, sin require_approval).
 """

@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 from typing import TYPE_CHECKING
 
+from src.home_assistant.operations import BLIND_CLASSES, DOMAIN_OPERATIONS, HVAC_MODES, finite_number
+
 if TYPE_CHECKING:
     from src.home_assistant.home_actions import HomeActionRequest
 
@@ -68,18 +70,45 @@ class EntityGrant:
     operations: frozenset[str]
     brightness_min: int = 0
     brightness_max: int = 100
+    color_temp_min: int | None = None
+    color_temp_max: int | None = None
+    temperature_min: float | None = None
+    temperature_max: float | None = None
+    temperature_unit: str = "C"
+    hvac_modes: frozenset[str] = frozenset()
+    position_min: int = 0
+    position_max: int = 100
+    cover_device_class: str | None = None
 
     def __post_init__(self) -> None:
         if (
             type(self.entity_id) is not str
-            or re.fullmatch(r"(?:light|switch)\.[a-z0-9_]+", self.entity_id) is None
+            or re.fullmatch(r"(?:light|switch|climate|cover)\.[a-z0-9_]+", self.entity_id) is None
             or type(self.operations) is not frozenset or not self.operations
-            or not self.operations <= {"turn_on", "turn_off", "brightness"}
-            or ("brightness" in self.operations and not self.entity_id.startswith("light."))
+            or not self.operations <= DOMAIN_OPERATIONS.get(self.entity_id.partition(".")[0], ())
             or type(self.brightness_min) is not int or type(self.brightness_max) is not int
             or not 0 <= self.brightness_min <= self.brightness_max <= 100
         ):
             raise ValueError("invalid_entity_grant")
+        if "color_temp_kelvin" in self.operations and (
+            type(self.color_temp_min) is not int or type(self.color_temp_max) is not int
+            or not 0 < self.color_temp_min <= self.color_temp_max
+        ):
+            raise ValueError("invalid_color_temperature_grant")
+        if "set_temperature" in self.operations and (
+            not finite_number(self.temperature_min) or not finite_number(self.temperature_max)
+            or self.temperature_min > self.temperature_max or self.temperature_unit != "C"
+        ):
+            raise ValueError("invalid_temperature_grant")
+        if type(self.hvac_modes) is not frozenset or ("set_hvac_mode" in self.operations and (
+            not self.hvac_modes or not self.hvac_modes <= HVAC_MODES
+        )):
+            raise ValueError("invalid_hvac_modes_grant")
+        if self.entity_id.startswith("cover.") and (
+            self.cover_device_class not in BLIND_CLASSES or type(self.position_min) is not int
+            or type(self.position_max) is not int or not 0 <= self.position_min <= self.position_max <= 100
+        ):
+            raise ValueError("invalid_cover_grant")
 
 
 class HomeControlPolicy:
@@ -121,20 +150,14 @@ class HomeControlPolicy:
                 operations = entry["operations"]
                 if type(operations) is not list or any(type(value) is not str for value in operations):
                     raise ValueError("invalid_operations")
-                parameters = entry.get("parameters", {})
-                if type(parameters) is not dict or parameters.keys() - {"brightness_pct"}:
-                    raise ValueError("invalid_parameters")
-                bounds = parameters["brightness_pct"] if "brightness" in operations else {"min": 0, "max": 100}
-                if type(bounds) is not dict or bounds.keys() != {"min", "max"}:
-                    raise ValueError("invalid_brightness_bounds")
-                grants.append(EntityGrant(entry["entity_id"], frozenset(operations), bounds["min"], bounds["max"]))
+                grants.append(grant_from_review(entry))
             if len({grant.entity_id for grant in grants}) != len(grants):
                 raise ValueError("duplicate_control_entity")
             return tuple(grants)
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
             raise HomeActionDenied("control_selection_unavailable") from error
 
-    async def require_allowed(self, request: "HomeActionRequest", actor: HomeActor) -> None:
+    async def require_allowed(self, request: "HomeActionRequest", actor: HomeActor) -> EntityGrant:
         """Check actor, producer, selected entity, operation and current limits."""
         if not isinstance(actor, HomeActor) or "home:control" not in actor.permissions:
             raise HomeActionDenied("home_control_denied")
@@ -143,9 +166,61 @@ class HomeControlPolicy:
             or (request.origin is ActionOrigin.HTTP) != (actor.kind is ActorKind.DASHBOARD)
         ):
             raise HomeActionDenied("action_provenance_denied")
-        grants = await asyncio.to_thread(self._read_selection) if self._selection_path else self._grants
+        grants = await self.snapshot_grants()
         grant = next((item for item in grants if item.entity_id == request.entity_id), None)
         if grant is None or request.operation not in grant.operations:
             raise HomeActionDenied("action_not_selected")
-        if request.brightness_pct is not None and not grant.brightness_min <= request.brightness_pct <= grant.brightness_max:
+        if request.brightness_pct is not None and (
+            "brightness" not in grant.operations or not grant.brightness_min <= request.brightness_pct <= grant.brightness_max
+        ):
             raise HomeActionDenied("brightness_outside_selected_range")
+        if request.color_temp_kelvin is not None and not grant.color_temp_min <= request.color_temp_kelvin <= grant.color_temp_max:
+            raise HomeActionDenied("color_temperature_outside_selected_range")
+        if request.temperature is not None and not grant.temperature_min <= request.temperature <= grant.temperature_max:
+            raise HomeActionDenied("temperature_outside_selected_range")
+        if request.hvac_mode is not None and request.hvac_mode not in grant.hvac_modes:
+            raise HomeActionDenied("hvac_mode_not_selected")
+        target = {"open_cover": 100, "close_cover": 0}.get(request.operation, request.position)
+        if request.entity_id.startswith("cover.") and target is not None and not grant.position_min <= target <= grant.position_max:
+            raise HomeActionDenied("position_outside_selected_range")
+        return grant
+
+    async def snapshot_grants(self) -> tuple[EntityGrant, ...]:
+        """Read current reviewed grants for projection, without freezing admission."""
+        return await asyncio.to_thread(self._read_selection) if self._selection_path else self._grants
+
+
+
+def grant_from_review(entry: dict) -> EntityGrant:
+    """Parse explicit per-operation limits from private reviewed inventory data."""
+    parameters = entry.get("parameters", {})
+    if type(parameters) is not dict or parameters.keys() - {"brightness_pct", "color_temp_kelvin", "temperature", "hvac_modes", "position", "device_class"}:
+        raise ValueError("invalid_parameters")
+    operations = frozenset(entry["operations"])
+
+    def bounds(key):
+        value = parameters[key]
+        if type(value) is not dict or value.keys() != {"min", "max"}:
+            raise ValueError("invalid_parameter_bounds")
+        return value["min"], value["max"]
+
+    fields = {}
+    if "brightness" in operations:
+        fields["brightness_min"], fields["brightness_max"] = bounds("brightness_pct")
+    if "color_temp_kelvin" in operations:
+        fields["color_temp_min"], fields["color_temp_max"] = bounds("color_temp_kelvin")
+    if "set_temperature" in operations:
+        temperature = parameters["temperature"]
+        if type(temperature) is not dict or temperature.keys() != {"min", "max", "unit", "unit_confirmed_by_user"} or temperature["unit_confirmed_by_user"] is not True:
+            raise ValueError("temperature_unit_not_verified")
+        fields.update(temperature_min=temperature["min"], temperature_max=temperature["max"], temperature_unit=temperature["unit"])
+    if "set_hvac_mode" in operations:
+        modes = parameters["hvac_modes"]
+        if type(modes) is not list or any(type(mode) is not str for mode in modes):
+            raise ValueError("invalid_hvac_modes")
+        fields["hvac_modes"] = frozenset(modes)
+    if entry["entity_id"].startswith("cover."):
+        fields["cover_device_class"] = parameters["device_class"]
+        if "set_cover_position" in operations or "position" in parameters:
+            fields["position_min"], fields["position_max"] = bounds("position")
+    return EntityGrant(entry["entity_id"], operations, **fields)

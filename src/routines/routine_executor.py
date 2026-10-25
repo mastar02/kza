@@ -10,6 +10,7 @@ from enum import StrEnum
 import time as time_module
 
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
+from src.home_assistant.operations import action_parameters
 from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult, HomeActionService
 from src.routines.models import ActionStatus, RoutineActionResult, RoutineRun, RunStatus
 from src.routines.routine_store import RoutineStore
@@ -117,7 +118,7 @@ class RoutineExecutor:
                 entity_id=action.entity_id,
                 operation=str(action.operation),
                 request_id=f"{run.run_id}:{index}",
-                brightness_pct=action.brightness_pct,
+                **action_parameters(action),
                 origin=ActionOrigin.ROUTINE,
             )
             try:

@@ -64,8 +64,12 @@ class RoutineActionModel(RoutineContractModel):
     """An allowlisted Casa action without an editable actor."""
 
     entity_id: str
-    operation: Literal["turn_on", "turn_off", "brightness"]
+    operation: Literal["turn_on", "turn_off", "brightness", "color_temp_kelvin", "set_temperature", "set_hvac_mode", "open_cover", "close_cover", "stop_cover", "set_cover_position"]
     brightness_pct: int | None = None
+    color_temp_kelvin: int | None = None
+    temperature: float | None = None
+    hvac_mode: str | None = None
+    position: int | None = None
 
 
 class RoutineWriteModel(RoutineContractModel):
@@ -194,10 +198,10 @@ class DashboardAPI:
         self.observability_use_mocks = observability_use_mocks
         self.microphone_snapshot_provider = microphone_snapshot_provider
         self.home_enabled = home_enabled
-        self.home_catalog = home_catalog if home_catalog is not None else HomeCatalogService(ha_client, home_rooms or {})
         self.home_actions = home_actions if home_actions is not None else (
             HomeActionService(ha_client) if ha_client is not None else None
         )
+        self.home_catalog = home_catalog if home_catalog is not None else HomeCatalogService(ha_client, home_rooms or {}, policy=self.home_actions.policy if self.home_actions is not None else None)
 
         # FastAPI app
         self.app = FastAPI(

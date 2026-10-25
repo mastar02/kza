@@ -26,6 +26,7 @@ from src.routines.models import (
 from src.routines.routine_store import RoutineStore
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionRequest
+from src.home_assistant.operations import action_parameters
 from src.routines.models import RoutineValidationError
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ class RoutineScheduler:
         try:
             for action in spec.actions:
                 await self.executor.home_actions.validate_selection(HomeActionRequest(
-                    action.entity_id, str(action.operation), "admission", action.brightness_pct, ActionOrigin.ROUTINE,
+                    action.entity_id, str(action.operation), "admission", origin=ActionOrigin.ROUTINE, **action_parameters(action),
                 ), actor=HomeActor.household())
         except ValueError as error:
             raise RoutineValidationError(str(error)) from error

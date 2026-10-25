@@ -19,6 +19,7 @@ from src.home_assistant.home_actions import (
 )
 from src.home_assistant.ha_client import HomeAssistantClient
 from src.home_assistant.control_policy import ActorKind, HomeActor
+from src.home_assistant.operations import PARAMETER_FIELDS, validate_parameters
 from src.rooms.room_context import RoomConfig
 
 
@@ -56,9 +57,10 @@ def build_home_services(
     Returns:
         A single catalog/action pair for dashboard and subsequent consumers.
     """
+    controls = actions if actions is not None else (HomeActionService(ha_client) if ha_client is not None else None)
     return HomeServices(
-        HomeCatalogService(ha_client, rooms),
-        actions if actions is not None else (HomeActionService(ha_client) if ha_client is not None else None),
+        HomeCatalogService(ha_client, rooms, policy=controls.policy if controls is not None else None),
+        controls,
         microphone_snapshot_provider,
     )
 
@@ -83,10 +85,15 @@ class HomeActionBody(BaseModel):
     operation: str
     request_id: str
     brightness_pct: int | None = Field(default=None, ge=0, le=100)
+    color_temp_kelvin: int | None = Field(default=None, gt=0)
+    temperature: float | None = Field(default=None, allow_inf_nan=False)
+    hvac_mode: str | None = None
+    position: int | None = Field(default=None, ge=0, le=100)
 
     @model_validator(mode="after")
     def validate_intent(self) -> "HomeActionBody":
         """Apply the same allowlist used by non-HTTP callers."""
+        validate_parameters(self.entity_id, self.operation, {name: getattr(self, name) for name in PARAMETER_FIELDS if name in self.model_fields_set})
         validate_home_action(HomeActionRequest(**self.model_dump()))
         return self
 

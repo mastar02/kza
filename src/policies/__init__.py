@@ -11,7 +11,10 @@ modules in this directory and import them here so they get loaded.
 # (priorities live on the decorators themselves).
 from src.policies import (  # noqa: F401  — side-effect imports
     safety_alarm,
-    permissions,
     tts_rewrite_es,
     audit_sqlite,
 )
+
+# Historical SpeakerID-based child IDs remain an explicit test instrument in
+# permissions.py. Runtime authorization uses HomeControlPolicy's server-owned
+# actor and private selection; acoustic annotations do not define permissions.

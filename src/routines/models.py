@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from enum import StrEnum
 import re
 
+from src.home_assistant.operations import HomeOperation as Operation, PARAMETER_FIELDS, action_parameters, validate_parameters
+
 
 class RoutineValidationError(ValueError):
     """A routine definition does not satisfy the supported contract."""
@@ -24,14 +26,6 @@ class RoutineConflict(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
-
-
-class Operation(StrEnum):
-    """Casa operations whose confirmation behavior is currently supported."""
-
-    TURN_ON = "turn_on"
-    TURN_OFF = "turn_off"
-    BRIGHTNESS = "brightness"
 
 
 class RunStatus(StrEnum):
@@ -79,6 +73,10 @@ class RoutineAction:
     entity_id: str
     operation: Operation
     brightness_pct: int | None = None
+    color_temp_kelvin: int | None = None
+    temperature: float | None = None
+    hvac_mode: str | None = None
+    position: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "operation", Operation(self.operation))
@@ -196,20 +194,18 @@ def parse_routine_spec(payload: dict) -> RoutineSpec:
         conditions.append(StateCondition(_entity(item["entity_id"]), _text(item["state"])))
     actions = []
     for value in payload["actions"]:
-        item = _object(value, {"entity_id", "operation"}, {"brightness_pct"})
+        item = _object(value, {"entity_id", "operation"}, set(PARAMETER_FIELDS))
         if type(item["operation"]) is not str:
             raise RoutineValidationError("Invalid operation")
         try:
             operation = Operation(item["operation"])
+            parameters = {name: item[name] for name in PARAMETER_FIELDS if name in item}
+            # Explicit null parameters are not discarded by persistence.
+            validate_parameters(_entity(item["entity_id"]), operation, parameters)
+            action = RoutineAction(item["entity_id"], operation, **parameters)
         except ValueError as error:
-            raise RoutineValidationError("Unsupported operation") from error
-        brightness = item.get("brightness_pct")
-        if operation == Operation.BRIGHTNESS:
-            if type(brightness) is not int or not 0 <= brightness <= 100:
-                raise RoutineValidationError("Invalid brightness_pct")
-        elif "brightness_pct" in item:
-            raise RoutineValidationError("brightness_pct requires brightness operation")
-        actions.append(RoutineAction(_entity(item["entity_id"]), operation, brightness))
+            raise RoutineValidationError(str(error)) from error
+        actions.append(action)
     return RoutineSpec(name, description, payload["enabled"], payload["timezone"], schedule, tuple(conditions), tuple(actions))
 
 
@@ -222,7 +218,7 @@ def spec_to_dict(spec: RoutineSpec) -> dict:
         "conditions": [{"entity_id": item.entity_id, "state": item.state} for item in spec.conditions],
         "actions": [
             {"entity_id": item.entity_id, "operation": Operation(item.operation).value,
-             **({"brightness_pct": item.brightness_pct} if item.brightness_pct is not None else {})}
+             **action_parameters(item)}
             for item in spec.actions
         ],
     }

@@ -5,6 +5,19 @@ import pytest
 from src.hooks import HaActionCall, BlockResult
 
 
+def test_default_runtime_policies_do_not_load_speaker_id_permission_demo():
+    import subprocess
+    import sys
+
+    subprocess.run([sys.executable, "-c", "\n".join([
+        "import src.policies",
+        "from src.hooks.registry import _global_registry",
+        "handlers = _global_registry.get_before_handlers('before_ha_action')",
+        "assert handlers",
+        "assert all(fn.__module__ != 'src.policies.permissions' for _, fn in handlers)",
+    ])], check=True, capture_output=True, text=True, timeout=10)
+
+
 def _ha_call(user_id, domain):
     return HaActionCall(
         entity_id=f"{domain}.x", domain=domain,

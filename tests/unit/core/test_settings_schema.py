@@ -57,6 +57,12 @@ class TestValidateSettings:
         with pytest.raises(ValueError, match="control_selection_path"):
             validate_settings(real_config)
 
+    @pytest.mark.parametrize("timeouts", [{"unlock": 60}, {"open_cover": True}, {"open_cover": "60"}, {"open_cover": 0}, {"open_cover": 121}, {"open_cover": float("nan")}])
+    def test_confirmation_timeouts_are_known_bounded_numeric_values(self, real_config, timeouts):
+        real_config["home_assistant"]["operation_confirmation_timeouts"] = timeouts
+        with pytest.raises(ValueError, match="operation_confirmation_timeouts"):
+            validate_settings(real_config)
+
     def test_extra_sections_and_fields_allowed(self, real_config):
         """El schema es permisivo: claves nuevas no rompen el boot."""
         real_config["seccion_futura"] = {"clave": 1}
