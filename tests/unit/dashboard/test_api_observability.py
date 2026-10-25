@@ -105,9 +105,9 @@ async def api_with_observability(tmp_path, health_aggregator, mock_reminder_sche
 
 
 @pytest_asyncio.fixture
-async def client(api_with_observability):
+async def client(api_with_observability, dashboard_auth):
     transport = ASGITransport(app=api_with_observability.app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=dashboard_auth) as c:
         yield c
 
 
@@ -153,11 +153,11 @@ class TestHealthEndpoint:
             assert "extra" in sub
 
     @pytest.mark.asyncio
-    async def test_health_without_aggregator(self, tmp_path):
+    async def test_health_without_aggregator(self, tmp_path, dashboard_auth):
         """When health_aggregator is None, returns fallback."""
         dashboard = DashboardAPI()
         transport = ASGITransport(app=dashboard.app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://test", headers=dashboard_auth) as c:
             resp = await c.get("/api/health")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -194,11 +194,11 @@ class TestMetricsEndpoint:
         assert data["command_count"] == 50
 
     @pytest.mark.asyncio
-    async def test_metrics_without_aggregator(self, tmp_path):
+    async def test_metrics_without_aggregator(self, tmp_path, dashboard_auth):
         """Without aggregator, returns zero-valued metrics."""
         dashboard = DashboardAPI()
         transport = ASGITransport(app=dashboard.app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://test", headers=dashboard_auth) as c:
             data = (await c.get("/api/metrics")).json()
         assert data["latency"]["p50_ms"] == 0.0
         assert data["queue_depth"] == 0
@@ -233,10 +233,10 @@ class TestSubsystemsEndpoint:
         assert "home_assistant" in names
 
     @pytest.mark.asyncio
-    async def test_subsystems_without_aggregator(self, tmp_path):
+    async def test_subsystems_without_aggregator(self, tmp_path, dashboard_auth):
         dashboard = DashboardAPI()
         transport = ASGITransport(app=dashboard.app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://test", headers=dashboard_auth) as c:
             data = (await c.get("/api/subsystems")).json()
         assert data["subsystems"] == []
 
@@ -278,10 +278,10 @@ class TestFailuresEndpoint:
         assert len(data["failures"]) == 3
 
     @pytest.mark.asyncio
-    async def test_failures_without_aggregator(self, tmp_path):
+    async def test_failures_without_aggregator(self, tmp_path, dashboard_auth):
         dashboard = DashboardAPI()
         transport = ASGITransport(app=dashboard.app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://test", headers=dashboard_auth) as c:
             data = (await c.get("/api/failures")).json()
         assert data["failures"] == []
 
@@ -314,11 +314,11 @@ class TestRemindersStatusEndpoint:
         assert data["delivery_failures"] == 3  # 1 + 2 from mock retry_counts
 
     @pytest.mark.asyncio
-    async def test_status_without_dependencies(self, tmp_path):
+    async def test_status_without_dependencies(self, tmp_path, dashboard_auth):
         """Without reminder manager/scheduler, returns safe defaults."""
         dashboard = DashboardAPI()
         transport = ASGITransport(app=dashboard.app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://test", headers=dashboard_auth) as c:
             data = (await c.get("/api/reminders/status")).json()
         assert data["pending_count"] == 0
         assert data["next_trigger_at"] is None

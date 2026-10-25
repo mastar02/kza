@@ -138,12 +138,12 @@ class UtteranceSegmenter:
 
         dur_s = sum(c.shape[0] for _, c, _ in self._buf) / self.sample_rate
         if self._silence_ms >= self.close_silence_ms or dur_s >= self.max_segment_s:
-            seg = self._close()
+            seg = self._close(complete=self._silence_ms >= self.close_silence_ms)
             if seg is not None:
                 closed.append(seg)
         return closed
 
-    def _close(self) -> RawSegment | None:
+    def _close(self, *, complete: bool = True) -> RawSegment | None:
         buf, self._buf = self._buf, []
         probs, self._probs = self._probs, []
         self._in_speech = False
@@ -166,5 +166,6 @@ class UtteranceSegmenter:
         during_tts = any(t for _, _, t in buf)
         vad_prob = float(sum(probs) / len(probs)) if probs else 0.0
         return RawSegment(
-            t0=t0, t1=t1, audio=audio, during_tts=during_tts, vad_prob=vad_prob
+            t0=t0, t1=t1, audio=audio, during_tts=during_tts, vad_prob=vad_prob,
+            complete=complete,
         )

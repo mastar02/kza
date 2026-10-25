@@ -43,6 +43,7 @@ def test_opens_and_closes_segment_with_preroll():
     # 5 chunks en total (preroll + 2 voz + 2 silencio de cola)
     assert s.audio.shape == (CHUNK * 5, 6)
     assert s.during_tts is False
+    assert s.complete is True
     # el VAD recibió la columna cruda (col 2)
     assert all(c.shape == (CHUNK,) for c in calls)
 
@@ -74,6 +75,7 @@ def test_max_segment_force_closes():
         out.extend(seg.feed(ts=1.0 + i * 0.08, chunk=_chunk(0.1)))
     assert len(out) >= 1
     assert out[0].audio.shape[0] <= CHUNK * 3
+    assert out[0].complete is False
 
 
 def test_during_tts_propagates():

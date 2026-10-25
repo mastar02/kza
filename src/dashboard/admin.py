@@ -12,7 +12,7 @@ import shutil
 import subprocess
 
 import numpy as np
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from src.dashboard.auth import (
@@ -69,10 +69,10 @@ def register_admin_routes(
     # ---------------- Auth helpers (sin require_admin) ----------------
 
     @router.post("/auth/login", dependencies=[Depends(require_dashboard_origin)])
-    async def login(body: LoginBody):
-        return login_response(body.token)
+    async def login(body: LoginBody, request: Request):
+        return login_response(body.token, secure=request.url.scheme == "https")
 
-    @router.post("/auth/logout", dependencies=[Depends(require_dashboard_origin)])
+    @router.post("/auth/logout", dependencies=[Depends(require_admin)])
     async def logout():
         return logout_response()
 

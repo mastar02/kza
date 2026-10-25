@@ -14,23 +14,23 @@ def _build_app(bus: LiveEventBus | None):
     return app
 
 
-def test_ws_route_absent_when_no_bus():
+def test_ws_route_absent_when_no_bus(dashboard_auth):
     app = _build_app(bus=None)
     paths = {getattr(r, "path", None) for r in app.routes}
     assert "/ws/live" not in paths
 
 
-def test_ws_route_present_with_bus():
+def test_ws_route_present_with_bus(dashboard_auth):
     bus = LiveEventBus()
     app = _build_app(bus)
     paths = {getattr(r, "path", None) for r in app.routes}
     assert "/ws/live" in paths
 
 
-def test_ws_handshake_and_unsubscribe_on_disconnect():
+def test_ws_handshake_and_unsubscribe_on_disconnect(dashboard_auth):
     bus = LiveEventBus()
     app = _build_app(bus)
-    client = TestClient(app)
+    client = TestClient(app, headers=dashboard_auth)
     assert bus.subscriber_count == 0
     with client.websocket_connect("/ws/live"):
         # Loop interno del TestClient debe haber registrado el subscriber
@@ -40,7 +40,7 @@ def test_ws_handshake_and_unsubscribe_on_disconnect():
     assert bus.subscriber_count == 0
 
 
-def test_ws_publish_round_trip():
+def test_ws_publish_round_trip(dashboard_auth):
     """Publish desde el mismo loop del server (vía un endpoint trigger)."""
     bus = LiveEventBus()
     app = _build_app(bus)
@@ -54,7 +54,7 @@ def test_ws_publish_round_trip():
         ))
         return {"ok": True}
 
-    client = TestClient(app)
+    client = TestClient(app, headers=dashboard_auth)
     with client.websocket_connect("/ws/live") as ws:
         client.post("/test/publish")
         frame = ws.receive_json()
@@ -65,7 +65,7 @@ def test_ws_publish_round_trip():
         }
 
 
-def test_ws_two_subscribers_each_receive_frame():
+def test_ws_two_subscribers_each_receive_frame(dashboard_auth):
     bus = LiveEventBus()
     app = _build_app(bus)
 
@@ -74,7 +74,7 @@ def test_ws_two_subscribers_each_receive_frame():
         await bus.publish(LiveEvent(type=LiveEventType.TURN, payload={"id": "t1"}))
         return {"ok": True}
 
-    client = TestClient(app)
+    client = TestClient(app, headers=dashboard_auth)
     with client.websocket_connect("/ws/live") as ws1:
         with client.websocket_connect("/ws/live") as ws2:
             client.post("/test/publish")

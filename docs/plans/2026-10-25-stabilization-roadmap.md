@@ -78,9 +78,11 @@ abiertos explícitos hasta corregirlos.
 ### H1 Cerrar las vías de control y las órdenes falsas
 
 Plan abierto: [control autorizado y semántica segura](2026-10-25-h1-authorized-control.md).
-La primera implementación semántica agrega un corpus compartido y rechazos
-conectados en ambos routers. Siguen pendientes captura parcial, autenticación
-uniforme, política compartida, operaciones ampliadas y consentimiento.
+La implementación semántica tiene un corpus compartido y rechazos conectados
+en ambos routers; la captura espera el endpoint y comprueba la cobertura del
+texto reutilizado. HTTP/WS privados ya comparten autenticación y la UI verifica
+la sesión antes de cargar datos. Siguen pendientes política compartida,
+operaciones ampliadas, efectos de escenas y consentimiento.
 
 **Entregables:** protección uniforme de HTTP y WebSocket, bind local detrás del
 proxy y una política de acciones compartida por voz, dashboard, rutinas y

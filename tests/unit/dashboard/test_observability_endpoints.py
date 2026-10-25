@@ -9,14 +9,14 @@ from src.dashboard.observability import register_observability_routes
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, dashboard_auth):
     # Aislar de la realidad del host: aunque haya nvidia-smi/systemctl en la
     # dev box, los endpoints /api/system/* deben caer a mocks acá.
     monkeypatch.setattr(system_monitor, "gpu_snapshot", lambda: None)
     monkeypatch.setattr(system_monitor, "services_snapshot", lambda: None)
     app = FastAPI()
     register_observability_routes(app, use_mocks=True)
-    return TestClient(app)
+    return TestClient(app, headers=dashboard_auth)
 
 
 def test_zones_returns_five_rooms(client):

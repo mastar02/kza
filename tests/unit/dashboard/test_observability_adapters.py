@@ -54,14 +54,14 @@ def fake_llm_router():
     return SimpleNamespace(_endpoints=[ep], _cd=cd)
 
 
-def _client(**kwargs):
+def _client(dashboard_auth, **kwargs):
     app = FastAPI()
     register_observability_routes(app, use_mocks=False, **kwargs)
-    return TestClient(app)
+    return TestClient(app, headers=dashboard_auth)
 
 
-def test_zones_adapter_returns_real_data(fake_zone_manager):
-    c = _client(zone_manager=fake_zone_manager)
+def test_zones_adapter_returns_real_data(fake_zone_manager, dashboard_auth):
+    c = _client(dashboard_auth, zone_manager=fake_zone_manager)
     r = c.get("/api/zones")
     assert r.status_code == 200
     assert r.headers.get("X-KZA-Source") == "real"
@@ -72,8 +72,8 @@ def test_zones_adapter_returns_real_data(fake_zone_manager):
     assert sala["ma1260_zone"] == "A"
 
 
-def test_users_adapter_real_data(fake_user_manager):
-    c = _client(user_manager=fake_user_manager)
+def test_users_adapter_real_data(fake_user_manager, dashboard_auth):
+    c = _client(dashboard_auth, user_manager=fake_user_manager)
     r = c.get("/api/users")
     assert r.status_code == 200
     [u] = r.json()
@@ -82,8 +82,8 @@ def test_users_adapter_real_data(fake_user_manager):
     assert u["permissions"]["lights"] is True
 
 
-def test_alerts_adapter_real_data(fake_alert_manager):
-    c = _client(alert_manager=fake_alert_manager)
+def test_alerts_adapter_real_data(fake_alert_manager, dashboard_auth):
+    c = _client(dashboard_auth, alert_manager=fake_alert_manager)
     r = c.get("/api/alerts")
     assert r.status_code == 200
     [a] = r.json()
@@ -92,15 +92,15 @@ def test_alerts_adapter_real_data(fake_alert_manager):
     assert a["zone"] == "patio"
 
 
-def test_alerts_adapter_filter_active(fake_alert_manager):
-    c = _client(alert_manager=fake_alert_manager)
+def test_alerts_adapter_filter_active(fake_alert_manager, dashboard_auth):
+    c = _client(dashboard_auth, alert_manager=fake_alert_manager)
     r = c.get("/api/alerts", params={"status": "active"})
     assert r.status_code == 200
     assert len(r.json()) == 1
 
 
-def test_llm_endpoints_adapter_real(fake_llm_router):
-    c = _client(llm_router=fake_llm_router)
+def test_llm_endpoints_adapter_real(fake_llm_router, dashboard_auth):
+    c = _client(dashboard_auth, llm_router=fake_llm_router)
     r = c.get("/api/llm/endpoints")
     assert r.status_code == 200
     [e] = r.json()
@@ -109,25 +109,25 @@ def test_llm_endpoints_adapter_real(fake_llm_router):
     assert e["url"] == "http://localhost:8100"
 
 
-def test_clear_cooldown_real(fake_llm_router):
-    c = _client(llm_router=fake_llm_router)
+def test_clear_cooldown_real(fake_llm_router, dashboard_auth):
+    c = _client(dashboard_auth, llm_router=fake_llm_router)
     r = c.post("/api/llm/endpoints/vllm-7b/clear-cooldown")
     assert r.status_code == 200
     assert r.json()["ok"] is True
     fake_llm_router._cd.record_success.assert_called_once_with("vllm-7b")
 
 
-def test_adapter_failure_falls_back_to_mocks_with_degraded_source():
+def test_adapter_failure_falls_back_to_mocks_with_degraded_source(dashboard_auth):
     bad = MagicMock()
     bad.get_all_zones.side_effect = RuntimeError("kaboom")
-    c = _client(zone_manager=bad)
+    c = _client(dashboard_auth, zone_manager=bad)
     r = c.get("/api/zones")
     assert r.status_code == 200
     assert r.headers.get("X-KZA-Source") == "degraded"
     assert len(r.json()) == 5  # mocks tienen 5
 
 
-def test_warn_logged_when_use_mocks_with_real_services_injected(caplog):
+def test_warn_logged_when_use_mocks_with_real_services_injected(caplog, dashboard_auth):
     from fastapi import FastAPI
     from src.dashboard.observability import register_observability_routes
     from unittest.mock import MagicMock as _M

@@ -11,8 +11,8 @@ contratos y pruebas sintéticas sin habilitar dispositivos ni modificar producci
 | Frente | Trabajo y evidencia de cierre | Estado |
 |---|---|---|
 | Semántica | Corpus de pasado, estado, preguntas informativas, negación, condición, reporte y diferidos. Gate, gramática, evidencia del LLM y routers conectados deben rechazar; los pedidos inmediatos conservan dirección e infinitivos/cortesía válidos. | Primera implementación y regresiones sobre texto completo. |
-| Captura parcial | Verificar early-dispatch y pretranscripciones: un prefijo imperativo no autoriza ejecutar antes de recibir «mañana», «no» u otra condición del mismo pedido. La configuración recuperada mantiene early-dispatch apagado. | Pendiente; impide cerrar R03 para todas las configuraciones. |
-| Sesión | HTTP y WebSocket privados comparten autenticación cerrada sin token, incluyendo listas, recordatorios, presencia, observabilidad y `/ws/live`. Orígenes inválidos se rechazan con sesión válida. Login y recursos estáticos tienen excepciones explícitas. Bind loopback detrás del proxy y token vacío en `.env.example`. | Pendiente. |
+| Captura parcial | Early-dispatch es preparseo especulativo: espera el endpoint, mantiene el texto ligado al audio y nunca ejecuta un prefijo. Una captura cortada por timeout no es una orden completa. | Implementado y probado con ambos routers y modo ambiental; validación acústica real en H6. |
+| Sesión | HTTP y WebSocket privados comparten autenticación cerrada sin token, incluyendo listas, recordatorios, presencia, observabilidad y `/ws/live`. Orígenes inválidos se rechazan con sesión válida. Login y recursos estáticos tienen excepciones explícitas. Bind loopback detrás del proxy y token vacío en `.env.example`. | Implementado y probado; proxy y unit reales se validan en H6. |
 | Política | Un servicio de acciones y un actor de procedencia por productor. Política obligatoria después de rewrites y antes de todo envío; permisos revisados también al disparar acciones diferidas. Tests sin hooks, con rewrite y revocación. | Pendiente. |
 | Operaciones | Extender DTOs, validación y confirmación a clima y cover. Agregar temperatura de color para reproducir las escenas seleccionadas sin perder parámetros. Usar rangos, modos y entidades del inventario privado aprobado. | Pendiente. |
 | Grupos y escenas | Expandir definiciones verificadas a hojas autorizadas y operaciones tipadas. Rechazar macros opacas, templates sin contexto y efectos indirectos no verificados. Pruebas de escena que oculta lock/alarm, grupos no autorizados y parámetros desconocidos. | Pendiente. |
@@ -55,12 +55,73 @@ los diez IDs de fallo clasificados en H0. Ruff pasa. El
 [registro](../research/2026-10-25-h1-semantic-validation.json) conserva alcance,
 comandos y limitaciones; no es una validación completa de H1.
 
-Los tests cubren texto completo entregado al router. No prueban STT acústico,
-FAR/FRR ni que el cierre de captura haya recibido toda la frase. El early worker
-actual puede despachar un comando parcial antes de VAD y luego salir; además el
-router prefiere `wake_text` cuando existe. H1 debe resolver la frescura y la
-finalidad de esos textos antes de declarar R03 cerrado, sin usar una medición
-de latencia para justificar que se ejecute un prefijo incompleto.
+Ese primer registro cubría texto completo entregado al router. La corrección
+posterior de captura se describe a continuación. Las pruebas no sustituyen STT
+acústico, FAR/FRR ni evaluación de las pausas reales del habla.
+
+## Finalidad de captura y procedencia del texto
+
+El worker de preparseo continúa observando el audio hasta el endpoint; la
+presencia de intent y entidad no dispara una acción. Su resultado se asocia a
+una generación de captura para evitar que una inferencia pendiente se publique
+sobre la siguiente captura. El loop cancela y recoge los workers al terminar.
+
+`CapturedTranscript` liga texto y productor al contenido exacto de un snapshot
+mono float32. El router sólo lo reutiliza si coincide con el audio final; el
+digest es efímero y no se persiste. `wake_text` y el parser parcial sin cobertura
+son diagnósticos, no reemplazan STT. Una continuación, aun con el mismo número
+de samples, obliga a evaluar la transcripción del audio final.
+
+Los loops distinguen silencio de timeout. Conservan frames silenciosos para
+cerrar VAD, requieren la cantidad de silencio configurada y marcan incompleta
+una captura forzada por duración. Los eventos early antiguos sin finalización
+explícita también se rechazan antes de STT. Ambient conserva los segmentos
+cortados para almacenamiento, pero no los despacha como comandos; el wake textual
+reutiliza sólo texto ligado al audio de su segmento completo.
+
+Las pruebas conectadas ejercitan prefijo válido → continuación («mañana»,
+negación o condición) → endpoint → gate → ambos routers, sin llamadas HA. También
+prueban la generación durante una inferencia pendiente, cambios de audio con
+igual longitud, el loop single-room y la conservación de segmentos ambientales
+incompletos sin invocar wake. La pausa de VAD sigue siendo una decisión acústica:
+sus thresholds y la respuesta no cacheada se evalúan con equipo real en H6.
+
+## Acceso privado uniforme
+
+`DashboardAPI` aplica una dependencia de sesión por defecto, también a rutas
+nuevas. Observabilidad añade la misma frontera al registrarse por separado.
+Las excepciones de aplicación son GET `/` (shell sin datos) y POST
+`/api/admin/auth/login`; los mounts públicos sirven únicamente recursos estáticos.
+Los endpoints privados, incluido health, requieren sesión. No se publican las
+rutas automáticas de documentación/OpenAPI. Logout requiere sesión.
+
+Sin token configurado, HTTP responde 503 y los sockets rechazan el handshake;
+sin credencial válida, HTTP responde 401. Un Origin presente debe coincidir con
+esquema, hostname y puerto efectivo, tanto en lecturas como mutaciones y sockets;
+orígenes `null`, malformados o con userinfo/path se rechazan. Los clientes nativos
+pueden omitir Origin. Las cookies son HttpOnly y SameSite=Strict; usan Secure
+cuando la solicitud llega como HTTPS desde el proxy de confianza.
+
+El YAML candidato liga el dashboard a `127.0.0.1:9500` y `.env.example` declara
+`KZA_DASHBOARD_TOKEN` vacío. El proxy de la única release debe preservar Host y
+establecer el esquema externo mediante headers de forwarding confiables; no se
+acepta Origin como sustituto de la credencial. No se modificó el proxy instalado
+ni se reinició producción.
+
+La UI de observabilidad comprueba la sesión antes de cargar datos o abrir WS.
+Al salir o perder autenticación, cancela cargas, cierra WS y limpia datos
+privados; una respuesta tardía no reactiva la sesión. Los rechazos de sesión no
+se convierten en datos simulados. Las seis pruebas Node de ese ciclo se ejecutan
+también en un job de CI. El JSX modificado se validó con el Babel ya fijado por
+la página, verificando antes su SRI.
+
+La matriz de pruebas enumera todas las rutas HTTP privadas registradas y prueba
+ausencia de credencial, credencial inválida, configuración ausente y origen ajeno,
+sin usar los servicios inyectados. Los dos WS se prueban antes de suscribir o
+aceptar clientes. Los tests funcionales existentes usan sesiones reales de prueba,
+sin desactivar la dependencia. El test obsoleto que esperaba crear usuarios sin
+token se reemplazó por 503 y ausencia de escritura: queda cerrado ese fallo del
+rescate; los otros nueve siguen explícitos.
 
 ## Integración de la política pendiente
 

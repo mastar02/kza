@@ -56,7 +56,7 @@ from collections.abc import Awaitable, Callable
 
 import numpy as np
 
-from src.pipeline.command_event import CommandEvent
+from src.pipeline.command_event import CapturedTranscript, CommandEvent, TranscriptSource
 
 logger = logging.getLogger(__name__)
 
@@ -383,6 +383,8 @@ class TextualWakeDetector:
             audio=audio,
             room_id=room_id,
             wake_text=text,
+            transcript=CapturedTranscript.from_audio(text, TranscriptSource.AMBIENT, audio),
+            capture_complete=True,
             wake_score=1.0,
             textual_wake=True,
         )

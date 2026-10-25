@@ -180,12 +180,36 @@ const ENDPOINT_MAP = [
 ];
 window.__kzaSources = Object.fromEntries(ENDPOINT_MAP.map(([key]) => [key, 'mock/sin verificar']));
 
-async function hydrateMocks() {
+const initialMocks = JSON.parse(JSON.stringify(window.MOCKS));
+
+function replaceData(key, data) {
+  const target = window.MOCKS[key];
+  if (Array.isArray(target) && Array.isArray(data)) target.splice(0, target.length, ...data);
+  else if (target && typeof target === 'object' && !Array.isArray(data)) {
+    for (const name of Object.keys(target)) delete target[name];
+    Object.assign(target, data);
+  } else window.MOCKS[key] = data;
+}
+
+function clearPrivateData() {
+  for (const [key, data] of Object.entries(initialMocks)) replaceData(key, JSON.parse(JSON.stringify(data)));
+  window.__kzaSources = Object.fromEntries(ENDPOINT_MAP.map(([key]) => [key, 'mock/sin verificar']));
+}
+
+async function hydrateMocks({ signal }) {
   await Promise.all(ENDPOINT_MAP.map(async ([key, path]) => {
     try {
-      const r = await fetch(API_BASE + path);
-      if (!r.ok) { window.__kzaSources[key] = 'degradada'; return; }
+      const r = await fetch(API_BASE + path, { credentials: 'same-origin', signal });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        if (signal.aborted) return;
+        if (r.status === 401 || r.status === 403 || body.detail === 'dashboard_auth_not_configured') {
+          throw new window.KzaDashboardSession.SessionRequired();
+        }
+        window.__kzaSources[key] = 'degradada'; return;
+      }
       const data = await r.json();
+      if (signal.aborted) return;
       // El header X-KZA-Source nos dice si el server tiene datos reales.
       // - "real": usar data tal cual (incluso lista vacía → "0 usuarios").
       // - "mock"/"degraded": el server ya cayó al mock; mantenemos el literal
@@ -197,17 +221,9 @@ async function hydrateMocks() {
       // el script, capturando la referencia. Reasignar `window.MOCKS[key] = data`
       // dejaría la referencia vieja apuntando al mock. Mutamos el array/objeto
       // existente para que la referencia capturada vea los datos nuevos.
-      const target = window.MOCKS[key];
-      if (Array.isArray(target) && Array.isArray(data)) {
-        target.length = 0;
-        target.push(...data);
-      } else if (target && typeof target === 'object' && !Array.isArray(data)) {
-        for (const k of Object.keys(target)) delete target[k];
-        Object.assign(target, data);
-      } else {
-        window.MOCKS[key] = data;
-      }
+      replaceData(key, data);
     } catch (e) {
+      if (signal.aborted || e instanceof window.KzaDashboardSession.SessionRequired) throw e;
       window.__kzaSources[key] = 'degradada';
       console.warn('[bootstrap] endpoint failed, keeping mock:', path, e);
     }
@@ -215,24 +231,53 @@ async function hydrateMocks() {
 }
 
 function mountWsLiveBridge() {
-  try {
+  let retired = false, retry = null, socket = null;
+  function connect() {
+    if (retired) return;
+    try {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/ws/live`);
+    socket = ws;
     ws.onmessage = (ev) => {
       try {
         const frame = JSON.parse(ev.data);
         window.dispatchEvent(new CustomEvent('kza:live', { detail: frame }));
       } catch {}
     };
-    ws.onclose = () => setTimeout(mountWsLiveBridge, 3000);
+    ws.onclose = async (event) => {
+      if (retired) return;
+      let needsLogin = event.code === 1008;
+      try {
+        const response = await fetch('/api/admin/auth/whoami', { credentials: 'same-origin' });
+        needsLogin = needsLogin || response.status === 401 || response.status === 503;
+      } catch {}
+      if (retired) return;
+      if (needsLogin) window.dispatchEvent(new CustomEvent('kza:auth-required'));
+      else retry = setTimeout(connect, 3000);
+    };
     window.__kzaLiveWs = ws;
   } catch (e) {
     console.warn('[ws] could not connect:', e);
   }
+  }
+  connect();
+  return () => {
+    retired = true; clearTimeout(retry); socket?.close();
+    if (window.__kzaLiveWs === socket) window.__kzaLiveWs = null;
+  };
 }
 
-(async () => {
-  await hydrateMocks();
-  mountWsLiveBridge();
-  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-})();
+const appRoot = ReactDOM.createRoot(document.getElementById('root'));
+const session = window.KzaDashboardSession.createSession({
+  fetch: window.fetch.bind(window), hydrate: hydrateMocks,
+  connect: mountWsLiveBridge, clear: clearPrivateData,
+  onState(state) {
+    if (state === 'ready') appRoot.render(<App />);
+    else if (state === 'login') appRoot.render(<LoginModal onLogin={() => session.start()} />);
+    else if (state === 'unavailable') appRoot.render(<div className="content" role="alert">El acceso no está disponible. <button className="btn" onClick={() => session.start()}>Reintentar</button></div>);
+    else appRoot.render(<div className="content">Cargando…</div>);
+  },
+});
+window.addEventListener('kza:auth-required', () => session.expire());
+window.addEventListener('pagehide', () => session.stop());
+session.start();

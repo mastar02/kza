@@ -116,13 +116,14 @@ class TestHealthEndpointNoSecrets:
         return dashboard
 
     @pytest.mark.asyncio
-    async def test_health_response_has_no_token_fields(self, mock_dashboard):
+    async def test_health_response_has_no_token_fields(self, mock_dashboard, dashboard_auth):
         """Health response should not contain token/secret keys."""
         from httpx import AsyncClient, ASGITransport
 
         transport = ASGITransport(app=mock_dashboard.app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://test", headers=dashboard_auth) as client:
             response = await client.get("/api/health")
+            assert response.status_code == 200
             data = response.json()
 
         # Recursively check that no key is a sensitive key
@@ -140,14 +141,15 @@ class TestHealthEndpointNoSecrets:
         check_no_secrets(data)
 
     @pytest.mark.asyncio
-    async def test_health_response_values_are_not_secrets(self, mock_dashboard):
+    async def test_health_response_values_are_not_secrets(self, mock_dashboard, dashboard_auth):
         """Health response string values should not look like tokens."""
         from httpx import AsyncClient, ASGITransport
         import re
 
         transport = ASGITransport(app=mock_dashboard.app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://test", headers=dashboard_auth) as client:
             response = await client.get("/api/health")
+            assert response.status_code == 200
             data = response.json()
 
         jwt_re = re.compile(r"eyJ[A-Za-z0-9_-]{20,}")

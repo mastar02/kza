@@ -64,6 +64,13 @@ del _module_name
 
 # ==================== Pytest Configuration ====================
 
+@pytest.fixture
+def dashboard_auth(monkeypatch):
+    """Configure a test-only dashboard credential and return its Bearer header."""
+    token = "unit-test-dashboard-session"
+    monkeypatch.setenv("KZA_DASHBOARD_TOKEN", token)
+    return {"Authorization": f"Bearer {token}"}
+
 def pytest_configure(config):
     """Configure pytest markers"""
     config.addinivalue_line(

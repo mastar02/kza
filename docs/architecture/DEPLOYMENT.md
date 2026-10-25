@@ -31,6 +31,20 @@ nuevo. Consultar `AGENTS.md` en la raíz para las instrucciones operativas.
 
 ## Construcción del artefacto
 
+El candidato de estabilización liga el dashboard a `127.0.0.1:9500` detrás del
+proxy del servidor. Todo endpoint HTTP/WS privado requiere `KZA_DASHBOARD_TOKEN`,
+incluidos health y observabilidad. La variable de ejemplo está vacía; el valor
+real permanece en el entorno privado de ejecución. La shell de login y los
+assets son públicos, sin datos del hogar. No se expone OpenAPI por una ruta
+automática. Los clientes de diagnóstico deben enviar Bearer o sesión válida.
+
+En la única release, el proxy debe preservar Host y establecer correctamente el
+esquema externo para que se validen Origin y la cookie Secure en HTTPS. Sólo se
+confía en forwarding desde el proxy local; no se toman headers de cualquier
+cliente como prueba de identidad. Las pruebas ASGI comprueban la frontera, pero
+la configuración instalada del proxy y la unit se validan en H6 antes de
+promover. Este cambio de configuración versionada no altera el servicio actual.
+
 Desde el checkout de `yo`, con CPython 3.13:
 
 ```bash

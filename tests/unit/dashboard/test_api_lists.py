@@ -28,9 +28,9 @@ async def api(tmp_path):
 
 
 @pytest_asyncio.fixture
-async def client(api):
+async def client(api, dashboard_auth):
     transport = ASGITransport(app=api.app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=dashboard_auth) as c:
         yield c
 
 

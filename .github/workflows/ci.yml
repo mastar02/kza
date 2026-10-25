@@ -26,6 +26,17 @@ env:
   PYTHON_VERSION: "3.13"
 
 jobs:
+  frontend-tests:
+    name: Dashboard session lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/frontend/*.cjs
+
   # ============================================================
   # LINT AND FORMAT CHECK
   # ============================================================

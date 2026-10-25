@@ -22,10 +22,11 @@ no hay servicio inyectado, falla, o devuelve vacío.
 import logging
 import time
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 
 from src.dashboard import observability_mocks as mocks
 from src.dashboard import system_monitor
+from src.dashboard.auth import require_dashboard_session
 from src.dashboard.live_event_bus import LiveEventBus
 
 logger = logging.getLogger(__name__)
@@ -274,6 +275,7 @@ def register_observability_routes(
         - "degraded": adapter falló y se cae al mock
     Esto permite a la UI mostrar un banner "datos simulados" cuando aplica.
     """
+    router = APIRouter(dependencies=[Depends(require_dashboard_session)])
     real_services = {
         "ha_client": ha_client, "llm_router": llm_router,
         "user_manager": user_manager, "alert_manager": alert_manager,
@@ -315,14 +317,14 @@ def register_observability_routes(
     def _set_source(response: Response, real: bool) -> None:
         response.headers[SOURCE_HEADER] = "real" if real else "mock"
 
-    @app.get("/api/zones")
+    @router.get("/api/zones")
     async def get_zones(response: Response):
         if zone_manager is None:
             _set_source(response, real=False)
             return mocks.ZONES
         return _adapt(lambda: _zones_adapter(zone_manager), mocks.ZONES, response)
 
-    @app.get("/api/conversations")
+    @router.get("/api/conversations")
     async def get_conversations(
         response: Response,
         user: str | None = None, zone: str | None = None,
@@ -344,7 +346,7 @@ def register_observability_routes(
             items = [i for i in items if i["path"] == path]
         return items
 
-    @app.get("/api/ha/entities")
+    @router.get("/api/ha/entities")
     async def get_ha_entities(response: Response, domain: str | None = None):
         if use_mocks or ha_client is None:
             response.headers[SOURCE_HEADER] = "mock"
@@ -366,7 +368,7 @@ def register_observability_routes(
             items = [e for e in items if e["domain"] == domain]
         return items
 
-    @app.get("/api/ha/actions")
+    @router.get("/api/ha/actions")
     async def get_ha_actions(response: Response):
         if not use_mocks and event_logger is not None:
             return _adapt(lambda: _ha_actions_adapter(event_logger),
@@ -374,7 +376,7 @@ def register_observability_routes(
         response.headers[SOURCE_HEADER] = "mock"
         return mocks.HA_ACTIONS
 
-    @app.get("/api/llm/endpoints")
+    @router.get("/api/llm/endpoints")
     async def get_llm_endpoints(response: Response):
         if llm_router is None:
             _set_source(response, real=False)
@@ -384,7 +386,7 @@ def register_observability_routes(
             mocks.LLM_ENDPOINTS, response,
         )
 
-    @app.post("/api/llm/endpoints/{endpoint_id}/clear-cooldown")
+    @router.post("/api/llm/endpoints/{endpoint_id}/clear-cooldown")
     async def clear_cooldown(endpoint_id: str):
         if use_mocks or llm_router is None:
             return {"ok": True, "endpoint_id": endpoint_id, "mocked": True}
@@ -400,14 +402,14 @@ def register_observability_routes(
             logger.error(f"clear_cooldown {endpoint_id} failed: {type(e).__name__}: {e}")
             raise
 
-    @app.get("/api/users")
+    @router.get("/api/users")
     async def get_users(response: Response):
         if user_manager is None:
             _set_source(response, real=False)
             return mocks.USERS
         return _adapt(lambda: _users_adapter(user_manager), mocks.USERS, response)
 
-    @app.get("/api/alerts")
+    @router.get("/api/alerts")
     async def get_alerts(response: Response, status: str | None = None):
         if use_mocks or alert_manager is None:
             response.headers[SOURCE_HEADER] = "mock"
@@ -429,20 +431,20 @@ def register_observability_routes(
             logger.warning(f"alerts adapter failed: {e}")
             return mocks.ALERTS
 
-    @app.get("/api/system/gpus")
+    @router.get("/api/system/gpus")
     async def get_gpus(response: Response):
         real = system_monitor.gpu_snapshot()
         _set_source(response, real=real is not None)
         return real if real else mocks.GPUS
 
-    @app.get("/api/system/services")
+    @router.get("/api/system/services")
     async def get_services(response: Response):
         real = system_monitor.services_snapshot()
         _set_source(response, real=real is not None)
         return real if real else mocks.SERVICES
 
     if event_bus is not None:
-        @app.websocket("/ws/live")
+        @router.websocket("/ws/live")
         async def ws_live(ws: WebSocket):
             await ws.accept()
             sub_id, queue = await event_bus.subscribe()
@@ -456,3 +458,5 @@ def register_observability_routes(
                 logger.warning(f"[ws/live] subscriber {sub_id} error: {e}")
             finally:
                 await event_bus.unsubscribe(sub_id)
+
+    app.include_router(router)

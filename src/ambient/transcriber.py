@@ -225,7 +225,7 @@ class AmbientTranscriber:
             # (encode FLAC + shutil.disk_usage) y no puede quedar en serie
             # por delante de un dispatch de cara al usuario, ni un fallo del
             # UPDATE de audio_path puede tragarse un "nexa" real.
-            if self._textual_wake is not None:
+            if self._textual_wake is not None and seg.complete:
                 try:
                     # review PR #16: `seg.t0` es wall-clock (tap.py stampea
                     # time.time()); TextualWakeDetector compara en

@@ -8,13 +8,49 @@ command capture after wake word detection.
 from __future__ import annotations
 
 import time
+import hashlib
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 if TYPE_CHECKING:
     from src.nlu.command_grammar import PartialCommand
+
+
+class TranscriptSource(StrEnum):
+    """Producer of a reusable transcription of one audio snapshot."""
+
+    WAKE = "wake"
+    PARTIAL = "partial"
+    AMBIENT = "ambient"
+
+
+@dataclass(frozen=True)
+class CapturedTranscript:
+    """Bind text to the exact audio it covers, without retaining another clip."""
+
+    text: str
+    source: TranscriptSource
+    samples: int
+    audio_digest: str
+
+    @classmethod
+    def from_audio(cls, text: str, source: TranscriptSource, audio: np.ndarray) -> CapturedTranscript:
+        """Bind a producer's text to its mono float32 snapshot."""
+        samples = np.asarray(audio, dtype=np.float32)
+        if samples.ndim != 1:
+            raise ValueError("A transcript must cover mono audio")
+        return cls(text, source, len(samples), hashlib.sha256(samples.tobytes()).hexdigest())
+
+    def covers(self, audio: np.ndarray) -> bool:
+        """Return whether the final audio is exactly the transcribed snapshot."""
+        samples = np.asarray(audio, dtype=np.float32)
+        return (
+            samples.ndim == 1 and len(samples) == self.samples
+            and hashlib.sha256(samples.tobytes()).hexdigest() == self.audio_digest
+        )
 
 
 @dataclass
@@ -25,17 +61,16 @@ class CommandEvent:
     room_id: str
     mic_device_index: int | None = None
     timestamp: float = field(default_factory=time.time)
-    # Early dispatch: si el parser streaming extrajo intent+entity antes del
-    # silencio final, viene aquí. El RequestRouter puede usarlo para saltear
-    # el STT (ya está el texto) o cruzarlo con el STT canónico como fallback.
+    # Parser hints are diagnostic; only a matching transcript snapshot can
+    # replace final STT, after the producer has completed capture.
     partial_command: "PartialCommand | None" = None
     early_dispatch: bool = False
-    # Texto ya transcripto por el wake detector. Cuando existe, el router lo
-    # usa como `pretranscribed_text` y se saltea el segundo Whisper — ese
-    # segundo pass a veces alucina ("Nexa." / "La luz" / "Esto es un asistente
-    # para el nuevo criterio") aunque el primer Whisper del wake haya salido
-    # bien ("Nexa apagá la luz del escritorio").
+    # Wake text alone does not prove coverage of later captured audio.
     wake_text: str | None = None
+    transcript: CapturedTranscript | None = None
+    # None supports existing complete-audio callers. Early events require an
+    # explicit True; False means a timeout or another incomplete capture.
+    capture_complete: bool | None = None
     # AmbientGuard (spec 2026-06-05): True cuando la room estaba en STRICT al
     # despachar. El RequestRouter lo usa para NO otorgar el bonus de
     # wake_acoustically_confirmed al grammar fast-path — con TV de fondo el

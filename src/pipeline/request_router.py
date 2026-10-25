@@ -11,9 +11,7 @@ Owns all command routing logic:
 import asyncio
 import logging
 import time
-import unicodedata
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 
 import numpy as np
 
@@ -57,29 +55,6 @@ _UNSUPPORTED_INTENT_MESSAGES: dict[str, str] = {
 # OWW a 0.40–0.45 solapa con TV. Nexa real en prod mide 0.54–0.93. El bonus
 # de wake sobre 'prende la luz' (conf 0.70) no aplica debajo de este piso.
 _GRAMMAR_BONUS_MIN_WAKE_SCORE = 0.50
-
-
-def _texts_diverge(a: str, b: str, min_ratio: float = 0.95) -> bool:
-    """True if two transcriptions differ enough to suspect hallucination.
-
-    Uses accent-stripped lowercase SequenceMatcher ratio. Below min_ratio,
-    the texts are considered divergent.
-
-    Default 0.95 calibrated so single-word hallucinations (e.g. 'Nexa' → 'Para'
-    in a ~6-word utterance, ratio ≈ 0.917) cross the threshold. Exact matches
-    and near-duplicates caused by e.g. a one-letter insertion (ratio ≥ 0.97)
-    stay silent.
-
-    Returns False if either input is empty (nothing meaningful to compare).
-    """
-    if not a or not b:
-        return False
-
-    def _norm(t: str) -> str:
-        t = unicodedata.normalize("NFD", t.lower())
-        return "".join(c for c in t if unicodedata.category(c) != "Mn").strip()
-
-    return SequenceMatcher(None, _norm(a), _norm(b)).ratio() < min_ratio
 
 
 def _grammar_fastpath_classification(
@@ -378,7 +353,7 @@ class RequestRouter:
             Dict with keys: text, intent, action, response, success,
             latency_ms, user, timings, and optionally path, room.
         """
-        from src.pipeline.command_event import CommandEvent
+        from src.pipeline.command_event import CommandEvent, TranscriptSource
 
         pretranscribed_text: str | None = None
         used_wake_text = False
@@ -389,30 +364,20 @@ class RequestRouter:
             room_id = audio_or_event.room_id
             early_dispatch = audio_or_event.early_dispatch
             ambient_strict = getattr(audio_or_event, "ambient_strict", False)
-            wake_text = audio_or_event.wake_text
-            partial_text = (
-                audio_or_event.partial_command.raw_text
-                if audio_or_event.partial_command is not None else None
-            )
-            # Preferencia: wake_text > partial_command.raw_text.
-            # Motivo: el wake detector transcribe con initial_prompt sesgado a la
-            # keyword ("nexa"); el partial del streaming worker a veces alucina
-            # la primera palabra ("Nexa" -> "Para"). Si ambos difieren mucho,
-            # log para diagnóstico pero igual elegimos wake_text.
-            if wake_text:
-                pretranscribed_text = wake_text
-                used_wake_text = True
-                if partial_text and _texts_diverge(wake_text, partial_text):
-                    logger.warning(
-                        f"Wake/partial text mismatch — using wake: "
-                        f"wake={wake_text!r} partial={partial_text!r}"
-                    )
-                else:
-                    logger.info(
-                        f"Using wake-detector text as pretranscribed: {wake_text!r}"
-                    )
-            elif partial_text is not None:
-                pretranscribed_text = partial_text
+            if audio_or_event.capture_complete is False or (
+                early_dispatch and audio_or_event.capture_complete is not True
+            ):
+                return {
+                    "text": "", "intent": "gate_rejected:incomplete_capture",
+                    "action": None, "response": "", "success": False,
+                    "latency_ms": 0, "timings": {}, "user": None, "path": None,
+                }
+            transcript = audio_or_event.transcript
+            if transcript is not None and transcript.covers(audio):
+                pretranscribed_text = transcript.text
+                used_wake_text = transcript.source is TranscriptSource.WAKE
+            elif transcript is not None or audio_or_event.wake_text or audio_or_event.partial_command:
+                logger.debug("[Capture] Transcript does not cover final audio; running final STT")
         else:
             audio = audio_or_event
             room_id = None

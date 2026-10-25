@@ -435,6 +435,20 @@ class UtteranceTsRecordingWake:
         self.received_kwargs = kwargs
 
 
+def test_duration_limited_segment_is_stored_without_authorizing_textual_wake():
+    store = FakeStore()
+    _, transcriber = _make(store)
+    wake = UtteranceTsRecordingWake()
+    transcriber.attach_textual_wake(wake)
+    segment = RawSegment(
+        t0=100, t1=101, audio=np.full((16000, 6), 0.1, dtype=np.float32),
+        complete=False,
+    )
+    asyncio.run(transcriber._handle_segment("test", segment))
+    assert len(store.added) == 1
+    assert wake.received_kwargs is None
+
+
 def test_handle_segment_computes_utterance_started_ts_from_seg_t0(tmp_path):
     # review PR #16: maybe_dispatch no recibía NINGÚN timestamp de cuándo
     # ocurrió la utterance real — solo `now` al momento de evaluarla, que

@@ -348,6 +348,7 @@ function AdminView() {
         </div>
         <button className="btn" onClick={async () => {
           await fetch("/api/admin/auth/logout", { method: "POST", credentials: "same-origin" });
+          window.dispatchEvent(new CustomEvent("kza:auth-required"));
           refresh();
         }}>cerrar sesión</button>
       </div>

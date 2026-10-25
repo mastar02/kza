@@ -23,7 +23,7 @@ import numpy as np
 import sounddevice as sd
 
 from src.pipeline.ambient_guard import AmbientGuard, GuardState, classify_outcome
-from src.pipeline.command_event import CommandEvent
+from src.pipeline.command_event import CapturedTranscript, CommandEvent, TranscriptSource
 from src.wakeword.detector import WakeWordDetector
 from src.wakeword.whisper_wake import _text_likely_truncated
 from src.audio.echo_suppressor import EchoSuppressor
@@ -140,13 +140,14 @@ class RoomStream:
     listening: bool = False
     audio_buffer: list = field(default_factory=list)
     command_start_time: float = 0.0
-    # Early dispatch (opt-in vía config): un background task transcribe+parsea
-    # el audio acumulado cada N ms y settea `early_command` apenas el parser
-    # tiene intent+entity. El polling loop dispatcha sin esperar silencio.
+    # Speculative parsing can shorten endpointing, but never authorize sending
+    # an action before capture ends. The snapshot must cover the final audio.
     early_task: Optional[asyncio.Task] = None
     early_command: Optional[PartialCommand] = None
-    # Texto completo transcripto por el wake detector (si está disponible).
-    # Se usa como pretranscribed_text del CommandEvent para evitar 2do Whisper.
+    transcript: CapturedTranscript | None = None
+    capture_complete: bool = False
+    capture_generation: int = 0
+    # Diagnostic wake text; reuse requires a matching transcript snapshot.
     wake_text: Optional[str] = None
     # Barge-in (S3): acumulador de ms de voz sostenida durante TTS activo.
     # Se incrementa por cada chunk con RMS + is_human_voice==True; decae
@@ -1247,41 +1248,8 @@ class MultiRoomAudioLoop:
                             self._early_parse_worker(rs)
                         )
 
-                    # 2. Early dispatch si el worker detectó comando completo
-                    if rs.early_command is not None:
-                        # Pre-gate SPENERGY también acá (QW-1 2026-06-04): sin
-                        # este chequeo, una alucinación con forma de comando
-                        # (grammar full sobre secador/ruido) se despachaba
-                        # saltándose el VAD por hardware — early_dispatch es el
-                        # path más usado en prod.
-                        if not self._passes_spenergy_gate(rs):
-                            self._reset_listening(rs)
-                            continue
-                        audio_data = np.array(rs.audio_buffer, dtype=np.float32)
-                        pc = rs.early_command
-                        logger.info(
-                            f"⚡ Early dispatch in {rs.room_id}: "
-                            f"intent={pc.intent} entity={pc.entity} room={pc.room} "
-                            f"({len(audio_data) / self.sample_rate * 1000:.0f}ms captured)"
-                        )
-                        event = CommandEvent(
-                            audio=audio_data,
-                            room_id=room_id,
-                            mic_device_index=rs.device_index,
-                            partial_command=pc,
-                            early_dispatch=True,
-                            wake_text=rs.wake_text,
-                            ambient_strict=(
-                                self._guard is not None
-                                and self._guard.state_for(room_id) is GuardState.STRICT
-                            ),
-                            wake_score=rs.wake_score,
-                        )
-                        asyncio.create_task(self._dispatch_command(event))
-                        self._reset_listening(rs)
-                        continue
-
-                    # 3. Fallback: VAD silencio normal
+                    # Parser readiness is provisional. Wait for the endpoint
+                    # so a later negation or deferred clause cannot be lost.
                     is_complete, audio_data = self._check_vad_completion(rs)
                     if is_complete and audio_data is not None:
                         # Pre-gate SPENERGY: descartar capturas sin voz real
@@ -1294,6 +1262,9 @@ class MultiRoomAudioLoop:
                             room_id=room_id,
                             mic_device_index=rs.device_index,
                             wake_text=rs.wake_text,
+                            partial_command=rs.early_command,
+                            transcript=rs.transcript,
+                            capture_complete=rs.capture_complete,
                             ambient_strict=(
                                 self._guard is not None
                                 and self._guard.state_for(room_id) is GuardState.STRICT
@@ -1303,6 +1274,11 @@ class MultiRoomAudioLoop:
                         asyncio.create_task(self._dispatch_command(event))
                         self._reset_listening(rs)
         finally:
+            parsing = [rs.early_task for rs in self.room_streams.values() if rs.early_task is not None]
+            for rs in self.room_streams.values():
+                self._reset_listening(rs)
+            if parsing:
+                await asyncio.gather(*parsing, return_exceptions=True)
             if self._watchdog_task is not None:
                 self._watchdog_task.cancel()
                 self._watchdog_task = None
@@ -1470,6 +1446,9 @@ class MultiRoomAudioLoop:
                         rs.room_id, rms, time.time(),
                         wake_score=detection[1], wake_vad=wake_vad,
                     ):
+                        rs.capture_generation += 1
+                        rs.transcript = None
+                        rs.capture_complete = False
                         rs.listening = True
                         rs.wake_score = detection[1]
                         rs.command_start_time = time.time()
@@ -1527,14 +1506,17 @@ class MultiRoomAudioLoop:
                                         f"Usando audio inline del wake word ({len(inline_audio)/16000:.2f}s) "
                                         f"— saltando captura post-wake"
                                     )
-                        # Guardar texto del wake como `pretranscribed_text` SOLO
-                        # si no estaba truncado. Si estaba truncado, dejamos que
-                        # el STT post-wake re-transcriba el audio completo
-                        # (inline + continuación) y obtenga el comando entero.
+                        # Bind text only to the detector's inline snapshot.
+                        # Any subsequently captured samples invalidate reuse.
                         pop_text_fn = getattr(rs.wake_detector, "pop_pending_text", None)
                         if callable(pop_text_fn):
                             popped = pop_text_fn()
                             rs.wake_text = popped if not wake_was_truncated else None
+                            if isinstance(rs.wake_text, str) and callable(pop_fn) and inline_audio is not None and len(inline_audio) > 0:
+                                rs.transcript = CapturedTranscript.from_audio(
+                                    rs.wake_text, TranscriptSource.WAKE,
+                                    np.asarray(rs.audio_buffer, dtype=np.float32),
+                                )
                     else:
                         # Wake RECHAZADO por el guard (STRICT score / COOLDOWN):
                         # persistir igual para el dataset de re-entrenamiento. Los
@@ -1610,6 +1592,7 @@ class MultiRoomAudioLoop:
 
     def _check_vad_completion(self, rs: RoomStream) -> tuple[bool, np.ndarray | None]:
         """Check if a room's command capture is complete (VAD or timeout)."""
+        rs.capture_complete = False
         elapsed = time.time() - rs.command_start_time
         elapsed_ms = elapsed * 1000
 
@@ -1638,23 +1621,26 @@ class MultiRoomAudioLoop:
                         f"threshold={threshold_ms}ms rms={rms_adaptive:.3f} "
                         f"elapsed={elapsed_ms:.0f}ms"
                     )
+                    rs.capture_complete = True
                     return True, audio_data
 
         # Silence check clásico (fallback si el adaptativo no cortó).
         silence_samples = int(self.silence_duration_ms * samples_per_ms)
         recent = rs.audio_buffer[-silence_samples:] if len(rs.audio_buffer) > silence_samples else rs.audio_buffer
 
-        if recent:
+        if recent and len(rs.audio_buffer) >= silence_samples:
             recent_array = np.array(recent, dtype=np.float32)
             rms = float(np.sqrt(np.mean(recent_array ** 2)))
             if rms < self.silence_threshold:
                 audio_data = np.array(rs.audio_buffer, dtype=np.float32)
                 logger.debug(f"VAD early exit in {rs.room_id}: {elapsed_ms:.0f}ms")
+                rs.capture_complete = True
                 return True, audio_data
 
         # Timeout
         if elapsed >= self.command_duration:
             audio_data = np.array(rs.audio_buffer, dtype=np.float32)
+            rs.capture_complete = False
             return True, audio_data
 
         return False, None
@@ -1665,6 +1651,9 @@ class MultiRoomAudioLoop:
         rs.audio_buffer = []
         rs.early_command = None
         rs.wake_text = None
+        rs.transcript = None
+        rs.capture_complete = False
+        rs.capture_generation += 1
         if rs.early_task is not None:
             rs.early_task.cancel()
             rs.early_task = None
@@ -1675,21 +1664,25 @@ class MultiRoomAudioLoop:
           1. Snapshot del audio acumulado.
           2. Transcribe con el STT compartido.
           3. Parsea con `parse_partial_command`.
-          4. Si `ready_to_dispatch()` → setea `rs.early_command` y sale.
+          4. Actualiza el hint del parser y la transcripción de ese snapshot.
 
-        El polling loop principal ve `rs.early_command` y despacha.
+        Sigue observando hasta el endpoint; un prefijo completo no es una orden
+        final. La generación evita publicar un resultado sobre otra captura.
         """
         interval_s = self.early_dispatch_interval_ms / 1000
         min_samples = int(self.early_dispatch_min_audio_s * self.sample_rate)
+        generation = rs.capture_generation
+        last_samples = -1
         try:
             while rs.listening and self._running:
                 await asyncio.sleep(interval_s)
                 if not rs.listening:
                     return
                 buf_len = len(rs.audio_buffer)
-                if buf_len < min_samples:
+                if buf_len < min_samples or buf_len == last_samples:
                     continue
                 audio_snapshot = np.array(rs.audio_buffer, dtype=np.float32)
+                last_samples = len(audio_snapshot)
                 try:
                     text, _ms = await asyncio.to_thread(
                         self._stt.transcribe, audio_snapshot, sample_rate=self.sample_rate,
@@ -1697,16 +1690,19 @@ class MultiRoomAudioLoop:
                 except Exception as e:
                     logger.debug(f"Early transcribe error in {rs.room_id}: {e}")
                     continue
+                if not self._running or not rs.listening or generation != rs.capture_generation:
+                    return
                 if not text:
+                    rs.early_command = None
+                    rs.transcript = None
                     continue
                 pc = parse_partial_command(text)
                 logger.debug(
                     f"Early parse {rs.room_id}: {text!r} → "
                     f"intent={pc.intent} entity={pc.entity} room={pc.room}"
                 )
-                if pc.ready_to_dispatch():
-                    rs.early_command = pc
-                    return
+                rs.early_command = pc
+                rs.transcript = CapturedTranscript.from_audio(text, TranscriptSource.PARTIAL, audio_snapshot)
         except asyncio.CancelledError:
             return
 
@@ -1801,6 +1797,7 @@ class MultiRoomAudioLoop:
             return
 
         logger.info(f"⏹  Barge-in detectado en {rs.room_id}")
+        self._reset_listening(rs)
         rs.listening = True
         rs.command_start_time = time.time()
         rs.audio_buffer = []

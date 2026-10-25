@@ -6,9 +6,8 @@ Valida:
   - WebSocket /ws/live entrega un frame publicado al bus
 """
 
-import asyncio
-import json
 import os
+import secrets
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
-from src.dashboard.live_event_bus import LiveEventBus, LiveEvent, LiveEventType
+from src.dashboard.live_event_bus import LiveEventBus
 from src.dashboard.observability import register_observability_routes
 
 
@@ -36,7 +35,8 @@ def build_app(use_mocks: bool = True):
 
 def main():
     app, bus = build_app(use_mocks=True)
-    client = TestClient(app)
+    token = os.environ.setdefault("KZA_DASHBOARD_TOKEN", secrets.token_urlsafe(32))
+    client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
 
     endpoints = [
         "/api/zones", "/api/conversations", "/api/ha/entities",
@@ -71,7 +71,7 @@ def main():
     r = client.get("/obs/src/views/live.jsx")
     assert r.status_code == 200
     assert "useLiveStream" in r.text
-    print(f"  [OK ] 200  → live.jsx served (incluye useLiveStream)")
+    print("  [OK ] 200  → live.jsx served (incluye useLiveStream)")
 
     print("\nWS /ws/live handshake:")
     with client.websocket_connect("/ws/live") as ws:

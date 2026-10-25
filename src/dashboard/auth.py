@@ -1,5 +1,5 @@
 """
-Auth para endpoints mutativos del dashboard.
+Authentication for private HTTP and WebSocket dashboard routes.
 
 Modelo: token compartido único guardado en `KZA_DASHBOARD_TOKEN` env var.
 Comparado con `secrets.compare_digest` para evitar timing attacks. El token
@@ -15,6 +15,7 @@ import os
 import secrets
 from dataclasses import dataclass
 from typing import NoReturn, Optional
+from urllib.parse import urlsplit
 
 from fastapi import Cookie, Depends, Header, HTTPException, WebSocketException, status
 from fastapi.responses import JSONResponse
@@ -70,14 +71,32 @@ async def require_dashboard_origin(
     request: HTTPConnection,
     kza_dashboard_token: Optional[str] = Cookie(None, alias=COOKIE_NAME),
 ) -> None:
-    """Reject external socket origins and cookie mutation origins."""
-    websocket = request.scope["type"] == "websocket"
-    if not websocket and (request.scope.get("method") in {"GET", "HEAD", "OPTIONS"} or not kza_dashboard_token):
-        return
+    """Reject an invalid or foreign Origin, including reads and bearer clients.
+
+    Native clients may omit Origin. Browsers that send one must match the
+    scheme, host and effective port as seen through the trusted local proxy.
+    """
     origin = request.headers.get("origin")
+    if origin is None:
+        return
     scheme = {"ws": "http", "wss": "https"}.get(request.url.scheme, request.url.scheme)
     expected_origin = f"{scheme}://{request.url.netloc}"
-    if origin is not None and origin != expected_origin:
+
+    def identity(value: str) -> tuple[str, str, int] | None:
+        try:
+            parsed = urlsplit(value)
+            if (
+                parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.path or parsed.query or parsed.fragment
+            ):
+                return None
+            port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+            return parsed.scheme, parsed.hostname.lower(), port
+        except ValueError:
+            return None
+
+    if identity(origin) is None or identity(origin) != identity(expected_origin):
         _deny_session(request, status.HTTP_403_FORBIDDEN, "origin denied")
 
 
@@ -98,6 +117,27 @@ async def require_dashboard_session(
     )
 
 
+async def require_dashboard_access(
+    request: HTTPConnection,
+    authorization: Optional[str] = Header(None),
+    kza_dashboard_token: Optional[str] = Cookie(None, alias=COOKIE_NAME),
+) -> DashboardPrincipal | None:
+    """Protect application routes by default, with exact public entry points.
+
+    Only the home HTML and token login are public application routes. Static
+    mounts contain UI assets and have no private data. New API/WS routes inherit
+    this dependency even when their handler omits a session parameter.
+    """
+    public = request.scope["type"] == "http" and (
+        (request.scope["method"] == "GET" and request.url.path == "/")
+        or (request.scope["method"] == "POST" and request.url.path == "/api/admin/auth/login")
+    )
+    if public:
+        await require_dashboard_origin(request, kza_dashboard_token)
+        return None
+    return await require_dashboard_session(request, authorization, kza_dashboard_token)
+
+
 async def require_admin(
     principal: DashboardPrincipal = Depends(require_dashboard_session),
 ) -> DashboardPrincipal:
@@ -105,7 +145,7 @@ async def require_admin(
     return principal
 
 
-def login_response(token: str) -> JSONResponse:
+def login_response(token: str, *, secure: bool = False) -> JSONResponse:
     """Setea cookie httpOnly tras un POST /api/admin/auth/login válido."""
     if not auth_configured():
         return JSONResponse(
@@ -121,7 +161,7 @@ def login_response(token: str) -> JSONResponse:
     resp.set_cookie(
         key=COOKIE_NAME, value=token,
         max_age=COOKIE_MAX_AGE, httponly=True,
-        samesite="strict", secure=False,  # secure=False porque dashboard es HTTP en LAN
+        samesite="strict", secure=secure,
     )
     return resp
 

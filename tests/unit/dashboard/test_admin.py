@@ -293,11 +293,13 @@ def test_restart_service_systemctl_failure_returns_500(monkeypatch):
     assert r.status_code == 500
 
 
-# ---------------- Public mode (sin token configurado) ----------------
+# ---------------- Fail closed without a configured token ----------------
 
-def test_no_token_configured_means_open_access(monkeypatch, fake_user_manager):
+def test_no_token_configured_rejects_without_creating_user(monkeypatch, fake_user_manager):
     monkeypatch.delenv("KZA_DASHBOARD_TOKEN", raising=False)
     c = _client(user_manager=fake_user_manager)
     r = c.post("/api/admin/users",
                json={"name": "Open", "permission_level": "adult"})
-    assert r.status_code == 200
+    assert r.status_code == 503
+    fake_user_manager.add_user.assert_not_called()
+    assert fake_user_manager._users == {}

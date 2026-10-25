@@ -12,6 +12,7 @@ Tests ensure that:
 
 import sys
 import logging
+import asyncio
 from unittest.mock import MagicMock, AsyncMock
 
 # Mock system-level modules BEFORE any imports
@@ -24,6 +25,7 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 import pytest
 
 from src.pipeline.audio_loop import AudioLoop
+from src.pipeline.command_event import CommandEvent
 
 
 # ============================================================
@@ -61,6 +63,51 @@ def _make_follow_up():
     m.on_kza_response = MagicMock()
     m.on_kza_finished_speaking = MagicMock()
     return m
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("silence_endpoint", [True, False])
+async def test_run_preserves_silence_and_reports_capture_finality(monkeypatch, silence_endpoint):
+    import numpy as np
+
+    manager = _make_audio_manager()
+    manager.detect_wake_word.return_value = ("nexa", 0.9)
+    received = []
+    echo = _make_echo_suppressor()
+    echo.should_process_audio.side_effect = [(True, "ok"), (True, "ok"), (False, "silence")]
+    loop = AudioLoop(manager, echo, _make_follow_up())
+
+    def capture(buffer, *_args, **_kwargs):
+        assert len(buffer) == 1280 + 4800
+        assert all(sample == 0 for sample in buffer[-4800:])
+        return True, 500, np.asarray(buffer, dtype=np.float32), silence_endpoint
+
+    manager.capture_command_with_vad.side_effect = capture
+
+    def input_stream(**options):
+        stream = MagicMock()
+
+        def enter():
+            callback = options["callback"]
+            speech = np.full((1280, 1), 0.1, dtype=np.float32)
+            callback(speech, 1280, None, None)  # Wake.
+            callback(speech, 1280, None, None)
+            callback(np.zeros((4800, 1), dtype=np.float32), 4800, None, None)
+
+        stream.__enter__.side_effect = enter
+        return stream
+
+    async def on_command(event):
+        received.append(event)
+        await loop.stop()
+        return {}
+
+    monkeypatch.setattr("src.pipeline.audio_loop.sd.InputStream", input_stream)
+    loop.on_command(on_command)
+    await asyncio.wait_for(loop.run(), 2)
+    assert len(received) == 1
+    assert isinstance(received[0], CommandEvent)
+    assert received[0].capture_complete is silence_endpoint
 
 
 def _make_ambient_detector():

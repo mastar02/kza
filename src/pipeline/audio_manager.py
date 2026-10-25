@@ -189,7 +189,7 @@ class AudioManager:
         # Obtener últimos N samples
         recent_audio = audio_buffer[-silence_samples:] if len(audio_buffer) > silence_samples else audio_buffer
 
-        if recent_audio:
+        if recent_audio and len(audio_buffer) >= silence_samples:
             recent_array = np.array(recent_audio, dtype=np.float32)
             rms = np.sqrt(np.mean(recent_array ** 2))
 

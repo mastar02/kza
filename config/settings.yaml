@@ -1017,7 +1017,7 @@ dashboard:
   enabled: true
   home:
     enabled: true       # Activación local; desplegar requiere la puerta operativa.
-  host: "0.0.0.0"       # Default: local-only. Set to "0.0.0.0" to expose to LAN.
+  host: "127.0.0.1"     # Acceso doméstico autenticado mediante el proxy local.
   port: 9500
   observability_use_mocks: false
 
@@ -1025,8 +1025,8 @@ dashboard:
   cors:
     # Allowed origins for CORS.  Use ["*"] only during development.
     allowed_origins:
-      - "http://127.0.0.1:8080"
-      - "http://localhost:8080"
+      - "http://127.0.0.1:9500"
+      - "http://localhost:9500"
     allow_credentials: true
     allow_methods: ["GET", "POST", "PUT", "DELETE"]
     allow_headers: ["*"]
@@ -1431,19 +1431,11 @@ rooms:
     # transcripciones de audios ambiguos). _decoalesce_post_wake cubre el
     # caso 'nexa aprende→nexa prende' sin necesidad del prompt sesgo.
     initial_prompt: null
-    # Early dispatch — parser streaming del comando post-wake. Transcribe
-    # cada N ms el audio acumulado y dispatcha apenas detecta intent+entity
-    # sin esperar el silencio final (ahorra ~400-800ms de latencia percibida).
-    # Costo: Whisper corriendo continuamente en cuda:0 durante el comando.
-    # Con sólo 900 MiB de headroom en VRAM, medir con gpu_thermal.sh antes.
-    # ⚠️ OFF 2026-07-28: despachaba apenas parse_partial_command daba
-    # quality=full (intent+entity) SIN esperar la room — y en español el
-    # locativo va al final: "prendé la luz | del living" despachaba en la
-    # barra con room=None → caía a la room del micrófono (prendía la cocina).
-    # Carrera estructural, no flake: el poll de 400ms a veces alcanzaba a ver
-    # la room y a veces no. Además hacía INALCANZABLE el endpointing
-    # adaptativo (short_ms=150), que resuelve lo mismo esperando silencio real
-    # por RMS y por eso nunca corta a mitad de frase.
+    # Nombre legacy: habilita preparseo especulativo, nunca envío antes de VAD.
+    # H1: el parser se actualiza hasta el endpoint; un prefijo no autoriza una
+    # acción. El router sólo reutiliza texto ligado al snapshot de audio final.
+    # Mantener OFF en el perfil actual; medir costo del STT compartido y
+    # endpointing con el equipo antes de habilitarlo en la única release.
     early_dispatch: false
     early_dispatch_interval_ms: 400
     early_dispatch_min_audio_s: 0.6

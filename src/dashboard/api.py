@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from src.core.sanitize import sanitize_dict
 from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
-from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_session
+from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session
 from src.dashboard.home_api import (
     LegacyHomeActionBody, execute_home_action, register_home_frontend, register_home_routes,
 )
@@ -203,7 +203,9 @@ class DashboardAPI:
         self.app = FastAPI(
             title="KZA Dashboard API",
             description="API para gestión de asistente de voz KZA",
-            version="1.0.0"
+            version="1.0.0",
+            dependencies=[Depends(require_dashboard_access)],
+            docs_url=None, redoc_url=None, openapi_url=None,
         )
 
         # CORS — use explicit config; default to restrictive same-origin

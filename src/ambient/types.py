@@ -30,6 +30,8 @@ class RawSegment:
     # el no_speech_prob del turbo está degenerado (~1e-10 siempre, verificado
     # 2026-06-07); este mean SÍ discrimina voz near-field vs TV/silencio.
     vad_prob: float = 0.0
+    # A duration limit may close storage, but cannot finalize a voice command.
+    complete: bool = True
 
     @property
     def duration_s(self) -> float:

@@ -20,6 +20,7 @@ import numpy as np
 import sounddevice as sd
 
 from src.pipeline.audio_manager import AudioManager
+from src.pipeline.command_event import CommandEvent
 from src.audio import EchoSuppressor
 from src.conversation import FollowUpMode
 
@@ -68,19 +69,19 @@ class AudioLoop:
         self.ambient_detector = ambient_detector
 
         self._running = False
-        self._on_command_callback: Callable[[np.ndarray], Awaitable[dict]] | None = None
+        self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
         self._on_post_command_callback: Callable[[dict, np.ndarray], Awaitable[None]] | None = None
 
-    def on_command(self, callback: Callable[[np.ndarray], Awaitable[dict]]):
+    def on_command(self, callback: Callable[[CommandEvent], Awaitable[dict]]) -> None:
         """
         Register callback for when command audio is captured.
 
-        The callback receives the captured audio data as a numpy array
+        The callback receives a CommandEvent with capture finality
         and must return a dict with at least 'text', 'success', 'action',
         and 'response' keys.
 
         Args:
-            callback: Async function(audio_data: np.ndarray) -> dict.
+            callback: Async function(event: CommandEvent) -> dict.
         """
         self._on_command_callback = callback
 
@@ -155,7 +156,7 @@ class AudioLoop:
 
             # Check if captured audio is TTS echo
             should_process, reason = self.echo_suppressor.should_process_audio(audio_chunk)
-            if not should_process:
+            if not should_process and reason != "silence":
                 if reason == "echo_detected":
                     logger.debug("Echo detected, ignoring audio")
                 return
@@ -233,7 +234,10 @@ class AudioLoop:
 
                         # Dispatch command via callback
                         if self._on_command_callback:
-                            result = await self._on_command_callback(audio_data)
+                            event = CommandEvent(
+                                audio=audio_data, room_id="", capture_complete=early_exit,
+                            )
+                            result = await self._on_command_callback(event)
                         else:
                             logger.warning("No on_command callback registered")
                             result = {}

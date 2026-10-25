@@ -459,11 +459,7 @@ class TestSpenergyGate:
 
 
 class TestSpenergyGateEarlyDispatch:
-    """El pre-gate SPENERGY debe cubrir TAMBIÉN el path early_dispatch (QW-1
-    2026-06-04): el bloque early en run() despachaba sin consultar el gate, así
-    que una alucinación con forma de comando (grammar full sobre ruido) se
-    ejecutaba saltándose el VAD por hardware. Con early_dispatch:true ese es el
-    path más usado en prod."""
+    """Speculative parsing waits for the endpoint and still uses SPENERGY."""
 
     def _make_ready_partial_command(self):
         """PartialCommand-like ya listo para despachar (intent+entity)."""
@@ -474,7 +470,7 @@ class TestSpenergyGateEarlyDispatch:
         pc.ready_to_dispatch = MagicMock(return_value=True)
         return pc
 
-    async def _run_one_early_dispatch(self, xvf_peak: float) -> tuple[list, RoomStream]:
+    async def _run_one_early_dispatch(self, xvf_peak: float, complete: bool = True) -> tuple[list, RoomStream]:
         """Corre run() con un room en estado early-ready y SPENERGY=xvf_peak.
 
         Devuelve (eventos despachados, room stream) tras ~3 iteraciones del
@@ -482,8 +478,10 @@ class TestSpenergyGateEarlyDispatch:
         """
         rs = _make_room_stream("escritorio")
         rs.listening = True
-        rs.command_start_time = time.time()
+        rs.command_start_time = time.time() - 0.5
         rs.audio_buffer = [0.05] * CHUNK_SIZE
+        if complete:
+            rs.audio_buffer.extend([0.0] * 4800)
         rs.early_command = self._make_ready_partial_command()
 
         loop = _make_multi_room_loop(
@@ -521,11 +519,19 @@ class TestSpenergyGateEarlyDispatch:
 
     @pytest.mark.asyncio
     async def test_early_dispatch_passes_when_spenergy_high(self):
-        """SPENERGY de voz real (≥ umbral) → early_dispatch despacha normal."""
+        """A voiced capture is dispatched only after its endpoint."""
         received, rs = await self._run_one_early_dispatch(xvf_peak=335000.0)
         assert len(received) == 1
-        assert received[0].early_dispatch is True
+        assert received[0].early_dispatch is False
+        assert received[0].capture_complete is True
         assert rs.listening is False
+
+    @pytest.mark.asyncio
+    async def test_ready_prefix_cannot_dispatch_before_silence(self):
+        received, rs = await self._run_one_early_dispatch(xvf_peak=335000.0, complete=False)
+        assert received == []
+        assert rs.listening is False  # Stopping releases the provisional capture.
+        assert rs.transcript is None
 
 
 class TestCallbacks:
