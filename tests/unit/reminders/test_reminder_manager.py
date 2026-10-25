@@ -1,5 +1,7 @@
 """Tests for ReminderManager — CRUD and cancellation logic."""
 import time
+from unittest.mock import MagicMock
+from tests.mocks.home_control import selected_actions
 import pytest
 import pytest_asyncio
 
@@ -17,7 +19,7 @@ async def store(tmp_path):
 @pytest_asyncio.fixture
 async def manager(store):
     config = {"default_time": "09:00", "tts_prefix": "Oye, recuerda"}
-    return ReminderManager(store=store, config=config)
+    return ReminderManager(store=store, config=config, home_actions=selected_actions(MagicMock(), ("light.patio",)))
 
 @pytest.mark.asyncio
 async def test_create_one_shot(manager):

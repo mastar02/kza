@@ -574,8 +574,9 @@ class HomeAssistantClient:
 
         Returns:
             True si está disponible, False si está `unavailable`,
-            None si no hay entry en cache — el caller debe fallar ABIERTO
-            (llamar igual), porque "no sé" no es "está rota".
+            None si no hay entry en cache. Los controles deben pasar por el
+            servicio de acciones, que consulta estado fresco y política antes
+            del envío; el cache no autoriza una acción.
         """
         entry = self._state_cache.get(entity_id)
         if entry is None:

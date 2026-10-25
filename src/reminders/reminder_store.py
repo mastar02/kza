@@ -17,6 +17,24 @@ class ReminderState(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ReminderActionStatus(StrEnum):
+    """Durable send evidence for one reminder occurrence and action."""
+
+    SENDING = "sending"
+    CONFIRMED = "confirmed"
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+
+
+@dataclass(frozen=True)
+class ReminderHomeActionReceipt:
+    """Evidence retained independently of a reminder's delivery state."""
+
+    request_id: str
+    status: ReminderActionStatus
+    reason: str | None
+
+
 @dataclass
 class Reminder:
     """Data transfer object for a single reminder."""
@@ -43,6 +61,8 @@ class ReminderStore:
 
     async def initialize(self) -> None:
         """Create the reminders table and indexes."""
+        if self._db is not None:
+            return
         self._db = await aiosqlite.connect(self._db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("""
@@ -68,8 +88,57 @@ class ReminderStore:
             CREATE INDEX IF NOT EXISTS idx_reminders_user
             ON reminders (user_id, state)
         """)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS reminder_home_actions (
+                request_id TEXT PRIMARY KEY,
+                body TEXT NOT NULL,
+                status TEXT NOT NULL,
+                reason TEXT
+            )
+        """)
+        # An interrupted send is evidence of uncertainty, never permission
+        # to send again after restart. Existing reminder data is unchanged.
+        await self._db.execute("""
+            UPDATE reminder_home_actions SET status = 'uncertain', reason = 'interrupted_send'
+            WHERE status = 'sending'
+        """)
         await self._db.commit()
         logger.info("ReminderStore initialized at %s", self._db_path)
+
+    async def claim_home_action(self, request_id: str, action: dict) -> bool:
+        """Commit one occurrence's immutable body before admitting its effect."""
+        body = json.dumps(action, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        cursor = await self._db.execute(
+            "INSERT OR IGNORE INTO reminder_home_actions (request_id, body, status) VALUES (?, ?, 'sending')",
+            (request_id, body),
+        )
+        created = cursor.rowcount == 1
+        await cursor.close()
+        await self._db.commit()
+        async with self._db.execute("SELECT body FROM reminder_home_actions WHERE request_id = ?", (request_id,)) as row:
+            previous = await row.fetchone()
+        if previous is None or previous["body"] != body:
+            raise ValueError("reminder_action_body_conflict")
+        return created
+
+    async def finish_home_action(self, request_id: str, status: str, reason: str | None) -> None:
+        """Record a terminal effect without allowing an uncertain send to retry."""
+        status = ReminderActionStatus(status)
+        if status is ReminderActionStatus.SENDING:
+            raise ValueError("invalid_home_action_status")
+        await self._db.execute(
+            "UPDATE reminder_home_actions SET status = ?, reason = ? WHERE request_id = ? AND status = 'sending'",
+            (status, reason, request_id),
+        )
+        await self._db.commit()
+
+    async def get_home_action_receipt(self, request_id: str) -> ReminderHomeActionReceipt | None:
+        """Read execution evidence; absence is never proof an old order is safe."""
+        async with self._db.execute(
+            "SELECT request_id, status, reason FROM reminder_home_actions WHERE request_id = ?", (request_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return ReminderHomeActionReceipt(row["request_id"], ReminderActionStatus(row["status"]), row["reason"]) if row is not None else None
 
     async def close(self) -> None:
         """Close the database connection."""

@@ -84,8 +84,10 @@ en ambos routers; la captura espera el endpoint y comprueba la cobertura del
 texto reutilizado. HTTP/WS privados ya comparten autenticación y la UI verifica
 la sesión antes de cargar datos. Los consumidores de inferencia aplican destino
 de procesamiento y consentimiento explícitos, también detrás de gateways
-loopback. Siguen pendientes política compartida, operaciones ampliadas y efectos
-de escenas; la configuración real se contrasta durante H6.
+loopback. Los productores de controles comparten servicio, actores de procedencia
+y selección privada revisada antes del envío, incluidas acciones diferidas.
+Siguen pendientes operaciones ampliadas y efectos de escenas; la configuración
+real se contrasta durante H6.
 
 **Entregables:** protección uniforme de HTTP y WebSocket, bind local detrás del
 proxy y una política de acciones compartida por voz, dashboard, rutinas y

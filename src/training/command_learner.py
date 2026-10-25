@@ -18,6 +18,9 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 
+from src.home_assistant.control_policy import ActionOrigin, HomeActor
+from src.home_assistant.home_actions import HomeActionService
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,10 +78,12 @@ class CommandLearner:
         chroma_sync,
         ha_client,
         llm_reasoner,
-        commands_file: str = "./data/custom_commands.json"
+        commands_file: str = "./data/custom_commands.json",
+        *, home_actions: HomeActionService | None = None,
     ):
         self.chroma = chroma_sync
         self.ha = ha_client
+        self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
         self.llm = llm_reasoner
         self.commands_file = Path(commands_file)
 
@@ -520,17 +525,20 @@ Si no puedes identificar acciones, responde: []
         success = True
         for action in cmd.actions:
             try:
-                result = await self.ha.call_service(
+                result = await self.home_actions.execute_service(
                     action["domain"],
                     action["service"],
                     action["entity_id"],
-                    action.get("data")
+                    action.get("data"),
+                    actor=HomeActor.household(), origin=ActionOrigin.VOICE,
                 )
-                if not result:
+                if result.status != "confirmed":
                     success = False
+                    break
             except Exception as e:
                 logger.error(f"Error ejecutando acción: {e}")
                 success = False
+                break
 
         # Actualizar estadísticas
         cmd.times_used += 1

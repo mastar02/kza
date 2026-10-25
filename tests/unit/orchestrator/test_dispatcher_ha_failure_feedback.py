@@ -19,9 +19,10 @@ justo lo que hace el bug invisible.
 """
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 from src.orchestrator.dispatcher import RequestDispatcher, MultiUserOrchestrator
+from tests.mocks.home_control import ACCEPTED, REJECTED, selected_actions
 
 
 @pytest.fixture
@@ -38,6 +39,7 @@ def _dispatcher(ha_client, response_handler=None):
         ha_client=ha_client,
         routine_manager=MagicMock(),
         response_handler=response_handler,
+        home_actions=selected_actions(ha_client, ("light.x", "light.grupo_cocina", "light.grupo_escritorio")),
     )
 
 
@@ -47,8 +49,8 @@ class TestEarconOnFailure:
     @pytest.mark.asyncio
     async def test_failed_call_plays_earcon(self, response_handler):
         ha = MagicMock()
-        ha.call_service_ws = AsyncMock(return_value=False)
         d = _dispatcher(ha, response_handler)
+        ha.call_service_once.return_value = REJECTED
 
         await d._fire_and_reconcile_ha({
             "domain": "light",
@@ -64,8 +66,8 @@ class TestEarconOnFailure:
     async def test_earcon_targets_the_command_zone(self, response_handler):
         """El earcon suena donde habló el usuario, no en todas las zonas."""
         ha = MagicMock()
-        ha.call_service_ws = AsyncMock(return_value=False)
         d = _dispatcher(ha, response_handler)
+        ha.call_service_once.return_value = REJECTED
 
         await d._fire_and_reconcile_ha({
             "domain": "light",
@@ -84,8 +86,8 @@ class TestEarconOnFailure:
     async def test_failed_call_does_not_speak(self, response_handler):
         """Decisión: earcon SIN frase. No debe hablar el error."""
         ha = MagicMock()
-        ha.call_service_ws = AsyncMock(return_value=False)
         d = _dispatcher(ha, response_handler)
+        ha.call_service_once.return_value = REJECTED
 
         await d._fire_and_reconcile_ha({
             "domain": "light", "service": "turn_on",
@@ -98,8 +100,8 @@ class TestEarconOnFailure:
     async def test_exception_also_plays_earcon(self, response_handler):
         """Una excepción de HA es tan invisible como un success=False."""
         ha = MagicMock()
-        ha.call_service_ws = AsyncMock(side_effect=RuntimeError("WS muerto"))
         d = _dispatcher(ha, response_handler)
+        ha.call_service_once.side_effect = RuntimeError("Transport interrupted")
 
         await d._fire_and_reconcile_ha({
             "domain": "light", "service": "turn_on", "entity_id": "light.x",
@@ -111,8 +113,8 @@ class TestEarconOnFailure:
     async def test_successful_call_stays_silent(self, response_handler):
         """Regla vigente: éxito de domótica = silencio (validación visual)."""
         ha = MagicMock()
-        ha.call_service_ws = AsyncMock(return_value=True)
         d = _dispatcher(ha, response_handler)
+        ha.call_service_once.return_value = ACCEPTED
 
         await d._fire_and_reconcile_ha({
             "domain": "light", "service": "turn_on", "entity_id": "light.x",
@@ -125,9 +127,9 @@ class TestEarconOnFailure:
     async def test_earcon_failure_does_not_propagate(self, response_handler):
         """Si el earcon falla, no debe tumbar la task de reconciliación."""
         ha = MagicMock()
-        ha.call_service_ws = AsyncMock(return_value=False)
         response_handler.play_earcon.side_effect = RuntimeError("sin audio")
         d = _dispatcher(ha, response_handler)
+        ha.call_service_once.return_value = REJECTED
 
         await d._fire_and_reconcile_ha({
             "domain": "light", "service": "turn_on", "entity_id": "light.x",

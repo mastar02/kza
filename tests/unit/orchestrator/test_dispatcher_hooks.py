@@ -2,9 +2,10 @@
 
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from src.hooks import HookRegistry, BlockResult, RewriteResult
+from tests.mocks.home_control import selected_actions
 
 
 @pytest.fixture
@@ -15,7 +16,6 @@ def dispatcher_with_hooks():
     hooks = HookRegistry()
 
     ha_client = MagicMock()
-    ha_client.call_service_ws = AsyncMock(return_value=True)
 
     response_handler = MagicMock()
     response_handler.speak = MagicMock()
@@ -26,12 +26,13 @@ def dispatcher_with_hooks():
         routine_manager=MagicMock(),
         response_handler=response_handler,
         hooks=hooks,
+        home_actions=selected_actions(ha_client, ("light.x", "light.cocina")),
     )
     return dispatcher, hooks, ha_client, response_handler
 
 
 def _find_ha_dispatch_method(dispatcher):
-    """Locate the method that wraps self.ha.call_service_ws."""
+    """Locate the method that wraps self.ha.call_service_once."""
     for name in (
         "_fire_and_reconcile_ha",
         "_reconcile",
@@ -72,14 +73,14 @@ async def test_block_prevents_ha_call_and_speaks_reason(dispatcher_with_hooks):
     await method(command)
 
     # HA was NOT called
-    ha_client.call_service_ws.assert_not_called()
+    ha_client.call_service_once.assert_not_called()
     # Response was spoken with the block reason
     response_handler.speak.assert_called_with("prohibido")
 
 
 @pytest.mark.asyncio
-async def test_no_hooks_baseline_unchanged(dispatcher_with_hooks):
-    """Without registered handlers, dispatch flow is unchanged."""
+async def test_empty_hooks_still_use_shared_policy(dispatcher_with_hooks):
+    """An empty hook registry preserves the mandatory action boundary."""
     dispatcher, hooks, ha_client, response_handler = dispatcher_with_hooks
     # No handlers registered — registry is empty
 
@@ -97,7 +98,7 @@ async def test_no_hooks_baseline_unchanged(dispatcher_with_hooks):
     await method(command)
 
     # HA WAS called normally
-    ha_client.call_service_ws.assert_called_once()
+    ha_client.call_service_once.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -150,7 +151,7 @@ async def test_dispatch_emits_ha_action_dispatched_after_event(dispatcher_with_h
 
 
 @pytest.mark.asyncio
-async def test_rewrite_modifies_call_service_ws_args(dispatcher_with_hooks):
+async def test_rewrite_modifies_call_service_once_args(dispatcher_with_hooks):
     """Rewrite path: handler returns RewriteResult, dispatcher should call HA
     with the modified service_data (not the original)."""
     dispatcher, hooks, ha_client, response_handler = dispatcher_with_hooks
@@ -173,9 +174,9 @@ async def test_rewrite_modifies_call_service_ws_args(dispatcher_with_hooks):
         "data": {"brightness_pct": 100}, "description": "la luz",
     })
 
-    # call_service_ws should have been called with brightness_pct=20, not 100
-    ha_client.call_service_ws.assert_called_once()
-    args, kwargs = ha_client.call_service_ws.call_args
-    # call_service_ws(domain, service, entity_id, data) — data is positional[3]
+    # call_service_once should have been called with brightness_pct=20, not 100
+    ha_client.call_service_once.assert_called_once()
+    args, kwargs = ha_client.call_service_once.call_args
+    # call_service_once(domain, service, entity_id, data) — data is positional[3]
     data_arg = args[3] if len(args) >= 4 else kwargs.get("data") or kwargs.get("service_data")
     assert data_arg.get("brightness_pct") == 20, f"Expected brightness_pct=20, got {data_arg}"

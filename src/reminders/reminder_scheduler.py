@@ -1,11 +1,15 @@
 """Asyncio scheduling and delivery engine for reminders."""
 import asyncio
+import hashlib
+import json
 import logging
 import time
 from typing import Any
 
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_store import Reminder, ReminderStore
+from src.home_assistant.control_policy import ActionOrigin, HomeActor
+from src.home_assistant.home_actions import HomeActionService
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +32,13 @@ class ReminderScheduler:
         presence_detector,
         ha_client,
         config: dict = None,
+        *, home_actions: HomeActionService | None = None,
     ):
         self._store = store
         self._tts = tts
         self._presence_detector = presence_detector
         self._ha_client = ha_client
+        self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
         self._config = config or {}
         self._running = False
         self._wake_event = asyncio.Event()
@@ -139,21 +145,7 @@ class ReminderScheduler:
                 "TTS fired for reminder %s in zone %s", reminder.id, zone
             )
 
-        if reminder.ha_actions:
-            for action in reminder.ha_actions:
-                domain = action.get("domain", "")
-                service = action.get("service", "")
-                entity_id = action.get("entity_id", "")
-                data = action.get("data", {})
-                await self._ha_client.call_service(
-                    domain, service, entity_id, data
-                )
-                logger.info(
-                    "HA action executed: %s.%s on %s",
-                    domain,
-                    service,
-                    entity_id,
-                )
+        await self._execute_home_actions(reminder)
 
         if reminder.recurrence:
             new_trigger_at = next_trigger(reminder.trigger_at, reminder.recurrence)
@@ -244,16 +236,7 @@ class ReminderScheduler:
                     target_zone,
                 )
 
-            # Fire HA actions if any
-            if reminder.ha_actions:
-                for action in reminder.ha_actions:
-                    domain = action.get("domain", "")
-                    service = action.get("service", "")
-                    entity_id = action.get("entity_id", "")
-                    data = action.get("data", {})
-                    await self._ha_client.call_service(
-                        domain, service, entity_id, data
-                    )
+            await self._execute_home_actions(reminder)
 
             # Handle recurrence or mark fired
             if reminder.recurrence:
@@ -272,3 +255,27 @@ class ReminderScheduler:
             delivered += 1
 
         return delivered
+
+    async def _execute_home_actions(self, reminder: Reminder) -> None:
+        """Claim durable effects and apply current policy on every delivery path."""
+        for index, action in enumerate(reminder.ha_actions or []):
+            identity = json.dumps([reminder.id, reminder.trigger_at, index], separators=(",", ":"), allow_nan=False)
+            request_id = "reminder:" + hashlib.sha256(identity.encode()).hexdigest()
+            if not await self._store.claim_home_action(request_id, action):
+                logger.warning("Reminder home action already claimed; no automatic resend")
+                receipt = await self._store.get_home_action_receipt(request_id)
+                if receipt is not None and receipt.status == "confirmed":
+                    continue
+                # Do not advance a partially executed sequence after uncertainty.
+                break
+            if type(action) is not dict or action.keys() - {"domain", "service", "entity_id", "data"}:
+                await self._store.finish_home_action(request_id, "failed", "invalid_reminder_action")
+                break
+            result = await self.home_actions.execute_service(
+                action.get("domain", ""), action.get("service", ""), action.get("entity_id", ""), action.get("data"),
+                actor=HomeActor.household(), origin=ActionOrigin.REMINDER, request_id=request_id,
+            )
+            await self._store.finish_home_action(request_id, result.status, result.reason)
+            logger.info("Reminder home action finished: status=%s", result.status)
+            if result.status != "confirmed":
+                break

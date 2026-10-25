@@ -78,6 +78,7 @@ class _Section(BaseModel):
 
 class HomeAssistantSettings(_Section):
     url: str
+    control_selection_path: str = Field(default="", strict=True)
 
 
 class CloudConsentSettings(_Section):

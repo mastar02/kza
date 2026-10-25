@@ -11,6 +11,7 @@ from src.lists.ha_sync import HASyncManager
 from src.reminders.reminder_store import ReminderStore
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_scheduler import ReminderScheduler
+from tests.mocks.home_control import selected_actions
 
 
 @pytest_asyncio.fixture
@@ -37,9 +38,10 @@ async def reminder_system(tmp_path):
     presence = MagicMock()
     presence.get_user_zone = MagicMock(return_value="living")
     ha_client = AsyncMock()
-    manager = ReminderManager(store=store, config={"tts_prefix": "Oye, recuerda"})
+    actions = selected_actions(ha_client, ("light.jardin",))
+    manager = ReminderManager(store=store, config={"tts_prefix": "Oye, recuerda"}, home_actions=actions)
     scheduler = ReminderScheduler(
-        store=store, tts=tts, presence_detector=presence,
+        store=store, tts=tts, presence_detector=presence, home_actions=actions,
         ha_client=ha_client, config={"max_retries": 2, "retry_interval_seconds": 1, "tts_prefix": "Oye, recuerda"},
     )
     yield {
@@ -158,7 +160,7 @@ class TestReminderFlow:
         reminder = await reminder_system["store"].get_by_id(r.id)
         await scheduler._fire_reminder(reminder)
 
-        ha.call_service.assert_called_once_with("light", "turn_on", "light.jardin", {})
+        ha.call_service_once.assert_called_once_with("light", "turn_on", "light.jardin", None)
 
     @pytest.mark.asyncio
     async def test_cancel_reminder_by_fuzzy_text(self, reminder_system):

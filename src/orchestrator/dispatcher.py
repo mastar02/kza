@@ -40,6 +40,8 @@ from enum import StrEnum
 from typing import Callable
 
 from src.core.logging import get_logger
+from src.home_assistant.control_policy import ActionOrigin, HomeActor
+from src.home_assistant.home_actions import HomeActionService
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
     Priority,
@@ -529,6 +531,7 @@ class RequestDispatcher:
         require_known_speaker_for_actions: bool = False,
         unavailable_precheck_enabled: bool = True,
         weather_entity: str = DEFAULT_WEATHER_ENTITY,
+        home_actions: HomeActionService | None = None,
     ):
         """
         Args:
@@ -547,7 +550,7 @@ class RequestDispatcher:
             hooks: Optional HookRegistry instance (plan #3 OpenClaw). When set,
                 before_ha_action / before_tts_speak hooks fire on each invocation
                 and after-events emit at pipeline checkpoints. Backward-compat:
-                None → no hook calls, behavior identical to baseline.
+                None disables hook calls; mandatory home control policy remains active.
             before_handler_warn_ms: Threshold (ms) for logging slow before-handlers
                 in execute_before_chain. Default 5.0ms — anything above eats into
                 the 300ms fast path budget.
@@ -563,6 +566,7 @@ class RequestDispatcher:
         """
         self.chroma = chroma_sync
         self.ha = ha_client
+        self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
         self.routines = routine_manager
         self.router = router
         self.llm = llm
@@ -590,7 +594,6 @@ class RequestDispatcher:
         # home_assistant.state_prefetch.full_refresh_interval_s) y eso empieza
         # a retener comandos contra dispositivos que en realidad ya volvieron.
         self._unavailable_precheck_enabled = unavailable_precheck_enabled
-        self._ha_entity_locks: dict[str, asyncio.Lock] = {}
 
         # Estadisticas
         self._stats = {
@@ -1717,22 +1720,12 @@ class RequestDispatcher:
         t0 = time.perf_counter()
         err: str | None = None
         try:
-            lock = self._ha_entity_locks.setdefault(entity_id, asyncio.Lock())
-            async with lock:
-                success = await self.ha.call_service_ws(
-                    domain, service, entity_id, rewritten_data,
-                )
-                if success and domain in ("light", "switch") and service in ("turn_on", "turn_off"):
-                    brightness = (
-                        rewritten_data.get("brightness_pct")
-                        if domain == "light" and service == "turn_on" and rewritten_data else None
-                    )
-                    success = await self.ha.confirm_entity_state(
-                        entity_id, "off" if service == "turn_off" or brightness == 0 else "on",
-                        **({"brightness_pct": brightness} if brightness is not None else {}),
-                    )
-                    if not success:
-                        err = "Requested entity state was not confirmed"
+            receipt = await self.home_actions.execute_service(
+                domain, service, entity_id, rewritten_data,
+                actor=HomeActor.household(), origin=ActionOrigin.VOICE,
+            )
+            success = receipt.status == "confirmed"
+            err = receipt.reason
             dt = (time.perf_counter() - t0) * 1000
             logger.info(
                 f"[HA-CALL] {domain}.{service}@{entity_id} "
@@ -1861,6 +1854,7 @@ class MultiUserOrchestrator:
         require_known_speaker_for_actions: bool = False,
         unavailable_precheck_enabled: bool = True,
         weather_entity: str = DEFAULT_WEATHER_ENTITY,
+        home_actions: HomeActionService | None = None,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -1872,7 +1866,7 @@ class MultiUserOrchestrator:
             hooks: Optional HookRegistry instance (plan #3 OpenClaw). When set,
                 before_ha_action / before_tts_speak hooks fire on each invocation
                 and after-events emit at pipeline checkpoints. Backward-compat:
-                None → no hook calls, behavior identical to baseline.
+                None disables hook calls; mandatory home control policy remains active.
             before_handler_warn_ms: Threshold (ms) for logging slow before-handlers.
                 Forwarded to RequestDispatcher.
             unavailable_precheck_enabled: Kill switch del precheck de
@@ -1888,6 +1882,7 @@ class MultiUserOrchestrator:
         # Componentes principales
         self.chroma = chroma_sync
         self.ha = ha_client
+        self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
         self.routines = routine_manager
         self.router = router
         self.llm = llm
@@ -1937,6 +1932,7 @@ class MultiUserOrchestrator:
             require_known_speaker_for_actions=require_known_speaker_for_actions,
             unavailable_precheck_enabled=unavailable_precheck_enabled,
             weather_entity=weather_entity,
+            home_actions=self.home_actions,
         )
 
         self._running = False

@@ -17,6 +17,7 @@ sys.modules.setdefault('torch', MagicMock())
 sys.modules.setdefault('torch.cuda', MagicMock())
 
 import pytest
+from tests.mocks.home_control import selected_actions
 
 from src.pipeline.command_processor import ProcessedCommand
 
@@ -54,6 +55,7 @@ class TestVoicePipelineIntegration:
             orchestrator_enabled=False,
             chroma_sync=mock_chroma,
             ha_client=mock_ha_client,
+            home_actions=selected_actions(mock_ha_client, ("light.living_room",)),
             llm_reasoner=mock_llm,
             routine_manager=mock_routine_manager,
             vector_search_threshold=0.65,

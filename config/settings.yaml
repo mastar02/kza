@@ -2,6 +2,9 @@
 
 # Home Assistant Connection
 home_assistant:
+  # Private reviewed inventory data, outside Git. Empty denies all controls.
+  # Selection approval and live verification are required; no domain fallback.
+  control_selection_path: ""
   url: "${HOME_ASSISTANT_URL}"  # Set via environment variable in .env
   token: "${HOME_ASSISTANT_TOKEN}"  # Set via environment variable in .env
   timeout: 2.0  # segundos

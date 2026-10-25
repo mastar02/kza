@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.home_assistant.ha_client import HomeAssistantClient
+from tests.mocks.home_control import selected_actions
 
 
 def test_is_entity_available_true_for_live_entity():
@@ -54,7 +55,9 @@ def _dispatcher_with(ha_available, dispatcher_cls, precheck_enabled=True):
     d = dispatcher_cls.__new__(dispatcher_cls)
     d.ha = MagicMock()
     d.ha.is_entity_available = MagicMock(return_value=ha_available)
-    d.ha.call_service_ws = AsyncMock(return_value=True)
+    d.home_actions = selected_actions(d.ha, ("light.nueva", "light.grupo_cuarto"))
+    if ha_available is False:
+        d.ha.get_entity_state_fresh = AsyncMock(return_value={"entity_id": "light.grupo_cuarto", "state": "unavailable"})
     d.response_handler = MagicMock()
     d.hooks = None
     d._unavailable_precheck_enabled = precheck_enabled
@@ -70,12 +73,12 @@ def test_unavailable_entity_is_not_called_and_plays_earcon():
         "entity_id": "light.grupo_cuarto", "service_data": {},
         "description": "luz del cuarto", "zone_id": "cocina",
     }))
-    d.ha.call_service_ws.assert_not_awaited()
+    d.ha.call_service_once.assert_not_awaited()
     d.response_handler.play_earcon.assert_called_once()
 
 
-def test_unknown_availability_fails_open_and_calls():
-    """None means 'no data', not 'broken'. We must still try."""
+def test_missing_cache_requires_fresh_selected_state_before_send():
+    """A selected target can act after a valid fresh observation replaces missing cache."""
     from src.orchestrator.dispatcher import RequestDispatcher
 
     d = _dispatcher_with(None, RequestDispatcher)
@@ -84,7 +87,7 @@ def test_unknown_availability_fails_open_and_calls():
         "entity_id": "light.nueva", "service_data": {},
         "description": "luz nueva", "zone_id": "cocina",
     }))
-    d.ha.call_service_ws.assert_awaited_once()
+    d.ha.call_service_once.assert_awaited_once()
 
 
 # --- Review findings (post Task 2): audit trail + kill switch --------------
@@ -119,7 +122,7 @@ def test_unavailable_entity_emits_ha_action_blocked_for_audit_trail():
         "description": "luz del cuarto", "zone_id": "cocina",
     }))
 
-    d.ha.call_service_ws.assert_not_awaited()
+    d.ha.call_service_once.assert_not_awaited()
     assert len(captured) == 1
     payload = captured[0]
     assert isinstance(payload, HaActionBlockedPayload)
@@ -127,9 +130,8 @@ def test_unavailable_entity_emits_ha_action_blocked_for_audit_trail():
     assert payload.call.entity_id == "light.grupo_cuarto"
 
 
-def test_unavailable_precheck_disabled_still_calls_ha():
-    """Con el kill switch apagado, se llama a HA aunque la entidad esté
-    unavailable en cache (Important 2)."""
+def test_disabled_optional_precheck_cannot_bypass_mandatory_fresh_state():
+    """Disabling the cache precheck cannot authorize an unavailable target."""
     from src.orchestrator.dispatcher import RequestDispatcher
 
     d = _dispatcher_with(False, RequestDispatcher, precheck_enabled=False)
@@ -138,7 +140,7 @@ def test_unavailable_precheck_disabled_still_calls_ha():
         "entity_id": "light.grupo_cuarto", "service_data": {},
         "description": "luz del cuarto", "zone_id": "cocina",
     }))
-    d.ha.call_service_ws.assert_awaited_once()
+    d.ha.call_service_once.assert_not_awaited()
 
 
 # --- Re-review: poder de detección sobre el cableado del flag --------------

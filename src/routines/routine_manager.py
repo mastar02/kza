@@ -212,21 +212,10 @@ class RoutineManager:
         """Manejar eliminación de rutina"""
         result["handled"] = True
         
-        routine = self.chroma.search_routine(text)
-        
-        if routine:
-            # Eliminar de HA
-            self.ha_client.delete_automation(routine["routine_id"])
-            # Eliminar de ChromaDB
-            self.chroma.delete_routine(routine["routine_id"])
-            
-            result["response"] = f"Eliminé la rutina '{routine['name']}'"
-            result["success"] = True
-        else:
-            result["response"] = "No encontré esa rutina"
-        
+        result["success"] = False
+        result["response"] = "La gestión de rutinas necesita el scheduler persistente de KZA."
         return result
-    
+
     async def _handle_list(self, result: dict) -> dict:
         """Listar rutinas"""
         result["handled"] = True
@@ -355,37 +344,13 @@ Solo JSON:"""
         )
     
     def _create_in_ha(self, routine: Routine) -> tuple[bool, str]:
-        """Crear automatización en Home Assistant"""
-        
-        # Convertir a formato HA
-        automation_config = {
-            "id": routine.id,
-            "alias": routine.name,
-            "description": routine.description,
-            "trigger": [],
-            "condition": routine.conditions,
-            "action": [],
-            "mode": "single"
-        }
-        
-        # Convertir triggers
-        for trigger in routine.triggers:
-            ha_trigger = self._convert_trigger(trigger)
-            if ha_trigger:
-                automation_config["trigger"].append(ha_trigger)
-        
-        # Convertir acciones
-        for action in routine.actions:
-            ha_action = {
-                "service": f"{action.domain}.{action.service}",
-                "target": {"entity_id": action.entity_id}
-            }
-            if action.data:
-                ha_action["data"] = action.data
-            automation_config["action"].append(ha_action)
-        
-        return self.ha_client.create_automation(routine.id, automation_config)
-    
+        """Reject HA-owned automation writes that cannot recheck KZA policy.
+
+        H5 connects voice creation to the persistent KZA scheduler. Until then
+        no legacy producer may install an automation outside this boundary.
+        """
+        return False, "La gestión de rutinas necesita el scheduler persistente de KZA."
+
     def _convert_trigger(self, trigger: RoutineTrigger) -> dict | None:
         """Convertir trigger a formato Home Assistant"""
         

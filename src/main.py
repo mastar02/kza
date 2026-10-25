@@ -30,6 +30,7 @@ from src.routines.routine_manager import RoutineManager
 from src.routines.factory import build_routine_scheduler
 from src.routines.routine_scheduler import RoutineScheduler
 from src.home_assistant.home_actions import HomeActionService
+from src.home_assistant.control_policy import HomeControlPolicy
 from src.pipeline.voice_pipeline import VoicePipeline
 from src.pipeline.audio_loop import AudioLoop
 from src.pipeline.audio_manager import AudioManager
@@ -354,6 +355,10 @@ async def _run_main(shutdown: AsyncExitStack):
         state_confirmation_timeout_s=ha_config.get("state_confirmation_timeout_s", 0.3)
     )
     shutdown.push_async_callback(ha_client.close)
+    home_action_service = HomeActionService(
+        ha_client, policy=HomeControlPolicy(selection_path=ha_config.get("control_selection_path")),
+    )
+    shutdown.push_async_callback(home_action_service.close)
 
     # Verificar conexión (async)
     if not await ha_client.test_connection():
@@ -692,7 +697,7 @@ async def _run_main(shutdown: AsyncExitStack):
 
     reminder_store = ReminderStore(reminders_config.get("db_path", "./data/reminders.db"))
     await reminder_store.initialize()
-    reminder_manager = ReminderManager(store=reminder_store, config=reminders_config)
+    reminder_manager = ReminderManager(store=reminder_store, config=reminders_config, home_actions=home_action_service)
     reminder_scheduler = None  # Created after presence_detector is ready
     logger.info("Lists & reminders initialized")
 
@@ -772,6 +777,7 @@ async def _run_main(shutdown: AsyncExitStack):
                 store=reminder_store, tts=tts,
                 presence_detector=presence_detector,
                 ha_client=ha_client, config=reminders_config,
+                home_actions=home_action_service,
             )
 
         # Room context manager
@@ -1442,6 +1448,7 @@ async def _run_main(shutdown: AsyncExitStack):
             # Sin esto el dispatcher del orquestador no puede avisar de un
             # fallo de HA y el comando se pierde en silencio (fix 2026-07-25).
             response_handler=response_handler,
+            home_actions=home_action_service,
             # Plan #2 OpenClaw
             compactor=compactor,
             persister=persister,
@@ -1490,6 +1497,7 @@ async def _run_main(shutdown: AsyncExitStack):
     request_router = RequestRouter(
         command_processor=command_processor,
         response_handler=response_handler,
+        home_actions=home_action_service,
         audio_manager=audio_manager,
         room_context_manager=room_context_manager,
         orchestrator=orchestrator,
@@ -1628,12 +1636,8 @@ async def _run_main(shutdown: AsyncExitStack):
         ha_client,
         room_context_manager.get_all_rooms() if room_context_manager else {},
         multi_room_loop.get_microphone_snapshot if multi_room_loop else None,
+        actions=home_action_service,
     )
-    # Routines will share this exact instance; it exists with dashboard disabled.
-    home_action_service = home_services.actions
-    if home_action_service is not None:
-        shutdown.push_async_callback(home_action_service.close)
-
     routine_scheduler = await _initialize_routines(
         config, ha_client=ha_client, home_actions=home_action_service, shutdown=shutdown,
     )

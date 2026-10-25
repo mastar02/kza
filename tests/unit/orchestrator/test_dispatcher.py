@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 
 from src.home_assistant.ha_client import HomeAssistantClient
+from tests.mocks.home_control import selected_actions
 from src.orchestrator.dispatcher import (
     RequestDispatcher,
     PathType,
@@ -104,6 +105,7 @@ def dispatcher(mock_chroma, mock_ha, mock_routine_manager, mock_router):
     return RequestDispatcher(
         chroma_sync=mock_chroma,
         ha_client=mock_ha,
+        home_actions=selected_actions(mock_ha, ("light.living",)),
         routine_manager=mock_routine_manager,
         router=mock_router,
         llm=None,
@@ -245,7 +247,7 @@ class TestDispatchFastPath:
         await _drain_background_tasks()
         # call_service_ws, no call_service: el dispatcher migró al socket
         # [calls] y el REST quedó sin uso en este camino (dispatcher.py:1426).
-        mock_ha.call_service_ws.assert_called_once()
+        mock_ha.call_service_once.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_dispatch_domotics_not_found(self, dispatcher, mock_chroma):

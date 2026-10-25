@@ -28,6 +28,7 @@ import numpy as np
 from src.pipeline.request_router import RequestRouter, PermissionResult
 from src.pipeline.command_processor import ProcessedCommand
 from src.nlu.command_gate import CommandAcceptanceGate
+from tests.mocks.home_control import selected_actions
 
 
 # ============================================================
@@ -349,6 +350,7 @@ class TestProcessCommandLegacy:
             command_processor=cp,
             chroma_sync=chroma,
             ha_client=ha,
+            home_actions=selected_actions(ha, ("light.living_room",)),
             orchestrator_enabled=False,
         )
 
@@ -358,7 +360,7 @@ class TestProcessCommandLegacy:
         assert result["success"] is True
         assert result["intent"] == "domotics"
         assert result["action"]["entity_id"] == "light.living_room"
-        ha.call_service_ws.assert_awaited_once()
+        ha.call_service_once.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_process_command_empty_text(self):

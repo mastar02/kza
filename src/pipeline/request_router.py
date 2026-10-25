@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from src.home_assistant.control_policy import ActionOrigin, HomeActor
+from src.home_assistant.home_actions import HomeActionService
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.nlu.command_grammar import PartialCommand, has_unresolved_light_location, parse_default_light_target, parse_partial_command
 from src.nlu.sensitive_actions import is_sensitive
@@ -202,6 +204,7 @@ class RequestRouter:
         llm_min_command_confidence: float = 0.6,
         earcon_cfg: dict | None = None,
         asr_event_logger=None,
+        home_actions: HomeActionService | None = None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -238,7 +241,7 @@ class RequestRouter:
             hooks: Optional HookRegistry instance (plan #3 OpenClaw). When set,
                 before_ha_action / before_tts_speak hooks fire on each invocation
                 and after-events emit at pipeline checkpoints. Backward-compat:
-                None → no hook calls, behavior identical to baseline.
+                None disables hook calls; mandatory home control policy remains active.
         """
         # Core pipeline components
         self.command_processor = command_processor
@@ -254,6 +257,7 @@ class RequestRouter:
         # Service dependencies
         self.chroma = chroma_sync
         self.ha = ha_client
+        self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
         self.llm = llm_reasoner
         self.router = fast_router
         self.memory = memory_manager
@@ -1168,14 +1172,16 @@ class RequestRouter:
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
 
-            # Execute in HA (always use call_service_ws which auto-falls back)
+            # The shared action boundary validates the final target and confirms state.
             t_ha = time.perf_counter()
-            success = await self.ha.call_service_ws(
+            receipt = await self.home_actions.execute_service(
                 command["domain"],
                 command["service"],
                 command["entity_id"],
-                command.get("data")
+                command.get("data"),
+                actor=HomeActor.household(), origin=ActionOrigin.VOICE,
             )
+            success = receipt.status == "confirmed"
             result["timings"]["home_assistant"] = (time.perf_counter() - t_ha) * 1000
 
             result["success"] = success

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 import time as time_module
 
-from src.home_assistant.circuit_breaker import get_ha_circuit_breaker
+from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult, HomeActionService
 from src.routines.models import ActionStatus, RoutineActionResult, RoutineRun, RunStatus
 from src.routines.routine_store import RoutineStore
@@ -77,15 +77,12 @@ class RoutineExecutor:
         self.spotify = spotify_client
         self.tts = tts_engine
         self.zones = zone_controller
-        self.home_actions = home_actions
+        self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
         self.store = store
 
         # Semáforos con límites altos (prioriza velocidad)
         self._ha_semaphore = asyncio.Semaphore(max_parallel)
         self._spotify_semaphore = asyncio.Semaphore(self.MAX_PARALLEL_SPOTIFY)
-
-        # FIX: Circuit breaker para proteger contra fallos de HA
-        self._circuit_breaker = get_ha_circuit_breaker()
 
         # Handlers por tipo de acción
         self._handlers = {
@@ -121,9 +118,10 @@ class RoutineExecutor:
                 operation=str(action.operation),
                 request_id=f"{run.run_id}:{index}",
                 brightness_pct=action.brightness_pct,
+                origin=ActionOrigin.ROUTINE,
             )
             try:
-                result = await self.home_actions.execute(request, actor=run.actor)
+                result = await self.home_actions.execute(request, actor=HomeActor.household())
             except Exception:
                 result = HomeActionResult(
                     request_id=request.request_id,
@@ -239,42 +237,15 @@ class RoutineExecutor:
                 message="Home Assistant no configurado"
             )
 
-        # FIX: Usar circuit breaker para proteger contra fallos de HA
-        async def ha_call():
-            if hasattr(self.ha, 'call_service_ws'):
-                return await self.ha.call_service_ws(domain, service, entity_id, data)
-            else:
-                return await self.ha.call_service(domain, service, entity_id, data)
-
-        success, result = await self._circuit_breaker.call(
-            ha_call,
-            fallback=False
+        receipt = await self.home_actions.execute_service(
+            domain, service, entity_id, data,
+            actor=HomeActor.household(), origin=ActionOrigin.ROUTINE,
         )
-
-        elapsed = (time_module.perf_counter() - t_start) * 1000
-
-        if not success:
-            # Circuit breaker bloqueó o HA falló
-            cb_status = self._circuit_breaker.get_status()
-            if cb_status["state"] == "open":
-                message = f"HA no disponible (circuit open, recuperación en {cb_status['config']['recovery_timeout']}s)"
-            else:
-                message = "Error llamando a HA"
-
-            return ActionResult(
-                success=False,
-                action_type="ha_service",
-                entity_id=entity_id,
-                message=message,
-                elapsed_ms=elapsed
-            )
-
         return ActionResult(
-            success=result if isinstance(result, bool) else True,
-            action_type="ha_service",
-            entity_id=entity_id,
-            message=f"{domain}.{service}",
-            elapsed_ms=elapsed
+            success=receipt.status == "confirmed", action_type="ha_service",
+            entity_id=entity_id, message=receipt.reason or receipt.status,
+            elapsed_ms=(time_module.perf_counter() - t_start) * 1000,
+            data={"status": receipt.status, "request_id": receipt.request_id},
         )
 
     async def _execute_ha_scene(

@@ -14,7 +14,7 @@ contratos y pruebas sintéticas sin habilitar dispositivos ni modificar producci
 | Semántica | Corpus de pasado, estado, preguntas informativas, negación, condición, reporte y diferidos. Gate, gramática, evidencia del LLM y routers conectados deben rechazar; los pedidos inmediatos conservan dirección e infinitivos/cortesía válidos. | Primera implementación y regresiones sobre texto completo. |
 | Captura parcial | Early-dispatch es preparseo especulativo: espera el endpoint, mantiene el texto ligado al audio y nunca ejecuta un prefijo. Una captura cortada por timeout no es una orden completa. | Implementado y probado con ambos routers y modo ambiental; validación acústica real en H6. |
 | Sesión | HTTP y WebSocket privados comparten autenticación cerrada sin token, incluyendo listas, recordatorios, presencia, observabilidad y `/ws/live`. Orígenes inválidos se rechazan con sesión válida. Login y recursos estáticos tienen excepciones explícitas. Bind loopback detrás del proxy y token vacío en `.env.example`. | Implementado y probado; proxy y unit reales se validan en H6. |
-| Política | Un servicio de acciones y un actor de procedencia por productor. Política obligatoria después de rewrites y antes de todo envío; permisos revisados también al disparar acciones diferidas. Tests sin hooks, con rewrite y revocación. | Pendiente. |
+| Política | Un servicio de acciones y un actor de procedencia por productor. Política obligatoria después de rewrites y antes de todo envío; permisos revisados también al disparar acciones diferidas. Tests sin hooks, con rewrite y revocación. | Frontera compartida implementada para las operaciones actuales; tipos ampliados y expansión de efectos siguen pendientes. |
 | Operaciones | Extender DTOs, validación y confirmación a clima y cover. Agregar temperatura de color para reproducir las escenas seleccionadas sin perder parámetros. Usar rangos, modos y entidades del inventario privado aprobado. | Pendiente. |
 | Grupos y escenas | Expandir definiciones verificadas a hojas autorizadas y operaciones tipadas. Rechazar macros opacas, templates sin contexto y efectos indirectos no verificados. Pruebas de escena que oculta lock/alarm, grupos no autorizados y parámetros desconocidos. | Pendiente. |
 | Consentimiento | Destino cloud explícito, independiente de host/transporte. Denegación probada en reasoner, compactor y cada consumidor; loopback no elude consentimiento. | Implementado; validación offline conectada y límites descritos abajo. |
@@ -169,14 +169,57 @@ compilado confirma además la denegación antes de red fuera del checkout. El
 [registro de consentimiento](../research/2026-10-25-h1-consent-validation.json)
 conserva alcance, comandos, resultados y comprobaciones reales pendientes.
 
-## Integración de la política pendiente
+## Política común y procedencia
 
-El plan conserva los recibos `HomeActionRequest`/`HomeActionResult`, las lanes
-por entidad y la factory del scheduler persistente. Debe sustituir los envíos
-propios del dispatcher, router legacy, scheduler de recordatorios y executor
-legacy por esa frontera compartida. Ningún wrapper opcional de hooks puede ser
-la única defensa. `failed`, `uncertain` y `confirmed` conservan significados
-distintos; una respuesta aceptada de HA no prueba el efecto observado.
+`HomeActionService` conserva los recibos `HomeActionRequest`/`HomeActionResult`
+y las lanes por entidad. Dispatcher, router legacy, HTTP, rutinas persistentes,
+executor legacy y ambos caminos de entrega de recordatorios pasan por él.
+También se protegió el executor de comandos aprendidos, aunque `main` no lo
+construye actualmente. Los hooks opcionales pueden bloquear o reescribir;
+el servicio valida siempre el resultado final. Los controles usan el intento
+REST único ya existente y conservan la confirmación de estado fresco.
+
+`HomeActor` separa la sesión del dashboard del actor doméstico compartido sin
+identidad verificada. `ActionOrigin` registra HTTP, voz, rutina o recordatorio.
+El cuerpo HTTP no admite actor ni origen; la sesión los aporta. SpeakerID,
+nombres sugeridos y el `actor` guardado como auditoría en una rutina no otorgan
+autenticación a un job. La identidad del recibo incluye el tipo de actor.
+
+`HomeControlPolicy` requiere selección explícita de entidad, operación y rango.
+`home_assistant.control_selection_path` apunta a datos privados de revisión,
+fuera de Git; vacío deniega controles. El lector exige `selection_approved`,
+`live_api_verified` y `allowed_entities[].live_verified` booleanos verdaderos.
+La entrada declara `entity_id`, `operations` y, para brillo,
+`parameters.brightness_pct` con `min` y `max` enteros. No hay permiso por dominio.
+La selección se lee sin bloquear el loop y se vuelve a comprobar tras esperar
+la lane y consultar HA. Archivo ausente, inválido o revocado no reutiliza una
+copia anterior. Su actualización operativa debe reemplazar el archivo completo.
+
+El perfil versionado conserva el path vacío. La revisión privada recibida aún
+produce cero grants efectivos: no se cambió su evidencia ni se habilitaron
+dispositivos. Grupos observados, escenas y scripts opacos se rechazan hasta que
+su expansión verificada tenga implementación. La normalización de productores
+rechaza parámetros desconocidos, selectores de múltiples targets y servicios
+fuera de las operaciones tipadas actuales, sin descartarlos silenciosamente.
+
+La admisión de rutinas y recordatorios comprueba la selección, y su ejecución
+la revisa otra vez. Revocar permisos no impide deshabilitar una rutina. El
+manager legacy dejó de instalar o eliminar automatizaciones propiedad de HA:
+esas automatizaciones no podrían consultar la política de KZA al dispararse.
+H5 sigue obligado a conectar creación y gestión por voz al scheduler persistente;
+el rechazo provisional de esa vía antigua no completa esa función.
+
+Los recordatorios agregan una tabla de recibos por ocurrencia y acción. El
+cuerpo se guarda antes del efecto; un ID con otro cuerpo produce conflicto.
+Después de un reinicio, un envío interrumpido queda incierto y no se reenvía.
+Las entregas por vencimiento y llegada comparten ese claim. Una secuencia sólo
+avanza tras una acción confirmada. La migración aditiva se prueba en una copia
+offline sintética preservando sus filas; no se migró la base instalada.
+
+`failed`, `uncertain` y `confirmed` conservan significados distintos: aceptación
+HTTP de HA no prueba el efecto observado. La confirmación de luces usa estado
+fresco y brillo, con el plazo existente. Los recibos inmediatos siguen siendo
+locales al proceso; ausencia o expulsión de un recibo no autorizan un reintento.
 
 La confirmación es específica por operación y está acotada por timeout. Las
 acciones programadas conservan su procedencia e ID durable; no recuperan un
@@ -184,10 +227,8 @@ envío incierto reintentándolo sin evidencia. La política rechaza locks y alar
 incluso desde una escena o una sesión del dashboard. Los nombres de grupos y
 perfiles vocales nunca alteran ese resultado.
 
-Las capacidades se validarán contra observaciones actuales, y el esquema de
-`config/settings.yaml` describirá los campos de la política y dónde leer su
-selección privada. No se publicarán entidades personales en el YAML versionado
-ni se agregará una allowlist implícita por dominio. Los modos/rangos acordados
+Las operaciones ampliadas todavía necesitan capacidades y confirmación propias,
+además de propagarse por todos los DTOs y productores. Los modos/rangos acordados
 siguen en la revisión privada del inventario, junto con su evidencia pendiente.
 
 ## Cierre

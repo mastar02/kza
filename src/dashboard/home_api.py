@@ -18,6 +18,7 @@ from src.home_assistant.home_actions import (
     validate_home_action,
 )
 from src.home_assistant.ha_client import HomeAssistantClient
+from src.home_assistant.control_policy import ActorKind, HomeActor
 from src.rooms.room_context import RoomConfig
 
 
@@ -43,6 +44,7 @@ def build_home_services(
     ha_client: HomeAssistantClient | None,
     rooms: Mapping[str, RoomConfig],
     microphone_snapshot_provider: Callable[[], MicrophonesSnapshot | None] | None,
+    *, actions: HomeActionService | None = None,
 ) -> HomeServices:
     """Construct home services without reads, tasks, discovery, or HA ownership.
 
@@ -56,7 +58,7 @@ def build_home_services(
     """
     return HomeServices(
         HomeCatalogService(ha_client, rooms),
-        HomeActionService(ha_client) if ha_client is not None else None,
+        actions if actions is not None else (HomeActionService(ha_client) if ha_client is not None else None),
         microphone_snapshot_provider,
     )
 
@@ -112,9 +114,14 @@ async def execute_home_action(
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     try:
-        return await actions.execute(request, actor=principal.subject)
+        return await actions.execute(request, actor=home_actor(principal))
     except HomeActionConflict as error:
         raise HTTPException(status_code=409, detail="request_id_body_conflict") from error
+
+
+def home_actor(principal: DashboardPrincipal) -> HomeActor:
+    """Adapt a validated dashboard session without accepting identity in JSON."""
+    return HomeActor(ActorKind.DASHBOARD, principal.subject, principal.permissions)
 
 
 def register_home_routes(
@@ -187,7 +194,7 @@ def register_home_routes(
             raise HTTPException(status_code=403, detail="home_read_denied")
         if actions is None:
             raise HTTPException(status_code=503, detail="home_actions_unavailable")
-        receipt = actions.get_receipt(actor=principal.subject, request_id=request_id)
+        receipt = actions.get_receipt(actor=home_actor(principal), request_id=request_id)
         if receipt is None:
             raise HTTPException(status_code=404, detail="home_action_receipt_not_found")
         return receipt

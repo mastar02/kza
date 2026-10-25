@@ -4,6 +4,8 @@ from datetime import datetime
 from difflib import SequenceMatcher
 
 from src.reminders.reminder_store import ReminderStore, Reminder
+from src.home_assistant.control_policy import ActionOrigin, HomeActor
+from src.home_assistant.home_actions import HomeActionService, request_from_service
 
 logger = logging.getLogger(__name__)
 
@@ -11,9 +13,10 @@ logger = logging.getLogger(__name__)
 class ReminderManager:
     """High-level reminder operations with fuzzy search and voice output."""
 
-    def __init__(self, store: ReminderStore, config: dict | None = None):
+    def __init__(self, store: ReminderStore, config: dict | None = None, *, home_actions: HomeActionService | None = None):
         self._store = store
         self._config = config or {}
+        self.home_actions = home_actions if home_actions is not None else HomeActionService(None)
         self._tts_prefix = self._config.get("tts_prefix", "Recuerda")
         self._default_time = self._config.get("default_time", "09:00")
 
@@ -26,6 +29,14 @@ class ReminderManager:
         ha_actions: list[dict] | None = None,
     ) -> Reminder:
         """Create a new reminder via the store."""
+        for action in ha_actions or []:
+            if type(action) is not dict or action.keys() - {"domain", "service", "entity_id", "data"}:
+                raise ValueError("invalid_reminder_action")
+            request = request_from_service(
+                action.get("domain", ""), action.get("service", ""), action.get("entity_id", ""), action.get("data"),
+                request_id="admission", origin=ActionOrigin.REMINDER,
+            )
+            await self.home_actions.validate_selection(request, actor=HomeActor.household())
         reminder = await self._store.create(
             user_id=user_id,
             text=text,

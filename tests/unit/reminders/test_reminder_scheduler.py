@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from src.reminders.reminder_scheduler import ReminderScheduler
 from src.reminders.reminder_store import ReminderStore
+from tests.mocks.home_control import selected_actions
 
 
 @pytest_asyncio.fixture
@@ -38,6 +39,7 @@ async def scheduler(store, mock_deps):
         presence_detector=mock_deps["presence_detector"],
         ha_client=mock_deps["ha_client"],
         config=config,
+        home_actions=selected_actions(mock_deps["ha_client"], ("light.patio",)),
     )
     yield s
     if s._running:
@@ -58,7 +60,7 @@ async def test_fire_reminder_with_ha_actions(scheduler, store, mock_deps):
     actions = [{"domain": "light", "service": "turn_on", "entity_id": "light.patio"}]
     r = await store.create(user_id="u1", text="regar", trigger_at=time.time() - 10, ha_actions=actions)
     await scheduler._fire_reminder(r)
-    mock_deps["ha_client"].call_service.assert_called_once_with("light", "turn_on", "light.patio", {})
+    mock_deps["ha_client"].call_service_once.assert_called_once_with("light", "turn_on", "light.patio", None)
 
 @pytest.mark.asyncio
 async def test_fire_recurring_reschedules(scheduler, store, mock_deps):

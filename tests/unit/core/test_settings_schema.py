@@ -52,6 +52,11 @@ class TestValidateSettings:
         with pytest.raises(ValueError, match="home_assistant"):
             validate_settings(real_config)
 
+    def test_control_selection_path_cannot_be_a_boolean(self, real_config):
+        real_config["home_assistant"]["control_selection_path"] = True
+        with pytest.raises(ValueError, match="control_selection_path"):
+            validate_settings(real_config)
+
     def test_extra_sections_and_fields_allowed(self, real_config):
         """El schema es permisivo: claves nuevas no rompen el boot."""
         real_config["seccion_futura"] = {"clave": 1}

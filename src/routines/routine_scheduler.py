@@ -24,6 +24,9 @@ from src.routines.models import (
     spec_to_dict,
 )
 from src.routines.routine_store import RoutineStore
+from src.home_assistant.control_policy import ActionOrigin, HomeActor
+from src.home_assistant.home_actions import HomeActionRequest
+from src.routines.models import RoutineValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -90,13 +93,24 @@ class RoutineScheduler:
 
     async def register_routine(self, spec: RoutineSpec, *, actor: str) -> ScheduledRoutine:
         """Persist a new normalized definition with server-owned identity."""
+        await self._validate_control_selection(spec)
         return await self.store.save(spec, actor=actor)
 
     async def update_routine(self, routine_id: str, spec: RoutineSpec, *,
                              expected_revision: int, actor: str) -> ScheduledRoutine:
         """Persist an optimistic update while retaining receipt snapshots."""
+        await self._validate_control_selection(spec)
         return await self.store.save(spec, routine_id=routine_id,
                                      expected_revision=expected_revision, actor=actor)
+
+    async def _validate_control_selection(self, spec: RoutineSpec) -> None:
+        try:
+            for action in spec.actions:
+                await self.executor.home_actions.validate_selection(HomeActionRequest(
+                    action.entity_id, str(action.operation), "admission", action.brightness_pct, ActionOrigin.ROUTINE,
+                ), actor=HomeActor.household())
+        except ValueError as error:
+            raise RoutineValidationError(str(error)) from error
 
     async def unregister_routine(self, routine_id: str, *, expected_revision: int) -> None:
         """Delete an idle definition without deleting its receipts."""
@@ -125,6 +139,10 @@ class RoutineScheduler:
         routine = await self.store.get(routine_id)
         if routine is None:
             raise RoutineNotFound(routine_id)
+        if not enabled:
+            # Revoking control permission must never prevent disabling a job.
+            return await self.store.save(replace(routine.spec, enabled=False), routine_id=routine_id,
+                                         expected_revision=expected_revision, actor=actor)
         return await self.update_routine(routine_id, replace(routine.spec, enabled=enabled),
                                          expected_revision=expected_revision, actor=actor)
 
