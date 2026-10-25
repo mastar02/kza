@@ -321,6 +321,14 @@ límites. El recibo conserva los valores solicitados. El smoke manual
 el servicio real y SQLite temporal con HA simulado: elige consigna y color con
 brillo, y guarda una rutina decimal sin ejecutarla. No usa HA ni audio reales.
 
+Verificación del commit `3ef6beb`: **3927 passed, 5 failed, 1 xfailed** en
+108,82 s, sin IDs de fallo nuevos. Pasan 902 pruebas dirigidas y 233 de regresión
+del pipeline, incluidas 49 de parser y 150 conectadas desde texto hablado en
+ambos modos. Pasan Ruff 0.15.1, el gate medio/alto de Bandit 1.9.4, los diez tests
+Node, el smoke autenticado del dashboard y el artefacto compilado fuera del
+checkout. El [registro de voz](../research/2026-10-25-h1-voice-commands-validation.json)
+detalla el alcance sintético y las validaciones reales pendientes.
+
 Verificación del commit `48c19f3`: **3726 passed, 5 failed, 1 xfailed** en
 108,59 s, con los mismos cinco IDs pendientes. Pasan 562 pruebas enfocadas,
 incluidas 68 de contratos conectados, diez tests Node, el smoke Chromium y el

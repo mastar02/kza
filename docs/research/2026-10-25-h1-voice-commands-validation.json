@@ -1,0 +1,79 @@
+{
+  "checked_on": "2026-10-25",
+  "tested_commit": "3ef6beb0809a139d3219cdba624befe31834c041",
+  "source_change_commit": "8f3d5c079d07f54f4362b87e696dc400fa672fb0",
+  "scope": "H1 extended spoken-text interpretation, exact selected room targets and shared voice executor; groups/scenes, live acoustics and release remain incomplete",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "environment_reference": "docs/research/2026-10-25-h0-baseline.json",
+  "dependency_limit": "Existing runtime virtualenv used read-only with bytecode writes disabled; dependencies still differ from CI pins. Tool installs confined to yo cache.",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short --junitxml=/tmp/kza-h1-voice-final.xml",
+    "passed": 3927,
+    "failed": 5,
+    "xfailed": 1,
+    "runtime_s": 108.82,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad",
+      "tests/unit/vectordb/test_search_command_excluded.py::TestExcludedEntitiesQueryTime::test_excluded_top_candidate_skipped_with_prefer_area",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestPreferAreaScoring::test_prefer_area_unknown_area_falls_back_to_baseline",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_below_threshold_falls_back_to_global",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_pass_empty_falls_back_to_global"
+    ],
+    "new_failure_ids": [],
+    "prior_validation_reference": "docs/research/2026-10-25-h1-typed-operations-validation.json"
+  },
+  "focused": {
+    "primary_passed": 902,
+    "primary_xfailed": 1,
+    "pipeline_regression_passed": 233,
+    "parser_cases": 49,
+    "connected_voice_cases": 150,
+    "files": [
+      "tests/unit/nlu/test_home_command.py",
+      "tests/integration/test_voice_home_commands.py",
+      "tests/integration/test_home_control_policy.py",
+      "tests/integration/test_voice_pipeline.py"
+    ]
+  },
+  "proven": [
+    "Both real RequestRouter modes parse complete synthetic Spanish imperatives before vector or general model routing",
+    "Absolute temperature with decimal/cardinal values, six HVAC modes, blind open/close/stop/position and Kelvin with brightness preserve exact parameters through one send and actual HA confirmation logic",
+    "Incomplete, malformed, out-of-range, invalid-step and composite controls do not fall through to a guessed target or value",
+    "Common semantic gate rejects negation, conditions, reported speech, deferred controls and newly covered accent-sensitive past forms before action parsing",
+    "Explicit room aliases match exactly; unknown/ambiguous rooms and missing/unselected defaults cannot use a different room or microphone target",
+    "Without any room evidence, only one selected domain entity can resolve; domain candidates are not silently filtered to a different entity by operation",
+    "Textual wake, ambient strict and weak wake captures require an available affirmative confidence gate; model slots and targets cannot replace deterministic evidence",
+    "Revocation after resolution or fresh state read, unsafe hook rewrites and unknown temperature unit prevent a send",
+    "Missing observed effect produces uncertain receipt and failure feedback without a retry or success announcement",
+    "Voice profiles do not grant or block selected household controls; absent, guest and admin annotations all use the shared household actor",
+    "Dispatcher and both voice modes share optional hooks/precheck and mandatory final policy, single attempt, receipts and local failure feedback",
+    "Compiled runtime outside checkout imports new voice modules, parses decimal cardinal temperature and denies unselected controls before transport"
+  ],
+  "checks": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium_high_findings": 0
+    },
+    "frontend_node": {
+      "passed": 10,
+      "failed": 0
+    },
+    "authenticated_dashboard_smoke": "passed",
+    "source_free_runtime_smoke": "passed within full suite",
+    "chromium_smoke": "Not repeated; UI unchanged. Prior synthetic browser evidence remains in typed operations record."
+  },
+  "limits": [
+    "Tests start from synthetic transcribed text, not recorded household audio; ASR accuracy, real wake errors and end-to-end latency are not measured",
+    "State confirmation is HA observation, not physical sensing",
+    "Real control selection stays disabled and live_api_verified remains false; private approval is for the future release",
+    "Device friendly-name fuzzy lookup and inferred relative temperature/position changes are not implemented",
+    "Group/scene expansion remains unimplemented and opaque effects stay denied",
+    "H0 live evidence and legacy-memory treatment, H2-H6 and deployment remain incomplete"
+  ],
+  "production_changed": false
+}
