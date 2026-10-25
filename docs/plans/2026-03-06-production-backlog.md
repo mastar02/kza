@@ -1,5 +1,11 @@
 # KZA Productionization Backlog
 
+> Estado histórico de marzo. Los estados `Done` y supuestos como la ausencia de
+> datos de producción no describen el entorno actual. Para los pendientes
+> contrastados el 2026-10-25, consultar el
+> [backlog actualizado](2026-10-25-review-followups.md); para desarrollo y
+> publicación, seguir [DEPLOYMENT.md](../architecture/DEPLOYMENT.md).
+
 **Date:** 2026-03-06  
 **Status:** Proposed backlog  
 **Primary goal:** Convert KZA from an ambitious local-first prototype into a reliable local voice server for home use.  
