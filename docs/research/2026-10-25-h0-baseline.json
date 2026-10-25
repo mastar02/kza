@@ -1,0 +1,83 @@
+{
+  "checked_on": "2026-10-25",
+  "source_revision": "f56b5ae4e3e63b8f6c361f1c62a89af9d0801464",
+  "scope": "Recovered runtime unchanged; H0 tools and tests added in the worktree.",
+  "effective_user": "yo",
+  "effective_uid": 1011,
+  "development_checkout": "/home/yo/projects/kza",
+  "environment": {
+    "python": "3.13.12",
+    "gpu_enabled": false,
+    "dependency_source": "Existing virtualenv read only; no dependencies installed or modified. Not a CI-pinned or reproducible release environment.",
+    "versions": {
+      "pytest": "9.0.2",
+      "pytest-asyncio": "1.3.0",
+      "aiohttp": "3.13.3",
+      "aiosqlite": "0.22.1",
+      "fastapi": "0.135.1",
+      "httpx": "0.28.1",
+      "chromadb": "1.5.5",
+      "torch": "2.10.0",
+      "ruff": "0.15.6"
+    }
+  },
+  "validation": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short --junitxml=/tmp/kza-h0-final.xml",
+    "passed": 3123,
+    "failed": 10,
+    "xfailed": 1,
+    "runtime_s": 79.69,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad",
+      "tests/unit/dashboard/test_admin.py::test_no_token_configured_means_open_access",
+      "tests/unit/orchestrator/test_dispatcher_ha_failure_feedback.py::TestEarconOnFailure::test_successful_call_stays_silent",
+      "tests/unit/orchestrator/test_dispatcher_hooks.py::test_dispatch_emits_ha_action_dispatched_after_event",
+      "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unknown_availability_fails_open_and_calls",
+      "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unavailable_precheck_disabled_still_calls_ha",
+      "tests/unit/vectordb/test_search_command_excluded.py::TestExcludedEntitiesQueryTime::test_excluded_top_candidate_skipped_with_prefer_area",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestPreferAreaScoring::test_prefer_area_unknown_area_falls_back_to_baseline",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_below_threshold_falls_back_to_global",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_pass_empty_falls_back_to_global"
+    ],
+    "same_failed_node_ids_as_recovery": true,
+    "triage": {
+      "previous_contract_expectations": 6,
+      "incomplete_fixtures_or_async_doubles": 4,
+      "responsible_followups": "docs/plans/2026-10-25-h0-baseline-contracts.md"
+    },
+    "staging_tests_passed": 13,
+    "staging_evidence": [
+      "Real builder archives from two distinct committed revisions",
+      "SQLite schema, data and configuration restored with the old runtime slot",
+      "Corrupt candidate never replaces current",
+      "Archive traversal, duplicate files, source files and links rejected",
+      "Unexpected installed sources and redirected state rejected",
+      "Compiled main import and five frontend resources in a fresh process outside the source checkout"
+    ],
+    "inventory_tool": "Synthetic offline snapshot; private output mode 0600; no entity approved by collection",
+    "lint_command": "ruff check src/ tests/ scripts/stage_runtime.py scripts/inventory_home.py",
+    "lint_passed": true
+  },
+  "private_inventory": {
+    "received": true,
+    "review_written_outside_git": true,
+    "user_selection_recorded_outside_git": true,
+    "source": "Read-only persisted HA registries and configuration; not a live API capture",
+    "live_api_verified": false,
+    "unresolved_effects_remain": true,
+    "legacy_memory_preview_available": false
+  },
+  "production": {
+    "services_restarted": false,
+    "configuration_changed": false,
+    "data_migrated": false,
+    "source_retired": false
+  },
+  "status": "H0 in progress; not release-ready",
+  "remaining": [
+    "Live service/capability reconciliation and resolution of selected effects",
+    "Legacy memory inventory and migration preview from an offline private copy",
+    "H1-H5 implementation and connected regression tests",
+    "H6 reproducible dependencies, compatible models/resources, migration copies, metrics, hardware and real-unit validation, single release"
+  ]
+}

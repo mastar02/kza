@@ -19,8 +19,11 @@ El próximo modelo de despliegue transferirá a `kza` únicamente el artefacto
 compilado y sus recursos de ejecución, construidos y probados bajo `yo`.
 Secretos y datos persistentes permanecen fuera del artefacto y de Git. El
 proyecto es Python: `scripts/build_runtime.py` construye un paquete de bytecode
-CPython 3.13 sin fuentes `.py`. La instalación y promoción todavía deben
-implementarse. No se cambió el servicio durante el rescate.
+CPython 3.13 sin fuentes `.py`. El ensayo offline de instalación, promoción y
+rollback está en `scripts/stage_runtime.py` y el
+[plan de H0](../plans/2026-10-25-h0-baseline-contracts.md). Su validación usa
+staging bajo `yo`; la integración de dependencias, modelos, units y estado real
+se completa para la release. No se cambió el servicio durante el rescate.
 
 La sección siguiente describe el despliegue existente. El flujo histórico de
 edición en producción y puente desde la laptop queda retirado para trabajo

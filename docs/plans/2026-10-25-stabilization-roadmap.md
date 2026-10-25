@@ -53,6 +53,13 @@ implementación; no se acumulan para H6.
 
 ### H0 Fijar baseline y contratos
 
+En ejecución: [baseline, contratos y ensayo de release](2026-10-25-h0-baseline-contracts.md).
+Los diez fallos están clasificados y el staging tiene pruebas de restauración
+conjunta de runtime y datos. Se recibió el inventario privado persistido de HA
+y se registró la selección inicial del usuario fuera de Git. Quedan pendientes
+la evidencia viva y los efectos sin resolver del inventario, y la vista previa
+de registros legacy; H0 todavía no está cerrado.
+
 **Entregables:** clasificación de los diez tests fallidos del rescate, matriz de
 flujos realmente conectados y plan probado de instalación, promoción y rollback
 en un directorio de staging bajo `yo`. Reutilizar el builder CPython 3.13.
