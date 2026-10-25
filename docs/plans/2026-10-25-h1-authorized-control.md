@@ -231,11 +231,22 @@ Las operaciones ampliadas todavía necesitan capacidades y confirmación propias
 además de propagarse por todos los DTOs y productores. Los modos/rangos acordados
 siguen en la revisión privada del inventario, junto con su evidencia pendiente.
 
+Verificación del commit `d49fa2f`: **3651 passed, 5 failed, 1 xfailed** en
+105,16 s, sin IDs de fallo nuevos. Pasan 516 pruebas enfocadas, incluidas 48 de
+grafos de política, y el smoke compilado que deniega controles sin selección
+antes de usar HA. Ruff 0.15.1, el gate medio/alto de Bandit 1.9.4, las seis
+pruebas Node y el smoke autenticado del dashboard pasan. El
+[registro de política](../research/2026-10-25-h1-policy-validation.json) describe
+las pruebas y sus límites.
+
 ## Cierre
 
 H1 requiere todos los frentes de la tabla y pruebas conectadas para cada
 productor, con HTTP/WS autenticados, política obligatoria y consentimiento
-aplicado. Las correcciones de fixtures y expectativas de los nueve fallos del
-baseline asignados a H1 acompañan la nueva frontera, sin retirar confirmación de
-estado ni restaurar acceso anónimo o fallback a otra habitación. El fallo de
-idioma/VAD corresponde a H3. No hay publicación intermedia.
+aplicado. La nueva frontera cierra cuatro fallos del dispatcher mediante fixtures
+con selección explícita, estado fresco e intento único, conservando confirmación.
+Siguen abiertos los cuatro fallos de búsqueda por habitación; no se restaurará
+fallback a otra habitación para volverlos verdes. El quinto fallo, de idioma/VAD,
+corresponde a H3. H1 aún necesita operaciones ampliadas y expansión de efectos,
+además de revisar las restricciones de demostración basadas en SpeakerID.
+No hay publicación intermedia.

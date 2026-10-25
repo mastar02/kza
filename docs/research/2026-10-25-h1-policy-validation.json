@@ -1,0 +1,126 @@
+{
+  "checked_on": "2026-10-25",
+  "tested_commit": "d49fa2f08a1fc4815edc6e2d279ae888e003bce4",
+  "scope": "H1 mandatory shared home action policy for current binary/brightness operations; extended types, scene expansion and release are not complete",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "environment_reference": "docs/research/2026-10-25-h0-baseline.json",
+  "dependency_limit": "Existing runtime virtualenv read only; runtime dependencies still differ from CI pins. Scanner/linter installed only in yo tool cache.",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short --junitxml=/tmp/kza-h1-policy-sequence-committed.xml",
+    "passed": 3651,
+    "failed": 5,
+    "xfailed": 1,
+    "runtime_s": 105.16,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad",
+      "tests/unit/vectordb/test_search_command_excluded.py::TestExcludedEntitiesQueryTime::test_excluded_top_candidate_skipped_with_prefer_area",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestPreferAreaScoring::test_prefer_area_unknown_area_falls_back_to_baseline",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_below_threshold_falls_back_to_global",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_pass_empty_falls_back_to_global"
+    ],
+    "new_failure_ids": [],
+    "prior_validation_reference": "docs/research/2026-10-25-h1-consent-validation.json",
+    "closed_recovery_failure_ids": [
+      "tests/unit/orchestrator/test_dispatcher_ha_failure_feedback.py::TestEarconOnFailure::test_successful_call_stays_silent",
+      "tests/unit/orchestrator/test_dispatcher_hooks.py::test_dispatch_emits_ha_action_dispatched_after_event",
+      "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unknown_availability_fails_open_and_calls",
+      "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unavailable_precheck_disabled_still_calls_ha"
+    ],
+    "closed_failure_basis": "Explicit synthetic grants, fresh-state and single-attempt/confirmation fixtures replace obsolete direct-send mocks. Missing cache requires fresh evidence; disabling the optional cache precheck cannot bypass mandatory fresh-state validation. Confirmation was retained and is also exercised using the real polling method."
+  },
+  "policy": {
+    "consumer_graph_tests": 48,
+    "proven": [
+      "Default empty selection denies controls before HA observation",
+      "Unverified, missing, malformed or revoked private selection never reuses a previous grant",
+      "Strict boolean live verification, explicit operation and integer brightness bounds are required",
+      "Actor kind/scope and action origin are server-owned; a speaker annotation cannot act as authenticated principal",
+      "Requests queued on an entity lane or waiting for fresh HA state are reauthorized before send",
+      "Disabled/empty hooks do not disable the mandatory policy; rewrites to a hidden lock, target selector or excessive brightness are rejected",
+      "Lock, alarm, opaque scene/script, unselected target, unknown parameters and aggregate entity effects cannot be sent",
+      "HTTP session adapts to a typed actor and namespaced receipt; identity fields in the request body are rejected",
+      "Orchestrator, legacy voice router, persistent routine factory/executor, legacy executor and both reminder delivery paths consume the shared action boundary",
+      "Learned command executor also uses the boundary, although main does not construct it",
+      "Routine/reminder creation checks the current selection; execution rechecks revocation; revocation does not prevent disabling a routine",
+      "Accepted transport without observed requested state remains uncertain",
+      "Concurrent identical immediate requests share one send and receipt; type-changing reuse conflicts",
+      "Legacy routine manager cannot install HA-owned automation that would bypass policy on later execution"
+    ],
+    "application_wiring": "main creates one action service before producers and injects it into both voice paths, reminder manager/scheduler, home services and persistent routines. Source inspected; constructor/factory graphs tested with doubles. Full application boot with real dependencies is still a release validation item.",
+    "private_selection": {
+      "config_key": "home_assistant.control_selection_path",
+      "versioned_value": "",
+      "existing_review_grants_enabled": false,
+      "existing_review_metadata_changed": false,
+      "live_capabilities_or_effects_verified": false
+    },
+    "immediate_receipts_durable_across_restart": false
+  },
+  "reminder_receipts": {
+    "new_table": "reminder_home_actions",
+    "proven": [
+      "Immutable occurrence/action claim is committed before the shared service can send",
+      "Due and presence-arrival races share a single effect",
+      "Uncertain receipt survives lost scheduler completion and restart without resend",
+      "Interrupted sending claim becomes uncertain at startup",
+      "Reused occurrence with a changed body is rejected",
+      "Only a confirmed action permits continuation to a following action",
+      "Additive journal migration preserves legacy reminder rows in an offline synthetic copy without changing the source database"
+    ],
+    "production_database_migrated": false,
+    "tts_presence_zone_and_delivery_outcomes_completed": false
+  },
+  "focused_tests": {
+    "command": "pytest tests/integration/test_home_control_policy.py tests/integration/test_voice_pipeline.py tests/unit/core/test_settings_schema.py tests/unit/orchestrator/ tests/unit/reminders/ tests/unit/pipeline/test_request_router.py tests/integration/test_lists_reminders_e2e.py -q --tb=short",
+    "passed": 516,
+    "failed": 0
+  },
+  "checks": {
+    "ruff": {
+      "version": "0.15.1",
+      "command": "ruff check src/ tests/ scripts/stage_runtime.py scripts/inventory_home.py scripts/smoke_dashboard.py scripts/sync_ha_to_chroma.py",
+      "passed": true
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "command": "bandit -r src/ -ll -c pyproject.toml",
+      "passed_medium_and_high_gate": true,
+      "medium": 0,
+      "high": 0
+    },
+    "frontend": {
+      "command": "node --test tests/frontend/*.cjs",
+      "passed": 6
+    },
+    "dashboard_smoke": {
+      "command": "PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python scripts/smoke_dashboard.py",
+      "passed": true
+    },
+    "compiled_runtime_smoke": {
+      "included_in_full_suite": true,
+      "passed": true,
+      "checks": [
+        "Main imported from .pyc outside source checkout",
+        "Existing static assets, authenticated dashboard health and cloud consent rejection",
+        "Compiled action service denies missing selection without using HA"
+      ]
+    }
+  },
+  "remaining": [
+    "Typed climate/cover/color-temperature operations and propagation through DTOs, producers and operation-specific confirmation",
+    "Verified selected group/scene expansion and indirect-effect review",
+    "Review legacy speaker-based demo restrictions while integrating the extended policy",
+    "Remaining five recovery failures",
+    "Live inventory evidence and legacy memory treatment/copy migrations",
+    "H2-H6 implementation, including voice routines through the persistent scheduler and honest delivery outcomes",
+    "Full graph/application boot, acoustic evaluation, proxy/unit/hardware checks and the single release"
+  ],
+  "production": {
+    "service_restarted": false,
+    "configuration_changed": false,
+    "data_migrated": false,
+    "source_retired": false
+  },
+  "implementation_commit": "851678bac8c578c809d1c2f27884299719f73985"
+}
