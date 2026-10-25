@@ -40,6 +40,7 @@ _NOISE_PHRASES = (
     "esto es un asistente",
 )
 _FILLER_WORDS = {"gracias", "si", "no", "ok", "bueno", "dale"}
+_STATE_ECHO_PHRASES = {"luz encendida", "luz apagada", "luces encendidas", "luces apagadas"}
 
 # prompt_echo: fracción mínima de la transcripción que debe aparecer como
 # bloque contiguo dentro de una oración del initial_prompt para considerarla
@@ -154,6 +155,15 @@ class CommandAcceptanceGate:
             return "empty_after_norm"
         for phrase in _NOISE_PHRASES:
             if phrase in norm:
+                if phrase in _STATE_ECHO_PHRASES:
+                    from src.nlu.command_grammar import parse_command
+
+                    command = parse_command(text)
+                    # A state echo alone still fails. A separate imperative
+                    # such as "apagá la luz encendida" retains its direction;
+                    # the participle itself cannot supply a binary verb.
+                    if command.ready_to_dispatch() and command.intent in {"turn_on", "turn_off"}:
+                        continue
                 return f"noise_phrase:{phrase!r}"
         if norm in _FILLER_WORDS:
             return f"filler_word:{norm!r}"

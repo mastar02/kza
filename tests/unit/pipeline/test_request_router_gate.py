@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.pipeline.request_router import RequestRouter
+from tests.command_corpus import IMMEDIATE_ACTIONS, REJECTED_ACTIONS
 
 
 def _make_cmd(text="nexa prendé la luz"):
@@ -67,6 +68,40 @@ async def test_rejected_command_does_not_reach_orchestrator():
     assert not orch.process.called
     assert result["success"] is False
     assert result["intent"].startswith("gate_rejected:missing_wake")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("orchestrated", [True, False])
+@pytest.mark.parametrize("text,category", REJECTED_ACTIONS)
+async def test_non_immediate_corpus_stops_before_every_execution_path(text, category, orchestrated):
+    # No textual wake is required: this is the acoustic wake configuration
+    # that previously gave "¿Apagaste la luz?" enough confidence to execute.
+    r, orch = _router(CommandAcceptanceGate())
+    r.orchestrator_enabled = orchestrated
+    r.wake_acoustically_confirmed = True
+    r.command_processor.process_command.return_value = _make_cmd(text)
+    r.ha = MagicMock()
+    r.ha.call_service_ws = AsyncMock()
+    r.ha.call_service = AsyncMock()
+    r.chroma = MagicMock()
+    r.chroma.asearch_command = AsyncMock()
+    result = await r.process_command(np.zeros(16000, dtype="float32"))
+    assert result["success"] is False, (category, result)
+    assert result["intent"].startswith("gate_rejected:non_immediate:"), result
+    orch.process.assert_not_awaited()
+    r.ha.call_service_ws.assert_not_awaited()
+    r.ha.call_service.assert_not_awaited()
+    r.chroma.asearch_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,intent", IMMEDIATE_ACTIONS)
+async def test_immediate_corpus_can_still_reach_the_orchestrator(text, intent):
+    r, orch = _router(CommandAcceptanceGate())
+    r.wake_acoustically_confirmed = True
+    r.command_processor.process_command.return_value = _make_cmd(text)
+    await r.process_command(np.zeros(16000, dtype="float32"))
+    orch.process.assert_awaited_once()
 
 
 # ---- LLM router confidence gate (2026-06-02) ----

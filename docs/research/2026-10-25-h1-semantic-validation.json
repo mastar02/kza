@@ -1,0 +1,51 @@
+{
+  "checked_on": "2026-10-25",
+  "base_commit": "b7b0708eb30a06582f33d1117505009610189c0d",
+  "scope": "First H1 semantic implementation on complete text; not H1 completion",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "environment_reference": "docs/research/2026-10-25-h0-baseline.json",
+  "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short --junitxml=/tmp/kza-h1-semantic-full.xml",
+  "passed": 3287,
+  "failed": 10,
+  "xfailed": 1,
+  "runtime_s": 80.37,
+  "failed_tests": [
+    "tests/unit/ambient/test_language_quality.py::test_drops_low_vad",
+    "tests/unit/dashboard/test_admin.py::test_no_token_configured_means_open_access",
+    "tests/unit/orchestrator/test_dispatcher_ha_failure_feedback.py::TestEarconOnFailure::test_successful_call_stays_silent",
+    "tests/unit/orchestrator/test_dispatcher_hooks.py::test_dispatch_emits_ha_action_dispatched_after_event",
+    "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unknown_availability_fails_open_and_calls",
+    "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unavailable_precheck_disabled_still_calls_ha",
+    "tests/unit/vectordb/test_search_command_excluded.py::TestExcludedEntitiesQueryTime::test_excluded_top_candidate_skipped_with_prefer_area",
+    "tests/unit/vectordb/test_search_command_prefer_area.py::TestPreferAreaScoring::test_prefer_area_unknown_area_falls_back_to_baseline",
+    "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_below_threshold_falls_back_to_global",
+    "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_pass_empty_falls_back_to_global"
+  ],
+  "same_failed_node_ids_as_h0": true,
+  "corpus": {
+    "path": "tests/command_corpus.py",
+    "rejected_phrases": 40,
+    "immediate_phrases": 21,
+    "new_regressions": 164,
+    "source": "Synthetic text, no household recordings or identifiers"
+  },
+  "proven": [
+    "Non-immediate text rejected by gate and authoritative grammar",
+    "Both RequestRouter modes reject before orchestrator, vector search or HA sends",
+    "Immediate text still reaches orchestrated consumer",
+    "Described state does not reverse binary action or evidence opposite LLM intent",
+    "Non-immediate text cannot evidence another LLM action intent"
+  ],
+  "lint_command": "ruff check src/ tests/ scripts/stage_runtime.py scripts/inventory_home.py",
+  "lint_passed": true,
+  "remaining": [
+    "Early partial dispatch and stale wake pretranscriptions",
+    "Uniform HTTP/WebSocket authentication",
+    "Mandatory shared policy across all producers",
+    "Extended typed operations, selected scene/group expansion and effect verification",
+    "Cloud destination consent independent of loopback transport",
+    "Other H2-H6 gates"
+  ],
+  "production_changed": false
+}

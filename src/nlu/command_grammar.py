@@ -74,10 +74,20 @@ INTENT_RULES: tuple[IntentRule, ...] = (
 )
 
 
+_ACTION_PARTICIPLE = re.compile(
+    r"(?:(?:apag|cort|desactiv|activ|ilumin|baj|levant|cerr|paus|par|fren|silenci|cambi|salt)ad[oa]s?"
+    r"|(?:prend|encend|sub)id[oa]s?|abiert[oa]s?|puest[oa]s?)"
+)
+
+
 def _rule_verb_matches(rule: IntentRule, norm_text: str) -> bool:
     for pat in rule.verb_patterns:
-        if re.search(rf"\b{pat}\b", norm_text):
-            return True
+        for match in re.finditer(rf"\b{pat}\b", norm_text):
+            # A described state cannot supply an action verb. In particular,
+            # "apagá la luz que está prendida" must not become turn_on merely
+            # because turn_on rules have priority over turn_off.
+            if not _ACTION_PARTICIPLE.fullmatch(match.group()):
+                return True
     return False
 
 
@@ -280,15 +290,19 @@ def llm_intent_evidenced(intent: str | None, text: str) -> bool:
     acción (pidió apagar, prendió). La auto-confianza del modelo no es señal:
     le puso 0.95 a 'haba la luz'. Regla: si el LLM afirma turn_on o turn_off,
     el texto tiene que contener un verbo de ESA acción (stems de INTENT_RULES).
-    Otros intents no se restringen — solo el par binario invierte acciones.
+    El bloqueo de pasado, negaciones y pedidos no inmediatos se aplica a todos
+    los intents. Para los demás no se exige evidencia léxica adicional.
 
     Args:
         intent: Intent afirmado por el LLMCommandRouter (puede ser None).
         text: Texto transcripto del comando.
 
     Returns:
-        True si el intent está evidenciado o no requiere evidencia.
+        True si el texto autoriza un pedido inmediato y el intent está
+        evidenciado o no requiere evidencia léxica adicional.
     """
+    if non_immediate_action_reason(text):
+        return False
     if intent not in ("turn_on", "turn_off"):
         return True
     t = _norm(text)
@@ -312,11 +326,55 @@ def _has_any_action_verb(text: str) -> bool:
     return False
 
 
+# Unlike the extractor's past blocker, this preserves formal imperatives such
+# as "apague" and the voseo imperatives "subí"/"abrí". Accents are retained by
+# regex.normalize, so "apagué" can be distinguished from "apague".
+_PAST_ACTION = re.compile(
+    r"\b(?:\w+(?:aste|iste|aron|ieron|asteis|isteis)|"
+    r"apagué|prendí|encendí|bajé|cerré|cambié|pausé|frené|puse|puso|pusimos|"
+    r"apag[oó]|prendi[oó]|encendi[oó]|subi[oó]|bajó|cerró|abri[oó]|"
+    r"activó|desactivó|reprodujo|"
+    r"apagaba[ns]?|prend[ií]a[ns]?|encend[ií]a[ns]?|sub[ií]a[ns]?|"
+    r"bajaba[ns]?|cerraba[ns]?|abr[ií]a[ns]?|pon[ií]a[ns]?)\b",
+    re.IGNORECASE,
+)
+_PERFECT_ACTION = re.compile(
+    r"\b(?:he|has|ha|hemos|han|hab[ií]a[ns]?|hab[ií]amos|hubo|habr[aá]s?)\s+"
+    r"(?:\w+\s+){0,2}(?:apagado|prendido|encendido|subido|bajado|"
+    r"cerrado|abierto|puesto|activado|desactivado|cambiado)\b",
+    re.IGNORECASE,
+)
+_PAST_CONTEXT = re.compile(
+    r"\b(?:ayer|anteayer|anoche|reci[eé]n|antes)\b"
+    r"|\b(?:ya|yo)\s+(?:sub[ií]|abr[ií])\b",
+    re.IGNORECASE,
+)
+_FUTURE_ACTION = re.compile(
+    r"\b(?:apagar|prender|encender|subir|bajar|cerrar|abrir|activar|desactivar|poner)"
+    r"(?:[eé]|[aá]s?|emos|[aá]n)\b"
+    r"|\b(?:voy|vas|va|vamos|van)\s+a\s+"
+    r"(?:apagar|prender|encender|subir|bajar|cerrar|abrir|activar|desactivar|poner)\b",
+    re.IGNORECASE,
+)
+_INFORMATIONAL_ACTION = re.compile(
+    r"^(?:[¿?¡!]\s*)?(?:(?:decime|dime|contame|cu[eé]ntame|explicame|expl[ií]came)\s+)?"
+    r"(?:qu[eé]|c[oó]mo|cu[aá]ndo|d[oó]nde|qui[eé]n|por\s+qu[eé]|para\s+qu[eé])\b",
+    re.IGNORECASE,
+)
+_STATE_DESCRIPTION = re.compile(
+    r"^(?:[¿?¡!]\s*)?(?:(?:la\s+luz|las\s+luces|el\s+aire|las?\s+persianas?)"
+    r"(?:\s+\w+){0,4}\s+)?"
+    r"(?:est[aá]s?|est[aá]n|sigue[n]?|qued[oó]|quedaron|tengo|ten[eé]s)\b",
+    re.IGNORECASE,
+)
+
+
 def non_immediate_action_reason(text: str) -> str | None:
     """Identify speech that must not authorize an immediate device action.
 
-    Reuse the Spanish extractor's semantic blockers without rejecting valid
-    infinitive commands or affirmative questions supported by this pipeline.
+    Reuse negation, conditions and reported speech from the Spanish extractor.
+    Check tense and question purpose separately so affirmative requests and
+    formal/voseo imperatives keep working without treating states as commands.
     """
     from src.nlu.regex.blockers import BLOCKERS
     from src.nlu.regex.normalize import normalize
@@ -324,13 +382,19 @@ def non_immediate_action_reason(text: str) -> str | None:
     light_request = extract_entity(text) == "light" or re.search(r"\bbrillo\b", _norm(text))
     if light_request and has_invalid_brightness_percentage(text):
         return "invalid_brightness_percentage"
-    if not _has_any_action_verb(text) and not light_request:
+    if not _has_any_action_verb(text) and extract_entity(text) is None and not light_request:
         return None
     normalized = normalize(text)
     blocked = {"negation", "subjunctive_cond", "report_of_speech"}
     for name, pattern in BLOCKERS:
         if name in blocked and pattern.search(normalized):
             return f"non_immediate:{name}"
+    if _PAST_ACTION.search(normalized) or _PERFECT_ACTION.search(normalized) or _PAST_CONTEXT.search(normalized):
+        return "non_immediate:past_action"
+    if _FUTURE_ACTION.search(normalized):
+        return "non_immediate:future_action"
+    if _INFORMATIONAL_ACTION.search(normalized) or _STATE_DESCRIPTION.search(normalized):
+        return "non_immediate:information_request"
     if re.search(
         r"\b(?:ma[ñn]ana|m[aá]s\s+tarde|despu[eé]s|luego|"
         r"en\s+(?:[\w]+\s+){1,5}(?:segundos?|minutos?|horas?)|a\s+las?\s+(?:\d+|una?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce))\b",
