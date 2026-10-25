@@ -7,7 +7,7 @@ Mock Home Assistant Client for testing.
 class MockHomeAssistantClient:
     """Mock implementation of HomeAssistantClient for testing.
 
-    All methods are async to match the real HomeAssistantClient interface.
+    Service operations are async; cached observations match the sync interface.
     """
 
     def __init__(self):
@@ -98,6 +98,13 @@ class MockHomeAssistantClient:
         for entity in self._entities:
             if entity["entity_id"] == entity_id:
                 return entity
+        return None
+
+    def is_entity_available(self, entity_id: str) -> bool | None:
+        """Observe cached availability without treating it as authorization."""
+        for entity in self._entities:
+            if entity["entity_id"] == entity_id:
+                return entity["state"] != "unavailable"
         return None
 
     async def call_service(
