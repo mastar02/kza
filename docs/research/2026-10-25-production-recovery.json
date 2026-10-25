@@ -278,5 +278,38 @@
       "source": "running service HTTP static resource",
       "source_mtime": "Fri, 23 Oct 2026 17:22:00 GMT"
     }
-  ]
+  ],
+  "test_results": {
+    "command": "CUDA_VISIBLE_DEVICES=\"\" PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/unit/ tests/safety/ tests/integration/ -q",
+    "effective_user": "yo",
+    "effective_uid": 1011,
+    "python_version": "3.13.12",
+    "environment": "Existing production virtualenv dependencies read without installation or modification; the process ran as yo from the development checkout. Dependency versions differ from CI pins.",
+    "passed": 3107,
+    "failed": 10,
+    "xfailed": 1,
+    "runtime_s": 71.33,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad",
+      "tests/unit/dashboard/test_admin.py::test_no_token_configured_means_open_access",
+      "tests/unit/orchestrator/test_dispatcher_ha_failure_feedback.py::TestEarconOnFailure::test_successful_call_stays_silent",
+      "tests/unit/orchestrator/test_dispatcher_hooks.py::test_dispatch_emits_ha_action_dispatched_after_event",
+      "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unavailable_precheck_disabled_still_calls_ha",
+      "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unknown_availability_fails_open_and_calls",
+      "tests/unit/vectordb/test_search_command_excluded.py::TestExcludedEntitiesQueryTime::test_excluded_top_candidate_skipped_with_prefer_area",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_below_threshold_falls_back_to_global",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_pass_empty_falls_back_to_global",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestPreferAreaScoring::test_prefer_area_unknown_area_falls_back_to_baseline"
+    ],
+    "status": "Recovery preserved; not release-ready. Failures require review before integrating or deploying.",
+    "baseline_comparison": {
+      "ref": "main",
+      "commit": "0fd3d166f1b17726f8ef998b320f37a42ff11d81",
+      "scope": "The same ten tests that fail in the recovered snapshot.",
+      "passed": 10,
+      "failed": 0,
+      "runtime_s": 2.64,
+      "conclusion": "All ten failures are differences introduced by the recovered production code; they are not baseline failures. Root causes remain to be reviewed."
+    }
+  }
 }

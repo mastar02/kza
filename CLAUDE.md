@@ -1,5 +1,16 @@
 # KZA — Asistente de Voz Local para Domótica
 
+## Flujo de trabajo acordado — 2026-10-25
+
+Desarrollar, probar, construir y operar Git como `yo` en
+`/home/yo/projects/kza`. Leer primero `AGENTS.md`. La cuenta `kza` es
+administrativa y de ejecución: no editar ni instalar dependencias de desarrollo
+en su despliegue. El destino acordado es transferirle únicamente artefactos
+compilados y recursos de ejecución construidos bajo `yo`. El mecanismo de
+compilación y despliegue todavía está pendiente; el servicio existente sigue
+ejecutando su checkout. Las instrucciones históricas de desarrollo en el server
+o de puente desde una laptop quedan reemplazadas por este acuerdo.
+
 Sistema de control por voz local para Home Assistant. Latencia <300ms para domótica (fast path 100% local); razonamiento complejo delegado al gateway LLM `:8200` (MiniMax cloud, decisión 2026-05-30 con `cloud.consent`). **2x RTX 3070 hoy** (cuda:1 audio completo + TTS + llama-server 7B fast-path NLU `:8101`; cuda:0 casi libre — Emotion deshabilitado; BGE-M3 vive en CPU, no en GPU) — se irán conectando más GPUs; cualquier reasignación se discute primero. Python 3.13, async/await, ~38K líneas, 2740+ tests.
 
 ## Source of truth cross-project

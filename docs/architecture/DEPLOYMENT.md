@@ -3,6 +3,22 @@
 > Si otro documento de este repo contradice a este, gana este (y ante dudas de
 > contrato compartido, `docs/SERVER_CONVENTIONS.md` / Notion pág. 8).
 
+## Desarrollo y despliegue acordados — 2026-10-25
+
+El desarrollo, los tests, la construcción y Git se ejecutan como `yo` en
+`/home/yo/projects/kza`. `kza` es la cuenta administrativa y de ejecución del
+servidor (UID 1000, grupo `sudo`); no se usa para desarrollar ni compilar.
+
+El próximo modelo de despliegue transferirá a `kza` únicamente el artefacto
+compilado y sus recursos de ejecución, construidos y probados bajo `yo`.
+Secretos y datos persistentes permanecen fuera del artefacto y de Git. El
+proyecto es Python: el mecanismo de compilación, instalación y promoción aún
+debe implementarse. No se cambió el servicio durante el rescate.
+
+La sección siguiente describe el despliegue existente. El flujo histórico de
+edición en producción y puente desde la laptop queda retirado para trabajo
+nuevo. Consultar `AGENTS.md` en la raíz para las instrucciones operativas.
+
 ## Cómo corre producción (server `192.168.1.2`, usuario `kza`)
 
 - **kza-voice.service** — pipeline de voz **nativo** (NO contenedor), systemd `--user` en
@@ -19,9 +35,9 @@
 - Secrets en `/home/kza/secrets/` (`.env`, `*-api-key.env`), inyectados vía
   `EnvironmentFile=` del unit.
 
-## Cómo se deploya
+## Cómo se deployaba — pendiente de reemplazo por artefactos
 
-Flujo git local ↔ server ↔ GitHub documentado en
+Flujo git local ↔ server ↔ GitHub histórico documentado en
 [`ECOSISTEMA_LOCAL_SERVER.md`](ECOSISTEMA_LOCAL_SERVER.md): el server es repo git y
 deploya **in-place** (el código que corre es el working tree), no pushea; la laptop es el
 puente (`scripts/kza-push` / `kza-sync`). Restart manual del service cuando el cambio lo

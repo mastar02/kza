@@ -1,5 +1,13 @@
 # Ecosistema de trabajo Local ↔ Server ↔ GitHub
 
+> **Reemplazado para trabajo nuevo el 2026-10-25.** Desarrollar, probar,
+> construir y operar Git como `yo` en `/home/yo/projects/kza`. `kza` es la
+> cuenta administrativa y de ejecución; recibirá únicamente artefactos
+> compilados y recursos de ejecución. La compilación y promoción todavía están
+> pendientes de implementación. Ver `AGENTS.md` y `DEPLOYMENT.md`.
+> El resto de este documento conserva el flujo histórico; no seguir sus pasos
+> de desarrollo en producción ni usar el puente de la laptop para trabajo nuevo.
+
 > Diseñado el 2026-06-01 tras un análisis profundo del drift (ver al final).
 > Opción adoptada: **A (puente formalizado) + D (higiene + worktrees)**, con **B** como evolución a mediano plazo.
 

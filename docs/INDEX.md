@@ -12,8 +12,8 @@
 ## architecture/ — docs vivos del sistema
 
 - [ARCHITECTURE_REVIEW.md](architecture/ARCHITECTURE_REVIEW.md) — Review de arquitectura del sistema de voz: fortalezas, deudas y recomendaciones.
-- [DEPLOYMENT.md](architecture/DEPLOYMENT.md) — **Fuente de verdad de deploy**: producción = kza-voice nativo systemd --user (excepción R10); docker/ es experimental, compose es legacy.
-- [ECOSISTEMA_LOCAL_SERVER.md](architecture/ECOSISTEMA_LOCAL_SERVER.md) — Flujo de trabajo Local ↔ Server ↔ GitHub: el server deploya in-place pero no pushea; la laptop es el puente (`kza-push`/`kza-sync`).
+- [DEPLOYMENT.md](architecture/DEPLOYMENT.md) — **Fuente de verdad de deploy**: desarrollo bajo `yo`, destino de artefactos bajo `kza` y estado del despliegue existente; compilación y promoción pendientes.
+- [ECOSISTEMA_LOCAL_SERVER.md](architecture/ECOSISTEMA_LOCAL_SERVER.md) — Flujo histórico Local ↔ Server ↔ GitHub, reemplazado para trabajo nuevo por desarrollo bajo `yo` y despliegue mediante artefactos.
 - [EMOTION_DETECTOR.md](architecture/EMOTION_DETECTOR.md) — Módulo de detección de emociones (wav2vec2): API, integración y configuración.
 - [ESTADO_PROYECTO_KZA.md](architecture/ESTADO_PROYECTO_KZA.md) — Reporte de estado del proyecto: qué funciona, métricas y pendientes.
 - [HARDWARE.md](architecture/HARDWARE.md) — Especificaciones de hardware: Threadripper PRO, 128GB RAM, GPUs, XVF3800, MA1260, BLE.
@@ -24,6 +24,7 @@
 
 ## research/ — investigaciones, análisis y sesiones
 
+- [2026-10-25-production-recovery.json](research/2026-10-25-production-recovery.json) — Procedencia y hashes de los 41 archivos recuperados de producción y de dos snapshots de configuración conservados en Git.
 - [REPORTE_KZA_FEBRERO_2026.md](research/REPORTE_KZA_FEBRERO_2026.md) — Reporte general del asistente (febrero 2026): visión, capacidades y estado.
 - [MEJORAS_IMPLEMENTADAS.md](research/MEJORAS_IMPLEMENTADAS.md) — Registro histórico de mejoras implementadas por área.
 - [KZA_ANALISIS_Y_ROADMAP.md](research/KZA_ANALISIS_Y_ROADMAP.md) — Análisis completo del sistema y roadmap de mejoras por área (histórico).
