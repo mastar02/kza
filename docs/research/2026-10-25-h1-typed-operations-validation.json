@@ -1,0 +1,150 @@
+{
+  "checked_on": "2026-10-25",
+  "tested_commit": "48c19f33250c3c29fcb47222247e876c64f2c23b",
+  "scope": "H1 typed climate, blind and color-temperature contracts, execution, persistence and dashboard forms; spoken NLU, group/scene expansion and release are incomplete",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "environment_reference": "docs/research/2026-10-25-h0-baseline.json",
+  "dependency_limit": "Existing runtime virtualenv read only; runtime dependencies still differ from CI pins. Scanner/linter installed only in yo tool cache.",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short --junitxml=/tmp/kza-h1-typed-committed.xml",
+    "passed": 3726,
+    "failed": 5,
+    "xfailed": 1,
+    "runtime_s": 108.59,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad",
+      "tests/unit/vectordb/test_search_command_excluded.py::TestExcludedEntitiesQueryTime::test_excluded_top_candidate_skipped_with_prefer_area",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestPreferAreaScoring::test_prefer_area_unknown_area_falls_back_to_baseline",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_below_threshold_falls_back_to_global",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_pass_empty_falls_back_to_global"
+    ],
+    "new_failure_ids": [],
+    "prior_validation_reference": "docs/research/2026-10-25-h1-policy-validation.json"
+  },
+  "typed_operations": {
+    "connected_tests": 68,
+    "operations": [
+      "turn_on",
+      "turn_off",
+      "brightness",
+      "color_temp_kelvin",
+      "set_temperature",
+      "set_hvac_mode",
+      "open_cover",
+      "close_cover",
+      "stop_cover",
+      "set_cover_position"
+    ],
+    "proven": [
+      "Typed fields survive HTTP validation, routine serialization/storage/execution and reminder receipts",
+      "Only selected entity operations and parameter ranges are authorized; default/real unverified selection remains disabled",
+      "All six selected HVAC modes and 7-35 C boundaries are exercised with synthetic entities",
+      "Temperature unit is freshly read from authenticated HA config before send and during confirmation, with no redirect following",
+      "Feature flags, current bounds, step and selected mode intersection are required without clamping",
+      "Temperature confirmation observes the setpoint and unchanged pre-send mode, not the room temperature",
+      "Unknown/Fahrenheit/changing units, missing features, unsupported parameters and missing effects fail or remain uncertain without retry",
+      "Blind class and exact OPEN/CLOSE/SET_POSITION/STOP feature flags are required; doors/garages are not implicitly granted",
+      "Cover travel can use an operation-specific bounded timeout without changing the binary timeout",
+      "Open/close uses endpoint position when reported; stop requires repeated nonmoving state with stable reported position",
+      "Color temperature retains optional brightness and requires the reported color mode and exact Kelvin target",
+      "Catalog controls use the same private grants and current technical intersection; default catalog is read-only",
+      "Default policy package no longer imports the historical SpeakerID child-ID demo"
+    ],
+    "confirmation_limits": {
+      "config_key": "home_assistant.operation_confirmation_timeouts",
+      "candidate_cover_travel_s": 60.0,
+      "configuration_max_s": 120.0,
+      "hardware_timing_measured": false,
+      "color_temperature_tolerance_kelvin": 0,
+      "state_confirmation_is_physical_sensing": false
+    },
+    "spoken_voice_commands_validated": false,
+    "normalized_dispatcher_commands_validated": true,
+    "experimental_climate_classifier_enabled": false
+  },
+  "frontend": {
+    "node_command": "node --test tests/frontend/*.cjs",
+    "passed": 10,
+    "syntax_commands": [
+      "node --check src/dashboard/frontend/home/home.js",
+      "node --check src/dashboard/frontend/home/routines.js"
+    ],
+    "browser_smoke": {
+      "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m tests.frontend.browser_typed_controls",
+      "browser": "Chromium 156.0.8078.47 snap, headless",
+      "passed": true,
+      "graph": "Real authenticated dashboard/UI, shared policy, single-send service and temporary persistent routine store with synthetic HA",
+      "proven": [
+        "Temperature form sends 23.5 C and confirms its receipt",
+        "Color-temperature form retains 2700 K and 30 percent brightness",
+        "Routine form stores 24.5 C without executing an action",
+        "No JavaScript exceptions",
+        "House and routine screenshots visually inspected"
+      ],
+      "typed_sends": 2,
+      "javascript_exceptions": 0,
+      "screenshots_outside_git": [
+        "/tmp/kza-typed-controls-house.png",
+        "/tmp/kza-typed-controls-browser.png"
+      ],
+      "production_or_real_ha_accessed": false
+    }
+  },
+  "focused_tests": {
+    "command": "pytest tests/integration/test_typed_home_operations.py tests/integration/test_home_control_policy.py tests/unit/dashboard/ tests/unit/reminders/ tests/unit/policies/ tests/unit/core/test_settings_schema.py -q --tb=short",
+    "passed": 562,
+    "failed": 0
+  },
+  "checks": {
+    "ruff": {
+      "version": "0.15.1",
+      "command": "ruff check src/ tests/ scripts/stage_runtime.py scripts/inventory_home.py scripts/smoke_dashboard.py scripts/sync_ha_to_chroma.py",
+      "passed": true
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "command": "bandit -r src/ -ll -c pyproject.toml",
+      "passed_medium_and_high_gate": true,
+      "medium": 0,
+      "high": 0
+    },
+    "dashboard_smoke": {
+      "command": "PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python scripts/smoke_dashboard.py",
+      "passed": true
+    },
+    "compiled_runtime_smoke": {
+      "included_in_full_suite": true,
+      "passed": true,
+      "checks": [
+        "Main imported from bytecode outside source checkout",
+        "Existing authenticated health and consent/selection denial",
+        "Compiled typed effect retains decimal temperature and fixed climate service",
+        "Compiled routine parsing/serialization retains decimal temperature"
+      ]
+    }
+  },
+  "upstream_contract_references": [
+    "https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/climate/__init__.py",
+    "https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/climate/const.py",
+    "https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/cover/__init__.py",
+    "https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/cover/const.py",
+    "https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/light/__init__.py",
+    "https://developers.home-assistant.io/docs/api/rest/"
+  ],
+  "remaining": [
+    "Spoken NLU interpretation/parameter extraction/entity resolution for the extended operations through both router modes",
+    "Remove legacy UserManager/SpeakerID permission precheck from household control while integrating those full voice paths",
+    "Verified selected group/scene expansion and indirect-effect review",
+    "Real HA units, features, state timing and color rounding validation before enabling any real selection",
+    "Remaining five recovery failures",
+    "Live inventory evidence and legacy memory treatment/copy migrations",
+    "H2-H6 implementation, full graph boot, acoustic evaluation, proxy/unit/hardware checks and the single release"
+  ],
+  "production": {
+    "service_restarted": false,
+    "configuration_changed": false,
+    "data_migrated": false,
+    "source_retired": false
+  }
+}

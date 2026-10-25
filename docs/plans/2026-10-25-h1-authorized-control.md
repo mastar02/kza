@@ -274,6 +274,9 @@ de órdenes ya normalizadas: todavía no prueban que una frase acústica llegue 
 la entidad y parámetros correctos. No se conectó el clasificador experimental
 de clima que tenía evaluación NO-GO. La selección privada real sigue sin grants
 efectivos; estos contratos se prueban con entidades sintéticas.
+Al integrar voz hay que retirar también el precheck legacy de `UserManager`
+basado en el perfil SpeakerID; no debe bloquear el alcance doméstico seleccionado
+ni convertir ese perfil en un principal autenticado.
 
 El catálogo usa la misma selección que el servicio. Sus controles son la
 intersección con capacidades y límites actuales; sin selección quedan de lectura.
@@ -282,6 +285,14 @@ límites. El recibo conserva los valores solicitados. El smoke manual
 `python -m tests.frontend.browser_typed_controls` usa Chromium, HTTP autenticado,
 el servicio real y SQLite temporal con HA simulado: elige consigna y color con
 brillo, y guarda una rutina decimal sin ejecutarla. No usa HA ni audio reales.
+
+Verificación del commit `48c19f3`: **3726 passed, 5 failed, 1 xfailed** en
+108,59 s, con los mismos cinco IDs pendientes. Pasan 562 pruebas enfocadas,
+incluidas 68 de contratos conectados, diez tests Node, el smoke Chromium y el
+smoke compilado de operaciones y rutinas. Ruff 0.15.1 y el gate medio/alto de
+Bandit 1.9.4 pasan. El
+[registro de operaciones](../research/2026-10-25-h1-typed-operations-validation.json)
+conserva comandos, alcance y límites de esa evidencia.
 
 Verificación del commit `d49fa2f`: **3651 passed, 5 failed, 1 xfailed** en
 105,16 s, sin IDs de fallo nuevos. Pasan 516 pruebas enfocadas, incluidas 48 de
