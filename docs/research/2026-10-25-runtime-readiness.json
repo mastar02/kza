@@ -47,5 +47,14 @@
     "Switch production with rollback and verify voice, dashboard, microphones and routines",
     "Back up and retire source directories without deleting runtime state"
   ],
-  "existing_recovery_test_failures_pending": 10
+  "existing_recovery_test_failures_pending": 10,
+  "working_agreement": {
+    "development_account": "yo",
+    "development_checkout": "/home/yo/projects/kza",
+    "production_account": "kza",
+    "server_stays_under_production_account": true,
+    "publish_when": "Only when publishing a release",
+    "cleanup_when": "Replace the installed release before retiring its source/development checkout; preserve runtime data and configuration.",
+    "current_task_requires_production_changes": false
+  }
 }

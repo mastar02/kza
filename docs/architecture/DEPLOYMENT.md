@@ -9,6 +9,12 @@ El desarrollo, los tests, la construcción y Git se ejecutan como `yo` en
 `/home/yo/projects/kza`. `kza` es la cuenta administrativa y de ejecución del
 servidor (UID 1000, grupo `sudo`); no se usa para desarrollar ni compilar.
 
+El servidor, los servicios y sus datos continúan bajo `kza`. La publicación se
+hace al preparar una release. Mientras se desarrolla bajo `yo`, se conserva la
+versión que está funcionando en producción, incluidos los archivos que necesita
+para ejecutarse. La retirada del checkout y de las copias de desarrollo se
+coordina con la sustitución de esa versión en la próxima release.
+
 El próximo modelo de despliegue transferirá a `kza` únicamente el artefacto
 compilado y sus recursos de ejecución, construidos y probados bajo `yo`.
 Secretos y datos persistentes permanecen fuera del artefacto y de Git. El
@@ -40,7 +46,7 @@ descompilación. Requiere el intérprete y las dependencias del entorno de
 ejecución. Ver [py_compile](https://docs.python.org/3.13/library/py_compile.html)
 y [SourcelessFileLoader](https://docs.python.org/3.13/library/importlib.html#importlib.machinery.SourcelessFileLoader).
 
-## Retirada del checkout de `kza` — pendiente
+## Limpieza del checkout de desarrollo — con la próxima release
 
 La inspección del 2026-10-25 encontró:
 
@@ -55,7 +61,7 @@ La inspección del 2026-10-25 encontró:
   `kza`; `sudo` sin contraseña y SSH con la clave actual tampoco están
   disponibles. La instalación requiere una sesión administrativa autorizada.
 
-Secuencia pendiente para mantener el servicio:
+Secuencia para la próxima publicación, manteniendo el servidor bajo `kza`:
 
 1. Inspeccionar las units, timers y montajes reales desde la sesión de `kza`.
    Registrar todas las referencias a `/home/kza/app`, `/home/kza/kza` y scripts
@@ -74,7 +80,9 @@ Secuencia pendiente para mantener el servicio:
    `src.bak-20260424-1741`, que contienen copias históricas de código.
 
 Esta secuencia todavía no se ejecutó: los servicios siguen usando el checkout
-original. No borrar `/home/kza/kza` como un todo.
+original. Los permisos administrativos se necesitarán al publicar esa release;
+el desarrollo actual continúa bajo `yo`. Conservar los archivos de ejecución y
+el estado persistente de `/home/kza/kza` hasta completar esa sustitución.
 
 ## Cómo corre producción (server `192.168.1.2`, usuario `kza`)
 

@@ -5,7 +5,9 @@
 Desarrollar, probar, construir y operar Git como `yo` en
 `/home/yo/projects/kza`. Leer primero `AGENTS.md`. La cuenta `kza` es
 administrativa y de ejecución: no editar ni instalar dependencias de desarrollo
-en su despliegue. El destino acordado es transferirle únicamente artefactos
+en su despliegue. El servidor permanece bajo `kza`; las versiones se publican
+allí al hacer una release. Los archivos de la versión instalada se conservan
+hasta su reemplazo por esa release. El destino acordado es transferirle únicamente artefactos
 compilados y recursos de ejecución construidos bajo `yo`. El mecanismo de
 construcción de bytecode está en `scripts/build_runtime.py`; la instalación y
 promoción siguen pendientes, y el servicio existente sigue ejecutando su

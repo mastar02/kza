@@ -2,9 +2,11 @@
 
 > **Reemplazado para trabajo nuevo el 2026-10-25.** Desarrollar, probar,
 > construir y operar Git como `yo` en `/home/yo/projects/kza`. `kza` es la
-> cuenta administrativa y de ejecución; recibirá únicamente artefactos
-> compilados y recursos de ejecución. La compilación y promoción todavía están
-> pendientes de implementación. Ver `AGENTS.md` y `DEPLOYMENT.md`.
+> cuenta administrativa y de ejecución: el servidor continúa allí y recibe
+> versiones únicamente al publicar una release. La construcción de bytecode
+> está preparada en `scripts/build_runtime.py`; la instalación y la limpieza
+> del checkout se harán con una release, preservando la versión activa hasta
+> su reemplazo. Ver `AGENTS.md` y `DEPLOYMENT.md`.
 > El resto de este documento conserva el flujo histórico; no seguir sus pasos
 > de desarrollo en producción ni usar el puente de la laptop para trabajo nuevo.
 
