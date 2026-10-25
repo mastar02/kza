@@ -4,19 +4,22 @@ Routes processed voice commands through the appropriate execution path.
 
 Owns all command routing logic:
 - Orchestrated (multi-user) vs legacy (single-user) paths
-- Feedback detection, suggestion handling, permission checks
+- Feedback detection, suggestion handling, shared household control policy
 - Cache, prompt building, latency logging, event logging
 """
 
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import asdict
 
 import numpy as np
 
-from src.home_assistant.control_policy import ActionOrigin, HomeActor
-from src.home_assistant.home_actions import HomeActionService
+from src.home_assistant.home_actions import HomeActionRequest, HomeActionService
+from src.home_assistant.operations import compile_effect, finite_number
+from src.home_assistant.voice_actions import VoiceHomeActionExecutor
+from src.home_assistant.voice_resolver import HomeVoiceResolver
+from src.nlu.home_command import parse_home_command
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.nlu.command_grammar import PartialCommand, has_unresolved_light_location, parse_default_light_target, parse_partial_command
 from src.nlu.sensitive_actions import is_sensitive
@@ -119,19 +122,12 @@ def _grammar_fastpath_classification(
     )
 
 
-@dataclass
-class PermissionResult:
-    """Result of a permission check when no UserManager is available."""
-    allowed: bool = True
-    message: str = ""
-
-
 class RequestRouter:
     """
     Routes voice commands through the correct execution path.
 
     Handles orchestrated (multi-user) and legacy (single-user) processing,
-    feedback detection, suggestion handling, permission checks, caching,
+    feedback detection, suggestion handling, household control policy, caching,
     prompt building, and latency/event logging.
 
     One public method: process_command(audio) -> dict
@@ -205,6 +201,9 @@ class RequestRouter:
         earcon_cfg: dict | None = None,
         asr_event_logger=None,
         home_actions: HomeActionService | None = None,
+        home_voice_resolver: HomeVoiceResolver | None = None,
+        before_handler_warn_ms: float = 5.0,
+        unavailable_precheck_enabled: bool = True,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -221,7 +220,7 @@ class RequestRouter:
             llm_reasoner: LLMReasoner for deep reasoning.
             fast_router: FastRouter for classify-and-respond.
             memory_manager: MemoryManager for context/preferences.
-            user_manager: UserManager for permission checks.
+            user_manager: UserManager for profile and enrollment operations.
             enrollment: VoiceEnrollment for new user registration.
             conversation_collector: For feedback tracking.
             command_learner: For learning new commands.
@@ -258,6 +257,7 @@ class RequestRouter:
         self.chroma = chroma_sync
         self.ha = ha_client
         self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
+        self.home_voice_resolver = home_voice_resolver if home_voice_resolver is not None else HomeVoiceResolver(self.home_actions)
         self.llm = llm_reasoner
         self.router = fast_router
         self.memory = memory_manager
@@ -316,6 +316,11 @@ class RequestRouter:
 
         # Plan #3 OpenClaw — plugin hooks registry (or None)
         self._hooks = hooks
+        self._voice_actions = VoiceHomeActionExecutor(
+            ha_client, self.home_actions, response_handler=response_handler, hooks=hooks,
+            before_handler_warn_ms=before_handler_warn_ms,
+            unavailable_precheck_enabled=unavailable_precheck_enabled,
+        )
 
         # State
         self._query_cache = {}
@@ -342,6 +347,74 @@ class RequestRouter:
                     await worker
                 finally:
                     raise
+
+    async def _try_home_command(self, text: str, result: dict, *, room_id: str | None,
+                                pipeline_start: float, extra_gate: bool) -> bool:
+        """Own complete extended controls in both modes, with no guessing fallback.
+
+        The model can veto a textual/weak wake capture. It cannot supply slots
+        or choose a target. Selection and current capabilities remain mandatory
+        in the shared service after resolution and any hook rewrites.
+        """
+        command = parse_home_command(text, wake_words=self._wake_words)
+        if command is None:
+            return False
+        result["path"] = PathType.FAST_DOMOTICS.value
+        result["intent"] = "domotics"
+        zone_id = f"zone_{room_id}" if room_id else None
+        if extra_gate:
+            classification = None
+            started = time.perf_counter()
+            if self.llm_command_router is not None:
+                try:
+                    classification = await self.llm_command_router.classify(text, room_id=room_id)
+                except Exception:
+                    logger.exception("[HomeVoice] Command gate unavailable")
+            result["timings"]["llm_router"] = (time.perf_counter() - started) * 1000
+            confidence = getattr(classification, "confidence", None)
+            if (
+                getattr(classification, "is_command", None) is not True
+                or getattr(classification, "rejection_reason", None) == "unavailable"
+                or not finite_number(confidence)
+                or not self.llm_min_command_confidence <= confidence <= 1
+            ):
+                result["intent"] = "llm_rejected:home_command"
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return True
+        reason = command.reason
+        target = None
+        if reason is None:
+            try:
+                target = await self.home_voice_resolver.resolve(command, room_id=room_id)
+                reason = target.reason
+            except Exception:
+                logger.exception("[HomeVoice] Target resolution unavailable")
+                reason = "selection_unavailable"
+        if reason is not None or target is None or target.entity_id is None:
+            if command.reason is not None:
+                question = {
+                    "climate": "¿A qué temperatura en grados Celsius o en qué modo querés poner el aire?",
+                    "cover": "¿Querés abrir, cerrar, detener o poner la persiana en un porcentaje concreto?",
+                    "light": "¿Qué temperatura de luz en kelvin querés usar?",
+                }[command.domain]
+            else:
+                question = "¿En qué habitación? Necesito un dispositivo seleccionado para esa habitación."
+            result.update(intent="clarification_requested", needs_confirmation=True,
+                          confirmation_question=question, response=question, reason=reason)
+            await self._speak_response(question, zone_id=zone_id)
+        else:
+            request = HomeActionRequest(target.entity_id, command.operation, "voice-parse", **command.parameters)
+            effect = compile_effect(request)
+            action = {"domain": effect.domain, "service": effect.service, "data": effect.data,
+                      "entity_id": target.entity_id, "zone_id": zone_id}
+            result["action"] = action
+            started = time.perf_counter()
+            receipt = await self._voice_actions.execute(action)
+            result["timings"]["home_assistant"] = (time.perf_counter() - started) * 1000
+            result["receipt"] = asdict(receipt)
+            result["success"] = receipt.status == "confirmed"
+        result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+        return True
 
     async def process_command(self, audio_or_event) -> dict:
         """
@@ -413,6 +486,7 @@ class RequestRouter:
             return await self._process_command_legacy(
                 audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
                 wake_score=wake_score, wake_rms=wake_rms,
+                textual_wake=textual_wake, ambient_strict=ambient_strict,
             )
 
     async def _process_command_orchestrated(self, audio: np.ndarray, room_id: str = None,
@@ -481,6 +555,12 @@ class RequestRouter:
             self._asr_event_logger, room_id, "accepted", "ok", text,
             gate_decision.signals or {}, wake_score, wake_rms,
         )
+
+        if await self._try_home_command(
+            text, result, room_id=room_id, pipeline_start=pipeline_start,
+            extra_gate=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
+        ):
+            return result
 
         # 1a-grammar. Grammar fast-path: la gramática determinística manda en
         # domótica.  Si extrae intent+entity con alta confianza, construimos
@@ -823,7 +903,9 @@ class RequestRouter:
     async def _process_command_legacy(self, audio: np.ndarray, room_id: str = None,
                                         pretranscribed_text: str | None = None,
                                         wake_score: float = 1.0,
-                                        wake_rms: float = 0.0) -> dict:
+                                        wake_rms: float = 0.0,
+                                        textual_wake: bool = False,
+                                        ambient_strict: bool = False) -> dict:
         """Legacy processing (single-user) for backwards compatibility."""
         result = {
             "text": "",
@@ -878,6 +960,12 @@ class RequestRouter:
             self._asr_event_logger, room_id, "accepted", "ok", text,
             gate_decision.signals or {}, wake_score, wake_rms,
         )
+
+        if await self._try_home_command(
+            text, result, room_id=room_id, pipeline_start=pipeline_start,
+            extra_gate=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
+        ):
+            return result
 
         user = cmd.user
         emotion = cmd.emotion
@@ -1154,33 +1242,13 @@ class RequestRouter:
             result["action"] = command
             logger.info(f"[Vector] {command['description']} (sim={command['similarity']:.2f})")
 
-            # Check permissions
-            user_for_check = user
-            if not user_for_check:
-                from src.users.user_manager import User, PermissionLevel
-                user_for_check = User(
-                    user_id="unknown",
-                    name="Desconocido",
-                    permission_level=PermissionLevel.GUEST
-                )
-
-            check = self._check_permission(user_for_check, command["entity_id"], command["service"])
-            if not check.allowed:
-                result["success"] = False
-                result["response"] = check.message
-                self.response_handler.speak(result["response"])
-                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-                return result
-
-            # The shared action boundary validates the final target and confirms state.
+            # Household controls do not derive authority from a voice profile.
             t_ha = time.perf_counter()
-            receipt = await self.home_actions.execute_service(
-                command["domain"],
-                command["service"],
-                command["entity_id"],
-                command.get("data"),
-                actor=HomeActor.household(), origin=ActionOrigin.VOICE,
-            )
+            receipt = await self._voice_actions.execute({
+                **command, "zone_id": f"zone_{room_id}" if room_id else None,
+                "user_id": user_id, "user_name": user.name if user else None,
+            })
+            result["receipt"] = asdict(receipt)
             success = receipt.status == "confirmed"
             result["timings"]["home_assistant"] = (time.perf_counter() - t_ha) * 1000
 
@@ -1446,16 +1514,6 @@ class RequestRouter:
             "anadir persona", "add user", "add person"
         ]
         return any(trigger in text.lower() for trigger in enrollment_triggers)
-
-    def _check_permission(self, user, entity_id: str, service: str) -> object:
-        """Check user permissions for an entity action."""
-        if not self.user_manager:
-            return PermissionResult()
-
-        check = self.user_manager.check_entity_permission(user, entity_id, service)
-        if not check.allowed:
-            check.message = self.user_manager.format_permission_denied_message(user, check)
-        return check
 
     def _handle_suggestion_response(self, text: str) -> dict:
         """Handle user response to a pending automation suggestion."""

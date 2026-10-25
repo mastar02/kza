@@ -333,7 +333,7 @@ _PAST_ACTION = re.compile(
     r"\b(?:\w+(?:aste|iste|aron|ieron|asteis|isteis)|"
     r"apagué|prendí|encendí|bajé|cerré|cambié|pausé|frené|puse|puso|pusimos|"
     r"apag[oó]|prendi[oó]|encendi[oó]|subi[oó]|bajó|cerró|abri[oó]|"
-    r"activó|desactivó|reprodujo|"
+    r"(?:ajust|configur|dej|activ|desactiv|par|cambi|levant)[éó]|reprodujo|"
     r"apagaba[ns]?|prend[ií]a[ns]?|encend[ií]a[ns]?|sub[ií]a[ns]?|"
     r"bajaba[ns]?|cerraba[ns]?|abr[ií]a[ns]?|pon[ií]a[ns]?)\b",
     re.IGNORECASE,

@@ -25,7 +25,7 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 import pytest
 import numpy as np
 
-from src.pipeline.request_router import RequestRouter, PermissionResult
+from src.pipeline.request_router import RequestRouter
 from src.pipeline.command_processor import ProcessedCommand
 from src.nlu.command_gate import CommandAcceptanceGate
 from tests.mocks.home_control import selected_actions
@@ -498,31 +498,6 @@ class TestCache:
         assert "cmd1" not in router._query_cache
         assert "cmd4" in router._query_cache
         assert len(router._query_cache) == 3
-
-
-class TestPermissionCheck:
-    """Test permission checking."""
-
-    def test_no_user_manager_allows_all(self):
-        """Without user manager, all actions are allowed."""
-        router = _build_router(user_manager=None)
-        result = router._check_permission(MagicMock(), "light.sala", "turn_on")
-        assert isinstance(result, PermissionResult)
-        assert result.allowed is True
-
-    def test_permission_delegates_to_user_manager(self):
-        """With user manager, delegates permission check."""
-        um = MagicMock()
-        check_result = MagicMock()
-        check_result.allowed = True
-        um.check_entity_permission.return_value = check_result
-
-        router = _build_router(user_manager=um)
-        user = MagicMock()
-        result = router._check_permission(user, "light.sala", "turn_on")
-
-        assert result.allowed is True
-        um.check_entity_permission.assert_called_once_with(user, "light.sala", "turn_on")
 
 
 class TestSuggestionHandling:

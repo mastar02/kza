@@ -14,8 +14,8 @@ contratos y pruebas sintéticas sin habilitar dispositivos ni modificar producci
 | Semántica | Corpus de pasado, estado, preguntas informativas, negación, condición, reporte y diferidos. Gate, gramática, evidencia del LLM y routers conectados deben rechazar; los pedidos inmediatos conservan dirección e infinitivos/cortesía válidos. | Primera implementación y regresiones sobre texto completo. |
 | Captura parcial | Early-dispatch es preparseo especulativo: espera el endpoint, mantiene el texto ligado al audio y nunca ejecuta un prefijo. Una captura cortada por timeout no es una orden completa. | Implementado y probado con ambos routers y modo ambiental; validación acústica real en H6. |
 | Sesión | HTTP y WebSocket privados comparten autenticación cerrada sin token, incluyendo listas, recordatorios, presencia, observabilidad y `/ws/live`. Orígenes inválidos se rechazan con sesión válida. Login y recursos estáticos tienen excepciones explícitas. Bind loopback detrás del proxy y token vacío en `.env.example`. | Implementado y probado; proxy y unit reales se validan en H6. |
-| Política | Un servicio de acciones y un actor de procedencia por productor. Política obligatoria después de rewrites y antes de todo envío; permisos revisados también al disparar acciones diferidas. Tests sin hooks, con rewrite y revocación. | Frontera compartida implementada; faltan integración del NLU y expansión verificada. |
-| Operaciones | Extender DTOs, validación y confirmación a clima y cover. Agregar temperatura de color para reproducir las escenas seleccionadas sin perder parámetros. Usar rangos, modos y entidades del inventario privado aprobado. | Contratos, servicio, persistencia y formularios implementados. Falta interpretar y resolver estas órdenes desde el NLU de voz, e integrar expansión de efectos. |
+| Política | Un servicio de acciones y un actor de procedencia por productor. Política obligatoria después de rewrites y antes de todo envío; permisos revisados también al disparar acciones diferidas. Tests sin hooks, con rewrite y revocación. | Frontera y NLU de operaciones ampliadas conectados; falta expansión verificada. |
+| Operaciones | Extender DTOs, validación y confirmación a clima y cover. Agregar temperatura de color para reproducir las escenas seleccionadas sin perder parámetros. Usar rangos, modos y entidades del inventario privado aprobado. | Contratos, servicio, persistencia, formularios e interpretación determinística de voz implementados. Falta integrar expansión de efectos y validar el hogar real. |
 | Grupos y escenas | Expandir definiciones verificadas a hojas autorizadas y operaciones tipadas. Rechazar macros opacas, templates sin contexto y efectos indirectos no verificados. Pruebas de escena que oculta lock/alarm, grupos no autorizados y parámetros desconocidos. | Pendiente. |
 | Consentimiento | Destino cloud explícito, independiente de host/transporte. Denegación probada en reasoner, compactor y cada consumidor; loopback no elude consentimiento. | Implementado; validación offline conectada y límites descritos abajo. |
 
@@ -269,14 +269,49 @@ incierto; la validación de efectos reales sigue pendiente. Referencia:
 [light en HA 2026.4.3](https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/light/__init__.py).
 
 HTTP, el adaptador de servicios de los productores, persistencia de rutinas y
-recibos de recordatorios conservan estos campos. Los tests del dispatcher parten
-de órdenes ya normalizadas: todavía no prueban que una frase acústica llegue a
-la entidad y parámetros correctos. No se conectó el clasificador experimental
-de clima que tenía evaluación NO-GO. La selección privada real sigue sin grants
-efectivos; estos contratos se prueban con entidades sintéticas.
-Al integrar voz hay que retirar también el precheck legacy de `UserManager`
-basado en el perfil SpeakerID; no debe bloquear el alcance doméstico seleccionado
-ni convertir ese perfil en un principal autenticado.
+recibos de recordatorios conservan estos campos. Las pruebas del dispatcher con
+órdenes normalizadas se complementan ahora con las de texto hablado descritas
+abajo. No se conectó el clasificador experimental de clima que tenía evaluación
+NO-GO. La selección privada real sigue sin grants efectivos; estos contratos se
+prueban con entidades sintéticas.
+
+### Interpretación y resolución desde voz
+
+`parse_home_command` reconoce una sola orden completa de temperatura absoluta,
+modo HVAC, apertura/cierre/parada/posición de persiana, o color Kelvin con brillo
+opcional. Conserva decimales y exige una composición válida de números hablados:
+«dos tres» no se suma como cinco. Los valores fuera de rango o paso se rechazan
+en el servicio; no se recortan. «Prendé el aire» pide modo o temperatura, sin
+adivinar un modo. Los pasados «dejé», «ajusté», «configuré», «activé»,
+«desactivé» y «paré» se bloquean antes de normalizar acentos.
+
+Ambos modos de `RequestRouter` usan el parser después del gate de captura y
+semántica. El canal de wake textual, ambient estricto y wakes débiles conservan
+un gate adicional de comando: error, indisponibilidad o confianza insuficiente
+impiden actuar. Sus slots y targets no sustituyen los del parser. Una orden
+ampliada incompleta o ambigua no cae a similitud vectorial ni a un LLM para
+inventar parámetros.
+
+`main` inyecta `HomeVoiceResolver` con el mismo servicio de acciones y los defaults
+de habitación configurados. Una habitación explícita debe coincidir exactamente
+con un ID, nombre, display name o alias configurado y tener el equipo de ese
+dominio seleccionado. No se sustituye una habitación desconocida por la del
+micrófono. Sin habitación explícita se usa el default del micrófono; sin ninguna
+evidencia de habitación sólo se admite una única entidad seleccionada del
+dominio. No hay búsqueda aproximada de dispositivos por su friendly name.
+
+`VoiceHomeActionExecutor` comparte hooks, intento único, recibos y feedback entre
+el dispatcher y ambos modos del router. Tras cualquier rewrite, el servicio
+obligatorio revisa destino, operación, parámetros, selección actual y estado
+fresco. Un recibo incierto no produce éxito ni reintento. Se retiró el precheck
+legacy de permisos por SpeakerID; tests con perfiles ausentes, guest y admin
+comprueban que no cambia la selección autorizada. Se conservan perfiles para
+funciones de usuario, sin convertirlos en actores autenticados.
+
+El corpus y los grafos conectados usan transcripciones y dispositivos sintéticos;
+no prueban reconocimiento acústico, timings ni efectos de los dispositivos reales.
+Grupos y escenas siguen pendientes de expansión verificada; las persianas de test
+no implican seleccionar un equipo real.
 
 El catálogo usa la misma selección que el servicio. Sus controles son la
 intersección con capacidades y límites actuales; sin selección quedan de lectura.
@@ -310,6 +345,6 @@ aplicado. La nueva frontera cierra cuatro fallos del dispatcher mediante fixture
 con selección explícita, estado fresco e intento único, conservando confirmación.
 Siguen abiertos los cuatro fallos de búsqueda por habitación; no se restaurará
 fallback a otra habitación para volverlos verdes. El quinto fallo, de idioma/VAD,
-corresponde a H3. H1 aún necesita integrar las órdenes ampliadas desde el NLU de
-voz y expandir los efectos verificados de grupos y escenas.
+corresponde a H3. H1 aún necesita expandir los efectos verificados de grupos y
+escenas y validar la configuración y el comportamiento del hogar real.
 No hay publicación intermedia.

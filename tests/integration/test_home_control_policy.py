@@ -237,19 +237,26 @@ async def test_orchestrator_preserves_shared_service_and_household_actor(graph):
 
 
 @pytest.mark.parametrize("selected", [True, False])
-async def test_legacy_router_uses_policy_and_confirmed_receipt(graph, selected):
+@pytest.mark.parametrize("profile", [None, "GUEST", "ADMIN"])
+async def test_legacy_router_uses_policy_and_confirmed_receipt(graph, selected, profile):
     ha, actions, path = graph
     write_selection(path, enabled=selected)
     processor = MagicMock()
-    processor.process_command = AsyncMock(return_value=ProcessedCommand(text="nexa prende la luz", user=None, emotion=None, timings={}, success=True))
+    user = MagicMock(user_id="unverified-profile", name="Test profile") if profile else None
+    if user:
+        user.permission_level.name = profile
+    processor.process_command = AsyncMock(return_value=ProcessedCommand(text="nexa prende la luz", user=user, emotion=None, timings={}, success=True))
     chroma = MagicMock()
     chroma.search_command.return_value = {"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp", "description": "luz de prueba", "similarity": 0.95}
     routines = MagicMock()
     routines.handle = AsyncMock(return_value={"handled": False})
-    router = RequestRouter(processor, MagicMock(), MagicMock(), orchestrator_enabled=False, chroma_sync=chroma, ha_client=ha, home_actions=actions, routine_manager=routines)
+    manager = MagicMock()
+    manager.check_entity_permission.side_effect = AssertionError("Voice profile cannot authorize or deny household controls")
+    router = RequestRouter(processor, MagicMock(), MagicMock(), orchestrator_enabled=False, chroma_sync=chroma, ha_client=ha, home_actions=actions, routine_manager=routines, user_manager=manager)
     result = await router.process_command(np.zeros(16000, dtype=np.float32))
     assert result["success"] is selected
     assert len(ha.sends) == int(selected)
+    manager.check_entity_permission.assert_not_called()
 
 
 def test_authenticated_http_uses_same_policy_and_scopes_receipt(graph, monkeypatch):

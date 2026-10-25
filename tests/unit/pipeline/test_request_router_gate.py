@@ -11,6 +11,7 @@ sys.modules.setdefault("torch.cuda", MagicMock())
 import numpy as np
 import pytest
 from src.nlu.command_gate import CommandAcceptanceGate
+from src.nlu.home_command import parse_home_command
 from src.pipeline.request_router import RequestRouter
 from tests.command_corpus import IMMEDIATE_ACTIONS, REJECTED_ACTIONS
 
@@ -96,12 +97,19 @@ async def test_non_immediate_corpus_stops_before_every_execution_path(text, cate
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text,intent", IMMEDIATE_ACTIONS)
-async def test_immediate_corpus_can_still_reach_the_orchestrator(text, intent):
+async def test_immediate_corpus_passes_semantic_gate_before_target_policy(text, intent):
     r, orch = _router(CommandAcceptanceGate())
     r.wake_acoustically_confirmed = True
     r.command_processor.process_command.return_value = _make_cmd(text)
-    await r.process_command(np.zeros(16000, dtype="float32"))
-    orch.process.assert_awaited_once()
+    result = await r.process_command(np.zeros(16000, dtype="float32"))
+    if parse_home_command(text) is not None:
+        # This fixture has no selected devices. Valid speech is distinct from
+        # authority or sufficient parameters; it must ask, not dispatch blindly.
+        assert result["intent"] == "clarification_requested"
+        assert result["success"] is False
+        orch.process.assert_not_awaited()
+    else:
+        orch.process.assert_awaited_once()
 
 
 # ---- LLM router confidence gate (2026-06-02) ----

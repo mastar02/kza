@@ -40,8 +40,8 @@ from enum import StrEnum
 from typing import Callable
 
 from src.core.logging import get_logger
-from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionService
+from src.home_assistant.voice_actions import VoiceHomeActionExecutor
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
     Priority,
@@ -1589,202 +1589,14 @@ class RequestDispatcher:
         return message
 
     async def _fire_and_reconcile_ha(self, command: dict) -> bool:
-        """Execute an action, confirm binary state and report failures in its room.
-
-        Returns:
-            True only after the service succeeds and any applicable binary
-            state confirmation completes. Blocks and unavailable targets fail.
-        """
-        domain = command.get("domain")
-        service = command.get("service")
-        entity_id = command.get("entity_id")
-        description = command.get("description") or entity_id or "esa acción"
-
-        # Plan #3 OpenClaw — before_ha_action chain (block / rewrite)
-        call = None
-        rewritten_data = command.get("data")
-        if self.hooks is not None:
-            from src.hooks import (
-                HaActionCall,
-                BlockResult,
-                HaActionDispatchedPayload,
-                HaActionBlockedPayload,
-                execute_before_chain,
-                execute_after_event,
-            )
-            call = HaActionCall(
-                entity_id=entity_id or "",
-                domain=domain or "",
-                service=service or "",
-                service_data=rewritten_data or {},
-                user_id=command.get("user_id"),
-                user_name=command.get("user_name"),
-                zone_id=command.get("zone_id"),
-                timestamp=time.time(),
-            )
-            result = execute_before_chain(
-                self.hooks, "before_ha_action", call,
-                warn_ms=self._before_handler_warn_ms,
-            )
-            if isinstance(result, BlockResult):
-                logger.info(
-                    f"[HA-CALL BLOCKED] {domain}.{service}@{entity_id} "
-                    f"by rule={result.rule_name}: {result.reason}"
-                )
-                if self.response_handler is not None:
-                    try:
-                        self.response_handler.speak(result.reason or "No puedo hacer eso")
-                    except Exception as e:
-                        logger.warning(f"No pude hablar block reason: {e}")
-                execute_after_event(
-                    self.hooks,
-                    "ha_action_blocked",
-                    HaActionBlockedPayload(
-                        timestamp=time.time(), call=call, block=result,
-                    ),
-                )
-                return False
-            # Apply rewrite (if any) back to local vars
-            domain = result.domain
-            service = result.service
-            entity_id = result.entity_id
-            rewritten_data = result.service_data
-
-        # HA acepta la llamada a una entidad unavailable y la filtra en
-        # silencio (helpers/service.py:720), devolviendo success=true. Sin este
-        # chequeo, "prendé la luz del cuarto" con la bombilla caída produce
-        # silencio absoluto: ni voz, ni earcon, ni luz.
-        # Falla ABIERTO ante None: sin dato en cache, llamamos igual.
-        # Kill switch: self._unavailable_precheck_enabled (default True). Un
-        # reinicio de Z2M/HA (recurrente, más con la migración Hue→Z2M en
-        # curso) deja entidades genuinamente unavailable; si el WS de events
-        # se cae en silencio en esa ventana, el cache no sana hasta el
-        # snapshot REST (home_assistant.state_prefetch.full_refresh_interval_s,
-        # 300s) y este precheck retendría comandos contra dispositivos que ya
-        # volvieron. Apagar el flag en config/settings.yaml si eso pasa.
-        unavailable = (
-            self._unavailable_precheck_enabled
-            and entity_id
-            and self.ha.is_entity_available(entity_id) is False
+        """Run the shared voice boundary and report success only on confirmation."""
+        executor = VoiceHomeActionExecutor(
+            self.ha, self.home_actions, response_handler=self.response_handler,
+            hooks=self.hooks, before_handler_warn_ms=getattr(self, "_before_handler_warn_ms", 5.0),
+            unavailable_precheck_enabled=self._unavailable_precheck_enabled,
         )
-        if unavailable:
-            # Refresh a negative cache entry before suppressing a recovered device.
-            try:
-                fresh = await self.ha.get_entity_state_fresh(entity_id)
-            except Exception:
-                fresh = None
-            if isinstance(fresh, dict) and fresh.get("state") not in (None, "unavailable"):
-                unavailable = False
-        if unavailable:
-            logger.warning(
-                f"[HA-UNAVAILABLE] {domain}.{service}@{entity_id} "
-                f"({description}) — no se envía la llamada"
-            )
-            if self.response_handler is not None:
-                try:
-                    self.response_handler.play_earcon(zone_id=command.get("zone_id"))
-                except Exception as e:
-                    logger.warning(f"No pude reproducir earcon de entidad caída: {e}")
-            # Plan #3 OpenClaw — el precheck es una tercera forma de retener
-            # un comando (además del before_ha_action block de arriba), y sin
-            # emitir este evento el comando quedaba fuera del audit trail
-            # (src/policies/audit_sqlite.py) — invisible en data/audit.db.
-            if self.hooks is not None and call is not None:
-                from dataclasses import replace
-                from src.hooks import (
-                    BlockResult,
-                    HaActionBlockedPayload,
-                    execute_after_event,
-                )
-                final_call = replace(
-                    call,
-                    domain=domain or "",
-                    service=service or "",
-                    entity_id=entity_id or "",
-                    service_data=rewritten_data or {},
-                )
-                execute_after_event(
-                    self.hooks,
-                    "ha_action_blocked",
-                    HaActionBlockedPayload(
-                        timestamp=time.time(),
-                        call=final_call,
-                        block=BlockResult(
-                            reason=f"{description}: entidad no disponible",
-                            rule_name="entity_unavailable",
-                        ),
-                    ),
-                )
-            return False
-
-        t0 = time.perf_counter()
-        err: str | None = None
-        try:
-            receipt = await self.home_actions.execute_service(
-                domain, service, entity_id, rewritten_data,
-                actor=HomeActor.household(), origin=ActionOrigin.VOICE,
-            )
-            success = receipt.status == "confirmed"
-            err = receipt.reason
-            dt = (time.perf_counter() - t0) * 1000
-            logger.info(
-                f"[HA-CALL] {domain}.{service}@{entity_id} "
-                f"success={success} took={dt:.0f}ms"
-            )
-        except Exception as e:
-            err = str(e)
-            logger.error(
-                f"Reconcile error en {domain}.{service}@{entity_id}: {e}"
-            )
-            success = False
-
-        # Plan #3 OpenClaw — emit after_event with dispatch result
-        if self.hooks is not None and call is not None:
-            from dataclasses import replace
-            from src.hooks import (
-                HaActionDispatchedPayload,
-                execute_after_event,
-            )
-            final_call = replace(
-                call,
-                domain=domain or "",
-                service=service or "",
-                entity_id=entity_id or "",
-                service_data=rewritten_data or {},
-            )
-            execute_after_event(
-                self.hooks,
-                "ha_action_dispatched",
-                HaActionDispatchedPayload(
-                    timestamp=time.time(),
-                    call=final_call,
-                    success=success,
-                    error=err,
-                ),
-            )
-
-        if success:
-            return True
-
-        # Fallo real. Earcon (no frase) en la zona donde habló el usuario:
-        # decisión 2026-07-25. La regla "domótica silenciosa" cubre los ÉXITOS
-        # que el usuario valida visualmente; un fallo mudo es justo lo que hizo
-        # invisible el bug del primer comando post-idle.
-        logger.warning(
-            f"[HA-FAIL] {domain}.{service}@{entity_id} ({description}) "
-            f"err={err or 'success=False'}"
-        )
-        if self.response_handler is not None:
-            try:
-                self.response_handler.play_earcon(zone_id=command.get("zone_id"))
-            except Exception as e:
-                logger.warning(f"No pude reproducir earcon de fallo HA: {e}")
-        else:
-            logger.warning(
-                f"HA fire-and-forget falló en {domain}.{service}@{entity_id} "
-                f"sin response_handler — usuario no fue notificado"
-            )
-        return False
+        receipt = await executor.execute(command)
+        return receipt.status == "confirmed"
 
 
 class MultiUserOrchestrator:

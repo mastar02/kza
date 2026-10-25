@@ -30,6 +30,7 @@ from src.routines.routine_manager import RoutineManager
 from src.routines.factory import build_routine_scheduler
 from src.routines.routine_scheduler import RoutineScheduler
 from src.home_assistant.home_actions import HomeActionService
+from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.home_assistant.control_policy import HomeControlPolicy
 from src.pipeline.voice_pipeline import VoicePipeline
 from src.pipeline.audio_loop import AudioLoop
@@ -1495,7 +1496,13 @@ async def _run_main(shutdown: AsyncExitStack):
         # era UnboundLocalError al boot (review 2026-07-05).
         initial_prompt=config.get("stt", {}).get("initial_prompt"),
     )
+    home_voice_resolver = HomeVoiceResolver(
+        home_action_service, room_context_manager.get_all_rooms() if room_context_manager else {},
+    )
     request_router = RequestRouter(
+        home_voice_resolver=home_voice_resolver,
+        before_handler_warn_ms=self_warn_ms,
+        unavailable_precheck_enabled=config.get("home_assistant", {}).get("unavailable_precheck_enabled", True),
         command_processor=command_processor,
         response_handler=response_handler,
         home_actions=home_action_service,
