@@ -395,7 +395,7 @@ reasoner:
   # (anthropic-compat): NO suprime el costo del thinking, solo entrega el content
   # limpio en reasoning_content separado — sin valor hoy (el strip de <think> ya
   # cubre); opción futura si el parsing de tags da problemas.
-  http_model: "MiniMax-M2.7-highspeed"
+  http_model: "grok-4.20-non-reasoning"
   api_style: "chat"            # MiniMax solo soporta /v1/chat/completions
   api_key_env: "MINIMAX_API_KEY"
   # Cloud cold puede tardar 10-20s al primer token → watchdog generoso.
@@ -1900,6 +1900,6 @@ code_index:
     device: "cpu"               # NUNCA GPU
   cards:
     base_url: "${LLM_GATEWAY_URL}"   # gateway LiteLLM → MiniMax
-    model: "MiniMax-M2.7-highspeed"
+    model: "grok-4.20-non-reasoning"
     api_key_env: "MINIMAX_API_KEY"            # virtual key del gateway
     timeout: 120
