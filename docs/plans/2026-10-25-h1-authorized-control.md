@@ -123,6 +123,15 @@ sin desactivar la dependencia. El test obsoleto que esperaba crear usuarios sin
 token se reemplazó por 503 y ausencia de escritura: queda cerrado ese fallo del
 rescate; los otros nueve siguen explícitos.
 
+Verificación del commit `6b8d143`: **3549 passed, 9 failed, 1 xfailed** en
+103,38 s. No aparecen IDs de fallo nuevos. Ruff 0.15.1 pasa y Bandit 1.9.4 no
+encuentra hallazgos de severidad media o alta. Las seis pruebas Node, el smoke
+autenticado del dashboard y el smoke compilado (incluyendo la nueva sesión JS y
+los rechazos de health sin credencial/configuración) pasan. El
+[registro de captura y acceso](../research/2026-10-25-h1-capture-auth-validation.json)
+distingue estas pruebas de las comprobaciones acústicas, del proxy instalado y
+de los demás frentes de H1 que permanecen pendientes.
+
 ## Integración de la política pendiente
 
 El plan conserva los recibos `HomeActionRequest`/`HomeActionResult`, las lanes

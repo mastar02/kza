@@ -1,0 +1,124 @@
+{
+  "checked_on": "2026-10-25",
+  "tested_commit": "6b8d143ee07f60b73ec87643cccdc44db9211314",
+  "scope": "H1 capture finality and uniform dashboard access; not H1 or release completion",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "environment_reference": "docs/research/2026-10-25-h0-baseline.json",
+  "dependency_limit": "Existing runtime virtualenv read only; runtime dependencies still differ from CI pins. Scanner/linter installed only in yo tool cache.",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short --junitxml=/tmp/kza-h1-capture-auth-committed.xml",
+    "passed": 3549,
+    "failed": 9,
+    "xfailed": 1,
+    "runtime_s": 103.38,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad",
+      "tests/unit/orchestrator/test_dispatcher_ha_failure_feedback.py::TestEarconOnFailure::test_successful_call_stays_silent",
+      "tests/unit/orchestrator/test_dispatcher_hooks.py::test_dispatch_emits_ha_action_dispatched_after_event",
+      "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unknown_availability_fails_open_and_calls",
+      "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unavailable_precheck_disabled_still_calls_ha",
+      "tests/unit/vectordb/test_search_command_excluded.py::TestExcludedEntitiesQueryTime::test_excluded_top_candidate_skipped_with_prefer_area",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestPreferAreaScoring::test_prefer_area_unknown_area_falls_back_to_baseline",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_below_threshold_falls_back_to_global",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_pass_empty_falls_back_to_global"
+    ],
+    "new_failure_ids": [],
+    "closed_recovery_failure": {
+      "previous_test": "tests/unit/dashboard/test_admin.py::test_no_token_configured_means_open_access",
+      "replacement": "tests/unit/dashboard/test_admin.py::test_no_token_configured_rejects_without_creating_user",
+      "behavior": "503 without a configured token; user manager is never called and no user is written"
+    }
+  },
+  "capture": {
+    "connected_integration_tests": 7,
+    "proven": [
+      "Ready imperative prefix cannot dispatch before endpoint",
+      "Deferred/negative/conditional continuation reaches the real gate and both router modes without HA sends",
+      "Unverified or changed audio invalidates cached wake/partial transcription, including equal-length changes",
+      "Incomplete captures fail before STT/execution",
+      "Speculative results cannot attach to a later capture generation",
+      "Single-room loop preserves silence and conveys endpoint vs timeout",
+      "Duration-limited ambient segments are stored without dispatching a voice command"
+    ],
+    "acoustic_quality_or_latency_claimed": false
+  },
+  "access": {
+    "matrix_tests": 244,
+    "proven": [
+      "All registered private HTTP routes reject absent/invalid/unconfigured sessions and foreign origins before calling injected services",
+      "Both WebSocket routes reject before acceptance/subscription",
+      "Default dependency protects future application routes",
+      "Public UI assets and token login carry no private runtime data",
+      "Origin validates effective scheme/host/port for cookie and bearer reads as well as mutation and sockets",
+      "Authenticated login/read/logout lifecycle and Secure HTTPS cookie",
+      "Functional API tests authenticate rather than overriding guards"
+    ],
+    "candidate_bind": "127.0.0.1:9500",
+    "production_proxy_tested": false
+  },
+  "frontend": {
+    "command": "node --test tests/frontend/*.cjs",
+    "passed": 6,
+    "ci_job_added": "frontend-tests",
+    "proven": [
+      "No hydration/socket before authentication",
+      "No simulated dashboard when auth is unavailable",
+      "Logout cancels loading, disposes socket and clears state",
+      "Late replies or superseded login attempts cannot restore an old session"
+    ],
+    "jsx_syntax": "Modified app/admin JSX transformed with the existing pinned Babel 7.29.0 after SRI verification",
+    "real_browser_validation": false
+  },
+  "checks": {
+    "ruff": {
+      "version": "0.15.1",
+      "command": "ruff check src/ tests/ scripts/stage_runtime.py scripts/inventory_home.py scripts/smoke_dashboard.py",
+      "passed": true
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "command": "bandit -r src/ -ll -c pyproject.toml",
+      "passed_medium_and_high_gate": true,
+      "medium": 0,
+      "high": 0
+    },
+    "dashboard_smoke": {
+      "command": "PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python scripts/smoke_dashboard.py",
+      "passed": true
+    },
+    "compiled_runtime_smoke": {
+      "included_in_full_suite": true,
+      "passed": true,
+      "checks": [
+        "Main imported from .pyc outside source checkout",
+        "Six static resources including observability session.js",
+        "Private health rejects missing configuration with 503 and missing credentials with 401",
+        "Private health accepts a valid Bearer credential"
+      ]
+    }
+  },
+  "legacy_memory": {
+    "metadata_inventory_written_outside_git": true,
+    "hypothetical_retention_preview_written_outside_git": true,
+    "read_transaction_query_only": true,
+    "documents_or_embeddings_exported": false,
+    "deletion_or_migration_authorized_by_preview": false,
+    "production_data_migrated": false,
+    "consistent_migration_copy_tested": false
+  },
+  "remaining": [
+    "Mandatory shared HA policy across all action producers, including disabled hooks and rewritten/deferred actions",
+    "Typed climate/cover/color-temperature operations, selected group/scene expansion and effect confirmation",
+    "Explicit cloud destination/consent across consumers, independent of loopback transport",
+    "Remaining nine recovery failures",
+    "Live inventory evidence and legacy treatment/copy migrations",
+    "H2-H6 implementation, acoustic evaluation, real proxy/unit/hardware checks and the single release"
+  ],
+  "production": {
+    "service_restarted": false,
+    "configuration_changed": false,
+    "data_migrated": false,
+    "source_retired": false
+  }
+}

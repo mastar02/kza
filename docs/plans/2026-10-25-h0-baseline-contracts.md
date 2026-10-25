@@ -4,8 +4,9 @@ Este documento ejecuta H0 del [roadmap](2026-10-25-stabilization-roadmap.md).
 La referencia inicial es `f56b5ae`, en `recovery/production-2026-10-25`.
 El trabajo se hace como `yo`, desde `/home/yo/projects/kza`. No modifica
 servicios, permisos ni datos de producción. Se recibió el inventario privado de
-HA y se revisó la selección inicial con el usuario. H0 permanece abierto hasta
-completar la vista previa de datos legacy y la evidencia faltante del inventario.
+HA y se revisó la selección inicial con el usuario. La metadata legacy también
+se inventarió por lectura y tiene vista previa privada; H0 permanece abierto
+hasta resolver su tratamiento y la evidencia faltante del inventario.
 
 ## Baseline de los diez fallos
 
@@ -151,7 +152,14 @@ tiempo de origen, confirmación o fuentes, tratamiento propuesto y compatibilida
 de rollback. `created_at` de inserción y `origin=ambient` no prueban autor,
 confirmación ni conversación de origen. No se inventan esos campos ni se
 aplica un borrado masivo implícito. No se abrió ni modificó la memoria de
-producción en H0.
+producción durante la primera clasificación de H0. Después se pudo consultar
+la metadata de la colección existente mediante SQLite `mode=ro`,
+`PRAGMA query_only=ON` y una transacción de lectura. La vista previa privada
+bajo `data/` no copia documentos ni embeddings: registra presencia de campos,
+procedencia declarada y el efecto hipotético de usar la inserción como inicio
+de 30 días. No la presenta como fecha de origen de la conversación ni como
+confirmación autenticada, y no autoriza eliminaciones. Falta decidir tratamiento
+y probar la migración sobre una copia consistente con rollback compatible.
 
 La vigencia de embeddings, grupos y perfiles nombrados requiere decisión en el
 plan de H3; los 48 h de clips no autorizan retención indefinida de huellas.
@@ -277,7 +285,8 @@ la prueba con audio, HA y unit reales corresponden a la única release de H6.
 - Ensayo de artefacto, promoción y restauración conjunta de datos: automatizado.
 - Inventario privado y selección inicial: recibidos y revisados; faltan servicios
   y disponibilidad en vivo, resolución completa de efectos y selección de alertas.
-- Inventario y vista previa de memoria legacy: pendiente de copia privada.
+- Metadata de memoria legacy: inventariada por lectura, con vista previa privada
+  de retención hipotética. Tratamiento y prueba de migración en copia: pendientes.
 
 H1 puede desarrollar política y pruebas con inventarios sintéticos sin habilitar
 entidades reales. H3 puede concretar interfaces; la migración de registros reales
