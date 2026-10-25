@@ -161,6 +161,14 @@ conversaciones, código ni audio a servicios reales para estas pruebas. La
 actualización de configuración requiere reconstruir las dependencias; no se
 implementa un control de consentimiento en caliente en este frente.
 
+Verificación del commit `a1d4c62`: **3598 passed, 9 failed, 1 xfailed** en
+104,60 s; los nueve IDs de fallo coinciden con el registro anterior. Pasan las
+66 pruebas específicas, Ruff 0.15.1, el gate medio/alto de Bandit 1.9.4, las seis
+pruebas Node y el smoke autenticado del dashboard. El smoke del artefacto
+compilado confirma además la denegación antes de red fuera del checkout. El
+[registro de consentimiento](../research/2026-10-25-h1-consent-validation.json)
+conserva alcance, comandos, resultados y comprobaciones reales pendientes.
+
 ## Integración de la política pendiente
 
 El plan conserva los recibos `HomeActionRequest`/`HomeActionResult`, las lanes

@@ -1,0 +1,109 @@
+{
+  "checked_on": "2026-10-25",
+  "tested_commit": "a1d4c62b1abfb625e81a14c824691c2f25a17da9",
+  "scope": "H1 explicit processing destinations and consent at inference consumers; not H1 or release completion",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "environment_reference": "docs/research/2026-10-25-h0-baseline.json",
+  "dependency_limit": "Existing runtime virtualenv read only; runtime dependencies still differ from CI pins. Scanner/linter installed only in yo tool cache.",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short --junitxml=/tmp/kza-h1-consent-committed.xml",
+    "passed": 3598,
+    "failed": 9,
+    "xfailed": 1,
+    "runtime_s": 104.6,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad",
+      "tests/unit/orchestrator/test_dispatcher_ha_failure_feedback.py::TestEarconOnFailure::test_successful_call_stays_silent",
+      "tests/unit/orchestrator/test_dispatcher_hooks.py::test_dispatch_emits_ha_action_dispatched_after_event",
+      "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unknown_availability_fails_open_and_calls",
+      "tests/unit/orchestrator/test_dispatcher_unavailable_precheck.py::test_unavailable_precheck_disabled_still_calls_ha",
+      "tests/unit/vectordb/test_search_command_excluded.py::TestExcludedEntitiesQueryTime::test_excluded_top_candidate_skipped_with_prefer_area",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestPreferAreaScoring::test_prefer_area_unknown_area_falls_back_to_baseline",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_below_threshold_falls_back_to_global",
+      "tests/unit/vectordb/test_search_command_prefer_area.py::TestAreaFirstTwoPassSearch::test_area_pass_empty_falls_back_to_global"
+    ],
+    "new_failure_ids": [],
+    "prior_validation_reference": "docs/research/2026-10-25-h1-capture-auth-validation.json"
+  },
+  "processing_policy": {
+    "default_destination": "cloud",
+    "consent_requires_literal_boolean": true,
+    "local_declaration": "Operator assertion about backend processing, independent of gateway hostname; release environment verification still required",
+    "consumers": [
+      "HttpReasoner",
+      "FastRouter",
+      "HermesCliReasoner",
+      "Ambient distiller",
+      "Code-index CardGenerator and build_indexer",
+      "Remote STT/TTS/LLM/router providers",
+      "Inventory phrase generator VLLMClient"
+    ],
+    "proven": [
+      "Loopback IPv4, localhost and IPv6 do not bypass denied cloud processing",
+      "Denied consumers stop before transport construction or cached SDK invocation, CLI process and usage file creation",
+      "Bound endpoint validation rejects retargeting and request path escape; HTTP consumers disable redirects",
+      "Actual OpenAI SDK with HTTPX MockTransport does not follow a local-to-cloud redirect",
+      "Absent HTTP URL cannot select the SDK default provider",
+      "A replaced policy is checked at the next call with a cached client",
+      "Failover to a denied consumer remains denied before its cached SDK call",
+      "Unresolved gateway fallback preserves CLOUD, including code-index factory resolution",
+      "Local compaction remains available with denied cloud consent and no inherited cloud credentials",
+      "Local parent grant cannot authorize a cloud compactor override",
+      "Ambient requires LOCAL; remote STT/TTS factories do not inherit reasoner consent for audio processing"
+    ],
+    "runtime_config_hot_reload_implemented": false,
+    "live_backend_declaration_verified": false,
+    "provider_or_existing_consent_changed": false,
+    "real_external_inference_requests_made": false
+  },
+  "targeted_tests": {
+    "command": "pytest tests/unit/core/test_egress.py tests/unit/llm/test_cloud_consent.py tests/integration/test_cloud_consent_consumers.py -q --tb=short",
+    "passed": 66,
+    "failed": 0
+  },
+  "checks": {
+    "ruff": {
+      "version": "0.15.1",
+      "command": "ruff check src/ tests/ scripts/stage_runtime.py scripts/inventory_home.py scripts/smoke_dashboard.py scripts/sync_ha_to_chroma.py",
+      "passed": true
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "command": "bandit -r src/ -ll -c pyproject.toml",
+      "passed_medium_and_high_gate": true,
+      "medium": 0,
+      "high": 0
+    },
+    "frontend": {
+      "command": "node --test tests/frontend/*.cjs",
+      "passed": 6
+    },
+    "dashboard_smoke": {
+      "command": "PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python scripts/smoke_dashboard.py",
+      "passed": true
+    },
+    "compiled_runtime_smoke": {
+      "included_in_full_suite": true,
+      "passed": true,
+      "checks": [
+        "Main imported from .pyc outside source checkout",
+        "Existing static assets and authenticated dashboard health",
+        "Compiled HttpReasoner denies loopback gateway without consent before network"
+      ]
+    }
+  },
+  "remaining": [
+    "Mandatory shared HA policy across all action producers, including disabled hooks and rewritten/deferred actions",
+    "Typed climate/cover/color-temperature operations, selected group/scene expansion and effect confirmation",
+    "Remaining nine recovery failures",
+    "Live inventory evidence and legacy treatment/copy migrations",
+    "H2-H6 implementation, acoustic evaluation, real proxy/unit/hardware checks and the single release"
+  ],
+  "production": {
+    "service_restarted": false,
+    "configuration_changed": false,
+    "data_migrated": false,
+    "source_retired": false
+  }
+}
