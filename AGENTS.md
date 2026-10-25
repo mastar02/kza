@@ -19,9 +19,11 @@
 - No desarrollar, compilar ni hacer `git pull` en la cuenta `kza` como parte del
   nuevo flujo. La configuración privada y los datos persistentes siguen siendo
   responsabilidad del entorno de ejecución.
-- El proyecto actual es Python. El mecanismo de compilación y promoción de
-  artefactos todavía está pendiente de implementación; no presentar el
+- El proyecto actual es Python. `scripts/build_runtime.py` prepara un artefacto
+  de bytecode CPython 3.13 sin fuentes `.py`; la instalación, promoción y
+  retirada del checkout de producción siguen pendientes. No presentar el
   despliegue existente como si ya cumpliera este modelo.
+
 ## Contexto
 
 - Rescate de producción: rama `recovery/production-2026-10-25` y manifiesto

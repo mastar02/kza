@@ -25,6 +25,7 @@
 ## research/ — investigaciones, análisis y sesiones
 
 - [2026-10-25-production-recovery.json](research/2026-10-25-production-recovery.json) — Procedencia y hashes de los 41 archivos recuperados de producción y de dos snapshots de configuración conservados en Git.
+- [2026-10-25-runtime-readiness.json](research/2026-10-25-runtime-readiness.json) — Paquete CPython 3.13 sin fuentes, pruebas realizadas y bloqueos para retirar el checkout de producción.
 - [REPORTE_KZA_FEBRERO_2026.md](research/REPORTE_KZA_FEBRERO_2026.md) — Reporte general del asistente (febrero 2026): visión, capacidades y estado.
 - [MEJORAS_IMPLEMENTADAS.md](research/MEJORAS_IMPLEMENTADAS.md) — Registro histórico de mejoras implementadas por área.
 - [KZA_ANALISIS_Y_ROADMAP.md](research/KZA_ANALISIS_Y_ROADMAP.md) — Análisis completo del sistema y roadmap de mejoras por área (histórico).

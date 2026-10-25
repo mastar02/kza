@@ -1,0 +1,51 @@
+{
+  "checked_on": "2026-10-25",
+  "development_user": "yo",
+  "source_revision": "11692c77e5b9dac650c2faee9df89dc3660b7960",
+  "artifact": {
+    "path": "dist/kza-runtime-11692c7-cp313.tar.gz",
+    "bytes": 1526090,
+    "sha256": "56f8a211b7aaab782f59c3e5682d880e29b3087995ab6748e2bdb1d03804ec7e",
+    "format": "kza-cpython-bytecode-v1",
+    "compiled_modules": 245,
+    "runtime_assets": 21,
+    "source_py_files": 0,
+    "contains_config_secrets_data_models_dependencies": false
+  },
+  "validation": {
+    "builder_tests_passed": 3,
+    "isolated_main_import": "passed, loaded from .pyc outside the source checkout",
+    "isolated_frontend_gets_passed": [
+      "/",
+      "/home/home.css",
+      "/home/home.js",
+      "/home/request-id.js",
+      "/home/routines.js"
+    ],
+    "routine_and_microphone_model_imports": "passed",
+    "hardware_and_live_service_migration_tested": false
+  },
+  "production": {
+    "source_checkout": "/home/kza/kza",
+    "app_symlink": "/home/kza/app -> /home/kza/kza",
+    "voice_pid_observed": 303078,
+    "voice_command": "/home/kza/app/.venv/bin/python -m src.main",
+    "source_deleted": false,
+    "services_reconfigured_or_restarted": false,
+    "reason": "Production still uses the checkout; install and validate a separate release before retiring source.",
+    "administrative_blockers": [
+      "yo has no write access to /home/kza/kza",
+      "yo cannot access the kza user systemd session",
+      "Noninteractive sudo is not available to yo",
+      "SSH public-key authentication to kza@127.0.0.1 was rejected after verifying the local host key"
+    ]
+  },
+  "remaining_steps": [
+    "Inspect private units, timers and container mounts as kza",
+    "Install and validate the compiled artifact with external runtime configuration/data/models/dependencies",
+    "Move code-index source access to the yo checkout",
+    "Switch production with rollback and verify voice, dashboard, microphones and routines",
+    "Back up and retire source directories without deleting runtime state"
+  ],
+  "existing_recovery_test_failures_pending": 10
+}
