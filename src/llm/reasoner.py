@@ -12,7 +12,9 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from src.llm.cloud_consent import is_cloud_endpoint
+import httpx
+
+from src.core.egress import EgressPolicy, ProcessingDestination
 
 logger = logging.getLogger(__name__)
 
@@ -462,6 +464,8 @@ class HttpReasoner:
         api_key_env: str | None = None,       # env var explícito para cloud endpoints
         api_style: str = "completions",       # "completions" | "chat" (tarea B1)
         verify_ssl: bool = True,              # desactivar para proxies locales (tarea B5)
+        destination: str = "cloud",
+        cloud_consent: bool = False,
         **_ignored_legacy,
     ):
         # Nota: el fallback simple base_url→fallback_base_url (commit 074160b)
@@ -475,6 +479,7 @@ class HttpReasoner:
         self.api_key_env = api_key_env
         self.api_style = api_style
         self.verify_ssl = verify_ssl
+        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent)
         self._client = None
         self._resolved_model = None
         self._resolved_base_url = None
@@ -487,8 +492,12 @@ class HttpReasoner:
 
         Returns (client, resolved_model_id). Raises if endpoint doesn't respond.
         """
+        self.policy.require_allowed(base_url)
         from openai import OpenAI
-        client = OpenAI(base_url=base_url, api_key=_resolve_api_key(base_url, self.api_key_env), timeout=self.timeout)
+        client = OpenAI(
+            base_url=base_url, api_key=_resolve_api_key(base_url, self.api_key_env), timeout=self.timeout,
+            http_client=httpx.Client(follow_redirects=False, verify=self.verify_ssl),
+        )
         models = client.models.list()
         ids = [m.id for m in models.data]
         if preferred_model and preferred_model in ids:
@@ -538,6 +547,7 @@ class HttpReasoner:
         Returns:
             Objeto respuesta del SDK (o iterador si stream=True).
         """
+        self.policy.require_allowed(self.base_url)
         kwargs = {
             "model": self._resolved_model,
             "max_tokens": max_tokens,
@@ -701,10 +711,11 @@ class HttpReasoner:
         """
         import asyncio
 
+        self.policy.require_allowed(self.base_url)
         if self._client is None:
             self.load()
 
-        if self.api_style == "chat" and is_cloud_endpoint(self.base_url):
+        if self.api_style == "chat" and self.policy.destination is ProcessingDestination.CLOUD:
             logger.info(
                 "Cloud reasoning: sending ~%d chars to %s (model=%s)",
                 len(prompt), urlparse(self.base_url).hostname, self._resolved_model,
@@ -796,6 +807,8 @@ REGLAS:
         model: str = "qwen2.5-7b-instruct",
         timeout: float = 30.0,
         api_key_env: str | None = None,  # env var explícito para cloud endpoints
+        destination: str = "cloud",
+        cloud_consent: bool = False,
         # Backward-compat: ignorar kwargs de la versión local (device, gpu_*, lora_*).
         **_ignored,
     ):
@@ -803,6 +816,7 @@ REGLAS:
         self.model_name = model
         self.timeout = timeout
         self.api_key_env = api_key_env
+        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent)
         self._client = None
         self._available = False
         self._last_metrics: dict | None = None
@@ -814,10 +828,14 @@ REGLAS:
 
     def load(self):
         """Inicializar cliente OpenAI + verificar que el modelo existe en el catálogo."""
+        self.policy.require_allowed(self.base_url)
         from openai import OpenAI
 
         logger.info(f"Conectando al vLLM compartido en {self.base_url} (modelo: {self.model_name})")
-        self._client = OpenAI(base_url=self.base_url, api_key=_resolve_api_key(self.base_url, self.api_key_env), timeout=self.timeout)
+        self._client = OpenAI(
+            base_url=self.base_url, api_key=_resolve_api_key(self.base_url, self.api_key_env), timeout=self.timeout,
+            http_client=httpx.Client(follow_redirects=False),
+        )
 
         try:
             models = self._client.models.list()
@@ -855,12 +873,14 @@ REGLAS:
         import asyncio
 
         def _call():
+            self.policy.require_allowed(self.base_url)
             if self._client is None:
                 self.load()
             t0 = time.perf_counter()
             # `stop` is opt-in: omitting the key keeps the request byte-identical
             # to the pre-2026-08-04 behaviour for every existing caller.
             extra = {"stop": stop} if stop else {}
+            self.policy.require_allowed(self.base_url)
             resp = self._client.completions.create(
                 model=self.model_name,
                 prompt=prompt,
@@ -897,6 +917,7 @@ REGLAS:
         prompt ("Texto: ...\nCategoría: ..."), lo que ensucia el output. Medido
         +18 puntos accuracy en classify (benchmarks/router/REPORT.md).
         """
+        self.policy.require_allowed(self.base_url)
         if self._client is None:
             self.load()
 
@@ -906,6 +927,7 @@ REGLAS:
         if stop:
             kwargs["stop"] = stop
         for prompt in prompts:
+            self.policy.require_allowed(self.base_url)
             try:
                 resp = self._client.completions.create(
                     model=self.model_name,

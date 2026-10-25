@@ -52,7 +52,7 @@ def _fake_popen_writing_usage_file(stdout="respuesta", usage_content=None):
 
 
 def test_init_defaults():
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     assert r.binary_path == "hermes"
     assert r.provider == "openai-codex"
     assert r.model is None
@@ -65,6 +65,7 @@ def test_init_overrides():
         provider="openai-codex",
         model="gpt-5.1-codex",
         timeout_s=45.0,
+        cloud_consent=True,
     )
     assert r.binary_path == "/opt/hermes/bin/hermes"
     assert r.model == "gpt-5.1-codex"
@@ -74,7 +75,7 @@ def test_init_overrides():
 @patch("src.llm.hermes_reasoner.subprocess.run")
 def test_load_ok_when_provider_ready(mock_run):
     mock_run.return_value = _completed(stdout="openai-codex: ready (oauth)\n")
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     r.load()  # no debe lanzar
     args, kwargs = mock_run.call_args
     assert args[0] == ["hermes", "auth", "status"]
@@ -85,7 +86,7 @@ def test_load_uses_explicit_utf8_encoding(mock_run):
     """No locale-dependent decoding — systemd --user con LANG sin setear no
     garantiza UTF-8 para la salida es-AR de `hermes auth status`."""
     mock_run.return_value = _completed(stdout="openai-codex: ready (oauth)\n")
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     r.load()
     kwargs = mock_run.call_args.kwargs
     assert kwargs["encoding"] == "utf-8"
@@ -96,7 +97,7 @@ def test_load_uses_explicit_utf8_encoding(mock_run):
 @patch("src.llm.hermes_reasoner.subprocess.run")
 def test_load_raises_when_provider_not_listed(mock_run):
     mock_run.return_value = _completed(stdout="nous: ready\nxai: ready\n")
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     with pytest.raises(RuntimeError, match="openai-codex"):
         r.load()
 
@@ -104,7 +105,7 @@ def test_load_raises_when_provider_not_listed(mock_run):
 @patch("src.llm.hermes_reasoner.subprocess.run")
 def test_load_raises_when_auth_command_fails(mock_run):
     mock_run.return_value = _completed(stderr="hermes: command not found", returncode=127)
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     with pytest.raises(RuntimeError, match="openai-codex"):
         r.load()
 
@@ -112,7 +113,7 @@ def test_load_raises_when_auth_command_fails(mock_run):
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
 def test_run_returns_stripped_stdout(mock_popen):
     mock_popen.return_value = _fake_popen(stdout="  la luz del living está prendida  \n")
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     text, _tokens = r._run("¿está prendida la luz?")
     assert text == "la luz del living está prendida"
 
@@ -120,7 +121,7 @@ def test_run_returns_stripped_stdout(mock_popen):
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
 def test_run_builds_correct_command_and_starts_new_session(mock_popen):
     mock_popen.return_value = _fake_popen(stdout="ok")
-    r = HermesCliReasoner(model="gpt-5.1-codex")
+    r = HermesCliReasoner(model="gpt-5.1-codex", cloud_consent=True)
     r._run("hola")
     args, kwargs = mock_popen.call_args
     cmd = args[0]
@@ -148,7 +149,7 @@ def test_run_builds_correct_command_and_starts_new_session(mock_popen):
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
 def test_run_omits_model_flag_when_unset(mock_popen):
     mock_popen.return_value = _fake_popen(stdout="ok")
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     r._run("hola")
     cmd = mock_popen.call_args[0][0]
     assert "-m" not in cmd
@@ -157,7 +158,7 @@ def test_run_omits_model_flag_when_unset(mock_popen):
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
 def test_run_raises_on_nonzero_exit_with_stderr_in_message(mock_popen):
     mock_popen.return_value = _fake_popen(stderr="429 rate limit exceeded", returncode=1)
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     with pytest.raises(RuntimeError, match="rate limit"):
         r._run("hola")
 
@@ -169,7 +170,7 @@ def test_run_wraps_popen_oserror_in_runtime_error(mock_popen):
     que _run() promete, y error_classifier.py la clasifica PERMANENT en vez de
     darle al LLMRouter la chance de rotar a fast_router_7b (finding Important,
     code-reviewer)."""
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     with pytest.raises(RuntimeError, match="could not start") as exc_info:
         r._run("hola")
     assert "no such file" in str(exc_info.value)
@@ -183,7 +184,7 @@ def test_run_raises_on_empty_stdout_even_with_exit_zero(mock_popen):
     feedback_proxies_mentirosos): un proxy (returncode) dice "éxito" mientras
     la realidad (sin texto de respuesta) dice lo contrario."""
     mock_popen.return_value = _fake_popen(stdout="   \n", stderr="", returncode=0)
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     with pytest.raises(RuntimeError, match="empty"):
         r._run("hola")
 
@@ -199,7 +200,7 @@ def test_run_empty_stdout_still_cleans_up_usage_file(mock_popen):
         return _fake_popen(stdout="", stderr="", returncode=0)
 
     mock_popen.side_effect = _side_effect
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     with pytest.raises(RuntimeError, match="empty"):
         r._run("hola")
 
@@ -213,7 +214,7 @@ def test_run_raises_on_timeout_with_timeout_in_message(mock_popen, mock_getpgid,
     proc = _fake_popen()
     proc.communicate.side_effect = subprocess.TimeoutExpired(cmd=["hermes"], timeout=90.0)
     mock_popen.return_value = proc
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     with pytest.raises(RuntimeError, match="timed out"):
         r._run("hola")
 
@@ -230,7 +231,7 @@ def test_run_kills_process_group_on_timeout(mock_popen, mock_getpgid, mock_killp
     proc.communicate.side_effect = subprocess.TimeoutExpired(cmd=["hermes"], timeout=90.0)
     mock_popen.return_value = proc
 
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     with pytest.raises(RuntimeError):
         r._run("hola")
 
@@ -247,7 +248,7 @@ def test_run_timeout_survives_process_already_dead(mock_popen, mock_getpgid, moc
     proc = _fake_popen()
     proc.communicate.side_effect = subprocess.TimeoutExpired(cmd=["hermes"], timeout=90.0)
     mock_popen.return_value = proc
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     with pytest.raises(RuntimeError, match="timed out"):
         r._run("hola")
 
@@ -257,7 +258,7 @@ def test_run_populates_last_metrics_from_usage_file(mock_popen):
     mock_popen.side_effect = _fake_popen_writing_usage_file(
         usage_content=json.dumps({"tokens": {"total": 123}})
     )
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     text, tokens = r._run("hola")
 
     assert text == "respuesta"
@@ -277,7 +278,7 @@ def test_run_deletes_temp_usage_file_after_reading(mock_popen):
         return _fake_popen(stdout="ok")
 
     mock_popen.side_effect = _side_effect
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     r._run("hola")
 
     assert not Path(written_path["path"]).exists()
@@ -288,7 +289,7 @@ def test_run_calls_metrics_tracker_when_attached(mock_popen):
     mock_popen.side_effect = _fake_popen_writing_usage_file(
         usage_content=json.dumps({"tokens": {"total": 42}})
     )
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     tracker = MagicMock()
     r._metrics_tracker = tracker
     r._endpoint_id = "hermes_codex"
@@ -307,7 +308,7 @@ def test_run_survives_missing_usage_file(mock_popen):
     mock_popen.side_effect = _fake_popen_writing_usage_file(
         stdout="respuesta igual", usage_content=None
     )
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     text, tokens = r._run("hola")
 
     assert text == "respuesta igual"
@@ -320,7 +321,7 @@ def test_run_survives_malformed_usage_file(mock_popen):
     mock_popen.side_effect = _fake_popen_writing_usage_file(
         stdout="respuesta igual", usage_content="esto no es json{{{"
     )
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     text, tokens = r._run("hola")
 
     assert text == "respuesta igual"
@@ -333,7 +334,7 @@ def test_run_survives_usage_file_without_tokens_key(mock_popen):
     mock_popen.side_effect = _fake_popen_writing_usage_file(
         stdout="respuesta igual", usage_content=json.dumps({"model": "gpt-5.1-codex"})
     )
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     text, tokens = r._run("hola")
 
     assert text == "respuesta igual"
@@ -355,7 +356,7 @@ def test_run_survives_non_numeric_tokens_in_usage_file(mock_popen, bad_tokens_va
     mock_popen.side_effect = _fake_popen_writing_usage_file(
         stdout="respuesta igual", usage_content=json.dumps({"tokens": bad_tokens_value})
     )
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     text, tokens = r._run("hola")
 
     assert text == "respuesta igual"
@@ -371,7 +372,7 @@ def test_run_survives_metrics_tracker_record_raising(mock_popen):
     mock_popen.side_effect = _fake_popen_writing_usage_file(
         stdout="respuesta real", usage_content=json.dumps({"tokens": {"total": 55}})
     )
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     tracker = MagicMock()
     tracker.record.side_effect = RuntimeError("tracker roto")
     r._metrics_tracker = tracker
@@ -392,7 +393,7 @@ def test_run_resets_stale_metrics_when_later_run_has_no_usage_file(mock_popen):
     reset _last_metrics seguiría reportando las métricas de la corrida
     VIEJA como si fueran de la corrida actual — __call__ las usa tal cual
     para el dict `usage`."""
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
 
     mock_popen.side_effect = _fake_popen_writing_usage_file(
         stdout="primera respuesta", usage_content=json.dumps({"tokens": {"total": 999}})
@@ -417,7 +418,7 @@ def test_has_drop_in_interface():
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
 def test_call_returns_choices_shape(mock_popen):
     mock_popen.return_value = _fake_popen(stdout="la luz está prendida")
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     result = r("¿está prendida la luz?")
     assert result["choices"][0]["text"] == "la luz está prendida"
     assert "usage" in result
@@ -434,7 +435,7 @@ def test_call_usage_tokens_reflect_current_run_not_stale_last_metrics(mock_popen
     mock_popen.side_effect = _fake_popen_writing_usage_file(
         stdout="respuesta nueva", usage_content=json.dumps({"tokens": {"total": 777}})
     )
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     r._last_metrics = {"tokens": 999999, "ms": 1.0}  # métricas "viejas"/de otra corrida
 
     result = r("¿está prendida la luz?")
@@ -446,14 +447,14 @@ def test_call_usage_tokens_reflect_current_run_not_stale_last_metrics(mock_popen
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
 def test_generate_returns_text(mock_popen):
     mock_popen.return_value = _fake_popen(stdout="hola mundo")
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     assert r.generate("hi") == "hola mundo"
 
 
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
 def test_generate_stream_yields_single_chunk_with_full_text(mock_popen):
     mock_popen.return_value = _fake_popen(stdout="respuesta completa")
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     out = list(r.generate_stream("hi"))
     assert len(out) == 1
     assert out[0]["token"] == "respuesta completa"
@@ -471,7 +472,7 @@ def test_generate_stream_is_a_plain_sync_generator_not_async():
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
 def test_complete_is_async_and_returns_text(mock_popen):
     mock_popen.return_value = _fake_popen(stdout="respuesta async")
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     result = asyncio.run(r.complete("hi"))
     assert result == "respuesta async"
 
@@ -499,7 +500,7 @@ def test_complete_does_not_block_event_loop(mock_popen):
     mock_popen.side_effect = make_slow_proc
 
     async def run_concurrently():
-        r = HermesCliReasoner()
+        r = HermesCliReasoner(cloud_consent=True)
         ticks = []
 
         async def ticker():
@@ -522,7 +523,7 @@ def test_complete_does_not_block_event_loop(mock_popen):
 
 
 def test_get_info():
-    r = HermesCliReasoner(model="gpt-5.1-codex")
+    r = HermesCliReasoner(model="gpt-5.1-codex", cloud_consent=True)
     info = r.get_info()
     assert info["mode"] == "hermes_cli"
     assert info["provider"] == "openai-codex"
@@ -530,7 +531,7 @@ def test_get_info():
 
 
 def test_lora_stubs_are_noop():
-    r = HermesCliReasoner()
+    r = HermesCliReasoner(cloud_consent=True)
     r.load_lora("/some/path")  # no debe lanzar
     r.unload_lora()  # no debe lanzar
 

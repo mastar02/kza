@@ -92,38 +92,32 @@ def make_local_chat_fn(
     llm_url: str = "http://127.0.0.1:8101/v1",
     model: str = "local",
     timeout_s: float = 120.0,
+    destination: str = "cloud",
 ) -> Callable[[str], Awaitable[str]]:
     """chat_fn real contra el llama-server local (OpenAI-compat).
 
-    Las transcripciones del hogar SOLO deben ir a un LLM local — si la URL
-    configurada no es loopback se avisa fuerte (no se bloquea: una IP LAN del
-    propio server puede ser legítima, pero tiene que ser una decisión visible).
+    The configured backend must explicitly declare LOCAL processing. This
+    consumer never inherits a cloud grant, including for a loopback gateway.
     """
-    from urllib.parse import urlparse
-
     import aiohttp
 
+    from src.core.egress import EgressDenied, EgressPolicy, ProcessingDestination
     from src.llm.reasoner import _resolve_api_key
 
-    host = urlparse(llm_url).hostname or ""
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        logger.warning(
-            f"⚠️ Distiller: llm_url apunta a {host!r} (no-loopback). Las "
-            f"transcripciones ambientales del hogar JAMÁS deben salir a un "
-            f"servicio cloud — verificá que sea un LLM local."
-        )
-
-    # El LLM local exige bearer (LLAMA_API_KEY :8101, enforce desde 2026-04-30).
-    # Reusa la resolución por puerto del reasoner — sin el header → 401.
-    headers = {"Authorization": f"Bearer {_resolve_api_key(llm_url)}"}
+    policy = EgressPolicy.for_http(llm_url, destination, False)
 
     async def chat(prompt: str) -> str:
+        policy.require_allowed(llm_url)
+        if policy.destination is not ProcessingDestination.LOCAL:
+            raise EgressDenied("ambient_requires_local_processing")
+        headers = {"Authorization": f"Bearer {_resolve_api_key(llm_url)}"}
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=timeout_s)
         ) as session:
             async with session.post(
                 f"{llm_url.rstrip('/')}/chat/completions",
                 headers=headers,
+                allow_redirects=False,
                 json={
                     "model": model,
                     "messages": [

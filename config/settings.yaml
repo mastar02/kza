@@ -303,6 +303,7 @@ embeddings:
 # R1: prohibido duplicar; consumo por HTTP contra el servicio compartido.
 # Ver Notion KZA pág 8 §4 para catálogo y política.
 router:
+  destination: "local"  # El backend 7B procesa en este servidor.
   enabled: true
   # 2026-05-07 (deploy LLM endpoints reorg): el fast router ahora apunta a
   # kza-llm-fast.service en :8101 (Qwen2.5-7B-Instruct Q4_K_M, ik_llama.cpp).
@@ -387,6 +388,7 @@ command_gate:
 # NO usa este modelo (grammar + Chroma + 7B :8101). Sin gateway/internet
 # el slow path queda mudo; la domótica sigue local.
 reasoner:
+  destination: "cloud"  # También al acceder al gateway por loopback.
   mode: "http"
   http_base_url: "${LLM_GATEWAY_URL}"  # gateway LiteLLM (OpenAI-compat)
   http_timeout: 60
@@ -934,31 +936,18 @@ orchestrator:
     # comentario "OFF por defecto" de persistence.enabled más abajo, que es
     # un flag distinto y sigue en false).
     #
-    # base_url/model (si no se overridean acá) heredan del reasoner principal
-    # SOLO cuando reasoner.cloud.consent lo permite — ver
-    # resolve_compaction_endpoint (src/llm/cloud_consent.py). Con
-    # consent=false el compactor degrada a local_base_url/local_model de
-    # abajo (mismo :8101 que ya usa el ambient distiller), sin heredar
-    # credenciales del reasoner cloud. El gate se evalúa para cualquier
-    # reasoner.mode, no solo "http" (resolve_reasoner_gate), y ni base_url ni
-    # local_base_url pueden apuntar a un endpoint cloud con el gate
-    # bloqueado: se ignoran y se loguea error.
-    #
-    # ⚠️ Límite conocido: el gate clasifica por host, así que un endpoint
-    # loopback que REENVÍA al cloud (el gateway LiteLLM de 127.0.0.1:8200)
-    # pasa como local y abre el gate. Aplica al bloque de rollback de
-    # emergencia de reasoner — y también, apenas se deploye, al camino normal:
-    # LLM_GATEWAY_URL NO está seteada en el server (verificado 2026-08-02), así
-    # que el placeholder de arriba resuelve a 127.0.0.1:8200. El fail-closed lo
-    # sostiene el ORDEN de resolve_http_reasoner_base_url (gate antes del
-    # fallback), no la URL final. Ver .superpowers/sdd/compactor-consent/.
+    # Hereda el destino explícito del reasoner. Un override base_url necesita
+    # su propia destination (por defecto cloud), aunque use loopback. Con
+    # consent=false sólo se permiten backends declarados locales; el fallback
+    # incorporado es el 7B :8101, sin credenciales del cloud.
     compaction:
       enabled: true
       threshold_turns: 6
       keep_recent_turns: 3
       max_summary_tokens: 200
       timeout_s: 30.0            # 30B tarda ~5s en 200 tokens; 30s es safety margin 6x
-      # local_base_url: "http://127.0.0.1:8101/v1"  # default si se omite
+      # local_base_url: "http://127.0.0.1:8101/v1"  # default incorporado
+      # local_destination: "local"  # obligatorio al elegir otro fallback local
       # local_model: "local"                          # default si se omite
 
     # Plan #2 OpenClaw — persistencia cross-sesión.
@@ -1831,6 +1820,7 @@ ambient:
     min_stability: 0.6
     require_known_speaker_for_live: false
   distill:
+    destination: "local"  # Declaración del backend; loopback solo no la prueba.
     llm_url: "http://127.0.0.1:8101/v1"   # SOLO local (privacidad del spec)
     model: "local"
     interval_hours: 6
@@ -1912,6 +1902,7 @@ code_index:
     model: "BAAI/bge-m3"
     device: "cpu"               # NUNCA GPU
   cards:
+    destination: "cloud"  # Usa el mismo consentimiento explícito del reasoner.
     base_url: "${LLM_GATEWAY_URL}"   # gateway LiteLLM → reasoner.http_model
     model: "grok-4.20-non-reasoning"
     api_key_env: "MINIMAX_API_KEY"            # virtual key del gateway

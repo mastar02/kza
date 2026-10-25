@@ -403,46 +403,15 @@ async def _run_main(shutdown: AsyncExitStack):
 
     from src.llm.cloud_consent import resolve_reasoner_gate
 
-    # El compactor necesita gate_allowed SIEMPRE (línea ~1180, vía
-    # resolve_compaction_endpoint), también cuando mode != "http" — ahí no hay
-    # cliente cloud principal, pero reasoner_config conserva http_base_url (el
-    # gateway → MiniMax) y api_key_env, y el compactor los hereda igual. Por
-    # eso el gate se evalúa para CUALQUIER mode, en resolve_reasoner_gate.
-    #
-    # Acá estuvo hardcodeado `gate_allowed = True` "porque sin reasoner cloud
-    # no hay nada que bloquear" (review 2026-08-02 ronda 3): con mode="local"
-    # —o un typo en mode, la condición es == "http"— cloud.consent=false
-    # quedaba en no-op y la conversación del hogar salía igual con la key
-    # real. Tests: test_gate_is_evaluated_when_reasoner_mode_is_not_http.
+    # Evaluate the declared backend, even for alternate modes: compaction
+    # shares this grant. Loopback gateways do not acquire a LOCAL declaration.
     gate_allowed, _ = resolve_reasoner_gate(
         reasoner_config, reasoner_mode, DEFAULT_LOCAL_LLM_GATEWAY
     )
 
     if reasoner_mode == "http":
-        # El orden gate→fallback (y el porqué) está documentado y TESTEADO en
-        # resolve_http_reasoner_base_url (src/llm/cloud_consent.py), a la que
-        # resolve_reasoner_gate delega en este mode — no lo reimplementes acá
-        # inline, ese fue exactamente el bug (Critical cerrado 2026-08-02,
-        # Task 5 "CI a verde"): con el fallback aplicado antes del gate,
-        # is_cloud_endpoint ve "127.0.0.1" en vez del placeholder y el gate
-        # pasa de fail-closed a fail-open.
-        #
-        # reasoner_config es el mismo dict que consume el compactor más abajo
-        # (línea ~1180, vía resolve_compaction_endpoint) — ese resolver SÍ
-        # respeta gate_allowed (dejó de ser bypass, ver
-        # .superpowers/sdd/compactor-consent/) y va a leer este http_base_url
-        # ya resuelto cuando el gate lo permite. Resolver acá el placeholder
-        # evita que el literal opaco "${LLM_GATEWAY_URL}" llegue a CUALQUIER
-        # cliente HTTP (mejora de robustez operativa) — pero en el corner
-        # env-var-ausente + compaction.enabled esto NO es privacy-preserving
-        # respecto de dejar el placeholder sin resolver: sin este fallback,
-        # HttpReasoner.load() del compactor recibe el literal, httpx.URL(...)
-        # tira UnsupportedProtocol al no poder parsearlo, el try/except del
-        # compactor lo atrapa y compactor=None (cero actividad de red). Con
-        # el fallback, el compactor recibe una URL local válida y SÍ intenta
-        # conectar — puede pasar de "muerto" a "vivo" sin que el operador
-        # haya elegido ese endpoint para él. Ver informe Task 5 §8.1 para el
-        # análisis completo de esta corrección.
+        # The resolver labels the gateway fallback CLOUD; consumers also
+        # enforce the grant at every inference, including cached clients.
         if not gate_allowed:
             logger.warning(
                 "Reasoner cloud bloqueado por falta de consent — slow path sin reasoner. "
@@ -458,6 +427,8 @@ async def _run_main(shutdown: AsyncExitStack):
                 api_style=reasoner_config.get("api_style", "completions"),
                 api_key_env=reasoner_config.get("api_key_env"),
                 verify_ssl=reasoner_config.get("verify_ssl", True),
+                destination=reasoner_config.get("destination", "cloud"),
+                cloud_consent=reasoner_config.get("cloud", {}).get("consent", False),
             )
             try:
                 llm.load()
@@ -502,6 +473,7 @@ async def _run_main(shutdown: AsyncExitStack):
             llm = HermesCliReasoner(
                 binary_path=reasoner_config.get("hermes_binary_path", "hermes"),
                 provider=reasoner_config.get("hermes_provider", "openai-codex"),
+                cloud_consent=reasoner_config.get("cloud", {}).get("consent", False),
                 model=reasoner_config.get("hermes_model"),
                 timeout_s=hermes_timeout_s,
             )
@@ -544,6 +516,8 @@ async def _run_main(shutdown: AsyncExitStack):
             base_url=router_config.get("base_url", "http://127.0.0.1:8101/v1"),
             model=router_config.get("model", "qwen2.5-7b-instruct"),
             timeout=router_config.get("timeout", 30),
+            destination=router_config.get("destination", "cloud"),
+            cloud_consent=reasoner_config.get("cloud", {}).get("consent", False),
         )
         logger.info(f"Fast router (HTTP) → {router_config.get('base_url', 'http://127.0.0.1:8101/v1')}")
 
@@ -1355,6 +1329,7 @@ async def _run_main(shutdown: AsyncExitStack):
                 compaction_reasoner = HermesCliReasoner(
                     binary_path=reasoner_config.get("hermes_binary_path", "hermes"),
                     provider=reasoner_config.get("hermes_provider", "openai-codex"),
+                    cloud_consent=reasoner_config.get("cloud", {}).get("consent", False),
                     model=reasoner_config.get("hermes_model"),
                     timeout_s=compaction_hermes_timeout_s,
                 )
@@ -1411,6 +1386,8 @@ async def _run_main(shutdown: AsyncExitStack):
                 model=compaction_endpoint.model,
                 api_style=compaction_endpoint.api_style,
                 api_key_env=compaction_endpoint.api_key_env,
+                destination=compaction_endpoint.destination,
+                cloud_consent=compaction_endpoint.cloud_consent,
                 timeout=compaction_cfg.get("timeout_s", 30.0),
             )
             try:

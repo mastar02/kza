@@ -39,7 +39,7 @@ def _chat_client_returning(text):
 
 
 def test_extract_text_strips_think():
-    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat")
+    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat", cloud_consent=True)
     r._client = _chat_client_returning("<think>2+2 es 4</think>4")
     r._resolved_model = "MiniMax-M2.7"
     assert r("¿2+2?")["choices"][0]["text"] == "4"
@@ -65,7 +65,7 @@ def _collect(gen):
 
 
 def test_generate_stream_strips_think_first():
-    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat")
+    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat", cloud_consent=True)
     r._resolved_model = "MiniMax-M2.7"
     # think completo en varios chunks, luego la respuesta
     r._client = _stream_client(["<think>", "razono ", "un poco", "</think>", "La ", "respuesta ", "final"])
@@ -76,7 +76,7 @@ def test_generate_stream_strips_think_first():
 
 def test_generate_stream_closing_tag_split_across_chunks():
     # El </think> partido entre chunks no debe filtrarse a la salida.
-    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat")
+    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat", cloud_consent=True)
     r._resolved_model = "MiniMax-M2.7"
     r._client = _stream_client(["<think>r</th", "ink>", "ok"])
     out = _collect(r.generate_stream("x"))
@@ -85,7 +85,7 @@ def test_generate_stream_closing_tag_split_across_chunks():
 
 
 def test_generate_stream_no_think_passthrough():
-    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat")
+    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat", cloud_consent=True)
     r._resolved_model = "MiniMax-M2.7"
     r._client = _stream_client(["Hola", " mundo"])
     assert _collect(r.generate_stream("x")) == "Hola mundo"

@@ -26,7 +26,8 @@ def main() -> None:
     # replica acá el mismo mecanismo que usa main.py.
     cfg = resolve_env_vars(raw)["code_index"]
 
-    indexer = build_indexer(cfg, repo_root=Path.cwd())
+    consent = raw.get("reasoner", {}).get("cloud", {}).get("consent", False)
+    indexer = build_indexer(cfg, repo_root=Path.cwd(), cloud_consent=consent)
     app = create_app(indexer)
     web.run_app(app, host=cfg.get("host", "0.0.0.0"), port=cfg.get("port", 9510))  # nosec B104 -- bind a LAN deliberado: el servicio code-index se consume desde la red (tools/code_search.py y agentes remotos), no solo localhost
 

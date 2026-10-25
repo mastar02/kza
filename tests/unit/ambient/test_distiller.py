@@ -222,7 +222,7 @@ def test_make_local_chat_fn_envia_bearer_token(monkeypatch):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         monkeypatch.setenv("LLAMA_API_KEY", "secret-token-xyz")
-        chat = make_local_chat_fn(llm_url=f"http://127.0.0.1:{port}/v1")
+        chat = make_local_chat_fn(llm_url=f"http://127.0.0.1:{port}/v1", destination="local")
         out = asyncio.run(chat("hola"))
     finally:
         srv.shutdown()

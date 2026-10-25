@@ -29,7 +29,7 @@ from src.providers.remote import (
 
 
 def _make_config(url: str = "http://localhost:5001", **kwargs) -> RemoteProviderConfig:
-    return RemoteProviderConfig(url=url, **kwargs)
+    return RemoteProviderConfig(url=url, **kwargs, destination="local")
 
 
 def _make_audio_b64(length: int = 100) -> str:
@@ -69,7 +69,8 @@ class FakeSession:
         self.closed = False
         self._post_calls = []
 
-    def post(self, url, *, json=None, data=None, timeout=None):
+    def post(self, url, *, json=None, data=None, timeout=None, allow_redirects=True):
+        assert allow_redirects is False
         self._post_calls.append({"url": url, "json": json, "data": data})
         if self._call_index < len(self._responses):
             resp = self._responses[self._call_index]

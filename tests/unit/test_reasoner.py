@@ -134,6 +134,7 @@ class TestFastRouterLoRA:
             enable_lora=True,
             lora_path="/models/test_adapter",
             max_lora_rank=32,
+            destination="local",
         )
 
         # El objeto queda usable...
@@ -154,7 +155,7 @@ class TestFastRouterLoRA:
         from src.llm.reasoner import FastRouter
 
         with caplog.at_level(logging.DEBUG, logger="src.llm.reasoner"):
-            FastRouter(model="test", enable_lora=True, lora_path="/x", max_lora_rank=8)
+            FastRouter(model="test", enable_lora=True, lora_path="/x", max_lora_rank=8, destination="local")
 
         assert "ignorando kwargs legacy" in caplog.text
         assert "enable_lora" in caplog.text
@@ -190,7 +191,7 @@ class TestFastRouterLoRA:
 
         from src.llm.reasoner import HttpReasoner
 
-        reasoner = HttpReasoner(base_url="http://127.0.0.1:8101/v1")
+        reasoner = HttpReasoner(base_url="http://127.0.0.1:8101/v1", cloud_consent=True)
 
         with caplog.at_level(logging.WARNING, logger="src.llm.reasoner"):
             reasoner.load_lora("/models/nightly/latest")

@@ -128,7 +128,7 @@ def build_chroma_client(cfg: dict):
     raise ValueError(f"code_index.chroma.mode unknown: {mode!r}")
 
 
-def build_indexer(cfg: dict, repo_root: Path) -> CodeIndexer:
+def build_indexer(cfg: dict, repo_root: Path, *, cloud_consent: bool = False) -> CodeIndexer:
     """Factory con dependencias reales (Chroma persistente, BGE-M3 CPU, MiniMax)."""
     from sentence_transformers import SentenceTransformer
 
@@ -147,17 +147,21 @@ def build_indexer(cfg: dict, repo_root: Path) -> CodeIndexer:
 
     cards_cfg = cfg["cards"]
     base_url = cards_cfg["base_url"]
+    destination = cards_cfg.get("destination", "cloud")
     if is_unresolved_placeholder(base_url):
         logger.warning(
             "code_index.cards.base_url sin resolver (¿falta LLM_GATEWAY_URL en "
-            f".env?) — usando fallback local {DEFAULT_LOCAL_LLM_GATEWAY}"
+            f".env?) — usando gateway cloud {DEFAULT_LOCAL_LLM_GATEWAY}"
         )
         base_url = DEFAULT_LOCAL_LLM_GATEWAY
+        destination = "cloud"
     card_gen = CardGenerator(
         base_url=base_url,
         model=cards_cfg["model"],
         api_key_env=cards_cfg.get("api_key_env", "MINIMAX_API_KEY"),
         timeout=cards_cfg.get("timeout", 120.0),
+        destination=destination,
+        cloud_consent=cloud_consent,
     )
 
     manifest = IndexManifest(Path(cfg["manifest_path"]))

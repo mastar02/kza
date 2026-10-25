@@ -16,6 +16,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from src.core.egress import EgressPolicy
+
 logger = logging.getLogger(__name__)
 
 
@@ -89,6 +91,7 @@ class HermesCliReasoner:
         provider: str = "openai-codex",
         model: str | None = None,
         timeout_s: float = 90.0,
+        cloud_consent: bool = False,
     ):
         """
         Args:
@@ -107,6 +110,7 @@ class HermesCliReasoner:
         self.provider = provider
         self.model = model
         self.timeout_s = timeout_s
+        self.policy = EgressPolicy(cloud_consent=cloud_consent)
         self._last_metrics: dict | None = None
         self._metrics_tracker = None
         self._endpoint_id: str | None = None
@@ -127,6 +131,7 @@ class HermesCliReasoner:
         el agente completo, con su propio timeout acotado — el riesgo de
         huérfanos que justifica el mecanismo de `_run()` no aplica acá.
         """
+        self.policy.require_allowed()
         try:
             result = subprocess.run(
                 [self.binary_path, "auth", "status"],
@@ -192,6 +197,7 @@ class HermesCliReasoner:
             a __call__ leer el valor de SU PROPIA corrida sin una carrera si
             dos llamadas pisan la misma instancia concurrentemente.
         """
+        self.policy.require_allowed()
         self._last_metrics = None
         fd, usage_path = tempfile.mkstemp(suffix=".json", prefix="hermes-usage-")
         os.close(fd)

@@ -30,7 +30,7 @@ import re
 import sys
 import time
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 logging.basicConfig(
@@ -390,7 +390,10 @@ def capability_prompt_detail(spec: CommandSpec) -> tuple[str, str]:
 # ============================================================
 class VLLMClient:
     """Cliente OpenAI contra vLLM compartido :8100 (infra)."""
-    def __init__(self, base_url: str, model: str, timeout: float = 30.0):
+    def __init__(self, base_url: str, model: str, timeout: float = 30.0, *, destination: str = "cloud", cloud_consent: bool = False):
+        from src.core.egress import EgressPolicy
+        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent)
+        self.policy.require_allowed(base_url)
         self.base_url = base_url
         self.model = model
         self.timeout = timeout
@@ -405,7 +408,11 @@ class VLLMClient:
             or os.environ.get("OPENAI_API_KEY")
             or "not-used"
         )
-        self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+        import httpx
+        self.client = OpenAI(
+            base_url=base_url, api_key=api_key, timeout=timeout,
+            http_client=httpx.Client(follow_redirects=False),
+        )
         models = [m.id for m in self.client.models.list().data]
         if model not in models:
             raise RuntimeError(f"Modelo {model} no disponible. Catálogo: {models}")
@@ -413,6 +420,7 @@ class VLLMClient:
 
     def complete(self, prompt: str, max_tokens: int = 400, temperature: float = 0.5) -> str:
         # Qwen Instruct → chat completions con system prompt conciso.
+        self.policy.require_allowed(self.base_url)
         resp = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -480,8 +488,9 @@ def main():
     ap.add_argument("--embedder-device", default="cuda:0")
     ap.add_argument("--use-72b", action="store_true",
                     help="Usar 72B local en lugar de vLLM 7B por HTTP (más lento ~100s/prompt)")
-    ap.add_argument("--vllm-url", default="http://127.0.0.1:8100/v1")
-    ap.add_argument("--vllm-model", default="qwen2.5-7b-awq")
+    ap.add_argument("--config", default=str(ROOT / "config/settings.yaml"))
+    ap.add_argument("--vllm-url", default=None)
+    ap.add_argument("--vllm-model", default=None)
     ap.add_argument("--model-path",
                     default=str(ROOT / "models/Qwen2.5-72B-Instruct-Q8_0/Qwen2.5-72B-Instruct-Q8_0-00001-of-00002.gguf"))
     args = ap.parse_args()
@@ -612,7 +621,18 @@ def main():
         if args.use_72b:
             llm = LocalLLMClient(args.model_path)
         else:
-            llm = VLLMClient(args.vllm_url, args.vllm_model)
+            import yaml
+            from src.core.settings_schema import resolve_env_vars
+            with open(args.config) as stream:
+                inference_config = resolve_env_vars(yaml.safe_load(stream))
+            router_config = inference_config.get("router", {})
+            base_url = args.vllm_url or router_config.get("base_url", "http://127.0.0.1:8101/v1")
+            matches_profile = base_url.rstrip("/") == router_config.get("base_url", "").rstrip("/")
+            llm = VLLMClient(
+                base_url, args.vllm_model or router_config.get("model", "local"),
+                destination=router_config.get("destination", "cloud") if matches_profile else "cloud",
+                cloud_consent=inference_config.get("reasoner", {}).get("cloud", {}).get("consent", False) if matches_profile else False,
+            )
 
     # Generar + persistir
     stats = {"generated": 0, "phrases": 0, "failed": 0}

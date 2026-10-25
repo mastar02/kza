@@ -13,7 +13,7 @@ from src.llm.reasoner import FastRouter
 
 @pytest.fixture
 def router():
-    r = FastRouter(base_url="http://127.0.0.1:8101/v1", model="test-model")
+    r = FastRouter(base_url="http://127.0.0.1:8101/v1", model="test-model", destination="local")
     r._client = MagicMock()
     r._client.completions.create.return_value = MagicMock(
         choices=[MagicMock(text="ACCION_AIRE")], usage=None

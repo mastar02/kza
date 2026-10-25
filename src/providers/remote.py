@@ -20,6 +20,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from src.core.egress import EgressDenied, EgressPolicy
+
 logger = logging.getLogger(__name__)
 
 # Default retry / timeout settings
@@ -28,7 +30,7 @@ _DEFAULT_MAX_RETRIES = 2
 _DEFAULT_RETRY_DELAY_S = 0.5
 
 
-@dataclass
+@dataclass(frozen=True)
 class RemoteProviderConfig:
     """Shared configuration for all remote providers."""
 
@@ -36,6 +38,13 @@ class RemoteProviderConfig:
     timeout: float = _DEFAULT_TIMEOUT_S
     max_retries: int = _DEFAULT_MAX_RETRIES
     retry_delay: float = _DEFAULT_RETRY_DELAY_S
+    destination: str = "cloud"
+    cloud_consent: bool = False
+
+    @property
+    def egress_policy(self) -> EgressPolicy:
+        """Return the processing grant bound to this worker, not its hostname."""
+        return EgressPolicy.for_http(self.url, self.destination, self.cloud_consent)
 
 
 # ---------------------------------------------------------------------------
@@ -51,12 +60,16 @@ async def _post_with_retry(
     timeout: float = _DEFAULT_TIMEOUT_S,
     max_retries: int = _DEFAULT_MAX_RETRIES,
     retry_delay: float = _DEFAULT_RETRY_DELAY_S,
+    policy: EgressPolicy | None = None,
 ) -> dict:
     """POST with exponential-backoff retry.
 
     Raises:
         RuntimeError: After all retries are exhausted.
     """
+    if policy is None:
+        raise EgressDenied("remote_processing_destination_required")
+    policy.require_request(url)
     import aiohttp
 
     last_exc: Exception | None = None
@@ -65,7 +78,7 @@ async def _post_with_retry(
         try:
             client_timeout = aiohttp.ClientTimeout(total=timeout)
             async with session.post(
-                url, json=json, data=data, timeout=client_timeout
+                url, json=json, data=data, timeout=client_timeout, allow_redirects=False,
             ) as resp:
                 if resp.status == 200:
                     return await resp.json()
@@ -128,6 +141,7 @@ class RemoteSTTProvider:
         self._session = None
 
     async def _get_session(self):
+        self._config.egress_policy.require_allowed(self._config.url)
         if self._session is None or self._session.closed:
             import aiohttp
             self._session = aiohttp.ClientSession()
@@ -178,6 +192,7 @@ class RemoteSTTProvider:
             timeout=self._config.timeout,
             max_retries=self._config.max_retries,
             retry_delay=self._config.retry_delay,
+            policy=self._config.egress_policy,
         )
         return result["text"], result["elapsed_ms"]
 
@@ -214,6 +229,7 @@ class RemoteLLMProvider:
         self._session = None
 
     async def _get_session(self):
+        self._config.egress_policy.require_allowed(self._config.url)
         if self._session is None or self._session.closed:
             import aiohttp
             self._session = aiohttp.ClientSession()
@@ -260,6 +276,7 @@ class RemoteLLMProvider:
             timeout=self._config.timeout,
             max_retries=self._config.max_retries,
             retry_delay=self._config.retry_delay,
+            policy=self._config.egress_policy,
         )
         return result["text"]
 
@@ -303,6 +320,7 @@ class RemoteLLMProvider:
             timeout=self._config.timeout,
             max_retries=self._config.max_retries,
             retry_delay=self._config.retry_delay,
+            policy=self._config.egress_policy,
         )
         return result["text"]
 
@@ -333,6 +351,7 @@ class RemoteTTSProvider:
         self.sample_rate: int = 24000  # Updated from worker response
 
     async def _get_session(self):
+        self._config.egress_policy.require_allowed(self._config.url)
         if self._session is None or self._session.closed:
             import aiohttp
             self._session = aiohttp.ClientSession()
@@ -373,6 +392,7 @@ class RemoteTTSProvider:
             timeout=self._config.timeout,
             max_retries=self._config.max_retries,
             retry_delay=self._config.retry_delay,
+            policy=self._config.egress_policy,
         )
 
         audio = _base64_to_ndarray(result["audio_b64"])
@@ -417,6 +437,7 @@ class RemoteRouterProvider:
         self._session = None
 
     async def _get_session(self):
+        self._config.egress_policy.require_allowed(self._config.url)
         if self._session is None or self._session.closed:
             import aiohttp
             self._session = aiohttp.ClientSession()
@@ -447,6 +468,7 @@ class RemoteRouterProvider:
             timeout=self._config.timeout,
             max_retries=self._config.max_retries,
             retry_delay=self._config.retry_delay,
+            policy=self._config.egress_policy,
         )
         return result["label"]
 
@@ -487,6 +509,7 @@ class RemoteRouterProvider:
             timeout=self._config.timeout,
             max_retries=self._config.max_retries,
             retry_delay=self._config.retry_delay,
+            policy=self._config.egress_policy,
         )
         return result["needs_deep"], result["response"]
 

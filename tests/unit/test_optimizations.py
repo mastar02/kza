@@ -178,7 +178,7 @@ class TestPrefixCaching:
         """classify() debe usar el prefix cacheado"""
         from src.llm.reasoner import FastRouter
 
-        router = FastRouter(model="test", device="cuda:0")
+        router = FastRouter(model="test", device="cuda:0", destination="local")
         # Mock the FastRouter.generate method directly to avoid vllm import
         router.generate = Mock(return_value=["domótica"])
 
@@ -192,7 +192,7 @@ class TestPrefixCaching:
         """classify_and_respond() debe usar el prefix cacheado"""
         from src.llm.reasoner import FastRouter
 
-        router = FastRouter(model="test", device="cuda:0")
+        router = FastRouter(model="test", device="cuda:0", destination="local")
         # Mock the FastRouter.generate method directly to avoid vllm import
         router.generate = Mock(return_value=["Luz encendida"])
 
@@ -208,7 +208,7 @@ class TestPrefixCaching:
         """classify_and_respond() debe detectar [DEEP] correctamente"""
         from src.llm.reasoner import FastRouter
 
-        router = FastRouter(model="test", device="cuda:0")
+        router = FastRouter(model="test", device="cuda:0", destination="local")
         # Mock the FastRouter.generate method directly to avoid vllm import
         router.generate = Mock(return_value=["[DEEP]"])
 
@@ -228,7 +228,7 @@ class TestPrefixCaching:
         """
         from src.llm.reasoner import FastRouter
 
-        router = FastRouter(model="test", enable_prefix_caching=True)
+        router = FastRouter(model="test", enable_prefix_caching=True, destination="local")
         stats = router.get_cache_stats()
 
         assert stats["mode"] == "http"

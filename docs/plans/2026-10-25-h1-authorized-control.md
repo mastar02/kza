@@ -3,7 +3,8 @@
 H1 implementa R01, R02, R03 y consentimiento de R08 del
 [roadmap](2026-10-25-stabilization-roadmap.md). Parte del
 [baseline y contratos de H0](2026-10-25-h0-baseline-contracts.md).
-H0 todavía necesita evidencia viva y vista previa de memoria; se avanza con
+H0 todavía necesita evidencia viva y resolver el tratamiento y la migración en
+copia de memoria legacy; su vista previa privada ya existe. Se avanza con
 contratos y pruebas sintéticas sin habilitar dispositivos ni modificar producción.
 
 ## Secuencia y criterios
@@ -16,7 +17,7 @@ contratos y pruebas sintéticas sin habilitar dispositivos ni modificar producci
 | Política | Un servicio de acciones y un actor de procedencia por productor. Política obligatoria después de rewrites y antes de todo envío; permisos revisados también al disparar acciones diferidas. Tests sin hooks, con rewrite y revocación. | Pendiente. |
 | Operaciones | Extender DTOs, validación y confirmación a clima y cover. Agregar temperatura de color para reproducir las escenas seleccionadas sin perder parámetros. Usar rangos, modos y entidades del inventario privado aprobado. | Pendiente. |
 | Grupos y escenas | Expandir definiciones verificadas a hojas autorizadas y operaciones tipadas. Rechazar macros opacas, templates sin contexto y efectos indirectos no verificados. Pruebas de escena que oculta lock/alarm, grupos no autorizados y parámetros desconocidos. | Pendiente. |
-| Consentimiento | Destino cloud explícito, independiente de host/transporte. Denegación probada en reasoner, compactor y cada consumidor; loopback no elude consentimiento. | Pendiente. |
+| Consentimiento | Destino cloud explícito, independiente de host/transporte. Denegación probada en reasoner, compactor y cada consumidor; loopback no elude consentimiento. | Implementado; validación offline conectada y límites descritos abajo. |
 
 El actor autenticado se obtiene de la sesión del servidor. Voz, SpeakerID y
 agrupación acústica no aportan identidad autenticada. La selección del usuario
@@ -131,6 +132,34 @@ los rechazos de health sin credencial/configuración) pasan. El
 [registro de captura y acceso](../research/2026-10-25-h1-capture-auth-validation.json)
 distingue estas pruebas de las comprobaciones acústicas, del proxy instalado y
 de los demás frentes de H1 que permanecen pendientes.
+
+## Destino de procesamiento y consentimiento
+
+`EgressPolicy` liga un destino declarado y un consentimiento booleano estricto
+a un endpoint. Sin declaración, el destino es cloud; una URL loopback no prueba
+dónde procesa el backend. `local` es una declaración del operador sobre ese
+backend, que debe contrastarse en la validación del entorno de release.
+
+Los consumidores comprueban esa política antes de enviar, también con un SDK
+ya creado: HTTP reasoner, FastRouter, CLI Hermes, cards del índice, destilación
+ambiental, generador de frases del inventario y providers remotos. Los clientes
+HTTP no siguen redirects; un cambio de endpoint requiere su propia política.
+Una URL ausente se rechaza antes de que el SDK elija su proveedor por defecto.
+No se eligió otro proveedor ni se cambió el consentimiento configurado.
+
+La compactación hereda el destino del reasoner; un override necesita su propia
+declaración. Si falta consentimiento cloud, puede usar el 7B local ya existente,
+sin heredar credenciales cloud. El fallback del gateway sigue siendo cloud,
+aunque se resuelva a loopback. Ambient exige procesamiento local y los providers
+STT/TTS no heredan la autorización cloud del reasoner para enviar audio.
+
+Las pruebas ejercitan consumidores reales con transportes falsos: denegación
+antes del SDK/subproceso/sesión, clientes en caché, cambio de política, resolución
+de placeholders, cadena de failover y factory del índice. El SDK OpenAI real,
+con transporte HTTPX en memoria, recibe un redirect y no lo sigue. No se envían
+conversaciones, código ni audio a servicios reales para estas pruebas. La
+actualización de configuración requiere reconstruir las dependencias; no se
+implementa un control de consentimiento en caliente en este frente.
 
 ## Integración de la política pendiente
 

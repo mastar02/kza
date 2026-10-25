@@ -4,6 +4,10 @@ import logging
 import os
 import re
 
+import httpx
+
+from src.core.egress import EgressPolicy
+
 logger = logging.getLogger(__name__)
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -45,6 +49,8 @@ class CardGenerator:
         api_key_env: str = "MINIMAX_API_KEY",
         timeout: float = 120.0,
         max_source_chars: int = 48_000,
+        destination: str = "cloud",
+        cloud_consent: bool = False,
     ):
         """Inicializar el generador de cards.
 
@@ -60,9 +66,11 @@ class CardGenerator:
         self.api_key_env = api_key_env
         self.timeout = timeout
         self.max_source_chars = max_source_chars
+        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent)
         self._client = None
 
     def _get_client(self):
+        self.policy.require_allowed(self.base_url)
         if self._client is None:
             from openai import AsyncOpenAI
 
@@ -70,6 +78,7 @@ class CardGenerator:
                 base_url=self.base_url,
                 api_key=os.environ.get(self.api_key_env, "dummy"),
                 timeout=self.timeout,
+                http_client=httpx.AsyncClient(follow_redirects=False),
             )
         return self._client
 

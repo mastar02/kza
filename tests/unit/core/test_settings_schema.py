@@ -21,6 +21,17 @@ def real_config() -> dict:
 
 
 class TestValidateSettings:
+    @pytest.mark.parametrize("consent", ["false", "true", 0, 1])
+    def test_cloud_consent_must_be_a_literal_boolean(self, real_config, consent):
+        real_config["reasoner"]["cloud"]["consent"] = consent
+        with pytest.raises(ValueError, match="consent"):
+            validate_settings(real_config)
+
+    def test_destination_must_describe_processing_not_transport(self, real_config):
+        real_config["reasoner"]["destination"] = "loopback"
+        with pytest.raises(ValueError, match="destination"):
+            validate_settings(real_config)
+
     def test_real_settings_yaml_validates(self, real_config):
         """El settings.yaml versionado en el repo debe pasar el schema."""
         result = validate_settings(real_config)

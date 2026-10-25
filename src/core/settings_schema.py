@@ -12,7 +12,7 @@ configs rotas al boot con un error claro, no modelar las ~1500 líneas.
 
 import logging
 import os
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -78,6 +78,19 @@ class _Section(BaseModel):
 
 class HomeAssistantSettings(_Section):
     url: str
+
+
+class CloudConsentSettings(_Section):
+    """Only a literal boolean grants cloud processing, never a truthy string."""
+
+    consent: bool = Field(default=False, strict=True)
+
+
+class InferenceSettings(_Section):
+    """Declared backend location, independent of its transport hostname."""
+
+    destination: Literal["local", "cloud"] = "cloud"
+    cloud: CloudConsentSettings = Field(default_factory=CloudConsentSettings)
 
 
 class EmbeddingsSettings(_Section):
@@ -149,8 +162,8 @@ class SettingsSchema(_Section):
     wake_word: dict
     stt: dict
     tts: dict
-    router: dict
-    reasoner: dict
+    router: InferenceSettings
+    reasoner: InferenceSettings
     vectordb: dict
     embeddings: EmbeddingsSettings
     speaker_id: ModelDeviceSettings

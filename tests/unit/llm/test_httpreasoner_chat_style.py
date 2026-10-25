@@ -21,7 +21,7 @@ def _make_chat_client(reply_text):
 
 @pytest.mark.asyncio
 async def test_complete_uses_chat_when_api_style_chat():
-    r = HttpReasoner(base_url="https://api.minimax.io/v1", model="MiniMax-M2.7-highspeed", api_style="chat")
+    r = HttpReasoner(base_url="https://api.minimax.io/v1", model="MiniMax-M2.7-highspeed", api_style="chat", cloud_consent=True)
     r._client = _make_chat_client("la luz está encendida")
     r._resolved_model = "MiniMax-M2.7-highspeed"
     out = await r.complete("¿está la luz?", max_tokens=64)
@@ -32,7 +32,7 @@ async def test_complete_uses_chat_when_api_style_chat():
 
 
 def test_call_chat_style_returns_completions_shaped_dict():
-    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat")
+    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat", cloud_consent=True)
     r._client = _make_chat_client("hola")
     r._resolved_model = "MiniMax-M2.7-highspeed"
     result = r("dummy prompt")
@@ -48,7 +48,7 @@ def test_completions_style_unchanged_legacy():
     resp.usage.prompt_tokens = 1
     resp.usage.completion_tokens = 2
     client.completions.create.return_value = resp
-    r = HttpReasoner(base_url="http://127.0.0.1:8200/v1")  # default api_style="completions"
+    r = HttpReasoner(base_url="http://127.0.0.1:8200/v1", cloud_consent=True)  # default api_style="completions"
     r._client = client
     r._resolved_model = "local"
     result = r("hola")
@@ -114,6 +114,7 @@ async def test_complete_stream_chat_style_extracts_delta_content():
         model="MiniMax-M2.7-highspeed",
         api_style="chat",
         idle_timeout_s=5.0,
+        cloud_consent=True,
     )
     chunks = []
     for piece in ["ho", "la", " mundo"]:
@@ -184,6 +185,7 @@ async def test_complete_stream_no_runtimeerror_on_exhausted_iterator():
         model="MiniMax-M2.7-highspeed",
         api_style="chat",
         idle_timeout_s=5.0,
+        cloud_consent=True,
     )
     client = MagicMock()
     # Return a plain list — iter(list) raises StopIteration when exhausted,

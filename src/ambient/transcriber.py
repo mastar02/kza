@@ -512,6 +512,7 @@ def build_ambient_path(
             chat_fn=make_local_chat_fn(
                 llm_url=dis_cfg.get("llm_url", "http://127.0.0.1:8101/v1"),
                 model=dis_cfg.get("model", "local"),
+                destination=dis_cfg.get("destination", "cloud"),
             ),
             store_fact_fn=store_fact_fn,
             interval_hours=dis_cfg.get("interval_hours", 6.0),

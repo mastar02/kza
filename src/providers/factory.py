@@ -34,10 +34,12 @@ from src.providers.remote import (
 logger = logging.getLogger(__name__)
 
 
-def _remote_config(provider_cfg: dict) -> RemoteProviderConfig:
+def _remote_config(provider_cfg: dict, *, cloud_consent: bool = False) -> RemoteProviderConfig:
     """Build a ``RemoteProviderConfig`` from a provider config dict."""
     return RemoteProviderConfig(
         url=provider_cfg["url"],
+        destination=provider_cfg.get("destination", "cloud"),
+        cloud_consent=cloud_consent,
         timeout=provider_cfg.get("timeout", 30.0),
         max_retries=provider_cfg.get("max_retries", 2),
         retry_delay=provider_cfg.get("retry_delay", 0.5),
@@ -90,7 +92,7 @@ def create_llm_provider(config: dict) -> LLMProvider:
 
     if mode == "remote":
         logger.info("LLM provider: remote (%s)", provider_cfg.get("url"))
-        return RemoteLLMProvider(_remote_config(provider_cfg))
+        return RemoteLLMProvider(_remote_config(provider_cfg, cloud_consent=config.get("reasoner", {}).get("cloud", {}).get("consent", False)))
 
     logger.info("LLM provider: local (in-process)")
     from src.llm.reasoner import LLMReasoner
@@ -155,7 +157,7 @@ def create_router_provider(config: dict) -> RouterProvider:
 
     if mode == "remote":
         logger.info("Router provider: remote (%s)", provider_cfg.get("url"))
-        return RemoteRouterProvider(_remote_config(provider_cfg))
+        return RemoteRouterProvider(_remote_config(provider_cfg, cloud_consent=config.get("reasoner", {}).get("cloud", {}).get("consent", False)))
 
     logger.info("Router provider: HTTP (kza-llm-fast :8101)")
     from src.llm.reasoner import FastRouter
@@ -163,6 +165,8 @@ def create_router_provider(config: dict) -> RouterProvider:
     router_cfg = config.get("router", {})
     return FastRouter(
         base_url=router_cfg.get("base_url", "http://127.0.0.1:8101/v1"),
+        destination=router_cfg.get("destination", "cloud"),
+        cloud_consent=config.get("reasoner", {}).get("cloud", {}).get("consent", False),
         model=router_cfg.get("model", "qwen2.5-7b-instruct"),
         timeout=router_cfg.get("timeout", 30),
     )
