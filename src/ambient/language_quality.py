@@ -25,6 +25,9 @@ SPANISH_STOPWORDS = frozenset({
     "todo", "toda", "nada", "algo", "bien", "acá", "allá", "aquí", "ahí",
     "entonces", "tenés", "tengo", "tiene", "hacer", "decir", "dale", "boludo",
     "sabés", "está", "están", "estoy", "sí", "quiero", "porque",
+    # Imperativos de casa sin tilde (Whisper/Parakeet suelen tirar el acento).
+    "prende", "prendé", "apaga", "apagá", "pone", "poné",
+    "subi", "subí", "baja", "bajá", "nexa",
 })
 
 # Acentos, ñ/ü y signos de apertura — inequívocamente español.
@@ -55,21 +58,23 @@ def is_spanish_keepable(
 ) -> bool:
     """¿Vale la pena conservar esta utterance como español útil?
 
-    Descarta: texto corto (``min_len``), señal débil (``vad_prob < min_vad``),
-    y texto sin marcadores españoles cuyo idioma detectado no es ``es`` (garble
-    code-switch o inglés real de TV). Conserva el resto.
+    Descarta texto corto (``min_len``) y texto sin marcadores españoles cuyo
+    idioma detectado no es ``es`` (garble / TV en inglés). Conserva el resto.
+
+    ``vad_prob`` no entra: el producto del 24/7 es fidelidad de idioma, no
+    energía. El distiller sigue filtrando por ``min_vad_prob``. ``min_vad``
+    queda en la firma por callers viejos y se ignora.
 
     Args:
         text: Texto transcripto.
         lang: Código ISO-639-1 de py3langid (o None si no se detectó).
         lang_prob: Confianza de la detección (no usado hoy; reservado).
-        vad_prob: Mean de Silero del segmento (None = sin señal, no bloquea).
+        vad_prob: Mean de Silero (ignorado; la firma lo conserva).
         min_len: Longitud mínima de texto (strip) para considerarlo.
-        min_vad: Umbral inferior de vad_prob.
+        min_vad: Ignorado. No borrar: ``make_quality_fn`` / YAML aún lo pasan.
     """
+    del lang_prob, vad_prob, min_vad
     if len(text.strip()) < min_len:
-        return False
-    if vad_prob is not None and vad_prob < min_vad:
         return False
     if has_spanish_markers(text):
         return True
@@ -86,7 +91,7 @@ def make_quality_fn(
 
     Args:
         detect_fn: ``text -> (lang, prob)`` (p.ej. make_langid_fn()).
-        min_len, min_vad: parámetros de is_spanish_keepable.
+        min_len: largo mínimo. min_vad: ignorado (compat; lang_ok no usa energía).
 
     Returns:
         ``(text, vad_prob) -> (lang, lang_prob, lang_ok)``.

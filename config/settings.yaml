@@ -5,6 +5,7 @@ home_assistant:
   url: "${HOME_ASSISTANT_URL}"  # Set via environment variable in .env
   token: "${HOME_ASSISTANT_TOKEN}"  # Set via environment variable in .env
   timeout: 2.0  # segundos
+  state_confirmation_timeout_s: 2.0   # HA publicó el apagado a ~514ms; no confundir demora con fallo  # plazo tras ACK para verificar on/off con estado fresco
 
   # S6: State prefetch cache via WebSocket subscribe_events(state_changed).
   # Evita ~30-50ms de round-trip REST por comando al tener el state local.
@@ -379,28 +380,23 @@ command_gate:
     min_rms: 0.02
     reasons: ["empty", "empty_after_norm", "high_compression", "low_confidence", "unverified_intent"]
 
-# LLM para Razonamiento — REEMPLAZO TOTAL 2026-05-29: GLM-4.5-Air local (:8200)
-# → MiniMax-M2.7-highspeed en el cloud de MiniMax (OpenAI-compat).
-# Riesgo aceptado: si cae internet/MiniMax, el slow path queda sin reasoner
-# (el fast path de domótica sigue 100% local). Rollback: descomentar el bloque
-# GLM-Air local de abajo y revertir failover.endpoints.reasoner_cloud.
+# LLM para Razonamiento — socket LiteLLM :8200 (infra). MiniMax salió del
+# ecosistema 2026-09: el model id es el que liste `GET :8200/v1/models`.
+# Pin 2026-09-14: grok-4.20-non-reasoning (TTFT p50 0.63s / 113 tok/s vía
+# gateway; grok-4-fast está retirado desde 2026-05-15). Fast path de luces
+# NO usa este modelo (grammar + Chroma + 7B :8101). Sin gateway/internet
+# el slow path queda mudo; la domótica sigue local.
 reasoner:
   mode: "http"
-  http_base_url: "${LLM_GATEWAY_URL}"  # gateway LiteLLM 2026-05-30 (rollback directo: https://api.minimax.io/v1)
+  http_base_url: "${LLM_GATEWAY_URL}"  # gateway LiteLLM (OpenAI-compat)
   http_timeout: 60
-  # 2026-06-06: migrado a -highspeed (registrado en el gateway por infra; la key
-  # de KZA lo accede). Bench sostenido 600 tok: ~+15% mediano sobre base con
-  # variancia alta (47-58 vs 32-77 t/s — el batching server-side domina).
-  # Rollback trivial: volver a "MiniMax-M2.7". Existe también "MiniMax-M2.7-nothink"
-  # (anthropic-compat): NO suprime el costo del thinking, solo entrega el content
-  # limpio en reasoning_content separado — sin valor hoy (el strip de <think> ya
-  # cubre); opción futura si el parsing de tags da problemas.
-  http_model: "MiniMax-M2.7-highspeed"
-  api_style: "chat"            # MiniMax solo soporta /v1/chat/completions
+  http_model: "grok-4.20-non-reasoning"
+  api_style: "chat"
+  # Nombre legado: es la virtual key de LiteLLM, no una key de MiniMax.
   api_key_env: "MINIMAX_API_KEY"
   # Cloud cold puede tardar 10-20s al primer token → watchdog generoso.
   idle_timeout_s: 25.0
-  # Privacidad: el reasoner cloud manda datos del usuario a MiniMax (tercero).
+  # Privacidad: el reasoner cloud manda datos del usuario a un tercero (Grok/xAI).
   # consent=false bloquea el cliente cloud (slow path sin reasoner). Cambiar a
   # true es una decisión informada de enviar transcripciones/contexto afuera.
   cloud:
@@ -480,7 +476,7 @@ llm:
       # 2026-05-07 reorg: dos endpoints separados por velocidad.
       # priority=1 fast (Qwen 7B Q4 full GPU :8101) — usado por dispatcher
       # cuando el query es clasificable / one-shot JSON / fast path.
-      # priority=2 slow (MiniMax-M2.7-highspeed cloud) — reemplazo total 2026-05-29
+      # priority=2 slow (reasoner.http_model vía :8200, hoy grok-4.20-non-reasoning)
       # del GLM-Air local; usado cuando el fast endpoint falla o el caller pide reasoning.
       # IDs canónicos que main.py registra al dict clients (NO renombrar
       # sin actualizar también main.py:320-322). reasoner_cloud reemplaza reasoner_72b.
@@ -503,7 +499,7 @@ llm:
   # Fallback de startup: el dispatcher arranca contra el fast endpoint :8101.
   # Si :8101 está caído al boot, el LLMRouter rota tras el primer error al
   # siguiente candidato de la cadena de arriba, que hoy es `reasoner_cloud`
-  # (MiniMax vía gateway LiteLLM, timeout_s: 60). Si ambos caen, KZA degrada
+  # (Grok vía gateway LiteLLM, timeout_s: 60). Si ambos caen, KZA degrada
   # a regex+ChromaDB.
   #
   # ATENCIÓN (corregido 2026-08-04): este comentario decía que la rotación
@@ -639,6 +635,11 @@ reminders:
   missed_reminder_on_arrival: true
   default_time: "09:00"
   tts_prefix: "Oye, recuerda"
+
+# Rutinas web persistentes, independientes de las automatizaciones de HA.
+routines:
+  db_path: "./data/routines.db"
+  timezone: "America/Montevideo"
 
 # Contexto Persistente por Usuario
 # Guarda historial de conversación por persona detectada
@@ -1014,6 +1015,8 @@ orchestrator:
 # =============================================================================
 dashboard:
   enabled: true
+  home:
+    enabled: true       # Activación local; desplegar requiere la puerta operativa.
   host: "0.0.0.0"       # Default: local-only. Set to "0.0.0.0" to expose to LAN.
   port: 9500
   observability_use_mocks: false
@@ -1205,6 +1208,20 @@ spotify:
 
 rooms:
   enabled: true
+  telemetry:
+    interval_s: 2
+    stale_after_s: 6
+  # Piloto read-only: requiere opt-in global y selección explícita de salas.
+  # Validación física y calibraciones se realizan en una ventana separada.
+  direction_observation:
+    enabled: false
+    room_ids: []
+    poll_interval_s: 0.5
+    stale_after_s: 2.0
+    read_timeout_ms: 50
+    max_attempts: 2
+    error_backoff_initial_s: 2.0
+    error_backoff_max_s: 30.0
   cross_validation: true
   fallback_room: "living"   # 2026-05-30: el mic real ahora está en el living (puerto USB 3-1.1)
   dedup_window_ms: 200
@@ -1563,18 +1580,15 @@ rooms:
     vad_threshold: 0.02
 
   living:
+    direction_calibration: null
     name: "Living"
     display_name: "el living"
-    # reSpeaker XVF3800 4-Mic Array (USB 2886:001a, serial 101991441260500742) —
-    # instalado 2026-05-30 (el mic NUEVO del living). Modelo distinto al del escritorio.
-    # Bindeo por PUERTO USB físico (no por index, que driftea al re-enumerar: ya pasó
-    # 9→4). Puerto 1-2.2 (PCI e3:00.4) → ALSA card4 → PortAudio index 10.
-    # NOTA: glitch de enumeración (error -71) al conectar, recuperó al reintentar —
-    # extensor Cat5e marginal, vigilar caídas intermitentes.
-    # Re-derivar puerto con: readlink -f /sys/class/sound/card<N>  (segmento "<bus>-<port>")
+    # XVF3800 serial 101991441261600422; comparte hub 1-2 con Sonoff Zigbee.
+    # Identificación física y USB confirmada el 2026-10-08; no usar índice ALSA fijo.
     mic_device_name: "XVF3800"
-    mic_usb_port: null   # XVF3800 reubicado al escritorio 2026-05-30; living sin mic (temporal)
+    mic_usb_port: "1-2.3"
     mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
+    capture_channel: 1
     bt_adapter: "F4:4E:FC:CF:BF:3F"   # UGREEN BT 5.3 living (instalado 2026-05-04). Resuelve a hciN al iniciar.
     ma1260_zone: 1
     output_mode: "stereo"
@@ -1590,11 +1604,14 @@ rooms:
     aliases: ["living", "sala", "salón", "el living"]
 
   hall:
+    direction_calibration: null
     name: "Hall"
     display_name: "el hall"
     mic_device_name: "XVF3800"
-    mic_device_index: null   # HW pendiente
-    bt_adapter: null
+    mic_usb_port: "7-7.1"   # XVF3800 serial 101991441261600365; hub con Bluetooth
+    mic_device_index: null
+    capture_channel: 1
+    bt_adapter: "F4:4E:FC:76:EA:58"
     ma1260_zone: 2
     output_mode: "mono"
     default_volume: 50
@@ -1605,6 +1622,7 @@ rooms:
     aliases: ["hall", "pasillo", "entrada", "el hall"]
 
   cocina:
+    direction_calibration: null
     name: "Cocina"
     display_name: "la cocina"
     mic_device_name: "XVF3800"
@@ -1627,7 +1645,7 @@ rooms:
     # bus, y lo revivió el replug físico sin cambiar de puerto. El 5-5.1
     # funciona: tiene el adaptador BT de la cocina corriendo. (Salvedad: el
     # BT es full-speed por interrupción, no prueba high-speed isócrono.)
-    mic_usb_port: "5-5.3"
+    mic_usb_port: "7-5.3"   # puerto actual verificado el 2026-10-08
     mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
     # ch1 = ASR (mismo beam, tap pre-post-processor, sin noise suppression
     # no-lineal), igual que el escritorio. Verificado hoy: ch1 -40.2 dBFS vs
@@ -1650,6 +1668,7 @@ rooms:
     aliases: ["cocina", "la cocina", "kitchen"]
 
   escritorio:
+    direction_calibration: null
     name: "Escritorio"
     display_name: "el escritorio"
     # ReSpeaker 4 Mic Array (UAC1.0, USB 2886:0018) — el mic que YA EXISTÍA
@@ -1685,6 +1704,7 @@ rooms:
     aliases: ["escritorio", "oficina", "estudio", "el escritorio"]
 
   bano:
+    direction_calibration: null
     name: "Baño"
     display_name: "el baño"
     mic_device_name: "XVF3800"
@@ -1763,7 +1783,7 @@ ambient:
   # command/wake path (shadow_mode solo gatea el distiller, verificado).
   shadow_mode: false
   asr_col: 1            # beam ASR (fw 6ch ch1 — mismo canal que el command path)
-  vad_col: 2            # mic crudo 0 (fw 6ch); con fw 2ch fallback a col 0 (medido OK)
+  vad_col: 1            # Silero sobre canal ASR real de los XVF3800 de dos canales
   raw_first_col: 2      # primera columna de mics crudos (DoA)
   # 12→48 (2026-06-13): la evidencia far-field se purgaba antes de poder
   # auditarla / juntar dataset de re-entrenamiento. 48h da ventana de audit.
@@ -1780,15 +1800,16 @@ ambient:
     enabled: false
     dir: "./data/ambient_audio"
     min_free_mb: 1000        # piso de disco; debajo de esto no archiva
-  # Flag de idioma del TEXTO al persistir (2026-06-13, flag-no-drop). El
-  # discriminante real de calidad del rioplatense es el idioma, no la energía
-  # (vad). py3langid + marcadores rioplatenses → (lang, lang_prob, lang_ok) en
-  # cada utterance. NO descarta: lang_ok solo gobierna qué consume el distiller
-  # (spanish_only). El no-español persiste para audit/re-train.
+  # Producto del ambient 24/7: MEDIR español, no destilar charla. El
+  # discriminante de calidad rioplatense es el idioma del texto, no la energía
+  # (vad). py3langid + marcadores (voseo: prende/apaga/nexa) → lang_ok.
+  # Flag-no-drop: el no-español persiste para audit/re-train; el distiller
+  # (spanish_only) es secundario. Campaña WER: keep_audio.enabled.
   quality:
     enabled: true
     min_len: 8          # texto < min_len no se considera (ruido corto)
-    min_vad: 0.45       # alineado con distill.min_vad_prob
+    min_vad: 0.45       # ignorado por lang_ok (queda por compat YAML); el
+                        # distiller usa distill.min_vad_prob
   stt:
     # Swap 2026-06-07: Parakeet-TDT-0.6B-v3 (onnx, CPU) reemplaza al turbo
     # en el ambient path. Benchmark A/B con audio real XVF3800: 0/5
@@ -1899,7 +1920,7 @@ code_index:
     model: "BAAI/bge-m3"
     device: "cpu"               # NUNCA GPU
   cards:
-    base_url: "${LLM_GATEWAY_URL}"   # gateway LiteLLM → MiniMax
-    model: "MiniMax-M2.7-highspeed"
+    base_url: "${LLM_GATEWAY_URL}"   # gateway LiteLLM → reasoner.http_model
+    model: "grok-4.20-non-reasoning"
     api_key_env: "MINIMAX_API_KEY"            # virtual key del gateway
     timeout: 120

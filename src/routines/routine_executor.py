@@ -10,6 +10,9 @@ from enum import StrEnum
 import time as time_module
 
 from src.home_assistant.circuit_breaker import get_ha_circuit_breaker
+from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult, HomeActionService
+from src.routines.models import ActionStatus, RoutineActionResult, RoutineRun, RunStatus
+from src.routines.routine_store import RoutineStore
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +68,17 @@ class RoutineExecutor:
         spotify_client=None,
         tts_engine=None,
         zone_controller=None,
-        max_parallel: int = 100  # Default alto para velocidad
+        max_parallel: int = 100,  # Default alto para velocidad
+        *,
+        home_actions: HomeActionService | None = None,
+        store: RoutineStore | None = None,
     ):
         self.ha = ha_client
         self.spotify = spotify_client
         self.tts = tts_engine
         self.zones = zone_controller
+        self.home_actions = home_actions
+        self.store = store
 
         # Semáforos con límites altos (prioriza velocidad)
         self._ha_semaphore = asyncio.Semaphore(max_parallel)
@@ -92,6 +100,45 @@ class RoutineExecutor:
             ActionType.PARALLEL.value: self._execute_parallel,
             ActionType.SEQUENCE.value: self._execute_sequence,
         }
+
+    async def execute_run(self, run: RoutineRun) -> RoutineRun:
+        """Execute a claimed snapshot with durable ordering around every effect.
+
+        Args:
+            run: Immutable receipt claimed by the server-side scheduler.
+
+        Returns:
+            Durable terminal receipt after confirmation or a stopped sequence.
+
+        Raises:
+            Exception: Persistence failures propagate without retrying HA or
+                advancing the sequence, preserving evidence for recovery.
+        """
+        for index, action in enumerate(run.snapshot.spec.actions):
+            await self.store.mark_action_sending(run.run_id, index)
+            request = HomeActionRequest(
+                entity_id=action.entity_id,
+                operation=str(action.operation),
+                request_id=f"{run.run_id}:{index}",
+                brightness_pct=action.brightness_pct,
+            )
+            try:
+                result = await self.home_actions.execute(request, actor=run.actor)
+            except Exception:
+                result = HomeActionResult(
+                    request_id=request.request_id,
+                    entity_id=request.entity_id,
+                    status="uncertain",
+                    reason="action_exception",
+                )
+            status = ActionStatus(result.status)
+            await self.store.record_action(run.run_id, RoutineActionResult(
+                index, action.entity_id, status, result.reason,
+            ))
+            if status != ActionStatus.CONFIRMED:
+                final = RunStatus.FAILED if status == ActionStatus.FAILED else RunStatus.UNCERTAIN
+                return await self.store.finish_run(run.run_id, final)
+        return await self.store.finish_run(run.run_id, RunStatus.SUCCEEDED)
 
     async def execute_actions(
         self,

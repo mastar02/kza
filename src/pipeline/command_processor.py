@@ -331,6 +331,11 @@ class CommandProcessor:
         if stt_res is not None:
             text, stt_ms = stt_res.text, stt_res.elapsed_ms
         else:
+            error = results[0]
+            logger.error(
+                "Primary STT failed: %s", error,
+                exc_info=(type(error), error, error.__traceback__),
+            )
             text, stt_ms = "", 0
 
         if self.speaker_id and self.user_manager and not isinstance(results[1], Exception):

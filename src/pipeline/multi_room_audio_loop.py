@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import re
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from threading import Lock
+from pathlib import Path
 from typing import Callable, Awaitable, Optional
 
 import numpy as np
@@ -22,6 +27,14 @@ from src.pipeline.command_event import CommandEvent
 from src.wakeword.detector import WakeWordDetector
 from src.wakeword.whisper_wake import _text_likely_truncated
 from src.audio.echo_suppressor import EchoSuppressor
+from src.audio.direction_observer import (
+    DirectionCalibration, DirectionObserver, parse_direction_observation,
+)
+from src.audio import microphone_status
+from src.audio.microphone_status import (
+    CaptureObservation, MicrophoneRoom, MicrophonesSnapshot, UsbInventory,
+    build_microphone_snapshot,
+)
 from src.conversation.follow_up_mode import FollowUpMode
 from src.nlu.command_grammar import PartialCommand, parse_partial_command
 from src.rooms.room_context import resolve_mic_usb_port
@@ -121,7 +134,7 @@ def detect_stale_streams(
 class RoomStream:
     """Per-room audio capture state."""
     room_id: str
-    device_index: int
+    device_index: int | None
     wake_detector: WakeWordDetector
     echo_suppressor: EchoSuppressor
     listening: bool = False
@@ -166,6 +179,13 @@ class RoomStream:
     # watchdog distinga "abrió y todavía no entregó" (gracia larga) de
     # "entregaba y dejó de entregar" (timeout corto).
     opened_ts: float = 0.0
+
+
+class _CaptureHolder:
+    """One callback-owned observation pointer; retired holders stay isolated."""
+
+    def __init__(self, observation: CaptureObservation):
+        self.observation = observation
 
 
 class MultiRoomAudioLoop:
@@ -215,7 +235,22 @@ class MultiRoomAudioLoop:
         stream_watchdog_reopen_backoff_max_s: float = 10.0,
         stream_watchdog_first_frame_grace_s: float = 180.0,
         audio_health_path: str = "./data/audio_health.json",
+        microphone_rooms: tuple[MicrophoneRoom, ...] | None = None,
+        microphone_usb_root: Path = Path("/sys/bus/usb/devices"),
+        microphone_reader: Callable[[Path], UsbInventory] | None = None,
+        microphone_monotonic: Callable[[], float] | None = None,
+        microphone_wall_clock: Callable[[], float] | None = None,
+        microphone_interval_s: float = 2.0,
+        microphone_stale_after_s: float = 6.0,
+        direction_observation: object = None,
+        direction_calibrations: dict | None = None,
     ):
+        if (
+            any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                for value in (microphone_interval_s, microphone_stale_after_s))
+            or microphone_stale_after_s < microphone_interval_s
+        ):
+            raise ValueError("invalid microphone telemetry interval/stale window")
         self.room_streams = room_streams
         self.follow_up = follow_up
         self.sample_rate = sample_rate
@@ -308,7 +343,7 @@ class MultiRoomAudioLoop:
         # mismo patrón que attach_response_handler). None = feature apagada.
         self._ambient_tap = None
         self._ambient_transcriber = None
-        self._wake_vad_predict = None  # lazy: predictor Silero para wake_vad
+        self._wake_vad_predictors: dict[str, object] = {}  # one native recurrent state per room
 
         self._watchdog_enabled = stream_watchdog_enabled
         self._watchdog_timeout_s = stream_watchdog_no_frames_timeout_s
@@ -356,6 +391,36 @@ class MultiRoomAudioLoop:
         # Viven fuera de _recover_streams para que un mic ausente no bloquee
         # ni a las otras rooms ni al watchdog.
         self._reopen_tasks: dict[str, asyncio.Task] = {}
+        self._microphone_rooms = microphone_rooms if microphone_rooms is not None else tuple(
+            MicrophoneRoom(rs.room_id, rs.room_id, rs.mic_usb_port, device_index=rs.device_index)
+            for rs in room_streams.values()
+        )
+        self._microphone_usb_root = microphone_usb_root
+        self._microphone_reader = microphone_reader
+        self._microphone_monotonic = microphone_monotonic or time.monotonic
+        self._microphone_wall_clock = microphone_wall_clock or time.time
+        self._microphone_inventory: UsbInventory | None = None
+        self._microphone_captures: dict[str, _CaptureHolder] = {}
+        self._microphone_telemetry_task: asyncio.Task | None = None
+        self._microphone_read_task: asyncio.Task | None = None
+        self._microphone_interval_s = float(microphone_interval_s)
+        self._microphone_stale_after_s = float(microphone_stale_after_s)
+        self._microphone_startup_budget_s = 0.25
+        self._microphone_inventory_ready = asyncio.Event()
+        self._direction_config, self._direction_room_ids, self._direction_reason = parse_direction_observation(
+            direction_observation, {room.room_id for room in self._microphone_rooms},
+        )
+        self._direction_calibrations = direction_calibrations or {}
+        self._direction_observers: dict[str, DirectionObserver] = {}
+        self._direction_keys: dict[str, tuple] = {}
+        self._direction_retired: list[DirectionObserver] = []
+        self._direction_needs_reset: set[str] = set()
+        self._direction_opening: set[str] = set()
+        self._direction_lock = Lock()
+        self._direction_lifecycle_lock = asyncio.Lock()
+        self._direction_started = False
+        if self._direction_reason:
+            logger.warning('[direction-observation] Pilot disabled: %s', self._direction_reason)
 
     def attach_response_handler(self, response_handler) -> None:
         """Inyectar ResponseHandler post-init (útil por orden de DI en main.py)."""
@@ -482,14 +547,16 @@ class MultiRoomAudioLoop:
         # sounddevice congelaría el stream en la primera detección). Dedicado:
         # NO compartir con los predictores del ambient segmenter (Silero es
         # stateful — GRU — y el segmenter resetea su estado por utterance).
-        if self._wake_vad_predict is None:
-            from src.ambient.segmenter import make_silero_predictor
+        from src.ambient.segmenter import make_silero_predictor
+        for room_id in self.room_streams:
+            if room_id in self._wake_vad_predictors:
+                continue
             try:
-                self._wake_vad_predict = make_silero_predictor()
-                logger.info("wake_vad: predictor Silero pre-cargado")
+                self._wake_vad_predictors[room_id] = await asyncio.to_thread(make_silero_predictor)
+                logger.info(f"wake_vad: dedicated Silero predictor ready for {room_id}")
             except Exception as e:
-                logger.warning(f"wake_vad: Silero no disponible ({e}) — umbral fijo")
-                self._wake_vad_predict = False  # no reintentar
+                logger.warning(f"wake_vad: Silero unavailable for {room_id} ({e}) — fixed threshold")
+                self._wake_vad_predictors[room_id] = False
         # Tuning del DSP ANTES de arrancar el poller (review Fase 1): así los
         # writes corren con USB single-threaded (sin transfers concurrentes
         # sobre el mismo handle), y en to_thread para no bloquear el event
@@ -513,6 +580,9 @@ class MultiRoomAudioLoop:
                     logger.warning(
                         f"Pre-gate SPENERGY error al iniciar en {room_id} — gate OFF: {e}"
                     )
+        # Reuse the handle opened by a configured legacy gate; DoA never enables it.
+        self._direction_started = True
+        await self._sync_direction_observers()
 
     def _apply_xvf_tuning(self) -> None:
         """Aplica el tuning configurado al DSP (EN RAM). Fail-open por param.
@@ -555,13 +625,37 @@ class MultiRoomAudioLoop:
                     )
 
     def _open_stream(self, rs: "RoomStream"):
-        """Open and start an InputStream for one room. None on PortAudioError."""
-        callback = self._make_audio_callback(rs)
+        """Open a resolved microphone; never substitute the system default."""
+        with self._direction_lock:
+            self._direction_opening.add(rs.room_id)
+        self._invalidate_direction(rs.room_id)
+        if rs.device_index is None:
+            with self._direction_lock:
+                self._direction_opening.discard(rs.room_id)
+            return None
         try:
             dev_info = sd.query_devices(rs.device_index)
             capture_channels = _resolve_capture_channels(
                 int(dev_info.get("max_input_channels", 0))
             )
+            previous = self._microphone_captures.get(rs.room_id)
+            generation = previous.observation.generation + 1 if previous else 1
+            match = re.search(r"\(hw:(\d+),", dev_info.get("name", ""))
+            card = int(match[1]) if match else None
+            inventory = self._microphone_inventory
+            identities = [device for device in inventory.devices if device.alsa_card == card] if (
+                inventory is not None and inventory.success and card is not None
+                and self._microphone_monotonic() - inventory.observed_monotonic <= self._microphone_stale_after_s
+            ) else []
+            identity = identities[0] if len(identities) == 1 else None
+            holder = _CaptureHolder(CaptureObservation(
+                generation=generation, opened=True,
+                usb_port=identity.usb_port if identity else None,
+                serial=identity.serial if identity else None,
+                alsa_card=card, device_index=rs.device_index,
+            ))
+            self._microphone_captures[rs.room_id] = holder
+            callback = self._make_audio_callback(rs, holder)
             stream = sd.InputStream(
                 device=rs.device_index,
                 samplerate=self.sample_rate,
@@ -570,6 +664,21 @@ class MultiRoomAudioLoop:
                 blocksize=CHUNK_SIZE,
                 callback=callback,
             )
+            # These are host stream properties, not claims about ALSA native
+            # format. Configure before start(), which may invoke the callback.
+            rate = getattr(stream, "samplerate", None)
+            channels = getattr(stream, "channels", None)
+            dtype = getattr(stream, "dtype", None)
+            index = getattr(stream, "device", None)
+            actual_channels = channels if isinstance(channels, int) else capture_channels
+            holder.observation = replace(
+                holder.observation,
+                sample_rate_hz=float(rate) if isinstance(rate, (int, float)) else float(self.sample_rate),
+                channels=actual_channels,
+                selected_channel=rs.capture_channel if 0 <= rs.capture_channel < actual_channels else 0,
+                host_dtype=dtype if isinstance(dtype, str) else "float32",
+                device_index=index if isinstance(index, int) else rs.device_index,
+            )
             stream.start()
             logger.info(
                 f"Room {rs.room_id}: audio stream started "
@@ -577,10 +686,14 @@ class MultiRoomAudioLoop:
             )
             return stream
         except sd.PortAudioError as e:
+            self._retire_microphone_capture(rs.room_id)
             logger.error(
                 f"Room {rs.room_id}: failed to open device {rs.device_index}: {e}"
             )
             return None
+        finally:
+            with self._direction_lock:
+                self._direction_opening.discard(rs.room_id)
 
     def _reinit_portaudio(self) -> None:
         """Force PortAudio to re-scan the device list (sync; fail-open).
@@ -618,6 +731,7 @@ class MultiRoomAudioLoop:
         # callback cuando llegue audio real (no la mera invocación).
         rs.opened_ts = time.monotonic()
         rs.last_frame_ts = 0.0
+        await self._sync_direction_observers()
         return True
 
     async def _reopen_room(self, rs: "RoomStream") -> None:
@@ -672,38 +786,44 @@ class MultiRoomAudioLoop:
         )
         self._reopen_tasks[rs.room_id] = asyncio.create_task(self._reopen_room(rs))
 
+    @staticmethod
+    def _close_capture_stream(stream) -> None:
+        """Close native PortAudio resources in a worker, even if stop fails."""
+        try:
+            stream.stop()
+        finally:
+            stream.close()
+
     async def _recover_streams(self, trigger_room_ids: list) -> None:
-        """Close all streams, reinit PortAudio, reopen all rooms.
+        """Recover failed rooms without interrupting rooms still receiving audio.
 
-        `sd._terminate()` invalida TODOS los streams, así que el cierre + reinit
-        sí es all-or-nothing aunque solo una room se haya colgado.
-
-        La REAPERTURA no: se intenta UNA vez por room y las que no responden
-        quedan esperando en su propia task. Awaitear `_reopen_room` en serie
-        —que espera indefinidamente— hacía que un mic desenchufado dejara sin
-        stream a los sanos y colgara al watchdog, porque el `for` nunca pasaba
-        de la primera room (incidente 2026-07-28: 27h sordo con el servicio
-        `active`, la cocina desenchufada y el escritorio presente y sano).
+        Reinitialize the shared PortAudio catalog only when no other stream is
+        healthy. Native stop/open calls must not block the asyncio event loop.
         """
-        logger.error(
-            f"[audio-watchdog] streams {trigger_room_ids} stopped delivering "
-            f"audio → recovering all streams"
+        now = time.monotonic()
+        healthy_other = any(
+            room_id not in trigger_room_ids and rs.last_frame_ts > 0
+            and now - rs.last_frame_ts <= self._watchdog_timeout_s
+            for room_id, rs in self.room_streams.items()
         )
-        for room_id, stream in list(self._streams.items()):
-            try:
-                stream.stop()
-                stream.close()
-            except Exception:
-                pass
-        self._streams.clear()
-        await asyncio.to_thread(self._reinit_portaudio)
-        for room_id, rs in self.room_streams.items():
+        affected = trigger_room_ids if healthy_other else list(self.room_streams)
+        logger.error(f"[audio-watchdog] streams {trigger_room_ids} stopped delivering audio; recovering {affected}")
+        for room_id in affected:
+            self._retire_microphone_capture(room_id)
+            stream = self._streams.pop(room_id, None)
+            if stream is not None:
+                try:
+                    await asyncio.to_thread(self._close_capture_stream, stream)
+                except Exception as exc:
+                    logger.warning(f"[audio-watchdog] Failed to close {room_id}: {exc}")
+        if not healthy_other:
+            await asyncio.to_thread(self._reinit_portaudio)
+        for room_id in affected:
+            rs = self.room_streams[room_id]
             if await self._try_reopen_once(rs):
-                logger.info(
-                    f"[audio-watchdog] {room_id}: recovered (device={rs.device_index})"
-                )
-                continue
-            self._schedule_reopen(rs)
+                logger.info(f"[audio-watchdog] {room_id}: stream reopened (device={rs.device_index}); awaiting audio frames")
+            else:
+                self._schedule_reopen(rs)
 
     def _update_audio_anchors(self, now_mono: float, now_wall: float) -> None:
         """Refrescar las anclas de salud que la reapertura no puede resetear.
@@ -752,6 +872,221 @@ class MultiRoomAudioLoop:
                 room_id in self._last_audio_wall,
             )
             for room_id in self.room_streams
+        }
+
+    def _publish_microphone_inventory(self, inventory: UsbInventory) -> None:
+        """Retain disappeared identities without treating old data as present."""
+        previous = self._microphone_inventory
+        known = {}
+        if previous is not None:
+            known.update((device.usb_port, device) for device in previous.previous_devices)
+            known.update((device.usb_port, device) for device in previous.devices)
+        self._microphone_inventory = replace(inventory, previous_devices=tuple(known.values()))
+        self._microphone_inventory_ready.set()
+        snapshot = self._base_microphone_snapshot()
+        if snapshot is not None:
+            current = {mic.room_id: mic for mic in snapshot.microphones}
+            with self._direction_lock:
+                changed = [room for room in self._direction_observers
+                           if self._direction_key(current.get(room)) != self._direction_keys.get(room)]
+            for room in changed:
+                self._invalidate_direction(room)
+
+    async def _refresh_microphone_inventory(self) -> None:
+        """Await one worker read; never queue another behind a slow sysfs read."""
+        reader = self._microphone_reader or microphone_status.read_usb_microphones
+        worker = asyncio.create_task(asyncio.to_thread(reader, self._microphone_usb_root))
+        self._microphone_read_task = worker
+        try:
+            inventory = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # to_thread cannot stop a running worker. Keep it tracked so stop
+            # awaits completion instead of leaking reads or queuing retries.
+            raise
+        except Exception:
+            logger.exception("[microphone-telemetry] Inventory reader failed")
+            inventory = UsbInventory(
+                observed_at=self._microphone_wall_clock(),
+                observed_monotonic=self._microphone_monotonic(), success=False,
+            )
+        finally:
+            if worker.done():
+                self._microphone_read_task = None
+        self._publish_microphone_inventory(inventory)
+        await self._sync_direction_observers()
+
+    async def _microphone_telemetry_loop(self) -> None:
+        """Refresh USB observations independently of watchdog enablement."""
+        while self._running:
+            await self._refresh_microphone_inventory()
+            await asyncio.sleep(self._microphone_interval_s)
+
+    async def _stop_microphone_telemetry(self) -> None:
+        """Cancel polling and drain its outstanding worker before returning."""
+        task = self._microphone_telemetry_task
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._microphone_telemetry_task = None
+        worker = self._microphone_read_task
+        if worker is not None:
+            await asyncio.gather(worker, return_exceptions=True)
+            self._microphone_read_task = None
+
+    def _retire_microphone_capture(self, room_id: str) -> None:
+        self._invalidate_direction(room_id)
+        holder = self._microphone_captures.get(room_id)
+        if holder is not None:
+            # Swap holders rather than mutate the callback-owned one. Even an
+            # already executing old callback can only update retired memory.
+            self._microphone_captures[room_id] = _CaptureHolder(replace(holder.observation, opened=False))
+
+    def _base_microphone_snapshot(self) -> MicrophonesSnapshot | None:
+        """Project the existing capture contract without direction lifecycle work."""
+        inventory = self._microphone_inventory
+        if inventory is None:
+            return None
+        return build_microphone_snapshot(
+            rooms=self._microphone_rooms, inventory=inventory,
+            captures={room: holder.observation for room, holder in self._microphone_captures.items()},
+            now_monotonic=self._microphone_monotonic(), now_wall=self._microphone_wall_clock(),
+            stale_after_s=self._microphone_stale_after_s,
+        )
+
+    def _direction_key(self, mic) -> tuple | None:
+        if (mic is None or mic.room_id not in self._direction_room_ids
+                or mic.room_id in self._direction_opening):
+            return None
+        controller = self._xvf_by_room.get(mic.room_id)
+        if (mic.connection != 'connected' or mic.binding != 'matched'
+                or not mic.usb_port or mic.usb_port != mic.configured_usb_port
+                or mic.usb_port != getattr(controller, 'usb_port', None)):
+            return None
+        return mic.mic_id, mic.usb_port, mic.capture.generation
+
+    def _invalidate_direction(self, room_id: str) -> None:
+        """Immediately hide an old generation; defer joins to async lifecycle."""
+        with self._direction_lock:
+            observer = self._direction_observers.pop(room_id, None)
+            self._direction_keys.pop(room_id, None)
+            if observer is not None:
+                observer.invalidate()
+                self._direction_retired.append(observer)
+                self._direction_needs_reset.add(room_id)
+
+    @staticmethod
+    def _drain_direction_observer(observer: DirectionObserver) -> None:
+        observer.stop()
+        observer.wait_stopped()
+
+    def _room_direction_calibration(self, room_id: str) -> DirectionCalibration | None:
+        raw = self._direction_calibrations.get(room_id) if isinstance(self._direction_calibrations, dict) else False
+        if raw is None or isinstance(raw, DirectionCalibration):
+            return raw
+        try:
+            return DirectionCalibration(**raw)
+        except (TypeError, ValueError):
+            # Preserve the distinction between no calibration and an invalid one.
+            return DirectionCalibration(0, 0, '', '', '')
+
+    async def _sync_direction_observers(self) -> None:
+        """Reconcile identity-bound workers outside GET and the audio callback."""
+        if not self._direction_started or not self._direction_room_ids:
+            return
+        async with self._direction_lifecycle_lock:
+            snapshot = self._base_microphone_snapshot()
+            current = {mic.room_id: mic for mic in snapshot.microphones} if snapshot else {}
+            with self._direction_lock:
+                changed = [room for room in self._direction_observers
+                           if self._direction_key(current.get(room)) != self._direction_keys.get(room)]
+            for room in changed:
+                self._invalidate_direction(room)
+            await self._drain_retired_directions()
+            for room_id in self._direction_room_ids:
+                if not self._direction_started:
+                    return
+                with self._direction_lock:
+                    needs_reset = room_id in self._direction_needs_reset
+                if needs_reset:
+                    await asyncio.to_thread(self._xvf_by_room[room_id].invalidate_device)
+                    with self._direction_lock:
+                        self._direction_needs_reset.discard(room_id)
+                # Identity/generation can change while an old worker drains.
+                snapshot = self._base_microphone_snapshot()
+                mic = next((mic for mic in snapshot.microphones if mic.room_id == room_id), None) if snapshot else None
+                key = self._direction_key(mic)
+                if key is None:
+                    continue
+                with self._direction_lock:
+                    fresh = self._base_microphone_snapshot()
+                    fresh_mic = next((mic for mic in fresh.microphones if mic.room_id == room_id), None) if fresh else None
+                    if (not self._direction_started or room_id in self._direction_observers
+                            or self._direction_key(fresh_mic) != key):
+                        continue
+                    observer = DirectionObserver(
+                        controller=self._xvf_by_room[room_id], room_id=room_id, usb_port=mic.usb_port,
+                        mic_id=mic.mic_id, config=self._direction_config,
+                        calibration=self._room_direction_calibration(room_id),
+                        monotonic=self._microphone_monotonic,
+                        utc_now=lambda: datetime.fromtimestamp(self._microphone_wall_clock(), timezone.utc),
+                    )
+                    self._direction_observers[room_id] = observer
+                    self._direction_keys[room_id] = key
+                    observer.start()
+
+    async def _drain_retired_directions(self) -> None:
+        # Keep ownership until the join actually completes. A cancelled to_thread
+        # await does not stop the worker; a subsequent stop must still find it.
+        with self._direction_lock:
+            retired = tuple(self._direction_retired)
+        for observer in retired:
+            await asyncio.to_thread(self._drain_direction_observer, observer)
+            with self._direction_lock:
+                self._direction_retired.remove(observer)
+
+    async def _stop_direction_observers(self) -> None:
+        """Invalidate all generations before awaiting complete worker drainage."""
+        self._direction_started = False
+        with self._direction_lock:
+            room_ids = tuple(self._direction_observers)
+        for room_id in room_ids:
+            self._invalidate_direction(room_id)
+        async with self._direction_lifecycle_lock:
+            await self._drain_retired_directions()
+
+    def get_microphone_snapshot(self) -> MicrophonesSnapshot | None:
+        """Project cached capture and direction snapshots without any I/O."""
+        snapshot = self._base_microphone_snapshot()
+        if snapshot is None:
+            return None
+        microphones = []
+        with self._direction_lock:
+            for mic in snapshot.microphones:
+                direction = microphone_status.DirectionSnapshot(
+                    state=microphone_status.DirectionState.DISABLED, reason=self._direction_reason,
+                )
+                if mic.room_id in self._direction_room_ids and self._direction_started:
+                    observer = self._direction_observers.get(mic.room_id)
+                    key = self._direction_key(mic)
+                    if observer is not None and key is not None and key == self._direction_keys.get(mic.room_id):
+                        direction = observer.snapshot()
+                    else:
+                        direction = replace(direction, state=microphone_status.DirectionState.UNKNOWN,
+                                            reason='identity_unavailable')
+                microphones.append(replace(mic, direction=direction))
+        return replace(snapshot, microphones=tuple(microphones))
+
+    def get_audio_health(self) -> dict:
+        """Return room frame health without file I/O or audio content."""
+        now_wall = time.time()
+        self._update_audio_anchors(now_mono=time.monotonic(), now_wall=now_wall)
+        return {
+            "rooms": {
+                room: {"age_s": max(0.0, now_wall - anchor), "ever": ever}
+                for room, (anchor, ever) in self._audio_health_rooms().items()
+            },
+            "deaf_after_s": self._watchdog_timeout_s,
+            "first_frame_grace_s": self._watchdog_first_frame_grace_s,
         }
 
     async def _stream_watchdog(self) -> None:
@@ -830,25 +1165,57 @@ class MultiRoomAudioLoop:
                 await self._recover_streams(stale)
 
     async def run(self):
+        """Start voice after a bounded identity budget and own telemetry tasks."""
+        self._running = True
+        self._loop = asyncio.get_running_loop()
+        self._microphone_inventory_ready.clear()
+        self._microphone_telemetry_task = asyncio.create_task(self._microphone_telemetry_loop())
+        try:
+            try:
+                await asyncio.wait_for(self._microphone_inventory_ready.wait(), self._microphone_startup_budget_s)
+            except TimeoutError:
+                # Do not delay voice indefinitely behind a sysfs read. The
+                # existing worker remains tracked; there is no replacement read.
+                self._publish_microphone_inventory(UsbInventory(
+                    self._microphone_wall_clock(), self._microphone_monotonic(), False,
+                ))
+            if self._running:
+                await self._run_capture()
+        finally:
+            self._running = False
+            await self._stop_direction_observers()
+            await self._stop_microphone_telemetry()
+            if self._watchdog_task is not None:
+                self._watchdog_task.cancel()
+                self._watchdog_task = None
+            pending = self._cancel_reopen_tasks()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            for room_id, stream in self._streams.items():
+                self._retire_microphone_capture(room_id)
+                try:
+                    await asyncio.to_thread(self._close_capture_stream, stream)
+                except Exception:
+                    pass
+            self._streams.clear()
+
+    async def _run_capture(self):
         """
         Main loop — opens N InputStreams and polls for completed commands.
 
         Each room's audio callback runs on sounddevice's C thread.
         Command dispatch happens on the asyncio event loop via create_task.
         """
-        self._running = True
-        # Guardamos el event loop para que el audio_callback (thread C del
-        # sounddevice) pueda schedular corrutinas via run_coroutine_threadsafe
-        # cuando detecta barge-in.
-        self._loop = asyncio.get_running_loop()
-
         self._streams = {}
         for room_id, rs in self.room_streams.items():
-            stream = self._open_stream(rs)
+            stream = await asyncio.to_thread(self._open_stream, rs)
             if stream is not None:
                 self._streams[room_id] = stream
                 rs.opened_ts = time.monotonic()
                 rs.last_frame_ts = 0.0
+                await self._sync_direction_observers()
+            else:
+                self._schedule_reopen(rs)
 
         logger.info(
             f"MultiRoomAudioLoop ready "
@@ -939,17 +1306,18 @@ class MultiRoomAudioLoop:
             if self._watchdog_task is not None:
                 self._watchdog_task.cancel()
                 self._watchdog_task = None
-            self._cancel_reopen_tasks()
-            for stream in self._streams.values():
-                try:
-                    stream.stop()
-                    stream.close()
-                except Exception:
-                    pass
+            pending = self._cancel_reopen_tasks()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
     async def stop(self):
         """Stop all audio streams."""
         self._running = False
+        await self._stop_direction_observers()
+        await self._stop_microphone_telemetry()
+        self._microphone_inventory_ready.set()
+        for room_id in self._microphone_captures:
+            self._retire_microphone_capture(room_id)
         if self._watchdog_task is not None:
             self._watchdog_task.cancel()
             self._watchdog_task = None
@@ -971,10 +1339,26 @@ class MultiRoomAudioLoop:
             except Exception:
                 pass
 
-    def _make_audio_callback(self, rs: RoomStream):
+    def _make_audio_callback(self, rs: RoomStream, holder: _CaptureHolder | None = None):
         """Create a sounddevice callback closure for one room."""
+        if holder is None:
+            holder = self._microphone_captures.setdefault(rs.room_id, _CaptureHolder(CaptureObservation()))
 
         def audio_callback(indata, frames, time_info, status):
+            if self._microphone_captures.get(rs.room_id) is not holder:
+                return
+            nonzero = bool(indata.any())
+            if self._microphone_captures.get(rs.room_id) is not holder:
+                return
+            now_mono = self._microphone_monotonic()
+            now_wall = self._microphone_wall_clock()
+            observation = holder.observation
+            holder.observation = replace(
+                observation, frames_received=observation.frames_received + frames,
+                last_callback_at=now_wall, last_callback_monotonic=now_mono,
+                last_nonzero_at=now_wall if nonzero else observation.last_nonzero_at,
+                nonzero_seen=observation.nonzero_seen or nonzero,
+            )
             # Watchdog heartbeat: marca que el stream entregó AUDIO. Primera
             # línea, nunca lanza — si esto deja de actualizarse, el mic murió
             # y _stream_watchdog dispara recovery.
@@ -990,7 +1374,7 @@ class MultiRoomAudioLoop:
             # El criterio es no-cero, NO un umbral de RMS: el silencio real de
             # un mic vivo trae un piso de ruido diminuto pero distinto de cero,
             # y no debe confundirse con un mic muerto.
-            if indata.any():
+            if nonzero:
                 rs.last_frame_ts = time.monotonic()
 
             # Tee al ambient path (spec 2026-06-06): SIEMPRE primero — el
@@ -1063,7 +1447,10 @@ class MultiRoomAudioLoop:
             if not rs.echo_suppressor.is_safe_to_listen:
                 return
             should_process, reason = rs.echo_suppressor.should_process_audio(audio_chunk)
-            if not should_process:
+            # Wake models need continuous time, including quiet frames. Command
+            # endpointing also needs trailing silence; dropping it concatenates
+            # speech and forces capture to wait for the timeout.
+            if not should_process and reason != "silence":
                 return
 
             if not rs.listening:
@@ -1077,7 +1464,7 @@ class MultiRoomAudioLoop:
                 detection = rs.wake_detector.detect(audio_chunk)
                 if detection:
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
-                    predict = self._wake_vad_predict or None
+                    predict = self._wake_vad_predictors.get(rs.room_id) or None
                     wake_vad = compute_wake_vad(audio_chunk, predict)
                     if self._should_accept_wakeword(
                         rs.room_id, rms, time.time(),
@@ -1304,8 +1691,8 @@ class MultiRoomAudioLoop:
                     continue
                 audio_snapshot = np.array(rs.audio_buffer, dtype=np.float32)
                 try:
-                    text, _ms = self._stt.transcribe(
-                        audio_snapshot, sample_rate=self.sample_rate,
+                    text, _ms = await asyncio.to_thread(
+                        self._stt.transcribe, audio_snapshot, sample_rate=self.sample_rate,
                     )
                 except Exception as e:
                     logger.debug(f"Early transcribe error in {rs.room_id}: {e}")

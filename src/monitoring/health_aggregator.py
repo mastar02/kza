@@ -63,7 +63,9 @@ class HealthAggregator:
         latency_monitor=None,
         priority_queue=None,
         reminder_scheduler=None,
+        audio_health_provider=None,
     ):
+        self._audio_health_provider = audio_health_provider
         self._ha_client = ha_client
         self._latency_monitor = latency_monitor
         self._priority_queue = priority_queue
@@ -161,6 +163,12 @@ class HealthAggregator:
 
         stats = self._latency_monitor.get_stats()
         session = stats.get("session", {})
+        if session.get("total_commands", 0) == 0:
+            return SubsystemHealth(
+                name="latency_monitor", status=OverallStatus.DEGRADED,
+                detail="No command samples; latency is unmeasured",
+                extra={"total_commands": 0},
+            )
         success_rate = session.get("success_rate_percent", 100.0)
 
         if success_rate >= 90:
@@ -247,6 +255,28 @@ class HealthAggregator:
     # Aggregate
     # ------------------------------------------------------------------
 
+    def _check_audio(self) -> SubsystemHealth:
+        """Expose missing and stale room capture using in-memory metadata."""
+        try:
+            snapshot = self._audio_health_provider()
+            rooms = snapshot.get("rooms", {})
+            threshold = snapshot.get("deaf_after_s", 8.0)
+            grace = snapshot.get("first_frame_grace_s", 180.0)
+            deaf = [room for room, info in rooms.items() if info.get("age_s", 0) > (threshold if info.get("ever") else grace)]
+            pending = [room for room, info in rooms.items() if not info.get("ever")]
+            if not rooms or deaf:
+                status = OverallStatus.UNHEALTHY
+                detail = "No audio frames: " + ", ".join(deaf or ["no rooms configured"])
+            elif pending:
+                status = OverallStatus.DEGRADED
+                detail = "Waiting for first audio frames: " + ", ".join(pending)
+            else:
+                status = OverallStatus.HEALTHY
+                detail = "Audio frames received in every configured room"
+            return SubsystemHealth(name="audio_capture", status=status, detail=detail, extra={"rooms": rooms})
+        except Exception as exc:
+            return SubsystemHealth(name="audio_capture", status=OverallStatus.UNHEALTHY, detail=f"Audio health unavailable: {type(exc).__name__}")
+
     def get_system_health(self) -> SystemHealth:
         """Collect health from all subsystems and compute overall status.
 
@@ -259,6 +289,9 @@ class HealthAggregator:
             self._check_queue(),
             self._check_reminders(),
         ]
+
+        if self._audio_health_provider is not None:
+            subsystems.append(self._check_audio())
 
         # Overall status: worst of all subsystems
         statuses = [s.status for s in subsystems]

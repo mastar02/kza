@@ -144,6 +144,11 @@ class CommandAcceptanceGate:
         """Return the first matching hard rule name, or None. Migrated from _is_noise_text."""
         if not text:
             return "empty"
+        from src.nlu.command_grammar import non_immediate_action_reason
+
+        action_block = non_immediate_action_reason(text)
+        if action_block:
+            return action_block
         norm = _normalize(text)
         if not norm:
             return "empty_after_norm"

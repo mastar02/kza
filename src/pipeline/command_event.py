@@ -4,6 +4,7 @@ Command Event — carries captured audio with room metadata.
 Emitted by MultiRoomAudioLoop when a room's microphone completes
 command capture after wake word detection.
 """
+
 from __future__ import annotations
 
 import time
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
 @dataclass
 class CommandEvent:
     """Audio command captured from a specific room's microphone."""
+
     audio: np.ndarray
     room_id: str
     mic_device_index: int | None = None
@@ -43,3 +45,7 @@ class CommandEvent:
     # gate del router para decidir "humano plausible" (wake fuerte). Default
     # 1.0 para llamadas que no vienen del wake loop (tests, raw ndarray).
     wake_score: float = 1.0
+    # True si el disparo vino del wake textual (ambient), no de OWW/Porcupine.
+    # El router NO toma grammar fast-path: el texto ya contiene "nexa" (así
+    # matcheó) y un verbo+luz alucinado ejecutaba luces fantasma.
+    textual_wake: bool = False

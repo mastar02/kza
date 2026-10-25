@@ -64,8 +64,8 @@ def classify_intent(text: str) -> str | None:
 # ============================================================
 # Brightness
 # ============================================================
-_RE_PCT = re.compile(r"\b(\d{1,3})\s*(?:%|por\s*ciento|porciento)\b", re.IGNORECASE)
-_RE_AL_NUM = re.compile(r"\bal\s+(\d{1,3})\b", re.IGNORECASE)
+_RE_PCT = re.compile(r"(?<![\w.,+\-−])(\d{1,3})\s*(?:%(?!\w)|(?:por\s*ciento|porciento)\b)", re.IGNORECASE)
+_RE_AL_NUM = re.compile(r"\bal\s+(\d{1,3})(?![\d.,])\b", re.IGNORECASE)
 BRIGHTNESS_WORDS = {
     # Literalidad → valor canónico
     "máximo": 100, "maximo": 100, "máxima": 100, "maxima": 100, "full": 100, "todo": 100,
@@ -76,9 +76,30 @@ BRIGHTNESS_WORDS = {
 }
 
 
+def has_invalid_brightness_percentage(text: str) -> bool:
+    """Detect signed, fractional or out-of-range numeric light percentages.
+
+    Callers must establish the light domain before using this as a command
+    blocker. Unsupported numbers must never fall through to a guessed level.
+    """
+    number = r"[+\-−]?(?:\d+(?:[.,]\d+)?|[.,]\d+)"
+    patterns = (
+        rf"(?<!\w)({number})\s*(?:%(?!\w)|por\s*ciento\b)",
+        rf"\bal\s+({number})(?!\w)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text.lower()):
+            value = match.group(1)
+            if not value.isdecimal() or not 0 <= int(value) <= 100:
+                return True
+    return False
+
+
 def extract_brightness(text: str) -> int | None:
     """Extrae brightness_pct (0-100) de la query. None si no hay señal."""
     t = text.lower()
+    if has_invalid_brightness_percentage(t):
+        return None
     # 1. Porcentaje explícito: "al 60%", "60 por ciento"
     for pat in (_RE_PCT, _RE_AL_NUM):
         m = pat.search(t)
@@ -86,6 +107,14 @@ def extract_brightness(text: str) -> int | None:
             v = int(m.group(1))
             if 0 <= v <= 100:
                 return v
+    # Spoken cardinal percentages share the existing Spanish vocabulary.
+    from src.nlu.regex.vocab import parse_cardinal
+
+    match = re.search(r"\b(?:al\s+)?([\wáéíóúñ]+(?:\s+y\s+[\wáéíóúñ]+)?)\s+por\s+ciento\b", t)
+    if match:
+        value = parse_cardinal(match.group(1))
+        if value is not None:
+            return value
     # 2. Palabras
     for word, val in BRIGHTNESS_WORDS.items():
         if re.search(rf"\b{re.escape(word)}\b", t):

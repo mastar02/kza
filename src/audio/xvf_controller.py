@@ -32,6 +32,15 @@ import struct
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
+from enum import Enum
+
+try:
+    from usb.core import USBTimeoutError
+except ImportError:
+    _USB_TIMEOUT_ERRORS: tuple[type[Exception], ...] = ()
+else:
+    _USB_TIMEOUT_ERRORS = (USBTimeoutError,)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +54,7 @@ XVF_PID = 0x001A
 PARAMETERS: dict[str, tuple[int, int, int, str, str]] = {
     # Firmware info
     "VERSION": (48, 0, 3, "ro", "uint8"),
+    "DOA_VALUE": (20, 18, 2, "ro", "uint16"),
     # VAD por hardware / dirección
     "AEC_SPENERGY_VALUES": (33, 80, 4, "ro", "float"),
     "AEC_AZIMUTH_VALUES": (33, 75, 4, "ro", "radians"),
@@ -97,8 +107,30 @@ _CONTROL_SUCCESS = 0
 _SERVICER_COMMAND_RETRY = 64
 
 # Bytes por valor según tipo declarado en PARAMETERS.
-_TYPE_SIZE = {"uint8": 1, "int32": 4, "uint32": 4, "float": 4, "radians": 4}
-_TYPE_STRUCT = {"int32": "i", "uint32": "I", "float": "f", "radians": "f"}
+_TYPE_SIZE = {"uint8": 1, "uint16": 2, "int32": 4, "uint32": 4, "float": 4, "radians": 4}
+_TYPE_STRUCT = {"uint16": "H", "int32": "i", "uint32": "I", "float": "f", "radians": "f"}
+
+
+class XvfReadOutcome(str, Enum):
+    """Classify a transport read without inferring firmware support."""
+
+    OK = "ok"
+    BUSY = "busy"
+    NO_DEVICE = "no_device"
+    TIMEOUT = "timeout"
+    USB_ERROR = "usb_error"
+    DEVICE_STATUS = "device_status"
+    INVALID_PAYLOAD = "invalid_payload"
+    RETRIES_EXHAUSTED = "retries_exhausted"
+
+
+@dataclass(frozen=True)
+class XvfReadResult:
+    """Carry decoded values or a transport failure and the received status."""
+
+    outcome: XvfReadOutcome
+    values: tuple[int | float, ...] | None = None
+    device_status: int | None = None
 
 # Rangos válidos por parámetro, tomados de las descripciones del xvf_host.py
 # oficial ("Valid range: ..."). Solo se valida lo que el oficial declara;
@@ -199,6 +231,7 @@ class XvfController:
         self._dev = device  # inyectable para tests
         self._samples: deque[tuple[float, float]] = deque()
         self._lock = threading.Lock()
+        self._device_generation = 0
         # Lock DEDICADO para serializar ctrl_transfer sobre el device handle
         # compartido (poller thread vs write_param desde otro thread). libusb
         # no garantiza transfers síncronos concurrentes sobre un mismo handle
@@ -248,6 +281,18 @@ class XvfController:
         self._dev = dev
         return True
 
+    def invalidate_device(self) -> None:
+        """Retire a disconnected handle and cached energy without USB transfers.
+
+        The lifecycle owner drains direction reads before calling this method.
+        The next read discovers the current device on this controller's bound port.
+        """
+        with self._usb_lock:
+            self._dev = None
+            with self._lock:
+                self._device_generation += 1
+                self._samples.clear()
+
     @staticmethod
     def _spec(name: str) -> tuple[int, int, int, str, str]:
         spec = PARAMETERS.get(name)
@@ -257,10 +302,11 @@ class XvfController:
 
     @staticmethod
     def _decode(dtype: str, count: int, raw: bytes) -> tuple:
+        if len(raw) != count * _TYPE_SIZE[dtype]:
+            raise ValueError("invalid payload length")
         if dtype == "uint8":
-            return tuple(int(b) for b in raw[:count])
-        fmt = f"<{count}{_TYPE_STRUCT[dtype]}"
-        return struct.unpack(fmt, raw[: count * 4])
+            return tuple(raw)
+        return struct.unpack(f"<{count}{_TYPE_STRUCT[dtype]}", raw)
 
     @staticmethod
     def _encode(dtype: str, values: list) -> bytes:
@@ -282,32 +328,77 @@ class XvfController:
             ValueError: Si el nombre no está en ``PARAMETERS`` (error de
                 programación, no de hardware).
         """
+        result = self.read_param_result(
+            name, timeout_ms=self.read_timeout_ms, max_attempts=self.max_retries,
+        )
+        return result.values if result.outcome is XvfReadOutcome.OK else None
+
+    def read_param_result(
+        self,
+        name: str,
+        *,
+        timeout_ms: int,
+        max_attempts: int,
+        skip_if_busy: bool = False,
+    ) -> XvfReadResult:
+        """Read a parameter with an explicit outcome and bounded retry budget.
+
+        Args:
+            name: Key in ``PARAMETERS``.
+            timeout_ms: Timeout for each USB transfer in milliseconds.
+            max_attempts: Maximum transfers, retrying only device status 64.
+            skip_if_busy: Return BUSY instead of waiting for the USB lock.
+
+        Returns:
+            Decoded values or a transport outcome, preserving device status.
+
+        Raises:
+            ValueError: If the parameter name is unknown.
+        """
         resid, cmdid, count, _rw, dtype = self._spec(name)
-        read_len = count * _TYPE_SIZE[dtype] + 1  # + 1 byte de status
+        read_len = count * _TYPE_SIZE[dtype] + 1
         dev = self._dev
         if dev is None:
-            if not self.open():
-                return None
-            dev = self._dev
+            if not self._usb_lock.acquire(blocking=not skip_if_busy):
+                return XvfReadResult(XvfReadOutcome.BUSY)
+            try:
+                if not self.open():
+                    return XvfReadResult(XvfReadOutcome.NO_DEVICE)
+                dev = self._dev
+            finally:
+                self._usb_lock.release()
         try:
-            attempts = 0
-            while attempts < self.max_retries:
-                with self._usb_lock:  # serializar vs writes de otros threads
+            status = None
+            for _ in range(max_attempts):
+                if not self._usb_lock.acquire(blocking=not skip_if_busy):
+                    return XvfReadResult(XvfReadOutcome.BUSY)
+                try:
+                    if dev is not self._dev:
+                        return XvfReadResult(XvfReadOutcome.NO_DEVICE)
                     resp = dev.ctrl_transfer(
-                        _BM_REQUEST_READ, 0, 0x80 | cmdid, resid, read_len, self.read_timeout_ms
+                        _BM_REQUEST_READ, 0, 0x80 | cmdid, resid, read_len, timeout_ms
                     )
+                finally:
+                    self._usb_lock.release()
+                if not len(resp):
+                    return XvfReadResult(XvfReadOutcome.INVALID_PAYLOAD)
                 status = resp[0]
                 if status == _CONTROL_SUCCESS:
-                    return self._decode(dtype, count, bytes(resp[1:]))
+                    if len(resp) != read_len:
+                        return XvfReadResult(XvfReadOutcome.INVALID_PAYLOAD, device_status=status)
+                    return XvfReadResult(
+                        XvfReadOutcome.OK, self._decode(dtype, count, bytes(resp[1:])), status,
+                    )
                 if status != _SERVICER_COMMAND_RETRY:
-                    logger.debug(f"read_param({name}) status desconocido: {status}")
-                    return None
-                attempts += 1
+                    return XvfReadResult(XvfReadOutcome.DEVICE_STATUS, device_status=status)
                 time.sleep(0.005)
-            return None
+            return XvfReadResult(XvfReadOutcome.RETRIES_EXHAUSTED, device_status=status)
+        except _USB_TIMEOUT_ERRORS as e:
+            logger.debug(f"read_param({name}) timeout: {e}")
+            return XvfReadResult(XvfReadOutcome.TIMEOUT)
         except Exception as e:
             logger.debug(f"read_param({name}) fail-open: {e}")
-            return None
+            return XvfReadResult(XvfReadOutcome.USB_ERROR)
 
     def write_param(self, name: str, values) -> bool:
         """Escribe un parámetro ``rw`` por nombre, EN RAM del chip.
@@ -380,13 +471,17 @@ class XvfController:
 
     def _poll_loop(self) -> None:
         while self._running:
+            with self._lock:
+                generation = self._device_generation
             vals = self.read_spenergy()
             if vals is not None:
-                self._record(vals[_AUTO_BEAM_IDX], time.time())
+                self._record(vals[_AUTO_BEAM_IDX], time.time(), generation)
             time.sleep(self.poll_interval_s)
 
-    def _record(self, value: float, now: float) -> None:
+    def _record(self, value: float, now: float, generation: int | None = None) -> None:
         with self._lock:
+            if generation is not None and generation != self._device_generation:
+                return
             self._samples.append((now, value))
             cutoff = now - self.window_s
             while self._samples and self._samples[0][0] < cutoff:

@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 from src.nlu.slot_extractor import (
     extract_slots,
+    has_invalid_brightness_percentage,
 )
 
 logger = logging.getLogger(__name__)
@@ -311,6 +312,54 @@ def _has_any_action_verb(text: str) -> bool:
     return False
 
 
+def non_immediate_action_reason(text: str) -> str | None:
+    """Identify speech that must not authorize an immediate device action.
+
+    Reuse the Spanish extractor's semantic blockers without rejecting valid
+    infinitive commands or affirmative questions supported by this pipeline.
+    """
+    from src.nlu.regex.blockers import BLOCKERS
+    from src.nlu.regex.normalize import normalize
+
+    light_request = extract_entity(text) == "light" or re.search(r"\bbrillo\b", _norm(text))
+    if light_request and has_invalid_brightness_percentage(text):
+        return "invalid_brightness_percentage"
+    if not _has_any_action_verb(text) and not light_request:
+        return None
+    normalized = normalize(text)
+    blocked = {"negation", "subjunctive_cond", "report_of_speech"}
+    for name, pattern in BLOCKERS:
+        if name in blocked and pattern.search(normalized):
+            return f"non_immediate:{name}"
+    if re.search(
+        r"\b(?:ma[ñn]ana|m[aá]s\s+tarde|despu[eé]s|luego|"
+        r"en\s+(?:[\w]+\s+){1,5}(?:segundos?|minutos?|horas?)|a\s+las?\s+(?:\d+|una?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce))\b",
+        normalized,
+    ) and (extract_entity(text) is not None or light_request):
+        return "non_immediate:deferred"
+    return None
+
+def _is_default_light_brightness_phrase(text: str) -> bool:
+    """Recognize one complete room-light percentage request without guessing."""
+    norm = unicodedata.normalize("NFD", text.lower())
+    norm = "".join(c for c in norm if unicodedata.category(c) != "Mn")
+    # Keep signs and percent symbols so negative values cannot become positive.
+    norm = re.sub(r"[^\w\s%+-]", " ", norm)
+    words = norm.split()
+    while words and words[0] in WAKE_TERMS:
+        words.pop(0)
+    norm = " ".join(words)
+    rooms = "|".join(re.escape(alias) for alias in ROOM_ALIASES)
+    pattern = (
+        r"(?:(?:pone|pon|poner|deja|dejar|ajusta|ajustar|subi|sube|subir|baja|bajar)\s+)?"
+        r"(?:(?:la|las|el)\s+)?(?:luz|luces|brillo(?:\s+de\s+(?:la\s+luz|las\s+luces))?)"
+        rf"(?:\s+(?:del|de la|de el|en el|en la|de|en)\s+(?:{rooms}))?"
+        r"\s+(?:al|a|el|del)\s+(?:\d{1,3}|[a-z]+(?:\s+y\s+[a-z]+)?)"
+        r"(?:\s*(?:%|por\s+ciento))?(?:\s+por favor)?"
+    )
+    return re.fullmatch(pattern, norm) is not None
+
+
 def parse_command(text: str) -> ParsedCommand:
     """Parser autoritativo para domótica simple. Determinístico, idempotente,
     sin I/O. Produce intent + domain + target + quality.
@@ -322,13 +371,20 @@ def parse_command(text: str) -> ParsedCommand:
     - Incompatibles: "abrí la luz" → None / light / domotics / partial
     - Sin domótica: "hola qué tal" → None / None / domotics / none
     """
-    if not text:
+    if not text or non_immediate_action_reason(text):
         return ParsedCommand()
     pc = ParsedCommand(raw_text=text)
     pc.has_wake = has_wake_word(text)
     pc.domain = extract_entity(text)
     pc.room = extract_room(text)
     pc.slots = extract_slots(text)
+
+    if pc.slots.keys() == {"brightness_pct"} and _is_default_light_brightness_phrase(text):
+        pc.domain = "light"
+        pc.intent = "set"
+        pc.quality = "full"
+        pc.confidence = _parsed_confidence(pc)
+        return pc
 
     # Inferencia segura: brillo/color/temperatura son slots exclusivos de luz.
     # Si no hubo dominio explícito pero hay un slot de luz (y NO de volumen),
@@ -367,6 +423,50 @@ def parse_command(text: str) -> ParsedCommand:
 
     pc.confidence = _parsed_confidence(pc)
     return pc
+
+
+def parse_default_light_target(text: str) -> ParsedCommand | None:
+    """Match an entire on/off or brightness phrase for a room's default light.
+
+    Specific fixtures, unknown rooms, global and multiple targets do not match.
+    """
+    pc = parse_command(text)
+    if (
+        pc.domain == "light" and pc.intent == "set"
+        and pc.slots.keys() == {"brightness_pct"}
+        and _is_default_light_brightness_phrase(text)
+    ):
+        return pc
+    if pc.domain != "light" or pc.intent not in ("turn_on", "turn_off") or pc.slots:
+        return None
+    norm = _norm(text)
+    words = norm.split()
+    while words and words[0] in WAKE_TERMS:
+        words.pop(0)
+    norm = " ".join(words)
+    verbs = "|".join(pat for rule in INTENT_RULES if rule.intent == pc.intent for pat in rule.verb_patterns)
+    rooms = "|".join(re.escape(alias) for alias in ROOM_ALIASES)
+    pattern = (
+        rf"(?:{verbs})\s+(?:(?:la|las)\s+)?(?:luz|luces)"
+        rf"(?:\s+(?:del|de la|de el|en el|en la|de|en)\s+(?:{rooms}))?"
+        r"(?:\s+por favor)?"
+    )
+    return pc if re.fullmatch(pattern, norm) else None
+
+
+def has_unresolved_light_location(text: str) -> bool:
+    """Reject explicit light locations that cannot be resolved exactly."""
+    if parse_default_light_target(text) is not None:
+        return False
+    norm = _norm(text)
+    match = re.search(r"\b(?:luz|luces)\b.*?\b(?:del|de la|de el|en el|en la|en|de)\s+(.+)", norm)
+    if match is None:
+        return bool(re.search(r"\b(?:ambiente|habitacion)\b", norm) and extract_room(text) is None)
+    location = re.sub(r"(?:\s+(?:por favor|ahora))+$", "", match.group(1)).strip()
+    if location in {"hogar", "toda la casa", "todo el hogar", "la casa entera"}:
+        return False
+    rooms = "|".join(re.escape(alias) for alias in ROOM_ALIASES)
+    return re.fullmatch(rf"(?:{rooms})(?:\s+(?:al|a|con)\s+.+)?", location) is None
 
 
 # ============================================================

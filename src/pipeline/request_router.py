@@ -8,6 +8,7 @@ Owns all command routing logic:
 - Cache, prompt building, latency logging, event logging
 """
 
+import asyncio
 import logging
 import time
 import unicodedata
@@ -17,7 +18,7 @@ from difflib import SequenceMatcher
 import numpy as np
 
 from src.nlu.command_gate import CommandAcceptanceGate
-from src.nlu.command_grammar import PartialCommand, parse_partial_command
+from src.nlu.command_grammar import PartialCommand, has_unresolved_light_location, parse_default_light_target, parse_partial_command
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
@@ -52,6 +53,10 @@ _UNSUPPORTED_INTENT_MESSAGES: dict[str, str] = {
     "media_next": "No tengo reproductor configurado.",
     "media_previous": "No tengo reproductor configurado.",
 }
+
+# OWW a 0.40–0.45 solapa con TV. Nexa real en prod mide 0.54–0.93. El bonus
+# de wake sobre 'prende la luz' (conf 0.70) no aplica debajo de este piso.
+_GRAMMAR_BONUS_MIN_WAKE_SCORE = 0.50
 
 
 def _texts_diverge(a: str, b: str, min_ratio: float = 0.95) -> bool:
@@ -263,6 +268,7 @@ class RequestRouter:
         # Core pipeline components
         self.command_processor = command_processor
         self.response_handler = response_handler
+        self._response_lock = asyncio.Lock()
         self.audio_manager = audio_manager
         self.room_context_manager = room_context_manager
 
@@ -345,6 +351,19 @@ class RequestRouter:
             action_tracker = LastActionTracker(ttl_seconds=60.0)
         self.action_tracker = action_tracker
 
+    async def _speak_response(self, text: str, **kwargs) -> None:
+        """Serialize synthesis/playback in a worker while capture keeps running."""
+        async with self._response_lock:
+            worker = asyncio.create_task(asyncio.to_thread(self.response_handler.speak, text, **kwargs))
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                await self.response_handler.cancel()
+                try:
+                    await worker
+                finally:
+                    raise
+
     async def process_command(self, audio_or_event) -> dict:
         """
         Process a complete audio command.
@@ -408,6 +427,7 @@ class RequestRouter:
         }
 
         wake_score = getattr(audio_or_event, "wake_score", 1.0)
+        textual_wake = bool(getattr(audio_or_event, "textual_wake", False))
         wake_rms = (
             float(np.sqrt(np.mean(np.square(audio))))
             if audio is not None and len(audio) else 0.0
@@ -418,6 +438,7 @@ class RequestRouter:
                 audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
                 ambient_strict=ambient_strict,
                 wake_score=wake_score, wake_rms=wake_rms,
+                textual_wake=textual_wake,
             )
         else:
             return await self._process_command_legacy(
@@ -429,7 +450,8 @@ class RequestRouter:
                                               pretranscribed_text: str | None = None,
                                               ambient_strict: bool = False,
                                               wake_score: float = 1.0,
-                                              wake_rms: float = 0.0) -> dict:
+                                              wake_rms: float = 0.0,
+                                              textual_wake: bool = False) -> dict:
         """Process command with multi-user orchestrator."""
         result = {
             "text": "",
@@ -496,13 +518,26 @@ class RequestRouter:
         # una fast_classification y nos saltamos el LLMCommandRouter (poco
         # fiable en el modelo actual: rechaza comandos válidos como 'noise').
         fast_classification = None
-        grammar_cls = _grammar_fastpath_classification(
-            text, self.confidence_threshold,
-            # En STRICT (AmbientGuard) el wake acústico no es evidencia de
-            # usuario — la TV dispara el wake espurio. Sin bonus, el texto
-            # tiene que valerse solo (o traer "nexa" transcripta).
-            wake_confirmed=self.wake_acoustically_confirmed and not ambient_strict,
-        )
+        # Wake textual: el utterance YA contiene "nexa" (así matcheó). Grammar
+        # lo marca full y ejecutaba luces fantasma; el 7B es el gate. El canal
+        # textual no está en el presupuesto <300ms.
+        if textual_wake:
+            grammar_cls = None
+            logger.info(
+                "[GRAMMAR_FASTPATH] skip textual_wake — forcing LLM router: %r",
+                text,
+            )
+        else:
+            grammar_cls = _grammar_fastpath_classification(
+                text, self.confidence_threshold,
+                # STRICT: TV dispara OWW. Score en banda TV (0.40–0.45): mismo
+                # problema — no otorgar bonus a 'prende la luz' genérico.
+                wake_confirmed=(
+                    self.wake_acoustically_confirmed
+                    and not ambient_strict
+                    and wake_score >= _GRAMMAR_BONUS_MIN_WAKE_SCORE
+                ),
+            )
         if grammar_cls is not None:
             logger.info(
                 f"[GRAMMAR_FASTPATH] intent={grammar_cls.intent} "
@@ -562,7 +597,6 @@ class RequestRouter:
             # Fallback: el LLM no pudo decidir (timeout/error → 'unavailable').
             # NO descartar si la gramática tenía señal parcial.
             if classification.rejection_reason == "unavailable":
-                from src.nlu.command_grammar import parse_partial_command
                 pc = parse_partial_command(text)
                 if pc.intent is not None and pc.entity is not None:
                     # señal completa → dispatch best-effort
@@ -639,8 +673,9 @@ class RequestRouter:
 
         # 1b. Confidence gate — low-confidence sensitive commands pide
         #     confirmación antes de dispatchar al orchestrator.
-        self._check_confidence_gate(text, result)
+        self._check_confidence_gate(text, result, speak=False)
         if result.get("pending_confirmation"):
+            await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
@@ -704,6 +739,34 @@ class RequestRouter:
                 _service_filter = _intent
             _query_slots = dict(_llm_classification.slots or {}) or None
 
+        target_entity_id = None
+        # Target selection is deterministic after either the acoustic grammar
+        # or the textual channel's LLM gate has accepted the command.
+        default_target = parse_default_light_target(text)
+        if (
+            fast_classification is not None
+            and fast_classification.entity_hint == "light"
+            and has_unresolved_light_location(text)
+        ):
+            result["intent"] = "unresolved_target"
+            result["response"] = "¿En qué ambiente querés controlar la luz?"
+            await self._speak_response(result["response"], zone_id=zone_id)
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
+        if default_target is not None and self.room_context_manager is not None:
+            target_room = default_target.room or (room_context.room_id if room_context else None)
+            config = self.room_context_manager.get_room_config(target_room) if target_room else None
+            if config is None or not config.default_light:
+                result["intent"] = "unresolved_target"
+                result["response"] = "No tengo una luz configurada para ese ambiente."
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                await asyncio.to_thread(self.response_handler.speak, result["response"], zone_id=zone_id)
+                return result
+            target_entity_id = config.default_light
+            if default_target.slots.keys() == {"brightness_pct"}:
+                _service_filter = "turn_on"
+                _query_slots = dict(default_target.slots)
+
         dispatch_result = await self._orchestrator.process(
             user_id=user_id,
             text=text,
@@ -712,6 +775,7 @@ class RequestRouter:
             on_response=on_response,
             service_filter=_service_filter,
             query_slots=_query_slots,
+            **({"target_entity_id": target_entity_id} if target_entity_id else {}),
         )
 
         # 6. Build result
@@ -752,7 +816,7 @@ class RequestRouter:
         )
         if dispatch_result.path not in [PathType.SLOW_LLM] and not _domotics_ok:
             emotion_adj = emotion.response_adjustment if emotion else None
-            self.response_handler.speak(
+            await self._speak_response(
                 result["response"],
                 zone_id=zone_id,
                 emotion_adjustment=emotion_adj,
@@ -1307,7 +1371,7 @@ class RequestRouter:
                 return f"¿Querés {action_verb} {entity_name} {room_name}? Decí sí o no."
         return f"¿Querés {action_verb} {entity_name}? Decí sí o no."
 
-    def _check_confidence_gate(self, text: str, result: dict) -> PartialCommand | None:
+    def _check_confidence_gate(self, text: str, result: dict, speak: bool = True) -> PartialCommand | None:
         """
         Chequea la confidence del comando y decide si hay que pedir confirmación.
 
@@ -1343,7 +1407,8 @@ class RequestRouter:
             # TODO(S4-followup): integrar con FollowUpMode para escuchar sí/no
             # por 5s. Por ahora sólo hablamos la pregunta y NO dispatchamos el
             # comando — el usuario puede repetirlo con más contexto.
-            self.response_handler.speak(question)
+            if speak:
+                self.response_handler.speak(question)
             result["intent"] = "pending_confirmation"
             result["response"] = question
             result["success"] = False
@@ -1493,13 +1558,19 @@ class RequestRouter:
         total = result["latency_ms"]
         target = self.latency_target_ms
         status = "OK" if total <= target else "SLOW"
-        timings_str = " + ".join([f"{k}={v:.0f}" for k, v in result["timings"].items()])
+        timings_str = " + ".join(
+            f"{k}={v:.0f}" if isinstance(v, (int, float)) else f"{k}={v}"
+            for k, v in result["timings"].items()
+        )
         logger.info(f"[{status}] Total: {total:.0f}ms (target: {target}ms) [{timings_str}]")
 
         if self.latency_monitor:
             user_name = result.get("user", {}).get("name") if result.get("user") else None
             self.latency_monitor.record(
-                timings=result["timings"],
+                timings={
+                    key: value for key, value in result["timings"].items()
+                    if isinstance(value, (int, float))
+                },
                 user=user_name,
                 intent=result.get("intent")
             )

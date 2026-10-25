@@ -8,6 +8,7 @@ a col 0 (peor señal para VAD, pero funcional).
 from __future__ import annotations
 
 import logging
+import threading
 from collections import deque
 from typing import Callable
 
@@ -19,9 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 def make_silero_predictor() -> Callable[[np.ndarray], float]:
-    """Factory del predictor real (Silero VAD vía torch.hub, patrón
-    whisper_wake.py). Devuelve prob máxima entre las ventanas de 512 samples
-    del chunk. Carga el modelo UNA vez al construirse.
+    """Create a stateful Silero predictor with serialized inference and reset.
+
+    Callers processing separate audio streams must own separate predictors.
+    The lock covers the entire chunk, including all native inference windows.
     """
     import torch  # torch PRIMERO (regla orden imports CUDA del proyecto)
 
@@ -29,30 +31,27 @@ def make_silero_predictor() -> Callable[[np.ndarray], float]:
         repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True,
     )
     model.eval()
+    model_lock = threading.Lock()
 
     def predict(chunk_mono: np.ndarray) -> float:
         if chunk_mono.dtype != np.float32:
             chunk_mono = chunk_mono.astype(np.float32)
-        probs = []
-        for i in range(0, len(chunk_mono) - 511, 512):
-            win = torch.from_numpy(chunk_mono[i : i + 512])
-            with torch.no_grad():
-                probs.append(float(model(win, 16000).item()))
-        if not probs:
-            # Chunk < 512 samples: sin ventana completa no hay predicción —
-            # se trata como silencio. No ocurre con CHUNK_SIZE=1280; avisar
-            # si un caller futuro rompe ese contrato.
-            logger.warning(
-                f"Silero predict: chunk de {len(chunk_mono)} samples (<512) "
-                f"— tratado como silencio"
-            )
-            return 0.0
-        return max(probs)
+        with model_lock:
+            probs = []
+            for i in range(0, len(chunk_mono) - 511, 512):
+                win = torch.from_numpy(chunk_mono[i : i + 512])
+                with torch.no_grad():
+                    probs.append(float(model(win, 16000).item()))
+            if not probs:
+                logger.warning(f"Silero predict: chunk de {len(chunk_mono)} samples (<512) — tratado como silencio")
+                return 0.0
+            return max(probs)
 
-    # Silero es stateful (GRU): la doc oficial recomienda reset en límites
-    # de utterance. El segmenter lo invoca en _close() vía getattr (opcional
-    # — los predictores fake de los tests no lo exponen).
-    predict.reset = model.reset_states
+    def reset() -> None:
+        with model_lock:
+            model.reset_states()
+
+    predict.reset = reset
     return predict
 
 

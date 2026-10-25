@@ -1,0 +1,282 @@
+{
+  "recovered_on": "2026-10-25",
+  "baseline_commit": "0fd3d166f1b17726f8ef998b320f37a42ff11d81",
+  "purpose": "Preserve the recovered production source; this snapshot is not a release validation.",
+  "source_checkout": "/home/kza/kza",
+  "development_checkout": "/home/yo/projects/kza",
+  "versioned_modified_files": 27,
+  "new_code_files": 9,
+  "new_frontend_files": 5,
+  "historical_configuration_snapshots": [
+    {
+      "source": "settings.yaml.bak-pre-p0p1-2026-09-14",
+      "commit": "510453fb9f932b29968c8d0f285707ad20982e1d",
+      "path": "config/settings.yaml"
+    },
+    {
+      "source": "settings.yaml.bak-pre-grok-2026-09-14",
+      "commit": "b8eb28be06f374083ae1e2d6ee676142fd90cc5b",
+      "path": "config/settings.yaml"
+    }
+  ],
+  "checks": [
+    "Exact SHA-256 match for all 41 recovered source/config/frontend files",
+    "ruff check src/ tests/: passed",
+    "Python syntax and frontend JavaScript syntax: passed",
+    "Credential patterns reviewed without exposing values; config credentials reference environment variables"
+  ],
+  "limitations": [
+    "Original home frontend directory cannot be listed by yo; all five served/referenced resources were recovered.",
+    "Tests and documentation specific to the recent production changes were not found.",
+    "Production .env, runtime data, models and orphaned Git stashes are excluded.",
+    "File modification dates can reflect copy or restoration time."
+  ],
+  "files": [
+    {
+      "path": "config/settings.yaml",
+      "sha256": "7cf87f6e033c8086cd3b850ed43fec6a7ad2fe19f615496ce08dbc2c49b52e9d",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.682819+00:00"
+    },
+    {
+      "path": "src/ambient/language_quality.py",
+      "sha256": "c31ca7c68152dbe6804fa6023b0f03fb8512616a7875daf7839ac7e7edd4c277",
+      "source": "production filesystem",
+      "source_mtime": "2026-09-14T11:24:39.097235+00:00"
+    },
+    {
+      "path": "src/ambient/segmenter.py",
+      "sha256": "8b950cd8750e8f81062131657cc1cd2f36c531b982b902166aabf508c7c53df2",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-09T03:02:13.335451+00:00"
+    },
+    {
+      "path": "src/ambient/store.py",
+      "sha256": "0fa140ca860dc6fb52ed605ffb433c4da6312e13d391b4579c7c2c881fd923bc",
+      "source": "production filesystem",
+      "source_mtime": "2026-09-14T11:24:39.122236+00:00"
+    },
+    {
+      "path": "src/ambient/textual_wake.py",
+      "sha256": "ee99cb2b8dc75b2f6c25b8df59e933a6193b577e5ade969850ca1d67a4277876",
+      "source": "production filesystem",
+      "source_mtime": "2026-09-14T11:24:39.147237+00:00"
+    },
+    {
+      "path": "src/ambient/transcriber.py",
+      "sha256": "32c8f06363a68fe06af2d20d8f886affbacbc9ee30291f241bf78b568ab27eaf",
+      "source": "production filesystem",
+      "source_mtime": "2026-09-14T11:24:39.172237+00:00"
+    },
+    {
+      "path": "src/audio/direction_observer.py",
+      "sha256": "0e12d0ce119c31e6b5b9913d6ab739f090dbd54764291446d402081ab710d235",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.683820+00:00"
+    },
+    {
+      "path": "src/audio/microphone_status.py",
+      "sha256": "15eebebf9796966ac449d531d23ea79a1acebeb6adecd1c46ca3104971c89a20",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.683820+00:00"
+    },
+    {
+      "path": "src/audio/xvf_controller.py",
+      "sha256": "c02ecd59c81594009249d4e1e82448050ad4956de6568fcdd21efe36fb66407e",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.683820+00:00"
+    },
+    {
+      "path": "src/core/settings_schema.py",
+      "sha256": "a38937a670070a06fb0b1e96d061187b1278f306d5ae397bf49bc7610615c990",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.683820+00:00"
+    },
+    {
+      "path": "src/dashboard/admin.py",
+      "sha256": "0ed85fad39992a080c196aefe7197fe4a6a3b67820f1933216fa25f272835c2d",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.683820+00:00"
+    },
+    {
+      "path": "src/dashboard/api.py",
+      "sha256": "8fe4304b89546e19af5253f0a6fb7aa10468477998ecd3ae14ff152974256810",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.683820+00:00"
+    },
+    {
+      "path": "src/dashboard/auth.py",
+      "sha256": "685504f51634e2a1cd533dbb6f82f93895a0949556ee0977e5597f96139f587a",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.683820+00:00"
+    },
+    {
+      "path": "src/dashboard/frontend/obs/src/app.jsx",
+      "sha256": "354a976204227c6a323ba533bed587e9292aef311ddc4d802a05353021a462a1",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.684819+00:00"
+    },
+    {
+      "path": "src/dashboard/home_api.py",
+      "sha256": "f5c5987731f536e6342247fe46d17572ba9bdb0df98518658d669fb0ae97dae8",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.684819+00:00"
+    },
+    {
+      "path": "src/dashboard/home_catalog.py",
+      "sha256": "6fdc83f950bd50b3ec6b5ab5157697d3a4686646bc6a737e2b8591e6e934e1bf",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.684819+00:00"
+    },
+    {
+      "path": "src/home_assistant/ha_client.py",
+      "sha256": "38cb8ea10fa158a665a59cf8676b54ce19274b34d16349e6833caaa6a0c593f8",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.685819+00:00"
+    },
+    {
+      "path": "src/home_assistant/home_actions.py",
+      "sha256": "533ab5ea779d9a0ed0656041d9a1a2bbf81a776282294327a9078e95a90ea115",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.685819+00:00"
+    },
+    {
+      "path": "src/main.py",
+      "sha256": "1bd6b688f00f2eab41f5836be580a5b4e3d0762c0e547d6d990d41a40b615c46",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.685819+00:00"
+    },
+    {
+      "path": "src/monitoring/health_aggregator.py",
+      "sha256": "84f77a40cd3b82e82b4b890cfabd7e76e836b0d19eadd515dd3ab262e411f231",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-08T11:48:34.401496+00:00"
+    },
+    {
+      "path": "src/nlu/command_gate.py",
+      "sha256": "6a2baf7eb5c570e8fe6cd04c2f37219f6b93f0ed40b3100e9f97386ac3da697c",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-08T11:48:34.401496+00:00"
+    },
+    {
+      "path": "src/nlu/command_grammar.py",
+      "sha256": "acd29739b040640ba556044914095dd0070933246e4f9b79c2c2a87ba916d381",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-09T16:33:16.339514+00:00"
+    },
+    {
+      "path": "src/nlu/slot_extractor.py",
+      "sha256": "d1b412db2272a97869404cc5e1e8c78edd45b28562c66e4f84e46ce9673824f8",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-09T16:23:57.436260+00:00"
+    },
+    {
+      "path": "src/orchestrator/dispatcher.py",
+      "sha256": "afd5e2977bc34df0e5106094e9ca3da3ca5e934ee5204043a7a748202cfa26cd",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-09T16:23:57.437260+00:00"
+    },
+    {
+      "path": "src/pipeline/command_event.py",
+      "sha256": "ae258a223ffd8a30ccd57e4400e98371efe22bec871e706b10a937ce76e44371",
+      "source": "production filesystem",
+      "source_mtime": "2026-09-14T11:24:39.408242+00:00"
+    },
+    {
+      "path": "src/pipeline/command_processor.py",
+      "sha256": "a4261b6773ed6cb401d045fc29fbde262986281bb09c1da5aa901e8c7b8b8397",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-09T16:16:24.529429+00:00"
+    },
+    {
+      "path": "src/pipeline/multi_room_audio_loop.py",
+      "sha256": "61df17b14ac82f0882bdef6a298a96547d5a530b28772cbe1213cc548fb96b8f",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.685819+00:00"
+    },
+    {
+      "path": "src/pipeline/request_router.py",
+      "sha256": "a8f3c677933f2099ba075fb45f02447468ef849a595d1cab17d037743d880785",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-09T16:23:57.436260+00:00"
+    },
+    {
+      "path": "src/pipeline/voice_pipeline.py",
+      "sha256": "cb2e5d7017fe706af44e8fa6e28057e4ee2b64b742ea3431f513937be7e7a52d",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-08T11:59:52.656605+00:00"
+    },
+    {
+      "path": "src/routines/factory.py",
+      "sha256": "ea01867941dd5e90a77e6fb527395211c327ccaca8a717e1842e36f76ff02ef7",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.686820+00:00"
+    },
+    {
+      "path": "src/routines/models.py",
+      "sha256": "ac371087c4514a2061a5ed1ec51ef337e76902469f3a2bccad7a72d61049d15e",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.686820+00:00"
+    },
+    {
+      "path": "src/routines/routine_executor.py",
+      "sha256": "85f269f7ae7b1c5444caf409d57c8c674a9030b6bbd97360b9b392c6573a96a5",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.686820+00:00"
+    },
+    {
+      "path": "src/routines/routine_scheduler.py",
+      "sha256": "41278fc86279f0cf84825fe4dfe0f1e0d3fe80a27b09a7770108ac55470e0aeb",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.686820+00:00"
+    },
+    {
+      "path": "src/routines/routine_store.py",
+      "sha256": "b28ba361f185583a44c69f662e749eebef2f2f5450136842cfe409a2fd35f8b7",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-23T17:22:00.686820+00:00"
+    },
+    {
+      "path": "src/vectordb/chroma_sync.py",
+      "sha256": "5643f04cb7b9a2d25ba14017209fdc53a52a1dc27f1e9645c287203da31655cf",
+      "source": "production filesystem",
+      "source_mtime": "2026-10-08T11:48:34.402496+00:00"
+    },
+    {
+      "path": "tools/ambient_spanish.py",
+      "sha256": "27689827f9e84a5f3e331f209b7779751c8dc2cff52dcdd6eb222c44a0cfc86f",
+      "source": "production filesystem",
+      "source_mtime": "2026-09-14T11:24:39.693247+00:00"
+    },
+    {
+      "path": "src/dashboard/frontend/home/index.html",
+      "sha256": "61af7be889e433c8fb89fd2015a5103b7b7f032bc442fc9020ac64f7b57ff322",
+      "source": "running service HTTP static resource",
+      "source_mtime": "Fri, 23 Oct 2026 17:22:00 GMT"
+    },
+    {
+      "path": "src/dashboard/frontend/home/home.css",
+      "sha256": "ad8277956487ca4017f70c7b5d76977eb5ede0f1f5990bf502cb7d5db2679ed3",
+      "source": "running service HTTP static resource",
+      "source_mtime": "Fri, 23 Oct 2026 17:22:00 GMT"
+    },
+    {
+      "path": "src/dashboard/frontend/home/request-id.js",
+      "sha256": "83b481cf2d103d60463f8ebe56e04b2a415b9f882731920f420b94d10b5612ab",
+      "source": "running service HTTP static resource",
+      "source_mtime": "Fri, 23 Oct 2026 17:22:00 GMT"
+    },
+    {
+      "path": "src/dashboard/frontend/home/home.js",
+      "sha256": "09f752b37e77d54a776addecacf1739634ee975042405642c16bb60ddaa307d0",
+      "source": "running service HTTP static resource",
+      "source_mtime": "Fri, 23 Oct 2026 17:22:00 GMT"
+    },
+    {
+      "path": "src/dashboard/frontend/home/routines.js",
+      "sha256": "41a4a15c67074e17c229f7584ff08a018e33ff32a32024bf7ce59899403405da",
+      "source": "running service HTTP static resource",
+      "source_mtime": "Fri, 23 Oct 2026 17:22:00 GMT"
+    }
+  ]
+}

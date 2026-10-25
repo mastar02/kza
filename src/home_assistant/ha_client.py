@@ -8,11 +8,87 @@ unavailable so the voice server keeps running.
 
 import asyncio
 import logging
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from enum import StrEnum
+from time import monotonic
 
 import aiohttp
+
+
+class ServiceCallStatus(StrEnum):
+    """Certainty of a single REST service attempt, independent of state."""
+
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    UNCERTAIN = "uncertain"
+
+
+@dataclass(frozen=True)
+class ServiceCallOutcome:
+    """Transport outcome; acceptance does not confirm entity state."""
+
+    status: ServiceCallStatus
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class HAStatesSnapshot:
+    """Fresh REST observation, retaining the last successful copy on failure."""
+
+    available: bool
+    observed_at: datetime | None
+    reason: str | None
+    states: tuple[dict, ...] = ()
+
+
+@dataclass(frozen=True)
+class HAAreaAssignments:
+    """Reduced registry observation with entity and device areas reconciled."""
+
+    available: bool
+    observed_at: datetime | None
+    reason: str | None
+    area_names: dict[str, str] = field(default_factory=dict)
+    entity_area_ids: dict[str, str] = field(default_factory=dict)
+
+
+def get_home_capabilities(entity: dict) -> tuple[str, ...]:
+    """Return the dashboard's supported actions from explicit HA evidence.
+
+    Args:
+        entity: HA state object, including the reduced capability attributes.
+
+    Returns:
+        Actions supported by the light or switch; other domains are read-only.
+    """
+    entity_id = entity.get("entity_id")
+    attributes = entity.get("attributes", {})
+    if not isinstance(entity_id, str) or "." not in entity_id or not isinstance(attributes, dict):
+        return ()
+    domain = entity_id.partition(".")[0]
+    if domain not in {"light", "switch"}:
+        return ()
+    capabilities = ("turn_on", "turn_off")
+    modes = attributes.get("supported_color_modes") or []
+    brightness_modes = {"brightness", "color_temp", "hs", "xy", "rgb", "rgbw", "rgbww", "white"}
+    if domain == "light" and isinstance(modes, list) and any(
+        isinstance(mode, str) and mode in brightness_modes for mode in modes
+    ):
+        capabilities += ("brightness",)
+    return capabilities
+
+
+def _optional_registry_id(value: object) -> str | None:
+    """Validate optional registry references before resolving any fallback."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError("Invalid optional registry ID")
+    return value
+
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +155,12 @@ class HomeAssistantClient:
     log the incident rather than raising exceptions.
     """
 
-    def __init__(self, url: str, token: str, timeout: float = REST_TIMEOUT_DEFAULT):
+    def __init__(self, url: str, token: str, timeout: float = REST_TIMEOUT_DEFAULT,
+                 state_confirmation_timeout_s: float = 0.3):
         self.url = url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self.state_confirmation_timeout_s = state_confirmation_timeout_s
         self.headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
@@ -106,6 +184,9 @@ class HomeAssistantClient:
         # los dos asignan self._ws_calls y el perdedor se filtra sin cerrarse
         # (incidente 2026-07-25).
         self._ws_connect_lock = asyncio.Lock()
+        # One service call owns the calls socket through ACK or REST fallback.
+        # This also preserves on/off ordering after an uncertain WS timeout.
+        self._ws_call_lock = asyncio.Lock()
 
         # Health tracking
         self._error_count = 0
@@ -126,6 +207,13 @@ class HomeAssistantClient:
         self._state_sync_running = False
         self._state_last_full_refresh: float = 0.0
         self._state_full_refresh_interval_s: float = 300.0
+
+        # Dashboard reads have independent provenance; the voice cache is not
+        # evidence of a successful current REST observation.
+        self._home_states = HAStatesSnapshot(False, None, "ha_states_unavailable")
+        self._area_assignments: HAAreaAssignments | None = None
+        self._registry_lock = asyncio.Lock()
+        self._registry_refresh_at = 0.0
 
     # ------------------------------------------------------------------
     # Backward-compat alias
@@ -183,6 +271,111 @@ class HomeAssistantClient:
             self._has_auth_error = True
 
     # ==================== REST API ====================
+
+    async def get_state_snapshot(self) -> HAStatesSnapshot:
+        """Read bounded REST states and distinguish failure from an empty home.
+
+        Returns:
+            Typed observation with its successful read time and failure reason.
+        """
+        started = time.perf_counter()
+        reason = "ha_states_unavailable"
+        try:
+            session = await self._ensure_session()
+            async with session.get(
+                f"{self.url}/api/states",
+                timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT_BULK),
+            ) as response:
+                response.raise_for_status()
+                states = await response.json()
+            if not isinstance(states, list) or any(
+                not isinstance(state, dict)
+                or not isinstance(state.get("entity_id"), str)
+                or "." not in state["entity_id"]
+                or not isinstance(state.get("state"), str)
+                or not isinstance(state.get("attributes", {}), dict)
+                for state in states
+            ):
+                reason = "ha_states_invalid"
+                raise ValueError("Invalid HA states response")
+            self._home_states = HAStatesSnapshot(True, datetime.now(UTC), None, tuple(states))
+            self._record_success((time.perf_counter() - started) * 1000)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+            self._record_error(error, "get_state_snapshot")
+            self._home_states = replace(self._home_states, available=False, reason=reason)
+            logger.warning("HA dashboard state snapshot unavailable")
+        return self._home_states
+
+    async def get_area_assignments(self) -> HAAreaAssignments:
+        """Read registries on an owned socket, caching one refresh for 60 seconds.
+
+        Returns:
+            Reduced registry data, retaining previous content and time on failure.
+        """
+        async with self._registry_lock:
+            if self._area_assignments is not None and monotonic() < self._registry_refresh_at:
+                return self._area_assignments
+            previous = self._area_assignments or HAAreaAssignments(False, None, None)
+            try:
+                areas, entities, devices = await self._read_home_registries()
+                names = {area["area_id"]: area["name"] for area in areas}
+                if any(not isinstance(device.get("id"), str) for device in devices):
+                    raise ValueError("Invalid registry device ID")
+                device_areas = {
+                    device["id"]: _optional_registry_id(device.get("area_id"))
+                    for device in devices
+                }
+                assignments = {}
+                for entity in entities:
+                    if not isinstance(entity.get("entity_id"), str) or "." not in entity["entity_id"]:
+                        raise ValueError("Invalid registry entity ID")
+                    area_id = _optional_registry_id(entity.get("area_id"))
+                    device_id = _optional_registry_id(entity.get("device_id"))
+                    if area_id is None:
+                        area_id = device_areas.get(device_id)
+                    if area_id is not None:
+                        assignments[entity["entity_id"]] = area_id
+                if not all(isinstance(key, str) and isinstance(value, str) for key, value in names.items()):
+                    raise ValueError("Invalid area registry")
+                self._area_assignments = HAAreaAssignments(
+                    True, datetime.now(UTC), None, names, assignments,
+                )
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, TypeError) as error:
+                self._record_error(error, "get_area_assignments")
+                self._area_assignments = replace(
+                    previous, available=False, reason="ha_registries_unavailable",
+                )
+                logger.warning("HA dashboard registries unavailable")
+            self._registry_refresh_at = monotonic() + 60.0
+            return self._area_assignments
+
+    async def _read_home_registries(self) -> tuple[list[dict], list[dict], list[dict]]:
+        """Read only registry list commands with a bounded temporary connection."""
+        ws = None
+        try:
+            async with asyncio.timeout(REST_TIMEOUT_BULK):
+                ws = await self._open_ws_authenticated("registry")
+                if ws is None:
+                    raise ValueError("Registry websocket unavailable")
+                results = []
+                for message_id, registry in enumerate(("area", "entity", "device"), start=1):
+                    await ws.send_json({"id": message_id, "type": f"config/{registry}_registry/list"})
+                    message = await ws.receive_json()
+                    if (
+                        not isinstance(message, dict)
+                        or message.get("id") != message_id
+                        or message.get("type") != "result"
+                        or message.get("success") is not True
+                    ):
+                        raise ValueError("Invalid registry result")
+                    result = message.get("result")
+                    if not isinstance(result, list) or any(not isinstance(item, dict) for item in result):
+                        raise ValueError("Invalid registry entries")
+                    results.append(result)
+                return results[0], results[1], results[2]
+        finally:
+            if ws is not None:
+                await ws.close()
 
     async def get_all_entities(self) -> list[dict]:
         """Obtener todas las entidades de Home Assistant."""
@@ -315,6 +508,52 @@ class HomeAssistantClient:
             self._record_error(e, f"get_entity_state({entity_id})")
             return None
 
+    async def get_entity_state_fresh(self, entity_id: str, timeout: float = 0.15) -> dict | None:
+        """Read a bounded REST state and refresh the local entity cache."""
+        try:
+            state = await asyncio.wait_for(self._get_entity_state_rest(entity_id), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+        if state is not None:
+            self._state_cache[entity_id] = state
+        return state
+
+    async def confirm_entity_state(
+        self, entity_id: str, expected_state: str, timeout: float | None = None,
+        *, brightness_pct: int | None = None,
+    ) -> bool:
+        """Confirm a requested state using fresh reads, never an old cache entry.
+
+        Args:
+            entity_id: Target Home Assistant entity.
+            expected_state: Requested binary state (on or off).
+            timeout: Maximum confirmation wait after the service response.
+            brightness_pct: Requested light percentage; confirm its fresh
+                0-255 attribute too, allowing one step for device rounding.
+
+        Returns:
+            Whether HA reported the requested state before the deadline.
+            This is an integration state confirmation, not physical sensing.
+        """
+        duration = self.state_confirmation_timeout_s if timeout is None else timeout
+        deadline = asyncio.get_running_loop().time() + duration
+        while (remaining := deadline - asyncio.get_running_loop().time()) > 0:
+            state = await self.get_entity_state_fresh(entity_id, timeout=remaining)
+            if state is None:
+                return False
+            if state.get("state") == expected_state:
+                if brightness_pct is None or brightness_pct == 0:
+                    return True
+                actual = (state.get("attributes") or {}).get("brightness")
+                if isinstance(actual, (int, float)) and abs(actual - brightness_pct * 255 / 100) <= 1:
+                    return True
+            if state.get("state") in ("unknown", "unavailable"):
+                return False
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining > 0:
+                await asyncio.sleep(min(0.025, remaining))
+        return False
+
     def get_entity_state_cached(self, entity_id: str) -> dict | None:
         """Lookup sin I/O contra el prefetch cache.
 
@@ -385,6 +624,48 @@ class HomeAssistantClient:
     async def _fetch_all_states_rest(self) -> list[dict]:
         """Wrapper sobre get_all_entities para claridad en el sync loop."""
         return await self.get_all_entities()
+
+    async def call_service_once(
+        self, domain: str, service: str, entity_id: str, data: dict | None = None,
+    ) -> ServiceCallOutcome:
+        """Send one REST POST without redirect, fallback, or automatic retry.
+
+        Args:
+            domain: Home Assistant domain.
+            service: Service name in that domain.
+            entity_id: Exact target; data cannot replace it.
+            data: Additional service fields, excluding target selectors.
+
+        Returns:
+            Explicit rejection, HTTP acceptance, or transport uncertainty.
+        """
+        if (
+            not isinstance(domain, str) or re.fullmatch(r"[a-z_]+", domain) is None
+            or not isinstance(service, str) or re.fullmatch(r"[a-z_]+", service) is None
+            or not isinstance(entity_id, str)
+            or re.fullmatch(re.escape(domain) + r"\.[a-z0-9_]+", entity_id) is None
+            or (data is not None and (
+                not isinstance(data, dict) or {"entity_id", "device_id", "area_id", "target"}.intersection(data)
+            ))
+        ):
+            return ServiceCallOutcome(ServiceCallStatus.REJECTED, "invalid_service_target")
+        payload = {**(data or {}), "entity_id": entity_id}
+        started = time.perf_counter()
+        try:
+            session = await self._ensure_session()
+            async with session.post(
+                f"{self.url}/api/services/{domain}/{service}", json=payload,
+                timeout=aiohttp.ClientTimeout(total=self.timeout), allow_redirects=False,
+            ) as response:
+                if response.status == 200:
+                    self._record_success((time.perf_counter() - started) * 1000)
+                    return ServiceCallOutcome(ServiceCallStatus.ACCEPTED, None)
+                if response.status in (401, 403):
+                    self._has_auth_error = True
+                status = ServiceCallStatus.REJECTED if 400 <= response.status < 500 else ServiceCallStatus.UNCERTAIN
+                return ServiceCallOutcome(status, f"ha_http_{response.status}")
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
+            return ServiceCallOutcome(ServiceCallStatus.UNCERTAIN, "ha_transport_uncertain")
 
     async def call_service(
         self,
@@ -662,7 +943,7 @@ class HomeAssistantClient:
             3. Server sends {"type": "auth_ok"} on success.
 
         Args:
-            purpose: "calls" or "events". Used only for log messages.
+            purpose: "calls", "events" or "registry". Used only for log messages.
 
         Returns:
             The authenticated aiohttp.ClientWebSocketResponse, or None on
@@ -670,7 +951,8 @@ class HomeAssistantClient:
             (self._ws_calls or self._ws_events).
         """
         ws_url = self.url.replace("http", "ws") + "/api/websocket"
-
+        ws = None
+        authenticated = False
         try:
             session = await self._ensure_session()
 
@@ -689,7 +971,6 @@ class HomeAssistantClient:
                 logger.error(
                     f"WS[{purpose}] unexpected first frame (expected auth_required): {msg}"
                 )
-                await ws.close()
                 return None
 
             await ws.send_json({
@@ -704,11 +985,11 @@ class HomeAssistantClient:
 
             if auth_result.get("type") == "auth_ok":
                 logger.info(f"WebSocket HA[{purpose}] conectado y autenticado")
+                authenticated = True
                 return ws
 
             self._has_auth_error = True
             logger.error(f"Auth WebSocket[{purpose}] fallo: {auth_result}")
-            await ws.close()
             return None
 
         except asyncio.TimeoutError:
@@ -723,6 +1004,9 @@ class HomeAssistantClient:
             logger.error(f"Error conectando WebSocket HA[{purpose}]: {e}")
             self._record_error(e, f"open_ws({purpose})")
             return None
+        finally:
+            if ws is not None and not authenticated:
+                await ws.close()
 
     async def connect_websocket(self) -> bool:
         """Conectar el canal de calls via WebSocket para menor latencia.
@@ -792,35 +1076,36 @@ class HomeAssistantClient:
         se reintenta — ahí el fallo es real y un retry dispararía el servicio
         dos veces.
         """
-        # ¿La conexión ya estaba viva antes de esta llamada?
-        was_established = (
-            self._ws_connected
-            and self._ws_calls is not None
-            and not self._ws_calls.closed
-        )
-
-        # Asegurar conexion WebSocket
-        if not await self.ensure_websocket_connected():
-            logger.debug("WebSocket no disponible, usando REST")
-            return await self.call_service(domain, service, entity_id, data)
-
-        result = await self._send_ws_call(domain, service, entity_id, data)
-
-        if result is True:
-            return result
-        if result is False:
-            if was_established:
-                return False
-            logger.info(
-                f"[WS-RETRY] {domain}.{service}@{entity_id} falló sobre una "
-                f"conexión recién abierta — un reintento"
+        async with self._ws_call_lock:
+            # ¿La conexión ya estaba viva antes de esta llamada?
+            was_established = (
+                self._ws_connected
+                and self._ws_calls is not None
+                and not self._ws_calls.closed
             )
-            retry = await self._send_ws_call(domain, service, entity_id, data)
-            if retry is not None:
-                return retry
 
-        # result is None (o el retry también fue None) → WS inutilizable.
-        return await self.call_service(domain, service, entity_id, data)
+            # Asegurar conexion WebSocket
+            if not await self.ensure_websocket_connected():
+                logger.debug("WebSocket no disponible, usando REST")
+                return await self.call_service(domain, service, entity_id, data)
+
+            result = await self._send_ws_call(domain, service, entity_id, data)
+
+            if result is True:
+                return result
+            if result is False:
+                if was_established:
+                    return False
+                logger.info(
+                    f"[WS-RETRY] {domain}.{service}@{entity_id} falló sobre una "
+                    f"conexión recién abierta — un reintento"
+                )
+                retry = await self._send_ws_call(domain, service, entity_id, data)
+                if retry is not None:
+                    return retry
+
+            # result is None (o el retry también fue None) → WS inutilizable.
+            return await self.call_service(domain, service, entity_id, data)
 
     async def _receive_ws_result(
         self,

@@ -66,9 +66,9 @@ function Topbar({ activeNav }) {
       <div className="topbar-spacer" />
       <input type="search" placeholder="buscar entidades, turns, users… (⌘K)" />
       <div className="pulse-group">
-        <div className="pulse"><i className="led" /> sistema</div>
-        <div className="pulse warn"><i className="led" /> 1 cooldown</div>
-        <div className="pulse"><i className="led" /> WS live</div>
+        <div className="pulse warn"><i className="led" /> sistema · ejemplo</div>
+        <div className="pulse warn"><i className="led" /> cooldown · ejemplo</div>
+        <div className="pulse warn"><i className="led" /> WS · sin validar</div>
       </div>
       <span className="kbd">⌘K</span>
     </header>
@@ -112,6 +112,11 @@ function App() {
       <Sidebar active={active} onNav={setActive} />
       <main className="main">
         <Topbar activeNav={active} />
+        <section role="status" style={{ margin: '16px 24px 0', padding: '12px 16px', border: '1px solid #806020', borderRadius: 6, background: '#302615', color: '#f6d28b', fontSize: 12 }}>
+          <strong>Panel técnico · incluye datos de ejemplo</strong>
+          <div>Esta pantalla puede mezclar observaciones de API con datos sintéticos del wireframe. Los indicadores, host, uptime y build de ejemplo no verifican el sistema real.</div>
+          <div>Fuentes en modo mock, degradadas o sin verificar: {Object.entries(window.__kzaSources || {}).filter(([, source]) => source !== 'real').map(([key, source]) => `${key} (${source})`).join(', ') || 'ninguna API marcada; los elementos de ejemplo siguen presentes'}.</div>
+        </section>
         <div className="content">
           {ViewComp && <ViewComp homeLayout={t.homeLayout} />}
         </div>
@@ -173,18 +178,20 @@ const ENDPOINT_MAP = [
   ['GPUS',          '/api/system/gpus'],
   ['SERVICES',      '/api/system/services'],
 ];
+window.__kzaSources = Object.fromEntries(ENDPOINT_MAP.map(([key]) => [key, 'mock/sin verificar']));
 
 async function hydrateMocks() {
   await Promise.all(ENDPOINT_MAP.map(async ([key, path]) => {
     try {
       const r = await fetch(API_BASE + path);
-      if (!r.ok) return;
+      if (!r.ok) { window.__kzaSources[key] = 'degradada'; return; }
       const data = await r.json();
       // El header X-KZA-Source nos dice si el server tiene datos reales.
       // - "real": usar data tal cual (incluso lista vacía → "0 usuarios").
       // - "mock"/"degraded": el server ya cayó al mock; mantenemos el literal
       //   de mocks.jsx que es idéntico, sin sobrescribir.
       const source = (r.headers.get('x-kza-source') || '').toLowerCase();
+      window.__kzaSources[key] = data === null || data === undefined ? 'degradada' : source === 'real' ? 'real' : source === 'degraded' ? 'degradada' : 'mock/sin verificar';
       if (source !== 'real' || data === null || data === undefined) return;
       // Mutar in-place: las views hacen `const { X } = window.MOCKS;` al cargar
       // el script, capturando la referencia. Reasignar `window.MOCKS[key] = data`
@@ -201,6 +208,7 @@ async function hydrateMocks() {
         window.MOCKS[key] = data;
       }
     } catch (e) {
+      window.__kzaSources[key] = 'degradada';
       console.warn('[bootstrap] endpoint failed, keeping mock:', path, e);
     }
   }));

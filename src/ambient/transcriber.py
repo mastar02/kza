@@ -470,7 +470,8 @@ def build_ambient_path(
     # (lang, lang_prob, lang_ok) al persistir. py3langid + marcadores rioplatenses
     # corren en el hot-path del worker ambient (CPU, determinista, liviano). El
     # discriminante de calidad del rioplatense es el IDIOMA DEL TEXTO, no la
-    # energía (vad). min_vad alineado con el gate del distiller (0.45).
+    # energía (vad). min_vad se pasa por compat y language_quality lo ignora;
+    # el distiller sigue usando distill.min_vad_prob.
     q_cfg = ambient_cfg.get("quality", {}) or {}
     quality_fn = None
     if q_cfg.get("enabled", False):

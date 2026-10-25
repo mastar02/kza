@@ -590,6 +590,7 @@ class RequestDispatcher:
         # home_assistant.state_prefetch.full_refresh_interval_s) y eso empieza
         # a retener comandos contra dispositivos que en realidad ya volvieron.
         self._unavailable_precheck_enabled = unavailable_precheck_enabled
+        self._ha_entity_locks: dict[str, asyncio.Lock] = {}
 
         # Estadisticas
         self._stats = {
@@ -618,6 +619,7 @@ class RequestDispatcher:
         timeout: float = 5.0,
         service_filter: str | None = None,
         query_slots: dict | None = None,
+        target_entity_id: str | None = None,
     ) -> DispatchResult:
         """
         Procesar una peticion, enrutando al path correcto.
@@ -686,6 +688,7 @@ class RequestDispatcher:
                 permission_level=permission_level,
                 service_filter=service_filter,
                 query_slots=query_slots,
+            target_entity_id=target_entity_id,
             )
             self._stats["fast_path"] += 1
 
@@ -918,6 +921,7 @@ class RequestDispatcher:
         permission_level: int,
         service_filter: str | None = None,
         query_slots: dict | None = None,
+        target_entity_id: str | None = None,
     ) -> DispatchResult:
         """
         Procesar peticion por fast path (paralelo, sin cola).
@@ -934,13 +938,21 @@ class RequestDispatcher:
 
             # Buscar comando en vector DB
             t0 = time.perf_counter()
-            command = await self.chroma.asearch_command(
-                text,
-                self.vector_threshold,
-                service_filter=service_filter,
-                query_slots=query_slots,
-                prefer_area=prefer_area,
-            )
+            if target_entity_id is not None:
+                if not target_entity_id.startswith("light.") or service_filter not in ("turn_on", "turn_off"):
+                    return DispatchResult(path=path, priority=Priority.HIGH, success=False, intent="invalid_target")
+                command = {
+                    "entity_id": target_entity_id, "domain": "light", "service": service_filter,
+                    "description": "la luz", "data": query_slots or {},
+                }
+            else:
+                command = await self.chroma.asearch_command(
+                    text,
+                    self.vector_threshold,
+                    service_filter=service_filter,
+                    query_slots=query_slots,
+                    prefer_area=prefer_area,
+                )
             timings["vector_search"] = (time.perf_counter() - t0) * 1000
 
             # Path dedicado para comandos globales ("toda la casa", "hogar").
@@ -1010,28 +1022,18 @@ class RequestDispatcher:
                 )
 
             if command:
-                # 2026-04-28: removido el skip idempotent por cache. La integración
-                # Hue↔HA tiene lag (a veces segundos) entre el estado real y el cache
-                # vía WS. Con el skip, una luz físicamente prendida pero con cache="off"
-                # ignoraba el "apagá" silenciosamente. La HA call es idempotent
-                # server-side, así que mandarla siempre no tiene costo y garantiza
-                # que el estado real se sincronice.
-                # 2026-04-26: fire-and-forget. El usuario valida visualmente las
-                # acciones de domótica (no quiere TTS ack). El HA call corre en
-                # background; si falla, _fire_and_reconcile_ha habla el error.
-                # Eso baja `home_assistant` de ~155ms a ~0ms en el camino crítico.
-                _ha_task = asyncio.create_task(self._fire_and_reconcile_ha(command))
-                _ha_task.add_done_callback(_log_fire_and_reconcile_exception)
-                timings["home_assistant"] = 0.0
-
+                command = {**command, "zone_id": zone_id, "user_id": user_id}
+                t0 = time.perf_counter()
+                success = await self._fire_and_reconcile_ha(command)
+                timings["home_assistant"] = (time.perf_counter() - t0) * 1000
                 return DispatchResult(
                     path=path,
                     priority=Priority.HIGH,
-                    success=True,
-                    response=command["description"],
+                    success=bool(success),
+                    response=command["description"] if success else "",
                     intent="domotics",
-                    action={**command, "fire_and_forget": True},
-                    timings=timings
+                    action=command,
+                    timings=timings,
                 )
 
             # No encontrado en vector DB, intentar con router
@@ -1583,18 +1585,12 @@ class RequestDispatcher:
             self.tts.speak(message)
         return message
 
-    async def _fire_and_reconcile_ha(self, command: dict) -> None:
-        """Ejecutar el call a HA en background y reportar solo en caso de error.
+    async def _fire_and_reconcile_ha(self, command: dict) -> bool:
+        """Execute an action, confirm binary state and report failures in its room.
 
-        Llamado desde `_fast_path` con `asyncio.create_task` para no bloquear
-        el camino crítico del usuario. La latencia hacia HA + dispositivo
-        sigue existiendo, pero ya no la paga el usuario en el TTS.
-
-        Reconciliación criterio α (sesión 2026-04-26):
-        - Si `call_service_ws` retorna False o lanza excepción → hablar el error
-          usando `command.description`. La integración HA/WS ya tiene su propio
-          timeout y fallback REST, así que llegar acá significa fallo real.
-        - Si retorna True → silencio (el usuario valida visualmente).
+        Returns:
+            True only after the service succeeds and any applicable binary
+            state confirmation completes. Blocks and unavailable targets fail.
         """
         domain = command.get("domain")
         service = command.get("service")
@@ -1644,7 +1640,7 @@ class RequestDispatcher:
                         timestamp=time.time(), call=call, block=result,
                     ),
                 )
-                return
+                return False
             # Apply rewrite (if any) back to local vars
             domain = result.domain
             service = result.service
@@ -1663,11 +1659,20 @@ class RequestDispatcher:
         # snapshot REST (home_assistant.state_prefetch.full_refresh_interval_s,
         # 300s) y este precheck retendría comandos contra dispositivos que ya
         # volvieron. Apagar el flag en config/settings.yaml si eso pasa.
-        if (
+        unavailable = (
             self._unavailable_precheck_enabled
             and entity_id
             and self.ha.is_entity_available(entity_id) is False
-        ):
+        )
+        if unavailable:
+            # Refresh a negative cache entry before suppressing a recovered device.
+            try:
+                fresh = await self.ha.get_entity_state_fresh(entity_id)
+            except Exception:
+                fresh = None
+            if isinstance(fresh, dict) and fresh.get("state") not in (None, "unavailable"):
+                unavailable = False
+        if unavailable:
             logger.warning(
                 f"[HA-UNAVAILABLE] {domain}.{service}@{entity_id} "
                 f"({description}) — no se envía la llamada"
@@ -1707,14 +1712,27 @@ class RequestDispatcher:
                         ),
                     ),
                 )
-            return
+            return False
 
         t0 = time.perf_counter()
         err: str | None = None
         try:
-            success = await self.ha.call_service_ws(
-                domain, service, entity_id, rewritten_data,
-            )
+            lock = self._ha_entity_locks.setdefault(entity_id, asyncio.Lock())
+            async with lock:
+                success = await self.ha.call_service_ws(
+                    domain, service, entity_id, rewritten_data,
+                )
+                if success and domain in ("light", "switch") and service in ("turn_on", "turn_off"):
+                    brightness = (
+                        rewritten_data.get("brightness_pct")
+                        if domain == "light" and service == "turn_on" and rewritten_data else None
+                    )
+                    success = await self.ha.confirm_entity_state(
+                        entity_id, "off" if service == "turn_off" or brightness == 0 else "on",
+                        **({"brightness_pct": brightness} if brightness is not None else {}),
+                    )
+                    if not success:
+                        err = "Requested entity state was not confirmed"
             dt = (time.perf_counter() - t0) * 1000
             logger.info(
                 f"[HA-CALL] {domain}.{service}@{entity_id} "
@@ -1753,7 +1771,7 @@ class RequestDispatcher:
             )
 
         if success:
-            return
+            return True
 
         # Fallo real. Earcon (no frase) en la zona donde habló el usuario:
         # decisión 2026-07-25. La regla "domótica silenciosa" cubre los ÉXITOS
@@ -1773,6 +1791,7 @@ class RequestDispatcher:
                 f"HA fire-and-forget falló en {domain}.{service}@{entity_id} "
                 f"sin response_handler — usuario no fue notificado"
             )
+        return False
 
 
 class MultiUserOrchestrator:
@@ -2001,6 +2020,7 @@ class MultiUserOrchestrator:
         on_response: Callable = None,
         service_filter: str | None = None,
         query_slots: dict | None = None,
+        target_entity_id: str | None = None,
     ) -> DispatchResult:
         """
         Procesar una peticion de usuario.
@@ -2045,6 +2065,7 @@ class MultiUserOrchestrator:
             on_response=on_response,
             service_filter=service_filter,
             query_slots=query_slots,
+            target_entity_id=target_entity_id,
         )
 
     async def _identify_speaker(self, audio) -> tuple[str, str]:

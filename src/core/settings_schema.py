@@ -14,7 +14,7 @@ import logging
 import os
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,35 @@ class ModelDeviceSettings(_Section):
         return self
 
 
+class MicrophoneTelemetrySettings(_Section):
+    """Metadata-only polling; no change to voice capture or DSP thresholds."""
+
+    interval_s: float = Field(default=2.0, strict=True, gt=0, allow_inf_nan=False)
+    stale_after_s: float = Field(default=6.0, strict=True, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _check_window(self) -> "MicrophoneTelemetrySettings":
+        if self.stale_after_s < self.interval_s:
+            raise ValueError("stale_after_s must cover at least one telemetry interval")
+        return self
+
+
+class RoomsSettings(_Section):
+    """Validate the telemetry subsection and preserve existing room/voice keys."""
+
+    telemetry: MicrophoneTelemetrySettings = Field(default_factory=MicrophoneTelemetrySettings)
+
+
+class DashboardHomeSettings(_Section):
+    """Home UI opt-in; runtime activation remains a deployment decision."""
+
+    enabled: bool = Field(default=False, strict=True)
+
+
+class DashboardSettings(_Section):
+    home: DashboardHomeSettings = Field(default_factory=DashboardHomeSettings)
+
+
 class SettingsSchema(_Section):
     """Secciones que una config sana siempre declara.
 
@@ -126,6 +155,8 @@ class SettingsSchema(_Section):
     embeddings: EmbeddingsSettings
     speaker_id: ModelDeviceSettings
     emotion: ModelDeviceSettings
+    rooms: RoomsSettings = Field(default_factory=RoomsSettings)
+    dashboard: DashboardSettings = Field(default_factory=DashboardSettings)
 
 
 def check_unresolved_env_vars(

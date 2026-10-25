@@ -5,6 +5,7 @@ Entry point principal
 """
 
 import asyncio
+from contextlib import AsyncExitStack
 import logging
 import os
 import sys
@@ -26,6 +27,9 @@ from src.vectordb.chroma_sync import ChromaSync
 from src.home_assistant.ha_client import HomeAssistantClient
 from src.llm.reasoner import LLMReasoner, FastRouter
 from src.routines.routine_manager import RoutineManager
+from src.routines.factory import build_routine_scheduler
+from src.routines.routine_scheduler import RoutineScheduler
+from src.home_assistant.home_actions import HomeActionService
 from src.pipeline.voice_pipeline import VoicePipeline
 from src.pipeline.audio_loop import AudioLoop
 from src.pipeline.audio_manager import AudioManager
@@ -45,6 +49,7 @@ from src.analytics.suggestion_engine import SuggestionEngine
 from src.audio.zone_manager import ZoneManager, Zone
 from src.audio.ma1260_controller import MA1260Controller, MA1260Source
 from src.audio.echo_suppressor import EchoSuppressor
+from src.audio.direction_observer import parse_direction_observation
 from src.conversation.follow_up_mode import FollowUpMode
 from src.orchestrator import MultiUserOrchestrator
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
@@ -66,6 +71,7 @@ from src.reminders.reminder_store import ReminderStore
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_scheduler import ReminderScheduler
 from src.dashboard.api import DashboardAPI
+from src.dashboard.home_api import build_home_services, build_microphone_rooms
 from src.dashboard.live_event_bus import LiveEventBus
 from src.monitoring.health_aggregator import HealthAggregator
 from src.nlu.command_gate import CommandAcceptanceGate
@@ -91,6 +97,33 @@ def load_config(config_path: str = "config/settings.yaml") -> dict:
     config = resolve_env_vars(config)
     check_unresolved_env_vars(config)
     return validate_settings(config)
+
+
+def _build_xvf_controllers(
+    room_streams: dict, spe_cfg: dict, tuning_cfg: dict, direction_room_ids: tuple[str, ...],
+) -> dict:
+    """Construct one port-bound controller per room needing gate, tuning, or DoA.
+
+    Construction never opens USB or starts the legacy SPENERGY poller.
+    """
+    from src.audio.xvf_controller import XvfController
+
+    legacy_needed = spe_cfg.get('enabled', False) or (
+        tuning_cfg.get('apply_on_start', False) and tuning_cfg.get('params')
+    )
+    controllers = {}
+    for room_id, stream in room_streams.items():
+        if not legacy_needed and room_id not in direction_room_ids:
+            continue
+        if not stream.mic_usb_port:
+            logger.warning('[XVF] %s has no mic_usb_port; gate/tuning/direction unavailable', room_id)
+            continue
+        controllers[room_id] = XvfController(
+            usb_port=stream.mic_usb_port,
+            poll_interval_s=spe_cfg.get('poll_interval_s', 0.04),
+            window_s=spe_cfg.get('window_s', 4.0),
+        )
+    return controllers
 
 
 async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma):
@@ -199,8 +232,85 @@ def _preflight_vram(threshold_mib: int = 1500) -> None:
         logger.debug(f"Preflight VRAM skipped: {e}")
 
 
+async def _initialize_routines(
+    config: dict, *, ha_client, home_actions: HomeActionService, shutdown: AsyncExitStack,
+) -> RoutineScheduler | None:
+    """Start persistent routines with shared Casa services and owned cleanup.
+
+    Args:
+        config: Central application configuration.
+        ha_client: Shared Home Assistant client owned by main.
+        home_actions: Shared Casa action service owned by main.
+        shutdown: Application lifecycle stack that outlives web admission.
+
+    Returns:
+        A started scheduler, or None when routines are unavailable. Other
+        application subsystems can continue after an initialization failure.
+    """
+    cleanup = AsyncExitStack()
+    transferred = False
+    try:
+        routines_config = config.get("routines", {})
+        scheduler = await build_routine_scheduler(
+            db_path=routines_config.get("db_path", "./data/routines.db"),
+            timezone=routines_config.get("timezone", "America/Montevideo"),
+            ha_client=ha_client,
+            home_actions=home_actions,
+        )
+        cleanup.push_async_callback(scheduler.store.close)
+        cleanup.push_async_callback(scheduler.stop)
+        await scheduler.start()
+        shutdown.push_async_callback(cleanup.pop_all().aclose)
+        transferred = True
+        return scheduler
+    except Exception:
+        # Keep private database paths and dependency exception text out of logs.
+        logger.error("Routine subsystem unavailable after initialization failure")
+        return None
+    finally:
+        if not transferred:
+            # Startup cancellation must finish owned cleanup before main closes
+            # shared Casa/HA, even if another cancellation arrives during I/O.
+            closing = asyncio.create_task(cleanup.aclose())
+            cancelled = False
+            while not closing.done():
+                try:
+                    await asyncio.shield(closing)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception:
+                    # aclose has exhausted its callbacks; observe and report
+                    # the failed task below without overriding degradation.
+                    break
+            try:
+                closing.result()
+            except Exception:
+                logger.error("Routine subsystem cleanup failed")
+            if cancelled:
+                raise asyncio.CancelledError
+
+
 async def main():
-    """Entry point principal"""
+    """Own shutdown even when construction or warmup fails before voice runs."""
+    shutdown = AsyncExitStack()
+    try:
+        await _run_main(shutdown)
+    finally:
+        # Repeated cancellation must not close HA while action sends still drain.
+        cleanup = asyncio.create_task(shutdown.aclose())
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+
+async def _run_main(shutdown: AsyncExitStack):
+    """Construct and run the voice graph with explicit owned cleanup."""
 
     # Cargar variables de entorno
     load_dotenv()
@@ -240,8 +350,10 @@ async def main():
     ha_client = HomeAssistantClient(
         url=ha_url,
         token=ha_token,
-        timeout=ha_config.get("timeout", 2.0)
+        timeout=ha_config.get("timeout", 2.0),
+        state_confirmation_timeout_s=ha_config.get("state_confirmation_timeout_s", 0.3)
     )
+    shutdown.push_async_callback(ha_client.close)
 
     # Verificar conexión (async)
     if not await ha_client.test_connection():
@@ -249,22 +361,6 @@ async def main():
         sys.exit(1)
     logger.info(f"Conectado a Home Assistant: {ha_url}")
 
-    # State prefetch cache (S6): WS subscribe para evitar round-trip REST.
-    # El warmup explícito del WS dentro de start_state_sync puede fallar si HA
-    # está degradado momentáneamente — degradamos a REST-only polling en vez
-    # de crashear toda la app.
-    state_prefetch_cfg = ha_config.get("state_prefetch", {})
-    if state_prefetch_cfg.get("enabled", True):
-        try:
-            await ha_client.start_state_sync(
-                full_refresh_interval_s=state_prefetch_cfg.get("full_refresh_interval_s", 300),
-            )
-            logger.info("HA state prefetch cache habilitado")
-        except RuntimeError as e:
-            logger.warning(
-                f"HA state prefetch deshabilitado: {e}. "
-                f"Sigo con REST polling cada 300s."
-            )
 
     # Preflight de VRAM antes de cargar modelos pesados (aviso, no bloquea).
     _preflight_vram()
@@ -680,6 +776,8 @@ async def main():
     ROOMS_RESERVED_KEYS = {
         "enabled", "cross_validation", "fallback_room",
         "dedup_window_ms", "ma1260", "wake_word", "detection",
+        "telemetry", "barge_in", "stream_watchdog", "ambient_guard", "endpointing",
+        "direction_observation",
     }
 
     if rooms_config.get("enabled", False):
@@ -760,8 +858,8 @@ async def main():
             )
             room_context_manager.add_room(rc)
 
-            # Build RoomStream if room has a mic
-            if rc.mic_device_index is not None:
+            # Keep configured USB microphones visible and retryable when absent.
+            if rc.mic_device_index is not None or rc.mic_usb_port:
                 wake_engine = room_wake_cfg.get("engine", "openwakeword")
                 if wake_engine == "whisper":
                     # Speaker filter opcional: carga embedding si existe + enabled.
@@ -939,29 +1037,13 @@ async def main():
             # controller de otra habitación.
             spe_cfg = early_cfg.get("spenergy_gate", {}) or {}
             tuning_cfg = early_cfg.get("xvf_tuning", {}) or {}
-            xvf_controllers: dict = {}
-            # Los controllers sirven DOS features ortogonales (review Fase 1):
-            # el gate SPENERGY y el tuning del DSP. Se construyen si CUALQUIERA
-            # lo necesita — antes, tuning con gate deshabilitado quedaba
-            # silenciosamente sin aplicar.
-            _need_xvf = spe_cfg.get("enabled", False) or (
-                tuning_cfg.get("apply_on_start", False) and tuning_cfg.get("params")
+            direction_cfg = rooms_config.get('direction_observation')
+            _, direction_room_ids, _ = parse_direction_observation(
+                direction_cfg, room_context_manager.get_all_rooms(),
             )
-            if _need_xvf:
-                from src.audio.xvf_controller import XvfController
-                for _room_id, _rs in room_streams.items():
-                    if not _rs.mic_usb_port:
-                        logger.warning(
-                            f"[XVF] {_room_id} sin mic_usb_port — sin gate SPENERGY "
-                            f"ni tuning del DSP (declarar rooms.{_room_id}."
-                            f"mic_usb_port para bindear su XVF3800)"
-                        )
-                        continue
-                    xvf_controllers[_room_id] = XvfController(
-                        usb_port=_rs.mic_usb_port,
-                        poll_interval_s=spe_cfg.get("poll_interval_s", 0.04),
-                        window_s=spe_cfg.get("window_s", 4.0),
-                    )
+            xvf_controllers = _build_xvf_controllers(
+                room_streams, spe_cfg, tuning_cfg, direction_room_ids,
+            )
             # AmbientGuard (spec 2026-06-05): compuerta acústica integral.
             # Default enabled=false → pasivo. Umbrales: ver settings.yaml.
             from src.pipeline.ambient_guard import AmbientGuard, AmbientGuardConfig
@@ -1013,6 +1095,9 @@ async def main():
                 )
             multi_room_loop = MultiRoomAudioLoop(
                 room_streams=room_streams,
+                microphone_rooms=build_microphone_rooms(room_context_manager.get_all_rooms()),
+                microphone_interval_s=rooms_config.get("telemetry", {}).get("interval_s", 2.0),
+                microphone_stale_after_s=rooms_config.get("telemetry", {}).get("stale_after_s", 6.0),
                 follow_up=FollowUpMode(
                     follow_up_window=early_cfg.get("follow_up_window_s", 4.0)
                 ),
@@ -1020,6 +1105,11 @@ async def main():
                 spenergy_threshold=spe_cfg.get("threshold", 100.0),
                 spenergy_gate_enabled=spe_cfg.get("enabled", False),
                 xvf_tuning=tuning_cfg,
+                direction_observation=direction_cfg,
+                direction_calibrations={
+                    room_id: rooms_config[room_id].get('direction_calibration')
+                    for room_id in room_context_manager.get_all_rooms()
+                },
                 ambient_guard=ambient_guard,
                 wake_clip_writer=wake_clip_writer,
                 sample_rate=16000,
@@ -1557,6 +1647,19 @@ async def main():
     # ----------------------------------------------------------------
     dashboard_config = config.get("dashboard", {})
     dashboard = None
+    home_services = build_home_services(
+        ha_client,
+        room_context_manager.get_all_rooms() if room_context_manager else {},
+        multi_room_loop.get_microphone_snapshot if multi_room_loop else None,
+    )
+    # Routines will share this exact instance; it exists with dashboard disabled.
+    home_action_service = home_services.actions
+    if home_action_service is not None:
+        shutdown.push_async_callback(home_action_service.close)
+
+    routine_scheduler = await _initialize_routines(
+        config, ha_client=ha_client, home_actions=home_action_service, shutdown=shutdown,
+    )
 
     live_event_bus = LiveEventBus(
         queue_size=dashboard_config.get("live_event_queue_size", 256),
@@ -1569,11 +1672,11 @@ async def main():
             latency_monitor=latency_monitor,
             priority_queue=getattr(orchestrator, "_queue", None) if orchestrator else None,
             reminder_scheduler=reminder_scheduler,
+            audio_health_provider=multi_room_loop.get_audio_health if multi_room_loop else None,
         )
 
         dashboard = DashboardAPI(
-            routine_scheduler=None,
-            routine_executor=None,
+            routine_scheduler=routine_scheduler,
             presence_detector=presence_detector,
             ha_client=ha_client,
             list_manager=list_manager,
@@ -1592,7 +1695,12 @@ async def main():
             speaker_identifier=speaker_identifier,
             llm_metrics=llm_metrics_tracker,
             observability_use_mocks=dashboard_config.get("observability_use_mocks", True),
+            home_catalog=home_services.catalog,
+            home_actions=home_action_service,
+            microphone_snapshot_provider=home_services.microphone_snapshot_provider,
+            home_enabled=dashboard_config.get("home", {}).get("enabled", False),
         )
+        shutdown.push_async_callback(dashboard.stop)
         logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 9500)}")
 
     # ----------------------------------------------------------------
@@ -1693,6 +1801,18 @@ async def main():
                 f"TTS response cache falló al build — continúo sin cache: {e}"
             )
 
+    # Start HA state sync after construction/warmup: synchronous model loads
+    # must not consume the initial REST snapshot deadline.
+    state_prefetch_cfg = ha_config.get("state_prefetch", {})
+    if state_prefetch_cfg.get("enabled", True):
+        try:
+            await ha_client.start_state_sync(
+                full_refresh_interval_s=state_prefetch_cfg.get("full_refresh_interval_s", 300),
+            )
+            logger.info("HA state prefetch cache habilitado")
+        except RuntimeError as e:
+            logger.warning(f"HA state prefetch deshabilitado: {e}; sigo con REST.")
+
     # Start presence detector before pipeline
     if presence_detector:
         await presence_detector.start()
@@ -1725,7 +1845,13 @@ async def main():
         logger.info("\nDeteniendo...")
     finally:
         if dashboard_task:
-            dashboard_task.cancel()
+            # Stop admission and drain HTTP, including action waiters, before
+            # services are closed by the outer lifecycle. No concurrent cancel.
+            await dashboard.stop()
+            # A task cancelled before its first turn has no server to drain.
+            if not dashboard_task.done():
+                dashboard_task.cancel()
+            await asyncio.gather(dashboard_task, return_exceptions=True)
         if presence_detector:
             await presence_detector.stop()
         if reminder_scheduler:
@@ -1735,8 +1861,9 @@ async def main():
         await list_store.close()
         await reminder_store.close()
         await pipeline.stop()
-        # Graceful shutdown del state sync (si fue habilitado)
-        await ha_client.stop_state_sync()
+        # The outer owner stops routines and closes their store, then drains
+        # shared home actions. HA.close() finally stops state sync
+        # and closes transports once, including construction/warmup failures.
 
 
 if __name__ == "__main__":

@@ -3,85 +3,109 @@ KZA Dashboard API
 API REST con FastAPI para gestión de rutinas, presencia y configuración
 """
 
-import logging
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+import asyncio
 import json
+import logging
 import os
+from collections.abc import Callable, Mapping
+from datetime import datetime
+from typing import Literal, Self
+
+import aiosqlite
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, WebSocketException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.core.sanitize import sanitize_dict
+from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
+from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_session
+from src.dashboard.home_api import (
+    LegacyHomeActionBody, execute_home_action, register_home_frontend, register_home_routes,
+)
+from src.dashboard.home_catalog import HomeCatalogService
 from src.dashboard.live_event_bus import LiveEventBus
 from src.dashboard.observability import register_observability_routes
+from src.rooms.room_context import RoomConfig
+from src.routines.models import (
+    RoutineConflict, RoutineNotFound, RoutineSpec, RoutineValidationError, ScheduledRoutine,
+    parse_routine_spec, routine_to_dict, run_to_dict,
+)
+from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult, HomeActionService
 
 logger = logging.getLogger(__name__)
 
 
 # ==================== Modelos Pydantic ====================
 
-class TriggerModel(BaseModel):
-    type: str  # time, presence_enter, presence_leave, sunrise, sunset, device_state
-    config: dict = Field(default_factory=dict)
-    description: str | None = ""
+class RoutineContractModel(BaseModel):
+    """Reject unknown fields and implicit conversions at the HTTP boundary."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class ConditionModel(BaseModel):
-    type: str  # time_range, state, presence, weekday
-    config: dict = Field(default_factory=dict)
+class RoutineScheduleModel(RoutineContractModel):
+    """One local wall-clock time on selected weekdays."""
+
+    at: str
+    weekdays: list[int]
 
 
-class ActionModel(BaseModel):
-    type: str = "ha_service"
+class RoutineConditionModel(RoutineContractModel):
+    """A state condition evaluated freshly by the scheduler."""
+
     entity_id: str
-    domain: str | None = None
-    service: str = "turn_on"
-    data: dict = Field(default_factory=dict)
-    description: str | None = ""
+    state: str
 
 
-class RoutineCreateModel(BaseModel):
-    name: str
-    description: str | None = ""
-    triggers: list[TriggerModel]
-    conditions: list[ConditionModel] = Field(default_factory=list)
-    actions: list[ActionModel]
-    enabled: bool = True
-    cooldown_seconds: int = 60
-    tags: list[str] = Field(default_factory=list)
+class RoutineActionModel(RoutineContractModel):
+    """An allowlisted Casa action without an editable actor."""
+
+    entity_id: str
+    operation: Literal["turn_on", "turn_off", "brightness"]
+    brightness_pct: int | None = None
 
 
-class RoutineUpdateModel(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    triggers: list[TriggerModel] | None = None
-    conditions: list[ConditionModel] | None = None
-    actions: list[ActionModel] | None = None
-    enabled: bool | None = None
-    cooldown_seconds: int | None = None
-    tags: list[str] | None = None
+class RoutineWriteModel(RoutineContractModel):
+    """Complete canonical definition shared with persistent routines."""
 
-
-class RoutineResponseModel(BaseModel):
-    routine_id: str
     name: str
     description: str
-    triggers: list[dict]
-    conditions: list[dict]
-    actions: list[dict]
     enabled: bool
-    cooldown_seconds: int
-    created_at: str
-    created_by: str
-    tags: list[str]
-    last_executed: str | None = None
-    execution_count: int = 0
+    timezone: Literal["America/Montevideo"]
+    schedule: RoutineScheduleModel | None
+    conditions: list[RoutineConditionModel]
+    actions: list[RoutineActionModel]
+
+    @model_validator(mode="after")
+    def validate_definition(self) -> Self:
+        """Apply the same exact contract as the store and scheduler."""
+        self.to_spec()
+        return self
+
+    def to_spec(self) -> RoutineSpec:
+        """Return a normalized immutable definition with server metadata excluded."""
+        return parse_routine_spec(self.model_dump(exclude={"expected_revision"}, exclude_unset=True))
 
 
-class ExecuteRoutineModel(BaseModel):
-    context: dict = Field(default_factory=dict)
+class RoutineUpdateModel(RoutineWriteModel):
+    """Complete definition and a strict optimistic concurrency revision."""
+
+    expected_revision: int = Field(ge=1)
+
+
+class RoutineRevisionModel(RoutineContractModel):
+    """Revision required by enable and disable commands."""
+
+    expected_revision: int = Field(ge=1)
+
+
+class ExecuteRoutineModel(RoutineContractModel):
+    """One actor-scoped idempotent manual attempt."""
+
+    request_id: str = Field(min_length=1, max_length=128)
 
 
 class PresenceUserModel(BaseModel):
@@ -142,6 +166,12 @@ class DashboardAPI:
         speaker_identifier=None,
         llm_metrics=None,
         observability_use_mocks: bool = True,
+        *,
+        home_rooms: Mapping[str, RoomConfig] | None = None,
+        home_actions: HomeActionService | None = None,
+        microphone_snapshot_provider: Callable[[], MicrophonesSnapshot | None] | None = None,
+        home_catalog: HomeCatalogService | None = None,
+        home_enabled: bool = True,
     ):
         self.scheduler = routine_scheduler
         self.executor = routine_executor
@@ -162,6 +192,12 @@ class DashboardAPI:
         self.speaker_identifier = speaker_identifier
         self.llm_metrics = llm_metrics
         self.observability_use_mocks = observability_use_mocks
+        self.microphone_snapshot_provider = microphone_snapshot_provider
+        self.home_enabled = home_enabled
+        self.home_catalog = home_catalog if home_catalog is not None else HomeCatalogService(ha_client, home_rooms or {})
+        self.home_actions = home_actions if home_actions is not None else (
+            HomeActionService(ha_client) if ha_client is not None else None
+        )
 
         # FastAPI app
         self.app = FastAPI(
@@ -191,8 +227,11 @@ class DashboardAPI:
 
         # WebSocket clients
         self._ws_clients: list[WebSocket] = []
+        self._server = None
+        self._serve_task = None
 
         # Registrar rutas
+        self._register_routine_exception_handlers()
         self._register_routes()
 
     def _register_routes(self):
@@ -200,127 +239,140 @@ class DashboardAPI:
 
         # ==================== Rutinas ====================
 
-        @self.app.get("/api/routines", response_model=list[RoutineResponseModel])
+        @self.app.get("/api/routines")
         async def list_routines(
             enabled: bool | None = None,
-            tag: str | None = None
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
         ):
-            """Listar todas las rutinas"""
-            routines = self.scheduler.get_all_routines()
-
-            # Filtrar
+            """List KZA definitions and their latest durable receipts."""
+            scheduler = self._require_routines(principal, {"home:read"})
+            routines = await scheduler.get_all_routines()
             if enabled is not None:
-                routines = [r for r in routines if r.enabled == enabled]
-            if tag:
-                routines = [r for r in routines if tag in r.tags]
+                routines = [routine for routine in routines if routine.spec.enabled == enabled]
+            return [await self._routine_to_response(routine) for routine in routines]
 
-            return [self._routine_to_response(r) for r in routines]
+        # Keep preview ahead of routes containing a dynamic routine identifier.
+        @self.app.post("/api/routines/preview")
+        async def preview_routine(
+            routine: RoutineWriteModel,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Normalize a definition without reads, writes or actions."""
+            scheduler = self._require_routines(principal, {"routines:manage"})
+            return scheduler.preview(routine.to_spec())
 
-        @self.app.get("/api/routines/{routine_id}", response_model=RoutineResponseModel)
-        async def get_routine(routine_id: str):
-            """Obtener una rutina por ID"""
-            routine = self.scheduler.get_routine(routine_id)
-            if not routine:
-                raise HTTPException(status_code=404, detail="Rutina no encontrada")
-            return self._routine_to_response(routine)
+        @self.app.get("/api/routines/{routine_id}")
+        async def get_routine(
+            routine_id: str,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Read a persisted definition."""
+            scheduler = self._require_routines(principal, {"home:read"})
+            routine = await scheduler.get_routine(routine_id)
+            if routine is None:
+                raise RoutineNotFound(routine_id)
+            return await self._routine_to_response(routine)
 
-        @self.app.post("/api/routines", response_model=RoutineResponseModel)
-        async def create_routine(routine: RoutineCreateModel):
-            """Crear nueva rutina"""
-            from ..routines.routine_scheduler import ScheduledRoutine
-            import uuid
+        @self.app.post("/api/routines")
+        async def create_routine(
+            routine: RoutineWriteModel,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Acknowledge a new definition only after its commit."""
+            scheduler = self._require_routines(principal, {"routines:manage"})
+            created = await scheduler.register_routine(routine.to_spec(), actor=principal.subject)
+            response = await self._routine_to_response(created)
+            await self._broadcast_ws({"type": "routine_created", "routine": response})
+            return response
 
-            new_routine = ScheduledRoutine(
-                routine_id=f"dash_{uuid.uuid4().hex[:8]}",
-                name=routine.name,
-                description=routine.description or "",
-                triggers=[t.dict() for t in routine.triggers],
-                conditions=[c.dict() for c in routine.conditions],
-                actions=[a.dict() for a in routine.actions],
-                enabled=routine.enabled,
-                cooldown_seconds=routine.cooldown_seconds,
-                created_at=datetime.now().isoformat(),
-                created_by="dashboard",
-                tags=routine.tags
+        @self.app.put("/api/routines/{routine_id}")
+        async def update_routine(
+            routine_id: str, update: RoutineUpdateModel,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Persist a complete definition with compare-and-swap semantics."""
+            scheduler = self._require_routines(principal, {"routines:manage"})
+            updated = await scheduler.update_routine(
+                routine_id, update.to_spec(), expected_revision=update.expected_revision,
+                actor=principal.subject,
             )
-
-            self.scheduler.register_routine(new_routine)
-
-            # Notificar a WebSocket clients
-            await self._broadcast_ws({
-                "type": "routine_created",
-                "routine": self._routine_to_response(new_routine)
-            })
-
-            return self._routine_to_response(new_routine)
-
-        @self.app.put("/api/routines/{routine_id}", response_model=RoutineResponseModel)
-        async def update_routine(routine_id: str, update: RoutineUpdateModel):
-            """Actualizar rutina existente"""
-            routine = self.scheduler.get_routine(routine_id)
-            if not routine:
-                raise HTTPException(status_code=404, detail="Rutina no encontrada")
-
-            # Actualizar campos proporcionados
-            if update.name is not None:
-                routine.name = update.name
-            if update.description is not None:
-                routine.description = update.description
-            if update.triggers is not None:
-                routine.triggers = [t.dict() for t in update.triggers]
-            if update.conditions is not None:
-                routine.conditions = [c.dict() for c in update.conditions]
-            if update.actions is not None:
-                routine.actions = [a.dict() for a in update.actions]
-            if update.enabled is not None:
-                routine.enabled = update.enabled
-            if update.cooldown_seconds is not None:
-                routine.cooldown_seconds = update.cooldown_seconds
-            if update.tags is not None:
-                routine.tags = update.tags
-
-            # Notificar
-            await self._broadcast_ws({
-                "type": "routine_updated",
-                "routine": self._routine_to_response(routine)
-            })
-
-            return self._routine_to_response(routine)
+            response = await self._routine_to_response(updated)
+            await self._broadcast_ws({"type": "routine_updated", "routine": response})
+            return response
 
         @self.app.delete("/api/routines/{routine_id}")
-        async def delete_routine(routine_id: str):
-            """Eliminar rutina"""
-            if not self.scheduler.unregister_routine(routine_id):
-                raise HTTPException(status_code=404, detail="Rutina no encontrada")
-
-            await self._broadcast_ws({
-                "type": "routine_deleted",
-                "routine_id": routine_id
-            })
-
+        async def delete_routine(
+            routine_id: str,
+            expected_revision: str = Query(pattern=r"^[1-9][0-9]*$"),
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Delete only the idle revision the caller has actually read."""
+            scheduler = self._require_routines(principal, {"routines:manage"})
+            await scheduler.unregister_routine(routine_id, expected_revision=int(expected_revision))
+            await self._broadcast_ws({"type": "routine_deleted", "routine_id": routine_id})
             return {"success": True}
 
-        @self.app.post("/api/routines/{routine_id}/execute")
-        async def execute_routine(routine_id: str, body: ExecuteRoutineModel):
-            """Ejecutar rutina manualmente"""
-            result = await self.scheduler.execute_by_id(routine_id, body.context)
-            if result is None:
-                raise HTTPException(status_code=404, detail="Rutina no encontrada")
-            return {"success": True, "result": result}
+        @self.app.post("/api/routines/{routine_id}/execute", status_code=202)
+        async def execute_routine(
+            routine_id: str, body: ExecuteRoutineModel,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Return the durable claim while its scheduler-owned worker proceeds."""
+            scheduler = self._require_routines(principal, {"routines:manage", "home:control"})
+            run = await scheduler.execute_by_id(
+                routine_id, actor=principal.subject, request_id=body.request_id,
+            )
+            return run_to_dict(run)
+
+        @self.app.get("/api/routines/{routine_id}/runs/{run_id}")
+        async def get_routine_run(
+            routine_id: str, run_id: str,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Read the receipt and ordered per-action outcomes for this routine."""
+            scheduler = self._require_routines(principal, {"routines:manage"})
+            return run_to_dict(await scheduler.get_run(routine_id, run_id))
+
+        @self.app.get("/api/routines/{routine_id}/attempts")
+        async def get_manual_attempt(
+            routine_id: str,
+            request_id: str = Query(min_length=1, max_length=128),
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Consult a persisted actor-scoped attempt without starting execution.
+
+            request_id is required query text of length 1..128, preserved exactly
+            through browser URL normalization, including dot-only IDs.
+            """
+            scheduler = self._require_routines(principal, {"routines:manage"})
+            run = await scheduler.get_manual_attempt(
+                routine_id, actor=principal.subject, request_id=request_id,
+            )
+            return run_to_dict(run)
 
         @self.app.post("/api/routines/{routine_id}/enable")
-        async def enable_routine(routine_id: str):
-            """Habilitar rutina"""
-            if not self.scheduler.enable_routine(routine_id):
-                raise HTTPException(status_code=404, detail="Rutina no encontrada")
-            return {"success": True}
+        async def enable_routine(
+            routine_id: str, body: RoutineRevisionModel,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Enable an idle definition using its expected revision."""
+            scheduler = self._require_routines(principal, {"routines:manage"})
+            routine = await scheduler.enable_routine(
+                routine_id, expected_revision=body.expected_revision, actor=principal.subject,
+            )
+            return await self._routine_to_response(routine)
 
         @self.app.post("/api/routines/{routine_id}/disable")
-        async def disable_routine(routine_id: str):
-            """Deshabilitar rutina"""
-            if not self.scheduler.disable_routine(routine_id):
-                raise HTTPException(status_code=404, detail="Rutina no encontrada")
-            return {"success": True}
+        async def disable_routine(
+            routine_id: str, body: RoutineRevisionModel,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Disable an idle definition using its expected revision."""
+            scheduler = self._require_routines(principal, {"routines:manage"})
+            routine = await scheduler.disable_routine(
+                routine_id, expected_revision=body.expected_revision, actor=principal.subject,
+            )
+            return await self._routine_to_response(routine)
 
         # ==================== Presencia ====================
 
@@ -364,13 +416,13 @@ class DashboardAPI:
 
         # ==================== Entidades HA ====================
 
-        @self.app.get("/api/entities")
+        @self.app.get("/api/entities", dependencies=[Depends(require_dashboard_session)])
         async def list_entities(domain: str | None = None):
             """Listar entidades de Home Assistant"""
             if not self.ha:
                 return []
 
-            entities = self.ha.get_domotics_entities()
+            entities = await self.ha.get_domotics_entities()
 
             if domain:
                 entities = [e for e in entities if e["entity_id"].startswith(f"{domain}.")]
@@ -386,7 +438,7 @@ class DashboardAPI:
                 for e in entities
             ]
 
-        @self.app.get("/api/entities/{entity_id}")
+        @self.app.get("/api/entities/{entity_id}", dependencies=[Depends(require_dashboard_session)])
         async def get_entity(entity_id: str):
             """Obtener estado de entidad"""
             if not self.ha:
@@ -398,29 +450,35 @@ class DashboardAPI:
 
             return state
 
-        @self.app.post("/api/entities/{entity_id}/call")
-        async def call_entity_service(entity_id: str, service: str, data: dict = None):
-            """Llamar servicio en entidad"""
-            if not self.ha:
+        @self.app.post("/api/entities/{entity_id}/call", response_model=HomeActionResult)
+        async def call_entity_service(
+            entity_id: str, service: str, data: LegacyHomeActionBody | None = None,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ) -> HomeActionResult:
+            """Map legacy controls to the shared allowlisted, confirmed service."""
+            if "home:control" not in principal.permissions:
+                raise HTTPException(status_code=403, detail="home_control_denied")
+            if self.home_actions is None:
                 raise HTTPException(status_code=503, detail="Home Assistant no disponible")
-
-            domain = entity_id.split(".")[0]
-            success = await self.ha.call_service(domain, service, entity_id, data or {})
-
-            return {"success": success}
+            if data is None:
+                raise HTTPException(status_code=422, detail="request_id_required")
+            return await execute_home_action(
+                self.home_actions,
+                HomeActionRequest(entity_id, service, data.request_id, data.brightness_pct), principal,
+            )
 
         # ==================== Servicios disponibles ====================
 
-        @self.app.get("/api/services")
+        @self.app.get("/api/services", dependencies=[Depends(require_dashboard_session)])
         async def list_services():
             """Listar servicios disponibles por dominio"""
             if not self.ha:
                 return {}
-            return self.ha.get_services_by_domain()
+            return await self.ha.get_services_by_domain()
 
         # ==================== Templates de triggers/actions ====================
 
-        @self.app.get("/api/templates/triggers")
+        @self.app.get("/api/templates/triggers", dependencies=[Depends(require_dashboard_session)])
         async def get_trigger_templates():
             """Obtener templates de triggers"""
             return [
@@ -489,7 +547,7 @@ class DashboardAPI:
                 }
             ]
 
-        @self.app.get("/api/templates/actions")
+        @self.app.get("/api/templates/actions", dependencies=[Depends(require_dashboard_session)])
         async def get_action_templates():
             """Obtener templates de acciones"""
             return [
@@ -613,8 +671,13 @@ class DashboardAPI:
         # ==================== WebSocket para tiempo real ====================
 
         @self.app.websocket("/ws")
-        async def websocket_endpoint(websocket: WebSocket):
-            """WebSocket para actualizaciones en tiempo real"""
+        async def websocket_endpoint(
+            websocket: WebSocket,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Subscribe an authorized reader to private dashboard events."""
+            if "home:read" not in principal.permissions:
+                raise WebSocketException(code=1008, reason="permission denied")
             await websocket.accept()
             self._ws_clients.append(websocket)
             logger.info(f"WebSocket client conectado ({len(self._ws_clients)} total)")
@@ -638,8 +701,11 @@ class DashboardAPI:
                         pass
 
             except WebSocketDisconnect:
-                self._ws_clients.remove(websocket)
-                logger.info(f"WebSocket client desconectado ({len(self._ws_clients)} restantes)")
+                pass
+            finally:
+                if websocket in self._ws_clients:
+                    self._ws_clients.remove(websocket)
+                logger.info("WebSocket client disconnected (%s remaining)", len(self._ws_clients))
 
         # ==================== Observability ====================
 
@@ -774,30 +840,59 @@ class DashboardAPI:
             alert_manager=self.alert_manager,
         )
 
+        register_home_routes(
+            self.app, catalog=self.home_catalog, actions=self.home_actions,
+            microphone_snapshot_provider=self.microphone_snapshot_provider,
+        )
+
         # ==================== Static files (Frontend) ====================
+
+        if self.home_enabled:
+            register_home_frontend(self.app)
 
         # Servir frontend si existe (incluye /obs/ con el dashboard wireframe)
         frontend_path = os.path.join(os.path.dirname(__file__), "frontend")
         if os.path.exists(frontend_path):
             self.app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 
-    def _routine_to_response(self, routine) -> dict:
-        """Convertir ScheduledRoutine a modelo de respuesta"""
-        return {
-            "routine_id": routine.routine_id,
-            "name": routine.name,
-            "description": routine.description,
-            "triggers": routine.triggers,
-            "conditions": routine.conditions,
-            "actions": routine.actions,
-            "enabled": routine.enabled,
-            "cooldown_seconds": routine.cooldown_seconds,
-            "created_at": routine.created_at,
-            "created_by": routine.created_by,
-            "tags": routine.tags,
-            "last_executed": routine.last_executed.isoformat() if routine.last_executed else None,
-            "execution_count": routine.execution_count
-        }
+    def _register_routine_exception_handlers(self) -> None:
+        """Translate domain and unavailable-storage failures without private details."""
+        @self.app.exception_handler(RoutineNotFound)
+        async def routine_not_found(request, error):
+            return JSONResponse(status_code=404, content={"detail": "routine_not_found"})
+
+        @self.app.exception_handler(RoutineValidationError)
+        async def routine_invalid(request, error):
+            return JSONResponse(status_code=422, content={"detail": "invalid_routine"})
+
+        @self.app.exception_handler(RoutineConflict)
+        async def routine_conflict(request, error):
+            if error.code == "scheduler_stopping":
+                return JSONResponse(status_code=503, content={"detail": "routines unavailable"})
+            return JSONResponse(status_code=409, content={"detail": error.code})
+
+        @self.app.exception_handler(aiosqlite.Error)
+        async def routine_storage_failure(request, error):
+            return JSONResponse(status_code=503, content={"detail": "routines unavailable"})
+
+        @self.app.exception_handler(RuntimeError)
+        async def routine_not_initialized(request, error):
+            if str(error) != "RoutineStore must be initialized":
+                raise error
+            return JSONResponse(status_code=503, content={"detail": "routines unavailable"})
+
+    def _require_routines(self, principal: DashboardPrincipal, permissions: set[str]):
+        """Check server permissions and require an initialized routines facade."""
+        if not permissions.issubset(principal.permissions):
+            raise HTTPException(status_code=403, detail="permission denied")
+        if self.scheduler is None:
+            raise HTTPException(status_code=503, detail="routines unavailable")
+        return self.scheduler
+
+    async def _routine_to_response(self, routine: ScheduledRoutine) -> dict:
+        """Serialize canonical top-level fields and the latest receipt via the facade."""
+        latest_run = await self.scheduler.get_latest_run(routine.routine_id)
+        return {**routine_to_dict(routine), "latest_run": run_to_dict(latest_run) if latest_run else None}
 
     async def _broadcast_ws(self, message: dict):
         """Enviar mensaje a todos los WebSocket clients"""
@@ -806,9 +901,22 @@ class DashboardAPI:
 
         for client in self._ws_clients[:]:
             try:
+                # A long-lived subscription cannot retain access after the
+                # configured credential is removed or rotated.
+                await require_dashboard_session(
+                    client, client.headers.get("authorization"), client.cookies.get(COOKIE_NAME),
+                )
                 await client.send_json(message)
+            except WebSocketException:
+                if client in self._ws_clients:
+                    self._ws_clients.remove(client)
+                try:
+                    await client.close(code=1008)
+                except Exception:
+                    logger.debug("WebSocket unavailable during session invalidation")
             except Exception:
-                self._ws_clients.remove(client)
+                if client in self._ws_clients:
+                    self._ws_clients.remove(client)
 
     async def start(self):
         """Iniciar servidor API"""
@@ -828,8 +936,24 @@ class DashboardAPI:
             port=self.port,
             log_level="info"
         )
-        server = uvicorn.Server(config)
-        await server.serve()
+        self._server = uvicorn.Server(config)
+        self._serve_task = asyncio.current_task()
+        try:
+            await self._server.serve()
+        finally:
+            self._serve_task = None
+
+    async def stop(self) -> None:
+        """Stop accepting HTTP requests and drain serving before shared services.
+
+        Uvicorn owns connection/request shutdown. Do not cancel its task while
+        controls may still be running, and do not close the injected HA client.
+        """
+        if self._server is not None:
+            self._server.should_exit = True
+        task = self._serve_task
+        if task is not None and task is not asyncio.current_task():
+            await asyncio.shield(task)
 
     def run_sync(self):
         """Ejecutar servidor de forma síncrona (para testing)"""

@@ -249,6 +249,70 @@ class AmbientStore:
         )
         await self._db.commit()
 
+    async def spanish_keep_rate(self, since_s: float | None = None) -> dict:
+        """Tasa de español conservable (``lang_ok``) — métrica de producto del ambient.
+
+        El 24/7 existe para saber si el ASR detecta bien el español, no para
+        destilar charla. ``rate`` es ok / (ok + not_ok); las filas sin clasificar
+        (``lang_ok`` NULL, DBs viejas) se cuentan aparte y no entran al rate.
+
+        Args:
+            since_s: Si se pasa, solo utterances con ``t0 >= since_s``.
+
+        Returns:
+            Dict con n, ok, not_ok, unclassified, rate (float|None), by_room.
+        """
+        where = ""
+        params: tuple = ()
+        if since_s is not None:
+            where = "WHERE t0 >= ?"
+            params = (since_s,)
+        cur = await self._db.execute(
+            f"SELECT "
+            f"COUNT(*) AS n, "
+            f"SUM(CASE WHEN lang_ok = 1 THEN 1 ELSE 0 END) AS ok, "
+            f"SUM(CASE WHEN lang_ok = 0 THEN 1 ELSE 0 END) AS not_ok, "
+            f"SUM(CASE WHEN lang_ok IS NULL THEN 1 ELSE 0 END) AS unclassified "
+            f"FROM utterances {where}",  # nosec B608 -- where es constante o 'WHERE t0 >= ?'
+            params,
+        )
+        row = await cur.fetchone()
+        n = int(row["n"] or 0)
+        ok = int(row["ok"] or 0)
+        not_ok = int(row["not_ok"] or 0)
+        unclassified = int(row["unclassified"] or 0)
+        classified = ok + not_ok
+        rate = (ok / classified) if classified else None
+        room_cur = await self._db.execute(
+            f"SELECT room_id, "
+            f"COUNT(*) AS n, "
+            f"SUM(CASE WHEN lang_ok = 1 THEN 1 ELSE 0 END) AS ok, "
+            f"SUM(CASE WHEN lang_ok = 0 THEN 1 ELSE 0 END) AS not_ok, "
+            f"SUM(CASE WHEN lang_ok IS NULL THEN 1 ELSE 0 END) AS unclassified "
+            f"FROM utterances {where} GROUP BY room_id",  # nosec B608
+            params,
+        )
+        by_room = {}
+        for r in await room_cur.fetchall():
+            r_ok = int(r["ok"] or 0)
+            r_not = int(r["not_ok"] or 0)
+            r_class = r_ok + r_not
+            by_room[r["room_id"]] = {
+                "n": int(r["n"] or 0),
+                "ok": r_ok,
+                "not_ok": r_not,
+                "unclassified": int(r["unclassified"] or 0),
+                "rate": (r_ok / r_class) if r_class else None,
+            }
+        return {
+            "n": n,
+            "ok": ok,
+            "not_ok": not_ok,
+            "unclassified": unclassified,
+            "rate": rate,
+            "by_room": by_room,
+        }
+
     async def purge_expired(self) -> int:
         """Borrar utterances cuyo audio es más viejo que retention_hours.
 

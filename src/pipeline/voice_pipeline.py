@@ -81,7 +81,8 @@ class VoicePipeline:
         logger.info("Initializing pipeline...")
 
         # Load models
-        self.command_processor.load_models()
+        # Keep HA's pending snapshot and WS handshakes live during model warmup.
+        await asyncio.to_thread(self.command_processor.load_models)
 
         # Initialize vector DB
         if self.chroma:

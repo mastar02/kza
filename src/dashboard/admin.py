@@ -20,6 +20,7 @@ from src.dashboard.auth import (
     login_response,
     logout_response,
     require_admin,
+    require_dashboard_origin,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,19 +61,18 @@ def register_admin_routes(
 
     if not auth_configured():
         logger.warning(
-            "KZA_DASHBOARD_TOKEN no seteado — endpoints /api/admin/* "
-            "ESTÁN ABIERTOS sin auth. Setealo en /home/kza/secrets/.env"
+            "Dashboard credential is not configured; protected routes return 503"
         )
 
     router = APIRouter(prefix="/api/admin", tags=["admin"])
 
     # ---------------- Auth helpers (sin require_admin) ----------------
 
-    @router.post("/auth/login")
+    @router.post("/auth/login", dependencies=[Depends(require_dashboard_origin)])
     async def login(body: LoginBody):
         return login_response(body.token)
 
-    @router.post("/auth/logout", dependencies=[Depends(require_admin)])
+    @router.post("/auth/logout", dependencies=[Depends(require_dashboard_origin)])
     async def logout():
         return logout_response()
 

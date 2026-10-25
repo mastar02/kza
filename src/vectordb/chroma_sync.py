@@ -319,10 +319,10 @@ Solo JSON, sin explicaciones:"""
                 contexto previo del usuario (plan #2 OpenClaw). Hoy solo
                 se loguea; el consumo real (boost de score) queda para un
                 follow-up cuando haya señal empírica de mejora.
-            prefer_area: Area preferida (matchea metadata.area en Chroma).
-                Cuando viene, traemos N=10 candidatos y aplicamos un bonus
-                de +PREFER_AREA_BOOST a la similarity de los que matchean
-                el area. NO excluye candidatos sin match — solo re-puntúa.
+            prefer_area: Área requerida (matchea metadata.area en Chroma).
+                Cuando viene, solo se aceptan candidatos de esa área.
+                Un área sin coincidencias válidas devuelve None; nunca se
+                sustituye por una entidad de otro ambiente.
                 Crítico para el caso 'bajá la luz al cincuenta por ciento'
                 desde el escritorio: sin esto, docs contaminados sin room
                 de otras entities ganan por similitud pura. Bug 2026-05-03.
@@ -349,8 +349,7 @@ Solo JSON, sin explicaciones:"""
         # boost no tiene a quién boostear (medido: top-10 sin Escritorio,
         # 'prende la luz fría'@Pasillo sim=0.945 → prendía el pasillo).
         # Buscamos primero SOLO dentro del área preferida; si hay match sobre
-        # threshold, gana. Si no, fallback al pase global (con boost) para
-        # cross-room implícito o áreas sin docs.
+        # threshold, gana. Si no, rechazamos sin buscar en otro ambiente.
         results = None
         best_idx: int | None = None
         area_locked = False
@@ -386,6 +385,10 @@ Solo JSON, sin explicaciones:"""
                 if best_idx is not None:
                     results = res_area
                     area_locked = True
+
+        if results is None and prefer_area:
+            logger.info(f"[VectorSearch] No verified match in requested area {prefer_area!r}; refusing cross-room fallback")
+            return None
 
         if results is None:
             # PASE 2 — global. Con prefer_area traemos más candidatos para

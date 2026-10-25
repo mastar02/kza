@@ -45,6 +45,7 @@ espacios colapsados): el módulo `ambient` no debe importar `src.nlu` (frontera
 de arquitectura — el ambient path es upstream e independiente del stack NLU).
 Mantener ambas implementaciones en sync si el algoritmo cambia.
 """
+
 from __future__ import annotations
 
 import logging
@@ -125,8 +126,8 @@ def _within_edit_distance(a: str, b: str, max_dist: int) -> bool:
         for j, cb in enumerate(b, start=1):
             cost = 0 if ca == cb else 1
             curr[j] = min(
-                prev[j] + 1,       # deletion
-                curr[j - 1] + 1,   # insertion
+                prev[j] + 1,  # deletion
+                curr[j - 1] + 1,  # insertion
                 prev[j - 1] + cost,  # substitution
             )
         prev = curr
@@ -346,7 +347,10 @@ class TextualWakeDetector:
         )
 
         last_acoustic = self._last_acoustic_command_ts_fn(room_id)
-        if last_acoustic > 0.0 and (acoustic_ref_ts - last_acoustic) < self._dedup_window_s:
+        if (
+            last_acoustic > 0.0
+            and (acoustic_ref_ts - last_acoustic) < self._dedup_window_s
+        ):
             logger.info(
                 f"[TextualWake] skip room={room_id} source={source} "
                 f"speaker={speaker} decision=dedup_acoustic text={text!r}"
@@ -373,11 +377,15 @@ class TextualWakeDetector:
             try:
                 self._on_missed_fn(room_id, audio)
             except Exception as e:
-                logger.warning(
-                    f"[TextualWake] on_missed_fn error room={room_id}: {e}"
-                )
+                logger.warning(f"[TextualWake] on_missed_fn error room={room_id}: {e}")
 
-        event = CommandEvent(audio=audio, room_id=room_id, wake_text=text, wake_score=1.0)
+        event = CommandEvent(
+            audio=audio,
+            room_id=room_id,
+            wake_text=text,
+            wake_score=1.0,
+            textual_wake=True,
+        )
         try:
             await self._dispatch_fn(event)
         except Exception as e:
