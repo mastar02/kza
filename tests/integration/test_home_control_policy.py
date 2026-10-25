@@ -406,6 +406,29 @@ async def test_due_and_arrival_race_share_one_committed_reminder_effect(graph, t
         await store.close()
 
 
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_reminder_sequence_advances_only_after_confirmation(graph, tmp_path, uncertain):
+    ha, actions, _ = graph
+    store = ReminderStore(str(tmp_path / "sequence.db"))
+    await store.initialize()
+    try:
+        reminder = await store.create("profile", "sequence", 1.0, ha_actions=[
+            {"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp"},
+            {"domain": "light", "service": "turn_off", "entity_id": "light.test_lamp"},
+        ])
+        if uncertain:
+            ha.outcome = ServiceCallOutcome(ServiceCallStatus.UNCERTAIN, "response_lost")
+        presence = MagicMock()
+        presence.get_user_zone.return_value = "test-zone"
+        scheduler = ReminderScheduler(store, AsyncMock(), presence, ha, home_actions=actions)
+        await scheduler._fire_reminder(reminder)
+        assert [send[1] for send in ha.sends] == (["turn_on"] if uncertain else ["turn_on", "turn_off"])
+        async with store._db.execute("SELECT status FROM reminder_home_actions ORDER BY rowid") as cursor:
+            assert [row[0] for row in await cursor.fetchall()] == (["uncertain"] if uncertain else ["confirmed", "confirmed"])
+    finally:
+        await store.close()
+
+
 async def test_reminder_journal_migration_preserves_legacy_rows_in_an_offline_copy(tmp_path):
     source = tmp_path / "legacy.db"
     store = ReminderStore(str(source))
