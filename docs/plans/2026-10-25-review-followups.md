@@ -11,6 +11,12 @@ incluyen trabajo sin resolver y cierres parciales; no implican que nunca se haya
 trabajado en esas áreas. La implementación y la publicación se siguen por
 separado según [DEPLOYMENT.md](../architecture/DEPLOYMENT.md).
 
+El [roadmap acordado](2026-10-25-stabilization-roadmap.md) define la secuencia y
+el alcance de la única release. Incluye clima y persianas seleccionados,
+retención de memoria y revisión de grupos de voz. Música y avisos externos de
+sordera o caída quedan postergados; los pendientes R06 y R07 se ejecutan con ese
+alcance. R11 se incorpora por un pedido posterior al review.
+
 ## Orden de trabajo
 
 | ID | Prioridad | Pendiente | Estado actual |
@@ -25,6 +31,7 @@ separado según [DEPLOYMENT.md](../architecture/DEPLOYMENT.md).
 | R08 | P1 | Hacer efectivas las opciones de privacidad | Controles parciales |
 | R09 | P1 | Verificar el comportamiento del runtime recuperado | Suite con diez fallos |
 | R10 | P2 | Alinear configuración y documentación con el runtime | Deriva confirmada |
+| R11 | P1 | Revisar voces agrupadas por probable hablante | Nuevo alcance acordado |
 
 R01 y R02 deben resolverse juntos para que cerrar un endpoint no deje otra vía
 para ejecutar la misma acción. R03 es independiente. R09 acompaña cada arreglo;
@@ -115,14 +122,15 @@ Evidencia: [player](../../src/tts/piper_tts.py),
 
 El arranque sale si HA no responde, la unit versionada limita los reinicios y
 un reasoner que falla al cargar queda en `None`. El watchdog de audio y el poller
-ya tienen trabajo previo: falta verificar su operación efectiva y la entrega de
-avisos, en lugar de asumir que no existen.
+ya tienen trabajo previo: falta verificar su operación efectiva y el diagnóstico
+local, en lugar de asumir que no existen. Los avisos externos quedan fuera de
+esta release por decisión del usuario.
 
 Cerrar con una prueba de HA y gateway tardíos que se recuperen sin reiniciar KZA,
-y una simulación de micrófono sin frames que produzca recuperación o aviso
-verificable. Revisar SIGTERM y cierre de recursos con la unit real durante la
-validación de la próxima release. El preflight de VRAM existente no equivale a
-recuperación ante OOM.
+y una simulación de micrófono sin frames que produzca recuperación o un fallo
+visible en el diagnóstico local. Revisar SIGTERM y cierre de recursos con la
+unit real durante la validación de la próxima release. El preflight de VRAM
+existente no equivale a recuperación ante OOM.
 
 Evidencia: [arranque](../../src/main.py),
 [unit](../../systemd/kza-voice.service),
@@ -138,9 +146,10 @@ entrypoint y las alertas carecen de sus productores en ese cableado.
 
 Cerrar por función, con pruebas que recorran las dependencias construidas por
 `main` y comprueben el resultado anunciado. Priorizar rutinas, timers y
-recordatorios. Decidir después el alcance de música mediante HA y de alertas con
-fuentes reales. Reutilizar el scheduler nuevo; no reconstruirlo porque el review
-antiguo lo consideraba desconectado.
+recordatorios y conectar fuentes existentes de alertas locales con datos reales
+de HA. Música y avisos externos de caída se evalúan en un roadmap posterior.
+Reutilizar el scheduler nuevo; no reconstruirlo porque el review antiguo lo
+consideraba desconectado.
 
 Evidencia: [entrypoint](../../src/main.py),
 [factory](../../src/routines/factory.py),
@@ -206,6 +215,22 @@ Evidencia: [configuración](../../config/settings.yaml),
 [entrenamiento](../../src/training/nightly_trainer.py),
 [despliegue](../architecture/DEPLOYMENT.md).
 
+### R11 Revisar voces agrupadas por probable hablante
+
+El usuario pide ver grupos sugeridos de capturas que parecen corresponder a la
+misma persona, asignarles nombres y corregir uniones o separaciones. La revisión
+incluye transcripciones y fragmentos locales de audio con TTL de 48 horas.
+
+El tagger actual compara con perfiles registrados; no agrupa hablantes
+desconocidos. Cerrar con una vista autenticada, agrupación evaluada sobre audio
+representativo, correcciones persistentes y un estado desconocido para casos
+ambiguos. Definir la retención de huellas y perfiles por separado. La asociación
+acústica o manual con un nombre no otorga permisos de control.
+
+Evidencia: [tagger](../../src/ambient/speaker_tagger.py),
+[identificador](../../src/users/speaker_identifier.py),
+[almacenamiento](../../src/ambient/store.py).
+
 ## Trabajo existente que se conserva
 
 Conservar la autenticación estricta y la allowlist ya incorporadas al control
@@ -226,8 +251,8 @@ ausente en `main.py` tampoco prueba que una dependencia no se construya:
 `RoutineExecutor` se instancia en la factory.
 
 Eliminar Spotify, LoRA, learning o emoción; cambiar los micrófonos; y ampliar a
-cámaras o energía son decisiones de producto posteriores. La propuesta de usar
-HA para música se evalúa en R07, sin comprometer ahora una nueva integración.
+cámaras o energía son decisiones de producto posteriores. Música queda fuera de
+esta release, sin comprometer ahora una nueva integración.
 
 La exposición pública del repositorio merece revisar qué información operativa
 se publica. Borrar documentos no revoca permisos ni borra su historia. Cambiar

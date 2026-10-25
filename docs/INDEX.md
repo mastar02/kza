@@ -43,6 +43,7 @@
 
 ## plans/ — planes de implementación
 
+- [2026-10-25-stabilization-roadmap.md](plans/2026-10-25-stabilization-roadmap.md) — Roadmap por hitos para una única release: decisiones acordadas, dependencias, privacidad y revisión de voces por probable hablante.
 - [2026-10-25-review-followups.md](plans/2026-10-25-review-followups.md) — Pendientes contrastados con el código recuperado: seguridad, semántica, voz, operación y criterios de cierre; distingue correcciones existentes de trabajo abierto.
 - [2026-02-21-holistic-improvements-design.md](plans/2026-02-21-holistic-improvements-design.md) — Plan holístico de mejoras "foundation first".
 - [2026-02-21-multi-interface-integration-design.md](plans/2026-02-21-multi-interface-integration-design.md) — Diseño de integración multi-interfaz (mic + BT por habitación).
