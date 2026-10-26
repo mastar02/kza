@@ -19,6 +19,7 @@ from src.ambient.tap import MultiChannelTap
 from src.ambient.transcriber import AmbientPath, AmbientTranscriber
 from src.ambient.types import RawSegment
 from src.memory.privacy_services import PrivacyServices
+from src.memory.producer_context import PRODUCER_CONTEXT
 from src.stt.whisper_fast import STTResult
 from src.users.speaker_identifier import SpeakerMatch
 
@@ -54,6 +55,7 @@ class Engine:
         self.results = []
 
     def transcribe_with_confidence(self, audio):
+        self.active_room = PRODUCER_CONTEXT.get().room_id
         self.gate.step()
         value = STTResult("Synthetic private transcript", 1.0, 0.01, -0.1, 1.0)
         self.results.append(ref(value))
@@ -66,6 +68,7 @@ class Identifier:
         self.embeddings = []
 
     def identify(self, audio, profiles):
+        self.active_room = PRODUCER_CONTEXT.get().room_id
         self.gate.step()
         embedding = np.ones(192, dtype=np.float32)
         self.embeddings.append(ref(embedding))

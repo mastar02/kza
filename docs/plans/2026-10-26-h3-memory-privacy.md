@@ -1251,6 +1251,19 @@ GC. El artefacto compilado construye el builder real, alimenta el propietario
 de segmentación y comprueba una inferencia nativa pendiente tras revocar y
 después de agotar la observación de cierre.
 
+La inspección posterior reprodujo otra intercalación del tap: leer primero el
+fence viejo y después la cola nueva permitía reinsertar un chunk retirado.
+La primera suite completa se interrumpió tras esa reproducción y no se acepta
+como verde. El callback ahora toma la cola antes del fence; la publicación
+instala el fence más estricto antes de sustituir el deque. Los ensayos cubren
+ambos órdenes y verifican que la entrada fresca sigue funcionando.
+
+ASR y el identificador compartidos serializan también su entrada nativa para
+evitar inicializaciones lazy o inferencias simultáneas sobre el mismo backend.
+Un waiter vuelve a comprobar su captura cada 50 ms: si se revoca, libera sus
+inputs sin esperar a que termine otra sala viva. El callback de audio no usa
+estos locks; sólo los workers nativos esperan en ellos.
+
 `PRODUCERS` sigue abierto: faltan los buffers y jobs del command path, wake VAD,
 STT/sombra y consumidores de aprendizaje, y conectar los scopes completos al
 journal. No se anuncia borrado global ni se habilita la UI de borrado amplio.

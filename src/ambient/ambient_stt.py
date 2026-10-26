@@ -9,12 +9,13 @@ vad_filter=False (el VAD ya lo hizo el segmenter sobre el mic crudo).
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import numpy as np
 
 from src.stt.whisper_fast import STTResult
 from src.core.owned_work import OwnedBlockingWork
-from src.memory.producer_context import PRODUCER_CONTEXT
+from src.memory.producer_context import PRODUCER_CONTEXT, model_admission
 from src.memory.prompt_context import SourcesInvalidated
 
 
@@ -31,6 +32,7 @@ class AmbientSTT:
         self.asr_col = asr_col
         self._work = OwnedBlockingWork()
         self._source_policy = source_policy
+        self._inference_lock = threading.Lock()
 
     def asr_mono(self, audio: np.ndarray) -> np.ndarray:
         """Extraer la columna ASR mono de un audio potencialmente multicanal.
@@ -66,12 +68,15 @@ class AmbientSTT:
     def _invoke(self, audio):
         mono = None
         try:
-            if self._work.status()["closed"] or self._source_policy is not None and not self._source_policy.sources_available(PRODUCER_CONTEXT.get().sources):
-                raise SourcesInvalidated("ambient_asr_sources_invalidated")
-            mono = self._asr_mono(audio)
-            return self._stt.transcribe_with_confidence(mono)
+            with model_admission(self._inference_lock, self._require_live):
+                mono = self._asr_mono(audio)
+                return self._stt.transcribe_with_confidence(mono)
         finally:
             audio = mono = None
+
+    def _require_live(self):
+        if self._work.status()["closed"] or self._source_policy is not None and not self._source_policy.sources_available(PRODUCER_CONTEXT.get().sources):
+            raise SourcesInvalidated("ambient_asr_sources_invalidated")
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Expose actual ASR calls, including an engine's pinned native delegate."""

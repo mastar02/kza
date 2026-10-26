@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from collections.abc import Callable
 
 from src.memory.fact_ledger import MemorySource
 
@@ -26,3 +27,16 @@ def producer_context(room_id: str | None, sources: tuple[MemorySource, ...] = ()
         yield
     finally:
         PRODUCER_CONTEXT.reset(token)
+
+
+@contextmanager
+def model_admission(lock, require_live: Callable[[], None]):
+    """Serialize a shared native model while allowing revoked waiters to exit."""
+    require_live()
+    while not lock.acquire(timeout=0.05):
+        require_live()
+    try:
+        require_live()
+        yield
+    finally:
+        lock.release()

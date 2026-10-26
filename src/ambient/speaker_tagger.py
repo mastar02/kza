@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Callable
 
 import numpy as np
 
 from src.core.owned_work import OwnedBlockingWork
-from src.memory.producer_context import PRODUCER_CONTEXT
+from src.memory.producer_context import PRODUCER_CONTEXT, model_admission
 from src.memory.prompt_context import SourcesInvalidated
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ class SpeakerTagger:
         self.sample_rate = sample_rate
         self._work = OwnedBlockingWork()
         self._source_policy = source_policy
+        self._inference_lock = threading.Lock()
 
     async def tag(self, audio_mono: np.ndarray) -> tuple[str, float]:
         """Etiquetar el hablante de una utterance.
@@ -55,6 +57,10 @@ class SpeakerTagger:
 
     def _identify(self, audio_mono):
         """Load profiles and identify inside the retained native scope."""
+        with model_admission(self._inference_lock, self._require_live):
+            return self._identify_locked(audio_mono)
+
+    def _identify_locked(self, audio_mono):
         self._require_live()
         try:
             registered = self._embeddings_loader() or {}

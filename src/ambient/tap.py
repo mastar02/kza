@@ -53,11 +53,14 @@ class MultiChannelTap:
         if self._closed:
             return
         timestamp = ts if ts is not None else self._clock()
-        boundary = self._boundaries.get(room_id)
-        if boundary is not None and not boundary.allows(timestamp):
-            return
+        # Snapshot the queue before reading its fence. Publication installs
+        # the stricter fence before replacing the queue, so an old callback
+        # cannot combine an old boundary with the newly published deque.
         q = self._queues.get(room_id)
         if q is None:
+            return
+        boundary = self._boundaries.get(room_id)
+        if boundary is not None and not boundary.allows(timestamp):
             return
         q.append((timestamp, chunk, tts_active))
 
