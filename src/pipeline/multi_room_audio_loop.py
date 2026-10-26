@@ -1786,7 +1786,7 @@ class MultiRoomAudioLoop:
         if self._response_handler is None:
             return
         try:
-            was_speaking = await self._response_handler.cancel()
+            was_speaking = await self._response_handler.cancel(zone_id=f"zone_{rs.room_id}")
         except Exception as e:
             logger.warning(f"Barge-in cancel error in {rs.room_id}: {e}")
             return

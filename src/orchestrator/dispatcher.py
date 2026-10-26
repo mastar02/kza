@@ -32,6 +32,7 @@ Ejemplo:
 """
 
 import asyncio
+import inspect
 import re
 import time
 import unicodedata
@@ -309,6 +310,7 @@ class DispatchResult:
     queue_position: int = None
     user_id: str = None
     zone_id: str = None
+    speech_handled: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -319,7 +321,8 @@ class DispatchResult:
             "intent": self.intent,
             "timings": self.timings,
             "was_queued": self.was_queued,
-            "queue_position": self.queue_position
+            "queue_position": self.queue_position,
+            "speech_handled": self.speech_handled,
         }
 
 
@@ -535,6 +538,7 @@ class RequestDispatcher:
         unavailable_precheck_enabled: bool = True,
         weather_entity: str = DEFAULT_WEATHER_ENTITY,
         home_actions: HomeActionService | None = None,
+        response_timeout_s: float = 180.0,
     ):
         """
         Args:
@@ -574,6 +578,7 @@ class RequestDispatcher:
         self.router = router
         self.llm = llm
         self.tts = tts
+        self.response_timeout_s = response_timeout_s
         self.context_manager = context_manager or ContextManager()
         # An injected queue is initially empty/falsy, but is still the worker's
         # queue. Replacing it strands every dispatcher request without a worker.
@@ -624,7 +629,7 @@ class RequestDispatcher:
         zone_id: str = None,
         permission_level: int = 3,
         on_response: Callable[[DispatchResult], None] = None,
-        timeout: float = 5.0,
+        timeout: float | None = None,
         service_filter: str | None = None,
         query_slots: dict | None = None,
         target_entity_id: str | None = None,
@@ -1097,7 +1102,7 @@ class RequestDispatcher:
             zone_id=zone_id,
             priority=Priority.LOW,
             on_response=None,
-            timeout=5.0
+            timeout=self.response_timeout_s
         )
 
     async def _slow_path(
@@ -1113,6 +1118,7 @@ class RequestDispatcher:
         """
         Procesar peticion por slow path (cola priorizada).
         """
+        timeout = self.response_timeout_s if timeout is None else timeout
         timings = {}
 
         # Crear evento para esperar respuesta
@@ -1162,7 +1168,7 @@ class RequestDispatcher:
 
         # Si hay callback, notificar que esta en cola
         if on_response and position and position > 1:
-            on_response(DispatchResult(
+            notification = on_response(DispatchResult(
                 path=PathType.SLOW_LLM,
                 priority=priority,
                 success=True,
@@ -1172,6 +1178,8 @@ class RequestDispatcher:
                 queue_position=position,
                 timings=timings
             ))
+            if inspect.isawaitable(notification):
+                await notification
 
         # Esperar respuesta o timeout
         try:
@@ -1185,6 +1193,7 @@ class RequestDispatcher:
                 response="Lo siento, tarde demasiado. Intenta de nuevo.",
                 intent="timeout",
                 error="timeout",
+                speech_handled=request.speech_handled,
                 was_queued=True,
                 timings=timings
             )
@@ -1209,6 +1218,7 @@ class RequestDispatcher:
                 response="No pude procesar eso ahora mismo, probá de nuevo.",
                 intent="error",
                 error=result_holder.get("error"),
+                speech_handled=request.speech_handled,
                 was_queued=True,
                 queue_position=position,
                 timings=timings
@@ -1218,6 +1228,7 @@ class RequestDispatcher:
             return DispatchResult(
                 path=PathType.SLOW_LLM, priority=priority, success=False,
                 response="", intent="cancelled", was_queued=True, timings=timings,
+                speech_handled=request.speech_handled,
             )
 
         response = result_holder["result"]
@@ -1227,6 +1238,7 @@ class RequestDispatcher:
             priority=priority,
             success=request.status.name == "COMPLETED",
             response=response or "Sin respuesta",
+            speech_handled=request.speech_handled,
             intent="conversation",
             was_queued=True,
             queue_position=position,
@@ -1682,6 +1694,7 @@ class MultiUserOrchestrator:
         unavailable_precheck_enabled: bool = True,
         weather_entity: str = DEFAULT_WEATHER_ENTITY,
         home_actions: HomeActionService | None = None,
+        response_timeout_s: float = 180.0,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -1714,8 +1727,10 @@ class MultiUserOrchestrator:
         self.router = router
         self.llm = llm
         self.tts = tts
+        self.response_timeout_s = response_timeout_s
         self.speaker_id = speaker_identifier
         self._generation = GenerationStream(llm)
+        self.response_handler = response_handler
         self.user_manager = user_manager
         self.music = music_dispatcher
 
@@ -1755,6 +1770,7 @@ class MultiUserOrchestrator:
             list_manager=list_manager,
             reminder_manager=reminder_manager,
             response_handler=response_handler,
+            response_timeout_s=response_timeout_s,
             hooks=hooks,
             before_handler_warn_ms=before_handler_warn_ms,
             require_known_speaker_for_actions=require_known_speaker_for_actions,
@@ -1944,6 +1960,18 @@ class MultiUserOrchestrator:
     async def _process_llm_request(self, request: Request):
         """Consume generation off the loop; cancel pending reads and late results."""
         async def generate() -> str:
+            if self.response_handler is not None:
+                from src.pipeline.response_handler import DeliveryState
+                delivered = await self.response_handler.arespond(
+                    prompt, zone_id=request.zone_id, generation=self._generation,
+                )
+                request.speech_handled = delivered.speech_handled
+                if delivered.delivery is DeliveryState.CANCELLED:
+                    request.cancel(CancellationReason.USER_EXPLICIT)
+                    return ""
+                if not delivered.success:
+                    raise RuntimeError(delivered.error or "response_delivery_failed")
+                return delivered.text
             parts = []
             async with aclosing(self._generation.astream(prompt)) as source:
                 async for chunk in source:

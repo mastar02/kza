@@ -10,6 +10,7 @@ sys.modules.setdefault("torch.cuda", MagicMock())
 
 import numpy as np
 import pytest
+from tests.mocks.responses import response_handler_mock
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.nlu.home_command import parse_home_command
 from src.pipeline.request_router import RequestRouter
@@ -46,7 +47,7 @@ def _router(gate):
         command_processor=command_processor,
         orchestrator=orch,
         orchestrator_enabled=True,
-        response_handler=MagicMock(),
+        response_handler=response_handler_mock(),
         audio_manager=MagicMock(),
         wake_words=("nexa",),
         command_gate=gate,
@@ -133,7 +134,7 @@ def _router_with_llm(classification, text="hola esto es una charla cualquiera"):
         command_processor=command_processor,
         orchestrator=orch,
         orchestrator_enabled=True,
-        response_handler=MagicMock(),
+        response_handler=response_handler_mock(),
         audio_manager=MagicMock(),
         wake_words=("nexa",),
         command_gate=CommandAcceptanceGate(wake_words=()),  # acepta (prod openwakeword)
@@ -199,7 +200,7 @@ def _router_with_earcon(text="nexa prendé la luz", gate=None):
             queue_position=None,
         )
     )
-    response_handler = MagicMock()
+    response_handler = response_handler_mock()
     response_handler.play_earcon = MagicMock()
     if gate is None:
         gate = CommandAcceptanceGate(wake_words=("nexa",))

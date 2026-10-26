@@ -25,6 +25,7 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 import pytest
 import numpy as np
 
+from tests.mocks.responses import response_handler_mock
 from src.pipeline.request_router import RequestRouter
 from src.pipeline.command_processor import ProcessedCommand
 from src.nlu.command_gate import CommandAcceptanceGate
@@ -91,7 +92,7 @@ def _build_router(**overrides):
     """Build a RequestRouter with sensible mock defaults."""
     defaults = {
         "command_processor": MagicMock(),
-        "response_handler": MagicMock(),
+        "response_handler": response_handler_mock(),
         "audio_manager": MagicMock(),
         "orchestrator": None,
         "orchestrator_enabled": False,
@@ -156,7 +157,7 @@ class TestRequestRouterInit:
     def test_request_router_init(self):
         """Verify all dependencies are stored correctly."""
         cp = MagicMock()
-        rh = MagicMock()
+        rh = response_handler_mock()
         am = MagicMock()
         orch = MagicMock()
         chroma = MagicMock()

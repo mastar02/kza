@@ -21,13 +21,14 @@ justo lo que hace el bug invisible.
 import pytest
 from unittest.mock import MagicMock
 
+from tests.mocks.responses import response_handler_mock
 from src.orchestrator.dispatcher import RequestDispatcher, MultiUserOrchestrator
 from tests.mocks.home_control import ACCEPTED, REJECTED, selected_actions
 
 
 @pytest.fixture
 def response_handler():
-    rh = MagicMock()
+    rh = response_handler_mock()
     rh.play_earcon = MagicMock()
     rh.speak = MagicMock()
     return rh

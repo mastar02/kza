@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
+from tests.mocks.responses import response_handler_mock
 from src.ambient.tap import MultiChannelTap
 from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
 
@@ -22,7 +23,7 @@ def _loop_with_tap(tts_speaking: bool = False):
         room_streams={"escritorio": rs},
         follow_up=FollowUpMode(follow_up_window=4.0),
     )
-    rh = MagicMock()
+    rh = response_handler_mock()
     rh.is_speaking = tts_speaking
     loop.attach_response_handler(rh)
     tap = MultiChannelTap(maxlen_chunks=10)

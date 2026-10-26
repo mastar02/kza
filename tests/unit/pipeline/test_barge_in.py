@@ -25,6 +25,7 @@ sys.modules.setdefault("torch.cuda", MagicMock())
 import numpy as np
 import pytest
 
+from tests.mocks.responses import response_handler_mock
 from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
 from src.pipeline.response_handler import ResponseHandler
 
@@ -67,7 +68,7 @@ def _make_room_stream(room_id: str = "escritorio", echo=None) -> RoomStream:
 
 def _make_response_handler_mock(is_speaking: bool = False):
     """Mock de ResponseHandler para tests de MultiRoomAudioLoop."""
-    rh = MagicMock()
+    rh = response_handler_mock()
     rh.is_speaking = is_speaking
     rh.cancel = AsyncMock(return_value=is_speaking)
     return rh
@@ -92,158 +93,49 @@ def _make_loop(response_handler=None, **kwargs) -> MultiRoomAudioLoop:
 # =========================================================================
 
 class TestResponseHandlerIsSpeaking:
-    """Verificar el flag `is_speaking` antes/durante/después de speak."""
-
     def test_is_speaking_false_at_init(self):
-        """Arranca en False; cancel() sin TTS activo retorna False."""
-        tts = MagicMock()
-        tts.sample_rate = 16000
-        handler = ResponseHandler(tts=tts, streaming_enabled=False)
+        handler = ResponseHandler(tts=MagicMock())
+        assert not handler.is_speaking and not handler.is_responding
 
-        assert handler.is_speaking is False
+    @pytest.mark.asyncio
+    async def test_is_speaking_tracks_owned_device_and_cancel(self, monkeypatch):
+        from src.tts import piper_tts
+        from tests.mocks.audio_output import AudioBackend
+        from tests.mocks.speech import PCMEngine
+        from src.pipeline.response_handler import DeliveryState
+        backend = AudioBackend(stall=True)
+        monkeypatch.setattr(piper_tts, 'sd', backend)
+        handler = ResponseHandler(PCMEngine())
+        task = asyncio.create_task(handler.aspeak('Synthetic response'))
+        async with asyncio.timeout(1):
+            while not backend.created.is_set():
+                await asyncio.sleep(0.001)
+        assert handler.is_speaking and handler.is_responding
+        assert await handler.cancel()
+        assert (await task).delivery is DeliveryState.CANCELLED
+        assert backend.outputs[0].aborted.is_set()
+        assert not await handler.cancel()
+        assert not handler.is_speaking
 
-    def test_response_handler_is_speaking_flag(self):
-        """
-        `is_speaking` está True durante el speak y False al terminar.
+    @pytest.mark.asyncio
+    async def test_failure_is_explicit_and_clears_owner(self):
+        from tests.mocks.speech import PCMEngine
+        from src.pipeline.response_handler import DeliveryState
+        engine = PCMEngine()
+        engine.failure = RuntimeError('synthetic TTS failure')
+        handler = ResponseHandler(engine, streaming_enabled=False)
+        result = await handler.aspeak('Synthetic response')
+        assert result.delivery is DeliveryState.FAILED
+        assert not result.success and not handler.is_responding and not handler.is_speaking
 
-        Usamos un side_effect en `tts.speak` para capturar el flag durante
-        la ejecución (no sólo antes/después).
-        """
-        tts = MagicMock()
-        tts.sample_rate = 16000
-        # Sin synthesize_stream → cae a _speak_direct sin streaming
-        if hasattr(tts, "synthesize_stream"):
-            del tts.synthesize_stream
-        if hasattr(tts, "speak_stream"):
-            del tts.speak_stream
-
-        handler = ResponseHandler(
-            tts=tts,
-            zone_manager=None,  # fuerza _speak_direct
-            streaming_enabled=False,
-        )
-
-        seen_during = {"value": None}
-
-        def _capture_flag(text):
-            seen_during["value"] = handler.is_speaking
-
-        tts.speak.side_effect = _capture_flag
-
-        assert handler.is_speaking is False
-        handler.speak("Hola")
-
-        # Durante el speak, el flag estaba True.
-        assert seen_during["value"] is True
-        # Al terminar, False (el finally lo resetea).
-        assert handler.is_speaking is False
-
-    def test_is_speaking_resets_on_exception(self):
-        """Si el TTS lanza, `is_speaking` vuelve a False (finally)."""
-        tts = MagicMock()
-        tts.sample_rate = 16000
-        if hasattr(tts, "synthesize_stream"):
-            del tts.synthesize_stream
-        if hasattr(tts, "speak_stream"):
-            del tts.speak_stream
-        tts.speak.side_effect = RuntimeError("TTS crash")
-
-        handler = ResponseHandler(
-            tts=tts, zone_manager=None, streaming_enabled=False
-        )
-
-        with pytest.raises(RuntimeError):
-            handler.speak("Hola")
-
-        assert handler.is_speaking is False
-
-
-# =========================================================================
-# 2. ResponseHandler.cancel() idempotent
-# =========================================================================
 
 class TestResponseHandlerCancel:
-    """Verificar que cancel() es idempotent y robusto."""
-
     @pytest.mark.asyncio
-    async def test_response_handler_cancel_idempotent(self):
-        """Dos llamadas consecutivas a cancel() no fallan ni disparan errores."""
-        tts = MagicMock()
-        tts.sample_rate = 16000
-        handler = ResponseHandler(tts=tts, streaming_enabled=False)
+    async def test_idle_cancel_is_idempotent(self):
+        handler = ResponseHandler(tts=MagicMock())
+        assert not await handler.cancel()
+        assert not await handler.cancel()
 
-        # 1ra llamada: no había nada que cancelar → False
-        result1 = await handler.cancel()
-        assert result1 is False
-
-        # 2da llamada: tampoco hay nada → False, no exception
-        result2 = await handler.cancel()
-        assert result2 is False
-
-    @pytest.mark.asyncio
-    async def test_cancel_when_speaking_returns_true(self):
-        """Si `is_speaking=True`, cancel() retorna True y apaga el flag."""
-        tts = MagicMock()
-        tts.sample_rate = 16000
-        handler = ResponseHandler(tts=tts, streaming_enabled=False)
-
-        # Simular TTS activo — así sería durante speak()
-        handler._is_speaking = True
-
-        result = await handler.cancel()
-
-        assert result is True
-        assert handler.is_speaking is False
-
-        # 2da llamada inmediata: idempotent, retorna False sin side effects
-        result2 = await handler.cancel()
-        assert result2 is False
-
-    @pytest.mark.asyncio
-    async def test_cancel_closes_current_stream(self):
-        """cancel() llama stop/close sobre `_current_stream` si existe."""
-        tts = MagicMock()
-        tts.sample_rate = 16000
-        handler = ResponseHandler(tts=tts, streaming_enabled=False)
-
-        # Simular un stream activo (ej: StreamingAudioPlayer)
-        fake_stream = MagicMock()
-        handler._is_speaking = True
-        handler._current_stream = fake_stream
-
-        result = await handler.cancel()
-
-        assert result is True
-        fake_stream.stop.assert_called_once()
-        fake_stream.close.assert_called_once()
-        assert handler._current_stream is None
-
-    @pytest.mark.asyncio
-    async def test_cancel_cancels_playback_task(self):
-        """cancel() cancela el `_playback_task` si está activo."""
-        tts = MagicMock()
-        tts.sample_rate = 16000
-        handler = ResponseHandler(tts=tts, streaming_enabled=False)
-
-        # Simular playback task activo
-        async def _long_playback():
-            await asyncio.sleep(10)
-
-        task = asyncio.create_task(_long_playback())
-        handler._is_speaking = True
-        handler._playback_task = task
-
-        result = await handler.cancel()
-
-        assert result is True
-        # Dar chance al event loop para que propague el cancel
-        await asyncio.sleep(0)
-        assert task.cancelled() or task.done()
-
-
-# =========================================================================
-# 3. Barge-in accumulator
-# =========================================================================
 
 class TestBargeInAccumulator:
     """Verificar el acumulador `barge_in_accum_ms` en RoomStream."""

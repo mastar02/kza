@@ -23,6 +23,7 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 import pytest
 import numpy as np
 
+from tests.mocks.responses import response_handler_mock
 from src.pipeline.request_router import RequestRouter
 from src.pipeline.command_event import CommandEvent
 from src.pipeline.command_processor import ProcessedCommand
@@ -69,7 +70,7 @@ def _make_router(room_context_manager=None, orchestrator=None, orchestrator_enab
     command_processor = MagicMock()
     command_processor.process_command = AsyncMock(return_value=_make_cmd_result())
 
-    response_handler = MagicMock()
+    response_handler = response_handler_mock()
     response_handler.speak = MagicMock()
     response_handler.set_active_zone = MagicMock()
 

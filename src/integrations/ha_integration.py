@@ -196,7 +196,7 @@ class KZAHomeAssistantIntegration:
     async def _service_speak(self, data: dict) -> dict:
         message = data.get("message", "")
         zone = data.get("zone")
-        self.pipeline.response_handler.speak(message, zone_id=zone)
+        await self.pipeline.response_handler.aspeak(message, zone_id=zone)
         return {"success": True}
 
     async def _create_sensors(self):

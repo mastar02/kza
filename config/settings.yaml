@@ -287,6 +287,11 @@ tts:
     buffer_ms: 150          # Buffer circular total (ms) - mayor = más suave
     prebuffer_ms: 30        # Pre-buffer ULTRA-LOW LATENCY (30ms)
     block_size: 512         # Tamaño de bloque de audio
+    sentence_queue_capacity: 2  # Frases esperando al único productor TTS
+    sentence_max_chars: 400     # Cortar frases sin delimitador con memoria acotada
+    max_pending_responses: 16   # Esperas de locución; no crean workers adicionales
+    stall_timeout_s: 1.0        # Ring de audio sin progreso -> fallo visible
+    drain_timeout_s: null      # Automático: al menos 2 s y buffer + 1 s
     # Ajustes recomendados:
     # - Audio se corta: aumentar buffer_ms (200-300) o prebuffer_ms (80)
     # - Mucha latencia: reducir prebuffer_ms (40-50)
@@ -931,6 +936,7 @@ training:
 # Sistema de orquestacion para multiples usuarios concurrentes
 orchestrator:
   enabled: true
+  response_timeout_s: 180.0     # Presupuesto total: cola, generación y entrega de voz
 
   # Contexto por usuario
   context:

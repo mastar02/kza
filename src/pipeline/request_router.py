@@ -9,6 +9,7 @@ Owns all command routing logic:
 """
 
 import asyncio
+from contextvars import ContextVar
 import logging
 import time
 from dataclasses import asdict
@@ -245,7 +246,6 @@ class RequestRouter:
         # Core pipeline components
         self.command_processor = command_processor
         self.response_handler = response_handler
-        self._response_lock = asyncio.Lock()
         self.audio_manager = audio_manager
         self.room_context_manager = room_context_manager
 
@@ -328,6 +328,7 @@ class RequestRouter:
         self._pending_suggestion = None
         self._last_response = None
         self._command_count = 0
+        self._response_zone = ContextVar("response_zone", default=None)
 
         # Last-action tracker para comandos ambiguos (Q6: contextual + pregunta fallback)
         if action_tracker is None:
@@ -337,16 +338,8 @@ class RequestRouter:
 
     async def _speak_response(self, text: str, **kwargs) -> None:
         """Serialize synthesis/playback in a worker while capture keeps running."""
-        async with self._response_lock:
-            worker = asyncio.create_task(asyncio.to_thread(self.response_handler.speak, text, **kwargs))
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                await self.response_handler.cancel()
-                try:
-                    await worker
-                finally:
-                    raise
+        kwargs.setdefault("zone_id", self._response_zone.get())
+        return await self.response_handler.aspeak(text, **kwargs)
 
     async def _try_home_command(self, text: str, result: dict, *, room_id: str | None,
                                 pipeline_start: float, extra_gate: bool) -> bool:
@@ -497,6 +490,7 @@ class RequestRouter:
                                               wake_rms: float = 0.0,
                                               textual_wake: bool = False) -> dict:
         """Process command with multi-user orchestrator."""
+        self._response_zone.set(f"zone_{room_id}" if room_id else None)
         result = {
             "text": "",
             "intent": None,
@@ -528,7 +522,7 @@ class RequestRouter:
             result["intent"] = f"gate_rejected:{_reason}"
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-            self._earcon_and_log(
+            await self._earcon_and_log(
                 _reason, text or "", {}, room_id, wake_score, wake_rms,
                 outcome="gate_rejected",
             )
@@ -546,7 +540,7 @@ class RequestRouter:
             result["success"] = False
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-            self._earcon_and_log(
+            await self._earcon_and_log(
                 gate_decision.reason, text, gate_decision.signals or {},
                 room_id, wake_score, wake_rms, outcome="gate_rejected",
             )
@@ -556,6 +550,7 @@ class RequestRouter:
             self._asr_event_logger, room_id, "accepted", "ok", text,
             gate_decision.signals or {}, wake_score, wake_rms,
         )
+        await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
 
         if await self._try_home_command(
             text, result, room_id=room_id, pipeline_start=pipeline_start,
@@ -684,7 +679,7 @@ class RequestRouter:
                 result["success"] = False
                 result["response"] = ""
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-                self._earcon_and_log(
+                await self._earcon_and_log(
                     _reason_lc, text, {}, room_id, wake_score, wake_rms,
                     outcome="low_confidence",
                 )
@@ -711,7 +706,7 @@ class RequestRouter:
                 # earcon. La TV no llega a este punto (pasó el CommandGate + 7B);
                 # casi seguro es un humano con STT garbleado → earcon apropiado.
                 result["response"] = ""
-                self._earcon_and_log(
+                await self._earcon_and_log(
                     _reason_ui, text, {}, room_id, wake_score, wake_rms,
                     outcome="low_confidence",
                 )
@@ -764,9 +759,10 @@ class RequestRouter:
         )
 
         # 5. Process with orchestrator
-        def on_response(dispatch_result):
-            if dispatch_result.was_queued and dispatch_result.queue_position:
-                self.response_handler.speak(
+        self._response_zone.set(zone_id)
+        async def on_response(dispatch_result):
+            if dispatch_result.was_queued and dispatch_result.queue_position and not self.response_handler.is_responding:
+                await self._speak_response(
                     dispatch_result.response,
                     zone_id=zone_id,
                     room_context=room_context,
@@ -810,7 +806,7 @@ class RequestRouter:
                 result["intent"] = "unresolved_target"
                 result["response"] = "No tengo una luz configurada para ese ambiente."
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-                await asyncio.to_thread(self.response_handler.speak, result["response"], zone_id=zone_id)
+                await self._speak_response(result["response"], zone_id=zone_id)
                 return result
             target_entity_id = config.default_light
             if default_target.slots.keys() == {"brightness_pct"}:
@@ -864,14 +860,17 @@ class RequestRouter:
         _domotics_ok = (
             dispatch_result.intent == "domotics" and dispatch_result.success
         )
-        if dispatch_result.path not in [PathType.SLOW_LLM] and not _domotics_ok:
+        if dispatch_result.speech_handled is not True and not _domotics_ok:
             emotion_adj = emotion.response_adjustment if emotion else None
-            await self._speak_response(
+            delivery = await self._speak_response(
                 result["response"],
                 zone_id=zone_id,
                 emotion_adjustment=emotion_adj,
                 room_context=room_context,
             )
+            result["voice_delivery"] = delivery.delivery.value
+            if dispatch_result.intent == "conversation" and not delivery.success:
+                result["success"] = False
 
         # 8. Logging
         result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
@@ -908,6 +907,7 @@ class RequestRouter:
                                         textual_wake: bool = False,
                                         ambient_strict: bool = False) -> dict:
         """Legacy processing (single-user) for backwards compatibility."""
+        self._response_zone.set(f"zone_{room_id}" if room_id else None)
         result = {
             "text": "",
             "intent": None,
@@ -935,7 +935,7 @@ class RequestRouter:
             _reason = "stt_veto" if getattr(cmd, "stt_vetoed", False) else "empty"
             result["intent"] = f"gate_rejected:{_reason}"
             result["response"] = ""
-            self._earcon_and_log(
+            await self._earcon_and_log(
                 _reason, text or "", {}, room_id, wake_score, wake_rms,
                 outcome="gate_rejected",
             )
@@ -951,7 +951,7 @@ class RequestRouter:
             result["success"] = False
             result["response"] = ""
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-            self._earcon_and_log(
+            await self._earcon_and_log(
                 gate_decision.reason, text, gate_decision.signals or {},
                 room_id, wake_score, wake_rms, outcome="gate_rejected",
             )
@@ -961,6 +961,7 @@ class RequestRouter:
             self._asr_event_logger, room_id, "accepted", "ok", text,
             gate_decision.signals or {}, wake_score, wake_rms,
         )
+        await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
 
         if await self._try_home_command(
             text, result, room_id=room_id, pipeline_start=pipeline_start,
@@ -993,6 +994,8 @@ class RequestRouter:
                 "source": room_context.source.value,
             }
 
+        if room_context is not None:
+            self._response_zone.set(f"zone_{room_context.room_id}")
         logger.info(f"[STT {cmd.timings.get('stt', 0):.0f}ms] {text}")
 
         # Plan #3 OpenClaw — emit after_event(stt) for audit/observability.
@@ -1023,8 +1026,9 @@ class RequestRouter:
         # 1b. Confidence gate — si confidence baja y combo sensible, pide
         #     confirmación en vez de ejecutar. Comandos sin intent/entity o
         #     reversibles con confidence baja siguen de largo (con log).
-        self._check_confidence_gate(text, result)
+        self._check_confidence_gate(text, result, speak=False)
         if result.get("pending_confirmation"):
+            await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
@@ -1034,7 +1038,7 @@ class RequestRouter:
             result["intent"] = "feedback"
             result["response"] = feedback_result["response"]
             result["success"] = True
-            self.response_handler.speak(result["response"])
+            await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
@@ -1045,7 +1049,7 @@ class RequestRouter:
                 result["intent"] = "suggestion_response"
                 result["response"] = suggestion_result["response"]
                 result["success"] = True
-                self.response_handler.speak(result["response"])
+                await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
 
@@ -1056,7 +1060,7 @@ class RequestRouter:
                 result["intent"] = "learning"
                 result["response"] = learning_result["response"]
                 result["success"] = learning_result.get("success", True)
-                self.response_handler.speak(result["response"])
+                await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
 
@@ -1071,18 +1075,18 @@ class RequestRouter:
                 result["intent"] = "enrollment"
                 result["response"] = enrollment_result["response"]
                 result["success"] = enrollment_result["state"].name == "COMPLETED"
-                self.response_handler.speak(result["response"])
+                await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
 
         # 6. Check sync command
         if self._is_sync_command(text):
             result["intent"] = "sync"
-            self.response_handler.speak("Sincronizando comandos...")
+            await self._speak_response("Sincronizando comandos...")
             count = self.chroma.sync_commands(self.ha, self.llm)
             result["response"] = f"Listo, actualicé {count} comandos"
             result["success"] = True
-            self.response_handler.speak(result["response"])
+            await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
@@ -1097,7 +1101,7 @@ class RequestRouter:
                 result["intent"] = "timer"
                 result["response"] = timer_result["response"]
                 result["success"] = True
-                self.response_handler.speak(result["response"])
+                await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
 
@@ -1112,7 +1116,7 @@ class RequestRouter:
                 result["intent"] = "intercom"
                 result["response"] = intercom_result["response"]
                 result["success"] = True
-                self.response_handler.speak(result["response"])
+                await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
 
@@ -1126,7 +1130,7 @@ class RequestRouter:
                 result["intent"] = "notification_config"
                 result["response"] = notif_result["response"]
                 result["success"] = True
-                self.response_handler.speak(result["response"])
+                await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
 
@@ -1143,7 +1147,7 @@ class RequestRouter:
                 result["intent"] = "routine"
                 result["response"] = routine_result["response"]
                 result["success"] = routine_result["success"]
-                self.response_handler.speak(result["response"])
+                await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
 
@@ -1155,7 +1159,7 @@ class RequestRouter:
             result["intent"] = "routine"
             result["response"] = routine_result["response"]
             result["success"] = routine_result["success"]
-            self.response_handler.speak(result["response"])
+            await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
@@ -1179,7 +1183,7 @@ class RequestRouter:
                 result["intent"] = _llm_classification.intent
                 result["response"] = msg
                 result["success"] = False
-                self.response_handler.speak(result["response"])
+                await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
 
@@ -1194,7 +1198,7 @@ class RequestRouter:
         # Estrategia: 1) Buscar por entity sin filtro de service, 2) mirar LastActionTracker,
         # 3) toggle si hay contexto reciente, si no → TTS "¿prendo o apago?".
         if intent is None:
-            probe = self.chroma.search_command(
+            probe = await asyncio.to_thread(self.chroma.search_command,
                 text, threshold=0.55, service_filter=None, query_slots={},
             )
             if probe and probe["similarity"] >= 0.60:
@@ -1215,7 +1219,7 @@ class RequestRouter:
             result["intent"] = "clarification_requested"
             result["response"] = f"¿Prendo o apago la luz del {friendly}?"
             result["success"] = False
-            self.response_handler.speak(result["response"])
+            await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
@@ -1227,7 +1231,7 @@ class RequestRouter:
         command = self._query_cache.get(cache_key)
 
         if not command:
-            command = self.chroma.search_command(
+            command = await asyncio.to_thread(self.chroma.search_command,
                 text,
                 self.vector_search_threshold,
                 service_filter=intent,
@@ -1264,7 +1268,7 @@ class RequestRouter:
 
             # Speak response with emotion adjustments
             emotion_adj = emotion.response_adjustment if emotion else None
-            self.response_handler.speak(
+            await self._speak_response(
                 result["response"],
                 emotion_adjustment=emotion_adj,
                 room_context=room_context,
@@ -1292,7 +1296,7 @@ class RequestRouter:
                 self._command_count += 1
                 if self._command_count >= self.suggestion_interval:
                     self._command_count = 0
-                    self._maybe_present_suggestion()
+                    await self._maybe_present_suggestion()
 
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             self._log_latency(result)
@@ -1308,7 +1312,7 @@ class RequestRouter:
             try:
                 t_router = time.perf_counter()
                 # Classify and respond in ONE inference (saves ~20ms)
-                use_deep, router_response = self.router.classify_and_respond(
+                use_deep, router_response = await asyncio.to_thread(self.router.classify_and_respond,
                     text,
                     context=self._get_conversation_context(),
                     max_tokens=256
@@ -1322,26 +1326,28 @@ class RequestRouter:
             result["response"] = router_response
             result["success"] = True
             emotion_adj = emotion.response_adjustment if emotion else None
-            self.response_handler.speak(
+            delivery = await self._speak_response(
                 result["response"],
                 emotion_adjustment=emotion_adj,
                 room_context=room_context,
             )
+            result["success"] = delivery.success
         else:
             prompt = await self._build_prompt(text)
             emotion_adj = emotion.response_adjustment if emotion else None
-            response = self.response_handler.speak_with_llm_stream(
+            delivery = await self.response_handler.arespond(
                 prompt,
+                zone_id=f"zone_{room_context.room_id}" if room_context else (f"zone_{room_id}" if room_id else None),
                 max_tokens=512,
                 temperature=0.7,
                 use_filler=True,
                 emotion_adjustment=emotion_adj
             )
             result["timings"]["llm_stream"] = (time.perf_counter() - pipeline_start) * 1000
-            result["response"] = response.strip()
-            result["success"] = True
+            result["response"] = delivery.text.strip()
+            result["success"] = delivery.success
 
-        if self.memory:
+        if self.memory and result["success"]:
             self.memory.record_interaction(
                 user_input=text,
                 assistant_response=result["response"],
@@ -1351,7 +1357,7 @@ class RequestRouter:
         result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
         return result
 
-    def _earcon_and_log(
+    async def _earcon_and_log(
         self, reason: str, text: str, signals: dict,
         room_id, wake_score: float, wake_rms: float,
         outcome: str = "gate_rejected",
@@ -1363,7 +1369,9 @@ class RequestRouter:
                 _rc = self.room_context_manager.resolve_room(
                     mic_zone_id=room_id, user_id=None,
                 )
-            self.response_handler.play_earcon(room_context=_rc)
+            await self.response_handler.aplay_earcon(
+                zone_id=f"zone_{room_id}" if room_id and _rc is None else None, room_context=_rc,
+            )
             log_asr_outcome(
                 self._asr_event_logger, room_id, "earcon_fired",
                 reason, text, signals or {}, wake_score, wake_rms,
@@ -1556,7 +1564,7 @@ class RequestRouter:
         self._pending_suggestion = None
         return {"handled": False}
 
-    def _maybe_present_suggestion(self):
+    async def _maybe_present_suggestion(self):
         """Present an automation suggestion if one is available."""
         if not self.suggestion_engine:
             return
@@ -1565,7 +1573,7 @@ class RequestRouter:
         if suggestion:
             self._pending_suggestion = suggestion
             message = suggestion.message + " Responde si, no, o despues."
-            self.response_handler.speak(message)
+            await self._speak_response(message)
 
     def _log_domotics_event(self, entity_id: str, action: str, trigger_phrase: str = None):
         """Log a domotics event."""

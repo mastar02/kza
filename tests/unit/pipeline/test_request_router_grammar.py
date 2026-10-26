@@ -19,6 +19,7 @@ sys.modules.setdefault("torch.cuda", MagicMock())
 import numpy as np
 import pytest
 
+from tests.mocks.responses import response_handler_mock
 from src.pipeline.request_router import _grammar_fastpath_classification
 from src.pipeline.command_event import CommandEvent
 from src.nlu.llm_router import CommandClassification
@@ -96,7 +97,7 @@ def _make_router_with_llm(wake_acoustically_confirmed: bool):
         command_processor=command_processor,
         orchestrator=orch,
         orchestrator_enabled=True,
-        response_handler=MagicMock(),
+        response_handler=response_handler_mock(),
         audio_manager=MagicMock(),
         wake_words=("nexa",),
         # El gate acepta todo (openwakeword ya disparó)
@@ -182,7 +183,7 @@ def _make_router_for(text: str, classification):
         command_processor=command_processor,
         orchestrator=orch,
         orchestrator_enabled=True,
-        response_handler=MagicMock(),
+        response_handler=response_handler_mock(),
         audio_manager=MagicMock(),
         wake_words=("nexa",),
         command_gate=CommandAcceptanceGate(wake_words=()),

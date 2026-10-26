@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.mocks.responses import response_handler_mock
 from src.home_assistant.ha_client import HomeAssistantClient
 from tests.mocks.home_control import selected_actions
 
@@ -58,7 +59,7 @@ def _dispatcher_with(ha_available, dispatcher_cls, precheck_enabled=True):
     d.home_actions = selected_actions(d.ha, ("light.nueva", "light.grupo_cuarto"))
     if ha_available is False:
         d.ha.get_entity_state_fresh = AsyncMock(return_value={"entity_id": "light.grupo_cuarto", "state": "unavailable"})
-    d.response_handler = MagicMock()
+    d.response_handler = response_handler_mock()
     d.hooks = None
     d._unavailable_precheck_enabled = precheck_enabled
     return d

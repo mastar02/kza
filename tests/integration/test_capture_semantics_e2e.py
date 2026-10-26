@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
+from tests.mocks.responses import response_handler_mock
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.pipeline.command_event import CapturedTranscript, TranscriptSource
 from src.pipeline.command_processor import ProcessedCommand
@@ -54,7 +55,7 @@ async def test_appended_clause_is_not_lost_after_a_ready_prefix(suffix, orchestr
     ha.call_service_ws = AsyncMock()
     ha.call_service = AsyncMock()
     router = RequestRouter(
-        command_processor=processor, response_handler=MagicMock(), audio_manager=MagicMock(),
+        command_processor=processor, response_handler=response_handler_mock(), audio_manager=MagicMock(),
         ha_client=ha, orchestrator=orchestrator, orchestrator_enabled=orchestrated,
         command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True,
     )

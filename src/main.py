@@ -1268,6 +1268,11 @@ async def _run_main(shutdown: AsyncExitStack):
         streaming_enabled=streaming_config.get("enabled", True),
         streaming_buffer_ms=streaming_config.get("buffer_ms", 150),
         streaming_prebuffer_ms=streaming_config.get("prebuffer_ms", 80),
+        sentence_queue_capacity=streaming_config.get("sentence_queue_capacity", 2),
+        sentence_max_chars=streaming_config.get("sentence_max_chars", 400),
+        max_pending_responses=streaming_config.get("max_pending_responses", 16),
+        playback_stall_timeout_s=streaming_config.get("stall_timeout_s", 1.0),
+        playback_drain_timeout_s=streaming_config.get("drain_timeout_s"),
         hooks=hooks,
         before_handler_warn_ms=self_warn_ms,
     )
@@ -1450,6 +1455,7 @@ async def _run_main(shutdown: AsyncExitStack):
             # Sin esto el dispatcher del orquestador no puede avisar de un
             # fallo de HA y el comando se pierde en silencio (fix 2026-07-25).
             response_handler=response_handler,
+            response_timeout_s=config.get("orchestrator", {}).get("response_timeout_s", 180.0),
             home_actions=home_action_service,
             # Plan #2 OpenClaw
             compactor=compactor,

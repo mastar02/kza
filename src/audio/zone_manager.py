@@ -378,6 +378,45 @@ class ZoneManager:
             if began:
                 zone.state = ZoneState.IDLE
 
+    def play_stream_to_all_zones(
+        self, audio_generator, sample_rate: int = 22050, buffer_ms: int = 150,
+        prebuffer_ms: int = 30, *, on_player: Callable | None = None,
+        cancel_event: threading.Event | None = None, stall_timeout_s: float = 1.0,
+        drain_timeout_s: float | None = None,
+    ) -> bool:
+        """Broadcast owned PCM with the same cancellation and drain contract."""
+        from src.tts.piper_tts import StreamingAudioPlayer
+        iterator = iter(audio_generator)
+        affected = tuple(self.zones.values())
+        handed_to_player = False
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            for zone in affected:
+                zone.state = ZoneState.SPEAKING
+            if self.ma1260:
+                self.ma1260.select_all_zones()
+            player = StreamingAudioPlayer(
+                sample_rate=sample_rate, device=self.ma1260.audio_output_device if self.ma1260 else None,
+                buffer_ms=buffer_ms, prebuffer_ms=prebuffer_ms, cancel_event=cancel_event,
+                stall_timeout_s=stall_timeout_s, drain_timeout_s=drain_timeout_s,
+            )
+            if on_player is not None:
+                try:
+                    on_player(player)
+                except Exception:
+                    player.stop()
+                    raise
+            handed_to_player = True
+            return player.play_stream(iterator)
+        finally:
+            if not handed_to_player:
+                close = getattr(iterator, "close", None)
+                if callable(close):
+                    close()
+            for zone in affected:
+                zone.state = ZoneState.IDLE
+
     def play_stream_to_active_zone(
         self,
         audio_generator,

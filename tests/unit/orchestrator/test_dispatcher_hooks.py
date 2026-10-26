@@ -4,6 +4,7 @@ import asyncio
 import pytest
 from unittest.mock import MagicMock
 
+from tests.mocks.responses import response_handler_mock
 from src.hooks import HookRegistry, BlockResult, RewriteResult
 from tests.mocks.home_control import selected_actions
 
@@ -17,7 +18,7 @@ def dispatcher_with_hooks():
 
     ha_client = MagicMock()
 
-    response_handler = MagicMock()
+    response_handler = response_handler_mock()
     response_handler.speak = MagicMock()
 
     dispatcher = RequestDispatcher(
@@ -75,7 +76,7 @@ async def test_block_prevents_ha_call_and_speaks_reason(dispatcher_with_hooks):
     # HA was NOT called
     ha_client.call_service_once.assert_not_called()
     # Response was spoken with the block reason
-    response_handler.speak.assert_called_with("prohibido")
+    response_handler.aspeak.assert_awaited_once_with("prohibido", zone_id=None)
 
 
 @pytest.mark.asyncio

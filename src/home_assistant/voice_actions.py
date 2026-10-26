@@ -63,7 +63,7 @@ class VoiceHomeActionExecutor:
                 )
                 if self.response_handler is not None:
                     try:
-                        self.response_handler.speak(result.reason or "No puedo hacer eso")
+                        await self.response_handler.aspeak(result.reason or "No puedo hacer eso", zone_id=command.get("zone_id"))
                     except Exception as e:
                         logger.warning(f"No pude hablar block reason: {e}")
                 execute_after_event(
@@ -102,7 +102,7 @@ class VoiceHomeActionExecutor:
             )
             if self.response_handler is not None:
                 try:
-                    self.response_handler.play_earcon(zone_id=command.get("zone_id"))
+                    await self.response_handler.aplay_earcon(zone_id=command.get("zone_id"))
                 except Exception as e:
                     logger.warning(f"No pude reproducir earcon de entidad caída: {e}")
             # Plan #3 OpenClaw — el precheck es una tercera forma de retener
@@ -197,7 +197,7 @@ class VoiceHomeActionExecutor:
         )
         if self.response_handler is not None:
             try:
-                self.response_handler.play_earcon(zone_id=command.get("zone_id"))
+                await self.response_handler.aplay_earcon(zone_id=command.get("zone_id"))
             except Exception as e:
                 logger.warning(f"No pude reproducir earcon de fallo HA: {e}")
         else:

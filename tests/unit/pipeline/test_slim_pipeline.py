@@ -154,7 +154,7 @@ class TestSlimPipelineCreation:
             "text": "test", "success": True
         })
 
-        response_handler = MagicMock()
+        response_handler = response_handler_mock()
 
         feature_manager = MagicMock()
         feature_manager.start = AsyncMock()
@@ -203,7 +203,7 @@ class TestSlimPipelineCreation:
             audio_loop=MagicMock(),
             command_processor=MagicMock(),
             request_router=MagicMock(),
-            response_handler=MagicMock(),
+            response_handler=response_handler_mock(),
             feature_manager=MagicMock(),
         )
 
@@ -237,3 +237,5 @@ class TestSlimPipelineCreation:
         slim_deps["audio_loop"].stop.assert_called_once()
         slim_deps["feature_manager"].stop.assert_called_once()
         assert vp._running is False
+
+from tests.mocks.responses import response_handler_mock

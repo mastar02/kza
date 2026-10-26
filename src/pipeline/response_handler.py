@@ -1,552 +1,573 @@
-"""
-Response Handler Module
-Gestiona síntesis de voz, streaming de audio y enrutamiento a zonas.
-"""
+"""One response owner for generation, bounded sentence delivery and audio."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import threading
 import time
+from collections import deque
+from contextlib import aclosing
+from dataclasses import dataclass, field
+from enum import StrEnum
 
-
-from src.llm.buffered_streamer import (
-    BufferedLLMStreamer,
-    BufferConfig,
-    create_buffered_streamer
-)
+from src.llm.generation_stream import GenerationStream
+from src.tts.piper_tts import AudioPlaybackError, StreamingAudioPlayer
 from src.tts.response_cache import CachedAudio, ResponseCache
 
 logger = logging.getLogger(__name__)
 
 
-class ResponseHandler:
-    """
-    Gestiona respuestas de audio: TTS, streaming, enrutamiento a zonas.
+class GenerationState(StrEnum):
+    INCOMPLETE = "incomplete"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
-    Responsabilidades:
-    - TTS (Text-to-Speech)
-    - Streaming de audio a zonas
-    - LLM buffered streaming (para LLMs lentos)
-    - Ajuste de respuesta según emoción detectada
+
+class DeliveryState(StrEnum):
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    BLOCKED = "blocked"
+    EMPTY = "empty"
+
+
+@dataclass(frozen=True)
+class ResponseResult:
+    """Keep generation validity separate from actual voice delivery."""
+
+    text: str
+    generation: GenerationState
+    delivery: DeliveryState
+    error: str | None = None
+    speech_handled: bool = True
+    spoken_segments: int = 0
+
+    @property
+    def success(self) -> bool:
+        return self.generation is GenerationState.COMPLETE and self.delivery is DeliveryState.COMPLETE
+
+
+@dataclass
+class _Utterance:
+    text: str = ""
+    pcm: CachedAudio | None = None
+    stream: bool = True
+    emotion: dict | None = None
+
+
+@dataclass
+class _Session:
+    zone_id: str | None
+    loop: asyncio.AbstractEventLoop | None = None
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    condition: threading.Condition = field(default_factory=threading.Condition)
+    space: asyncio.Event = field(default_factory=asyncio.Event)
+    interrupted: asyncio.Event = field(default_factory=asyncio.Event)
+    queue: deque = field(default_factory=deque)
+    done: bool = False
+    player: StreamingAudioPlayer | None = None
+    delivery: DeliveryState = DeliveryState.COMPLETE
+    error: str | None = None
+    spoken: int = 0
+    peak_queue: int = 0
+    filler: str | None = None
+    broadcast: bool = False
+
+    def signal(self, event: asyncio.Event) -> None:
+        if self.loop is not None:
+            try:
+                self.loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                pass
+
+
+class _DeliveryBlocked(Exception):
+    pass
+
+
+class ResponseHandler:
+    """Serialize the TTS engine and route every PCM source through owned output.
+
+    Async callers use ``aspeak``, ``aplay_earcon`` and ``arespond``. Blocking
+    adapters remain for synchronous integrations; none calls sd.play or an
+    engine's independent speak method. A cancelled blocking synthesis retains
+    the owner slot until it really exits, and cannot start late audio.
     """
 
     def __init__(
-        self,
-        tts,
-        zone_manager=None,
-        llm=None,
-        streaming_enabled: bool = True,
-        streaming_buffer_ms: int = 150,
-        streaming_prebuffer_ms: int = 30,
-        llm_buffer_preset: str = "balanced",
-        llm_use_filler: bool = True,
-        llm_filler_phrases: list = None,
-        response_cache: ResponseCache | None = None,
-        hooks=None,  # plan #3 OpenClaw — HookRegistry instance or None
-        before_handler_warn_ms: float = 5.0,
-    ):
-        """
-        Inicializar ResponseHandler.
-
-        Args:
-            tts: TTS service (ej: PiperTTS)
-            zone_manager: ZoneManager para enrutamiento de audio
-            llm: LLM reasoner para generación de respuestas
-            streaming_enabled: Habilitar streaming de audio
-            streaming_buffer_ms: Buffer size para streaming
-            streaming_prebuffer_ms: Prebuffer para streaming
-            llm_buffer_preset: Preset de buffering para LLM
-            llm_use_filler: Usar frases de relleno mientras LLM genera
-            llm_filler_phrases: Frases de relleno custom
-            response_cache: Cache TTS pre-generado (S2). Si se provee,
-                `speak()` consulta el cache antes del TTS live; hit → playback
-                directo del ndarray (~5-10ms). Miss → camino normal.
-            hooks: Optional HookRegistry instance (plan #3 OpenClaw). When set,
-                before_ha_action / before_tts_speak hooks fire on each invocation
-                and after-events emit at pipeline checkpoints. Backward-compat:
-                None → no hook calls, behavior identical to baseline.
-            before_handler_warn_ms: Threshold (ms) for logging slow before-handlers
-                in execute_before_chain. Default 5.0ms.
-        """
-        self.tts = tts
-        self.zone_manager = zone_manager
-        self.llm = llm
-
+        self, tts, zone_manager=None, llm=None, streaming_enabled: bool = True,
+        streaming_buffer_ms: int = 150, streaming_prebuffer_ms: int = 30,
+        llm_buffer_preset: str = "balanced", llm_use_filler: bool = True,
+        llm_filler_phrases: list | None = None, response_cache: ResponseCache | None = None,
+        hooks=None, before_handler_warn_ms: float = 5.0, *,
+        sentence_queue_capacity: int = 2, sentence_max_chars: int = 400,
+        max_pending_responses: int = 16, playback_stall_timeout_s: float = 1.0,
+        playback_drain_timeout_s: float | None = None,
+    ) -> None:
+        if any(type(n) is not int or n <= 0 for n in
+               (sentence_queue_capacity, sentence_max_chars, max_pending_responses)):
+            raise ValueError("Invalid response queue limits")
+        self.tts, self.zone_manager, self.llm = tts, zone_manager, llm
         self.streaming_enabled = streaming_enabled
-        self.streaming_buffer_ms = streaming_buffer_ms
-        self.streaming_prebuffer_ms = streaming_prebuffer_ms
-
-        self.llm_buffer_preset = llm_buffer_preset
-        self.llm_use_filler = llm_use_filler
-        self.llm_filler_phrases = llm_filler_phrases
-
-        self._response_cache = response_cache
-        self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
+        self.streaming_buffer_ms, self.streaming_prebuffer_ms = streaming_buffer_ms, streaming_prebuffer_ms
+        self.llm_buffer_preset, self.llm_use_filler = llm_buffer_preset, llm_use_filler
+        self.llm_filler_phrases = llm_filler_phrases or ["Un momento..."]
+        self._response_cache, self.hooks = response_cache, hooks
         self._before_handler_warn_ms = before_handler_warn_ms
-        self._llm_streamer: BufferedLLMStreamer | None = None
+        self.sentence_queue_capacity, self.sentence_max_chars = sentence_queue_capacity, sentence_max_chars
+        self.max_pending_responses = max_pending_responses
+        self.playback_stall_timeout_s, self.playback_drain_timeout_s = playback_stall_timeout_s, playback_drain_timeout_s
+        self._ownership = threading.Condition()
+        self._owner: _Session | None = None
+        self._pending: list[_Session] = []
         self._active_zone_id = None
-
-        # Barge-in state (S3). `is_speaking` se consulta desde el audio
-        # callback de MultiRoomAudioLoop. `_current_stream` guarda el handle
-        # de sounddevice (OutputStream o StreamingAudioPlayer) activo para
-        # poder cortarlo en <200ms. `_playback_task` cubre cualquier task
-        # asyncio que envuelva el playback.
-        self._is_speaking: bool = False
-        self._current_stream = None
-        self._playback_task: asyncio.Task | None = None
-
-        # Earcon "no entendí" (2026-06-15): se inyecta vía set_earcon() desde main.
-        self._earcon_audio = None
-        self._earcon_sr = 24000
+        self._earcon_audio, self._earcon_sr = None, 24000
+        self._generation = GenerationStream(llm)
 
     @property
     def is_speaking(self) -> bool:
-        """True si hay un TTS activo. Consultado por barge-in checker."""
-        return self._is_speaking
-
-    async def cancel(self) -> bool:
-        """
-        Interrumpir el TTS actual lo más rápido posible.
-
-        Cierra el stream de sounddevice (si hay uno expuesto en
-        `_current_stream`), cancela `_playback_task` si existe, y como
-        fallback llama `sd.stop()` para cortar cualquier playback inline
-        (`sd.play`) que no esté expuesto como stream.
-
-        Idempotent: llamadas múltiples no fallan; si no hay TTS activo,
-        retorna False sin efectos laterales.
-
-        Returns:
-            True si había algo activo que cancelar, False en caso contrario.
-        """
-        if not self._is_speaking:
+        """Report active PCM output, allowing capture during generation/synthesis."""
+        with self._ownership:
+            session = self._owner
+            player = session.player if session is not None else None
+        if player is None:
             return False
+        return player.is_playing
 
-        logger.info("⏹  TTS cancel (barge-in)")
-        # Marcamos primero para evitar race con otro cancel concurrente.
-        self._is_speaking = False
+    @property
+    def is_responding(self) -> bool:
+        """Whether a response owns generation, synthesis or playback resources."""
+        with self._ownership:
+            return self._owner is not None
 
-        # 1. Cerrar el stream explícito (si un método TTS lo registró).
-        stream = self._current_stream
-        if stream is not None:
-            try:
-                # sounddevice OutputStream expone stop/close; el
-                # StreamingAudioPlayer de PiperTTS expone solo stop().
-                if hasattr(stream, "stop"):
-                    stream.stop()
-                if hasattr(stream, "close"):
-                    stream.close()
-            except Exception as e:
-                logger.warning(f"cancel(): error cerrando stream: {e}")
-            finally:
-                self._current_stream = None
-
-        # 2. Cancelar task de playback si hay uno registrado.
-        task = self._playback_task
-        if task is not None and not task.done():
-            task.cancel()
-        self._playback_task = None
-
-        # 3. Fallback: sd.stop() corta cualquier sd.play() inline que no
-        # esté expuesto como stream (e.g. `PiperTTS.speak`, `_playback_cached`
-        # con sd.play). No rompe si sounddevice no está inicializado.
-        try:
-            import sounddevice as sd
-            sd.stop()
-        except Exception as e:
-            logger.debug(f"cancel(): sd.stop() no-op: {e}")
-
-        return True
-
-    def set_active_zone(self, zone_id: str):
-        """Establecer zona activa para respuestas."""
+    def set_active_zone(self, zone_id: str) -> None:
+        """Set the default only for subsequent sessions."""
         self._active_zone_id = zone_id
-        if self.zone_manager:
+        if self.zone_manager is not None:
             self.zone_manager.set_active_zone(zone_id)
-        logger.info(f"Zona activa: {zone_id}")
 
     def set_earcon(self, audio, sr: int) -> None:
-        """Inyectar el earcon pre-cargado (np.ndarray float32, sample rate)."""
-        self._earcon_audio = audio
-        self._earcon_sr = sr
+        """Inject a preloaded PCM earcon."""
+        self._earcon_audio, self._earcon_sr = audio, sr
 
-    def play_earcon(self, zone_id: str = None, room_context=None) -> None:
-        """Reproducir el earcon 'no entendí'. No-op si no hay asset."""
-        if self._earcon_audio is None:
-            return
-        if room_context and hasattr(room_context, "room_id") and not zone_id:
-            zone_id = f"zone_{room_context.room_id}"
-        target_zone = zone_id or self._active_zone_id
-        self._is_speaking = True
+    def _session(self, zone_id, room_context, *, asynchronous: bool) -> _Session:
+        if zone_id is None and room_context is not None:
+            room = getattr(room_context, "room_id", None)
+            zone_id = f"zone_{room}" if room else None
+        session = _Session(zone_id if zone_id is not None else self._active_zone_id,
+                           asyncio.get_running_loop() if asynchronous else None)
+        with self._ownership:
+            if len(self._pending) >= self.max_pending_responses:
+                raise RuntimeError("response_queue_full")
+            self._pending.append(session)
+        return session
+
+    def _claim(self, session: _Session) -> bool:
+        with self._ownership:
+            if session.cancelled.is_set():
+                if session in self._pending:
+                    self._pending.remove(session)
+                return False
+            if self._owner is None and self._pending and self._pending[0] is session:
+                self._pending.pop(0)
+                self._owner = session
+                return True
+            return False
+
+    async def _acquire(self, session: _Session) -> bool:
         try:
-            self._play_earcon_array(self._earcon_audio, self._earcon_sr, target_zone)
+            while not session.cancelled.is_set():
+                if self._claim(session):
+                    return True
+                await asyncio.sleep(0.005)
+            return False
         finally:
-            self._is_speaking = False
+            with self._ownership:
+                if session in self._pending:
+                    self._pending.remove(session)
 
-    def _play_earcon_array(self, audio, sr: int, zone_id: str) -> None:
-        """Reproducir el array del earcon en la zona (bypassa TTS y hooks)."""
-        self._playback_pcm(audio, sr, zone_id)
+    def _interrupt(self, session: _Session) -> StreamingAudioPlayer | None:
+        with session.condition:
+            if session.cancelled.is_set():
+                return None
+            session.cancelled.set()
+            session.queue.clear()
+            session.condition.notify_all()
+            session.signal(session.space)
+            session.signal(session.interrupted)
+            return session.player
 
-    def _playback_pcm(self, audio, sr: int, zone_id: str) -> None:
-        """Envolver un array PCM en el objeto de audio cacheado y reproducirlo."""
-        from src.tts.response_cache import CachedAudio
-        cached = CachedAudio(
-            audio=audio,
-            sample_rate=sr,
-            duration_s=len(audio) / sr,
-            text="",
-        )
-        self._playback_cached(cached, zone_id)
+    async def cancel(self, zone_id: str | None = None) -> bool:
+        """Cancel current/pending matching sessions, including before first PCM.
 
-    def speak(
-        self,
-        text: str,
-        zone_id: str = None,
-        stream: bool = None,
-        emotion_adjustment: dict = None,
-        room_context=None,
-    ):
+        Cancellation tokens prevent device startup immediately. Device abort
+        and close run off-loop; a blocked synthesis continues to own its slot.
         """
-        Sintetizar y reproducir texto.
+        with self._ownership:
+            sessions = ([self._owner] if self._owner is not None else []) + list(self._pending)
+        targets = [s for s in sessions if not s.cancelled.is_set() and (zone_id is None or s.zone_id == zone_id or s.broadcast)]
+        players = [p for s in targets if (p := self._interrupt(s)) is not None]
+        if players:
+            await asyncio.gather(*(asyncio.to_thread(p.stop) for p in players))
+        return bool(targets)
 
-        Args:
-            text: Texto a sintetizar
-            zone_id: ID de zona específica (None = usar zona activa)
-            stream: Usar streaming (None = usar config, True/False = forzar)
-            emotion_adjustment: Ajustes según emoción detectada
-            room_context: RoomContext para resolver zona automáticamente
-        """
-        if not text:
-            return
+    async def _put(self, session: _Session, utterance: _Utterance) -> None:
+        while True:
+            session.space.clear()
+            with session.condition:
+                if session.cancelled.is_set():
+                    raise asyncio.CancelledError
+                if session.error is not None:
+                    raise AudioPlaybackError(session.error)
+                if len(session.queue) < self.sentence_queue_capacity:
+                    session.queue.append(utterance)
+                    session.peak_queue = max(session.peak_queue, len(session.queue))
+                    session.condition.notify_all()
+                    return
+            await session.space.wait()
 
-        # Plan #3 OpenClaw — before_tts_speak chain
-        _hook_t0 = None
-        if self.hooks is not None:
-            from src.hooks import (
-                BlockResult,
-                TtsCall,
-                execute_before_chain,
-            )
+    def _finish(self, session: _Session) -> None:
+        with session.condition:
+            session.done = True
+            session.condition.notify_all()
 
-            _hook_t0 = time.perf_counter()
-            tts_call = TtsCall(
-                text=text,
-                voice=None,
-                lang="es",
-                user_id=None,
-                zone_id=zone_id,
-            )
-            result = execute_before_chain(
-                self.hooks, "before_tts_speak", tts_call,
+    def _render(self, session: _Session, utterance: _Utterance) -> None:
+        started = time.perf_counter()
+        text, success = utterance.text, False
+        if utterance.pcm is None and self.hooks is not None:
+            from src.hooks import BlockResult, TtsCall, execute_before_chain
+            rewritten = execute_before_chain(
+                self.hooks, "before_tts_speak", TtsCall(text=text, voice=None, lang="es", user_id=None, zone_id=session.zone_id),
                 warn_ms=self._before_handler_warn_ms,
             )
-            if isinstance(result, BlockResult):
-                logger.info(
-                    f"[TTS BLOCKED] rule={result.rule_name}: {result.reason}"
-                )
+            if isinstance(rewritten, BlockResult):
+                raise _DeliveryBlocked(rewritten.reason)
+            if rewritten.zone_id != session.zone_id:
+                raise _DeliveryBlocked("tts_origin_zone_changed")
+            text = rewritten.text
+        try:
+            if session.cancelled.is_set():
                 return
-            # rewrite chain may have modified text (and possibly other fields)
-            text = result.text
-            zone_id = result.zone_id
-
-        # Resolve zone from room context if available
-        if room_context and hasattr(room_context, 'room_id') and not zone_id:
-            zone_id = f"zone_{room_context.room_id}"
-
-        # Aplicar ajustes de emoción si están disponibles
-        if emotion_adjustment:
-            self._apply_emotion_adjustment(emotion_adjustment)
-
-        # Determinar si usar streaming
-        use_streaming = stream if stream is not None else self.streaming_enabled
-
-        # Enrutar a zona
-        target_zone = zone_id or self._active_zone_id
-
-        # Barge-in state on: desde aquí cualquier consulta a `is_speaking`
-        # devuelve True. Se limpia en `finally` aunque haya excepciones.
-        self._is_speaking = True
-        try:
-            # Cache hit (S2): playback directo si hay match. No aplicamos
-            # emotion adjustment a respuestas cacheadas (el pitch/rate vive en
-            # la síntesis live); son acks cortos pre-generados, el tradeoff
-            # vale la pena.
-            if self._response_cache is not None:
+            cached = utterance.pcm
+            if cached is None and self._response_cache is not None:
                 cached = self._response_cache.get(text)
-                if cached is not None:
-                    t0 = time.perf_counter()
-                    self._playback_cached(cached, target_zone)
-                    elapsed_ms = (time.perf_counter() - t0) * 1000
-                    logger.info(
-                        f"TTS cache HIT: {text!r} "
-                        f"(playback={elapsed_ms:.1f}ms, audio={cached.duration_s*1000:.0f}ms)"
-                    )
-                    return
-
-            if self.zone_manager and target_zone:
-                self._speak_to_zone(text, target_zone, use_streaming)
+            if cached is not None:
+                source, sr = iter([cached.audio]), cached.sample_rate
             else:
-                # Fallback: TTS directo
-                self._speak_direct(text, use_streaming)
-        finally:
-            # `cancel()` pudo haberlo apagado antes; idempotent.
-            self._is_speaking = False
-            self._current_stream = None
+                if utterance.emotion:
+                    self._apply_emotion_adjustment(utterance.emotion)
+                sr = self.tts.sample_rate
+                if utterance.stream and callable(getattr(self.tts, "synthesize_stream", None)):
+                    source = iter(self.tts.synthesize_stream(text))
+                else:
+                    audio, _ = self.tts.synthesize(text)
+                    source = iter([audio])
+            frames = 0
+            source_closed = False
 
-        # Plan #3 OpenClaw — emit after-event TTS
-        if self.hooks is not None:
+            def close_source():
+                nonlocal source_closed
+                if not source_closed:
+                    source_closed = True
+                    close = getattr(source, "close", None)
+                    if callable(close):
+                        close()
+
+            def guarded_pcm():
+                nonlocal frames
+                try:
+                    while not session.cancelled.is_set():
+                        try:
+                            chunk = next(source)
+                        except StopIteration:
+                            return
+                        if session.cancelled.is_set():
+                            return
+                        if chunk is None:
+                            raise AudioPlaybackError("tts_returned_no_audio")
+                        frames += len(chunk)
+                        yield chunk
+                finally:
+                    close_source()
+
+            def register(player):
+                with session.condition:
+                    session.player = player
+                if session.cancelled.is_set():
+                    player.stop()
+
+            pcm = guarded_pcm()
             try:
-                from src.hooks import TtsPayload, execute_after_event
-
-                latency_ms = (
-                    (time.perf_counter() - _hook_t0) * 1000.0
-                    if _hook_t0 is not None
-                    else 0.0
-                )
-                execute_after_event(
-                    self.hooks,
-                    "tts",
-                    TtsPayload(
-                        timestamp=time.time(),
-                        text=text,
-                        voice=None,
-                        latency_ms=latency_ms,
-                        success=True,
-                    ),
-                )
-            except Exception as e:
-                logger.warning(f"after_event tts emit failed: {e}")
-
-    def _playback_cached(self, cached: CachedAudio, zone_id: str = None):
-        """Reproducir audio cacheado reutilizando el mismo mecanismo que TTS live.
-
-        Si hay zone_manager + zone_id, va por `play_to_zone` (mismo path que
-        el TTS normal). En fallback directo usa `sounddevice.sd.play`, igual
-        que `PiperTTS.speak`/`KokoroTTS.speak`.
-        """
-        if self.zone_manager and zone_id:
-            self.zone_manager.play_to_zone(
-                zone_id=zone_id,
-                audio_data=cached.audio,
-                sample_rate=cached.sample_rate,
-                block=True,
-            )
-            return
-
-        # Fallback directo: mismo mecanismo que *TTS.speak() — sounddevice.
-        try:
-            import sounddevice as sd
-            sd.play(cached.audio, samplerate=cached.sample_rate)
-            sd.wait()
-        except Exception as e:
-            logger.warning(f"Playback cacheado falló, fallback TTS live: {e}")
-            # Si falla el playback cacheado, caer al TTS normal para no perder
-            # el ack al usuario.
-            self._speak_direct(cached.text, self.streaming_enabled)
-
-    def _speak_to_zone(
-        self,
-        text: str,
-        zone_id: str,
-        use_streaming: bool
-    ):
-        """
-        Sintetizar y reproducir en una zona específica.
-
-        Args:
-            text: Texto a sintetizar
-            zone_id: ID de la zona
-            use_streaming: Usar streaming de audio
-        """
-        if use_streaming and hasattr(self.tts, 'synthesize_stream'):
-            # Streaming: menor latencia
-            audio_generator = self.tts.synthesize_stream(text)
-            self.zone_manager.play_stream_to_zone(
-                zone_id=zone_id,
-                audio_generator=audio_generator,
-                sample_rate=self.tts.sample_rate,
-                buffer_ms=self.streaming_buffer_ms,
-                prebuffer_ms=self.streaming_prebuffer_ms
-            )
-            logger.debug(
-                f"Streaming enviado a zona: {zone_id} "
-                f"(buffer={self.streaming_buffer_ms}ms)"
-            )
-        else:
-            # Síntesis completa, luego reproducir
-            audio_data, _ = self.tts.synthesize(text)
-            if audio_data is not None:
-                self.zone_manager.play_to_zone(
-                    zone_id=zone_id,
-                    audio_data=audio_data,
-                    sample_rate=self.tts.sample_rate,
-                    block=True
-                )
-
-    def _speak_direct(self, text: str, use_streaming: bool):
-        """
-        Sintetizar y reproducir directamente (sin zone manager).
-
-        Args:
-            text: Texto a sintetizar
-            use_streaming: Usar streaming
-        """
-        if use_streaming and hasattr(self.tts, 'speak_stream'):
-            self.tts.speak_stream(
-                text,
-                buffer_ms=self.streaming_buffer_ms,
-                prebuffer_ms=self.streaming_prebuffer_ms
-            )
-        else:
-            self.tts.speak(text)
-
-    def speak_with_llm_stream(
-        self,
-        prompt: str,
-        zone_id: str = None,
-        max_tokens: int = 512,
-        temperature: float = 0.7,
-        use_filler: bool = None,
-        emotion_adjustment: dict = None,
-        room_context=None,
-    ) -> str:
-        """
-        Generar respuesta con LLM y hablar con buffering inteligente.
-
-        Permite que el LLM genere a velocidad lenta (6-10 tok/s) mientras
-        el TTS habla de forma fluida usando buffering por oraciones.
-
-        Args:
-            prompt: Prompt para el LLM
-            zone_id: Zona de destino
-            max_tokens: Tokens máximos
-            temperature: Temperatura
-            use_filler: Override para usar filler
-            emotion_adjustment: Ajustes según emoción
-            room_context: RoomContext para resolver zona automáticamente
-
-        Returns:
-            Texto completo de la respuesta
-        """
-        # Resolve zone from room context if available
-        if room_context and hasattr(room_context, 'room_id') and not zone_id:
-            zone_id = f"zone_{room_context.room_id}"
-
-        # Aplicar ajustes de emoción
-        if emotion_adjustment:
-            self._apply_emotion_adjustment(emotion_adjustment)
-
-        # Inicializar streamer si es necesario
-        self._init_llm_streamer()
-
-        # Usar filler por defecto según config
-        filler = use_filler if use_filler is not None else self.llm_use_filler
-
-        # Establecer zona activa si se proporciona
-        if zone_id:
-            self.set_active_zone(zone_id)
-
-        # Barge-in state on durante todo el streaming del LLM (puede durar
-        # varios segundos). El fallback que llama a `self.speak()` reusa el
-        # mismo flag — idempotent, no problema.
-        self._is_speaking = True
-        try:
-            # Verificar si el LLM soporta streaming
-            if self.llm and hasattr(self.llm, 'generate_stream'):
-                return self._llm_streamer.stream_and_speak(
-                    self.llm,
-                    prompt,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    use_filler=filler
-                )
-            else:
-                # Fallback: generar completo y luego hablar
-                logger.warning("LLM no soporta streaming, usando modo normal")
-                response = self.llm.generate(prompt, max_tokens=max_tokens, temperature=temperature)
-                self.speak(response, zone_id=zone_id)
-                return response
+                if self.zone_manager is not None and session.broadcast:
+                    completed = self.zone_manager.play_stream_to_all_zones(
+                        pcm, sample_rate=sr, buffer_ms=self.streaming_buffer_ms,
+                        prebuffer_ms=self.streaming_prebuffer_ms, on_player=register,
+                        cancel_event=session.cancelled, stall_timeout_s=self.playback_stall_timeout_s,
+                        drain_timeout_s=self.playback_drain_timeout_s,
+                    )
+                elif self.zone_manager is not None and session.zone_id is not None:
+                    completed = self.zone_manager.play_stream_to_zone(
+                        session.zone_id, pcm, sample_rate=sr,
+                        buffer_ms=self.streaming_buffer_ms, prebuffer_ms=self.streaming_prebuffer_ms,
+                        on_player=register, cancel_event=session.cancelled,
+                        stall_timeout_s=self.playback_stall_timeout_s, drain_timeout_s=self.playback_drain_timeout_s,
+                    )
+                else:
+                    player = StreamingAudioPlayer(
+                        sample_rate=sr, buffer_ms=self.streaming_buffer_ms, prebuffer_ms=self.streaming_prebuffer_ms,
+                        cancel_event=session.cancelled, stall_timeout_s=self.playback_stall_timeout_s,
+                        drain_timeout_s=self.playback_drain_timeout_s,
+                    )
+                    register(player)
+                    completed = player.play_stream(pcm)
+            finally:
+                try:
+                    pcm.close()
+                finally:
+                    close_source()
+                    with session.condition:
+                        session.player = None
+            if not session.cancelled.is_set():
+                if not completed or frames == 0:
+                    raise AudioPlaybackError("audio_not_delivered")
+                success = True
+                session.spoken += 1
         finally:
-            self._is_speaking = False
-            self._current_stream = None
+            if self.hooks is not None and utterance.pcm is None:
+                from src.hooks import TtsPayload, execute_after_event
+                payload = TtsPayload(
+                    timestamp=time.time(), text=text, voice=None,
+                    latency_ms=(time.perf_counter() - started) * 1000, success=success,
+                )
+                if session.loop is not None:
+                    session.loop.call_soon_threadsafe(execute_after_event, self.hooks, "tts", payload)
+                else:
+                    execute_after_event(self.hooks, "tts", payload)
 
-    def _init_llm_streamer(self):
-        """Inicializar el streamer con buffering para el LLM."""
-        if self._llm_streamer is not None:
-            return
+    def _worker(self, session: _Session) -> None:
+        filler_deadline = time.monotonic() + 0.1
+        try:
+            while not session.cancelled.is_set():
+                with session.condition:
+                    while not session.queue and not session.done and not session.cancelled.is_set():
+                        remaining = filler_deadline - time.monotonic()
+                        if session.filler is not None and remaining <= 0:
+                            break
+                        session.condition.wait(max(0, remaining) if session.filler is not None else None)
+                    if session.cancelled.is_set() or (not session.queue and session.done):
+                        return
+                    if session.queue:
+                        utterance = session.queue.popleft()
+                        session.filler = None
+                    else:
+                        utterance = _Utterance(session.filler, stream=self.streaming_enabled)
+                        session.filler = None
+                session.signal(session.space)
+                self._render(session, utterance)
+        except _DeliveryBlocked as error:
+            session.delivery, session.error = DeliveryState.BLOCKED, str(error)
+            self._interrupt(session)
+        except Exception as error:
+            session.delivery, session.error = DeliveryState.FAILED, str(error)
+            logger.warning("[Response] Audio delivery failed: %s", error)
+            self._interrupt(session)
+        finally:
+            if session.cancelled.is_set() and session.delivery is DeliveryState.COMPLETE:
+                session.delivery = DeliveryState.CANCELLED
+            with self._ownership:
+                if self._owner is session:
+                    self._owner = None
+                self._ownership.notify_all()
+            session.signal(session.space)
 
-        # Crear configuración personalizada si hay filler phrases custom
-        if self.llm_filler_phrases:
-            config = BufferConfig(
-                use_filler=self.llm_use_filler,
-                filler_phrases=self.llm_filler_phrases
-            )
-            self._llm_streamer = BufferedLLMStreamer(self.tts, config)
+    @staticmethod
+    def _result(session: _Session, text: str, generation=GenerationState.COMPLETE, error=None) -> ResponseResult:
+        if session.cancelled.is_set() and session.delivery is DeliveryState.COMPLETE:
+            delivery = DeliveryState.CANCELLED
         else:
-            # Usar preset
-            self._llm_streamer = create_buffered_streamer(
-                self.tts,
-                preset=self.llm_buffer_preset
-            )
-            self._llm_streamer.config.use_filler = self.llm_use_filler
+            delivery = session.delivery
+        if delivery is DeliveryState.CANCELLED:
+            generation = GenerationState.CANCELLED
+        return ResponseResult(text, generation, delivery, error or session.error, spoken_segments=session.spoken)
 
-        logger.info(
-            f"LLM Streamer inicializado "
-            f"(preset={self.llm_buffer_preset}, filler={self.llm_use_filler})"
+    async def _wait_output(self, session: _Session, worker: asyncio.Task) -> None:
+        interrupted = asyncio.create_task(session.interrupted.wait())
+        try:
+            await asyncio.wait({worker, interrupted}, return_when=asyncio.FIRST_COMPLETED)
+            if worker.done():
+                await worker
+        finally:
+            interrupted.cancel()
+            await asyncio.gather(interrupted, return_exceptions=True)
+
+    async def aspeak(self, text: str, zone_id: str | None = None, stream: bool | None = None,
+                     emotion_adjustment: dict | None = None, room_context=None) -> ResponseResult:
+        """Await one owned utterance without blocking capture or abandoning TTS."""
+        if not text:
+            return ResponseResult("", GenerationState.COMPLETE, DeliveryState.EMPTY, speech_handled=False)
+        return await self._aspeak_utterance(_Utterance(text=text, stream=self.streaming_enabled if stream is None else stream,
+                                                     emotion=emotion_adjustment), zone_id, room_context)
+
+    async def _aspeak_utterance(self, utterance, zone_id, room_context, *, broadcast=False) -> ResponseResult:
+        session = self._session(zone_id, room_context, asynchronous=True)
+        session.broadcast = broadcast
+        try:
+            if not await self._acquire(session):
+                return ResponseResult(utterance.text, GenerationState.CANCELLED, DeliveryState.CANCELLED)
+            session.queue.append(utterance)
+            session.done = True
+            worker = asyncio.create_task(asyncio.to_thread(self._worker, session))
+            await self._wait_output(session, worker)
+            return self._result(session, utterance.text)
+        except asyncio.CancelledError:
+            player = self._interrupt(session)
+            if player is not None:
+                await asyncio.to_thread(player.stop)
+            raise
+
+    def speak(self, text: str, zone_id=None, stream=None, emotion_adjustment=None, room_context=None) -> ResponseResult:
+        """Blocking adapter for synchronous callers, using the same owner/output."""
+        if not text:
+            return ResponseResult("", GenerationState.COMPLETE, DeliveryState.EMPTY, speech_handled=False)
+        session = self._session(zone_id, room_context, asynchronous=False)
+        with self._ownership:
+            while not self._claim(session) and not session.cancelled.is_set():
+                self._ownership.wait(0.02)
+        if session.cancelled.is_set():
+            return ResponseResult(text, GenerationState.CANCELLED, DeliveryState.CANCELLED)
+        session.queue.append(_Utterance(text=text, stream=self.streaming_enabled if stream is None else stream,
+                                        emotion=emotion_adjustment))
+        session.done = True
+        self._worker(session)
+        return self._result(session, text)
+
+    async def aplay_earcon(self, zone_id=None, room_context=None) -> ResponseResult:
+        """Deliver the configured earcon through the same cancellation owner."""
+        if self._earcon_audio is None:
+            return ResponseResult("", GenerationState.COMPLETE, DeliveryState.EMPTY, speech_handled=False)
+        pcm = CachedAudio(self._earcon_audio, self._earcon_sr, len(self._earcon_audio) / self._earcon_sr, "")
+        return await self._aspeak_utterance(_Utterance(pcm=pcm), zone_id, room_context)
+
+    def play_earcon(self, zone_id=None, room_context=None) -> ResponseResult:
+        """Blocking earcon adapter for synchronous integrations."""
+        return asyncio.run(self.aplay_earcon(zone_id, room_context))
+
+    async def aspeak_to_all_zones(self, text: str, stream: bool | None = None) -> ResponseResult:
+        """Broadcast through the shared owner and expose its actual delivery."""
+        if not text:
+            return ResponseResult("", GenerationState.COMPLETE, DeliveryState.EMPTY, speech_handled=False)
+        return await self._aspeak_utterance(
+            _Utterance(text, stream=self.streaming_enabled if stream is None else stream), None, None, broadcast=True,
         )
 
-    def _apply_emotion_adjustment(self, emotion_adjustment: dict):
-        """
-        Aplicar ajustes de emoción al TTS.
+    def speak_to_all_zones(self, text: str, stream: bool | None = None) -> ResponseResult:
+        """Blocking broadcast compatibility adapter with owned PCM output."""
+        return asyncio.run(self.aspeak_to_all_zones(text, stream))
 
-        Args:
-            emotion_adjustment: Dict con adjustments (pitch_shift, speech_rate, etc.)
+    def _split(self, text: str, final: bool = False) -> tuple[list[str], str]:
+        phrases = []
+        while text:
+            boundary = re.search(r"[.!?;](?:\s|$)|\n" if final else r"[.!?;]\s|\n", text)
+            if boundary is not None and boundary.end() <= self.sentence_max_chars:
+                end = boundary.end()
+            elif len(text) >= self.sentence_max_chars:
+                end = text.rfind(" ", 0, self.sentence_max_chars + 1)
+                end = end if end > 0 else self.sentence_max_chars
+            elif final:
+                end = len(text)
+            else:
+                break
+            phrase, text = text[:end], text[end:]
+            if phrase.strip():
+                phrases.append(phrase.strip())
+        return phrases, text
+
+    async def arespond(self, prompt: str, zone_id=None, *, generation: GenerationStream | None = None,
+                       max_tokens: int = 1024, temperature: float = 0.7, room_context=None,
+                       emotion_adjustment=None, use_filler: bool | None = None) -> ResponseResult:
+        """Stream generation into bounded phrases and serialize synthesis/output.
+
+        Generation failure discards queued old phrases and delivers one error
+        through this owner if output is available. Cancellation never speaks an
+        error. A blocked engine retains the slot until its real worker exits.
         """
-        if not hasattr(self.tts, 'set_audio_adjustment'):
-            return
+        session = self._session(zone_id, room_context, asynchronous=True)
+        producer = worker = interrupted = None
+        response = ""
+        generation_state, generation_error = GenerationState.INCOMPLETE, None
+
+        async def produce() -> None:
+            nonlocal response, generation_state, generation_error
+            pending = ""
+            try:
+                source = generation if generation is not None else self._generation
+                async with aclosing(source.astream(prompt, max_tokens=max_tokens, temperature=temperature)) as tokens:
+                    async for chunk in tokens:
+                        token = chunk.get("token", "")
+                        if type(token) is not str:
+                            raise ValueError("invalid_stream_text")
+                        if len(response) + len(token) > source.max_chars:
+                            raise ValueError("generation_text_limit")
+                        response += token
+                        phrases, pending = self._split(pending + token)
+                        for phrase in phrases:
+                            await self._put(session, _Utterance(phrase, stream=self.streaming_enabled, emotion=emotion_adjustment))
+                if not response.strip():
+                    raise RuntimeError("generation_empty")
+                generation_state = GenerationState.COMPLETE
+                phrases, _ = self._split(pending, final=True)
+                for phrase in phrases:
+                    await self._put(session, _Utterance(phrase, stream=self.streaming_enabled, emotion=emotion_adjustment))
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                generation_state, generation_error = GenerationState.FAILED, str(error)
+                response = "No pude procesar eso ahora mismo, probá de nuevo."
+                with session.condition:
+                    session.queue.clear()
+                await self._put(session, _Utterance(response, stream=self.streaming_enabled))
+            finally:
+                self._finish(session)
 
         try:
-            # Aplicar ajustes al TTS si lo soporta
-            if "pitch_shift" in emotion_adjustment:
-                self.tts.set_audio_adjustment(
-                    pitch=emotion_adjustment["pitch_shift"]
-                )
-            if "speech_rate" in emotion_adjustment:
-                self.tts.set_audio_adjustment(
-                    speed=emotion_adjustment["speech_rate"]
-                )
-
-            logger.debug(
-                f"Emotion adjustment aplicado: {emotion_adjustment.get('emotional_tone', 'unknown')}"
-            )
-        except Exception as e:
-            logger.warning(f"Error aplicando emotion adjustment: {e}")
-
-    def speak_to_all_zones(self, text: str, stream: bool = None):
-        """
-        Sintetizar y reproducir en todas las zonas.
-
-        Args:
-            text: Texto a sintetizar
-            stream: Usar streaming
-        """
-        self._is_speaking = True
-        try:
-            if not self.zone_manager:
-                self._speak_direct(text, stream if stream is not None else self.streaming_enabled)
-                return
-
-            use_streaming = stream if stream is not None else self.streaming_enabled
-
-            # Para todas las zonas, usar síntesis completa (más simple que streaming)
-            audio_data, _ = self.tts.synthesize(text)
-            if audio_data is not None:
-                self.zone_manager.play_to_all_zones(
-                    audio_data=audio_data,
-                    sample_rate=self.tts.sample_rate
-                )
-                logger.debug("Audio reproducido en todas las zonas")
+            if not await self._acquire(session):
+                return ResponseResult("", GenerationState.CANCELLED, DeliveryState.CANCELLED)
+            if self.llm_use_filler if use_filler is None else use_filler:
+                session.filler = self.llm_filler_phrases[0]
+            worker = asyncio.create_task(asyncio.to_thread(self._worker, session))
+            producer = asyncio.create_task(produce())
+            interrupted = asyncio.create_task(session.interrupted.wait())
+            await asyncio.wait({worker, producer, interrupted}, return_when=asyncio.FIRST_COMPLETED)
+            if producer.done() and not session.cancelled.is_set():
+                await producer
+                await self._wait_output(session, worker)
+            if session.cancelled.is_set():
+                producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+            return self._result(session, response, generation_state, generation_error)
+        except asyncio.CancelledError:
+            player = self._interrupt(session)
+            if player is not None:
+                await asyncio.to_thread(player.stop)
+            raise
         finally:
-            self._is_speaking = False
-            self._current_stream = None
+            for task in (producer, interrupted):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(*(t for t in (producer, interrupted) if t is not None), return_exceptions=True)
+
+    def speak_with_llm_stream(self, prompt: str, zone_id=None, **kwargs) -> str:
+        """Blocking compatibility adapter; async routers use arespond."""
+        kwargs.pop("stream", None)
+        return asyncio.run(self.arespond(prompt, zone_id, **kwargs)).text
+
+    def _apply_emotion_adjustment(self, adjustment: dict) -> None:
+        setter = getattr(self.tts, "set_audio_adjustment", None)
+        if callable(setter):
+            if "pitch_shift" in adjustment:
+                setter(pitch=adjustment["pitch_shift"])
+            if "speech_rate" in adjustment:
+                setter(speed=adjustment["speech_rate"])

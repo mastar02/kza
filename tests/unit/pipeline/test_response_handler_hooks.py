@@ -1,6 +1,9 @@
 """Tests for ResponseHandler integration with plugin hooks (plan #3 OpenClaw)."""
 
 from unittest.mock import MagicMock
+import numpy as np
+from src.tts import piper_tts
+from tests.mocks.audio_output import AudioBackend
 
 import pytest
 
@@ -9,12 +12,15 @@ from src.pipeline.response_handler import ResponseHandler
 
 
 @pytest.fixture
-def handler_with_hooks():
+def handler_with_hooks(monkeypatch):
     """Minimal ResponseHandler with mocked TTS + fresh HookRegistry."""
+    monkeypatch.setattr(piper_tts, "sd", AudioBackend())
     hooks = HookRegistry()
+    monkeypatch.setattr(piper_tts, "sd", AudioBackend())
     tts = MagicMock()
+    tts.synthesize.return_value = (np.ones(2400, dtype=np.float32), 0.1)
     tts.sample_rate = 24000
-    tts.synthesize = MagicMock(return_value=(b"\x00" * 100, 24000))
+    tts.synthesize = MagicMock(return_value=(np.ones(2400, dtype=np.float32), 0.1))
     tts.speak = MagicMock(return_value=None)
     # Streaming path attrs absent so _speak_direct falls through to tts.speak()
     if hasattr(tts, "speak_stream"):
@@ -43,9 +49,9 @@ def test_rewrite_modifies_text_before_tts(handler_with_hooks):
 
     def capture(text, *a, **kw):
         received_text.append(text)
-        return None
+        return np.ones(2400, dtype=np.float32), 0.1
 
-    tts.speak = MagicMock(side_effect=capture)
+    tts.synthesize = MagicMock(side_effect=capture)
 
     def upper(call):
         return RewriteResult(
@@ -71,12 +77,14 @@ def test_no_hooks_unchanged(handler_with_hooks):
     # No handlers registered
 
     handler.speak("hola")
-    assert tts.speak.call_count == 1
+    assert tts.synthesize.call_count == 1
 
 
-def test_no_hooks_attribute_unchanged():
+def test_no_hooks_attribute_unchanged(monkeypatch):
     """ResponseHandler with hooks=None behaves identically to baseline."""
+    monkeypatch.setattr(piper_tts, "sd", AudioBackend())
     tts = MagicMock()
+    tts.synthesize.return_value = (np.ones(2400, dtype=np.float32), 0.1)
     tts.sample_rate = 24000
     tts.speak = MagicMock(return_value=None)
     if hasattr(tts, "speak_stream"):
@@ -84,4 +92,4 @@ def test_no_hooks_attribute_unchanged():
 
     handler = ResponseHandler(tts=tts, streaming_enabled=False, hooks=None)
     handler.speak("hola")
-    assert tts.speak.call_count == 1
+    assert tts.synthesize.call_count == 1

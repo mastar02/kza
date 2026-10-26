@@ -91,6 +91,7 @@ class Request:
     # Resultados
     result: Any = field(compare=False, default=None)
     error: str = field(compare=False, default=None)
+    speech_handled: bool = field(compare=False, default=False)
     completed_at: float = field(compare=False, default=None)
 
     # Callbacks

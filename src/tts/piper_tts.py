@@ -84,6 +84,12 @@ class StreamingAudioPlayer:
     def _cancelled(self) -> bool:
         return not self._running or (self._cancel_event is not None and self._cancel_event.is_set())
 
+    @property
+    def is_playing(self) -> bool:
+        """Whether the device has started and still owns audible output."""
+        with self._condition:
+            return self._started_playback and self._state in {PlaybackState.PLAYING, PlaybackState.DRAINING}
+
     def _fail(self, reason: str) -> None:
         with self._condition:
             self._error = reason

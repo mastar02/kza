@@ -19,6 +19,7 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 import pytest
 from tests.mocks.home_control import selected_actions
 
+from tests.mocks.responses import response_handler_mock
 from src.pipeline.command_processor import ProcessedCommand
 
 
@@ -180,7 +181,7 @@ class TestVoicePipelineIntegration:
             audio_loop=MagicMock(),
             command_processor=MagicMock(),
             request_router=None,
-            response_handler=MagicMock(),
+            response_handler=response_handler_mock(),
             feature_manager=MagicMock(),
         )
         result = await vp.process_command(sample_audio)
@@ -199,7 +200,7 @@ class TestVoicePipelineCache:
 
         return RequestRouter(
             command_processor=MagicMock(),
-            response_handler=MagicMock(),
+            response_handler=response_handler_mock(),
             audio_manager=MagicMock(),
             routine_manager=MagicMock(),
             cache_max_size=100,
@@ -222,7 +223,7 @@ class TestSyncCommandDetection:
 
         return RequestRouter(
             command_processor=MagicMock(),
-            response_handler=MagicMock(),
+            response_handler=response_handler_mock(),
             audio_manager=MagicMock(),
             routine_manager=MagicMock(),
         )

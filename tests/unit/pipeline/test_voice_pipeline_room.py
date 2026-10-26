@@ -18,6 +18,7 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 import pytest
 import numpy as np
 
+from tests.mocks.responses import response_handler_mock
 from src.pipeline.command_event import CommandEvent
 from src.pipeline.voice_pipeline import VoicePipeline
 
@@ -31,7 +32,7 @@ def pipeline():
         request_router=MagicMock(
             process_command=AsyncMock(return_value={"text": "ok", "success": True})
         ),
-        response_handler=MagicMock(),
+        response_handler=response_handler_mock(),
         feature_manager=MagicMock(),
     )
 
@@ -65,7 +66,7 @@ async def test_process_command_no_router():
         audio_loop=MagicMock(),
         command_processor=MagicMock(),
         request_router=None,
-        response_handler=MagicMock(),
+        response_handler=response_handler_mock(),
         feature_manager=MagicMock(),
     )
     audio = np.zeros(16000, dtype=np.float32)

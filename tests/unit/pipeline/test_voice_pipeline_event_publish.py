@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import src.pipeline.voice_pipeline as vp_module
+from tests.mocks.responses import response_handler_mock
 from src.pipeline.voice_pipeline import VoicePipeline
 from src.dashboard.live_event_bus import LiveEventBus, LiveEventType
 
@@ -17,7 +18,7 @@ def _make_pipeline(event_bus=None, request_router=None):
         audio_loop=MagicMock(),
         command_processor=MagicMock(),
         request_router=request_router or MagicMock(),
-        response_handler=MagicMock(),
+        response_handler=response_handler_mock(),
         feature_manager=MagicMock(),
         event_bus=event_bus,
     )
