@@ -45,11 +45,15 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
     warmup failures before the application starts listening.
     """
     streaming = config.get("tts", {}).get("streaming", {})
+    buffering = config.get("llm", {}).get("buffering", {})
     response = ResponseHandler(
         tts, zone_manager, llm,
         streaming_enabled=streaming.get("enabled", True),
         streaming_buffer_ms=streaming.get("buffer_ms", 150),
         streaming_prebuffer_ms=streaming.get("prebuffer_ms", 80),
+        llm_buffer_preset=buffering.get("preset", "balanced"),
+        llm_use_filler=buffering.get("use_filler", True),
+        llm_filler_phrases=buffering.get("filler_phrases"),
         sentence_queue_capacity=streaming.get("sentence_queue_capacity", 2),
         sentence_max_chars=streaming.get("sentence_max_chars", 400),
         max_pending_responses=streaming.get("max_pending_responses", 16),

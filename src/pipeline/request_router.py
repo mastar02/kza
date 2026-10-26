@@ -1344,7 +1344,6 @@ class RequestRouter:
                 zone_id=f"zone_{room_context.room_id}" if room_context else (f"zone_{room_id}" if room_id else None),
                 max_tokens=512,
                 temperature=0.7,
-                use_filler=True,
                 emotion_adjustment=emotion_adj
             )
             result["timings"]["llm_stream"] = (time.perf_counter() - pipeline_start) * 1000

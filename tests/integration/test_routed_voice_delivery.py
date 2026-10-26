@@ -20,7 +20,8 @@ pytestmark = pytest.mark.asyncio
 @pytest.mark.parametrize('failure', [False, True])
 async def test_real_router_delivers_each_reply_or_generation_error_once(monkeypatch, orchestrated, failure):
     text = 'Una respuesta completa de prueba.'
-    parts = [event(text), event(finish='length' if failure else 'stop')]
+    # Exceed the filler delay: a quiet owner must remain quiet in either router.
+    parts = [.15, event(text), event(finish='length' if failure else 'stop')]
     handler, engine, backend, endpoint, amplifier = voice_graph(monkeypatch, parts=parts)
     orchestrator = MultiUserOrchestrator(None, None, None, llm=handler.llm, response_handler=handler) if orchestrated else None
     processor = MagicMock()
@@ -59,3 +60,4 @@ async def test_real_router_delivers_each_reply_or_generation_error_once(monkeypa
             orchestrator._running = False
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
+        await handler.aclose()

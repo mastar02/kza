@@ -374,6 +374,38 @@ async def test_application_factory_consumes_stage_budgets(monkeypatch):
         assert services.responses.budgets == selected
 
 
+@pytest.mark.parametrize('enabled', [True, False])
+async def test_application_factory_respects_filler_selection(monkeypatch, enabled):
+    release = asyncio.Event()
+    owner, engine, backend, endpoint, _ = voice_graph(monkeypatch,
+        parts=[release, event('Una respuesta completa.'), event(finish='stop')])
+    async with AsyncExitStack() as stack:
+        services = build_voice_services({
+            'llm': {'buffering': {'preset': 'smooth', 'use_filler': enabled, 'filler_phrases': ['Dejame ver...']}},
+            'alerts': {'enabled': False},
+        }, tts=engine, llm=owner.llm, shutdown=stack, zone_manager=owner.zone_manager)
+        speaking = asyncio.create_task(services.responses.arespond('synthetic', zone_id='zone_origin'))
+        try:
+            await asyncio.wait_for(endpoint.body.waiting.wait(), 1)
+            if enabled:
+                await until(lambda: engine.calls == ['Dejame ver...'])
+            else:
+                await asyncio.sleep(.15)
+                assert engine.calls == []
+            release.set()
+            result = await speaking
+        finally:
+            release.set()
+            if not speaking.done():
+                speaking.cancel()
+            await asyncio.gather(speaking, return_exceptions=True)
+        expected = (['Dejame ver...'] if enabled else []) + ['Una respuesta completa.']
+        assert result.success and engine.calls == expected
+        assert services.responses.llm_buffer_preset == 'smooth'
+        np.testing.assert_array_equal(backend.heard()[:, 0], np.concatenate([engine.audio(t) for t in expected]))
+        assert endpoint.body.closed and endpoint.client.is_closed()
+
+
 @pytest.mark.parametrize('cancel', [False, True])
 async def test_queue_announcement_shares_request_deadline_and_cancellation(monkeypatch, cancel):
     owner, _, backend, endpoint, _ = voice_graph(monkeypatch)
