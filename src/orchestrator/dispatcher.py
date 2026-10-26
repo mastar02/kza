@@ -2032,6 +2032,7 @@ class MultiUserOrchestrator:
                 await asyncio.sleep(0.01)
 
         generation = monitor = None
+        response = failure = None
         try:
             if request.is_cancelled:
                 request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
@@ -2052,13 +2053,6 @@ class MultiUserOrchestrator:
             if not response.strip():
                 raise RuntimeError("generation_empty")
 
-            # A cancelled/terminal request cannot be resurrected by a late result.
-            if request.complete(response):
-                if request.memory_sources is None:
-                    request.memory_sources = self.context_manager.interaction_sources(request.timestamp)
-                self.context_manager.add_turn(request.user_id, "user", request.text, sources=request.memory_sources)
-                self.context_manager.add_turn(request.user_id, "assistant", response, sources=request.memory_sources)
-
         except asyncio.CancelledError:
             request.cancel(CancellationReason.SYSTEM_SHUTDOWN)
             raise
@@ -2070,7 +2064,7 @@ class MultiUserOrchestrator:
                 user_id=request.user_id,
                 data={"error": str(e)}
             )
-            request.fail(str(e))
+            failure = str(e)
 
         finally:
             if request.is_cancelled:
@@ -2080,7 +2074,21 @@ class MultiUserOrchestrator:
                 task.cancel()
             if children:
                 await asyncio.gather(*children, return_exceptions=True)
-            self.queue.clear_current()
+            self.queue.clear_current(expected=request)
+
+        # Success/failure observers must see a released queue slot and closed
+        # generation scope. Cancellation still acknowledges immediately while
+        # its actual cleanup remains owned above.
+        if failure is not None:
+            request.fail(failure)
+        elif response is not None and request.complete(response):
+            try:
+                if request.memory_sources is None:
+                    request.memory_sources = self.context_manager.interaction_sources(request.timestamp)
+                self.context_manager.add_turn(request.user_id, "user", request.text, sources=request.memory_sources)
+                self.context_manager.add_turn(request.user_id, "assistant", response, sources=request.memory_sources)
+            except Exception as error:
+                logger.warning("Completed response context skipped: %s", type(error).__name__)
 
     def get_stats(self) -> dict:
         """Obtener estadisticas completas"""

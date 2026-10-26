@@ -490,9 +490,11 @@ class PriorityRequestQueue:
         """Obtener peticion actualmente en proceso"""
         return self._current
 
-    def clear_current(self):
-        """Limpiar peticion actual (llamar al terminar procesamiento)"""
-        self._current = None
+    def clear_current(self, expected: Request | None = None) -> None:
+        """Release only the request owned by this completing worker."""
+        with self._lock:
+            if expected is None or self._current is expected:
+                self._current = None
 
     def get_queue_status(self) -> list[dict]:
         """Obtener estado de la cola"""

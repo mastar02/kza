@@ -85,6 +85,24 @@ async def test_incomplete_answer_fails_and_never_records_success(monkeypatch, pa
         assert endpoint.body.closed and endpoint.client.is_closed()
 
 
+@pytest.mark.parametrize('failure', [False, True])
+async def test_terminal_callback_sees_released_queue_and_closed_generation(monkeypatch, failure):
+    parts = [event('respuesta'), event(finish='length' if failure else 'stop')]
+    async with graph(monkeypatch, parts) as (owner, endpoint):
+        observed = []
+
+        def terminal(request):
+            observed.append((owner.queue.get_current(), endpoint.body.closed, endpoint.client.is_closed()))
+
+        request = owner.queue.enqueue('household', 'consulta original', Priority.LOW,
+            on_complete=terminal, on_fail=terminal)
+        async with asyncio.timeout(1):
+            while not observed:
+                await asyncio.sleep(.001)
+        assert observed == [(None, True, True)]
+        assert request.status == (RequestStatus.FAILED if failure else RequestStatus.COMPLETED)
+
+
 async def test_dispatch_timeout_closes_pending_generation_and_keeps_context_empty(monkeypatch):
     async with graph(monkeypatch, [event("pending tail"), asyncio.Event()]) as (owner, endpoint):
         result = await dispatch(owner, timeout=0.05)
