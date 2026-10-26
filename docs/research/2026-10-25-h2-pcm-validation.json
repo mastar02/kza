@@ -1,0 +1,91 @@
+{
+  "checked_on": "2026-10-25",
+  "tested_commit": "5143e82cbd964afb9f3979e6f46994f37f0337b8",
+  "scope": "First H2 implementation: complete PCM writes, fixed ring backpressure, drain, cancellation handles and zone error propagation. Nonblocking reasoner and unified response ownership remain incomplete.",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "plan_reference": "docs/plans/2026-10-25-h2-complete-voice-responses.md",
+  "environment_reference": "docs/research/2026-10-25-h0-baseline.json",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short --junitxml=/tmp/kza-h2-player-full.xml",
+    "passed": 4032,
+    "failed": 1,
+    "xfailed": 1,
+    "runtime_s": 111.67,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad"
+    ],
+    "new_failure_ids": [],
+    "prior_validation_reference": "docs/research/2026-10-25-h1-effect-expansion-validation.json"
+  },
+  "focused": {
+    "passed": 77,
+    "runtime_s": 1.08,
+    "player_unit_tests": 24,
+    "connected_zone_and_player_tests": 6
+  },
+  "measurements": {
+    "repetitions": 10,
+    "sample_rate": 24000,
+    "samples_per_complete_response": 24000,
+    "exact_complete_runs": 10,
+    "peak_ring_frames": 3600,
+    "cancel_control_ms": {
+      "p50": 3.119888948276639,
+      "p95": 3.127566073089838,
+      "max": 3.127566073089838
+    },
+    "cancel_producer_join_ms": {
+      "p50": 3.124681650660932,
+      "p95": 3.193609695881605,
+      "max": 3.245424944907427
+    },
+    "synthetic_driver": true,
+    "physical_latency_measured": false,
+    "reasoner_heartbeat_measured": false
+  },
+  "proven": [
+    "Large and irregular chunks, including 24000 frames at 24 kHz, retain all producer frames in order with a fixed 3600-frame ring",
+    "Device callback consumes partial available data even when callback frame count exceeds ring capacity; software underrun padding is explicit rather than silently dropping source audio",
+    "Mono and multichannel frames preserve channel layout; empty streams complete without opening a device and invalid None chunks fail instead of silently truncating",
+    "Normal finish waits for the device finished callback; a held device tail cannot be closed early",
+    "Buffer stall, device start failure, premature driver termination and drain timeout raise and close owned resources instead of claiming success",
+    "Cancelling a full writer or active output wakes the producer, aborts the device and closes the source; external token cancellation during drain cannot become completion",
+    "A cancelled producer delivering a late chunk cannot restart or contaminate the next playback generation",
+    "Piper and real ZoneManager adapters expose the player before startup, accept a cancellation token, preserve result and propagate errors",
+    "Explicit zone routing cannot fall back to another active zone and uses the selected amplifier route/device",
+    "Barge-in tests import real Python 3.13 source packages instead of replacing global domain packages/DTOs with historical Python 3.9 stubs",
+    "Source-free runtime imports the new player and completes an empty stream without hardware access"
+  ],
+  "checks": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium_high_findings": 0
+    },
+    "node": {
+      "passed": 12,
+      "failed": 0
+    },
+    "authenticated_dashboard_smoke": "passed",
+    "source_free_runtime_smoke": "passed within full suite",
+    "chromium": "Not repeated; frontend unchanged from the prior effect-expansion record."
+  },
+  "dependency_limit": "Existing runtime virtualenv read-only with bytecode writes disabled; sounddevice 0.5.5, no dependency upgrades. Runtime/CI dependency reconciliation still belongs to H6.",
+  "references": [
+    "https://python-sounddevice.readthedocs.io/en/0.5.5/api/streams.html",
+    "https://python-sounddevice.readthedocs.io/en/0.5.5/api/misc.html"
+  ],
+  "limits": [
+    "No real speaker, microphone, amplifier, GPU or model was used; synthetic driver timing is not physical latency or acoustic barge-in validation",
+    "Measured cancellation covers player/zone APIs, not the complete main response/capture cancellation graph",
+    "ResponseHandler still needs to bind every playback path and session token, including cached and full-array audio",
+    "The queued reasoner still consumes a synchronous stream and the router still excludes SLOW_LLM speech; H2 is not complete",
+    "Reasoner heartbeat, bounded text streaming, unique response ownership, async transport resource cleanup and audible error integration remain to implement and measure",
+    "H0 live home evidence/legacy-memory treatment and H3-H6 remain incomplete; real selection remains disabled"
+  ],
+  "production_changed": false
+}

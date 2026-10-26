@@ -88,6 +88,19 @@ barge-in ahora importan los módulos reales de Python 3.13: se retiran los stubs
 globales de paquetes usados para un entorno histórico de Python 3.9, que rompían
 la recolección aislada y podían reemplazar DTOs del sistema.
 
+Verificación del commit `5143e82`: **4032 passed, 1 failed, 1 xfailed** en
+111,67 s; el fallo de idioma/VAD es el mismo del registro anterior. Pasan 77
+pruebas dirigidas, incluidas 24 nuevas del player y seis grafos de zona/player,
+Ruff 0.15.1, el gate medio/alto de Bandit 1.9.4, doce tests Node, el smoke del
+dashboard y el artefacto compilado fuera del checkout.
+
+En diez corridas sintéticas se conservaron los 24.000 frames de cada respuesta
+con ring máximo de 3.600 frames. Cancelar audio activo tardó como máximo
+3,13 ms y el productor terminó en 3,25 ms. Es una medida del driver de prueba,
+no del altavoz ni del barge-in completo. El
+[registro PCM](../research/2026-10-25-h2-pcm-validation.json) conserva alcance,
+comandos, métricas y criterios de H2 todavía pendientes.
+
 ## Estado
 
 Plan abierto. La capa PCM tiene implementación y pruebas sintéticas; quedan el
