@@ -1,0 +1,116 @@
+{
+  "checked_on": "2026-10-25",
+  "tested_commit": "892f4224d7d13be5649a557081d20befd6697517",
+  "scope": "H2 queued generation: native async HTTP/SSE, cold SDK initialization, bounded synchronous producer isolation, shared queue wiring, cancellation and valid context completion. Unified speech delivery remains pending.",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "plan_reference": "docs/plans/2026-10-25-h2-complete-voice-responses.md",
+  "prior_validation_reference": "docs/research/2026-10-25-h2-pcm-validation.json",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h2-generation-final.xml",
+    "passed": 4081,
+    "failed": 1,
+    "xfailed": 1,
+    "runtime_s": 116.67,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad"
+    ],
+    "new_failure_ids": []
+  },
+  "new_generation_tests": {
+    "total": 49,
+    "native_sdk_http_stream": 29,
+    "bounded_legacy_adapter": 6,
+    "real_queue_dispatcher_worker_context": 14,
+    "included_in_full_suite": true
+  },
+  "measurements": {
+    "heartbeat_ms": {
+      "repetitions": 10,
+      "stall_ms": 200,
+      "interval_ms": 5,
+      "samples": 419,
+      "p95": 0.37117721512913704,
+      "max": 5.437470972537994
+    },
+    "cancellation_ms": {
+      "repetitions": 10,
+      "request_control": {
+        "p50": 0.05223904736340046,
+        "p95": 0.0773170031607151,
+        "max": 0.0773170031607151
+      },
+      "stream_and_client_cleanup": {
+        "p50": 9.79761895723641,
+        "p95": 9.965484961867332,
+        "max": 9.965484961867332
+      }
+    }
+  },
+  "acceptance_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "cancellation_control_ms": 100,
+    "cooperative_cleanup_ms": 1000,
+    "fixed_before_evaluation": true,
+    "passed": true
+  },
+  "resolved_cold_start_regression": {
+    "initial_full_suite_max_loop_lag_ms": 135.25463920086622,
+    "cause": "First lazy SDK resource access remained on the event loop after client construction was moved off-loop",
+    "change": "Initialize models/chat/completions resources in the owned constructor worker; preserve client cleanup even when resource initialization fails",
+    "acceptance_limit_unchanged": true,
+    "additional_regression": "Simulated lazy resource initialization blocks for 200 ms without blocking loop heartbeat, both success and failure"
+  },
+  "proven": [
+    "Configured chat/completions wire protocol, model and parameters are preserved using the installed async SDK with memory-only HTTP/SSE",
+    "Consent denial precedes client creation; revocation and configuration changes during discovery block prompt submission",
+    "An explicit model cannot inherit a stale synchronous fallback model; unavailable configured model fails before the prompt",
+    "HTTP redirects and retries are disabled; partial transport failure is one attempt",
+    "Normal finish requires stop; premature EOF, truncation, content filter, raw text limit and empty generation cannot record a completed context answer",
+    "Reasoning tags split across chunks remain hidden; held tail is not flushed after a failed generation",
+    "Native stream and client close on completion, cancellation, idle timeout, early consumer close and failure, including repeated constructor cancellation",
+    "Legacy synchronous inference runs outside the loop with two buffered chunks; stalled cancelled producer retains its backend slot and rejects new workers until real exit",
+    "Dispatcher preserves the exact injected empty queue, connecting requests to the actual worker",
+    "New same-user and higher-priority requests interrupt a pending network read, and late/cancelled answers never enter context",
+    "Caller timeout, caller cancellation, direct token cancellation and orchestrator shutdown notify the request waiter and close cooperative generation resources",
+    "Terminal request transitions are guarded and cannot be resurrected or notify twice",
+    "Source-free smoke imports and consumes a bounded legacy generator, rejects denied native cloud inference and checks shared queue construction"
+  ],
+  "checks": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium_high_findings": 0
+    },
+    "node": {
+      "passed": 12,
+      "failed": 0
+    },
+    "authenticated_dashboard_smoke": "passed",
+    "source_free_runtime_smoke": "passed within final full suite",
+    "chromium": "Not repeated; no frontend change from prior validated effect-expansion implementation"
+  },
+  "dependencies": {
+    "openai_sdk": "2.24.0",
+    "changed": false,
+    "environment": "Existing runtime virtualenv read-only, bytecode writes disabled and GPUs hidden; no real model, home API or audio output used"
+  },
+  "references": [
+    "https://developers.openai.com/api/reference/python",
+    "https://developers.openai.com/api/docs/guides/streaming-responses"
+  ],
+  "limits": [
+    "Latency measures cover synthetic native HTTP generation and queue/dispatcher/context, not physical capture, output, acoustic barge-in or provider performance",
+    "A blocked legacy model/subprocess call is isolated but cannot be killed by asyncio cancellation; the owner stays busy until that call exits, and backend recovery remains pending",
+    "ResponseHandler still needs one voice owner, bounded sentence delivery, captured origin zone and handles/tokens for cached/full-array/streamed output",
+    "Both routers still need speech ownership-based routing and audible slow-path errors; full voice generation-to-playback cancellation remains incomplete",
+    "Queue/generation/delivery budgets still need alignment; inherited 5-second waits do not validate long answers",
+    "Only the historical VAD/language failure remains; H3-H6 and H0 live home effects/legacy memory treatment are incomplete",
+    "Real home selection remains disabled pending physical group members and live capability/indirect effect review; production unchanged"
+  ],
+  "production_changed": false
+}

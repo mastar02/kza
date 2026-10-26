@@ -119,6 +119,11 @@ inválidos; el consentimiento denegado impide el envío al cloud en sus consumid
 
 Plan abierto: [respuestas completas y captura disponible](2026-10-25-h2-complete-voice-responses.md).
 Los límites offline y la validación acústica pendiente se fijan allí antes de medir.
+La capa PCM conserva los samples y espera drenado en grafos sintéticos. El
+worker encolado ya consume HTTP asíncrono y un adaptador acotado para motores
+síncronos; comparte la cola del dispatcher, cancela lecturas pendientes y
+descarta resultados tardíos del historial. Falta conectar la locución única,
+la cola de frases hacia TTS y toda la cancelación de salida en ambos routers.
 
 **Entregables:** consumo no bloqueante del reasoner, un único responsable de
 locutar cada respuesta y reproducción que conserve todos los samples. Integrar

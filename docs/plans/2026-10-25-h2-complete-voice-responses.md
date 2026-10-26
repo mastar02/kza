@@ -101,9 +101,71 @@ no del altavoz ni del barge-in completo. El
 [registro PCM](../research/2026-10-25-h2-pcm-validation.json) conserva alcance,
 comandos, métricas y criterios de H2 todavía pendientes.
 
+## Segunda implementación: generación asíncrona conectada
+
+El worker de `MultiUserOrchestrator` consume `GenerationStream`. El reasoner
+HTTP usa el SDK asíncrono instalado, con los mismos estilos chat/completions,
+destino y modelo configurados. La construcción del transporte y el primer
+acceso a los recursos lazy del SDK quedan fuera del loop. La primera suite
+conectada en frío midió un bloqueo de 135 ms por esa inicialización diferida;
+se corrigió sin ampliar el límite de 75 ms. Las pruebas conservan el arranque
+en frío y una inicialización lazy simulada de 200 ms, incluido su fallo.
+Cada generación posee su cliente y stream; cancelar, agotar el watchdog,
+fallar o cerrar el consumidor libera ambos. El consumidor cierra el generador
+con `aclosing`, también al salir antes del EOF.
+
+El camino nuevo comprueba consentimiento antes de construir y antes de enviar
+el prompt, rechaza cambios de configuración durante discovery y no sustituye
+un modelo explícito por otro. No sigue redirecciones ni reintenta una respuesta
+parcial. Requiere fin `stop`: truncado, EOF prematuro y respuesta vacía fallan;
+el tail retenido no se publica como respuesta completa después de un fallo.
+El texto crudo se limita a 65.536 caracteres, incluido el razonamiento oculto.
+
+Los motores síncronos quedan aislados en un productor con cola de dos chunks.
+La cancelación despierta al productor cuando espera espacio y descarta su
+resultado tardío. Si está dentro de una llamada bloqueante, conserva la
+ocupación hasta que termine: nuevas generaciones de ese propietario fallan
+como ocupado. No se crean workers sucesivos abandonados ni se afirma que
+cancelar asyncio mate una llamada nativa o un subprocess síncrono. Su cierre
+real y recuperación siguen siendo una limitación, a resolver según el backend
+durante H4; no sustituyen el cierre cooperativo del HTTP nativo.
+
+El grafo conectado descubrió que `RequestDispatcher` reemplazaba la cola
+inyectada cuando estaba vacía, por su valor falso. Ahora conserva exactamente
+la cola que atiende el worker. Las nuevas consultas del mismo usuario cancelan
+también la petición en proceso; una prioridad mayor puede interrumpir durante
+una espera de red. Timeout, cancelación del llamador y apagado despiertan al
+waiter, cierran la generación y conservan su razón. Una petición terminal no
+puede revivir por una respuesta tardía ni notificar su resultado dos veces.
+Sólo una generación completa válida incorpora el par de turnos al contexto.
+
+Las pruebas usan el SDK 2.24.0 y HTTPX instalados, con HTTP/SSE en memoria.
+Se contrastó el ciclo de vida con la
+[referencia de Python](https://developers.openai.com/api/reference/python) y la
+[guía de streaming](https://developers.openai.com/api/docs/guides/streaming-responses).
+No se cambia el SDK, proveedor, modelo ni familia de API para este trabajo.
+
+Verificación del commit `892f422`: **4081 passed, 1 failed, 1 xfailed** en
+116,67 s. El fallo es el mismo de VAD/idioma de la línea base; pasan las 49
+pruebas nuevas de generación, Ruff 0.15.1, el gate medio/alto de Bandit 1.9.4,
+doce tests Node, el smoke autenticado y el artefacto compilado. En diez corridas
+del grafo cola/dispatcher/worker/contexto, con espera de red de 200 ms y
+heartbeat de 5 ms, el retraso p95 fue 0,38 ms y el máximo 5,44 ms. La petición
+de cancelación tardó como máximo 0,08 ms y el cierre del stream/cliente
+cooperativo 9,97 ms. Son medidas sintéticas de generación; no prueban captura,
+altavoz ni cancelación del grafo completo de voz. El
+[registro de generación](../research/2026-10-25-h2-generation-validation.json)
+conserva métricas sin redondear, alcance y limitaciones.
+
 ## Estado
 
-Plan abierto. La capa PCM tiene implementación y pruebas sintéticas; quedan el
-consumo no bloqueante del reasoner, la responsabilidad única de locución,
-la conexión completa de cancelación y sus métricas del event loop. La prueba
-acústica queda en H6. H2 no está cerrado.
+Plan abierto. PCM y generación encolada tienen implementación y grafos
+sintéticos conectados. Quedan la responsabilidad única de locución, el stream
+de frases hacia TTS con presión de retorno y la cancelación de todas las
+salidas de `ResponseHandler`, incluidos cache y síntesis completa. Ambos
+routers deben usar ese propietario; sigue pendiente retirar la exclusión de
+`SLOW_LLM` y hacer audibles sus errores. También hay que alinear los
+presupuestos de espera de cola, generación y reproducción: una espera heredada
+de 5 s no valida una respuesta larga. Las medidas actuales del loop y cierre
+HTTP no cubren ese grafo de voz completo. La prueba acústica queda en H6.
+H2 no está cerrado.
