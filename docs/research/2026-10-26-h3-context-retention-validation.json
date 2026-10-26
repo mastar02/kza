@@ -1,0 +1,235 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "7606e42caba75ae867c745ad2b77a576306b0f56",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 independent context snapshot/buffer expiry with optional features stopped, nonblocking registry refresh, bounded native ownership and source-authoritative snapshot reads",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-context-retention-final.xml",
+    "collected": 4653,
+    "passed": 4652,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 183.55,
+    "junit_time_s": 183.486,
+    "log": "/tmp/kza-h3-context-retention-final.log",
+    "xml": "/tmp/kza-h3-context-retention-final.xml",
+    "accepted": true,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "integrated_runtime_gc_acceptance": false
+  },
+  "new_connected_cases": 22,
+  "new_case_names": [
+    "test_expiry_removes_idle_summary_turns_short_term_and_file_without_reads_or_erase",
+    "test_live_snapshot_and_confirmed_fact_authority_do_not_extend_raw_context_expiry",
+    "test_historical_policy_directories_expire_with_all_features_disabled_and_legacy_intact",
+    "test_reading_restarting_and_later_sources_never_renew_original_snapshot_expiry",
+    "test_new_earlier_deadline_wakes_sleeping_native_and_runtime_retention",
+    "test_unknown_entry_does_not_starve_expired_files_in_later_batches",
+    "test_missing_roots_and_unknown_symlinks_are_never_created_or_followed",
+    "test_native_failure_survives_restart_and_retry_uses_original_source_deadline",
+    "test_inactive_orphan_draft_removed_without_deleting_unknown_quarantine",
+    "test_late_harvest_never_extends_an_already_due_snapshot_deadline",
+    "test_expired_noncooperative_compaction_does_not_block_other_runtime_buffers",
+    "test_cancelled_retention_observer_keeps_native_work_and_writer_lease",
+    "test_no_snapshot_without_sources_is_written_or_hydrated",
+    "test_snapshot_user_id_validation_matches_cleanup_protocol_for_newlines",
+    "test_blocked_snapshot_writer_and_registry_do_not_starve_another_known_root",
+    "test_saturated_default_executor_remains_occupied_while_context_retention_finishes",
+    "test_pending_failed_commit_never_authorizes_snapshot_or_idle_buffer_deletion",
+    "test_individual_fact_rejection_cleans_derived_snapshot_without_conversation_request",
+    "test_snapshot_batches_yield_and_remove_65_files_as_32_32_1",
+    "test_unsupported_target_version_stays_visible_without_opening_its_path",
+    "test_runtime_sweep_yields_between_user_batches",
+    "test_disabled_context_expiry_never_imports_optional_models"
+  ],
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 399,
+        "p95": 0.22019492462277412,
+        "max": 3.0740941874682903
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.06532995030283928,
+          "p95": 0.09043794125318527,
+          "max": 0.09043794125318527
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.994392912834883,
+          "p95": 11.128606973215938,
+          "max": 11.128606973215938
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 426,
+        "loop_lag_p95_ms": 0.3559822216629982,
+        "loop_lag_max_ms": 1.102697104215622,
+        "cancel_cleanup_max_ms": 1.7076460644602776,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2714,
+        "loop_lag_p95_ms": 0.991607904434204,
+        "loop_lag_max_ms": 2.3103029280900955,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 3.041463904082775,
+        "p95": 14.393089804798365,
+        "max": 14.393089804798365,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_validation": {
+    "passed": 508,
+    "failed": 0,
+    "runtime_s": 11.28,
+    "log": "/tmp/kza-h3-context-retention-focused-final.log",
+    "scope": "Context TTL/erasure/privacy, event erasure, all orchestrator/memory units, shared authority and coordinator"
+  },
+  "prior_validation_and_review": [
+    {
+      "log": "/tmp/kza-h3-context-retention-baseline.log",
+      "passed": 107,
+      "failed": 0,
+      "runtime_s": 7.31,
+      "scope": "Initial context and memory compatibility checks"
+    },
+    {
+      "log": "/tmp/kza-h3-context-retention-first.log",
+      "passed": 78,
+      "failed": 0,
+      "runtime_s": 5.11,
+      "scope": "First 14 expiry cases with context/event erasure and context privacy"
+    },
+    {
+      "log": "/tmp/kza-h3-context-retention-candidate.log",
+      "passed": 505,
+      "failed": 1,
+      "runtime_s": 10.97,
+      "cause": "A new unsupported-version case referenced ErasureParticipant after an earlier unused-import fix had removed it",
+      "correction": "Restore the required test import; timing, production semantics and thresholds remain unchanged"
+    },
+    {
+      "review": "Default-executor saturation fixture coverage",
+      "finding": "Closing an unused retention executor inside fixture setup could wait behind the deliberately saturated general pool until its blocker timed out, weakening the claimed isolation observation",
+      "correction": "Cancel only the periodic observer for controlled erasure tests, retain its resource shutdown until fixture teardown, and assert that the blocking default-pool task is still live after the actual event/context cleanup finishes"
+    },
+    {
+      "review": "Registry independence",
+      "finding": "Awaiting registry refresh inside each scheduling cycle could delay cached-root cleanup behind a different writer holding the ledger guard",
+      "correction": "Load registered destinations before optional producer admission, then retain one separate asynchronous refresh task while cached directory/runtime scheduling continues",
+      "proof": "A controlled writer still owns an active draft and ledger guard, the registry task is confirmed live, and another known directory has already been physically cleaned"
+    }
+  ],
+  "ownership": {
+    "directory_entries_per_batch": 32,
+    "snapshot_bytes_limit": 1048576,
+    "runtime_users_per_yield": 32,
+    "max_active_directory_batches": 2,
+    "dedicated_retention_threads": 2,
+    "owned_native_capacity": 8,
+    "max_registry_tasks": 1,
+    "max_runtime_sweeps": 1,
+    "registry_and_revocation_poll_max_s": 30,
+    "failure_backoff_max_s": 60,
+    "runtime_pending_poll_s": 0.05,
+    "deadlines": "Native receipts retain computation-time deadlines; reads, restart and late harvest do not renew source expiry. A full directory scan aggregates unknown-entry counts and the earliest known deadline",
+    "progress": "Opaque hash cursors and oldest-started tie breaking yield between directory batches; unknown entries remain pending but do not starve later attributable entries",
+    "registry": "Factory refresh before optional writers, then one tracked refresh task that never blocks scheduling over cached roots; descriptors stay private and status exposes only fixed codes and opaque IDs",
+    "runtime": "Prune idle histories, summaries, preserved IDs and short-term turns without reads; cancel expired compaction once and report pending actual operations rather than waiting in the pruning path and starving other buffers",
+    "lease": "Stop observer/scheduling, retain shielded cycle, directory batches, registry and runtime tasks, then drain the native executor before releasing the shared writer lease"
+  },
+  "proven": [
+    "Context retention starts with the erasure factory while orchestration/persistence/semantic recall remain disabled, covering registered current and historical policy_v2/policy_v3 directories without creating missing roots or rewriting original legacy files",
+    "Idle sourced turns, summaries, preserved IDs, short-term buffers and JSON snapshots expire at the original source deadline without another read or any erasure request",
+    "A manually confirmed fact remains authorized while its derived raw context expires; raw summary retention is never extended by permanent fact authority, later sources, reads or restart",
+    "New earlier writes/hydrations/turns wake deadline maintenance; a late harvest anchors to the original receipt time instead of postponing an already-due sweep",
+    "Unattributed/corrupt/oversized/unrecognized entries and symlinks remain pending and untouched while later attributable expired files are removed; a 71-entry directory cleans its valid target and reports all 70 unknown entries",
+    "Recognized abandoned drafts are removed only under the writer-shared physical lock; a draft held by an active writer remains present while an independent root is cleaned",
+    "Native failure preserves the original source deadline for retry after restart; fixed status codes/outcomes do not retain private exceptions or filesystem paths",
+    "A ledger-holding blocked writer and its blocked registry refresh cannot starve cleanup of a previously registered independent directory",
+    "An expired non-cooperative compaction is cancelled once and remains reported as pending while a later context/short-term buffer still expires independently",
+    "Runtime pruning yields between 32-user groups; an observer sees intermediate progress across 70 idle contexts",
+    "Pending failed ledger commits deny reads but do not authorize physical snapshot or idle-buffer destruction; after rollback their valid data and source authority remain intact",
+    "Individual fact deletion removes derived context snapshots/buffers on the maintenance poll without a conversation erasure operation",
+    "A 65-snapshot directory is removed as 32,32,1 entries; unsupported versions do not cause filesystem access or success claims",
+    "Cancelled retention observers and 10 ms close-observation timeouts retain native work and the writer lease until actual completion",
+    "Saturating the default executor leaves context write/erasure/retention and event erasure functional while that blocking task is explicitly confirmed live",
+    "Snapshots without actual sources cannot be written or hydrated even with an empty summary; newline-containing IDs cannot bypass the cleanup filename protocol",
+    "An isolated Python process forbids optional model imports while recall/orchestration/persistence-disabled context expiry physically removes a sourced snapshot",
+    "The source-free CPython 3.13 runtime closes its ContextManager before advancing 48 h, then verifies independent physical snapshot deletion and in-memory context pruning with no conversation tombstone"
+  ],
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000
+  },
+  "gates": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-h3-context-retention-ruff.log"
+    },
+    "bandit": {
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-context-retention-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-context-retention-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-context-retention-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 6.14,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 remains incomplete: producers, diagnostics, collectors, streams, suggestions and voices are unregistered erasure participants; no broad authenticated erasure-completion endpoint is exposed",
+    "Only registered policy directories and attached primary buffers/idle caches are covered. Unknown/corrupt files have no invented capture date or ownership, remain excluded/pending and still require private inventory/manual review",
+    "Active inference/audio producers, other prompt consumers and derived/distillation/tap copies still require complete source and erasure coordination; pending native work can delay physical cleanup and stays owned",
+    "The real 870-record legacy-copy migration, source-catalog/physical-data compatible restoration and preservation of latest tombstones remain pending",
+    "Rechecking known snapshots and expiry does not make an old authority-catalog rollback safe or discover paths never registered",
+    "New/empty live-index rebuild, pause/mute, automatic acoustic profile/group expiry and calibrated authenticated voice review remain pending",
+    "The earlier instrumented suite observed process GC pauses up to 495.68 ms outside explicit voice cases. This uninstrumented run does not remeasure or resolve integrated runtime/GC latency",
+    "H0/H1 live HA effects, H2 physical audio, H4 recovery, H5 voice features and H6 integrated hardware/migration/release/rollback acceptance remain open",
+    "No production deployment, service restart, private production-data mutation, dependency installation, GPU reassignment or configuration-file creation occurred"
+  ],
+  "prior_gc_evidence_reference": "docs/research/2026-10-26-h3-index-maintenance-validation.json"
+}

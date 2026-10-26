@@ -372,9 +372,9 @@ formatos de política y los buffers de contexto, memoria corta y consultas.
 Conserva archivos ajenos/legacy y deja pendiente lo que no puede atribuir.
 Las escrituras comparten barreras físicas y las compactaciones, hidrataciones y
 guardados afectados se retienen hasta su salida real. La lease no se libera por
-cancelar al observador. Quedan seis participantes, la purga de TTL de contextos
-independiente de los features y el resto de H3; no hay una promesa global de
-borrado ni cambios en producción.
+cancelar al observador. Quedan seis participantes y el resto de H3; el avance
+siguiente cubre el TTL independiente de los features. No hay una promesa global
+de borrado ni cambios en producción.
 
 La [validación del participante de contextos](../research/2026-10-26-h3-context-erasure-validation.json)
 del commit `5aec4fb` registra **4630 passed, 1 xfailed**, sin fallos, en 178,16 s,
@@ -391,6 +391,14 @@ bloquea otros directorios conocidos cuando un writer retiene el catálogo.
 Las compactaciones pendientes tampoco detienen otros buffers. Siguen abiertos
 los seis participantes restantes, los datos sin procedencia, la migración,
 voces y la aceptación integrada; no se publica una release intermedia.
+
+La [validación de retención de contextos](../research/2026-10-26-h3-context-retention-validation.json)
+del commit `7606e42` registra **4652 passed, 1 xfailed**, sin fallos, en 183,55 s,
+con 22 casos nuevos, 508 pruebas dirigidas, checks y artefacto compilado
+aceptados. Verifica vencimiento sin consultas, tombstone ni gestor activo,
+incluido un directorio limpio mientras otro writer y el registro siguen
+bloqueados. El heartbeat obtiene p95 de 0,22 ms y máximo de 3,07 ms con los
+límites intactos; no sustituye la aceptación integrada de runtime/GC y hardware.
 
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.

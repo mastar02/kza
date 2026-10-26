@@ -777,9 +777,9 @@ entre grupos de 32 para no sostener el loop durante todo el recorrido.
 
 Quedan seis participantes sin conectar. Este avance no completa los productores
 activos de inferencia/audio, los otros consumidores, las copias derivadas ni la
-interfaz de borrado amplio. La purga de TTL de contextos independiente de los
-features y sobre todas las ubicaciones históricas todavía está pendiente,
-además del inventario/migración privada, voces y aceptación integrada de H6.
+interfaz de borrado amplio. Ese avance todavía no independizaba el TTL de los
+features; el avance siguiente incorpora esa purga sobre ubicaciones conocidas.
+El inventario/migración privada, voces y aceptación integrada de H6 siguen abiertos.
 
 La [validación del participante de contextos](../research/2026-10-26-h3-context-erasure-validation.json)
 del commit `5aec4fb` registra **4630 passed, 1 xfailed**, sin fallos, en 178,16 s.
@@ -834,6 +834,18 @@ de TTL y deja el cierre de su pool para después de liberar ese bloqueo.
 Este avance cubre los contextos de política atribuibles y los buffers registrados.
 No da procedencia a los archivos desconocidos, no sustituye la migración privada
 ni completa los seis participantes restantes, la revisión de voces o H3/H6.
+
+La [validación de retención de contextos](../research/2026-10-26-h3-context-retention-validation.json)
+del commit `7606e42` registra **4652 passed, 1 xfailed**, sin fallos, en 183,55 s.
+Incluye 22 casos nuevos, 508 pruebas dirigidas, Ruff, Bandit sin hallazgos
+medios/altos, 18 tests de frontend, smoke y artefacto compilado. El ensayo cierra
+el gestor antes de avanzar a las 48 h y verifica el archivo y los buffers
+retirados sin consultas ni tombstone. La evidencia incluye el endurecimiento de
+los casos de saturación y el fallo inicial de un import de test, corregido sin
+ampliar límites. El heartbeat obtiene p95 de 0,22 ms y máximo de 3,07 ms;
+la cancelación de control alcanza 0,09 ms y el cleanup 11,13 ms. La suite sin
+instrumentación de GC no vuelve a medir ni resuelve sus pausas previas: la
+aceptación integrada de runtime/GC y hardware sigue abierta.
 
 ## Trabajo restante
 
