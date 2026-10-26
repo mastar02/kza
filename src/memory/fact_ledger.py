@@ -20,6 +20,8 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import UUID
 
+from src.memory.erasure_journal import ERASURE_SCHEMA, ErasureJournal
+
 
 class FactState(StrEnum):
     AUTOMATIC = "automatic"
@@ -210,6 +212,7 @@ class FactLedger:
         self._pending_fact_ids: frozenset[str] = frozenset()
         self._pending_conversations: frozenset[str] = frozenset()
         self._authority_version = 0
+        self.erasures = ErasureJournal(self)
 
     def initialize(self) -> None:
         """Create the private ledger without importing legacy documents."""
@@ -224,7 +227,7 @@ class FactLedger:
             self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
             self._db.row_factory = sqlite3.Row
             self._db.execute("PRAGMA foreign_keys=ON")
-            self._db.executescript(_SCHEMA)
+            self._db.executescript(_SCHEMA + ERASURE_SCHEMA)
             if "dependencies" not in {r[1] for r in self._db.execute("PRAGMA table_info(fact_sources)")}:
                 try:
                     self._db.execute("BEGIN IMMEDIATE")
@@ -537,6 +540,7 @@ class FactLedger:
                 db.execute("INSERT OR IGNORE INTO conversation_tombstones VALUES (?,?,?)",
                            (conversation_id, self.clock(), actor.subject))
                 self._authority_version += 1
+                self.erasures.ensure_operation(db, conversation_id, actor)
                 ids = [r[0] for r in db.execute("SELECT DISTINCT fact_id FROM fact_sources WHERE conversation_id=?", (conversation_id,))]
                 deleted = sum(self._delete(db, fact_id) for fact_id in ids)
             self._deleted_conversations = self._deleted_conversations | {conversation_id}

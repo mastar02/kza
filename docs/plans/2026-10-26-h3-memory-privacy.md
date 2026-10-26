@@ -343,6 +343,61 @@ Pasan Ruff, Bandit medio/alto, 18 tests Node, smoke y artefacto compilado con
 memoria opcional apagada. El heartbeat obtuvo p95 de 0,23 ms y máximo de 1,09 ms
 frente a 25/75 ms. No cierra H3 ni constituye una publicación en producción.
 
+## Avance: intención durable y participante del índice
+
+El catálogo registra ahora la revocación, el scrub de hechos y una operación de
+borrado en la misma transacción. Repetir el pedido conserva ID, actor y fecha
+originales. Los tombstones anteriores reciben una operación pendiente al
+arrancar, conservando sus metadatos originales. El estado distingue fuentes
+revocadas de limpieza completa; la ausencia de un participante bloquea esa
+última declaración. No se agregó todavía un endpoint global de borrado.
+
+El manifiesto obligatorio incluye productores, capturas/clips, contextos,
+índice semántico, eventos, diagnósticos, colectores, streams, sugerencias y voces.
+Sólo está conectado el driver del índice. Los demás conservan recibos pendientes
+hasta implementar la coordinación de sus productores y copias. El inventario
+encontró texto sin política común en logs estructurados, métricas JSONL y
+Logstash, el bus de eventos vivos y los JSON del colector de conversaciones.
+El colector actual se construye en el bloque nocturno; no se presupone que esté
+inyectado en el router. Estos hallazgos siguen abiertos.
+
+El registro privado conserva todos los destinos y versiones de almacenamiento
+conocidos. Agregar una ubicación reabre también operaciones anteriores; cambiar
+la configuración no descarta destinos viejos. El factory semántico registra su
+destino antes del primer acceso al índice, incluso si luego falla el arranque.
+Los recibos de estado no contienen rutas, descriptores, cursores, tokens de claim
+ni texto de excepciones. Esta lista todavía necesita reconciliarse con el
+inventario de datos reales antes de la release y no descubre ubicaciones que
+nunca estuvieron registradas.
+
+Cada intento tiene un token exclusivo; un worker viejo no puede confirmar otro
+intento. La recuperación de claims interrumpidos ocurre una sola vez, después
+de adquirir la lease del runtime. Abrir otro catálogo o repetir initialize no
+reinicia un claim vivo. El coordinador conserva hasta cuatro callbacks reales
+y el handoff desde claim, aunque se cancele el observador. Si falla el guardado
+del recibo, conserva el callback terminado y reintenta ese guardado sin duplicar
+la limpieza. Un timeout de cierre mantiene callbacks, executor y lease hasta
+su salida real. Los fallos se registran con códigos fijos y backoff acotado.
+
+El participante Chroma funciona con la memoria semántica apagada. Usa un worker
+dedicado y acceso de limpieza sin embeddings ni creación de colecciones. Recorre
+en lotes de 32 los IDs ya eliminados en el catálogo; el cursor se guarda tras
+completar el lote. Comparte la barrera del writer activo, de modo que una escritura
+que leyó el hecho antes de revocarlo termine antes de confirmar su eliminación.
+Una colección o directorio ausente no se crea. La colección legacy, los hechos
+vigentes y la cuarentena se conservan. La cola del índice actual se confirma por
+revisión; los destinos históricos tienen recibos propios. Esto cubre la limpieza
+del índice para las operaciones de conversación registradas: la reconciliación
+independiente de todos los vencimientos y borrados individuales con recall
+apagado sigue pendiente.
+
+Las pruebas conectadas usan SQLite y Chroma temporales: atomicidad con rollback,
+idempotencia, permisos, participantes y versiones ausentes, cambio de destino,
+reinicio con cursor, fallos de limpieza/recibo, cancelación durante claim,
+lease retenida durante trabajo nativo y upsert tardío. La aceptación del grafo
+completo, la migración real y la conservación de la intención de borrado durante
+restore continúan pendientes. No se modificó producción.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
@@ -351,9 +406,11 @@ frente a 25/75 ms. No cierra H3 ni constituye una publicación en producción.
    `RequestProcessor` antiguo no cableado.
 2. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
-   frente a productores y guardados tardíos. Incluir los lotes de destilación
-   en curso y la limpieza física del índice aunque la memoria esté apagada.
-   La limpieza local del catálogo no sustituye esa operación.
+   frente a productores y guardados tardíos. Conectar al journal los participantes
+   restantes y los lotes de destilación en curso; ampliar la limpieza sin recall
+   a vencimientos y borrados individuales. Agregar selección y recibos en el
+   dashboard autenticado después de cerrar esas garantías. La limpieza local
+   del catálogo y del índice no sustituye la operación completa.
 3. Implementar pausa ambiental y mute total con reactivación independiente del
    audio; definir qué productores se detienen y qué buffers se descartan.
 4. Aplicar 48 horas a huellas y grupos acústicos no confirmados; conservar perfiles

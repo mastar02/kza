@@ -34,6 +34,7 @@ class PrivacyServices:
         self._lock = threading.RLock()
         self._borrowers: list[WeakMethod] = []
         self._closed = False
+        self._ready = False
         self._closing: asyncio.Task | None = None
         self.maintenance: asyncio.Task | None = None
 
@@ -53,10 +54,13 @@ class PrivacyServices:
                     raise RuntimeError("privacy_writer_already_active") from None
                 self._lease = descriptor
             self.ledger.initialize()
+            if not self._ready:
+                self.ledger.erasures.recover()
+                self._ready = True
 
     def require_available(self) -> None:
         """Reject consumers until the leased authority is ready, or once closing."""
-        if self._closed or not self.ledger.authority_available:
+        if self._closed or not self._ready or not self.ledger.authority_available:
             raise RuntimeError("privacy_authority_unavailable")
 
     def add_borrower(self, begin_close: Callable[[], asyncio.Task]) -> None:
@@ -78,7 +82,7 @@ class PrivacyServices:
 
     def sources_available(self, sources: tuple[MemorySource, ...]) -> bool:
         """Reject admission after the authority begins closing."""
-        return not self._closed and self.ledger.sources_available(sources)
+        return not self._closed and self._ready and self.ledger.sources_available(sources)
 
     def source_for_capture(self, capture_id: str, captured_at: float, room_id: str | None,
                            *, conversation_id: str | None = None, expires_at: float | None = None,

@@ -5,6 +5,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
 from src.memory.memory_manager import MemoryManager
+from src.memory.index_erasure import register_policy_index_target
 
 
 @dataclass
@@ -35,6 +36,7 @@ async def build_memory_services(config: dict, *, shutdown: AsyncExitStack, chrom
         return None
     if privacy is not None:
         privacy.require_available()
+        await register_policy_index_target(config, privacy)
 
     def construct():
         client = chroma_client

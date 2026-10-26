@@ -257,6 +257,17 @@ apagada, y pasa checks y artefacto compilado. El heartbeat mantiene p95 de
 con journal y participantes, incluida la limpieza de índices con memoria
 apagada y los lotes de destilación en curso; no se expone un borrado global.
 
+El avance siguiente agrega el journal transaccional de borrado y un manifiesto
+obligatorio de diez participantes. Sólo está conectado el índice: la limpieza
+de conversaciones registradas funciona sin recall, conserva destinos históricos
+y cursores de lotes, y espera escrituras anteriores a la revocación. El catálogo
+registra la ubicación antes del primer acceso semántico. Las operaciones siguen
+bloqueadas por los participantes pendientes; cancelar la observación o agotar
+el plazo de cierre no libera su trabajo nativo ni la lease. Faltan los demás
+productores/copies y la integración autenticada del borrado global. La
+reconciliación de todos los vencimientos y borrados individuales sin recall
+también sigue pendiente. El detalle está en el plan de H3.
+
 La retención de huellas autorizada arriba todavía no está implementada. Siguen
 pendientes otras copias de texto y audio (otros logs, colectores,
 caches alternas, streams y frontend), sugerencias y consumidores alternos de
