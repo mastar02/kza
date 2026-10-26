@@ -672,3 +672,84 @@ async def test_runtime_factory_uses_bounded_retention_instead_of_a_second_logger
         )
         await until(lambda: rows(events.db_path)[0][0] is None)
         assert rows(events.db_path)[0][-1] == source.expires_at
+
+
+@pytest.mark.parametrize("encoded", ["{}", "[]", "[{}]"])
+async def test_unverified_source_shapes_cannot_enter_any_live_event_projection(
+    tmp_path, encoded
+):
+    async with graph(tmp_path) as (_, _, events, clock):
+        await events.alog(
+            "light.synthetic",
+            "turn_on",
+            trigger_phrase="synthetic private text",
+            sources=(memory_source(now=clock.now),),
+        )
+        with sqlite3.connect(events.db_path) as db:
+            db.execute("UPDATE events_policy_v1 SET sources_json=?", (encoded,))
+        assert await events.acall(events.get_events) == []
+        assert (await events.acall(events.get_stats))["total_events"] == 0
+        assert (
+            sum(
+                (
+                    await events.acall(
+                        events.get_hourly_distribution, "light.synthetic"
+                    )
+                ).values()
+            )
+            == 0
+        )
+        assert (
+            sum(
+                (
+                    await events.acall(
+                        events.get_weekday_distribution, "light.synthetic"
+                    )
+                ).values()
+            )
+            == 0
+        )
+        assert await events.acall(events.get_sequences, min_occurrences=1) == []
+        assert rows(events.db_path)[0][0] == "synthetic private text"
+
+
+async def test_source_expiry_hides_raw_text_even_when_persisted_deadline_is_later(
+    tmp_path,
+):
+    async with graph(tmp_path) as (_, _, events, clock):
+        source = memory_source(now=clock.now, ttl=30)
+        await events.alog(
+            "light.synthetic",
+            "turn_on",
+            trigger_phrase="synthetic private text",
+            user_name="synthetic name",
+            extra_context={"rms": 0.2, "private": "synthetic private context"},
+            sources=(source,),
+        )
+        with sqlite3.connect(events.db_path) as db:
+            db.execute(
+                "UPDATE events_policy_v1 SET text_expires_at=?", (clock.now + 600,)
+            )
+        clock.now += 30
+        result = (await events.acall(events.get_events))[0]
+        assert (
+            result.trigger_phrase is None
+            and result.user_name is None
+            and result.context == {"rms": 0.2}
+        )
+        assert rows(events.db_path)[0][0] == "synthetic private text"
+
+
+async def test_unrecognized_metadata_deadline_is_excluded_before_any_purge(tmp_path):
+    async with graph(tmp_path) as (_, _, events, clock):
+        await events.alog(
+            "light.synthetic",
+            "turn_on",
+            trigger_phrase="synthetic private text",
+            sources=(memory_source(now=clock.now),),
+        )
+        with sqlite3.connect(events.db_path) as db:
+            db.execute("UPDATE events_policy_v1 SET expires_at='unknown'")
+        assert await events.acall(events.get_events) == []
+        assert (await events.acall(events.get_stats))["total_events"] == 0
+        assert rows(events.db_path)[0][0] == "synthetic private text"

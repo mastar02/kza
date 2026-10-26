@@ -356,7 +356,8 @@ anteriores, despierta ante nuevas escrituras y conserva trabajo real durante el
 cierre. El factory usa ese mantenimiento acotado en lugar de otro barrido del
 logger. La limpieza física usa sólo revocaciones confirmadas: un commit fallido
 puede bloquear lecturas provisionalmente, pero no destruir eventos válidos.
-Siguen abiertos los siete participantes restantes, las otras copias, voces,+migración y aceptación de runtime; no hay cambios en producción.
+Siguen abiertos los siete participantes restantes, las otras copias, voces,
+migración y aceptación de runtime; no hay cambios en producción.
 
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.

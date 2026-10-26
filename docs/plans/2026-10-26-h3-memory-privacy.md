@@ -707,6 +707,15 @@ al participante del journal y al borrado del logger standalone. Un caso mantiene
 el commit pendiente, ejecuta las dos vías físicas y fuerza rollback: el evento
 válido se conserva y vuelve a estar autorizado.
 
+La revisión de lectura reprodujo dos huecos en filas sintéticas: un objeto JSON
+vacío se interpretaba como una lista vacía de fuentes, y una fecha raw guardada
+posterior al vencimiento de la fuente podía autorizar texto hasta la purga.
+La vista SQL valida ahora la forma de las fuentes y las fechas de metadatos;
+el acceso a frases, nombres y contexto exige también que las fuentes reales
+sigan dentro de su plazo. Las métricas válidas pueden conservarse durante su
+vigencia propia. Los casos comprueban todas las proyecciones analíticas y que
+la exclusión no depende de borrar físicamente la fila.
+
 No completa los otros siete participantes ni las copias derivadas, la migración,
 voces o el resto de H3. Las ubicaciones nunca registradas y los datos sin
 procedencia todavía requieren el inventario privado y el ensayo de migración.

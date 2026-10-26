@@ -22,7 +22,7 @@ from pathlib import Path
 import json
 
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
-from src.analytics.event_storage import event_descriptor
+from src.analytics.event_storage import event_descriptor, event_sources
 from src.memory.erasure_journal import ErasureParticipant
 from src.memory.fact_ledger import FactLedger, MemorySource, sources_current
 
@@ -195,9 +195,9 @@ class EventLogger:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_policy_event_expiry ON events_policy_v1(expires_at)")
             conn.commit()
 
-    def _unrevoked(self, encoded: str, *, committed: bool = False) -> bool:
+    def _unrevoked(self, encoded: str, raw: bool = False, *, committed: bool = False) -> bool:
         try:
-            sources = tuple(MemorySource.from_dict(item) for item in json.loads(encoded))
+            sources = event_sources(encoded, raw)
             if self.source_policy is None:
                 return committed or not any(s.fact_dependencies for s in sources)
             if not self.source_policy.authority_available:
@@ -211,23 +211,39 @@ class EventLogger:
                 raise ValueError('unknown_event_sources') from None
             return False
 
+    def _text_available(self, encoded: str, expires_at) -> bool:
+        """A stored raw deadline cannot override actual capture source expiry."""
+        if type(expires_at) not in (int,float) or not math.isfinite(expires_at) or self._clock() >= expires_at:
+            return False
+        try:
+            return sources_current(event_sources(encoded, True), self._clock())
+        except (TypeError, ValueError, KeyError, AttributeError):
+            return False
+
+    def _metadata_current(self, captured_at, expires_at) -> bool:
+        """Unknown metadata deadlines cannot authorize a policy event projection."""
+        return all(type(v) in (int,float) and math.isfinite(v) for v in (captured_at,expires_at)) and captured_at <= self._clock() < expires_at
+
     @contextmanager
     def _connect(self):
         self.initialize()
         with closing(sqlite3.connect(self.db_path)) as db, db:
             db.create_function("policy_now", 0, self._clock)
-            db.create_function("event_unrevoked", 1, self._unrevoked)
+            db.create_function("event_unrevoked", 2, self._unrevoked)
+            db.create_function("event_text_available", 2, self._text_available)
+            db.create_function("event_metadata_current", 2, self._metadata_current)
             db.create_function("event_committed_unrevoked", 1, lambda encoded: self._unrevoked(encoded, committed=True))
             # All existing analytics SQL resolves this temporary view. Legacy
             # rows cannot enter retrieval, distributions, sequences or stats.
             db.execute("""CREATE TEMP VIEW events AS SELECT
                 id, timestamp, event_type, entity_id, action, user_id,
-                CASE WHEN text_expires_at>policy_now() THEN user_name END AS user_name,
-                CASE WHEN text_expires_at>policy_now() THEN trigger_phrase END AS trigger_phrase,
-                CASE WHEN text_expires_at>policy_now() THEN context_json ELSE metrics_json END AS context_json,
+                CASE WHEN event_text_available(sources_json,text_expires_at) THEN user_name END AS user_name,
+                CASE WHEN event_text_available(sources_json,text_expires_at) THEN trigger_phrase END AS trigger_phrase,
+                CASE WHEN event_text_available(sources_json,text_expires_at) THEN context_json ELSE metrics_json END AS context_json,
                 hour, minute, weekday, is_weekend, time_of_day, sources_json, expires_at, text_expires_at
                 FROM main.events_policy_v1
-                WHERE expires_at>policy_now() AND event_unrevoked(sources_json)""")
+                WHERE event_metadata_current(timestamp,expires_at) AND event_unrevoked(sources_json,
+                    trigger_phrase IS NOT NULL OR user_name IS NOT NULL OR context_json IS NULL OR context_json!=metrics_json)""")
             yield db
 
     @staticmethod
