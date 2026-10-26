@@ -128,13 +128,16 @@ class IndexMaintenance:
                 if self._cycle is not None:
                     await asyncio.gather(self._cycle, return_exceptions=True)
                 await asyncio.gather(*(task for _, task in self._active.values()), return_exceptions=True)
+                deferred = 0
                 for batch, task in self._active.values():
                     try:
                         await self.privacy.acall(self.queue.finish, batch, task.result().error)
                     except Exception:
                         # Native completion remains true; recovery retries any
                         # unacknowledged claim after the next leased startup.
-                        pass
+                        deferred += 1
+                if deferred:
+                    logger.debug('Index cleanup receipts deferred to leased recovery: %d', deferred)
                 self._active.clear()
             self._closing = asyncio.create_task(finish())
         return self._closing

@@ -112,7 +112,7 @@ class PolicyIndexEraser:
             except Exception:
                 # Physical work finished. The retained scheduler outcome retries
                 # this receipt rather than running native cleanup again.
-                pass
+                return
 
     async def clean_deletions(self, batch: IndexDeletionBatch) -> None:
         """Run cleanup-only batches under the same physical writer barrier."""

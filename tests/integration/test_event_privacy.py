@@ -29,6 +29,9 @@ async def graph(tmp_path, **options):
     await asyncio.to_thread(policy.initialize)
     events = EventLogger(str(tmp_path/'events.db'), source_policy=policy, clock=clock, **options)
     try:
+        # Match build_event_logger: startup I/O finishes before bounded hot-path
+        # logging is admitted. The 100 ms observation budget stays unchanged.
+        await events.acall(events.initialize)
         yield events, policy, clock
     finally:
         await events.aclose()
@@ -124,6 +127,54 @@ async def test_revocation_filters_all_event_analytics_before_physical_cleanup(tm
         assert sum((await events.acall(events.get_weekday_distribution, 'light.first')).values()) == 0
         assert await events.acall(events.get_sequences, min_occurrences=1) == []
         assert await events.acall(events.cleanup_old_events) == 1
+
+
+async def test_runtime_factory_initializes_before_first_bounded_event(tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    initialize = EventLogger._init_db
+    instances = []
+    def slow_initialize(self):
+        instances.append(self)
+        entered.set()
+        release.wait(3)
+        initialize(self)
+    monkeypatch.setattr(EventLogger, '_init_db', slow_initialize)
+    async with AsyncExitStack() as stack:
+        starting = asyncio.create_task(build_event_logger({'analytics':{'events_db':str(tmp_path/'events.db')}},shutdown=stack))
+        try:
+            await until(entered.is_set)
+            await asyncio.sleep(.15)  # Deliberately beyond the unchanged 100 ms request budget.
+            assert not starting.done() and not instances[0]._initialized
+        finally:
+            release.set()
+        events = await starting
+        assert events._initialized and events.observation_timeout_s == .1
+        result = await events.alog('light.synthetic','turn_on',sources=(memory_source(),))
+        assert result.entity_id == 'light.synthetic'
+
+
+async def test_lazy_cold_event_timeout_retains_actual_initialization_and_single_write(tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    initialize = EventLogger._init_db
+    def slow_initialize(self):
+        entered.set()
+        release.wait(3)
+        initialize(self)
+    monkeypatch.setattr(EventLogger, '_init_db', slow_initialize)
+    events = EventLogger(str(tmp_path/'events.db'))
+    writing = asyncio.create_task(events.alog('light.synthetic','turn_on',sources=(memory_source(),)))
+    try:
+        await until(entered.is_set)
+        with pytest.raises(TimeoutError):
+            await writing
+        assert events.observation_timeout_s == .1 and events.resource_status()['operations'] == 1
+    finally:
+        release.set()
+        await until(lambda: events.resource_status()['operations'] == 0)
+    try:
+        assert len(await events.acall(events.get_events)) == 1
+    finally:
+        await events.aclose()
 
 
 @pytest.mark.parametrize('action', ['expire', 'revoke'])
