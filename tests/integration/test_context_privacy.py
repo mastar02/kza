@@ -302,8 +302,11 @@ async def test_final_compaction_keeps_context_reactivated_while_waiting(tmp_path
         cleaning = asyncio.create_task(manager._snapshot_and_remove('test_user'))
         try:
             await asyncio.wait_for(reasoner.entered.wait(), 1)
+            unchanged_wall_time = original.last_active
             assert await manager.aget_or_create('test_user') is original
             manager.add_turn('test_user', 'user', 'Mensaje nuevo en curso.', sources=(memory_source(now=clock.now),))
+            # Reactivation is a revision, even if the wall clock repeats.
+            original.last_active = unchanged_wall_time
             reasoner.release.set()
             assert await cleaning is False
             assert manager.get('test_user') is original
@@ -338,3 +341,24 @@ async def test_failed_atomic_write_and_unlink_leave_a_cleanup_retry(tmp_path, mo
         assert await manager._offload(persister.load, 'test_user') is None
         assert await manager._offload(persister.purge_expired) == 1
         assert list(persister.base_path.iterdir()) == []
+
+
+async def test_cached_context_needs_no_native_slot_when_all_workers_are_occupied(tmp_path):
+    async with graph(tmp_path) as (manager, _, memory, _, _):
+        existing = await manager.aget_or_create('test_user')
+        await wait_for(lambda: memory.resource_status()['operations'] == 0)
+        release = threading.Event()
+        entered = []
+
+        def occupied():
+            entered.append(True)
+            assert release.wait(3)
+
+        tasks = [asyncio.create_task(memory.acall(occupied)) for _ in range(8)]
+        try:
+            await wait_for(lambda: len(entered) == 8)
+            assert await manager.aget_or_create('test_user') is existing
+            assert memory.resource_status()['operations'] == 8
+        finally:
+            release.set()
+            await asyncio.gather(*tasks)

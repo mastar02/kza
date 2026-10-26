@@ -158,6 +158,7 @@ class UserContext:
     session_count: int = 1
     summary_sources: tuple[MemorySource, ...] = ()
     privacy_revision: int = 0
+    activity_revision: int = 0
     _compaction_token: object | None = field(default=None, repr=False)
     _clock: Callable[[], float] | None = field(default=None, repr=False)
     _source_policy: FactLedger | None = field(default=None, repr=False)
@@ -194,6 +195,7 @@ class UserContext:
         self.conversation_history.append(turn)
         self.turns_count += 1
         self.last_active = time.time()
+        self.activity_revision += 1
 
         if intent:
             self.last_intent = intent
@@ -429,13 +431,14 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
                 if zone_id:
                     ctx.zone_id = zone_id
                 ctx.last_active = time.time()
+                ctx.activity_revision += 1
                 ctx.prune()
                 return ctx
 
         hydrated = self.persister.load(user_id) if self.persister is not None else None
         with self._lock:
             if user_id in self._contexts:
-                return self._contexts[user_id]
+                return self.get_or_create(user_id, user_name, zone_id, preferences, permission_level)
 
             ctx = UserContext(
                 user_id=user_id,
@@ -478,9 +481,14 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         task.add_done_callback(finished)
         return await asyncio.shield(task)
 
-    async def aget_or_create(self, *args, **kwargs) -> UserContext:
+    async def aget_or_create(self, user_id: str, *args, **kwargs) -> UserContext:
         """Hydrate private disk state through an owned off-loop operation."""
-        return await self._offload(self.get_or_create, *args, **kwargs)
+        if self._io_closed:
+            raise RuntimeError("context_io_closed")
+        with self._lock:
+            if user_id in self._contexts:
+                return self.get_or_create(user_id, *args, **kwargs)
+        return await self._offload(self.get_or_create, user_id, *args, **kwargs)
 
     def interaction_sources(self, captured_at: float | None = None) -> tuple[MemorySource, ...]:
         """Mark a server-received text exchange once at admission, not completion."""
@@ -872,6 +880,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             revision = original.privacy_revision
             last_active = original.last_active
             admission_last_active = original.last_active
+            activity_revision = original.activity_revision
         if self.compactor is not None and self.persister is not None:
             await self._compact_background(user_id, keep_recent=0)
 
@@ -880,7 +889,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         if self.persister is not None:
             with self._lock:
                 ctx = self._contexts.get(user_id)
-                if ctx is not original or ctx.last_active != admission_last_active:
+                if ctx is not original or ctx.last_active != admission_last_active or ctx.activity_revision != activity_revision:
                     return False
                 ctx.prune()
                 revision = ctx.privacy_revision
@@ -903,7 +912,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         # Step 4: remove from memory
         with self._lock:
             current = self._contexts.get(user_id)
-            if current is original and current.last_active == last_active and current.privacy_revision == revision:
+            if current is original and current.last_active == last_active and current.privacy_revision == revision and current.activity_revision == activity_revision:
                 del self._contexts[user_id]
                 self._total_contexts_cleaned += 1
                 return True
