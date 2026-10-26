@@ -3,7 +3,9 @@
 import asyncio
 import os
 from pathlib import Path
+from functools import partial
 
+from src.ambient.retention import CaptureRetention
 from src.ambient.store import AmbientStore
 from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.erasure_journal import ErasureParticipant, ErasureResult, ErasureStep
@@ -13,11 +15,12 @@ from src.memory.privacy_services import PrivacyServices
 class CaptureEraser:
     """Wait actual encoders before retiring rows and their durable file locators."""
 
-    def __init__(self, privacy: PrivacyServices):
+    def __init__(self, privacy: PrivacyServices, *, retention_hours: float = 48):
         self.privacy = privacy
         self._archivers = []
         self._closed = False
         self._closing: asyncio.Task | None = None
+        self.retention = CaptureRetention(privacy, audio_inflight=self._is_writing, archive_contains=self._contains_audio, retention_hours=retention_hours)
 
     async def attach(self, ambient_path) -> None:
         """Bind the actual archive owner before the ambient graph starts producers."""
@@ -38,6 +41,7 @@ class CaptureEraser:
                 raise RuntimeError('capture_erasure_closed')
             self._archivers.append(archiver)
             store.audio_inflight = self._is_writing
+            await self.retention.watch_store(store, descriptor['db_path'])
 
     def _is_writing(self, path: str) -> bool:
         return any(archiver.is_writing(path) for archiver in self._archivers)
@@ -79,7 +83,8 @@ class CaptureEraser:
             and target['descriptor']['db_path'] == descriptor['db_path'])
         store = AmbientStore(db_path=descriptor['db_path'], audio_dir=descriptor['audio_dir'],
             source_policy=self.privacy.ledger, clock=self.privacy.ledger.clock,
-            audio_inflight=self._is_writing, cleanup_audio_roots=roots)
+            audio_inflight=self._is_writing, cleanup_audio_roots=roots, disk_worker=self.retention._disk.run,
+            file_guard=partial(self.retention.guard_files, descriptor['db_path']))
         try:
             if not await store.init(existing_only=True):
                 # A missing database cannot prove its archive directory empty.
@@ -96,9 +101,11 @@ class CaptureEraser:
     def begin_close(self) -> asyncio.Task:
         """Retain actual encoders even when their callers or close observers cancel."""
         self._closed = True
+        self.retention.stop_admission()
         if self._closing is None:
             async def finish():
                 await asyncio.gather(*(a.begin_close() for a in self._archivers))
+                await self.retention.begin_close()
             self._closing = asyncio.create_task(finish())
         return self._closing
 
@@ -113,7 +120,9 @@ async def build_capture_erasure(config: dict, *, privacy: PrivacyServices,
     descriptor = await privacy.acall(lambda: {
         'db_path': str(Path(path).resolve()),
         'audio_dir': str(Path((settings.get('keep_audio', {}) or {}).get('dir', './data/ambient_audio')).resolve())})
-    driver = CaptureEraser(privacy)
+    driver = CaptureEraser(privacy, retention_hours=settings.get('retention_hours', 48))
     owner.register(ErasureParticipant.CAPTURES, driver.clean, versions=frozenset({1}), begin_close=driver.begin_close)
     await privacy.acall(privacy.ledger.erasures.register_target, ErasureParticipant.CAPTURES, 1, descriptor)
+    await driver.retention.refresh()
+    driver.retention.start()
     return driver

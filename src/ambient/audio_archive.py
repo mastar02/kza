@@ -54,12 +54,30 @@ class AudioArchiver:
             raise ValueError('invalid_archive_capacity')
         self._privacy, self._store, self._capacity = privacy, store, capacity
         self._writes: dict[asyncio.Task, tuple[MemorySource | None, str]] = {}
+        self._calls: dict[asyncio.Future, MemorySource | None] = {}
         self._closed = False
         self._closing: asyncio.Task | None = None
         self._last_disk_warn = 0.0
         self.stats = {"written": 0, "skipped_disk": 0, "failed": 0}
 
     async def write(
+        self, room_id: str, utt_id: int, audio: np.ndarray, *, source: MemorySource | None = None,
+    ) -> str | None:
+        """Bound and retain reservation, encoding and cancellation cleanup together."""
+        if not self.enabled or self._closed:
+            return None
+        if len(self._calls) >= self._capacity:
+            self.stats['failed'] += 1
+            return None
+        completion = asyncio.get_running_loop().create_future()
+        self._calls[completion] = source
+        try:
+            return await self._write(room_id, utt_id, audio, source=source)
+        finally:
+            self._calls.pop(completion, None)
+            completion.set_result(None)
+
+    async def _write(
         self, room_id: str, utt_id: int, audio: np.ndarray, *, source: MemorySource | None = None,
     ) -> str | None:
         """Guardar el audio de una utterance.
@@ -122,7 +140,7 @@ class AudioArchiver:
                 except Exception:
                     break  # Retrieve the actual write outcome below.
             error = writing.exception()
-            revoked = self._privacy is not None and not self._privacy.sources_available((source,))
+            revoked = self._closed or self._privacy is not None and not self._privacy.sources_available((source,))
             if cancelled or error is not None or revoked:
                 cleanup = asyncio.create_task(self._discard(str(path)))
                 while not cleanup.done():
@@ -159,7 +177,7 @@ class AudioArchiver:
 
     async def drain_conversation(self, conversation_id: str) -> None:
         """Wait actual pre-revocation encoders; observation cancellation is shielded."""
-        tasks = [task for task, (source, _) in self._writes.items()
+        tasks = [task for task, source in self._calls.items()
                  if source is not None and source.conversation_id == conversation_id]
         await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
 
@@ -168,7 +186,7 @@ class AudioArchiver:
         self._closed = True
         if self._closing is None:
             async def finish():
-                await asyncio.gather(*(asyncio.shield(task) for task in list(self._writes)), return_exceptions=True)
+                await asyncio.gather(*(asyncio.shield(task) for task in list(self._calls)), return_exceptions=True)
             self._closing = asyncio.create_task(finish())
         return self._closing
 

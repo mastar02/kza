@@ -299,6 +299,16 @@ también el plazo menor del store cuando vence antes que la fuente. El heartbeat
 obtuvo p95 de 0,39 ms y máximo de 1,24 ms frente a 25/75 ms. Las correcciones del
 hook de cancelación y del vencimiento se incluyen en el candidato final.
 
+El avance siguiente independiza la purga del ambient path: recorre bases y
+raíces históricas aun con ambient, keep_audio y recall apagados, mantiene fechas
+persistidas y despierta ante vencimientos anteriores. Usa dos barridos y dos
+threads de disco propios; un destino bloqueado no frena otro independiente.
+Los archivos compartidos se conservan mientras otra base los referencia o no
+puede verificarse su estado. Las reservas, descartes y operaciones reales de
+purga permanecen bajo la lease durante cierre. Quedan abiertos el inventario de
+archivos legacy indeterminados, los ocho participantes restantes y el resto de
+H3; no se expone un borrado global ni se modifica producción.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke

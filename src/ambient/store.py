@@ -127,6 +127,9 @@ class AmbientStore:
         source_policy=None,
         audio_inflight: Callable[[str], bool] | None = None,
         cleanup_audio_roots: tuple[str, ...] = (),
+        disk_worker=None,
+        file_guard=None,
+        retention_notify: Callable[[], None] | None = None,
     ):
         """Inicializar el store.
 
@@ -151,22 +154,31 @@ class AmbientStore:
         self.source_policy = source_policy
         self.audio_inflight = audio_inflight or (lambda _: False)
         self._cleanup_audio_roots = tuple(Path(root) for root in cleanup_audio_roots)
+        self._disk_worker = disk_worker or asyncio.to_thread
+        self.file_guard = file_guard
+        self.retention_notify = retention_notify
         self.retention_hours = retention_hours
         self.audio_dir = Path(audio_dir) if audio_dir else None
         self._db: aiosqlite.Connection | None = None
         self._clock = time.time if clock is None else clock
         self._write_lock = asyncio.Lock()
         self._cleanup_lock = asyncio.Lock()
+        self._init_lock = asyncio.Lock()
+        self._ready = False
         self.expiry_changed = asyncio.Event()
         self._next_expiry: float | None = None
 
     async def init(self, *, existing_only: bool = False) -> bool:
         """Crear/abrir la DB y aplicar el schema."""
-        return await self._finish_owned(self._initialize(existing_only=existing_only))
+        async with self._init_lock:
+            return await self._finish_owned(self._initialize(existing_only=existing_only))
 
     async def _initialize(self, *, existing_only: bool) -> bool:
-        if self._db is not None:
+        if self._ready:
             return True
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
         def prepare():
             if self.db_path == ':memory:' and not existing_only:
                 return self.db_path
@@ -184,13 +196,25 @@ class AmbientStore:
             finally:
                 os.close(descriptor)
             return self.db_path
-        location = await asyncio.to_thread(prepare)
+        location = await self._disk_worker(prepare)
         if location is None:
             return False
         self._db = await aiosqlite.connect(location, uri=existing_only)
         self._db.row_factory = aiosqlite.Row
         await self._db.create_function("conversation_live", 1, self._conversation_live)
-        await self._db.executescript(_SCHEMA)
+        try:
+            await self._migrate()
+        except BaseException:
+            await self._db.rollback()
+            raise
+        self._ready = True
+        logger.info("AmbientStore listo (%s, TTL %.1fh)", self.db_path, self.retention_hours)
+        return True
+
+    async def _migrate(self) -> None:
+        # SQLite owns schema upgrade serialization across independent store
+        # connections, including the always-on maintenance connection.
+        await self._db.executescript('BEGIN IMMEDIATE;\n'+_SCHEMA)
         cur = await self._db.execute('PRAGMA table_info(pending_audio_deletions)')
         if 'conversation_id' not in {row['name'] for row in await cur.fetchall()}:
             await self._db.execute('ALTER TABLE pending_audio_deletions ADD COLUMN conversation_id TEXT')
@@ -202,15 +226,14 @@ class AmbientStore:
                 logger.info("AmbientStore migración: columna %s agregada", col)
         await self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_utt_capture ON utterances(capture_id) WHERE capture_id IS NOT NULL")
         await self._db.commit()
-        logger.info("AmbientStore listo (%s, TTL %.1fh)", self.db_path, self.retention_hours)
-        return True
 
     async def close(self) -> None:
         """Cerrar la conexión."""
-        async with self._cleanup_lock, self._write_lock:
+        async with self._init_lock, self._cleanup_lock, self._write_lock:
             if self._db is not None:
                 await self._db.close()
                 self._db = None
+                self._ready = False
 
     def _conversation_live(self, conversation_id: str | None) -> bool:
         if self.source_policy is not None and not self.source_policy.authority_available:
@@ -328,6 +351,8 @@ class AmbientStore:
             if self._next_expiry is None or expires_at < self._next_expiry:
                 self._next_expiry = expires_at
                 self.expiry_changed.set()
+            if self.retention_notify is not None:
+                self.retention_notify()
             return cur.lastrowid
         return await self._mutate(insert)
 
@@ -335,7 +360,7 @@ class AmbientStore:
         """Persist the file locator before a policy-bound encoder may create it."""
         if self.source_policy is None or not self.source_policy.sources_available((source,)):
             return None
-        path = await asyncio.to_thread(lambda: str(self._audio_path(path).resolve()))
+        path = await self._disk_worker(lambda: str(self._audio_path(path).resolve()))
         async def reserve():
             cur = await self._db.execute('SELECT * FROM utterances WHERE id=?', (utt_id,))
             row = await cur.fetchone()
@@ -398,7 +423,7 @@ class AmbientStore:
             return self._audio_path(path).read_bytes()
 
         try:
-            data = await asyncio.to_thread(read)
+            data = await self._disk_worker(read)
         except (OSError, ValueError):
             return None
         return data if await live_path() == path else None
@@ -547,7 +572,7 @@ class AmbientStore:
             "by_room": by_room,
         }
 
-    async def purge_expired(self) -> int:
+    async def purge_expired(self, *, sweep_orphans: bool = True) -> int:
         """Borrar utterances cuyo audio es más viejo que retention_hours.
 
         El plazo usa el inicio del audio, la inserción como límite para fechas
@@ -578,10 +603,10 @@ class AmbientStore:
         deleted = await self._mutate(expire)
         unlinked = await self._retry_audio_deletions()
         orphans = 0
-        if self.audio_dir is not None:
+        if sweep_orphans and self.audio_dir is not None:
             id_cur = await self._db.execute("SELECT id FROM utterances")
             live_ids = {row["id"] for row in await id_cur.fetchall()}
-            orphans = await asyncio.to_thread(self._sweep_orphans, live_ids, parameters["cutoff"])
+            orphans = await self._disk_worker(self._sweep_orphans, live_ids, parameters["cutoff"])
         if deleted or unlinked or orphans:
             logger.info("AmbientStore expiry: rows=%d audio=%d orphans=%d", deleted, unlinked, orphans)
         return deleted
@@ -610,12 +635,14 @@ class AmbientStore:
 
     async def _queue_audio_deletion(self, path: str, conversation_id: str | None = None) -> None:
         # Called only inside the same transaction that removes the reference.
-        await self._db.execute(
+        cur = await self._db.execute(
             "INSERT INTO pending_audio_deletions(path, requested_at, conversation_id) VALUES (?, ?, COALESCE(?, (SELECT conversation_id FROM audio_write_intents WHERE path=?))) "
-            "ON CONFLICT(path) DO UPDATE SET conversation_id=COALESCE(pending_audio_deletions.conversation_id, excluded.conversation_id)",
+            "ON CONFLICT(path) DO UPDATE SET conversation_id=excluded.conversation_id WHERE pending_audio_deletions.conversation_id IS NULL AND excluded.conversation_id IS NOT NULL",
             (path, self._clock(), conversation_id, path),
         )
         self.expiry_changed.set()
+        if cur.rowcount and self.retention_notify is not None:
+            self.retention_notify()
 
     async def discard_audio(self, path: str) -> None:
         """Durably discard an unaccepted or cancelled archive, including retries."""
@@ -633,6 +660,14 @@ class AmbientStore:
         )
         return dict(await cur.fetchone())
 
+    async def queue_orphan_audio(self, paths: list[str]) -> None:
+        """Keep discovered legacy orphan cleanup durable before unlinking files."""
+        async def enqueue():
+            for path in paths:
+                await self._queue_audio_deletion(path)
+        await self._mutate(enqueue)
+        await self._retry_audio_deletions()
+
     async def _retry_audio_deletions(self) -> int:
         async def attempt():
             cur = await self._db.execute(
@@ -641,7 +676,9 @@ class AmbientStore:
             paths = [row["path"] for row in await cur.fetchall() if not self.audio_inflight(row['path'])]
             if not paths:
                 return 0
-            outcomes = await asyncio.to_thread(self._unlink_outcomes, paths)
+            allowed = set(paths) if self.file_guard is None else await self.file_guard(paths)
+            outcomes = await self._disk_worker(self._unlink_outcomes, [path for path in paths if path in allowed])
+            outcomes.extend(_AudioDeletion(path, error='live_or_unknown_reference') for path in paths if path not in allowed)
 
             async def acknowledge():
                 for result in outcomes:

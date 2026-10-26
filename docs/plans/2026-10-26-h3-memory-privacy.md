@@ -475,6 +475,64 @@ que su fila; el candidato final incluye su corrección y regresión. La evidenci
 conserva ambos resultados y el aviso inicial de Bandit, resuelto con una consulta
 literal parametrizada y el guard de vigencia. Esto no cierra H3.
 
+## Avance: purga independiente del ambient path
+
+`CaptureRetention` se construye y arranca con el participante de capturas, antes
+de los productores. Recorre las bases y raíces históricas del registro privado
+aunque ambient, keep_audio y memoria semántica estén apagados. No carga STT,
+SpeakerID, Chroma ni embeddings para hacerlo. Las ubicaciones nuevas se registran
+antes de admitir archivos y despiertan su mantenimiento; los destinos previos
+siguen incluidos después de cambiar configuración o reiniciar.
+
+El planificador mantiene hasta dos bases en trabajo independiente y un executor
+de disco propio de dos threads. Una búsqueda semántica o un encoder en el pool
+general no ocupa esos threads. Una base corrupta o un unlink bloqueado no
+impiden que otro destino independiente se limpie. El trabajo real de cada barrido
+sigue registrado si se cancela su observador. El estado de diagnóstico sólo
+contiene IDs opacos, contadores y códigos fijos; no contiene rutas ni texto de
+errores privados. Un destino o versión indeterminado queda visible y no autoriza
+eliminaciones que no se puedan atribuir.
+
+La fecha persistida de cada fila/intent limita la retención. El mantenimiento
+respeta también un límite configurado menor que 48 h, sin renovar fechas al leer
+o reabrir. Las capturas nuevas y los archivos pendientes despiertan el scheduler;
+se consulta el vencimiento más próximo y se acotan reintentos a 60 s. El recibo
+guarda cuándo se calculó el próximo plazo: recogerlo tarde no le suma otra espera
+al vencimiento original. No se interpreta una lectura filtrada como prueba de
+que ya terminó la limpieza física.
+
+El barrido retira texto y scopes vencidos y conserva los intents de encoders
+activos hasta su salida. Las rutas pasan a la cola durable antes del unlink.
+Para evitar colisiones de datos anteriores, el guard de archivos comprueba sólo
+metadatos en todas las bases registradas que comparten esa raíz. Una referencia
+vigente protege el archivo; una base inaccesible o de esquema desconocido también
+lo conserva, con la limpieza pendiente. Un rowid vigente de otra base protege
+el archivo numérico legacy aunque todavía no tenga puntero adjunto.
+
+Los huérfanos numéricos legacy siguen la guarda previa de mtime y se encolan en
+lotes de hasta 256, sin borrar rutas ya pendientes de nuevo ni tocar archivos
+protegidos. El recorrido usa scandir y propaga errores, en vez de interpretar
+un directorio ilegible como vacío. Archivos sin una base atribuible y protocolos
+de archivo ajenos al conocido requieren inventario/revisión; no se les inventan
+fuentes. Los clips nuevos con UUID disponen de su intent durable desde antes
+del encoder. Todavía falta contrastar las ubicaciones reales y las copias legacy
+en el ensayo de migración.
+
+El store activo comparte guard, raíces históricas y ownership del disco con el
+mantenimiento. La apertura/migración del schema se serializa con BEGIN IMMEDIATE
+entre conexiones y hace rollback si falla. Esto evita que la conexión del
+transcriber y el barrido agreguen simultáneamente una columna. El archiver ahora
+retiene toda la llamada, incluida reserva y descarte, además del encoder: el
+cierre detiene admisión y espera esas llamadas antes de cerrar disco y liberar
+la lease. El presupuesto de observación y la tarea de cierre real siguen siendo
+cosas distintas.
+
+Este avance no conecta los otros ocho participantes del borrado global ni drena
+STT, lectores, tap y destilación. La reconciliación de todos los vencimientos y
+borrados individuales del índice con recall apagado sigue pendiente, al igual
+que pausa/mute, voces, copias de diagnóstico y migración real. No cierra H3 y no
+modificó producción.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
@@ -484,8 +542,8 @@ literal parametrizada y el guard de vigencia. Esto no cierra H3.
 2. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
    frente a productores y guardados tardíos. Conectar al journal los participantes
-   restantes y los lotes de destilación en curso; mantener la purga de capturas
-   históricas aunque ambient esté apagado; ampliar la limpieza sin recall
+   restantes y los lotes de destilación en curso; contrastar los destinos y clips
+   legacy indeterminados del inventario; ampliar la limpieza sin recall
    a vencimientos y borrados individuales. Agregar selección y recibos en el
    dashboard autenticado después de cerrar esas garantías. La limpieza local
    del catálogo y del índice no sustituye la operación completa.

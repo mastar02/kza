@@ -51,8 +51,13 @@ async def graph(root, *, location='current'):
             privacy=privacy, store=store, discard_audio=store.discard_audio)
         await driver.attach(SimpleNamespace(store=store, transcriber=SimpleNamespace(_archiver=archive)))
         await store.init()
-        yield SimpleNamespace(privacy=privacy, owner=owner, driver=driver, store=store, archive=archive,
-                              clock=clock, config=config, stack=stack)
+        try:
+            yield SimpleNamespace(privacy=privacy, owner=owner, driver=driver, store=store, archive=archive,
+                                  clock=clock, config=config, stack=stack)
+        finally:
+            # The 10 ms observation budget remains tested explicitly. Drain
+            # actual background I/O before ExitStack closes fixture databases.
+            await asyncio.wait_for(asyncio.shield(owner.begin_close()), 3)
 
 
 async def capture(g):

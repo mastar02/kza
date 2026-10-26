@@ -503,6 +503,7 @@ def build_ambient_path(
         db_path=ambient_cfg.get("db_path", "./data/ambient.db"),
         retention_hours=ambient_cfg.get("retention_hours", 48.0),
         source_policy=privacy.ledger if privacy is not None else None,
+        clock=privacy.ledger.clock if privacy is not None else None,
         audio_dir=ka_cfg.get("dir", "./data/ambient_audio"),
     )
 
