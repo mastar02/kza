@@ -33,6 +33,7 @@ Ejemplo:
 
 import asyncio
 import inspect
+import math
 import re
 import time
 import unicodedata
@@ -42,6 +43,7 @@ from enum import StrEnum
 from typing import Callable
 
 from src.core.logging import get_logger
+from src.core.voice_delivery import DeliveryState
 from src.home_assistant.home_actions import HomeActionService
 from src.home_assistant.voice_actions import VoiceHomeActionExecutor
 from src.llm.generation_stream import GenerationStream
@@ -325,6 +327,8 @@ class DispatchResult:
             "was_queued": self.was_queued,
             "queue_position": self.queue_position,
             "speech_handled": self.speech_handled,
+            "timeout_stage": self.timeout_stage,
+            "voice_delivery": self.voice_delivery,
         }
 
 
@@ -580,6 +584,8 @@ class RequestDispatcher:
         self.router = router
         self.llm = llm
         self.tts = tts
+        if type(response_timeout_s) not in (int, float) or not math.isfinite(response_timeout_s) or response_timeout_s <= 0:
+            raise ValueError("Invalid response timeout")
         self.response_timeout_s = response_timeout_s
         self.context_manager = context_manager or ContextManager()
         # An injected queue is initially empty/falsy, but is still the worker's
@@ -1121,6 +1127,8 @@ class RequestDispatcher:
         Procesar peticion por slow path (cola priorizada).
         """
         timeout = self.response_timeout_s if timeout is None else timeout
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("Invalid response timeout")
         timings = {}
 
         # Crear evento para esperar respuesta
@@ -1169,26 +1177,21 @@ class RequestDispatcher:
 
         position = self.queue.get_position(request.request_id)
 
-        # Si hay callback, notificar que esta en cola
-        if on_response and position and position > 1:
-            notification = on_response(DispatchResult(
-                path=PathType.SLOW_LLM,
-                priority=priority,
-                success=True,
-                response=f"Un momento, hay {position - 1} peticion(es) antes",
-                intent="queued",
-                was_queued=True,
-                queue_position=position,
-                timings=timings
-            ))
-            if inspect.isawaitable(notification):
-                await notification
-
-        # Work has one deadline. A delegated voice owner is allowed only its
-        # bounded feedback/cleanup grace, so the router cannot repeat its error.
+        # Queue feedback spends the same work budget and cancellation scope.
+        # A delegated response owner gets only its bounded terminal grace.
         try:
             try:
-                await asyncio.wait_for(response_event.wait(), timeout=max(0, request.response_deadline-response_loop.time()))
+                async with asyncio.timeout_at(request.response_deadline):
+                    if on_response and position and position > 1:
+                        notification = on_response(DispatchResult(
+                            path=PathType.SLOW_LLM, priority=priority, success=True,
+                            response=f"Un momento, hay {position - 1} peticion(es) antes",
+                            intent="queued", was_queued=True,
+                            queue_position=position, timings=timings,
+                        ))
+                        if inspect.isawaitable(notification):
+                            await notification
+                    await response_event.wait()
             except TimeoutError:
                 if not request.speech_handled or self.response_handler is None:
                     raise
@@ -1207,6 +1210,9 @@ class RequestDispatcher:
                 timings=timings
             )
         except asyncio.CancelledError:
+            request.cancel(CancellationReason.USER_EXPLICIT)
+            raise
+        except Exception:
             request.cancel(CancellationReason.USER_EXPLICIT)
             raise
 
@@ -1249,6 +1255,7 @@ class RequestDispatcher:
             success=request.status.name == "COMPLETED",
             response=response or "Sin respuesta",
             speech_handled=request.speech_handled,
+            voice_delivery=request.voice_delivery,
             intent="conversation",
             was_queued=True,
             queue_position=position,
@@ -1970,7 +1977,6 @@ class MultiUserOrchestrator:
         """Consume generation off the loop; cancel pending reads and late results."""
         async def generate() -> str:
             if self.response_handler is not None:
-                from src.pipeline.response_handler import DeliveryState
                 def owned():
                     request.speech_handled = True
 

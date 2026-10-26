@@ -46,11 +46,13 @@ class ResponseBudgets:
         for value in (self.queue_wait_s, self.generation_s, self.delivery_s, self.feedback_s, self.cleanup_s):
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError("Response budgets must be finite and positive")
+        if not math.isfinite(self.terminal_grace_s):
+            raise ValueError("Response terminal grace must be finite")
 
     @property
     def terminal_grace_s(self) -> float:
-        """Bound feedback plus generation/output cleanup after work deadline."""
-        return self.feedback_s + 2 * self.cleanup_s
+        """Allow provider unwind, work abort, feedback abort and final cleanup."""
+        return self.feedback_s + 4 * self.cleanup_s
 
 
 class ResponseTimedOut(TimeoutError):

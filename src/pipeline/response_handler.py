@@ -9,6 +9,7 @@ import re
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from src.llm.generation_stream import GenerationStream
@@ -34,6 +35,7 @@ class _Session:
     zone_id: str | None
     loop: asyncio.AbstractEventLoop | None = None
     cancelled: threading.Event = field(default_factory=threading.Event)
+    cancel_requested: threading.Event = field(default_factory=threading.Event)
     condition: threading.Condition = field(default_factory=threading.Condition)
     space: asyncio.Event = field(default_factory=asyncio.Event)
     interrupted: asyncio.Event = field(default_factory=asyncio.Event)
@@ -201,11 +203,13 @@ class ResponseHandler:
         and close run off-loop; a blocked synthesis continues to own its slot.
         """
         with self._ownership:
-            sessions = ([self._owner] if self._owner is not None else []) + list(self._pending)
-        targets = [s for s in sessions if not s.cancelled.is_set() and (zone_id is None or s.zone_id == zone_id or s.broadcast)]
-        players = [p for s in targets if (p := self._interrupt(s)) is not None]
-        if players:
-            await asyncio.gather(*(asyncio.to_thread(p.stop) for p in players))
+            sessions = {**self._controllers, **self._workers}.values()
+            targets = [s for s in sessions if not s.cancel_requested.is_set()
+                       and (zone_id is None or s.zone_id == zone_id or s.broadcast)]
+            for session in targets:
+                session.cancel_requested.set()
+        if targets:
+            await asyncio.gather(*(self._stop_session(session) for session in targets))
         return bool(targets)
 
     def get_delivery_status(self) -> dict:
@@ -534,6 +538,8 @@ class ResponseHandler:
                      emotion_adjustment: dict | None = None, room_context=None, *,
                      timeout_s: float | None = None) -> ResponseResult:
         """Await one owned utterance without blocking capture or abandoning TTS."""
+        if timeout_s is not None and (type(timeout_s) not in (int, float) or not math.isfinite(timeout_s) or timeout_s <= 0):
+            raise ValueError("Invalid voice utterance deadline")
         if not text:
             return ResponseResult("", GenerationState.COMPLETE, DeliveryState.EMPTY, speech_handled=False)
         return await self._aspeak_utterance(_Utterance(text=text, stream=self.streaming_enabled if stream is None else stream,
@@ -634,7 +640,7 @@ class ResponseHandler:
     async def arespond(self, prompt: str, zone_id=None, *, generation: GenerationStream | None = None,
                        max_tokens: int = 1024, temperature: float = 0.7, room_context=None,
                        emotion_adjustment=None, use_filler: bool | None = None,
-                       deadline: float | None = None, on_owned=None) -> ResponseResult:
+                       deadline: float | None = None, on_owned: Callable[[], None] | None = None) -> ResponseResult:
         """Own work deadlines and at most one bounded error utterance.
 
         Queue, provider waiting and output have separate budgets. Downstream
@@ -642,14 +648,21 @@ class ResponseHandler:
         deadline caps work after an orchestrator queue; feedback has its own
         budget and is never announced again by the router.
         """
+        if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
+            raise ValueError("Invalid response deadline")
         session = self._session(zone_id, room_context, asynchronous=True)
         loop = asyncio.get_running_loop()
         producer = worker = None
         watches = set()
+        resources = set()
+        work_stopped = False
         response = ""
         generation_state = GenerationState.INCOMPLETE
-        if on_owned is not None:
-            on_owned()
+
+        def track(task):
+            resources.add(task)
+            task.add_done_callback(resources.discard)
+            return self._track_generation(task)
 
         async def produce() -> None:
             nonlocal response, generation_state
@@ -667,7 +680,7 @@ class ResponseHandler:
             try:
                 while True:
                     started = loop.time()
-                    read = self._track_generation(asyncio.create_task(anext(iterator)))
+                    read = track(asyncio.create_task(anext(iterator)))
                     done, _ = await asyncio.wait({read}, timeout=max(0, remaining))
                     remaining -= loop.time() - started
                     if not done:
@@ -704,7 +717,7 @@ class ResponseHandler:
                         await asyncio.gather(read, return_exceptions=True)
                     await tokens.aclose()
 
-                cleanup = self._track_generation(asyncio.create_task(close_source()))
+                cleanup = track(asyncio.create_task(close_source()))
                 try:
                     done, _ = await asyncio.wait({cleanup}, timeout=self.budgets.cleanup_s)
                     if done:
@@ -728,13 +741,14 @@ class ResponseHandler:
             return ResponseStage.DELIVERY if generation_state is GenerationState.COMPLETE else ResponseStage.GENERATION
 
         async def stop_work(*, wait_worker=True):
+            nonlocal work_stopped
             started = loop.time()
             if producer is not None and not producer.done() and not producer.cancelling():
                 producer.cancel()
             await self._stop_session(session)
+            work_stopped = True
             while True:
-                with self._ownership:
-                    tasks = {task for task in self._generation_tasks if not task.done()}
+                tasks = {task for task in resources if not task.done()}
                 owned = (producer, worker) if wait_worker else (producer,)
                 tasks.update(task for task in owned if task is not None and not task.done())
                 remaining = self.budgets.cleanup_s - (loop.time()-started)
@@ -743,6 +757,8 @@ class ResponseHandler:
                 await self._settle_tasks(tasks, remaining)
 
         try:
+            if on_owned is not None:
+                on_owned()
             queue_limit = self.budgets.queue_wait_s if deadline is None else min(self.budgets.queue_wait_s, max(0, deadline-loop.time()))
             try:
                 async with asyncio.timeout(queue_limit):
@@ -754,7 +770,7 @@ class ResponseHandler:
             if self.llm_use_filler if use_filler is None else use_filler:
                 session.filler = self.llm_filler_phrases[0]
             worker = asyncio.create_task(asyncio.to_thread(self._worker, session))
-            producer = self._track_generation(asyncio.create_task(produce()))
+            producer = track(asyncio.create_task(produce()))
             interrupted = asyncio.create_task(session.interrupted.wait())
             output_timer = asyncio.create_task(output_limit())
             watches = {interrupted, output_timer}
@@ -791,6 +807,8 @@ class ResponseHandler:
             raise
         except Exception as error:
             await stop_work()
+            if session.cancel_requested.is_set():
+                return ResponseResult("", GenerationState.CANCELLED, DeliveryState.CANCELLED)
             if generation_state is GenerationState.INCOMPLETE:
                 generation_state = GenerationState.FAILED
             stage = error.stage if isinstance(error, ResponseTimedOut) else None
@@ -810,7 +828,7 @@ class ResponseHandler:
                                   spoken_segments=session.spoken + feedback.spoken_segments, timeout_stage=stage)
         finally:
             async def cleanup_all():
-                if (producer is not None and not producer.done()) or (worker is not None and not worker.done()):
+                if not work_stopped and ((producer is not None and not producer.done()) or (worker is not None and not worker.done())):
                     await stop_work(wait_worker=False)
                 for task in watches:
                     task.cancel()

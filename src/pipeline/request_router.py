@@ -831,6 +831,10 @@ class RequestRouter:
         result["action"] = dispatch_result.action
         result["path"] = dispatch_result.path.value if dispatch_result.path else None
         result["timings"].update(dispatch_result.timings)
+        for key in ("timeout_stage", "voice_delivery"):
+            value = getattr(dispatch_result, key, None)
+            if isinstance(value, str):
+                result[key] = value
 
         # 6b. Attach room context to result
         if room_context:
@@ -1346,6 +1350,10 @@ class RequestRouter:
             result["timings"]["llm_stream"] = (time.perf_counter() - pipeline_start) * 1000
             result["response"] = delivery.text.strip()
             result["success"] = delivery.success
+            result["voice_delivery"] = delivery.delivery.value
+            if delivery.timeout_stage is not None:
+                result["timeout_stage"] = delivery.timeout_stage.value
+                result["intent"] = "timeout"
 
         if self.memory and result["success"]:
             self.memory.record_interaction(

@@ -11,6 +11,7 @@ import os
 import re
 import time
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,50 @@ class _AsyncGenerationResources:
     error: Exception | None = None
 
 logger = logging.getLogger(__name__)
+
+
+async def _finish_owned_close(closing: asyncio.Task) -> None:
+    """Do not detach resource cleanup when its consumer is cancelled."""
+    cancelled = False
+    while not closing.done():
+        try:
+            await asyncio.shield(closing)
+        except asyncio.CancelledError:
+            cancelled = True
+    closing.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+@asynccontextmanager
+async def _owned_async_resource(resource):
+    """Keep explicit SDK resource close attached to the consumer."""
+    try:
+        yield resource
+    finally:
+        await _finish_owned_close(asyncio.create_task(resource.close()))
+
+
+class _OwnedHTTPBody(httpx.AsyncByteStream):
+    """Protect body close, including HTTPX/SDK automatic close at EOF.
+
+    HTTPX marks a response closed before awaiting the underlying byte stream.
+    Retaining that actual close prevents cancellation from losing it behind
+    the response's already-closed flag.
+    """
+
+    def __init__(self, stream: httpx.AsyncByteStream):
+        self._stream = stream
+        self._closing: asyncio.Task | None = None
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async for chunk in self._stream:
+            yield chunk
+
+    async def aclose(self) -> None:
+        if self._closing is None:
+            self._closing = asyncio.create_task(self._stream.aclose())
+        await _finish_owned_close(self._closing)
 
 
 def _resolve_api_key(base_url: str, api_key_env: str | None = None) -> str:
@@ -724,7 +769,7 @@ class HttpReasoner:
                     continue
             cleanup.result()
             raise
-        async with resources.client:
+        async with _owned_async_resource(resources.client):
             if resources.error is not None:
                 raise resources.error
             self.policy.require_allowed(base_url)
@@ -752,10 +797,11 @@ class HttpReasoner:
                 stream = await resources.completions.create(messages=[{"role": "user", "content": prompt}], **options)
             else:
                 stream = await resources.completions.create(prompt=prompt, **options)
+            stream.response.stream = _OwnedHTTPBody(stream.response.stream)
             raw = emitted = ""
             count = received = 0
             finish_reason = None
-            async with stream:
+            async with _owned_async_resource(stream):
                 iterator = stream.__aiter__()
                 while True:
                     try:
