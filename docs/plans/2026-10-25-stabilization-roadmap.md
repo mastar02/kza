@@ -127,9 +127,13 @@ propietario de respuesta, cola de frases acotada y PCM con cancelación para
 cache, síntesis completa, streaming, earcons y broadcast. El factory usado por
 `main` conecta también productores de features y síntesis de arranque/cache al
 propietario, con cierre de admisión y espera de recursos reales. El callback de
-captura tiene un caso conectado de barge-in sobre salida simulada. Quedan los
-timeouts durante entrega parcial, los presupuestos por etapa y la aceptación
-del grafo completo con runtime y hardware.
+captura tiene un caso conectado de barge-in sobre salida simulada. El avance del
+26 de octubre incorpora presupuestos por etapa y una prueba conectada que evita
+duplicar el aviso de error mientras se drena la salida. Es trabajo en curso:
+faltan ampliar los casos de timeout y entrega parcial, ejecutar la suite completa
+sobre estos cambios y aceptar el grafo completo con runtime y hardware. La
+[validación dirigida](../research/2026-10-26-h2-response-deadline-checkpoint.json)
+no cierra H2.
 
 **Entregables:** consumo no bloqueante del reasoner, un único responsable de
 locutar cada respuesta y reproducción que conserve todos los samples. Integrar

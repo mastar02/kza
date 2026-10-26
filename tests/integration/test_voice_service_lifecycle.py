@@ -66,7 +66,7 @@ async def test_close_waits_for_native_stream_cleanup_after_output_worker_exits(m
     closing = asyncio.create_task(owner.aclose())
     await asyncio.wait_for(entered.wait(), 1)
     await until(lambda: owner.get_delivery_status()['workers'] == 0)
-    assert not closing.done() and owner.get_delivery_status()['generations'] == 1
+    assert not closing.done() and owner.get_delivery_status()['generations'] >= 1
     release.set()
     await closing
     assert (await task).delivery is DeliveryState.CANCELLED

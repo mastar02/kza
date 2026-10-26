@@ -1,0 +1,34 @@
+{
+  "checked_on": "2026-10-26",
+  "status": "work_in_progress",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "base_commit": "091719f",
+  "code_reference": "Code changes are included in the commit introducing this checkpoint",
+  "scope": "Stage budgets and early ownership of error speech across dispatcher, generation and output",
+  "regression": "A generation error with device tail still draining beyond the outer deadline previously caused a second spoken timeout error. The connected test now observes one error utterance and no saved conversation turn.",
+  "focused_validation": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/integration/test_response_deadlines.py tests/integration/test_owned_voice_responses.py tests/integration/test_voice_service_lifecycle.py tests/integration/test_routed_voice_delivery.py tests/unit/orchestrator/test_slow_path_failure.py -q --tb=short",
+    "passed": 40,
+    "failed": 0,
+    "runtime_s": 6.69,
+    "log": "/tmp/kza-h2-deadline-directed-2.log"
+  },
+  "ruff": {
+    "version": "0.15.1",
+    "passed": true
+  },
+  "remaining": [
+    "Stage-specific timeout, partial-delivery, backpressure, stalled cleanup and feedback cancellation coverage",
+    "Public deadline validation and metadata review",
+    "Completed long uncached response measurements",
+    "Full suite and compiled runtime validation for these changes",
+    "Complete runtime and physical capture/output acceptance in H4/H6"
+  ],
+  "last_full_suite_reference": "docs/research/2026-10-25-h2-application-voice-validation.json",
+  "full_suite_run_for_this_checkpoint": false,
+  "h2_complete": false,
+  "production_changed": false,
+  "dependencies_changed": false,
+  "physical_audio_measured": false
+}

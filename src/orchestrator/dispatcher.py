@@ -311,6 +311,8 @@ class DispatchResult:
     user_id: str = None
     zone_id: str = None
     speech_handled: bool = False
+    timeout_stage: str | None = None
+    voice_delivery: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -1162,6 +1164,7 @@ class RequestDispatcher:
             on_cancel=on_cancel,
             on_fail=on_fail
         )
+        request.response_deadline = response_loop.time() + timeout
         timings["queue"] = (time.perf_counter() - t0) * 1000
 
         position = self.queue.get_position(request.request_id)
@@ -1181,9 +1184,15 @@ class RequestDispatcher:
             if inspect.isawaitable(notification):
                 await notification
 
-        # Esperar respuesta o timeout
+        # Work has one deadline. A delegated voice owner is allowed only its
+        # bounded feedback/cleanup grace, so the router cannot repeat its error.
         try:
-            await asyncio.wait_for(response_event.wait(), timeout=timeout)
+            try:
+                await asyncio.wait_for(response_event.wait(), timeout=max(0, request.response_deadline-response_loop.time()))
+            except TimeoutError:
+                if not request.speech_handled or self.response_handler is None:
+                    raise
+                await asyncio.wait_for(response_event.wait(), timeout=self.response_handler.budgets.terminal_grace_s)
         except asyncio.TimeoutError:
             request.cancel(CancellationReason.TIMEOUT)
             return DispatchResult(
@@ -1215,10 +1224,11 @@ class RequestDispatcher:
                 path=PathType.SLOW_LLM,
                 priority=priority,
                 success=False,
-                response="No pude procesar eso ahora mismo, probá de nuevo.",
-                intent="error",
+                response=request.error_response or "No pude procesar eso ahora mismo, probá de nuevo.",
+                intent="timeout" if request.timeout_stage is not None else "error",
                 error=result_holder.get("error"),
                 speech_handled=request.speech_handled,
+                timeout_stage=request.timeout_stage, voice_delivery=request.voice_delivery,
                 was_queued=True,
                 queue_position=position,
                 timings=timings
@@ -1961,10 +1971,17 @@ class MultiUserOrchestrator:
         async def generate() -> str:
             if self.response_handler is not None:
                 from src.pipeline.response_handler import DeliveryState
+                def owned():
+                    request.speech_handled = True
+
                 delivered = await self.response_handler.arespond(
                     prompt, zone_id=request.zone_id, generation=self._generation,
+                    deadline=request.response_deadline, on_owned=owned,
                 )
                 request.speech_handled = delivered.speech_handled
+                request.error_response = delivered.text
+                request.timeout_stage = delivered.timeout_stage
+                request.voice_delivery = delivered.delivery
                 if delivered.delivery is DeliveryState.CANCELLED:
                     request.cancel(CancellationReason.USER_EXPLICIT)
                     return ""

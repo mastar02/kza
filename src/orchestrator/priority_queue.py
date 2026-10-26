@@ -92,6 +92,10 @@ class Request:
     result: Any = field(compare=False, default=None)
     error: str = field(compare=False, default=None)
     speech_handled: bool = field(compare=False, default=False)
+    response_deadline: float | None = field(compare=False, default=None)
+    error_response: str | None = field(compare=False, default=None)
+    timeout_stage: str | None = field(compare=False, default=None)
+    voice_delivery: str | None = field(compare=False, default=None)
     completed_at: float = field(compare=False, default=None)
 
     # Callbacks

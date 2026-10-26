@@ -294,6 +294,12 @@ tts:
     drain_timeout_s: null      # Automático: al menos 2 s y buffer + 1 s
     shutdown_timeout_s: 1.0    # Cierre cooperativo; un motor bloqueado queda visible como fallo
     default_output_zone: null # Zona fija para avisos sin origen; no usa la última habitación activa
+    response_timeouts:
+      queue_wait_s: 30.0     # Esperar al propietario de voz
+      generation_s: 60.0     # Tiempo acumulado esperando al proveedor; excluye presión de retorno
+      delivery_s: 120.0      # Desde la primera síntesis hasta el drenado final
+      feedback_s: 10.0       # Único aviso de error, incluida espera de TTS y salida
+      cleanup_s: 1.0         # Limpieza cooperativa; los recursos retenidos siguen visibles
     # Ajustes recomendados:
     # - Audio se corta: aumentar buffer_ms (200-300) o prebuffer_ms (80)
     # - Mucha latencia: reducir prebuffer_ms (40-50)

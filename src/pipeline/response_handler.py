@@ -9,11 +9,12 @@ import re
 import threading
 import time
 from collections import deque
-from contextlib import aclosing
 from dataclasses import dataclass, field
 
 from src.llm.generation_stream import GenerationStream
-from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
+from src.core.voice_delivery import (
+    DeliveryState, GenerationState, ResponseBudgets, ResponseResult, ResponseStage, ResponseTimedOut,
+)
 from src.tts.piper_tts import AudioPlaybackError, StreamingAudioPlayer
 from src.tts.response_cache import CachedAudio, ResponseCache
 
@@ -45,6 +46,7 @@ class _Session:
     peak_queue: int = 0
     filler: str | None = None
     broadcast: bool = False
+    delivery_started_at: float | None = None
 
     def signal(self, event: asyncio.Event) -> None:
         if self.loop is not None:
@@ -81,6 +83,7 @@ class ResponseHandler:
         max_pending_responses: int = 16, playback_stall_timeout_s: float = 1.0,
         playback_drain_timeout_s: float | None = None,
         shutdown_timeout_s: float = 1.0,
+        response_budgets: ResponseBudgets | None = None,
     ) -> None:
         if any(type(n) is not int or n <= 0 for n in
                (sentence_queue_capacity, sentence_max_chars, max_pending_responses)):
@@ -99,11 +102,14 @@ class ResponseHandler:
         if type(shutdown_timeout_s) not in (int, float) or not math.isfinite(shutdown_timeout_s) or shutdown_timeout_s <= 0:
             raise ValueError("Invalid voice shutdown deadline")
         self.shutdown_timeout_s = shutdown_timeout_s
+        self.budgets = response_budgets or ResponseBudgets()
         self._closed = False
         self._shutdown_task: asyncio.Task | None = None
         self._controllers: dict[int, _Session] = {}
         self._workers: dict[int, _Session] = {}
         self._generation_tasks: set[asyncio.Task] = set()
+        self._retained_generations: set[asyncio.Task] = set()
+        self._abort_tasks: set[asyncio.Task] = set()
         self._owner: _Session | None = None
         self._pending: list[_Session] = []
         self._active_zone_id = None
@@ -210,6 +216,7 @@ class ResponseHandler:
                 "controllers": len(self._controllers), "workers": len(self._workers),
                 "generations": sum(not task.done() for task in self._generation_tasks),
                 "blocked_generations": sum(source.sync_busy for source in self._generation_sources),
+                "aborts": sum(not task.done() for task in self._abort_tasks),
             }
 
     def _controller_finished(self, session: _Session) -> None:
@@ -222,7 +229,7 @@ class ResponseHandler:
                 await self.cancel()
                 while True:
                     status = self.get_delivery_status()
-                    if not any(status[key] for key in ("controllers", "workers", "generations", "blocked_generations")):
+                    if not any(status[key] for key in ("controllers", "workers", "generations", "blocked_generations", "aborts")):
                         return
                     await asyncio.sleep(0.005)
         except TimeoutError as error:
@@ -403,6 +410,8 @@ class ResponseHandler:
                         utterance = _Utterance(session.filler, stream=self.streaming_enabled)
                         session.filler = None
                 session.signal(session.space)
+                if session.delivery_started_at is None:
+                    session.delivery_started_at = time.monotonic()
                 self._render(session, utterance)
         except _DeliveryBlocked as error:
             session.delivery, session.error = DeliveryState.BLOCKED, str(error)
@@ -466,38 +475,98 @@ class ResponseHandler:
         return ResponseResult(text, generation, delivery, error or session.error, spoken_segments=session.spoken)
 
     async def _wait_output(self, session: _Session, worker: asyncio.Task) -> None:
+        await self._wait_output_until(session, worker)
+
+    async def _wait_output_until(self, session: _Session, worker: asyncio.Task,
+                                 deadline: float | None = None) -> None:
         interrupted = asyncio.create_task(session.interrupted.wait())
         try:
-            await asyncio.wait({worker, interrupted}, return_when=asyncio.FIRST_COMPLETED)
+            timeout = None if deadline is None else max(0, deadline - asyncio.get_running_loop().time())
+            done, _ = await asyncio.wait({worker, interrupted}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                raise ResponseTimedOut(ResponseStage.DELIVERY)
             if worker.done() or session.delivery in {DeliveryState.FAILED, DeliveryState.BLOCKED}:
                 await asyncio.shield(worker)
         finally:
             interrupted.cancel()
             await asyncio.gather(interrupted, return_exceptions=True)
 
+    def _track_generation(self, task: asyncio.Task) -> asyncio.Task:
+        with self._ownership:
+            self._generation_tasks.add(task)
+
+        def finished(completed):
+            with self._ownership:
+                self._generation_tasks.discard(completed)
+                self._retained_generations.discard(completed)
+            if not completed.cancelled():
+                completed.exception()
+
+        task.add_done_callback(finished)
+        return task
+
+    async def _settle_tasks(self, tasks: set[asyncio.Task], timeout: float | None = None) -> bool:
+        if not tasks:
+            return True
+        done, pending = await asyncio.wait(tasks, timeout=self.budgets.cleanup_s if timeout is None else timeout)
+        for task in done:
+            if not task.cancelled():
+                task.exception()
+        return not pending
+
+    async def _stop_session(self, session: _Session) -> None:
+        player = self._interrupt(session)
+        if player is not None:
+            task = asyncio.create_task(asyncio.to_thread(player.stop))
+            with self._ownership:
+                self._abort_tasks.add(task)
+
+            def finished(completed):
+                with self._ownership:
+                    self._abort_tasks.discard(completed)
+                if not completed.cancelled():
+                    completed.exception()
+
+            task.add_done_callback(finished)
+            await self._settle_tasks({task})
+
     async def aspeak(self, text: str, zone_id: str | None = None, stream: bool | None = None,
-                     emotion_adjustment: dict | None = None, room_context=None) -> ResponseResult:
+                     emotion_adjustment: dict | None = None, room_context=None, *,
+                     timeout_s: float | None = None) -> ResponseResult:
         """Await one owned utterance without blocking capture or abandoning TTS."""
         if not text:
             return ResponseResult("", GenerationState.COMPLETE, DeliveryState.EMPTY, speech_handled=False)
         return await self._aspeak_utterance(_Utterance(text=text, stream=self.streaming_enabled if stream is None else stream,
-                                                     emotion=emotion_adjustment), zone_id, room_context)
+                                                     emotion=emotion_adjustment), zone_id, room_context, timeout_s=timeout_s)
 
-    async def _aspeak_utterance(self, utterance, zone_id, room_context, *, broadcast=False) -> ResponseResult:
+    async def _aspeak_utterance(self, utterance, zone_id, room_context, *, broadcast=False, timeout_s=None) -> ResponseResult:
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout_s is None else loop.time() + timeout_s
         session = self._session(zone_id, room_context, asynchronous=True)
         session.broadcast = broadcast
         try:
-            if not await self._acquire(session):
+            queue_limit = self.budgets.queue_wait_s if deadline is None else min(self.budgets.queue_wait_s, max(0, deadline-loop.time()))
+            try:
+                async with asyncio.timeout(queue_limit):
+                    acquired = await self._acquire(session)
+            except TimeoutError as error:
+                raise ResponseTimedOut(ResponseStage.QUEUE) from error
+            if not acquired:
                 return ResponseResult(utterance.text, GenerationState.CANCELLED, DeliveryState.CANCELLED)
             session.queue.append(utterance)
             session.done = True
             worker = asyncio.create_task(asyncio.to_thread(self._worker, session))
-            await self._wait_output(session, worker)
+            output_deadline = loop.time() + self.budgets.delivery_s
+            if deadline is not None:
+                output_deadline = min(deadline, output_deadline)
+            await self._wait_output_until(session, worker, output_deadline)
             return self._result(session, utterance.text)
+        except ResponseTimedOut as error:
+            await self._stop_session(session)
+            return ResponseResult(utterance.text, GenerationState.COMPLETE, DeliveryState.TIMED_OUT,
+                                  str(error), timeout_stage=error.stage)
         except asyncio.CancelledError:
-            player = self._interrupt(session)
-            if player is not None:
-                await asyncio.to_thread(player.stop)
+            await self._stop_session(session)
             raise
         finally:
             self._controller_finished(session)
@@ -564,90 +633,190 @@ class ResponseHandler:
 
     async def arespond(self, prompt: str, zone_id=None, *, generation: GenerationStream | None = None,
                        max_tokens: int = 1024, temperature: float = 0.7, room_context=None,
-                       emotion_adjustment=None, use_filler: bool | None = None) -> ResponseResult:
-        """Stream generation into bounded phrases and serialize synthesis/output.
+                       emotion_adjustment=None, use_filler: bool | None = None,
+                       deadline: float | None = None, on_owned=None) -> ResponseResult:
+        """Own work deadlines and at most one bounded error utterance.
 
-        Generation failure discards queued old phrases and delivers one error
-        through this owner if output is available. Cancellation never speaks an
-        error. A blocked engine retains the slot until its real worker exits.
+        Queue, provider waiting and output have separate budgets. Downstream
+        backpressure does not spend the provider budget. The optional absolute
+        deadline caps work after an orchestrator queue; feedback has its own
+        budget and is never announced again by the router.
         """
         session = self._session(zone_id, room_context, asynchronous=True)
-        producer = worker = interrupted = None
+        loop = asyncio.get_running_loop()
+        producer = worker = None
+        watches = set()
         response = ""
-        generation_state, generation_error = GenerationState.INCOMPLETE, None
+        generation_state = GenerationState.INCOMPLETE
+        if on_owned is not None:
+            on_owned()
 
         async def produce() -> None:
-            nonlocal response, generation_state, generation_error
+            nonlocal response, generation_state
             pending = ""
+            source = generation if generation is not None else self._generation
+            with self._ownership:
+                if any(not task.done() for task in self._retained_generations) or any(item.sync_busy for item in self._generation_sources):
+                    raise RuntimeError("previous_generation_still_running")
+                self._generation_sources = {source}
+            tokens = source.astream(prompt, max_tokens=max_tokens, temperature=temperature)
+            iterator = tokens.__aiter__()
+            read = None
+            failed = False
+            remaining = self.budgets.generation_s
             try:
-                source = generation if generation is not None else self._generation
-                with self._ownership:
-                    self._generation_sources = {item for item in self._generation_sources if item.sync_busy}
-                    self._generation_sources.add(source)
-                async with aclosing(source.astream(prompt, max_tokens=max_tokens, temperature=temperature)) as tokens:
-                    async for chunk in tokens:
-                        token = chunk.get("token", "")
-                        if type(token) is not str:
-                            raise ValueError("invalid_stream_text")
-                        if len(response) + len(token) > source.max_chars:
-                            raise ValueError("generation_text_limit")
-                        response += token
-                        phrases, pending = self._split(pending + token)
-                        for phrase in phrases:
-                            await self._put(session, _Utterance(phrase, stream=self.streaming_enabled, emotion=emotion_adjustment))
+                while True:
+                    started = loop.time()
+                    read = self._track_generation(asyncio.create_task(anext(iterator)))
+                    done, _ = await asyncio.wait({read}, timeout=max(0, remaining))
+                    remaining -= loop.time() - started
+                    if not done:
+                        read.cancel()
+                        raise ResponseTimedOut(ResponseStage.GENERATION)
+                    try:
+                        chunk = read.result()
+                    except StopAsyncIteration:
+                        break
+                    token = chunk.get("token", "")
+                    if type(token) is not str:
+                        raise ValueError("invalid_stream_text")
+                    if len(response) + len(token) > source.max_chars:
+                        raise ValueError("generation_text_limit")
+                    response += token
+                    phrases, pending = self._split(pending + token)
+                    for phrase in phrases:
+                        await self._put(session, _Utterance(phrase, stream=self.streaming_enabled, emotion=emotion_adjustment))
                 if not response.strip():
                     raise RuntimeError("generation_empty")
                 generation_state = GenerationState.COMPLETE
                 phrases, _ = self._split(pending, final=True)
                 for phrase in phrases:
                     await self._put(session, _Utterance(phrase, stream=self.streaming_enabled, emotion=emotion_adjustment))
-            except asyncio.CancelledError:
+            except BaseException:
+                failed = True
                 raise
-            except Exception as error:
-                generation_state, generation_error = GenerationState.FAILED, str(error)
-                response = "No pude procesar eso ahora mismo, probá de nuevo."
-                with session.condition:
-                    session.queue.clear()
-                await self._put(session, _Utterance(response, stream=self.streaming_enabled))
             finally:
-                self._finish(session)
+                if read is not None and not read.done() and not read.cancelling():
+                    read.cancel()
+
+                async def close_source():
+                    if read is not None:
+                        await asyncio.gather(read, return_exceptions=True)
+                    await tokens.aclose()
+
+                cleanup = self._track_generation(asyncio.create_task(close_source()))
+                try:
+                    done, _ = await asyncio.wait({cleanup}, timeout=self.budgets.cleanup_s)
+                    if done:
+                        cleanup.result()
+                    elif not failed:
+                        raise ResponseTimedOut(ResponseStage.CLEANUP)
+                finally:
+                    if not cleanup.done():
+                        with self._ownership:
+                            self._retained_generations.add(cleanup)
+                    self._finish(session)
+
+        async def output_limit():
+            while session.delivery_started_at is None:
+                await asyncio.sleep(.005)
+            await asyncio.sleep(max(0, session.delivery_started_at + self.budgets.delivery_s - loop.time()))
+            return ResponseStage.DELIVERY
+
+        async def total_limit():
+            await asyncio.sleep(max(0, deadline - loop.time()))
+            return ResponseStage.DELIVERY if generation_state is GenerationState.COMPLETE else ResponseStage.GENERATION
+
+        async def stop_work(*, wait_worker=True):
+            started = loop.time()
+            if producer is not None and not producer.done() and not producer.cancelling():
+                producer.cancel()
+            await self._stop_session(session)
+            while True:
+                with self._ownership:
+                    tasks = {task for task in self._generation_tasks if not task.done()}
+                owned = (producer, worker) if wait_worker else (producer,)
+                tasks.update(task for task in owned if task is not None and not task.done())
+                remaining = self.budgets.cleanup_s - (loop.time()-started)
+                if not tasks or remaining <= 0:
+                    return
+                await self._settle_tasks(tasks, remaining)
 
         try:
-            if not await self._acquire(session):
+            queue_limit = self.budgets.queue_wait_s if deadline is None else min(self.budgets.queue_wait_s, max(0, deadline-loop.time()))
+            try:
+                async with asyncio.timeout(queue_limit):
+                    acquired = await self._acquire(session)
+            except TimeoutError as error:
+                raise ResponseTimedOut(ResponseStage.QUEUE) from error
+            if not acquired:
                 return ResponseResult("", GenerationState.CANCELLED, DeliveryState.CANCELLED)
             if self.llm_use_filler if use_filler is None else use_filler:
                 session.filler = self.llm_filler_phrases[0]
             worker = asyncio.create_task(asyncio.to_thread(self._worker, session))
-            producer = asyncio.create_task(produce())
-            with self._ownership:
-                self._generation_tasks.add(producer)
-
-            def generation_finished(task):
-                with self._ownership:
-                    self._generation_tasks.discard(task)
-
-            producer.add_done_callback(generation_finished)
+            producer = self._track_generation(asyncio.create_task(produce()))
             interrupted = asyncio.create_task(session.interrupted.wait())
-            await asyncio.wait({worker, producer, interrupted}, return_when=asyncio.FIRST_COMPLETED)
-            if producer.done() and not session.cancelled.is_set():
-                await producer
-                await self._wait_output(session, worker)
-            if session.cancelled.is_set():
-                producer.cancel()
-            await asyncio.gather(producer, return_exceptions=True)
-            if session.delivery in {DeliveryState.FAILED, DeliveryState.BLOCKED}:
-                await asyncio.shield(worker)
-            return self._result(session, response, generation_state, generation_error)
+            output_timer = asyncio.create_task(output_limit())
+            watches = {interrupted, output_timer}
+            overall_timer = None if deadline is None else asyncio.create_task(total_limit())
+            if overall_timer is not None:
+                watches.add(overall_timer)
+            pending_tasks = {worker, producer, *watches}
+            while True:
+                done, _ = await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
+                # Output failure is not retried through the same failed device.
+                if session.delivery in {DeliveryState.FAILED, DeliveryState.BLOCKED}:
+                    await stop_work()
+                    return self._result(session, response, generation_state, session.error)
+                if session.cancelled.is_set():
+                    await stop_work(wait_worker=False)
+                    return ResponseResult("", GenerationState.CANCELLED, DeliveryState.CANCELLED)
+                if producer in done:
+                    if producer.cancelled():
+                        await stop_work(wait_worker=False)
+                        return ResponseResult("", GenerationState.CANCELLED, DeliveryState.CANCELLED)
+                    producer.result()
+                    pending_tasks.discard(producer)
+                if worker in done:
+                    await worker
+                    if producer.done():
+                        producer.result()
+                        return self._result(session, response, generation_state)
+                    pending_tasks.discard(worker)
+                if output_timer in done:
+                    raise ResponseTimedOut(output_timer.result())
+                if overall_timer is not None and overall_timer in done:
+                    raise ResponseTimedOut(overall_timer.result())
         except asyncio.CancelledError:
-            player = self._interrupt(session)
-            if player is not None:
-                await asyncio.to_thread(player.stop)
             raise
+        except Exception as error:
+            await stop_work()
+            if generation_state is GenerationState.INCOMPLETE:
+                generation_state = GenerationState.FAILED
+            stage = error.stage if isinstance(error, ResponseTimedOut) else None
+            text = "Lo siento, tarde demasiado. Intenta de nuevo." if stage is not None else "No pude procesar eso ahora mismo, probá de nuevo."
+            # A separate cancelled epoch stops old PCM. This is the only error
+            # attempt and its queue/synthesis/drain all share the feedback cap.
+            try:
+                feedback = await self.aspeak(text, zone_id=session.zone_id, timeout_s=self.budgets.feedback_s)
+            except RuntimeError as unavailable:
+                return ResponseResult(text, generation_state, DeliveryState.FAILED, str(unavailable), timeout_stage=stage)
+            if feedback.delivery is DeliveryState.CANCELLED:
+                return ResponseResult("", GenerationState.CANCELLED, DeliveryState.CANCELLED)
+            if feedback.delivery is DeliveryState.TIMED_OUT:
+                return ResponseResult(text, generation_state, DeliveryState.TIMED_OUT,
+                                      "response_feedback_timeout", timeout_stage=ResponseStage.FEEDBACK)
+            return ResponseResult(text, generation_state, feedback.delivery, str(error),
+                                  spoken_segments=session.spoken + feedback.spoken_segments, timeout_stage=stage)
         finally:
-            for task in (producer, interrupted):
-                if task is not None and not task.done():
+            async def cleanup_all():
+                if (producer is not None and not producer.done()) or (worker is not None and not worker.done()):
+                    await stop_work(wait_worker=False)
+                for task in watches:
                     task.cancel()
-            cleanup = asyncio.ensure_future(asyncio.gather(*(t for t in (producer, interrupted) if t is not None), return_exceptions=True))
+                await asyncio.gather(*watches, return_exceptions=True)
+
+            cleanup = asyncio.create_task(cleanup_all())
             cancelled = False
             try:
                 while not cleanup.done():

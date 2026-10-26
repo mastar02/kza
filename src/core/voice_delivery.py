@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable
@@ -20,6 +21,44 @@ class DeliveryState(StrEnum):
     CANCELLED = "cancelled"
     BLOCKED = "blocked"
     EMPTY = "empty"
+    TIMED_OUT = "timed_out"
+
+
+class ResponseStage(StrEnum):
+    QUEUE = "queue"
+    GENERATION = "generation"
+    DELIVERY = "delivery"
+    FEEDBACK = "feedback"
+    CLEANUP = "cleanup"
+
+
+@dataclass(frozen=True)
+class ResponseBudgets:
+    """Finite stage budgets; generation excludes downstream backpressure."""
+
+    queue_wait_s: float = 30.0
+    generation_s: float = 60.0
+    delivery_s: float = 120.0
+    feedback_s: float = 10.0
+    cleanup_s: float = 1.0
+
+    def __post_init__(self) -> None:
+        for value in (self.queue_wait_s, self.generation_s, self.delivery_s, self.feedback_s, self.cleanup_s):
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                raise ValueError("Response budgets must be finite and positive")
+
+    @property
+    def terminal_grace_s(self) -> float:
+        """Bound feedback plus generation/output cleanup after work deadline."""
+        return self.feedback_s + 2 * self.cleanup_s
+
+
+class ResponseTimedOut(TimeoutError):
+    """A specific response stage exhausted its budget."""
+
+    def __init__(self, stage: ResponseStage):
+        self.stage = stage
+        super().__init__("response_" + stage.value + "_timeout")
 
 
 @dataclass(frozen=True)
@@ -32,10 +71,14 @@ class ResponseResult:
     error: str | None = None
     speech_handled: bool = True
     spoken_segments: int = 0
+    timeout_stage: ResponseStage | None = None
 
     @property
     def success(self) -> bool:
-        return self.generation is GenerationState.COMPLETE and self.delivery is DeliveryState.COMPLETE
+        return (
+            self.generation is GenerationState.COMPLETE and self.delivery is DeliveryState.COMPLETE
+            and self.error is None and self.timeout_stage is None
+        )
 
 
 class VoiceDeliveryError(RuntimeError):

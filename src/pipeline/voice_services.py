@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from src.pipeline.feature_manager import FeatureManager, build_feature_manager
 from src.pipeline.response_handler import ResponseHandler
 from src.reminders.reminder_scheduler import ReminderScheduler
+from src.core.voice_delivery import ResponseBudgets
 
 
 @dataclass
@@ -55,6 +56,7 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
         playback_stall_timeout_s=streaming.get("stall_timeout_s", 1.0),
         playback_drain_timeout_s=streaming.get("drain_timeout_s"),
         shutdown_timeout_s=streaming.get("shutdown_timeout_s", 1.0),
+        response_budgets=ResponseBudgets(**streaming.get("response_timeouts", {})),
         hooks=hooks, before_handler_warn_ms=before_handler_warn_ms,
     )
     shutdown.push_async_callback(response.aclose)
