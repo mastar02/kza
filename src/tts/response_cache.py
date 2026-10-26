@@ -19,6 +19,7 @@ import re
 import time
 import wave as _wave
 from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 
 import numpy as np
 
@@ -116,7 +117,8 @@ class ResponseCache:
             tts.speak(text)              # fallback camino normal
     """
 
-    def __init__(self, tts, sample_rate: int = 24000):
+    def __init__(self, tts, sample_rate: int = 24000, *,
+                 synthesize_callback: Callable[[str], Awaitable[object]] | None = None):
         """Crear cache.
 
         Args:
@@ -126,8 +128,11 @@ class ResponseCache:
                 primer elemento ndarray.
             sample_rate: Sample rate a guardar en `CachedAudio`. Kokoro
                 produce 24kHz. Si el TTS expone `.sample_rate`, se respeta.
+            synthesize_callback: Shared owned synthesis for application startup;
+                a failed/cancelled call never falls through to an unowned engine.
         """
         self._tts = tts
+        self._synthesize_callback = synthesize_callback
         # Respetar sample_rate del TTS si está disponible (DualTTS y Kokoro
         # ambos exponen .sample_rate = 24000).
         self._sample_rate = getattr(tts, "sample_rate", sample_rate)
@@ -175,12 +180,16 @@ class ResponseCache:
         - Retorno tupla `(audio, elapsed_ms, engine)` (DualTTS).
         - Método sync o async.
         """
+        if self._synthesize_callback is not None:
+            result = await self._synthesize_callback(text)
+            audio = self._extract_ndarray(result)
+            return audio.astype(np.float32) if audio is not None else None
         for method_name in ("synthesize_to_array", "synthesize", "generate"):
             fn = getattr(self._tts, method_name, None)
             if fn is None:
                 continue
             try:
-                result = fn(text)
+                result = await fn(text) if asyncio.iscoroutinefunction(fn) else await asyncio.to_thread(fn, text)
                 if asyncio.iscoroutine(result):
                     result = await result
             except Exception as e:

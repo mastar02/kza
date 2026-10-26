@@ -414,12 +414,46 @@ class ResponseHandler:
         finally:
             if session.cancelled.is_set() and session.delivery is DeliveryState.COMPLETE:
                 session.delivery = DeliveryState.CANCELLED
-            with self._ownership:
-                if self._owner is session:
-                    self._owner = None
-                self._workers.pop(id(session), None)
-                self._ownership.notify_all()
-            session.signal(session.space)
+            self._worker_finished(session)
+
+    def _worker_finished(self, session: _Session) -> None:
+        with self._ownership:
+            if self._owner is session:
+                self._owner = None
+            self._workers.pop(id(session), None)
+            self._ownership.notify_all()
+        session.signal(session.space)
+
+    async def asynthesize(self, text: str) -> object:
+        """Own startup/cache synthesis without playing or publishing late PCM.
+
+        The worker retains the same engine slot as spoken responses, including
+        after caller cancellation. Its real exit is included in aclose.
+        """
+        session = self._session(None, None, asynchronous=True)
+
+        def synthesize():
+            try:
+                if not session.cancelled.is_set():
+                    return self.tts.synthesize(text)
+                return None
+            finally:
+                self._worker_finished(session)
+
+        try:
+            if not await self._acquire(session):
+                raise asyncio.CancelledError
+            worker = asyncio.create_task(asyncio.to_thread(synthesize))
+            worker.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+            await self._wait_output(session, worker)
+            if session.cancelled.is_set():
+                raise asyncio.CancelledError
+            return worker.result()
+        except asyncio.CancelledError:
+            self._interrupt(session)
+            raise
+        finally:
+            self._controller_finished(session)
 
     @staticmethod
     def _result(session: _Session, text: str, generation=GenerationState.COMPLETE, error=None) -> ResponseResult:

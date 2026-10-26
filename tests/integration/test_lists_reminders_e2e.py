@@ -130,8 +130,8 @@ class TestReminderFlow:
         await scheduler._fire_reminder(reminder)
 
         # Verify TTS was called and reminder marked fired
-        tts.speak.assert_called_once()
-        assert "sacar basura" in tts.speak.call_args[0][0]
+        tts.aspeak.assert_awaited_once()
+        assert "sacar basura" in tts.aspeak.call_args[0][0]
         updated = await reminder_system["store"].get_by_id(r.id)
         assert updated.state == "fired"
 

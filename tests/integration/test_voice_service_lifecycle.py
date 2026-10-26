@@ -189,3 +189,38 @@ async def test_application_close_deadline_ten_times(monkeypatch, record_property
         'cooperative_cleanup_limit_ms': 1000,
     }))
     assert max(elapsed) <= 1000
+
+
+async def test_cache_build_cancellation_retains_native_worker_and_never_publishes_late_array(monkeypatch):
+    from src.tts.response_cache import ResponseCache
+    owner, engine, backend, _, _ = voice_graph(monkeypatch)
+    engine.release.clear()
+    cache = ResponseCache(engine, synthesize_callback=owner.asynthesize)
+    building = asyncio.create_task(cache.build())
+    await until(engine.entered.is_set)
+    closing = asyncio.create_task(owner.aclose())
+    await until(lambda: owner.get_delivery_status()['closed'])
+    with pytest.raises(asyncio.CancelledError):
+        await building
+    assert owner.get_delivery_status()['workers'] == 1 and not closing.done()
+    assert cache.size() == 0 and backend.outputs == []
+    engine.release.set()
+    await closing
+    assert_drained(owner)
+    assert cache.size() == 0 and backend.outputs == []
+
+
+async def test_owned_startup_warmup_keeps_loop_available_and_synthesizes_without_output(monkeypatch):
+    from src.main import _warmup_models
+    owner, engine, backend, _, _ = voice_graph(monkeypatch)
+    engine.release.clear()
+    task = asyncio.create_task(_warmup_models(None, engine, None, None, None, voice_output=owner))
+    await until(engine.entered.is_set)
+    assert owner.get_delivery_status()['workers'] == 1 and not owner.is_speaking
+    await asyncio.sleep(.2)
+    assert not task.done()
+    engine.release.set()
+    await task
+    assert engine.calls == ['hola'] and backend.outputs == []
+    await owner.aclose()
+    assert_drained(owner)

@@ -121,7 +121,7 @@ def _build_xvf_controllers(
     return controllers
 
 
-async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma):
+async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma, *, voice_output=None):
     """Precalentar modelos con input dummy para evitar cold-start lag.
 
     CUDA compila kernels la primera vez que se usa un modelo — este warmup
@@ -154,7 +154,10 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
     if tts is not None:
         t0 = time.perf_counter()
         try:
-            maybe = await asyncio.to_thread(tts.synthesize, "hola") if hasattr(tts, "synthesize") else None
+            if voice_output is not None:
+                maybe = await voice_output.asynthesize("hola")
+            else:
+                maybe = await asyncio.to_thread(tts.synthesize, "hola") if hasattr(tts, "synthesize") else None
             if asyncio.iscoroutine(maybe):
                 await maybe
             timings["tts"] = (time.perf_counter() - t0) * 1000
@@ -1717,7 +1720,7 @@ async def _run_main(shutdown: AsyncExitStack):
     # Precalentar modelos para eliminar cold-start del primer comando (~600ms→~200ms)
     warmup_config = config.get("warmup", {})
     if warmup_config.get("enabled", True):
-        await _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
+        await _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma, voice_output=response_handler)
 
     # TTS response cache (S2) — pre-genera frases canónicas post-warmup para
     # que Kokoro ya esté caliente y la síntesis bulk sea rápida.
@@ -1725,7 +1728,7 @@ async def _run_main(shutdown: AsyncExitStack):
     if tts_cache_cfg.get("enabled", False):
         from src.tts.response_cache import ResponseCache
 
-        response_cache = ResponseCache(tts)
+        response_cache = ResponseCache(tts, synthesize_callback=response_handler.asynthesize)
         try:
             await response_cache.build()
             response_handler._response_cache = response_cache

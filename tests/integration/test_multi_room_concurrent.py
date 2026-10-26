@@ -412,8 +412,8 @@ async def test_missed_reminder_on_arrival():
         )
 
         assert delivered == 1, f"Expected 1 delivered, got {delivered}"
-        tts_mock.speak.assert_called_once()
-        call_args = tts_mock.speak.call_args
+        tts_mock.aspeak.assert_awaited_once()
+        call_args = tts_mock.aspeak.call_args
         assert "tomar la medicina" in call_args[0][0]
         assert call_args[1]["zone_id"] == "cocina"
 
@@ -456,7 +456,7 @@ async def test_missed_reminder_on_arrival_no_overdue():
         )
 
         assert delivered == 0
-        tts_mock.speak.assert_not_called()
+        tts_mock.aspeak.assert_not_called()
 
         await store.close()
 
