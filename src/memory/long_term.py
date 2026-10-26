@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 from src.memory.fact_ledger import FactLedger, MemoryReviewer, MemorySource
+from src.memory.privacy_services import PrivacyServices
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +28,14 @@ class LongTermMemory:
 
     def __init__(self, chroma_client, collection_name: str = "user_memories", *,
                  ledger_path: str = ":memory:", clock=None, automatic_days: float = 30,
-                 shutdown_timeout_s: float = 1):
+                 shutdown_timeout_s: float = 1, privacy: PrivacyServices | None = None):
         if type(shutdown_timeout_s) not in (int, float) or not math.isfinite(shutdown_timeout_s) or shutdown_timeout_s <= 0:
             raise ValueError("invalid_memory_shutdown_timeout")
         self._client, self._collection_name = chroma_client, collection_name
         self._collection = None
         self.index_collection_name = collection_name + "_policy_v1"
-        self.ledger = FactLedger(ledger_path, clock=clock, automatic_days=automatic_days)
+        self._privacy = privacy
+        self.ledger = privacy.ledger if privacy is not None else FactLedger(ledger_path, clock=clock, automatic_days=automatic_days)
         self.shutdown_timeout_s = shutdown_timeout_s
         self._initializing = threading.RLock()
         self._index_lock = threading.Lock()
@@ -46,6 +48,8 @@ class LongTermMemory:
         self._close_task: asyncio.Task | None = None
         self._maintenance_event: asyncio.Event | None = None
         self._maintenance_loop: asyncio.AbstractEventLoop | None = None
+        if privacy is not None:
+            privacy.add_borrower(self.begin_close)
 
     def _notify(self):
         if self._maintenance_loop is not None:
@@ -61,7 +65,9 @@ class LongTermMemory:
             self._require_open()
             if self._collection is not None:
                 return
-            if self.ledger.path != ":memory:" and self._lease is None:
+            if self._privacy is not None:
+                self._privacy.require_available()
+            if self._privacy is None and self.ledger.path != ":memory:" and self._lease is None:
                 Path(self.ledger.path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 descriptor = os.open(str(Path(self.ledger.path)) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
                 try:
@@ -239,7 +245,7 @@ class LongTermMemory:
         with self._resources_lock:
             return {"closed": self._closed, "operations": len(self._operations),
                     "index_busy": self._index_lock.locked(), "query_busy": self._query_lock.locked(),
-                    "writer_lease": self._lease is not None}
+                    "writer_lease": self._privacy.resource_status()["writer_lease"] if self._privacy is not None else self._lease is not None}
 
     async def maintain(self) -> None:
         """Run expiry and retry maintenance with tracked, bounded native work."""
@@ -264,13 +270,14 @@ class LongTermMemory:
 
     def _close_resources(self):
         with self._index_lock, self._query_lock, self._initializing:
-            self.ledger.close()
+            if self._privacy is None:
+                self.ledger.close()
             if self._lease is not None:
                 os.close(self._lease)
                 self._lease = None
 
-    async def aclose(self) -> None:
-        """Close admission and retain ownership when native cleanup is blocked."""
+    def begin_close(self) -> asyncio.Task:
+        """Expose actual memory drain so a shared ledger outlives native work."""
         with self._resources_lock:
             self._closed = True
         if self._close_task is None:
@@ -283,6 +290,11 @@ class LongTermMemory:
                     await asyncio.gather(*tasks, return_exceptions=True)
                 await asyncio.to_thread(self._close_resources)
             self._close_task = asyncio.create_task(finish())
+        return self._close_task
+
+    async def aclose(self) -> None:
+        """Close admission and retain ownership when native cleanup is blocked."""
+        self.begin_close()
         cancelled = False
         while not self._close_task.done():
             try:

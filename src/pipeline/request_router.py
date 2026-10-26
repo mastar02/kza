@@ -211,6 +211,7 @@ class RequestRouter:
         home_voice_resolver: HomeVoiceResolver | None = None,
         before_handler_warn_ms: float = 5.0,
         unavailable_precheck_enabled: bool = True,
+        privacy=None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -267,6 +268,7 @@ class RequestRouter:
         self.llm = llm_reasoner
         self.router = fast_router
         self.memory = memory_manager
+        self._privacy = privacy
         self.user_manager = user_manager
         self.enrollment = enrollment
         self.conversation_collector = conversation_collector
@@ -330,7 +332,9 @@ class RequestRouter:
 
         # State
         from src.memory.memory_manager import MemoryManager
-        self._source_policy = self.memory.long_term.ledger if isinstance(self.memory, MemoryManager) else None
+        if privacy is not None and isinstance(self.memory, MemoryManager) and self.memory.long_term.ledger is not privacy.ledger:
+            raise ValueError("privacy_authority_mismatch")
+        self._source_policy = privacy.ledger if privacy is not None else (self.memory.long_term.ledger if isinstance(self.memory, MemoryManager) else None)
         self._query_cache = TransientCache(cache_max_size, source_policy=self._source_policy)
         self._cache_max_size = cache_max_size
         self._private_maintenance_task = None
@@ -532,7 +536,10 @@ class RequestRouter:
             conversation_id = getattr(audio_or_event, "conversation_id", None)
             expires_at = getattr(audio_or_event, "source_expires_at", None)
             origin = MemoryOrigin.AMBIENT if textual_wake else MemoryOrigin.VOICE
-            if isinstance(self.memory, MemoryManager):
+            if self._privacy is not None:
+                source = self._privacy.source_for_capture(capture_id, captured_at, room_id,
+                    conversation_id=conversation_id, expires_at=expires_at, origin=origin)
+            elif isinstance(self.memory, MemoryManager):
                 source = self.memory.source_for_capture(capture_id, captured_at, room_id,
                     conversation_id=conversation_id, expires_at=expires_at, origin=origin)
             else:
@@ -540,8 +547,11 @@ class RequestRouter:
                 source = MemorySource(capture_id, conversation_id or str(uuid4()), captured_at,
                     expires_at if expires_at is not None else min(captured_at, time.time())+48*3600, origin)
             self._memory_source.set(source)
-        except (ValueError, TypeError):
-            logger.warning("[Memory] Capture provenance unavailable")
+        except (ValueError, TypeError, RuntimeError, PermissionError):
+            logger.warning("[Privacy] Capture provenance unavailable")
+
+        if self._source_policy is not None and not self._current_source_available():
+            return {"intent": "cancelled", "success": False, "text": "", "response": "", "timings": {}, "latency_ms": 0}
 
         if self.orchestrator_enabled and self._orchestrator:
             result = await self._process_command_orchestrated(
@@ -1847,7 +1857,10 @@ Asistente:"""
 
     def _current_source_available(self) -> bool:
         from src.memory.fact_ledger import sources_authorized
-        return not self._closed and sources_authorized(self._active_sources(), self._query_cache.clock(), self._source_policy)
+        sources = self._active_sources()
+        return not self._closed and (
+            self._privacy.sources_available(sources) if self._privacy is not None
+            else sources_authorized(sources, self._query_cache.clock(), self._source_policy))
 
     def prune_private(self) -> None:
         """Drop idle query/history copies; every read enforces the same policy."""

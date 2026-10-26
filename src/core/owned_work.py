@@ -45,13 +45,18 @@ class OwnedBlockingWork:
         """Report actual retained operations, not cancelled callers."""
         return {"closed": self._closed, "operations": len(self._tasks), "capacity": self._capacity}
 
-    async def aclose(self) -> None:
-        """Close admission and wait for actual work, retaining timed-out cleanup."""
+    def begin_close(self) -> asyncio.Task:
+        """Close admission and return the actual native drain task for an owner."""
         self._closed = True
         if self._closing is None:
             async def finish():
                 await asyncio.gather(*list(self._tasks), return_exceptions=True)
             self._closing = asyncio.create_task(finish())
+        return self._closing
+
+    async def aclose(self) -> None:
+        """Close admission and wait for actual work, retaining timed-out cleanup."""
+        self.begin_close()
         cancelled = False
         while not self._closing.done():
             try:

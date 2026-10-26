@@ -89,8 +89,8 @@ _MIGRATIONS: dict[str, str] = {
     "conversation_id": "ALTER TABLE utterances ADD COLUMN conversation_id TEXT",
 }
 
-_LIVE = "t0 > :cutoff AND created_at > :cutoff AND (expires_at IS NULL OR expires_at > :now)"
-_EXPIRED = "t0 <= :cutoff OR created_at <= :cutoff OR expires_at <= :now"
+_LIVE = "t0 > :cutoff AND created_at > :cutoff AND (expires_at IS NULL OR expires_at > :now) AND conversation_live(conversation_id)"
+_EXPIRED = "t0 <= :cutoff OR created_at <= :cutoff OR expires_at <= :now OR NOT conversation_live(conversation_id)"
 
 
 @dataclass(frozen=True)
@@ -110,6 +110,7 @@ class AmbientStore:
         audio_dir: str | None = None,
         *, clock: Callable[[], float] | None = None,
         conversation_idle_s: float = 120,
+        source_policy=None,
     ):
         """Inicializar el store.
 
@@ -129,6 +130,7 @@ class AmbientStore:
         if type(conversation_idle_s) not in (int, float) or not math.isfinite(conversation_idle_s) or not 0 < conversation_idle_s <= 3600:
             raise ValueError("invalid_capture_conversation_idle")
         self.conversation_idle_s = conversation_idle_s
+        self.source_policy = source_policy
         self.retention_hours = retention_hours
         self.audio_dir = Path(audio_dir) if audio_dir else None
         self._db: aiosqlite.Connection | None = None
@@ -143,6 +145,7 @@ class AmbientStore:
         await asyncio.to_thread(Path(self.db_path).parent.mkdir, parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
+        await self._db.create_function("conversation_live", 1, self._conversation_live)
         await self._db.executescript(_SCHEMA)
         cur = await self._db.execute("PRAGMA table_info(utterances)")
         existing = {row["name"] for row in await cur.fetchall()}
@@ -160,6 +163,17 @@ class AmbientStore:
             if self._db is not None:
                 await self._db.close()
                 self._db = None
+
+    def _conversation_live(self, conversation_id: str | None) -> bool:
+        if self.source_policy is not None and not self.source_policy.authority_available:
+            raise RuntimeError("privacy_authority_unavailable")
+        return self.source_policy is None or conversation_id is None or not self.source_policy.conversation_revoked(conversation_id)
+
+    def _row_live(self, row) -> bool:
+        now = self._clock()
+        cutoff = now-self.retention_hours*3600
+        return row["t0"] > cutoff and row["created_at"] > cutoff and (
+            row["expires_at"] is None or row["expires_at"] > now) and self._conversation_live(row["conversation_id"])
 
     def _retention_parameters(self) -> dict:
         now = self._clock()
@@ -217,12 +231,18 @@ class AmbientStore:
         Raises:
             ValueError: si utt.source no está en SOURCE_VALUES.
         """
+        if self.source_policy is not None and utt.conversation_id is None:
+            raise PermissionError("capture_provenance_must_precede_transcription")
         if utt.source not in SOURCE_VALUES:
             raise ValueError(f"source inválido: {utt.source!r} (∉ {SOURCE_VALUES})")
         if any(type(value) not in (int, float) or not math.isfinite(value) for value in (utt.t0, utt.t1)) or utt.t1 < utt.t0:
             raise ValueError("Capture timestamps must be finite and ordered")
         now = self._clock()
         expires_at = min(utt.t0, now) + self.retention_hours * 3600
+        if utt.expires_at is not None:
+            if type(utt.expires_at) not in (int, float) or not math.isfinite(utt.expires_at):
+                raise ValueError("invalid_capture_expiry")
+            expires_at = min(expires_at, utt.expires_at)
         utt.expires_at = expires_at
 
         async def insert():
@@ -233,6 +253,8 @@ class AmbientStore:
                 )
                 conversation = await cur.fetchone()
                 utt.conversation_id = conversation["id"] if conversation else str(uuid4())
+            if not self._conversation_live(utt.conversation_id):
+                raise PermissionError("capture_conversation_deleted")
             await self._db.execute(
                 "INSERT INTO capture_conversations VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET last_seen_at=max(last_seen_at,excluded.last_seen_at)",
                 (utt.conversation_id, utt.room_id, utt.t0, utt.t1),
@@ -296,11 +318,11 @@ class AmbientStore:
         """Read live clip bytes, rechecking expiry after asynchronous disk I/O."""
         async def live_path():
             cur = await self._db.execute(
-                "SELECT audio_path FROM utterances WHERE id=:id AND " + _LIVE,  # nosec B608 -- Predicate is constant; all values use bound parameters.
+                "SELECT * FROM utterances WHERE id=:id AND " + _LIVE,  # nosec B608 -- Predicate is constant; all values use bound parameters.
                 self._retention_parameters() | {"id": utt_id},
             )
             row = await cur.fetchone()
-            return row["audio_path"] if row else None
+            return row["audio_path"] if row is not None and self._row_live(row) else None
 
         path = await live_path()
         if not path:
@@ -332,7 +354,7 @@ class AmbientStore:
             "SELECT * FROM utterances WHERE room_id=:room AND t0>=:start AND t0<=:end AND " + _LIVE + " ORDER BY t0",  # nosec B608 -- Predicate is constant; all values use bound parameters.
             self._retention_parameters() | {"room": room_id, "start": t0, "end": t1},
         )
-        return [dict(r) for r in await cur.fetchall()]
+        return [dict(r) for r in await cur.fetchall() if self._row_live(r)]
 
     async def undistilled_live(
         self, limit: int = 200, min_vad_prob: float = 0.0, spanish_only: bool = False,
@@ -378,7 +400,7 @@ class AmbientStore:
             query += "AND capture_id IS NOT NULL AND conversation_id IS NOT NULL AND expires_at IS NOT NULL "
         query += "ORDER BY t0 LIMIT :limit"
         cur = await self._db.execute(query, params)
-        return [dict(r) for r in await cur.fetchall()]
+        return [dict(r) for r in await cur.fetchall() if self._row_live(r)]
 
     async def mark_distilled(self, ids: list[int]) -> None:
         """Marcar utterances como destiladas (no se reprocesarán).

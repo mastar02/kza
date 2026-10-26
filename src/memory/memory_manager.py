@@ -18,6 +18,7 @@ from uuid import uuid4
 from src.memory.fact_ledger import FactDependency, MemoryOrigin, MemorySource
 from src.memory.long_term import LongTermMemory
 from src.memory.prompt_context import PromptContext, merge_sources
+from src.memory.sources import CaptureScopes
 
 logger = logging.getLogger(__name__)
 
@@ -222,16 +223,15 @@ class MemoryManager:
         preferences_path: str = "./data/preferences.json",
         max_short_term_turns: int = 10,
         *, ledger_path: str = ":memory:", collection_name: str = "user_memories",
-        clock=None, automatic_days: float = 30,
+        clock=None, automatic_days: float = 30, privacy=None,
     ):
-        self._clock = time.time if clock is None else clock
+        self._clock = privacy.ledger.clock if privacy is not None else (time.time if clock is None else clock)
         self.long_term = LongTermMemory(chroma_client, collection_name,
-                                       ledger_path=ledger_path, clock=self._clock, automatic_days=automatic_days)
+                                       ledger_path=ledger_path, clock=self._clock, automatic_days=automatic_days, privacy=privacy)
         self.short_term = ShortTermMemory(max_turns=max_short_term_turns, clock=self._clock,
                                           source_policy=self.long_term.ledger)
         self.preferences = PreferencesStore(preferences_path)
-        self._scopes = {}
-        self._scope_lock = threading.Lock()
+        self._capture_scopes = privacy.scopes if privacy is not None else CaptureScopes(self.long_term.ledger)
         self._record_lock = threading.Lock()
 
         # Fact extractor se inyecta después para evitar dependencia circular
@@ -255,19 +255,8 @@ class MemoryManager:
         Scopes describe recorded exchanges, not speaker identity or ownership.
         An ambient textual wake preserves its existing capture/conversation IDs.
         """
-        if conversation_id is None:
-            key = (origin, room_id)
-            with self._scope_lock:
-                previous = self._scopes.get(key)
-                if previous is None or self.long_term.ledger.conversation_revoked(previous[0]) or not 0 <= captured_at-previous[1] <= 120 or captured_at-previous[2] > 3600:
-                    conversation_id = str(uuid4())
-                    started = captured_at
-                else:
-                    conversation_id = previous[0]
-                    started = previous[2]
-                self._scopes[key] = (conversation_id, captured_at, started)
-        return MemorySource(capture_id, conversation_id, captured_at,
-                            expires_at if expires_at is not None else min(captured_at, self._clock())+48*3600, origin)
+        return self._capture_scopes.source_for_capture(capture_id, captured_at, room_id,
+            conversation_id=conversation_id, expires_at=expires_at, origin=origin)
 
     async def ainitialize(self) -> None:
         """Initialize policy memory through its owned worker scope."""

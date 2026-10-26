@@ -1726,6 +1726,7 @@ class MultiUserOrchestrator:
         home_actions: HomeActionService | None = None,
         response_timeout_s: float = 180.0,
         memory_manager=None,
+        privacy=None,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -1760,6 +1761,10 @@ class MultiUserOrchestrator:
         self.tts = tts
         self.response_timeout_s = response_timeout_s
         self.memory_manager = memory_manager
+        if privacy is not None and memory_manager is not None and memory_manager.long_term.ledger is not privacy.ledger:
+            raise ValueError("privacy_authority_mismatch")
+        source_policy = privacy.ledger if privacy is not None else (memory_manager.long_term.ledger if memory_manager is not None else None)
+        policy_worker = privacy.acall if privacy is not None else (memory_manager.long_term.acall if memory_manager is not None else None)
         self.speaker_id = speaker_identifier
         self._generation = GenerationStream(llm)
         self.response_handler = response_handler
@@ -1777,14 +1782,14 @@ class MultiUserOrchestrator:
             persister=persister,
             compaction_threshold=compaction_threshold,
             keep_recent_turns=keep_recent_turns,
-            source_policy=memory_manager.long_term.ledger if memory_manager is not None else None,
-            clock=memory_manager.long_term.ledger.clock if memory_manager is not None else None,
-            io_worker=memory_manager.long_term.acall if memory_manager is not None else None,
+            source_policy=source_policy,
+            clock=source_policy.clock if source_policy is not None else None,
+            io_worker=policy_worker,
         )
 
         self._queue = PriorityRequestQueue(
             auto_cancel_previous=auto_cancel_previous,
-            source_policy=memory_manager.long_term.ledger if memory_manager is not None else None,
+            source_policy=source_policy,
         )
 
         self._cancel_manager = self._queue  # Para acceso desde VoicePipeline

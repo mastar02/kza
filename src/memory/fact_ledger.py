@@ -202,7 +202,10 @@ class FactLedger:
         self.clock = time.time if clock is None else clock
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
+        self._authority_available = False
         self._deleted_conversations: frozenset[str] = frozenset()
+        self._deleted_times: dict[str, float] = {}
+        self._pending_deleted_times: dict[str, float] = {}
         self._fact_receipts: dict[str, FactDependency] = {}
         self._pending_fact_ids: frozenset[str] = frozenset()
         self._pending_conversations: frozenset[str] = frozenset()
@@ -243,11 +246,18 @@ class FactLedger:
                         self._db = None
                     raise
             self._fact_receipts = self._read_fact_receipts(self._db)
-            self._deleted_conversations = frozenset(r[0] for r in self._db.execute("SELECT conversation_id FROM conversation_tombstones"))
+            self._deleted_times = dict(self._db.execute("SELECT conversation_id, deleted_at FROM conversation_tombstones"))
+            self._deleted_conversations = frozenset(self._deleted_times)
+            self._authority_available = True
+
+    @property
+    def authority_available(self) -> bool:
+        """Whether the initialized writer still owns a live authority snapshot."""
+        return self._authority_available
 
     def sources_available(self, sources: tuple[MemorySource, ...]) -> bool:
         """Read this sole writer's committed revocations without disk on-loop."""
-        return sources_current(sources, self.clock()) and all(
+        return self._authority_available and sources_current(sources, self.clock()) and all(
             s.conversation_id not in self._deleted_conversations and s.conversation_id not in self._pending_conversations
             and self.facts_available(s.fact_dependencies) for s in sources)
 
@@ -255,10 +265,14 @@ class FactLedger:
         """Read a committed revocation without disk or a SQLite lock."""
         return conversation_id in self._deleted_conversations or conversation_id in self._pending_conversations
 
+    def conversation_deleted_at(self, conversation_id: str) -> float | None:
+        """Read the capture-time fence without disk or source-scope renewal."""
+        return self._pending_deleted_times.get(conversation_id, self._deleted_times.get(conversation_id))
+
     def facts_available(self, dependencies: tuple[FactDependency, ...]) -> bool:
         """Validate committed fact receipts without SQLite or locks on-loop."""
         now = self.clock()
-        return all(d.fact_id not in self._pending_fact_ids and self._fact_receipts.get(d.fact_id) == d
+        return self._authority_available and all(d.fact_id not in self._pending_fact_ids and self._fact_receipts.get(d.fact_id) == d
                    and (d.expires_at is None or now < d.expires_at) for d in dependencies)
 
     def _read_fact_receipts(self, db) -> dict[str, FactDependency]:
@@ -285,6 +299,7 @@ class FactLedger:
     def close(self) -> None:
         """Release the connection after all owning worker operations finish."""
         with self._lock:
+            self._authority_available = False
             if self._db is not None:
                 self._db.close()
                 self._db = None
@@ -302,15 +317,18 @@ class FactLedger:
                 changed = self._authority_version != changes or recovering
                 if changed:
                     receipts = self._read_fact_receipts(self._db)
-                    deleted = frozenset(r[0] for r in self._db.execute("SELECT conversation_id FROM conversation_tombstones"))
+                    deleted_times = dict(self._db.execute("SELECT conversation_id, deleted_at FROM conversation_tombstones"))
+                    deleted = frozenset(deleted_times)
                     # Deny affected readers before commit releases the GIL. New
                     # positive authority is published only after durable commit.
                     self._pending_fact_ids = frozenset(key for key in self._fact_receipts.keys() | receipts.keys()
                         if self._fact_receipts.get(key) != receipts.get(key))
                     self._pending_conversations = deleted - self._deleted_conversations
+                    self._pending_deleted_times = {key: deleted_times[key] for key in self._pending_conversations}
                 self._db.commit()
                 if changed:
                     self._fact_receipts = receipts
+                    self._deleted_times = deleted_times
                     self._deleted_conversations = deleted
             except BaseException:
                 clear_pending = False
@@ -319,15 +337,18 @@ class FactLedger:
                     # A failing commit may have reached disk. Re-read actual
                     # authority after rollback; never restore an assumed state.
                     self._fact_receipts = self._read_fact_receipts(self._db)
-                    self._deleted_conversations = frozenset(r[0] for r in self._db.execute("SELECT conversation_id FROM conversation_tombstones"))
+                    self._deleted_times = dict(self._db.execute("SELECT conversation_id, deleted_at FROM conversation_tombstones"))
+                    self._deleted_conversations = frozenset(self._deleted_times)
                     clear_pending = True
                 finally:
                     if clear_pending:
                         self._pending_fact_ids = self._pending_conversations = frozenset()
+                        self._pending_deleted_times = {}
                 raise
             finally:
                 if clear_pending:
                     self._pending_fact_ids = self._pending_conversations = frozenset()
+                    self._pending_deleted_times = {}
 
     def _queue(self, db, fact_id: str, revision: int, operation: str) -> None:
         db.execute(

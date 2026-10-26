@@ -28,11 +28,13 @@ class MemoryServices:
 
 
 async def build_memory_services(config: dict, *, shutdown: AsyncExitStack, chroma_client=None,
-                                clock=None) -> MemoryServices | None:
+                                clock=None, privacy=None) -> MemoryServices | None:
     """Construct the runtime graph off-loop and register cleanup before init."""
     settings = config.get("memory", {})
     if not settings.get("enabled", True):
         return None
+    if privacy is not None:
+        privacy.require_available()
 
     def construct():
         client = chroma_client
@@ -44,7 +46,7 @@ async def build_memory_services(config: dict, *, shutdown: AsyncExitStack, chrom
             max_short_term_turns=settings.get("short_term_size", 10),
             collection_name=settings.get("long_term_collection", "user_memories"),
             ledger_path=settings.get("privacy_db_path", "./data/memory_privacy.db"),
-            automatic_days=settings.get("automatic_retention_days", 30), clock=clock)
+            automatic_days=settings.get("automatic_retention_days", 30), clock=clock, privacy=privacy)
 
     building = asyncio.create_task(asyncio.to_thread(construct))
     cancelled = False

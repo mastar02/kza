@@ -187,6 +187,8 @@ class EventLogger:
             sources = tuple(MemorySource.from_dict(item) for item in json.loads(encoded))
             if self.source_policy is None:
                 return not any(s.fact_dependencies for s in sources)
+            if not self.source_policy.authority_available:
+                raise RuntimeError("privacy_authority_unavailable")
             return all(not self.source_policy.conversation_revoked(s.conversation_id)
                        and self.source_policy.facts_available(s.fact_dependencies) for s in sources)
         except (TypeError, ValueError, KeyError, AttributeError):

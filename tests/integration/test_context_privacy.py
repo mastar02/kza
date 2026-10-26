@@ -259,6 +259,9 @@ async def test_revocation_removes_short_term_prompt_and_starts_a_new_capture_sco
         assert 'Texto privado anterior.' in await manager.aformat_context_for_prompt('texto')
         await memory.acall(memory.delete_conversation, source.conversation_id, MemoryReviewer('test-admin'))
         assert await manager.aformat_context_for_prompt('texto') == ''
+        with pytest.raises(PermissionError, match='precedes_conversation_revocation'):
+            manager.source_for_capture(str(uuid4()), clock.now, 'test_room')
+        clock.now += .001
         fresh = manager.source_for_capture(str(uuid4()), clock.now, 'test_room')
         assert fresh.conversation_id != source.conversation_id
         await manager.arecord_interaction('Intercambio posterior.', 'Respuesta.', sources=(fresh,))

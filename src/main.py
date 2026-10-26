@@ -39,6 +39,7 @@ from src.pipeline.command_processor import CommandProcessor
 from src.pipeline.voice_services import build_voice_services
 from src.pipeline.request_router import RequestRouter
 from src.memory.services import build_memory_services
+from src.memory.privacy_services import build_privacy_services
 from src.users.speaker_identifier import SpeakerIdentifier
 from src.users.user_manager import UserManager
 from src.users.voice_enrollment import VoiceEnrollment
@@ -555,8 +556,9 @@ async def _run_main(shutdown: AsyncExitStack):
             logger.error(f"No se pudo construir LLMRouter, sigo con fast_router suelto: {e}")
             llm_router = None
 
-    # Memory Manager - memoria contextual
-    memory_services = await build_memory_services(config, shutdown=shutdown)
+    # Privacy authority always exists; semantic recall remains optional.
+    privacy_services = await build_privacy_services(config, shutdown=shutdown)
+    memory_services = await build_memory_services(config, shutdown=shutdown, privacy=privacy_services)
     memory_manager = memory_services.manager if memory_services is not None else None
 
     # LLM Command Router (Opción 2 NLU) — clasificador de comandos vía vLLM 7B.
@@ -579,7 +581,7 @@ async def _run_main(shutdown: AsyncExitStack):
             timeout_s=nlu_cfg.get("timeout_s", 1.5),
             max_tokens=nlu_cfg.get("max_tokens", 200),
             temperature=nlu_cfg.get("temperature", 0.0),
-            source_policy=memory_manager.long_term.ledger if memory_manager is not None else None,
+            source_policy=privacy_services.ledger,
         )
         shutdown.push_async_callback(llm_command_router.aclose)
         logger.info(
@@ -664,8 +666,8 @@ async def _run_main(shutdown: AsyncExitStack):
 
     if analytics_config.get("enabled", True):
         event_logger = await build_event_logger(config, shutdown=shutdown,
-            source_policy=memory_manager.long_term.ledger if memory_manager is not None else None,
-            io_worker=memory_manager.long_term.acall if memory_manager is not None else None)
+            source_policy=privacy_services.ledger,
+            io_worker=privacy_services.acall)
 
         pattern_analyzer = PatternAnalyzer(event_logger)
 
@@ -1125,6 +1127,7 @@ async def _run_main(shutdown: AsyncExitStack):
                         stt_base_cfg=config.get("stt", {}) or {},
                         room_ids=list(room_streams.keys()),
                         store_fact_fn=_store_fact,
+                        privacy=privacy_services,
                     )
                     shutdown.push_async_callback(ambient_path.stop)
                     multi_room_loop.attach_ambient(
@@ -1407,7 +1410,7 @@ async def _run_main(shutdown: AsyncExitStack):
             from src.orchestrator import ContextPersister
             persister = ContextPersister(
                 base_path=persistence_cfg.get("base_path", "data/contexts"),
-                source_policy=memory_manager.long_term.ledger if memory_manager is not None else None,
+                source_policy=privacy_services.ledger,
             )
             logger.info(f"[main] Context persister enabled at {persister.base_path}")
 
@@ -1430,6 +1433,7 @@ async def _run_main(shutdown: AsyncExitStack):
             # fallo de HA y el comando se pierde en silencio (fix 2026-07-25).
             response_handler=response_handler,
             memory_manager=memory_manager,
+            privacy=privacy_services,
             response_timeout_s=config.get("orchestrator", {}).get("response_timeout_s", 180.0),
             home_actions=home_action_service,
             # Plan #2 OpenClaw
@@ -1496,6 +1500,7 @@ async def _run_main(shutdown: AsyncExitStack):
         llm_reasoner=llm,
         fast_router=fast_router,
         memory_manager=memory_manager,
+        privacy=privacy_services,
         user_manager=user_manager,
         enrollment=voice_enrollment,
         event_logger=event_logger,

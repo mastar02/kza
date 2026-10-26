@@ -45,6 +45,7 @@ class AmbientTranscriber:
         quality_fn: Callable[[str, float | None], tuple[str | None, float | None, bool]]
         | None = None,
         archiver: AudioArchiver | None = None,
+        privacy=None,
     ):
         self._tap = tap
         self._segmenter_factory = segmenter_factory
@@ -63,6 +64,7 @@ class AmbientTranscriber:
         # histórico exacto: no se guarda audio y los segmentos sin texto se
         # descartan sin persistir.
         self._archiver = archiver
+        self._privacy = privacy
 
         self._running = False
         self._tasks: list[asyncio.Task] = []
@@ -148,7 +150,19 @@ class AmbientTranscriber:
         worker de la room.
         """
         try:
+            provenance = {}
+            capture_source = None
+            if self._privacy is not None:
+                from uuid import uuid4
+                from src.memory.fact_ledger import MemoryOrigin
+                capture_source = self._privacy.source_for_capture(str(uuid4()), seg.t0, room_id, origin=MemoryOrigin.AMBIENT)
+                if not self._privacy.sources_available((capture_source,)):
+                    return
+                provenance = {"capture_id": capture_source.capture_id, "conversation_id": capture_source.conversation_id,
+                              "expires_at": capture_source.expires_at}
             stt_result = await self._stt.transcribe(seg.audio)
+            if capture_source is not None and not self._privacy.sources_available((capture_source,)):
+                return
             text = stt_result.text.strip()
             archiving = self._archiver is not None and self._archiver.enabled
             if not text:
@@ -162,7 +176,7 @@ class AmbientTranscriber:
                     room_id=room_id, t0=seg.t0, t1=seg.t1, text="",
                     source="self" if seg.during_tts else "unknown",
                     vad_prob=seg.vad_prob, during_tts=seg.during_tts,
-                    text_empty=True,
+                    text_empty=True, **provenance,
                 )
                 empty_id = await self._store.add(empty)
                 try:
@@ -208,14 +222,14 @@ class AmbientTranscriber:
                 no_speech_prob=stt_result.no_speech_prob,
                 vad_prob=seg.vad_prob,
                 lang=lang, lang_prob=lang_prob, lang_ok=lang_ok,
-                during_tts=seg.during_tts,
+                during_tts=seg.during_tts, **provenance,
             )
             if source == "tv":
                 self._last_tv[room_id] = time.time()
             utt_id = await self._store.add(utt)
             logger.debug(
-                f"[Ambient] {room_id} {source} {speaker}: "
-                f"{utt.text[:60]!r} (az={azimuth}, stab={stability:.2f})"
+                "[Ambient] room=%s source=%s azimuth=%s stability=%.2f",
+                room_id, source, azimuth, stability
             )
             # Wake textual (spec 2026-07-05): SIEMPRE después de persistir —
             # la utterance ya quedó en el store pase lo que pase acá. Fail-open
@@ -387,6 +401,7 @@ def build_ambient_path(
     stt_base_cfg: dict,
     room_ids: list[str],
     store_fact_fn: Callable[..., str] | None,
+    privacy=None,
 ) -> AmbientPath:
     """Construir el ambient path completo desde config (wiring de main.py).
 
@@ -478,6 +493,7 @@ def build_ambient_path(
     store = AmbientStore(
         db_path=ambient_cfg.get("db_path", "./data/ambient.db"),
         retention_hours=ambient_cfg.get("retention_hours", 48.0),
+        source_policy=privacy.ledger if privacy is not None else None,
         audio_dir=ka_cfg.get("dir", "./data/ambient_audio"),
     )
 
@@ -516,6 +532,7 @@ def build_ambient_path(
         poll_interval_s=ambient_cfg.get("poll_interval_s", 0.25),
         quality_fn=quality_fn,
         archiver=archiver,
+        privacy=privacy,
     )
 
     distiller = None

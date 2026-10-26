@@ -332,7 +332,7 @@ def command_event(clock):
         source_expires_at=source.expires_at)
 
 
-def request_router(manager, handler, *, owner=None, fast=None):
+def request_router(manager, handler, *, owner=None, fast=None, privacy=None):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
     from src.pipeline.request_router import RequestRouter
@@ -344,7 +344,7 @@ def request_router(manager, handler, *, owner=None, fast=None):
     return RequestRouter(processor, handler, audio, memory_manager=manager,
         orchestrator=owner, orchestrator_enabled=owner is not None, ha_client=ha,
         chroma_sync=SimpleNamespace(search_command=lambda *args, **kwargs: None),
-        fast_router=fast, wake_acoustically_confirmed=True,
+        fast_router=fast, privacy=privacy, wake_acoustically_confirmed=True,
         routine_manager=SimpleNamespace(handle=AsyncMock(return_value={'handled': False})))
 
 
