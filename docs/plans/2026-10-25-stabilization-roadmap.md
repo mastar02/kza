@@ -264,7 +264,7 @@ y cursores de lotes, y espera escrituras anteriores a la revocación. El catálo
 registra la ubicación antes del primer acceso semántico. Las operaciones siguen
 bloqueadas por los participantes pendientes; cancelar la observación o agotar
 el plazo de cierre no libera su trabajo nativo ni la lease. Faltan los demás
-productores/copies y la integración autenticada del borrado global. La
+productores/copias y la integración autenticada del borrado global. La
 reconciliación de todos los vencimientos y borrados individuales sin recall
 también sigue pendiente. El detalle está en el plan de H3.
 

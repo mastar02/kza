@@ -31,6 +31,14 @@ class ActiveCleanup:
     task: asyncio.Task
 
 
+@dataclass(frozen=True)
+class CleanupOutcome:
+    """A retained receipt must never own a driver's exception or traceback."""
+
+    result: ErasureResult | None
+    error: ErasureError | None = None
+
+
 class ErasureCoordinator:
     """Reconcile bounded cleanup without treating observer cancellation as exit.
 
@@ -84,18 +92,13 @@ class ErasureCoordinator:
         for key, active in list(self._active.items()):
             if not active.task.done():
                 continue
-            result, error = None, None
             try:
-                result = active.task.result()
-                if not isinstance(result, ErasureResult):
-                    result, error = None, ErasureError.INVALID_RESULT
+                outcome = active.task.result()
             except asyncio.CancelledError:
-                error = ErasureError.FAILED
-            except Exception:
-                error = ErasureError.FAILED
+                outcome = CleanupOutcome(None, ErasureError.FAILED)
             # A failed acknowledgement keeps the completed task. Retry the
             # receipt, never rerun physical cleanup for the same live claim.
-            await self.privacy.acall(self.journal.finish, active.step, result, error)
+            await self.privacy.acall(self.journal.finish, active.step, outcome.result, outcome.error)
             del self._active[key]
 
     async def _reconcile(self) -> None:
@@ -117,7 +120,17 @@ class ErasureCoordinator:
             # The whole cycle is shielded, including the claim -> task handoff.
             # Closing waits for it before draining callbacks and their resources.
             async def cleanup(claim=step, callback=driver.callback):
-                return await callback(claim)
+                try:
+                    result = await callback(claim)
+                    if not isinstance(result, ErasureResult):
+                        return CleanupOutcome(None, ErasureError.INVALID_RESULT)
+                    # Copy the exact DTO so subclasses cannot keep extra raw
+                    # fields attached to a successfully retained result either.
+                    return CleanupOutcome(ErasureResult(result.done, result.cursor, result.pending_count))
+                except asyncio.CancelledError:
+                    return CleanupOutcome(None, ErasureError.FAILED)
+                except Exception:
+                    return CleanupOutcome(None, ErasureError.FAILED)
             task = asyncio.create_task(cleanup())
             task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
             self._active[(step.operation_id, step.participant, step.target_id)] = ActiveCleanup(step, task)

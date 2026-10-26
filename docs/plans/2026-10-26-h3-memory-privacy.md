@@ -376,7 +376,10 @@ de adquirir la lease del runtime. Abrir otro catálogo o repetir initialize no
 reinicia un claim vivo. El coordinador conserva hasta cuatro callbacks reales
 y el handoff desde claim, aunque se cancele el observador. Si falla el guardado
 del recibo, conserva el callback terminado y reintenta ese guardado sin duplicar
-la limpieza. Un timeout de cierre mantiene callbacks, executor y lease hasta
+la limpieza. El resultado retenido se normaliza a un DTO sin texto de excepción,
+traceback ni campos adicionales del driver; tampoco se conserva un resultado
+inválido con contenido privado mientras falla la escritura del recibo.
+Un timeout de cierre mantiene callbacks, executor y lease hasta
 su salida real. Los fallos se registran con códigos fijos y backoff acotado.
 
 El participante Chroma funciona con la memoria semántica apagada. Usa un worker

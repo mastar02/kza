@@ -2,7 +2,7 @@
 
 import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 import sqlite3
@@ -589,3 +589,34 @@ async def test_semantic_factory_registers_target_before_first_index_access_even_
         with pytest.raises(OSError):
             await build_memory_services(config, shutdown=stack, privacy=privacy, chroma_client=client)
         assert observed == [{'path': str(tmp_path/'chroma'), 'collection': 'user_memories_policy_v1'}]
+
+
+@pytest.mark.parametrize('scenario', ['exception', 'invalid_result', 'extra_fields'])
+async def test_failed_ack_retains_only_sanitized_outcome_instead_of_original_driver_exception(tmp_path, monkeypatch, scenario):
+    async with graph(tmp_path) as (privacy, owner, _, _):
+        @dataclass(frozen=True)
+        class RichResult(ErasureResult):
+            private: str = 'synthetic private transcript in extra field'
+        async def clean(step):
+            if scenario == 'invalid_result':
+                return {'done': True, 'private': 'synthetic private transcript in invalid result'}
+            if scenario == 'extra_fields':
+                return RichResult(True)
+            raise OSError('synthetic private transcript in driver exception')
+        await target(privacy)
+        owner.register(Participant.CONTEXTS, clean, versions=frozenset({1}))
+        await owner.request(str(uuid4()), ACTOR)
+        await owner.reconcile()
+        await until(lambda: all(a.task.done() for a in owner._active.values()))
+        finish = privacy.ledger.erasures.finish
+        def unavailable(*args):
+            raise OSError('synthetic unavailable journal')
+        monkeypatch.setattr(privacy.ledger.erasures, 'finish', unavailable)
+        try:
+            with pytest.raises(OSError):
+                await owner.reconcile()
+            retained = next(iter(owner._active.values())).task
+            assert retained.exception() is None
+            assert 'private transcript' not in repr(retained.result())
+        finally:
+            monkeypatch.setattr(privacy.ledger.erasures, 'finish', finish)
