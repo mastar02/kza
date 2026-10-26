@@ -32,9 +32,18 @@ class HomeVoiceResolver:
         one selected domain entity is sufficient; more than one needs a choice.
         """
         grants = await self.actions.policy.snapshot_grants()
-        candidates = {grant.entity_id for grant in grants if grant.entity_id.startswith(command.domain + ".")}
+        candidates = {grant.entity_id for grant in grants if grant.direct_control and grant.entity_id.startswith(command.domain + ".")}
         if not candidates:
             return VoiceTarget(None, "no_selected_target")
+        if command.domain == "scene":
+            target = normalize_target(command.target)
+            matches = []
+            for grant in grants:
+                if grant.entity_id in candidates and grant.scene_effects:
+                    aliases = (grant.entity_id.partition(".")[2].replace("_", " "), grant.display_name, *grant.aliases)
+                    if target in {normalize_target(alias) for alias in aliases if alias}:
+                        matches.append(grant.entity_id)
+            return VoiceTarget(matches[0]) if len(matches) == 1 else VoiceTarget(None, "unknown_or_ambiguous_scene")
         target = normalize_target(command.target)
         explicit = bool(target)
         target = re.sub(r"^(?:del|de la|de los|de las|de|en el|en la|en|el|la|los|las)\s+", "", target)

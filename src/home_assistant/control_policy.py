@@ -9,6 +9,7 @@ import re
 from typing import TYPE_CHECKING
 
 from src.home_assistant.operations import BLIND_CLASSES, DOMAIN_OPERATIONS, HVAC_MODES, finite_number
+from src.home_assistant.effect_plans import EffectIntent, GroupMembershipSource, MAX_EFFECTS, scene_effects_from_states
 
 if TYPE_CHECKING:
     from src.home_assistant.home_actions import HomeActionRequest
@@ -64,7 +65,7 @@ class HomeActionDenied(ValueError):
 
 @dataclass(frozen=True)
 class EntityGrant:
-    """Explicit operations and limits for one verified leaf entity."""
+    """Selected control, reviewed expansion and exact operation limits."""
 
     entity_id: str
     operations: frozenset[str]
@@ -79,17 +80,42 @@ class EntityGrant:
     position_min: int = 0
     position_max: int = 100
     cover_device_class: str | None = None
+    members: tuple[str, ...] = ()
+    scene_effects: tuple[EffectIntent, ...] = ()
+    display_name: str | None = None
+    aliases: tuple[str, ...] = ()
+    membership_source: GroupMembershipSource = GroupMembershipSource.HA_STATE
+    direct_control: bool = True
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "membership_source", GroupMembershipSource(self.membership_source))
+        if type(self.direct_control) is not bool:
+            raise ValueError("invalid_direct_control_scope")
         if (
             type(self.entity_id) is not str
-            or re.fullmatch(r"(?:light|switch|climate|cover)\.[a-z0-9_]+", self.entity_id) is None
+            or re.fullmatch(r"(?:light|switch|climate|cover|scene)\.[a-z0-9_]+", self.entity_id) is None
             or type(self.operations) is not frozenset or not self.operations
             or not self.operations <= DOMAIN_OPERATIONS.get(self.entity_id.partition(".")[0], ())
             or type(self.brightness_min) is not int or type(self.brightness_max) is not int
             or not 0 <= self.brightness_min <= self.brightness_max <= 100
         ):
             raise ValueError("invalid_entity_grant")
+        if type(self.members) is not tuple or len(self.members) > MAX_EFFECTS or any(type(member) is not str or re.fullmatch(r"light\.[a-z0-9_]+", member) is None for member in self.members) or len(set(self.members)) != len(self.members):
+            raise ValueError("invalid_group_members")
+        if self.members and (not self.entity_id.startswith("light.") or self.entity_id in self.members):
+            raise ValueError("invalid_group_members")
+        if not self.members and self.membership_source is not GroupMembershipSource.HA_STATE:
+            raise ValueError("group_definition_required")
+        if type(self.scene_effects) is not tuple or len(self.scene_effects) > MAX_EFFECTS or any(not isinstance(effect, EffectIntent) or not effect.entity_id.startswith("light.") for effect in self.scene_effects):
+            raise ValueError("invalid_scene_effects")
+        if self.entity_id.startswith("scene.") != bool(self.scene_effects):
+            raise ValueError("scene_effects_unverified")
+        if len({effect.entity_id for effect in self.scene_effects}) != len(self.scene_effects):
+            raise ValueError("duplicate_scene_target")
+        if self.display_name is not None and (type(self.display_name) is not str or not self.display_name.strip()):
+            raise ValueError("invalid_effect_name")
+        if type(self.aliases) is not tuple or any(type(alias) is not str or not alias.strip() for alias in self.aliases):
+            raise ValueError("invalid_effect_aliases")
         if "color_temp_kelvin" in self.operations and (
             type(self.color_temp_min) is not int or type(self.color_temp_max) is not int
             or not 0 < self.color_temp_min <= self.color_temp_max
@@ -145,7 +171,9 @@ class HomeControlPolicy:
                 raise ValueError("invalid_selection")
             grants = []
             for entry in entries:
-                if entry.get("live_verified") is not True:
+                if entry.get("live_verified") is not True or entry.get("indirect_effects_verified") is not True:
+                    continue
+                if (entry.get("kind") in {"light_group", "scene"} or entry.get("entity_id", "").startswith("scene.")) and entry.get("effects_verified") is not True:
                     continue
                 operations = entry["operations"]
                 if type(operations) is not list or any(type(value) is not str for value in operations):
@@ -159,6 +187,11 @@ class HomeControlPolicy:
 
     async def require_allowed(self, request: "HomeActionRequest", actor: HomeActor) -> EntityGrant:
         """Check actor, producer, selected entity, operation and current limits."""
+        return self.require_from_grants(request, actor, await self.snapshot_grants())
+
+    @staticmethod
+    def require_from_grants(request: "HomeActionRequest", actor: HomeActor, grants: tuple[EntityGrant, ...], *, via_expansion: bool = False) -> EntityGrant:
+        """Validate an actor and effect against one atomic selection observation."""
         if not isinstance(actor, HomeActor) or "home:control" not in actor.permissions:
             raise HomeActionDenied("home_control_denied")
         if (
@@ -166,12 +199,15 @@ class HomeControlPolicy:
             or (request.origin is ActionOrigin.HTTP) != (actor.kind is ActorKind.DASHBOARD)
         ):
             raise HomeActionDenied("action_provenance_denied")
-        grants = await self.snapshot_grants()
         grant = next((item for item in grants if item.entity_id == request.entity_id), None)
-        if grant is None or request.operation not in grant.operations:
+        if grant is None or request.operation not in grant.operations or (not via_expansion and not grant.direct_control):
             raise HomeActionDenied("action_not_selected")
         if request.brightness_pct is not None and (
             "brightness" not in grant.operations or not grant.brightness_min <= request.brightness_pct <= grant.brightness_max
+        ):
+            raise HomeActionDenied("brightness_outside_selected_range")
+        if getattr(request, "brightness", None) is not None and (
+            "brightness" not in grant.operations or not grant.brightness_min * 255 <= request.brightness * 100 <= grant.brightness_max * 255
         ):
             raise HomeActionDenied("brightness_outside_selected_range")
         if request.color_temp_kelvin is not None and not grant.color_temp_min <= request.color_temp_kelvin <= grant.color_temp_max:
@@ -193,6 +229,8 @@ class HomeControlPolicy:
 
 def grant_from_review(entry: dict) -> EntityGrant:
     """Parse explicit per-operation limits from private reviewed inventory data."""
+    if entry.get("indirect_effects_verified") is not True:
+        raise ValueError("indirect_effects_unverified")
     parameters = entry.get("parameters", {})
     if type(parameters) is not dict or parameters.keys() - {"brightness_pct", "color_temp_kelvin", "temperature", "hvac_modes", "position", "device_class"}:
         raise ValueError("invalid_parameters")
@@ -204,7 +242,24 @@ def grant_from_review(entry: dict) -> EntityGrant:
             raise ValueError("invalid_parameter_bounds")
         return value["min"], value["max"]
 
-    fields = {}
+    fields = {"direct_control": entry.get("direct_control", True)}
+    kind = entry.get("kind", "leaf")
+    if kind not in {"leaf", "light_group", "scene"}:
+        raise ValueError("invalid_effect_kind")
+    if kind in {"light_group", "scene"}:
+        if entry.get("effects_verified") is not True:
+            raise ValueError("effects_unverified")
+        if kind == "light_group":
+            if type(entry.get("members")) is not list or not entry["members"]:
+                raise ValueError("invalid_group_members")
+            fields["members"] = tuple(entry["members"])
+            fields["membership_source"] = GroupMembershipSource(entry.get("membership_source", "ha_state"))
+        else:
+            fields["scene_effects"] = scene_effects_from_states(entry["states"])
+            fields["display_name"] = entry.get("name")
+            if type(entry.get("aliases", [])) is not list:
+                raise ValueError("invalid_effect_aliases")
+            fields["aliases"] = tuple(entry.get("aliases", []))
     if "brightness" in operations:
         fields["brightness_min"], fields["brightness_max"] = bounds("brightness_pct")
     if "color_temp_kelvin" in operations:

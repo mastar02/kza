@@ -42,3 +42,31 @@ test('routine validation retains typed requirements and rejects values outside c
   }
   assert.equal(routines.validateRoutineDraft({ ...draft, actions: [{ entity_id: ac.entity_id, operation: 'set_hvac_mode', hvac_mode: 'heat' }] }, { entities: [ac] }).valid, false);
 });
+
+test('reviewed scenes use their capability and retain partial leaf receipts', async () => {
+  const scene = { entity_id: 'scene.test_evening', domain: 'scene', state: 'unknown', available: true, capabilities: ['activate_scene'] };
+  assert.equal(home.entityCanControl(scene, 'activate_scene', false), true);
+  assert.equal(home.entityCanControl({ ...scene, capabilities: [] }, 'activate_scene', false), false);
+  assert.equal(home.entityCanControl(scene, 'activate_scene', true), false);
+  const effects = [{ status: 'confirmed' }, { status: 'uncertain' }, { status: 'not_executed' }];
+  const calls = [];
+  const controller = home.createActionController({ makeId: () => 'scene-test', api: async (url, options) => { calls.push(options); return { status: 'uncertain', effects }; } });
+  await controller.execute(scene.entity_id, 'activate_scene', { target: 'lock.hidden' });
+  assert.deepEqual(calls[0].body, { entity_id: scene.entity_id, operation: 'activate_scene', request_id: 'scene-test' });
+  assert.equal(home.effectSummary(controller.get(scene.entity_id, 'activate_scene').effects), '1 confirmado · 1 sin confirmar · 1 sin ejecutar');
+  assert.equal(calls.length, 1);
+});
+
+test('raw scene brightness survives routine serialization without a percentage conversion', async () => {
+  const lamp = { entity_id: 'light.test_lamp', capabilities: ['color_temp_kelvin', 'brightness'], control_limits: { brightness_min: 0, brightness_max: 100, color_temp_min: 2000, color_temp_max: 6500 } };
+  const draft = { name: 'test', description: '', enabled: true, timezone: 'America/Montevideo', schedule: null, conditions: [], actions: [{ entity_id: lamp.entity_id, operation: 'color_temp_kelvin', color_temp_kelvin: 2700, brightness: 179 }] };
+  assert.equal(routines.validateRoutineDraft(draft, { entities: [lamp] }).valid, true);
+  const calls = [];
+  const controller = routines.createRoutineController({ catalog: { entities: [lamp] }, apiFetch: async (url, options) => {
+    calls.push({ url, ...options }); return { ...options.body, routine_id: 'test-routine', revision: 1 };
+  } });
+  controller.newDraft(); controller.setDraft(draft); await controller.save();
+  assert.deepEqual(calls[0].body.actions, draft.actions);
+  controller.destroy();
+  assert.equal(home.controlFields(lamp, 'color_temp_kelvin', draft.actions[0])[1].name, 'brightness');
+});

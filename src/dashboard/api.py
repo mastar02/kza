@@ -64,12 +64,13 @@ class RoutineActionModel(RoutineContractModel):
     """An allowlisted Casa action without an editable actor."""
 
     entity_id: str
-    operation: Literal["turn_on", "turn_off", "brightness", "color_temp_kelvin", "set_temperature", "set_hvac_mode", "open_cover", "close_cover", "stop_cover", "set_cover_position"]
+    operation: Literal["turn_on", "turn_off", "brightness", "color_temp_kelvin", "set_temperature", "set_hvac_mode", "open_cover", "close_cover", "stop_cover", "set_cover_position", "activate_scene"]
     brightness_pct: int | None = None
     color_temp_kelvin: int | None = None
     temperature: float | None = None
     hvac_mode: str | None = None
     position: int | None = None
+    brightness: int | None = None
 
 
 class RoutineWriteModel(RoutineContractModel):

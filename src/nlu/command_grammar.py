@@ -113,6 +113,7 @@ def match_intent_rules(text: str, domain: str | None) -> IntentRule | None:
 # Entity lexicon — mapa de palabra → dominio HA.
 # ============================================================
 ENTITY_TERMS: dict[str, list[str]] = {
+    "scene": ["escena", "escenas"],
     "light": [
         "luz", "luces", "lampara", "lamparas", "foco", "focos", "bombilla",
         "bombillas", "led", "leds", "lampara de pie", "lampara de mesa",

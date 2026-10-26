@@ -29,6 +29,7 @@ class HomeCommand:
 
 _AIR = r"(?:aire(?: acondicionado)?|clima|climatizador|termostato|calefaccion|temperatura)"
 _COVER = r"(?:persianas?|cortinas?|estores?)"
+_SCENE = r"escena"
 _LIGHT = r"(?:luces|luz|lamparas?|iluminacion)"
 _SET = r"(?:pone|poner|pon|ponga|poneme|ajusta|ajustar|ajuste|deja|dejar|deje|configura|configurar|configure|cambia|cambiar|cambie)"
 _OFF = r"(?:apaga|apagar|apague|desactiva|desactivar|desactive)"
@@ -89,17 +90,20 @@ def parse_home_command(text: str, *, wake_words: tuple[str, ...] = ()) -> HomeCo
     value = normalize_target(raw)
     value = re.sub(r"^(?:por favor[, ]+)?(?:(?:podes|puedes|podrias|podria)\s+)?", "", value)
     value = re.sub(r"[, ]+por favor$", "", value)
-    head = re.match(r"^(\w+)\s+" + _ARTICLE + r"(" + _AIR + "|" + _COVER + "|" + _LIGHT + r")\b", value)
+    head = re.match(r"^(\w+)\s+" + _ARTICLE + r"(" + _AIR + "|" + _COVER + "|" + _LIGHT + "|" + _SCENE + r")\b", value)
     if head is None:
         return None
     noun = head.group(2)
-    domain = "climate" if re.fullmatch(_AIR, noun) else "cover" if re.fullmatch(_COVER, noun) else "light"
+    domain = "climate" if re.fullmatch(_AIR, noun) else "cover" if re.fullmatch(_COVER, noun) else "scene" if re.fullmatch(_SCENE, noun) else "light"
     known_verbs = "|".join((_SET, _OFF, _ON, _OPEN, _CLOSE, _STOP))
     if re.fullmatch(known_verbs, head.group(1)) is None:
         return None
     if domain == "light" and not re.search(r"\b(?:kelvin|\d+\s*k|calid[ao]|tibi[ao]|neutr[ao]|fri[ao])\b", value):
         return None
     invalid = HomeCommand(domain, value[head.start(2):], reason="incomplete_home_command")
+    if domain == "scene":
+        match = re.fullmatch("(?:" + _ON + "|" + _SET + r")\s+" + _ARTICLE + _SCENE + r"\s+(?P<target>.+)", value)
+        return HomeCommand(domain, match["target"].strip(), "activate_scene") if match else invalid
     if domain == "climate":
         match = re.fullmatch(_SET + r"\s+" + _ARTICLE + _AIR + r"(?P<target>.*?)\s+(?:a|en)\s+(?P<value>.+?)(?:\s*(?:grados?(?: celsius| centigrados)?|°\s*c|celsius))?", value)
         if match and (number := _number(match["value"])) is not None:

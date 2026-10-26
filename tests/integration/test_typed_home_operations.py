@@ -207,7 +207,7 @@ async def test_reminder_preserves_extended_parameters_and_durable_receipt(typed_
 
 async def test_private_review_parser_preserves_authorized_modes_and_celsius_bounds(tmp_path):
     path = tmp_path / "review.json"
-    path.write_text(json.dumps({"selection_approved": True, "live_api_verified": True, "allowed_entities": [{"entity_id": "climate.test_ac", "operations": ["set_temperature", "set_hvac_mode"], "live_verified": True, "parameters": {"temperature": {"min": 7, "max": 35, "unit": "C", "unit_confirmed_by_user": True}, "hvac_modes": MODES}}]}))
+    path.write_text(json.dumps({"selection_approved": True, "live_api_verified": True, "allowed_entities": [{"entity_id": "climate.test_ac", "operations": ["set_temperature", "set_hvac_mode"], "live_verified": True, "indirect_effects_verified": True, "parameters": {"temperature": {"min": 7, "max": 35, "unit": "C", "unit_confirmed_by_user": True}, "hvac_modes": MODES}}]}))
     ha = TypedHA()
     actions = HomeActionService(ha, policy=HomeControlPolicy(selection_path=str(path)))
     request = HomeActionRequest("climate.test_ac", "set_temperature", "test", origin=ActionOrigin.VOICE, temperature=35)

@@ -1,12 +1,17 @@
 /* KZA home — classic script, also loadable by the native Node test runner. */
 (function (root) {
   'use strict';
-  const OPERATION_LABELS = { turn_on: 'Encender', turn_off: 'Apagar', brightness: 'Brillo', color_temp_kelvin: 'Temperatura de color', set_temperature: 'Temperatura objetivo', set_hvac_mode: 'Modo del aire', open_cover: 'Abrir', close_cover: 'Cerrar', stop_cover: 'Detener', set_cover_position: 'Posición' };
-  const OPERATION_PARAMETERS = { brightness: ['brightness_pct'], color_temp_kelvin: ['color_temp_kelvin', 'brightness_pct'], set_temperature: ['temperature'], set_hvac_mode: ['hvac_mode'], set_cover_position: ['position'] };
+  const OPERATION_LABELS = { activate_scene: 'Activar escena', turn_on: 'Encender', turn_off: 'Apagar', brightness: 'Brillo', color_temp_kelvin: 'Temperatura de color', set_temperature: 'Temperatura objetivo', set_hvac_mode: 'Modo del aire', open_cover: 'Abrir', close_cover: 'Cerrar', stop_cover: 'Detener', set_cover_position: 'Posición' };
+  const OPERATION_PARAMETERS = { brightness: ['brightness_pct', 'brightness'], color_temp_kelvin: ['color_temp_kelvin', 'brightness_pct', 'brightness'], set_temperature: ['temperature'], set_hvac_mode: ['hvac_mode'], set_cover_position: ['position'] };
   const MODE_LABELS = { off: 'Apagado', cool: 'Frío', heat: 'Calor', dry: 'Deshumidificar', fan_only: 'Ventilación', auto: 'Automático', heat_cool: 'Frío y calor' };
-  function controlFields(entity, operation) {
+  function controlFields(entity, operation, parameters = {}) {
     const limits = entity?.control_limits || {};
     const number = (name, label, min, max, step = 1, optional = false) => ({ name, label, min, max, step, optional });
+    if (parameters.brightness !== undefined && parameters.brightness !== null && ['brightness', 'color_temp_kelvin'].includes(operation)) {
+      const fields = [number('brightness', 'Brillo (0–255)', Math.max(operation === 'color_temp_kelvin' ? 1 : 0, Math.ceil((limits.brightness_min ?? 0) * 255 / 100)), Math.floor((limits.brightness_max ?? 100) * 255 / 100))];
+      if (operation === 'color_temp_kelvin') fields.unshift(number('color_temp_kelvin', 'Temperatura de color (K)', limits.color_temp_min, limits.color_temp_max));
+      return fields;
+    }
     if (operation === 'brightness') return [number('brightness_pct', 'Brillo (%)', limits.brightness_min ?? 0, limits.brightness_max ?? 100)];
     if (operation === 'color_temp_kelvin') return [number('color_temp_kelvin', 'Temperatura de color (K)', limits.color_temp_min, limits.color_temp_max), ...(entity?.capabilities?.includes('brightness') ? [number('brightness_pct', 'Brillo opcional (%)', Math.max(1, limits.brightness_min), limits.brightness_max, 1, true)] : [])];
     if (operation === 'set_temperature') return [number('temperature', 'Temperatura objetivo (°C)', limits.temperature_min, limits.temperature_max, limits.temperature_step)];
@@ -22,6 +27,12 @@
   function selectFreshResponse(currentSeq, incomingSeq) { return incomingSeq >= currentSeq; }
   function actionLabel(status) {
     return ({ confirmed: 'Confirmado por HA', failed: 'Falló', uncertain: 'Sin confirmar', missing: 'Resultado desconocido', in_progress: 'En curso' })[status] || 'Resultado desconocido';
+  }
+  function effectSummary(effects) {
+    if (!Array.isArray(effects) || !effects.length) return '';
+    const count = status => effects.filter(effect => effect.status === status).length;
+    const confirmed = count('confirmed'), unconfirmed = count('failed') + count('uncertain'), remaining = count('not_executed');
+    return [`${confirmed} confirmado${confirmed === 1 ? '' : 's'}`, unconfirmed ? `${unconfirmed} sin confirmar` : '', remaining ? `${remaining} sin ejecutar` : ''].filter(Boolean).join(' · ');
   }
   function known(value, fallback = 'Desconocido') { return value === null || value === undefined || value === '' ? fallback : String(value); }
   function observationMillis(value) {
@@ -102,7 +113,7 @@
   function entityCanControl(entity, operation, stale) {
     const domain = entity.domain || entity.entity_id?.split('.')[0];
     const states = { light: ['on', 'off'], switch: ['on', 'off'], climate: Object.keys(MODE_LABELS), cover: ['open', 'closed', 'opening', 'closing'] };
-    return !stale && entity.available === true && states[domain]?.includes(entity.state) && Array.isArray(entity.capabilities) && entity.capabilities.includes(operation);
+    return !stale && entity.available === true && (domain === 'scene' ? entity.state !== 'unavailable' : states[domain]?.includes(entity.state)) && Array.isArray(entity.capabilities) && entity.capabilities.includes(operation);
   }
   function createApi({ fetch: fetcher = root.fetch.bind(root), onDemo = () => {}, onUnauthorized = () => {}, timeoutMs = 12000 } = {}) {
     let sessionGeneration = 0;
@@ -173,7 +184,7 @@
         const result = await api(`/api/home/actions?request_id=${encodeURIComponent(record.request_id)}`);
         if (epoch !== generation) return;
         const status = ['confirmed', 'failed', 'uncertain', 'in_progress'].includes(result?.status) ? result.status : 'missing';
-        publish(key, { ...record, status, pending: status === 'in_progress', checking: false });
+        publish(key, { ...record, status, effects: result.effects, pending: status === 'in_progress', checking: false });
       } catch (error) {
         if (epoch !== generation) return;
         publish(key, { ...record, status: error.status === 404 ? 'missing' : 'uncertain', pending: error.status !== 404, checking: false });
@@ -194,7 +205,7 @@
           const result = await api('/api/home/actions', { method: 'POST', body });
           if (epoch !== generation) return;
           const status = ['confirmed', 'failed', 'uncertain', 'in_progress'].includes(result?.status) ? result.status : 'missing';
-          publish(key, { ...record, status, sending: false, pending: status === 'in_progress' });
+          publish(key, { ...record, status, effects: result.effects, sending: false, pending: status === 'in_progress' });
         } catch (error) {
           if (epoch !== generation) return;
           record.sending = false;
@@ -253,7 +264,7 @@
   }
   const views = new Map();
   let application = null;
-  const exported = { OPERATION_LABELS, OPERATION_PARAMETERS, controlFields, validControlValue, selectFreshResponse, actionLabel, directionLabel, describeMicrophone, entityCanControl, createApi, createPoller, createActionController, createViewLifecycle, createLazyView, clearRoutineSession, observationMillis, createSnapshotClock, createFreshnessTicker,
+  const exported = { OPERATION_LABELS, OPERATION_PARAMETERS, controlFields, validControlValue, selectFreshResponse, actionLabel, effectSummary, directionLabel, describeMicrophone, entityCanControl, createApi, createPoller, createActionController, createViewLifecycle, createLazyView, clearRoutineSession, observationMillis, createSnapshotClock, createFreshnessTicker,
     /** Register a synchronous renderer(container, context), mounted once per activation.
      * It may return {refresh, destroy}. Refresh delegates without remounting; destroy
      * runs before leaving/replacing the view, on logout, and on pagehide. The view
@@ -343,12 +354,12 @@
     function renderEntity(entity) {
       const card = node('div', 'entity'); card.append(node('div', 'entity-name', known(entity.name)), node('div', 'entity-id', known(entity.entity_id)));
       const row = node('div', 'entity-row');
-      const state = entity.available !== true ? 'No disponible' : ({ on: 'Encendido', off: 'Apagado', open: 'Abierto', closed: 'Cerrado', opening: 'Abriendo', closing: 'Cerrando', ...MODE_LABELS, unavailable: 'No disponible', unknown: 'Desconocido' })[entity.state] || 'Desconocido';
+      const state = entity.available !== true ? 'No disponible' : entity.domain === 'scene' ? 'Lista para activar' : ({ on: 'Encendido', off: 'Apagado', open: 'Abierto', closed: 'Cerrado', opening: 'Abriendo', closing: 'Cerrando', ...MODE_LABELS, unavailable: 'No disponible', unknown: 'Desconocido' })[entity.state] || 'Desconocido';
       const stateBadge = badge(state);
       bindTemporal(freshness => { stateBadge.className = `badge${!freshness.stale && entity.available === true && entity.state === 'on' ? ' good' : ''}`; });
       row.append(stateBadge);
       const controls = node('div', 'entity-controls');
-      for (const [operation, label] of [['turn_on', 'Encender'], ['turn_off', 'Apagar'], ['open_cover', 'Abrir'], ['close_cover', 'Cerrar'], ['stop_cover', 'Detener']]) {
+      for (const [operation, label] of [['turn_on', 'Encender'], ['turn_off', 'Apagar'], ['open_cover', 'Abrir'], ['close_cover', 'Cerrar'], ['stop_cover', 'Detener'], ['activate_scene', 'Activar escena']]) {
         if (!entity.capabilities?.includes(operation)) continue;
         const control = button(label, () => {
           if (entityCanControl(entity, operation, isStale(stateFor())) && !actions.get(entity.entity_id, operation)?.pending) actions.execute(entity.entity_id, operation);
@@ -394,8 +405,10 @@
         const record = actions.get(entity.entity_id, operation);
         if (!record) continue;
         const text = node('p', `action-result ${record.status === 'confirmed' ? 'confirmed' : ''}`, `${OPERATION_LABELS[operation]} · ${actionLabel(record.status)}`);
-        const requested = Object.entries(record.parameters || {}).map(([name, value]) => name === 'temperature' ? `${value} °C` : name === 'color_temp_kelvin' ? `${value} K` : name === 'hvac_mode' ? MODE_LABELS[value] || value : `${value}%`);
+        const requested = Object.entries(record.parameters || {}).map(([name, value]) => name === 'temperature' ? `${value} °C` : name === 'color_temp_kelvin' ? `${value} K` : name === 'hvac_mode' ? MODE_LABELS[value] || value : name === 'brightness' ? `${Math.round(value * 100 / 255)}%` : `${value}%`);
         if (requested.length) text.append(node('span', '', ' · ' + requested.join(', ')));
+        const summary = effectSummary(record.effects);
+        if (summary) text.append(node('span', '', ' · ' + summary));
         text.setAttribute('role', 'status');
         if (['uncertain', 'missing'].includes(record.status)) text.append(node('span', '', '. Actualizá el estado antes de decidir. Una nueva orden necesita otro toque.'));
         card.append(text);

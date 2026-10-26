@@ -396,9 +396,10 @@ class RequestRouter:
                     "climate": "¿A qué temperatura en grados Celsius o en qué modo querés poner el aire?",
                     "cover": "¿Querés abrir, cerrar, detener o poner la persiana en un porcentaje concreto?",
                     "light": "¿Qué temperatura de luz en kelvin querés usar?",
+                    "scene": "¿Qué escena querés activar?",
                 }[command.domain]
             else:
-                question = "¿En qué habitación? Necesito un dispositivo seleccionado para esa habitación."
+                question = "¿Qué escena querés activar? Necesito su nombre exacto entre las escenas seleccionadas." if command.domain == "scene" else "¿En qué habitación? Necesito un dispositivo seleccionado para esa habitación."
             result.update(intent="clarification_requested", needs_confirmation=True,
                           confirmation_question=question, response=question, reason=reason)
             await self._speak_response(question, zone_id=zone_id)

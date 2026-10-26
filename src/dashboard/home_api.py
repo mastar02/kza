@@ -89,6 +89,7 @@ class HomeActionBody(BaseModel):
     temperature: float | None = Field(default=None, allow_inf_nan=False)
     hvac_mode: str | None = None
     position: int | None = Field(default=None, ge=0, le=100)
+    brightness: int | None = None
 
     @model_validator(mode="after")
     def validate_intent(self) -> "HomeActionBody":

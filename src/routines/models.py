@@ -77,6 +77,7 @@ class RoutineAction:
     temperature: float | None = None
     hvac_mode: str | None = None
     position: int | None = None
+    brightness: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "operation", Operation(self.operation))

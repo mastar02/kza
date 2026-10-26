@@ -10,7 +10,10 @@ from datetime import datetime
 
 from src.home_assistant.ha_client import HomeAssistantClient, get_home_capabilities
 from src.home_assistant.control_policy import EntityGrant, HomeActionDenied, HomeControlPolicy
-from src.home_assistant.operations import finite_number
+from src.home_assistant.operations import action_parameters, finite_number, validate_observation
+from src.home_assistant.home_actions import HomeActionRequest
+from src.home_assistant.control_policy import ActionOrigin, HomeActor
+from src.home_assistant.effect_plans import expand_effect_plan, validate_plan_references
 from src.rooms.room_context import RoomConfig
 
 
@@ -149,6 +152,7 @@ class HomeCatalogService:
             elif matches:
                 reasons.append(f"area_room_conflict:{area_id}")
 
+        state_by_id = {state["entity_id"]: state for state in states.states}
         entities = []
         room_entities: dict[str, list[str]] = defaultdict(list)
         for state in states.states:
@@ -161,7 +165,7 @@ class HomeCatalogService:
             )
             if len(set(explicit_ids)) > 1:
                 reasons.append(f"explicit_room_conflict:{entity_id}")
-            capabilities, limits = selected_capabilities(state, grants.get(entity_id), unit)
+            capabilities, limits = projected_capabilities(state, grants, state_by_id, unit)
             attributes = state.get("attributes", {})
             brightness = attributes.get("brightness")
             brightness_pct = None
@@ -172,7 +176,7 @@ class HomeCatalogService:
                 and 0 <= brightness <= 255
             ):
                 brightness_pct = round(brightness * 100 / 255)
-            name = attributes.get("friendly_name")
+            name = grants[entity_id].display_name if entity_id in grants and grants[entity_id].scene_effects else attributes.get("friendly_name")
             changed_at = state.get("last_changed")
             entity = HomeEntity(
                 entity_id=entity_id, domain=entity_id.partition(".")[0],
@@ -181,7 +185,7 @@ class HomeCatalogService:
                 room_id=room_id, area_id=area_id, capabilities=capabilities,
                 state_changed_at=changed_at if isinstance(changed_at, str) else None,
                 observed_at=states.observed_at,
-                available=states.available and state["state"] not in {"unknown", "unavailable"},
+                available=states.available and (state["state"] not in {"unknown", "unavailable"} or (entity_id.startswith("scene.") and bool(capabilities))),
                 control_limits=limits,
                 temperature=attributes.get("temperature") if unit == "°C" and finite_number(attributes.get("temperature")) else None,
                 color_temp_kelvin=attributes.get("color_temp_kelvin") if type(attributes.get("color_temp_kelvin")) is int else None,
@@ -204,10 +208,10 @@ class HomeCatalogService:
         )
 
 
-def selected_capabilities(state: dict, grant: EntityGrant | None, unit: str | None) -> tuple[tuple[str, ...], HomeControlLimits]:
+def selected_capabilities(state: dict, grant: EntityGrant | None, unit: str | None, *, allow_group: bool = False, allow_internal: bool = False) -> tuple[tuple[str, ...], HomeControlLimits]:
     """Project controls without exposing an implicit grant for a whole domain."""
     attributes = state.get("attributes", {})
-    if grant is None or attributes.get("entity_id") is not None:
+    if grant is None or (not grant.direct_control and not allow_internal) or (attributes.get("entity_id") is not None and not allow_group):
         return (), HomeControlLimits()
     capabilities = set(get_home_capabilities(state)) & grant.operations
     values = {}
@@ -248,3 +252,45 @@ def selected_capabilities(state: dict, grant: EntityGrant | None, unit: str | No
         if grant.position_min > 0:
             capabilities.discard("close_cover")
     return tuple(operation for operation in get_home_capabilities(state) if operation in capabilities), HomeControlLimits(**values)
+
+
+def projected_capabilities(state: dict, grants: dict[str, EntityGrant], states: dict[str, dict], unit: str | None) -> tuple[tuple[str, ...], HomeControlLimits]:
+    """Intersect reviewed expansions with every current leaf, never group averages."""
+    grant = grants.get(state["entity_id"])
+    if grant is not None and not grant.direct_control:
+        return (), HomeControlLimits()
+    if grant is None or (not grant.members and not grant.scene_effects):
+        return selected_capabilities(state, grant, unit)
+    root = HomeActionRequest(grant.entity_id, "activate_scene" if grant.scene_effects else "turn_on", "catalog", origin=ActionOrigin.VOICE)
+    try:
+        plan = expand_effect_plan(root, tuple(grants.values()))
+        validate_plan_references(root, plan, states)
+        if grant.scene_effects:
+            HomeControlPolicy.require_from_grants(root, HomeActor.household(), tuple(grants.values()))
+            for intent in (*plan.intermediates, *plan.effects):
+                request = HomeActionRequest(intent.entity_id, intent.operation, "catalog", origin=ActionOrigin.VOICE,
+                    **action_parameters(intent))
+                HomeControlPolicy.require_from_grants(request, HomeActor.household(), tuple(grants.values()), via_expansion=True)
+            for intent in plan.effects:
+                validate_observation(intent, states.get(intent.entity_id), temperature_unit=unit)
+            return ("activate_scene",), HomeControlLimits()
+        ids = {grant.entity_id, *(reference.entity_id for reference in plan.groups), *(intent.entity_id for intent in plan.effects)}
+        observations = []
+        for entity_id in sorted(ids):
+            current = states.get(entity_id)
+            if current is None or current.get("state") not in {"on", "off"}:
+                return (), HomeControlLimits()
+            observations.append(selected_capabilities(current, grants.get(entity_id), unit, allow_group=bool(grants[entity_id].members), allow_internal=True))
+        common = set.intersection(*(set(operations) for operations, _ in observations))
+        values = {}
+        for operation, low_key, high_key in (("brightness", "brightness_min", "brightness_max"), ("color_temp_kelvin", "color_temp_min", "color_temp_max")):
+            if operation in common:
+                low = max(getattr(limits, low_key) for _, limits in observations)
+                high = min(getattr(limits, high_key) for _, limits in observations)
+                if low > high:
+                    common.remove(operation)
+                else:
+                    values.update({low_key: low, high_key: high})
+        return tuple(operation for operation in ("turn_on", "turn_off", "brightness", "color_temp_kelvin") if operation in common), HomeControlLimits(**values)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return (), HomeControlLimits()

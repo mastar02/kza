@@ -50,7 +50,7 @@ def summarize_snapshot(states: list[dict], services: list[dict]) -> dict:
             "entity_id": entity_id,
             "state": state.get("state"),
             "attributes": {k: v for k, v in attributes.items() if k in CAPABILITY_ATTRIBUTES},
-            "selection": {"approved": False, "operations": [], "limits": {}},
+            "selection": {"approved": False, "operations": [], "limits": {}, "indirect_effects_verified": False},
         }
         if domain in SENSITIVE_DOMAINS:
             entity["restriction"] = "blocked_by_roadmap"

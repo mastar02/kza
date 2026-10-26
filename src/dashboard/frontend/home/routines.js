@@ -36,7 +36,8 @@
     else value.actions.forEach((item, index) => {
       const entity = entityList(catalog).find(entry => entry.entity_id === item?.entity_id);
       if (!item || typeof item.entity_id !== 'string' || !item.entity_id || !Object.hasOwn(OPERATIONS, item.operation) || (catalog && (!entity || !entity.capabilities?.includes(item.operation)))) errors.push(`Revisá la entidad y operación de la acción ${index + 1}`);
-      for (const field of home.controlFields(entity, item?.operation)) if (!home.validControlValue(field, item?.[field.name])) errors.push(`Revisá ${field.label.toLowerCase()} de la acción ${index + 1}`);
+      if (item?.brightness !== undefined && item?.brightness !== null && item?.brightness_pct !== undefined && item?.brightness_pct !== null) errors.push(`Elegí una única medida de brillo en la acción ${index + 1}`);
+      for (const field of home.controlFields(entity, item?.operation, item)) if (!home.validControlValue(field, item?.[field.name])) errors.push(`Revisá ${field.label.toLowerCase()} de la acción ${index + 1}`);
     });
     return { valid: errors.length === 0, errors };
   }
@@ -305,7 +306,7 @@
         if (item.operation && !options.some(([key]) => key === item.operation)) options.unshift([item.operation, (OPERATIONS[item.operation] || item.operation) + ' (no disponible)']);
         row.append(field('Dispositivo de la acción ' + (index + 1), entitySelect(item.entity_id, state.catalog, id => update(d => { const target = entityList(state.catalog).find(entry => entry.entity_id === id); d.actions[index] = { entity_id: id, operation: target?.capabilities?.find(cap => Object.hasOwn(OPERATIONS, cap)) || '' }; }, true), true)));
         row.append(field('Operación ' + (index + 1), select([['', 'Elegí una operación'], ...options], item.operation, operation => update(d => { d.actions[index] = { entity_id: item.entity_id, operation }; }, true))));
-        for (const descriptor of home.controlFields(entity, item.operation)) {
+        for (const descriptor of home.controlFields(entity, item.operation, item)) {
           const change = text => update(d => { d.actions[index][descriptor.name] = text === '' ? null : descriptor.options ? text : Number(text); });
           const control = descriptor.options ? select([['', 'Elegí un modo'], ...descriptor.options], item[descriptor.name] || '', change) : input('number', item[descriptor.name] ?? '', change);
           if (!descriptor.options) { control.min = descriptor.min; control.max = descriptor.max; control.step = descriptor.step || 1; }

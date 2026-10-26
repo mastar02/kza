@@ -11,6 +11,7 @@ class HomeOperation(StrEnum):
 
     TURN_ON = "turn_on"
     TURN_OFF = "turn_off"
+    ACTIVATE_SCENE = "activate_scene"
     BRIGHTNESS = "brightness"
     COLOR_TEMP = "color_temp_kelvin"
     SET_TEMPERATURE = "set_temperature"
@@ -23,8 +24,9 @@ class HomeOperation(StrEnum):
 
 HVAC_MODES = frozenset({"off", "cool", "heat", "heat_cool", "auto", "dry", "fan_only"})
 BLIND_CLASSES = frozenset({"blind", "curtain", "shade", "shutter"})
-PARAMETER_FIELDS = ("brightness_pct", "color_temp_kelvin", "temperature", "hvac_mode", "position")
+PARAMETER_FIELDS = ("brightness", "brightness_pct", "color_temp_kelvin", "temperature", "hvac_mode", "position")
 DOMAIN_OPERATIONS = {
+    "scene": frozenset({"activate_scene"}),
     "light": frozenset({"turn_on", "turn_off", "brightness", "color_temp_kelvin"}),
     "switch": frozenset({"turn_on", "turn_off"}),
     "climate": frozenset({"set_temperature", "set_hvac_mode"}),
@@ -38,6 +40,7 @@ class ActionIntent(Protocol):
     entity_id: str
     operation: str
     brightness_pct: int | None
+    brightness: int | None
     color_temp_kelvin: int | None
     temperature: float | None
     hvac_mode: str | None
@@ -54,7 +57,7 @@ def finite_number(value: object) -> bool:
 
 def action_parameters(action: ActionIntent) -> dict:
     """Retain every explicitly populated typed parameter."""
-    return {name: getattr(action, name) for name in PARAMETER_FIELDS if getattr(action, name) is not None}
+    return {name: getattr(action, name) for name in PARAMETER_FIELDS if getattr(action, name, None) is not None}
 
 
 def validate_parameters(entity_id: str, operation: str, parameters: dict) -> None:
@@ -67,9 +70,18 @@ def validate_parameters(entity_id: str, operation: str, parameters: dict) -> Non
         "set_temperature": {"temperature"}, "set_hvac_mode": {"hvac_mode"},
         "set_cover_position": {"position"},
     }.get(operation, set())
-    optional = {"brightness_pct"} if operation == "color_temp_kelvin" else set()
+    if operation == "brightness" and "brightness" in parameters:
+        required = {"brightness"}
+    optional = {"brightness_pct", "brightness"} if operation == "color_temp_kelvin" else set()
+    if "brightness" in parameters and "brightness_pct" in parameters:
+        raise ValueError("conflicting_brightness")
     if not required <= parameters.keys() or parameters.keys() - required - optional:
         raise ValueError("invalid_action_parameters")
+    if "brightness" in parameters and (
+        type(parameters["brightness"]) is not int or not 0 <= parameters["brightness"] <= 255
+        or (operation == "color_temp_kelvin" and parameters["brightness"] == 0)
+    ):
+        raise ValueError("invalid_brightness")
     if "brightness_pct" in parameters and (
         type(parameters["brightness_pct"]) is not int or not 0 <= parameters["brightness_pct"] <= 100
         or (operation == "color_temp_kelvin" and parameters["brightness_pct"] == 0)
@@ -157,8 +169,10 @@ def compile_effect(action: ActionIntent) -> HomeEffect:
     """Map a validated typed operation to a fixed HA service and exact fields."""
     domain = action.entity_id.partition(".")[0]
     data = action_parameters(action)
+    if domain == "scene":
+        return HomeEffect(domain, "turn_on", None)
     if domain in {"light", "switch"}:
-        service = "turn_off" if action.operation == "turn_off" or action.brightness_pct == 0 else "turn_on"
+        service = "turn_off" if action.operation == "turn_off" or (action.brightness_pct == 0 or getattr(action, "brightness", None) == 0) else "turn_on"
         return HomeEffect(domain, service, data if service == "turn_on" and data else None)
     return HomeEffect(domain, str(action.operation), data or None)
 
@@ -171,12 +185,15 @@ def matches_observation(action: ActionIntent, state: dict, *, initial_state: str
     if not isinstance(attributes, dict):
         return False
     if action.entity_id.startswith(("light.", "switch.")):
-        off = action.operation == "turn_off" or action.brightness_pct == 0
+        off = action.operation == "turn_off" or (action.brightness_pct == 0 or getattr(action, "brightness", None) == 0)
         if current != ("off" if off else "on"):
             return False
         if not off and action.brightness_pct is not None:
             brightness = attributes.get("brightness")
             if not finite_number(brightness) or abs(brightness - action.brightness_pct * 255 / 100) > 1:
+                return False
+        if not off and getattr(action, "brightness", None) is not None:
+            if type(attributes.get("brightness")) is not int or attributes["brightness"] != action.brightness:
                 return False
         return action.color_temp_kelvin is None or (attributes.get("color_mode") == "color_temp" and type(attributes.get("color_temp_kelvin")) is int and attributes["color_temp_kelvin"] == action.color_temp_kelvin)
     if action.operation == "set_hvac_mode":

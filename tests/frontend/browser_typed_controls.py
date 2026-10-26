@@ -22,8 +22,10 @@ from websockets.asyncio.client import connect
 
 from src.dashboard.api import DashboardAPI
 from src.home_assistant.ha_client import HAAreaAssignments, HAStatesSnapshot
+from src.home_assistant.control_policy import HomeControlPolicy
 from src.routines.factory import build_routine_scheduler
 from tests.integration.test_typed_home_operations import typed_graph
+from tests.integration.test_composite_home_effects import composite_graph
 
 
 class Page:
@@ -64,7 +66,10 @@ class Page:
 async def main():
     """Render and exercise typed controls with actual browser events and HTTP."""
     os.environ["KZA_DASHBOARD_TOKEN"] = "synthetic-browser-session"
-    ha, actions = typed_graph.__wrapped__()
+    _, typed_actions = typed_graph.__wrapped__()
+    ha, actions = composite_graph.__wrapped__()
+    by_id = {grant.entity_id: grant for grant in (*await typed_actions.policy.snapshot_grants(), *await actions.policy.snapshot_grants())}
+    actions.policy = HomeControlPolicy(tuple(by_id.values()))
     ha.get_state_snapshot = AsyncMock(side_effect=lambda: HAStatesSnapshot(True, datetime.now(UTC), None, tuple(ha.states.values())))
     ha.get_area_assignments = AsyncMock(return_value=HAAreaAssignments(True, datetime.now(UTC), None))
     # Chromium's Snap uses a private /tmp namespace. A disposable profile in
@@ -133,6 +138,28 @@ async def main():
                     })()""")
                     await page.wait_for("document.body.textContent.includes('Temperatura de color · Confirmado por HA')")
                     assert ha.sends[-1][3] == {"brightness_pct": 30, "color_temp_kelvin": 2700}
+                    await page.evaluate("""[...document.querySelectorAll('.entity')].find(card => card.textContent.includes('scene.test_evening')).querySelector('button').click()""")
+                    await page.wait_for("[...document.querySelectorAll('.entity')].find(card => card.textContent.includes('scene.test_evening')).textContent.includes('2 confirmados')")
+                    assert await page.evaluate("[...document.querySelectorAll('.entity')].find(card => card.textContent.includes('scene.test_evening')).textContent.includes('Lista para activar')")
+                    assert [send[3] for send in ha.sends[-2:]] == [{"color_temp_kelvin": 2700, "brightness": 179}] * 2
+                    original_send = ha.call_service_once
+
+                    async def partially_observed(domain, service, entity_id, data):
+                        if data and data.get("color_temp_kelvin") == 4000:
+                            ha.observe_effect = entity_id == "light.test_lamp"
+                        return await original_send(domain, service, entity_id, data)
+
+                    ha.call_service_once = partially_observed
+                    await page.evaluate("""(() => {
+                        const input = document.querySelector('[aria-label="Temperatura de color (K) de light.test_group"]');
+                        input.value = '4000'; input.dispatchEvent(new Event('input', {bubbles:true}));
+                        const brightness = document.querySelector('[aria-label="Brillo opcional (%) de light.test_group"]');
+                        brightness.value = '40'; brightness.dispatchEvent(new Event('input', {bubbles:true}));
+                        input.closest('.typed-controls').querySelector('button').click();
+                    })()""")
+                    await page.wait_for("[...document.querySelectorAll('.entity')].find(card => card.textContent.includes('light.test_group')).textContent.includes('1 sin confirmar')")
+                    assert len(ha.sends) == 6
+                    ha.observe_effect = True
                     house_image = await page.command("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": True})
                     house_path = Path("/tmp/kza-typed-controls-house.png")
                     house_path.write_bytes(base64.b64decode(house_image["data"]))
@@ -150,18 +177,24 @@ async def main():
                         operation.value = 'set_temperature'; operation.dispatchEvent(new Event('change', {bubbles:true}));
                         const temperature = document.querySelector('[data-routine-field="Temperatura objetivo (°C) de la acción 1"]');
                         temperature.value = '24.5'; temperature.dispatchEvent(new Event('input', {bubbles:true}));
+                        [...document.querySelectorAll('button')].find(button => button.textContent === 'Agregar acción').click();
+                        const scene = document.querySelector('[data-routine-field="Dispositivo de la acción 2"]');
+                        scene.value = 'scene.test_evening'; scene.dispatchEvent(new Event('change', {bubbles:true}));
+                        const activate = document.querySelector('[data-routine-field="Operación 2"]');
+                        activate.value = 'activate_scene'; activate.dispatchEvent(new Event('change', {bubbles:true}));
                         [...document.querySelectorAll('button')].find(button => button.textContent === 'Guardar').click();
                     })()""")
                     await page.wait_for("document.body.textContent.includes('Guardada')")
                     stored = await scheduler.get_all_routines()
                     assert len(stored) == 1 and stored[0].spec.actions[0].temperature == 24.5
-                    assert len(ha.sends) == 2  # Saving the routine cannot execute it.
+                    assert stored[0].spec.actions[1].operation == "activate_scene"
+                    assert len(ha.sends) == 6  # Saving the routine cannot execute it.
                     assert not page.errors, page.errors
                     screenshot = await page.command("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": True})
                     output_image = Path("/tmp/kza-typed-controls-browser.png")
                     output_image.write_bytes(base64.b64decode(screenshot["data"]))
                     output_image.chmod(0o600)
-                    print(json.dumps({"passed": True, "typed_sends": len(ha.sends), "stored_temperature": 24.5, "screenshot": str(output_image), "javascript_exceptions": len(page.errors)}))
+                    print(json.dumps({"passed": True, "typed_sends": len(ha.sends), "stored_temperature": 24.5, "stored_scene": True, "partial_group_feedback": True, "screenshot": str(output_image), "javascript_exceptions": len(page.errors)}))
         finally:
             if browser is not None:
                 browser.terminate()

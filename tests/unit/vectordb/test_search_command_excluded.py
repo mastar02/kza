@@ -46,11 +46,8 @@ def _meta(entity_id, area="", service="turn_on"):
 
 # El caso real de prod: light.hogar (excluido) gana por similitud con doc
 # genérico; el grupo del escritorio está apenas abajo y sobre threshold.
-# El candidato válido NO es del área preferida (Cocina vs Escritorio): el
-# boost de área no aplica a ninguno → SOLO el filtro de exclusión puede
-# destronar al doc genérico del grupo global. (Con un doc del área, el
-# PREFER_AREA_BOOST=0.35 lo salvaría por sí solo y el test no probaría el
-# filtro.)
+# El candidato no excluido pertenece a otra habitación. Sin área explícita
+# permite comprobar el filtro; con área solicitada también debe rechazarse.
 _PROD_ROWS = [
     (0.10, _meta("light.hogar"), "Prendé la iluminación."),
     (0.46, _meta("light.grupo_cocina", area="Cocina"), "Prendé la luz de la cocina."),
@@ -58,11 +55,12 @@ _PROD_ROWS = [
 
 
 class TestExcludedEntitiesQueryTime:
-    def test_excluded_top_candidate_skipped_with_prefer_area(self):
+    def test_excluded_global_and_other_room_cannot_replace_requested_area(self):
         cs = _make_chroma(_PROD_ROWS)
         r = cs.search_command("prende la luz", threshold=0.65, prefer_area="Escritorio")
-        assert r is not None
-        assert r["entity_id"] == "light.grupo_cocina"
+        assert r is None
+        assert cs._commands_collection.query.call_count == 1
+        assert cs._commands_collection.query.call_args.kwargs["where"] == {"area": "Escritorio"}
 
     def test_excluded_top_candidate_skipped_without_prefer_area(self):
         cs = _make_chroma(_PROD_ROWS)

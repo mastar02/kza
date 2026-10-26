@@ -170,16 +170,17 @@ class TestPreferAreaScoring:
             f"Got where={where}"
         )
 
-    def test_prefer_area_unknown_area_falls_back_to_baseline(self):
-        """Si prefer_area no matchea ningún candidato, usar ranking original."""
+    def test_unknown_requested_area_never_falls_back_to_another_room(self):
+        """An unresolved room must ask rather than choose the global top hit."""
         cs = _make_chroma_with_results(self._phantom_rows())
         result = cs.search_command(
             "bajá la luz al cincuenta por ciento",
             threshold=0.5,
             prefer_area="HabitacionInexistente",
         )
-        # Sin candidatos con esa area, gana el top distance original.
-        assert result["entity_id"] == "light.cuarto"
+        assert result is None
+        assert cs._commands_collection.query.call_count == 1
+        assert cs._commands_collection.query.call_args.kwargs["where"] == {"area": "HabitacionInexistente"}
 
 
 class TestContextBoostStrength:
@@ -248,7 +249,8 @@ class TestAreaFirstTwoPassSearch:
     doc del área del mic entra al pool → el boost no tiene a quién boostear
     (verificado con ranking real: top-10 sin Escritorio, pasillo sim=0.945).
     Pase 1: SOLO docs del área preferida; si hay match ≥ threshold, gana.
-    Pase 2 (fallback): query global actual con boost."""
+    Sin coincidencia verificada en esa área, no se consulta otra habitación.
+    La búsqueda global queda sólo para llamadas sin área solicitada."""
 
     # El caso real: top global lleno de pasillo/living, escritorio fuera.
     _GLOBAL = [
@@ -266,18 +268,20 @@ class TestAreaFirstTwoPassSearch:
         assert r is not None
         assert r["entity_id"] == "light.grupo_escritorio"
 
-    def test_area_below_threshold_falls_back_to_global(self):
+    def test_weak_requested_area_cannot_execute_a_stronger_global_match(self):
         area_weak = [_row(0.90, "light.grupo_escritorio", "Escritorio", "doc lejano")]  # sim 0.55
         cs = _make_chroma_two_pass(area_weak, self._GLOBAL)
         r = cs.search_command("prende la luz", threshold=0.65, prefer_area="Escritorio")
-        assert r is not None
-        assert r["entity_id"] == "light.grupo_pasillo"  # mejor global
+        assert r is None
+        assert cs._commands_collection.query.call_count == 1
+        assert cs._commands_collection.query.call_args.kwargs["where"] == {"area": "Escritorio"}
 
-    def test_area_pass_empty_falls_back_to_global(self):
+    def test_empty_requested_area_never_queries_another_room(self):
         cs = _make_chroma_two_pass([], self._GLOBAL)
         r = cs.search_command("prende la luz", threshold=0.65, prefer_area="Escritorio")
-        assert r is not None
-        assert r["entity_id"] == "light.grupo_pasillo"
+        assert r is None
+        assert cs._commands_collection.query.call_count == 1
+        assert cs._commands_collection.query.call_args.kwargs["where"] == {"area": "Escritorio"}
 
     def test_no_prefer_area_single_global_pass(self):
         cs = _make_chroma_two_pass(self._AREA, self._GLOBAL)

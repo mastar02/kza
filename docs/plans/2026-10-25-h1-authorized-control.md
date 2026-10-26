@@ -14,9 +14,9 @@ contratos y pruebas sintéticas sin habilitar dispositivos ni modificar producci
 | Semántica | Corpus de pasado, estado, preguntas informativas, negación, condición, reporte y diferidos. Gate, gramática, evidencia del LLM y routers conectados deben rechazar; los pedidos inmediatos conservan dirección e infinitivos/cortesía válidos. | Primera implementación y regresiones sobre texto completo. |
 | Captura parcial | Early-dispatch es preparseo especulativo: espera el endpoint, mantiene el texto ligado al audio y nunca ejecuta un prefijo. Una captura cortada por timeout no es una orden completa. | Implementado y probado con ambos routers y modo ambiental; validación acústica real en H6. |
 | Sesión | HTTP y WebSocket privados comparten autenticación cerrada sin token, incluyendo listas, recordatorios, presencia, observabilidad y `/ws/live`. Orígenes inválidos se rechazan con sesión válida. Login y recursos estáticos tienen excepciones explícitas. Bind loopback detrás del proxy y token vacío en `.env.example`. | Implementado y probado; proxy y unit reales se validan en H6. |
-| Política | Un servicio de acciones y un actor de procedencia por productor. Política obligatoria después de rewrites y antes de todo envío; permisos revisados también al disparar acciones diferidas. Tests sin hooks, con rewrite y revocación. | Frontera y NLU de operaciones ampliadas conectados; falta expansión verificada. |
-| Operaciones | Extender DTOs, validación y confirmación a clima y cover. Agregar temperatura de color para reproducir las escenas seleccionadas sin perder parámetros. Usar rangos, modos y entidades del inventario privado aprobado. | Contratos, servicio, persistencia, formularios e interpretación determinística de voz implementados. Falta integrar expansión de efectos y validar el hogar real. |
-| Grupos y escenas | Expandir definiciones verificadas a hojas autorizadas y operaciones tipadas. Rechazar macros opacas, templates sin contexto y efectos indirectos no verificados. Pruebas de escena que oculta lock/alarm, grupos no autorizados y parámetros desconocidos. | Pendiente. |
+| Política | Un servicio de acciones y un actor de procedencia por productor. Política obligatoria después de rewrites y antes de todo envío; permisos revisados también al disparar acciones diferidas. Tests sin hooks, con rewrite y revocación. | Frontera, NLU y expansión conectados con pruebas sintéticas; falta evidencia del hogar real. |
+| Operaciones | Extender DTOs, validación y confirmación a clima y cover. Agregar temperatura de color para reproducir las escenas seleccionadas sin perder parámetros. Usar rangos, modos y entidades del inventario privado aprobado. | Contratos, servicio, persistencia, formularios e interpretación determinística de voz implementados. Expansión integrada; falta validar el hogar real. |
+| Grupos y escenas | Expandir definiciones verificadas a hojas autorizadas y operaciones tipadas. Rechazar macros opacas, templates sin contexto y efectos indirectos no verificados. Pruebas de escena que oculta lock/alarm, grupos no autorizados y parámetros desconocidos. | Implementado con grupos/escenas sintéticos y todos los productores; revisión real pendiente. |
 | Consentimiento | Destino cloud explícito, independiente de host/transporte. Denegación probada en reasoner, compactor y cada consumidor; loopback no elude consentimiento. | Implementado; validación offline conectada y límites descritos abajo. |
 
 El actor autenticado se obtiene de la sesión del servidor. Voz, SpeakerID y
@@ -188,7 +188,9 @@ autenticación a un job. La identidad del recibo incluye el tipo de actor.
 `HomeControlPolicy` requiere selección explícita de entidad, operación y rango.
 `home_assistant.control_selection_path` apunta a datos privados de revisión,
 fuera de Git; vacío deniega controles. El lector exige `selection_approved`,
-`live_api_verified` y `allowed_entities[].live_verified` booleanos verdaderos.
+`live_api_verified`, `allowed_entities[].live_verified` e
+`indirect_effects_verified` booleanos verdaderos. Este último exige revisión de
+las automatizaciones/bindings relevantes; no se deduce de capacidades ni estado.
 La entrada declara `entity_id`, `operations` y, para brillo,
 `parameters.brightness_pct` con `min` y `max` enteros. No hay permiso por dominio.
 La selección se lee sin bloquear el loop y se vuelve a comprobar tras esperar
@@ -197,8 +199,8 @@ copia anterior. Su actualización operativa debe reemplazar el archivo completo.
 
 El perfil versionado conserva el path vacío. La revisión privada recibida aún
 produce cero grants efectivos: no se cambió su evidencia ni se habilitaron
-dispositivos. Grupos observados, escenas y scripts opacos se rechazan hasta que
-su expansión verificada tenga implementación. La normalización de productores
+dispositivos. Grupos y escenas requieren una definición revisada y expansión a hojas
+autorizadas; los scripts y macros opacos siguen rechazados. La normalización de productores
 rechaza parámetros desconocidos, selectores de múltiples targets y servicios
 fuera de las operaciones tipadas actuales, sin descartarlos silenciosamente.
 
@@ -310,8 +312,8 @@ funciones de usuario, sin convertirlos en actores autenticados.
 
 El corpus y los grafos conectados usan transcripciones y dispositivos sintéticos;
 no prueban reconocimiento acústico, timings ni efectos de los dispositivos reales.
-Grupos y escenas siguen pendientes de expansión verificada; las persianas de test
-no implican seleccionar un equipo real.
+La expansión de grupos/escenas se describe abajo; las persianas de test no
+implican seleccionar un equipo real.
 
 El catálogo usa la misma selección que el servicio. Sus controles son la
 intersección con capacidades y límites actuales; sin selección quedan de lectura.
@@ -345,14 +347,96 @@ pruebas Node y el smoke autenticado del dashboard pasan. El
 [registro de política](../research/2026-10-25-h1-policy-validation.json) describe
 las pruebas y sus límites.
 
+## Grupos y escenas con efectos explícitos
+
+`EffectPlan` expande los grupos de iluminación seleccionados y las escenas de
+iluminación revisadas a `EffectIntent` de hojas concretas. No envía servicios de
+HA a grupos, escenas, scripts o automatizaciones. La copia revisada de una escena
+sólo acepta `state` on/off, kelvin y brillo 0–255; rechaza otros atributos,
+templates, targets sensibles y valores contradictorios. Conserva el brillo
+original: convertir 179 a un porcentaje entero podría modificar la consigna.
+Los contratos, política, persistencia y formularios conservan `brightness` crudo
+como alternativa exclusiva a `brightness_pct`, con límites porcentuales
+comprobados sin redondear y confirmación exacta del atributo crudo.
+
+Esta elección se basa en las implementaciones de HA 2026.4.3:
+[grupos de luces](https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/group/light.py)
+reenvía a sus miembros; [escenas](https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/homeassistant/scene.py)
+reproduce estados por dominio, y [reproducción de luz](https://github.com/home-assistant/core/blob/2026.4.3/homeassistant/components/light/reproduce_state.py)
+utiliza brillo crudo y atributos de color. El estado agregado no confirma cada
+hoja y una invocación opaca no es evidencia de efectos permitidos.
+
+Cada grupo de la revisión privada declara `kind: light_group`, `members`,
+`membership_source` y `effects_verified: true`, además de operaciones y límites.
+`ha_state` exige que la lista de miembros de HA coincida antes de los envíos.
+`reviewed_copy` permite fijar una lista explícita cuando el bridge no publica
+miembros en HA; se comprueba la existencia/disponibilidad de la referencia y,
+si HA publica miembros, deben coincidir. KZA nunca llama al servicio del bridge:
+cambios externos no agregan miembros a la copia autorizada. No es sincronización
+automática con la configuración MQTT; revisar la copia es responsabilidad del
+entorno de release y requiere nueva evidencia ante cambios externos.
+
+Las escenas declaran `kind: scene`, nombre/aliases, `states`, operación
+`activate_scene` y `effects_verified: true`. Sus referencias HA deben coincidir,
+pero los valores ejecutados son los de la copia revisada, no una definición HA
+que pueda cambiar y agregar efectos ocultos. Scripts, otras escenas anidadas y
+otros dominios dentro de estas escenas de iluminación se rechazan. La revisión
+de efectos indirectos es una declaración del operador respaldada por H0/H6;
+no hay un detector automático de cambios en toda la configuración HA/MQTT.
+
+Los miembros y nodos internos tienen grants con operaciones/rangos explícitos.
+`direct_control: false` los autoriza sólo como parte de una expansión revisada:
+no aparecen como controles nuevos en Casa ni son candidatos independientes de
+voz. Una llamada directa o la creación de una acción diferida sobre ese miembro
+se rechaza. Elegir un grupo no concede permisos generales sobre sus miembros.
+
+La expansión tiene límites de ocho niveles, 128 hojas y 512 referencias
+recorridas. Ciclos, membresía duplicada y solapamientos con consignas distintas
+se rechazan; una hoja repetida con intención idéntica se ejecuta una sola vez.
+Las lanes de todas las entidades se adquieren en orden estable, compartidas con
+controles directos, para serializar escenas solapadas sin deadlocks. Se comprueba
+todo el plan antes del primer envío y se vuelve a revisar selección, definición,
+membresía disponible y capacidades frescas antes de cada hoja. No hay rollback
+físico ni atomicidad frente a otros clientes de HA.
+
+El recibo del conjunto conserva intención y resultado de cada hoja, incluyendo
+`not_executed`. Un fallo antes de enviar no cambia ninguna hoja. Si hubo efectos
+confirmados y luego falla otra parte, el conjunto queda incierto con
+`partial_effects`; no avanza ni reintenta. La UI muestra cuántos dispositivos se
+confirmaron, quedaron sin confirmar o no se ejecutaron. Los recibos detallados
+del servicio siguen siendo locales al proceso; los jobs conservan su claim y
+resultado raíz durables, que impiden repetir una escena parcial tras reinicio.
+H5 debe conservar ese contrato al completar sus flujos de voz.
+
+HTTP autenticado, ambos routers de voz, dispatcher, rutinas y recordatorios usan
+el mismo servicio. El catálogo intersecta capacidades y límites de todas las
+hojas. La voz exige el nombre/alias exacto de una escena seleccionada, sin
+inventar un destino por similitud. El gate compartido también protege escenas
+en pasado, negadas o diferidas. El smoke Chromium activa la escena sintética,
+observa brillo crudo, muestra un grupo parcial y guarda una rutina de temperatura
+decimal más escena sin ejecutarla.
+
+Se actualizan cuatro tests legacy que todavía exigían fallback global al no
+resolver una habitación. Sus nuevas aserciones requieren `None`, una sola query
+y el filtro de área solicitado; se conserva el caso global sin área explícita
+y el test independiente de exclusiones. No se modifica el runtime para volver
+a accionar otra habitación. Queda pendiente el fallo VAD/idioma de H3.
+
+El borrador privado de efectos conserva las siete escenas elegidas y los enlaces
+de grupos hallados en el snapshot. Los grupos HA apuntan a grupos MQTT sin
+miembros físicos en ese inventario: esa capa sigue sin completar y sin grants
+efectivos. `live_api_verified` sigue falso y el YAML conserva el path de selección
+vacío. Se solicitó el export privado de miembros para contrastarlo; ningún flag
+se activa a partir de esta implementación sintética.
+
 ## Cierre
 
 H1 requiere todos los frentes de la tabla y pruebas conectadas para cada
 productor, con HTTP/WS autenticados, política obligatoria y consentimiento
 aplicado. La nueva frontera cierra cuatro fallos del dispatcher mediante fixtures
 con selección explícita, estado fresco e intento único, conservando confirmación.
-Siguen abiertos los cuatro fallos de búsqueda por habitación; no se restaurará
-fallback a otra habitación para volverlos verdes. El quinto fallo, de idioma/VAD,
-corresponde a H3. H1 aún necesita expandir los efectos verificados de grupos y
-escenas y validar la configuración y el comportamiento del hogar real.
+Los cuatro contratos obsoletos de búsqueda por habitación se actualizan para
+comprobar ausencia de fallback; el fallo de idioma/VAD corresponde a H3. H1 aún
+necesita la evidencia de miembros físicos, efectos indirectos, configuración y
+comportamiento del hogar real. Las pruebas sintéticas no cierran esos puntos.
 No hay publicación intermedia.

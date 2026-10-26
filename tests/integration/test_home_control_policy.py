@@ -63,7 +63,7 @@ class ObservedHA:
 def write_selection(path, *, enabled=True, operations=None, maximum=100):
     review = {
         "selection_approved": True, "live_api_verified": enabled,
-        "allowed_entities": [{"entity_id": "light.test_lamp", "live_verified": True,
+        "allowed_entities": [{"entity_id": "light.test_lamp", "live_verified": True, "indirect_effects_verified": True,
             "operations": operations or ["turn_on", "turn_off", "brightness"],
             "parameters": {"brightness_pct": {"min": 0, "max": maximum}}}],
     }
@@ -91,7 +91,7 @@ async def test_default_selection_denies_before_ha_observation():
     assert ha.sends == ha.reads == []
 
 
-@pytest.mark.parametrize("state", ["missing", "malformed", "not_live", "unselected", "revoked_operation", "invalid_boolean", "missing_bounds"])
+@pytest.mark.parametrize("state", ["missing", "malformed", "not_live", "unselected", "revoked_operation", "invalid_boolean", "missing_bounds", "indirect_unverified", "indirect_missing", "indirect_invalid_boolean"])
 async def test_private_selection_fails_closed_without_reusing_a_previous_grant(graph, state):
     ha, actions, path = graph
     assert (await actions.execute(voice_request("before"), actor=HomeActor.household())).status == "confirmed"
@@ -111,6 +111,12 @@ async def test_private_selection_fails_closed_without_reusing_a_previous_grant(g
             data["allowed_entities"] = []
         elif state == "missing_bounds":
             data["allowed_entities"][0]["parameters"] = {}
+        elif state == "indirect_unverified":
+            data["allowed_entities"][0]["indirect_effects_verified"] = False
+        elif state == "indirect_missing":
+            del data["allowed_entities"][0]["indirect_effects_verified"]
+        elif state == "indirect_invalid_boolean":
+            data["allowed_entities"][0]["indirect_effects_verified"] = "true"
         else:
             data["live_api_verified"] = "true"
         path.write_text(json.dumps(data))

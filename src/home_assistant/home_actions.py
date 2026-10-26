@@ -1,15 +1,17 @@
-"""Confirmed direct controls with process-local, actor-scoped receipts."""
+"""Confirmed controls and reviewed expansions with actor-scoped receipts."""
 
 import asyncio
 from collections import OrderedDict
-from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, fields, replace
 import logging
 import re
 import uuid
 
-from src.home_assistant.control_policy import ActionOrigin, HomeActor, HomeControlPolicy
+from src.home_assistant.control_policy import ActionOrigin, EntityGrant, HomeActor, HomeControlPolicy
 from src.home_assistant.ha_client import HomeAssistantClient, ServiceCallStatus
+from src.home_assistant.effect_plans import EffectIntent, EffectPlan, expand_effect_plan, validate_plan_references
 from src.home_assistant.operations import (
     PARAMETER_FIELDS, action_parameters, compile_effect, validate_observation, validate_parameters,
 )
@@ -31,6 +33,16 @@ class HomeActionRequest:
     temperature: float | None = None
     hvac_mode: str | None = None
     position: int | None = None
+    brightness: int | None = None
+
+
+@dataclass(frozen=True)
+class HomeEffectResult:
+    """One expanded leaf's exact intent and terminal/not-executed outcome."""
+
+    intent: EffectIntent
+    status: str
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +56,7 @@ class HomeActionResult:
     entity_id: str
     status: str
     reason: str | None = None
+    effects: tuple[HomeEffectResult, ...] = ()
 
 
 class HomeActionConflict(ValueError):
@@ -72,7 +85,7 @@ def validate_home_action(request: HomeActionRequest) -> None:
     if (
         not isinstance(request.entity_id, str)
         or not isinstance(request.operation, str)
-        or re.fullmatch(r"(?:light|switch|climate|cover)\.[a-z0-9_]+", request.entity_id) is None
+        or re.fullmatch(r"(?:light|switch|climate|cover|scene)\.[a-z0-9_]+", request.entity_id) is None
         or not isinstance(request.request_id, str)
         or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", request.request_id) is None
     ):
@@ -174,86 +187,155 @@ class HomeActionService:
         return await self.execute(request, actor=actor)
 
     async def validate_selection(self, request: HomeActionRequest, *, actor: HomeActor) -> None:
-        """Validate admission without claiming a receipt or sending an effect."""
+        """Validate all selected effects without claiming or sending an action."""
         validate_home_action(request)
-        await self.policy.require_allowed(request, actor)
+        grants = await self.policy.snapshot_grants()
+        self.policy.require_from_grants(request, actor, grants)
+        plan = expand_effect_plan(request, grants)
+        for intent in (*plan.intermediates, *plan.effects):
+            self.policy.require_from_grants(self._leaf_request(request, intent), actor, grants, via_expansion=True)
+
+    @staticmethod
+    def _leaf_request(root: HomeActionRequest, intent: EffectIntent) -> HomeActionRequest:
+        return replace(root, **{field.name: getattr(intent, field.name) for field in fields(intent)})
+
+    @asynccontextmanager
+    async def _entity_lanes(self, entity_ids: Iterable[str]) -> AsyncIterator[None]:
+        # Register before awaiting; sorted acquisition prevents deadlocks across
+        # overlapping scenes/groups and ordinary direct controls.
+        registered = []
+        acquired = []
+        try:
+            for entity_id in sorted(set(entity_ids)):
+                lock, users = self._lanes.get(entity_id, (asyncio.Lock(), 0))
+                self._lanes[entity_id] = (lock, users + 1)
+                registered.append((entity_id, lock))
+            for _, lock in registered:
+                await lock.acquire()
+                acquired.append(lock)
+            yield
+        finally:
+            for lock in reversed(acquired):
+                lock.release()
+            for entity_id, lock in registered:
+                _, users = self._lanes[entity_id]
+                if users == 1:
+                    del self._lanes[entity_id]
+                else:
+                    self._lanes[entity_id] = (lock, users - 1)
 
     async def _run(self, request: HomeActionRequest, actor: HomeActor) -> HomeActionResult:
         try:
             validate_home_action(request)
-            await self.policy.require_allowed(request, actor)
+            grant = await self.policy.require_allowed(request, actor)
+            if grant.members or request.entity_id.startswith("scene."):
+                grants = await self.policy.snapshot_grants()
+                plan = expand_effect_plan(request, grants)
+                return await self._run_composite(request, actor, plan)
+            async with self._entity_lanes((request.entity_id,)):
+                return await self._perform_leaf(request, actor)
         except ValueError as error:
             return HomeActionResult(request.request_id, request.entity_id, "failed", str(error))
-        lock, users = self._lanes.get(request.entity_id, (asyncio.Lock(), 0))
-        self._lanes[request.entity_id] = (lock, users + 1)
+        except Exception:
+            logger.warning("Home action preflight dependency failed")
+            return HomeActionResult(request.request_id, request.entity_id, "failed", "ha_preflight_failed")
+
+    async def _require_binding(self, root: HomeActionRequest, actor: HomeActor, plan: EffectPlan, leaf: HomeActionRequest) -> EntityGrant:
+        # Membership reads precede one atomic policy observation. No mutable HA
+        # group or scene service is called even if its definition changes later.
+        ids = [reference.entity_id for reference in plan.groups]
+        if plan.scene_targets is not None:
+            ids.append(root.entity_id)
+        states = dict(zip(ids, await asyncio.gather(*(self.ha.get_entity_state_fresh(entity_id) for entity_id in ids))))
+        validate_plan_references(root, plan, states)
+        grants = await self.policy.snapshot_grants()
+        if expand_effect_plan(root, grants) != plan:
+            raise ValueError("effect_selection_changed")
+        self.policy.require_from_grants(root, actor, grants)
+        for intent in (*plan.intermediates, *plan.effects):
+            self.policy.require_from_grants(self._leaf_request(root, intent), actor, grants, via_expansion=True)
+        return self.policy.require_from_grants(leaf, actor, grants, via_expansion=True)
+
+    async def _run_composite(self, root: HomeActionRequest, actor: HomeActor, plan: EffectPlan) -> HomeActionResult:
+        outcomes = [HomeEffectResult(intent, "not_executed") for intent in plan.effects]
+        ids = [root.entity_id, *(group.entity_id for group in plan.groups), *(intent.entity_id for intent in plan.effects)]
+        async with self._entity_lanes(ids):
+            async def binding(leaf):
+                return await self._require_binding(root, actor, plan, leaf)
+
+            try:
+                # Preflight every leaf before the first effect; an unsupported
+                # last member cannot leave earlier members changed by admission.
+                await binding(root)
+                for intent in plan.effects:
+                    child = self._leaf_request(root, intent)
+                    fresh = await self.ha.get_entity_state_fresh(child.entity_id)
+                    unit = await self.ha.get_temperature_unit_fresh() if child.temperature is not None else None
+                    validate_observation(child, fresh, temperature_unit=unit)
+                await binding(root)
+            except Exception as error:
+                reason = str(error) if isinstance(error, ValueError) else "ha_preflight_failed"
+                return HomeActionResult(root.request_id, root.entity_id, "failed", reason, tuple(outcomes))
+            for index, intent in enumerate(plan.effects):
+                receipt = await self._perform_leaf(self._leaf_request(root, intent), actor, binding=binding)
+                outcomes[index] = HomeEffectResult(intent, receipt.status, receipt.reason)
+                if receipt.status != "confirmed":
+                    partial = index > 0
+                    return HomeActionResult(
+                        root.request_id, root.entity_id,
+                        "uncertain" if partial or receipt.status == "uncertain" else "failed",
+                        "partial_effects" if partial else receipt.reason, tuple(outcomes),
+                    )
+            return HomeActionResult(root.request_id, root.entity_id, "confirmed", effects=tuple(outcomes))
+
+    async def _perform_leaf(self, request: HomeActionRequest, actor: HomeActor, *, binding: Callable[[HomeActionRequest], Awaitable[EntityGrant]] | None = None) -> HomeActionResult:
         attempted = False
         try:
-            async with lock:
-                fresh = await self.ha.get_entity_state_fresh(request.entity_id)
-                unit = await self.ha.get_temperature_unit_fresh() if request.temperature is not None else None
-                try:
-                    validate_observation(request, fresh, temperature_unit=unit)
-                    grant = await self.policy.require_allowed(request, actor)
-                    if request.entity_id.startswith("cover.") and fresh["attributes"].get("device_class") != grant.cover_device_class:
-                        raise ValueError("cover_class_changed")
-                except ValueError as error:
-                    return HomeActionResult(request.request_id, request.entity_id, "failed", str(error))
-                effect = compile_effect(request)
-                initial_state = fresh["state"]
-                attempted = True
-                outcome = await self.ha.call_service_once(
-                    effect.domain, effect.service, request.entity_id, effect.data,
+            fresh = await self.ha.get_entity_state_fresh(request.entity_id)
+            unit = await self.ha.get_temperature_unit_fresh() if request.temperature is not None else None
+            try:
+                validate_observation(request, fresh, temperature_unit=unit)
+                grant = await binding(request) if binding is not None else await self.policy.require_allowed(request, actor)
+                if request.entity_id.startswith("cover.") and fresh["attributes"].get("device_class") != grant.cover_device_class:
+                    raise ValueError("cover_class_changed")
+            except ValueError as error:
+                return HomeActionResult(request.request_id, request.entity_id, "failed", str(error))
+            effect = compile_effect(request)
+            initial_state = fresh["state"]
+            attempted = True
+            outcome = await self.ha.call_service_once(effect.domain, effect.service, request.entity_id, effect.data)
+            if outcome.status != ServiceCallStatus.ACCEPTED:
+                status = "failed" if outcome.status == ServiceCallStatus.REJECTED else "uncertain"
+                return HomeActionResult(request.request_id, request.entity_id, status, outcome.reason)
+            if request.operation in {"turn_on", "turn_off", "brightness"} and request.brightness is None:
+                confirmed = await self.ha.confirm_entity_state(
+                    request.entity_id, "off" if effect.service == "turn_off" else "on", brightness_pct=request.brightness_pct,
                 )
-                if outcome.status != ServiceCallStatus.ACCEPTED:
-                    status = "failed" if outcome.status == ServiceCallStatus.REJECTED else "uncertain"
-                    return HomeActionResult(request.request_id, request.entity_id, status, outcome.reason)
-                if request.operation in {"turn_on", "turn_off", "brightness"}:
-                    confirmed = await self.ha.confirm_entity_state(
-                        request.entity_id, "off" if effect.service == "turn_off" else "on", brightness_pct=request.brightness_pct,
-                    )
-                else:
-                    confirmed = await self.ha.confirm_home_action(request, initial_state=initial_state)
-                return HomeActionResult(
-                    request.request_id, request.entity_id,
-                    "confirmed" if confirmed else "uncertain",
-                    None if confirmed else "state_not_confirmed",
-                )
+            else:
+                confirmed = await self.ha.confirm_home_action(request, initial_state=initial_state)
+            return HomeActionResult(request.request_id, request.entity_id, "confirmed" if confirmed else "uncertain", None if confirmed else "state_not_confirmed")
         except Exception:
             logger.warning("Home action dependency failed; preserving send certainty")
             return HomeActionResult(
-                request.request_id, request.entity_id,
-                "uncertain" if attempted else "failed",
+                request.request_id, request.entity_id, "uncertain" if attempted else "failed",
                 "ha_attempt_uncertain" if attempted else "ha_preflight_failed",
             )
-        finally:
-            _, users = self._lanes[request.entity_id]
-            if users == 1:
-                del self._lanes[request.entity_id]
-            else:
-                self._lanes[request.entity_id] = (lock, users - 1)
 
 
 def request_from_service(
     domain: str, service: str, entity_id: str, data: dict | None,
     *, request_id: str, origin: ActionOrigin,
 ) -> HomeActionRequest:
-    """Convert supported binary light/switch calls without dropping parameters."""
+    """Convert one supported service-shaped intent without dropping parameters."""
     if not isinstance(entity_id, str) or domain != entity_id.partition(".")[0]:
         raise ValueError("invalid_service_target")
     data = {} if data is None else data
     if not isinstance(data, Mapping):
         raise ValueError("unsupported_action_parameters")
     data = dict(data)
-    if "brightness" in data:
-        if "brightness_pct" in data:
-            raise ValueError("conflicting_brightness")
-        raw = data.pop("brightness")
-        if type(raw) is not int or not 0 <= raw <= 255:
-            raise ValueError("invalid_brightness")
-        data["brightness_pct"] = max(1, round(raw * 100 / 255)) if raw else 0
-    operation = service
+    operation = "activate_scene" if domain == "scene" and service == "turn_on" else service
     if domain == "light" and service == "turn_on":
-        operation = "color_temp_kelvin" if "color_temp_kelvin" in data else ("brightness" if "brightness_pct" in data else "turn_on")
+        operation = "color_temp_kelvin" if "color_temp_kelvin" in data else ("brightness" if "brightness_pct" in data or "brightness" in data else "turn_on")
     if data.keys() - set(PARAMETER_FIELDS):
         raise ValueError("unsupported_action_parameters")
     request = HomeActionRequest(entity_id, operation, request_id, origin=origin, **data)
