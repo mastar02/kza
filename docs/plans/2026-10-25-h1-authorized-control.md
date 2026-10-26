@@ -429,6 +429,16 @@ efectivos. `live_api_verified` sigue falso y el YAML conserva el path de selecci
 vacío. Se solicitó el export privado de miembros para contrastarlo; ningún flag
 se activa a partir de esta implementación sintética.
 
+Verificación del commit `9ebdab8`: **4002 passed, 1 failed, 1 xfailed** en
+111,08 s. El único fallo restante es idioma/VAD; no hay IDs de fallo nuevos.
+Las 68 pruebas conectadas de expansión cubren los casos anteriores. Pasan
+Ruff 0.15.1, el gate medio/alto de Bandit 1.9.4, los doce tests Node, el smoke
+autenticado del dashboard y el artefacto compilado fuera del checkout. Chromium
+comprueba seis envíos sobre hojas sintéticas, feedback parcial y guardado de una
+rutina con consigna decimal más escena, sin ejecutarla; no hay excepciones JS.
+El [registro de expansión](../research/2026-10-25-h1-effect-expansion-validation.json)
+conserva comandos, fallos cerrados, límites y evidencia real pendiente.
+
 ## Cierre
 
 H1 requiere todos los frentes de la tabla y pruebas conectadas para cada
