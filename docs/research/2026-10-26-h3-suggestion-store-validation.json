@@ -1,0 +1,323 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "3242ef5635a7b24e6494d46590f9487b57c1c6fe",
+  "tested_runtime_source_tree": "b45f1ff32409eb41c31ac1e47c8c7affa6400d7e",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 policy suggestion storage, event/authority-fenced commits, fresh projections, voice delivery revocation and leased CLI access",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-suggestion-store-accepted.xml",
+    "collected": 4722,
+    "passed": 4721,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 192.57,
+    "junit_time_s": 192.511,
+    "log": "/tmp/kza-h3-suggestion-store-accepted.log",
+    "xml": "/tmp/kza-h3-suggestion-store-accepted.xml",
+    "accepted": true,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "integrated_runtime_gc_acceptance": false
+  },
+  "new_cases": 39,
+  "new_case_names": [
+    "test_legacy_json_stays_untouched_and_never_enters_active_proposals",
+    "test_restart_reads_and_expanded_configuration_do_not_renew_proposals",
+    "test_valid_metadata_can_generate_after_raw_scrubbing_without_copying_raw_content",
+    "test_conversation_revocation_excludes_all_projections_before_physical_cleanup",
+    "test_fact_receipts_constrain_expiry_and_reject_a_later_revision",
+    "test_unknown_or_forged_policy_metadata_is_excluded_and_preserved[sources_json-[]]",
+    "test_unknown_or_forged_policy_metadata_is_excluded_and_preserved[evidence_json-[]]",
+    "test_unknown_or_forged_policy_metadata_is_excluded_and_preserved[pattern_json-{}]",
+    "test_unknown_or_forged_policy_metadata_is_excluded_and_preserved[expires_at-1799834400.0]",
+    "test_unknown_or_forged_policy_metadata_is_excluded_and_preserved[observed_at-1791453600.0]",
+    "test_unknown_or_forged_policy_metadata_is_excluded_and_preserved[status-implemented]",
+    "test_unknown_or_forged_policy_metadata_is_excluded_and_preserved[snooze_until-1799834400.0]",
+    "test_missing_event_rows_cannot_be_replaced_by_self_reported_lineage",
+    "test_untrusted_pattern_descriptions_and_statistics_are_rebuilt_before_model_prompt",
+    "test_receipts_cannot_authorize_another_entity_or_an_invalid_pattern",
+    "test_recomputed_confidence_must_meet_requested_threshold",
+    "test_late_model_output_cannot_commit_after_its_source_is_invalidated[marker]",
+    "test_late_model_output_cannot_commit_after_its_source_is_invalidated[expiry]",
+    "test_model_wait_does_not_renew_creation_or_observation_deadline",
+    "test_native_proposal_commit_precedes_marker_or_is_rejected",
+    "test_concurrent_instances_cannot_duplicate_a_live_pattern",
+    "test_pending_failed_marker_hides_proposals_without_destroying_or_renewing_them",
+    "test_accepting_is_a_proposal_response_and_never_claims_stub_ha_implementation",
+    "test_snooze_survives_restart_and_is_capped_by_original_expiry",
+    "test_voice_delivery_stops_on_metadata_revocation_and_discards_idle_pending",
+    "test_cancelled_late_model_keeps_worker_and_lease_until_actual_completion",
+    "test_midnight_pattern_exports_midnight_instead_of_default_noon",
+    "test_expired_or_revoked_metadata_never_loads_stored_message",
+    "test_event_mutation_waits_until_derivative_commit_and_then_invalidates_it",
+    "test_optional_model_failure_falls_back_without_persisting_or_logging_private_error[oversized]",
+    "test_optional_model_failure_falls_back_without_persisting_or_logging_private_error[error]",
+    "test_policy_paths_are_pinned_and_each_actual_destination_is_registered",
+    "test_conflicting_policy_and_event_locations_are_rejected_before_writer_deadlock",
+    "test_shorter_event_policy_applies_before_sweep_and_cannot_expand_on_next_restart",
+    "test_startup_retention_clamp_preserves_unknown_event_sources",
+    "test_cli_uses_same_configured_authority_and_filters_revoked_proposals",
+    "test_cli_cannot_open_an_alternate_writer_while_runtime_lease_is_live",
+    "test_optional_store_read_failure_does_not_fail_completed_command_or_expose_error",
+    "test_voice_response_write_failure_is_reported_without_claiming_acceptance"
+  ],
+  "focused_validation": {
+    "passed": 280,
+    "failed": 0,
+    "runtime_s": 13.95,
+    "log": "/tmp/kza-h3-suggestion-store-focused-accepted.log",
+    "scope": "Suggestion storage, pattern receipts, event/context erasure and retention, coordinator, router and memory unit compatibility"
+  },
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 399,
+        "p95": 0.49693300388753414,
+        "max": 1.0766331106424332
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.058957841247320175,
+          "p95": 0.19323010928928852,
+          "max": 0.19323010928928852
+        },
+        "stream_and_client_cleanup": {
+          "p50": 11.029592016711831,
+          "p95": 11.374217923730612,
+          "max": 11.374217923730612
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 425,
+        "loop_lag_p95_ms": 0.26692519895732403,
+        "loop_lag_max_ms": 1.0931540746241808,
+        "cancel_cleanup_max_ms": 1.7864881083369255,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2736,
+        "loop_lag_p95_ms": 0.9729199856519698,
+        "loop_lag_max_ms": 1.9157020188868046,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.5880920216441154,
+        "p95": 5.947434110566974,
+        "max": 5.947434110566974,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "prior_validation_and_review": [
+    {
+      "log": "/tmp/kza-h3-suggestion-store-baseline.log",
+      "passed": 133,
+      "failed": 0,
+      "runtime_s": 6.12
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-store-first.log",
+      "passed": 24,
+      "failed": 1,
+      "runtime_s": 2.31,
+      "cause": "New registry assertion omitted the required ErasureParticipant argument and expected a participant field not present in the private locator DTO",
+      "correction": "Pass SUGGESTIONS explicitly and compare the actual registered descriptor; no production protocol or timing rules changed"
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-store-second.log",
+      "passed": 108,
+      "failed": 0,
+      "runtime_s": 3.74
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-store-third.log",
+      "passed": 33,
+      "failed": 0,
+      "runtime_s": 2.65
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-store-bandit-initial.log",
+      "finding": "Three queries assembled a constant column list, causing B608 findings",
+      "correction": "Replace the assembled queries with literal SQL and bound parameters; no rule suppression"
+    },
+    {
+      "finding": "Receipt resolution could validate an earlier SQL batch before a marker and finish after it",
+      "correction": "Recheck all resolved source authorities at the end; writer admission additionally keeps the authority and event store guarded through derivative commit"
+    },
+    {
+      "finding": "Existing CLI constructed EventLogger without the configured authority",
+      "correction": "Build the same leased privacy/event services from existing settings, execute commands in owned workers and close them via AsyncExitStack; test live-lease contention before any alternate event database creation"
+    },
+    {
+      "finding": "Original compiled proposal fixture accepted its sole proposal before erasure, so checking pending rows and replay alone did not independently prove accepted-proposal exclusion",
+      "correction": "Add counts before/after the marker and rerun that source-free artifact test with the same committed runtime code; only test assertions change after the full suite"
+    },
+    {
+      "tested_commit": "b5069e6fcd18cbcf219044c85541cb512a29b7eb",
+      "suite": {
+        "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-suggestion-store-final.xml",
+        "collected": 4720,
+        "passed": 4719,
+        "failed": 0,
+        "xfailed": 1,
+        "runtime_s": 193.18,
+        "junit_time_s": 193.109,
+        "log": "/tmp/kza-h3-suggestion-store-final.log",
+        "xml": "/tmp/kza-h3-suggestion-store-final.xml",
+        "accepted": true,
+        "failed_tests": [],
+        "xfailed_tests": [
+          "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+        ],
+        "integrated_runtime_gc_acceptance": false
+      },
+      "result": "Full candidate suite passed, but review then reproduced a shorter-retention startup gap; this candidate is not the final acceptance evidence"
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-store-shorter-policy-repro.log",
+      "passed": 0,
+      "failed": 1,
+      "runtime_s": 0.55,
+      "finding": "Restarting with one-day event retention could still project proposals from older 90-day deadlines before the first sweep",
+      "correction": "Persist reductions of recognized event deadlines during native initialization before consumer admission; preserve unparseable source rows and test 90-to-1-to-90 restart without running maintenance",
+      "fixed_focused_log": "/tmp/kza-h3-suggestion-store-shorter-policy-fixed.log",
+      "fixed_focused_passed": 118,
+      "fixed_focused_failed": 0
+    }
+  ],
+  "storage_contract": {
+    "table": "suggestions_policy_v1",
+    "physical_destination": "Separate .policy-v1.sqlite3 sidecar pinned to configured legacy basename before opening",
+    "legacy_json_loaded_or_modified": false,
+    "private_file_mode": "0600",
+    "registration_before_open": true,
+    "runtime_cache_can_refill_rows": false,
+    "revalidates_actual_event_rows": true,
+    "rebuilds_pattern_text_and_statistics": true,
+    "stored_yaml_rehydrated": false,
+    "optional_model_prompt_includes_raw_event_text_or_names": false,
+    "automatic_expiry_anchor": "Last actual event observation, not generation completion or later access",
+    "automatic_days_max": 30,
+    "semantic_and_event_deadlines_also_bound_expiry": true,
+    "snooze_accept_or_restart_extend_expiry": false,
+    "metadata_can_outlive_48_hour_raw_text": true,
+    "unknown_rows": "Preserved in place, excluded before message projection",
+    "independent_physical_cleanup_connected": false,
+    "durable_suggestions_driver_connected": false,
+    "shorter_event_retention_persisted_before_reads": true,
+    "later_event_retention_expansion_restores_old_deadlines": false,
+    "unparseable_event_sources_modified_by_startup_clamp": false,
+    "startup_clamp_scope": "Native SQL update of recognized policy rows before optional consumer admission; large-history startup cost remains within H4/H6 integrated acceptance"
+  },
+  "admission_and_ownership": {
+    "lock_order": [
+      "Leased FactLedger activity serialization",
+      "Actual EventLogger BEGIN IMMEDIATE",
+      "Suggestion database BEGIN IMMEDIATE"
+    ],
+    "model_generation_holds_authority_lock": false,
+    "revalidates_receipts_inside_guards": true,
+    "late_model_after_marker_can_commit": false,
+    "event_mutation_can_cross_derivative_commit": false,
+    "pending_failed_marker_deletes_proposals": false,
+    "native_observer_cancellation_releases_worker_or_lease": false,
+    "voice_delivery_watches_metadata_expiry_and_revocation": true,
+    "idle_pending_projection_is_pruned": true,
+    "acceptance_is_ha_implementation": false,
+    "runtime_suggestion_ha_calls": 0,
+    "write_error_claims_success": false,
+    "cli_shares_configured_authority_and_exclusive_lease": true,
+    "optional_read_failure_propagates_from_proposal_handler": false,
+    "home_action_hardware_verification": false
+  },
+  "bounds": {
+    "active_proposals": 1000,
+    "event_receipts": 10000,
+    "source_references": 10000,
+    "metadata_bytes_per_field": 4194304,
+    "model_wording_characters": 4096
+  },
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000
+  },
+  "gates": {
+    "ruff": {
+      "command": "ruff check src/ tests/ scripts/smart_automations.py",
+      "passed": true,
+      "log": "/tmp/kza-h3-suggestion-store-ruff-final.log"
+    },
+    "bandit": {
+      "command": "bandit -r src/ scripts/smart_automations.py -ll -c pyproject.toml",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-suggestion-store-bandit-accepted.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-suggestion-store-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-suggestion-store-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "full_suite_case_runtime_s": 6.567,
+      "prior_strengthened_case": {
+        "passed": 1,
+        "failed": 0,
+        "runtime_s": 6.37,
+        "junit_time_s": 6.365,
+        "log": "/tmp/kza-h3-suggestion-store-compiled-strong.log",
+        "xml": "/tmp/kza-h3-suggestion-store-compiled-strong.xml",
+        "exercise": "Create/reload policy proposals from real metadata, accept only a draft, prove accepted proposals count before a marker and disappear afterwards, reject replay, preserve legacy JSON outside checkout",
+        "runtime_source_modified_after_full_suite": false,
+        "test_assertions_strengthened_after_full_suite": true
+      },
+      "final_full_suite_includes_strengthened_accepted_proposal_erasure_assertions": true,
+      "runtime_source_modified_after_accepted_full_suite": false
+    }
+  },
+  "remaining_scope": [
+    "Connect SUGGESTIONS durable cleanup and physical expiry independent of analytics, including historical targets and restored rows",
+    "Six erasure participants remain; target registration is not completion",
+    "Complete active producers and buffers, other diagnostics, collectors, streams/frontend and voice review/TTL",
+    "Private real-copy legacy migration, compatible restore, live semantic index rebuild and authenticated broad erasure UI",
+    "H0/H1 actual HA effects, H2 physical audio, H4 runtime/GC recovery, H5 actual typed voice routine execution, H6 single final release/rollback",
+    "Earlier instrumented GC pauses up to 495.68 ms remain unresolved; the uninstrumented suite does not remeasure or accept integrated runtime/GC",
+    "Large-history startup cost of initial event deadline reduction remains to be measured under H4/H6"
+  ],
+  "production_modified": false,
+  "new_dependencies": false,
+  "new_configuration_files": false
+}

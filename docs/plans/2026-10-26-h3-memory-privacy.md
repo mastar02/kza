@@ -962,6 +962,24 @@ participante: siguen siendo seis los pendientes. No se habilita un borrado globa
 no se migra el JSON original y no se modifica producción. La aceptación de GC,
 hardware, voces, migración privada y el resto de H0–H6 continúa abierta.
 
+La [validación del almacén de propuestas](../research/2026-10-26-h3-suggestion-store-validation.json)
+del commit `3242ef5` registra **4721 passed, 1 xfailed**, sin fallos, en 192,57 s.
+Incluye 39 casos nuevos, 280 pruebas dirigidas, Ruff con la CLI modificada,
+Bandit sin hallazgos medios/altos, 18 tests de frontend y smoke del dashboard.
+El artefacto compilado verifica creación, recarga, aceptación como borrador y
+exclusión de propuestas aceptadas después del marker, fuera del checkout, en
+6,57 s. El heartbeat tiene p95 de 0,50 ms y máximo de 1,08 ms; la cancelación de
+control llega a 0,19 ms y el cleanup a 11,37 ms, con los límites intactos.
+
+La evidencia conserva la primera suite completa verde del commit `b5069e6`,
+la reproducción posterior del hueco de retención antes del barrido y su
+corrección. También registra el error inicial del fixture de locators, el SQL
+convertido a consultas literales y el refuerzo del smoke compilado para que
+aceptar la única propuesta no volviera trivial el chequeo de pendientes tras
+borrarla. La suite final incluye ese refuerzo y las pruebas de 90 → 1 → 90 días.
+No completa el mantenimiento físico de propuestas, su participante durable ni
+la aceptación integrada de GC y hardware.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

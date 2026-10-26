@@ -463,6 +463,12 @@ La voz interrumpe la entrega de una propuesta revocada, y la CLI comparte la
 autoridad configurada y su lease. Aceptar entrega un borrador; la ejecución
 efectiva sigue en H5. Falta conectar el mantenimiento físico y el participante
 durable de sugerencias, además de los otros pendientes de H3 y del plan completo.
+La [validación del almacén](../research/2026-10-26-h3-suggestion-store-validation.json)
+del commit `3242ef5` registra **4721 passed, 1 xfailed**, sin fallos, con 39 casos
+nuevos y el artefacto compilado aceptado. Incluye la corrección de un hueco al
+reiniciar con menor retención, antes del primer barrido; la suite verde anterior
+no lo había detectado. La aceptación integrada de GC, arranque y hardware sigue
+pendiente.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
