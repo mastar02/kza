@@ -1,16 +1,19 @@
 """Medición de calidad del command path STT.
 
-Traduce el outcome de una captura post-wake a un evento del EventLogger
-existente (data/events.db). NO toca el schema: usa entity_id="asr_quality:<room>"
-y action="<outcome>:<reason>" para poder hacer luego:
-    SELECT action, count(*) FROM events
-    WHERE entity_id LIKE 'asr_quality:%' GROUP BY action;
+Traduce el outcome de una captura post-wake al EventLogger privado. Usa
+entity_id="asr_quality:<room>" y action="<outcome>:<reason>". Las consultas
+del logger aplican procedencia, vencimiento de texto y revocaciones; no se
+consulta directamente la tabla legacy.
 
 Fail-open: si event_logger es None o falla, no se rompe el pipeline de voz.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+
+from src.analytics.event_logger import EventLogger
+from src.memory.fact_ledger import MemorySource
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,7 @@ def log_asr_outcome(
     signals: dict,
     wake_score: float,
     rms: float,
+    *, sources: tuple[MemorySource, ...] = (),
 ) -> None:
     """Registrar el resultado de una captura del command path.
 
@@ -60,6 +64,21 @@ def log_asr_outcome(
                 "no_speech_prob": signals.get("no_speech_prob"),
                 "avg_logprob": signals.get("avg_logprob"),
             },
+            **({"sources": sources} if sources else {}),
         )
-    except Exception as e:  # nunca romper el pipeline de voz por la métrica
-        logger.debug(f"[asr_quality] log falló (ignorado): {e}")
+    except Exception as error:
+        logger.debug("ASR metric write skipped: %s", type(error).__name__)
+
+
+async def alog_asr_outcome(event_logger, *args, **kwargs) -> None:
+    """Keep diagnostic I/O off-loop and bound its observation during voice."""
+    if event_logger is None:
+        return
+    try:
+        if isinstance(event_logger, EventLogger):
+            async with asyncio.timeout(event_logger.observation_timeout_s):
+                await event_logger.acall(log_asr_outcome, event_logger, *args, **kwargs)
+        else:
+            await asyncio.to_thread(log_asr_outcome, event_logger, *args, **kwargs)
+    except Exception as error:
+        logger.debug("ASR metric observation deferred: %s", type(error).__name__)

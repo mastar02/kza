@@ -794,6 +794,7 @@ analytics:
   events_db: "./data/events.db"          # SQLite para eventos
   suggestions_path: "./data/suggestions.json"  # Sugerencias generadas
   retention_days: 90                      # Días de historial a mantener
+  operation_timeout_s: 0.1                # Espera de métricas en voz; el worker sigue bajo seguimiento
   min_confidence: 0.7                     # Confianza mínima para sugerir
   suggestion_interval: 20                 # Presentar sugerencia cada N comandos
 

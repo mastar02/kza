@@ -149,7 +149,7 @@ def register_home_routes(
     async def private_response_policy(request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Prevent storage of private responses, including handled HTTP errors."""
         response = await call_next(request)
-        if request.url.path.startswith(("/api/home/", "/api/routines/", "/api/memory")) or request.url.path == "/api/routines":
+        if request.url.path.startswith(("/api/home/", "/api/routines/", "/api/memory", "/api/conversations", "/api/ha/actions")) or request.url.path == "/api/routines":
             response.headers["Cache-Control"] = "no-store"
         return response
 

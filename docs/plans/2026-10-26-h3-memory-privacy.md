@@ -110,11 +110,56 @@ las capturas/clips y otras copias, sus productores y la coordinación durable
 desde el dashboard. Tampoco transforma los perfiles de usuario ni las
 preferencias legacy en confirmaciones manuales.
 
+## Eventos de diagnóstico y actividad
+
+El registro nuevo usa la tabla `events_policy_v1` en el archivo configurado de
+analítica. La tabla legacy se conserva sin importar ni modificar sus filas.
+Todas las consultas del logger —historial, distribución horaria/semanal,
+secuencias y estadísticas— usan una proyección que excluye eventos revocados
+o vencidos y aplica el vencimiento de texto al leer.
+
+La frase de disparo, el nombre copiado y el contexto libre conservan el menor
+vencimiento de sus capturas, hasta 48 horas. Los metadatos de actividad y las
+señales numéricas siguen el plazo configurado en `analytics.retention_days`,
+actualmente 90 días; ese deadline se persiste por evento y no se renueva al
+consultar ni al cambiar la configuración después. Los hechos del catálogo de
+memoria conservan su política propia de 30 días. El logger admite en el canal
+numérico sólo campos y tipos conocidos, para que el contexto libre no prolongue
+la transcripción. Una escritura sin fuentes guarda exclusivamente ese
+diagnóstico numérico y los identificadores de actividad validados.
+
+Las dos rutas de voz y sus resultados de aceptación o rechazo adjuntan la
+procedencia del CommandEvent. También existe esa procedencia al deshabilitar
+el catálogo de memoria; no se toma el momento de terminar la métrica como
+inicio de la captura. Antes de guardar texto se revalidan fuentes y tombstones
+bajo la transacción de la política. Un writer anterior termina antes del marker;
+uno que llega después se rechaza. Las consultas filtran la revocación aunque
+todavía falte la eliminación física de la fila.
+
+El factory inicializa el registro fuera del loop y registra su cierre antes de
+iniciar I/O. El mantenimiento arranca con limpieza y se despierta según el
+próximo plazo; elimina eventos vencidos o revocados y retira el texto vencido
+de los que aún conservan métricas. Las conexiones SQLite se cierran al salir
+de cada operación. `OwnedBlockingWork` limita los trabajos nativos y conserva
+su ownership tras cancelación o timeout, también cuando delega en el worker
+compartido de memoria.
+
+La espera de escritura durante voz está acotada por
+`analytics.operation_timeout_s`; el valor inicial es 0,1 s. Fallar una métrica
+no revierte una acción ni convierte su diagnóstico en otro intento de HA. Las
+lecturas de eventos de la API autenticada también se ejecutan fuera del loop;
+sus respuestas y errores llevan `Cache-Control: no-store`.
+
+Esta retención todavía no cubre los demás logs de diagnóstico, colectores,
+colas, cachés y copias mantenidas por consumidores del stream o del frontend.
+La revisión de sugerencias derivadas y su procedencia se integra con el trabajo
+restante de H3/H5. El borrado coordinado continúa pendiente.
+
 ## Trabajo restante
 
-1. Propagar procedencia y TTL a eventos y colectores que aún conservan copias
-   de texto o audio, solicitudes de cola, últimas respuestas y otras rutas de
-   persistencia y caché.
+1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
+   solicitudes de cola, últimas respuestas y otras rutas de persistencia,
+   caché, streams y frontend; integrar las sugerencias derivadas.
 2. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
    frente a productores y guardados tardíos. La limpieza local del catálogo no

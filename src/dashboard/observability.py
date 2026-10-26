@@ -24,6 +24,7 @@ import time
 from datetime import datetime
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 
+from src.analytics.event_logger import EventLogger
 from src.dashboard import observability_mocks as mocks
 from src.dashboard import system_monitor
 from src.dashboard.auth import require_dashboard_session
@@ -317,6 +318,16 @@ def register_observability_routes(
     def _set_source(response: Response, real: bool) -> None:
         response.headers[SOURCE_HEADER] = "real" if real else "mock"
 
+    async def _adapt_events(adapter_call, mock_data, response):
+        if isinstance(event_logger, EventLogger):
+            try:
+                observed = await event_logger.acall(adapter_call)
+            except Exception as error:
+                logger.warning("Event observation unavailable: %s", type(error).__name__)
+                observed = None
+            return _adapt(lambda: observed, mock_data, response)
+        return _adapt(adapter_call, mock_data, response)
+
     @router.get("/api/zones")
     async def get_zones(response: Response):
         if zone_manager is None:
@@ -331,7 +342,7 @@ def register_observability_routes(
         from_: str | None = None, to: str | None = None, path: str | None = None,
     ):
         if not use_mocks and event_logger is not None:
-            return _adapt(
+            return await _adapt_events(
                 lambda: _conversations_adapter(
                     event_logger, user=user, zone=zone, path=path),
                 mocks.CONVERSATIONS, response,
@@ -371,7 +382,7 @@ def register_observability_routes(
     @router.get("/api/ha/actions")
     async def get_ha_actions(response: Response):
         if not use_mocks and event_logger is not None:
-            return _adapt(lambda: _ha_actions_adapter(event_logger),
+            return await _adapt_events(lambda: _ha_actions_adapter(event_logger),
                           mocks.HA_ACTIONS, response)
         response.headers[SOURCE_HEADER] = "mock"
         return mocks.HA_ACTIONS

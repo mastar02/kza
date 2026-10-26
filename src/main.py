@@ -44,7 +44,7 @@ from src.users.user_manager import UserManager
 from src.users.voice_enrollment import VoiceEnrollment
 from src.users.emotion_detector import EmotionDetector
 from src.monitoring.latency_monitor import LatencyMonitor
-from src.analytics.event_logger import EventLogger
+from src.analytics.services import build_event_logger
 from src.analytics.pattern_analyzer import PatternAnalyzer
 from src.analytics.suggestion_engine import SuggestionEngine
 from src.audio.zone_manager import ZoneManager, Zone
@@ -661,14 +661,13 @@ async def _run_main(shutdown: AsyncExitStack):
     suggestion_engine = None
 
     if analytics_config.get("enabled", True):
-        event_logger = EventLogger(
-            db_path=analytics_config.get("events_db", "./data/events.db"),
-            retention_days=analytics_config.get("retention_days", 90)
-        )
+        event_logger = await build_event_logger(config, shutdown=shutdown,
+            source_policy=memory_manager.long_term.ledger if memory_manager is not None else None,
+            io_worker=memory_manager.long_term.acall if memory_manager is not None else None)
 
         pattern_analyzer = PatternAnalyzer(event_logger)
 
-        suggestion_engine = SuggestionEngine(
+        suggestion_engine = await event_logger.acall(SuggestionEngine,
             event_logger=event_logger,
             pattern_analyzer=pattern_analyzer,
             suggestions_path=analytics_config.get("suggestions_path", "./data/suggestions.json"),

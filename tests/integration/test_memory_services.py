@@ -12,6 +12,7 @@ import pytest
 from src.ambient.distiller import Distiller
 from src.ambient.store import AmbientStore
 from src.ambient.types import AmbientUtterance
+from src.analytics.services import build_event_logger
 from src.dashboard.api import DashboardAPI
 from src.memory.services import build_memory_services
 from src.memory.fact_ledger import MemoryReviewer
@@ -212,6 +213,8 @@ async def test_both_voice_routes_retrieve_policy_memory_and_record_actual_captur
         stack.push_async_callback(owner.aclose)
         services = await build_memory_services(configuration(tmp_path), shutdown=stack,
             chroma_client=MemoryClient(tmp_path/'chroma'), clock=clock)
+        events = await build_event_logger({'analytics': {'events_db': str(tmp_path/'events.db')}}, shutdown=stack,
+            source_policy=services.manager.long_term.ledger, clock=clock, io_worker=services.manager.long_term.acall)
         source = services.manager.source_for_capture(str(uuid4()), clock.now, 'origin')
         await services.manager.long_term.astore_fact('Dato sintético verificable.', 'fact', sources=(source,))
         processor = SimpleNamespace(process_command=AsyncMock(return_value=SimpleNamespace(
@@ -222,6 +225,7 @@ async def test_both_voice_routes_retrieve_policy_memory_and_record_actual_captur
             response_handler=owner, memory_manager=services.manager) if orchestrated else None
         router = RequestRouter(processor, owner, audio, orchestrator=orchestrator,
             orchestrator_enabled=orchestrated, memory_manager=services.manager, llm_reasoner=owner.llm,
+            event_logger=events, asr_event_logger=events,
             chroma_sync=SimpleNamespace(search_command=lambda *a, **kw: None),
             routine_manager=SimpleNamespace(handle=AsyncMock(return_value={'handled': False})))
         worker = None
@@ -242,6 +246,11 @@ async def test_both_voice_routes_retrieve_policy_memory_and_record_actual_captur
                 history = orchestrator.context_manager.get('unknown').conversation_history
                 assert len(history) == 2 and all(t.sources[0] == turns[0].sources[0] for t in history)
                 assert all(t.timestamp == event.captured_at for t in history)
+            recorded = await events.acall(events.get_events)
+            assert len(recorded) == 1 and recorded[0].sources[0] == turns[0].sources[0]
+            assert recorded[0].trigger_phrase == 'Nexa explicame el cielo'
+            clock.now += 48*3600
+            assert (await events.acall(events.get_events))[0].trigger_phrase is None
         finally:
             if worker:
                 orchestrator._running = False

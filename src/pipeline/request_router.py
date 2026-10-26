@@ -27,7 +27,7 @@ from src.nlu.command_grammar import PartialCommand, has_unresolved_light_locatio
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
-from src.analytics.asr_quality import log_asr_outcome
+from src.analytics.asr_quality import alog_asr_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -510,18 +510,24 @@ class RequestRouter:
         from src.memory.fact_ledger import MemoryOrigin
         from uuid import uuid4
         self._memory_source.set(None)
-        if isinstance(self.memory, MemoryManager):
-            try:
-                captured_at = getattr(audio_or_event, "captured_at", None)
-                if captured_at is None:
-                    captured_at = getattr(audio_or_event, "timestamp", time.time())
-                self._memory_source.set(self.memory.source_for_capture(
-                    getattr(audio_or_event, "capture_id", str(uuid4())), captured_at, room_id,
-                    conversation_id=getattr(audio_or_event, "conversation_id", None),
-                    expires_at=getattr(audio_or_event, "source_expires_at", None),
-                    origin=MemoryOrigin.AMBIENT if textual_wake else MemoryOrigin.VOICE))
-            except (ValueError, TypeError):
-                logger.warning("[Memory] Capture provenance unavailable")
+        try:
+            captured_at = getattr(audio_or_event, "captured_at", None)
+            if captured_at is None:
+                captured_at = getattr(audio_or_event, "timestamp", time.time())
+            capture_id = getattr(audio_or_event, "capture_id", str(uuid4()))
+            conversation_id = getattr(audio_or_event, "conversation_id", None)
+            expires_at = getattr(audio_or_event, "source_expires_at", None)
+            origin = MemoryOrigin.AMBIENT if textual_wake else MemoryOrigin.VOICE
+            if isinstance(self.memory, MemoryManager):
+                source = self.memory.source_for_capture(capture_id, captured_at, room_id,
+                    conversation_id=conversation_id, expires_at=expires_at, origin=origin)
+            else:
+                from src.memory.fact_ledger import MemorySource
+                source = MemorySource(capture_id, conversation_id or str(uuid4()), captured_at,
+                    expires_at if expires_at is not None else min(captured_at, time.time())+48*3600, origin)
+            self._memory_source.set(source)
+        except (ValueError, TypeError):
+            logger.warning("[Memory] Capture provenance unavailable")
 
         if self.orchestrator_enabled and self._orchestrator:
             result = await self._process_command_orchestrated(
@@ -615,9 +621,10 @@ class RequestRouter:
             )
             return result
 
-        log_asr_outcome(
+        await alog_asr_outcome(
             self._asr_event_logger, room_id, "accepted", "ok", text,
             gate_decision.signals or {}, wake_score, wake_rms,
+            sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
 
@@ -895,8 +902,7 @@ class RequestRouter:
             service_filter=_service_filter,
             query_slots=_query_slots,
             **({"target_entity_id": target_entity_id} if target_entity_id else {}),
-            **({"memory_sources": (self._memory_source.get(),) if self._memory_source.get() is not None else ()}
-               if self.memory is not None and hasattr(type(self.memory), "source_for_capture") else {}),
+            memory_sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
 
         # 6. Build result
@@ -956,7 +962,7 @@ class RequestRouter:
         self._log_latency(result)
 
         if self.event_logger and result["success"] and result["intent"] == "domotics":
-            self._log_domotics_event(
+            await self._log_domotics_event(
                 entity_id=result["action"]["entity_id"] if result["action"] else None,
                 action=result["action"]["service"] if result["action"] else None,
                 trigger_phrase=text
@@ -1036,9 +1042,10 @@ class RequestRouter:
             )
             return result
 
-        log_asr_outcome(
+        await alog_asr_outcome(
             self._asr_event_logger, room_id, "accepted", "ok", text,
             gate_decision.signals or {}, wake_score, wake_rms,
+            sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
 
@@ -1359,7 +1366,7 @@ class RequestRouter:
 
             # Log event
             if self.event_logger and success:
-                self._log_domotics_event(
+                await self._log_domotics_event(
                     entity_id=command["entity_id"],
                     action=command["service"],
                     trigger_phrase=text
@@ -1442,13 +1449,15 @@ class RequestRouter:
             await self.response_handler.aplay_earcon(
                 zone_id=f"zone_{room_id}" if room_id and _rc is None else None, room_context=_rc,
             )
-            log_asr_outcome(
+            await alog_asr_outcome(
                 self._asr_event_logger, room_id, "earcon_fired",
                 reason, text, signals or {}, wake_score, wake_rms,
+                sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
             )
-        log_asr_outcome(
+        await alog_asr_outcome(
             self._asr_event_logger, room_id, outcome,
             reason, text, signals or {}, wake_score, wake_rms,
+            sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
 
     def _build_confirmation_question(self, pc: PartialCommand) -> str:
@@ -1645,21 +1654,25 @@ class RequestRouter:
             message = suggestion.message + " Responde si, no, o despues."
             await self._speak_response(message)
 
-    def _log_domotics_event(self, entity_id: str, action: str, trigger_phrase: str = None):
+    async def _log_domotics_event(self, entity_id: str, action: str, trigger_phrase: str = None):
         """Log a domotics event."""
         if not self.event_logger:
             return
 
         from src.analytics.event_logger import EventType
         user = self.command_processor.get_current_user()
-        self.event_logger.log(
-            entity_id=entity_id,
-            action=action,
-            event_type=EventType.COMMAND,
-            user_id=user.user_id if user else None,
-            user_name=user.name if user else None,
-            trigger_phrase=trigger_phrase
-        )
+        arguments = dict(entity_id=entity_id, action=action, event_type=EventType.COMMAND,
+            user_id=user.user_id if user else None, user_name=user.name if user else None,
+            trigger_phrase=trigger_phrase)
+        try:
+            from src.analytics.event_logger import EventLogger
+            if isinstance(self.event_logger, EventLogger):
+                source = self._memory_source.get()
+                await self.event_logger.alog(**arguments, sources=(source,) if source is not None else ())
+            else:
+                await asyncio.to_thread(self.event_logger.log, **arguments)
+        except Exception as error:
+            logger.debug("Domotics metric write deferred: %s", type(error).__name__)
 
     def _log_latency(self, result: dict):
         """Log latency metrics."""
