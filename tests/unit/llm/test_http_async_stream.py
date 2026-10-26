@@ -1,4 +1,4 @@
-"""Exercise the installed async SDK over an in-memory HTTP/SSE transport."""
+"""Exercise native HTTP/SSE generation over an in-memory transport."""
 
 import asyncio
 import json
@@ -8,7 +8,6 @@ from contextlib import aclosing
 
 import httpx
 import pytest
-from openai import APIStatusError
 
 from src.core.egress import EgressDenied, EgressPolicy
 from src.llm.idle_watchdog import IdleTimeoutError
@@ -183,7 +182,7 @@ async def test_transport_error_is_single_attempt_and_closes(monkeypatch):
 @pytest.mark.parametrize("status", [307, 429, 500])
 async def test_http_failure_never_redirects_or_retries(monkeypatch, status):
     reasoner, endpoint = setup(monkeypatch, status=status)
-    with pytest.raises(APIStatusError):
+    with pytest.raises(httpx.HTTPStatusError):
         await collect(reasoner)
     assert endpoint.client.is_closed()
     assert len(endpoint.requests) == 2
@@ -213,28 +212,22 @@ async def test_repeated_cancellation_during_constructor_cleans_resource(monkeypa
 
 
 @pytest.mark.parametrize("fail", [False, True])
-async def test_lazy_sdk_resource_initialization_keeps_loop_available_and_closes_on_error(monkeypatch, fail):
+async def test_transport_preparation_keeps_loop_available_and_closes_on_error(monkeypatch, fail):
     reasoner, endpoint = setup(monkeypatch)
     client = endpoint.build(ENDPOINT)
 
     class LazyClient:
-        @property
-        def models(self):
+        def prepare(self, style):
             time.sleep(0.2)
             if fail:
-                raise RuntimeError("synthetic SDK initialization failure")
-            return client.models
+                raise RuntimeError("synthetic transport initialization failure")
+            client.prepare(style)
 
-        @property
-        def chat(self):
-            return client.chat
+        async def models(self):
+            return await client.models()
 
-        async def __aenter__(self):
-            await client.__aenter__()
-            return self
-
-        async def __aexit__(self, *args):
-            await client.__aexit__(*args)
+        async def stream(self, *args, **kwargs):
+            return await client.stream(*args, **kwargs)
 
         async def close(self):
             await client.close()
@@ -246,7 +239,7 @@ async def test_lazy_sdk_resource_initialization_keeps_loop_available_and_closes_
         await asyncio.sleep(0.005)
         beats += 1
     if fail:
-        with pytest.raises(RuntimeError, match="synthetic SDK initialization failure"):
+        with pytest.raises(RuntimeError, match="synthetic transport initialization failure"):
             await task
         assert endpoint.requests == []
     else:

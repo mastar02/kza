@@ -1,6 +1,9 @@
 """Tests for LLM error classifier."""
 
 import asyncio
+
+import httpx
+import pytest
 from src.llm.error_classifier import classify_error
 from src.llm.types import ErrorKind
 
@@ -59,3 +62,22 @@ class TestClassifyError:
     def test_unknown_error_is_permanent(self):
         e = RuntimeError("something completely unexpected")
         assert classify_error(e) == ErrorKind.PERMANENT
+
+
+@pytest.mark.parametrize('status,expected', [
+    (401, ErrorKind.AUTH), (403, ErrorKind.AUTH), (402, ErrorKind.BILLING),
+    (429, ErrorKind.RATE_LIMIT), (408, ErrorKind.TIMEOUT), (500, ErrorKind.TIMEOUT),
+    (502, ErrorKind.TIMEOUT), (503, ErrorKind.TIMEOUT), (504, ErrorKind.TIMEOUT),
+    (307, ErrorKind.PERMANENT), (400, ErrorKind.PERMANENT),
+])
+def test_native_http_status_uses_structured_code(status, expected):
+    request = httpx.Request('POST', 'https://synthetic.invalid/429/401/503')
+    response = httpx.Response(status, request=request)
+    error = httpx.HTTPStatusError('503 timeout 429 unauthorized', request=request, response=response)
+    assert classify_error(error) == expected
+
+
+@pytest.mark.parametrize('error', [httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout,
+                                   httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError])
+def test_native_network_error_without_message_is_transient(error):
+    assert classify_error(error('')) == ErrorKind.TIMEOUT

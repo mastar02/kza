@@ -13,6 +13,8 @@ import logging
 import socket
 import ssl
 
+import httpx
+
 from src.llm.idle_watchdog import IdleTimeoutError
 from src.llm.types import ErrorKind
 
@@ -98,6 +100,22 @@ def classify_error(exc: BaseException) -> ErrorKind:
 
     # Errores de red/TLS/DNS — siempre transitorio (failover-worthy)
     if isinstance(exc, (ssl.SSLError, socket.gaierror)):
+        return ErrorKind.TIMEOUT
+
+    # Native async HTTP errors may carry no text. Structured status also
+    # prevents URL digits or provider prose from changing auth classification.
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in {401, 403}:
+            return ErrorKind.AUTH
+        if status == 429:
+            return ErrorKind.RATE_LIMIT
+        if status == 402:
+            return ErrorKind.BILLING
+        if status == 408 or status >= 500:
+            return ErrorKind.TIMEOUT
+        return ErrorKind.PERMANENT
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
         return ErrorKind.TIMEOUT
 
     # Texto del error para matchear patrones

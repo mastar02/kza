@@ -4,7 +4,7 @@ import asyncio
 import json
 
 import httpx
-from openai import AsyncOpenAI
+from src.llm.http_generation import HTTPGenerationClient
 
 
 def event(text="", finish=None, *, style="chat", choices=True):
@@ -51,6 +51,7 @@ class Endpoint:
         self.on_models = on_models
         self.requests = []
         self.client = None
+        self.completion_payload = None
 
     async def handle(self, request):
         self.requests.append(request)
@@ -64,11 +65,13 @@ class Endpoint:
         if self.status != 200:
             return httpx.Response(self.status, headers={"location": "https://elsewhere.invalid/v1"},
                                   json={"error": {"message": "synthetic failure"}})
+        if self.completion_payload is not None and json.loads(request.content).get("stream") is False:
+            return httpx.Response(200, json=self.completion_payload)
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=self.body)
 
     def build(self, base_url):
-        self.client = AsyncOpenAI(
-            base_url=base_url, api_key="synthetic-key", max_retries=0,
+        self.client = HTTPGenerationClient(
+            base_url=base_url, api_key="synthetic-key",
             http_client=httpx.AsyncClient(transport=httpx.MockTransport(self.handle), follow_redirects=False),
         )
         return self.client

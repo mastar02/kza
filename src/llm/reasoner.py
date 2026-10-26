@@ -11,72 +11,25 @@ import os
 import re
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
 
 from src.core.egress import EgressPolicy, ProcessingDestination
 
-if TYPE_CHECKING:
-    from openai import AsyncOpenAI
+from src.llm.http_generation import HTTPGenerationClient, owned_resource as _owned_async_resource
 
 
 @dataclass
 class _AsyncGenerationResources:
-    client: AsyncOpenAI
-    models: Any = None
-    completions: Any = None
+    client: HTTPGenerationClient
     error: Exception | None = None
 
+
 logger = logging.getLogger(__name__)
-
-
-async def _finish_owned_close(closing: asyncio.Task) -> None:
-    """Do not detach resource cleanup when its consumer is cancelled."""
-    cancelled = False
-    while not closing.done():
-        try:
-            await asyncio.shield(closing)
-        except asyncio.CancelledError:
-            cancelled = True
-    closing.result()
-    if cancelled:
-        raise asyncio.CancelledError
-
-
-@asynccontextmanager
-async def _owned_async_resource(resource):
-    """Keep explicit SDK resource close attached to the consumer."""
-    try:
-        yield resource
-    finally:
-        await _finish_owned_close(asyncio.create_task(resource.close()))
-
-
-class _OwnedHTTPBody(httpx.AsyncByteStream):
-    """Protect body close, including HTTPX/SDK automatic close at EOF.
-
-    HTTPX marks a response closed before awaiting the underlying byte stream.
-    Retaining that actual close prevents cancellation from losing it behind
-    the response's already-closed flag.
-    """
-
-    def __init__(self, stream: httpx.AsyncByteStream):
-        self._stream = stream
-        self._closing: asyncio.Task | None = None
-
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        async for chunk in self._stream:
-            yield chunk
-
-    async def aclose(self) -> None:
-        if self._closing is None:
-            self._closing = asyncio.create_task(self._stream.aclose())
-        await _finish_owned_close(self._closing)
 
 
 def _resolve_api_key(base_url: str, api_key_env: str | None = None) -> str:
@@ -700,55 +653,26 @@ class HttpReasoner:
         """
         return self(prompt, max_tokens=max_tokens, temperature=temperature)["choices"][0]["text"]
 
-    def _new_async_client(self, base_url: str) -> AsyncOpenAI:
-        """Build only transport/SDK objects; TLS setup runs outside the loop."""
+    def _new_async_client(self, base_url: str) -> HTTPGenerationClient:
+        """Build transport objects off-loop without initializing SDK model types."""
         self.policy.require_allowed(base_url)
-        from openai import AsyncOpenAI
-        key = _resolve_api_key(base_url, self.api_key_env)
-        return AsyncOpenAI(
-            base_url=base_url, api_key=key, timeout=self.timeout, max_retries=0,
-            http_client=httpx.AsyncClient(follow_redirects=False, verify=self.verify_ssl),
-        )
+        return HTTPGenerationClient(base_url, api_key=_resolve_api_key(base_url, self.api_key_env),
+                                    timeout=self.timeout, verify=self.verify_ssl)
 
     def _prepare_async_generation(self, base_url: str, style: str) -> _AsyncGenerationResources:
-        """Resolve SDK lazy resources off-loop, retaining ownership on failure."""
+        """Prepare owned transport resources outside the capture loop."""
         resources = _AsyncGenerationResources(self._new_async_client(base_url))
         try:
-            resources.models = resources.client.models
-            resources.completions = resources.client.chat.completions if style == "chat" else resources.client.completions
+            resources.client.prepare(style)
         except Exception as error:
             resources.error = error
         return resources
 
-    async def astream(
-        self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7,
-        *, max_chars: int = 65536,
-    ) -> AsyncIterator[dict]:
-        """Yield sanitized text deltas with native async I/O and owned resources.
-
-        The endpoint/model/style remain those configured for this request. A
-        terminal stop is required; truncation or premature EOF cannot become a
-        complete answer. Both stream and client close on cancellation, timeout,
-        failure. Consumers use contextlib.aclosing when stopping before EOF.
-        This method never retries a partial run.
-
-        Args:
-            prompt: Input already admitted by the caller's privacy policy.
-            max_tokens: Existing endpoint token budget, without changing model.
-            temperature: Sampling temperature.
-            max_chars: Maximum raw text retained, including hidden reasoning.
-
-        Yields:
-            Dictionaries containing token, accumulated text and chunk count.
-
-        Raises:
-            Exception: Denied egress, transport failure, idle timeout, incomplete
-                generation or invalid protocol; no held tail is flushed on error.
-        """
+    @asynccontextmanager
+    async def _async_generation_session(self):
+        """Pin consent/configuration and retain constructor and client cleanup."""
         base_url, style, configured_model = self.base_url, self.api_style, self.model
         self.policy.require_allowed(base_url)
-        if type(max_chars) is not int or max_chars <= 0:
-            raise ValueError("invalid_generation_limit")
         if style not in {"chat", "completions"}:
             raise ValueError("unsupported_api_style")
         initializing = asyncio.create_task(asyncio.to_thread(self._prepare_async_generation, base_url, style))
@@ -778,8 +702,7 @@ class HttpReasoner:
                 and (configured_model is None or self._resolved_model == configured_model)
             ) else None
             if model is None:
-                models = await resources.models.list()
-                ids = [item.id for item in models.data]
+                ids = await resources.client.models()
                 if configured_model is not None:
                     if configured_model not in ids:
                         raise RuntimeError("configured_model_unavailable")
@@ -792,12 +715,42 @@ class HttpReasoner:
             self.policy.require_allowed(base_url)
             if (self.base_url, self.api_style, self.model) != (base_url, style, configured_model):
                 raise RuntimeError("reasoner_configuration_changed")
+            yield resources.client, model, style
+
+    async def astream(
+        self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7,
+        *, max_chars: int = 65536,
+    ) -> AsyncIterator[dict]:
+        """Yield sanitized text deltas with native async I/O and owned resources.
+
+        The endpoint/model/style remain those configured for this request. A
+        terminal stop is required; truncation or premature EOF cannot become a
+        complete answer. Both stream and client close on cancellation, timeout,
+        failure. Consumers use contextlib.aclosing when stopping before EOF.
+        This method never retries a partial run.
+
+        Args:
+            prompt: Input already admitted by the caller's privacy policy.
+            max_tokens: Existing endpoint token budget, without changing model.
+            temperature: Sampling temperature.
+            max_chars: Maximum raw text retained, including hidden reasoning.
+
+        Yields:
+            Dictionaries containing token, accumulated text and chunk count.
+
+        Raises:
+            Exception: Denied egress, transport failure, idle timeout, incomplete
+                generation or invalid protocol; no held tail is flushed on error.
+        """
+        if type(max_chars) is not int or max_chars <= 0:
+            raise ValueError("invalid_generation_limit")
+        async with self._async_generation_session() as (client, model, style):
             options = {"model": model, "max_tokens": max_tokens, "temperature": temperature, "stream": True}
             if style == "chat":
-                stream = await resources.completions.create(messages=[{"role": "user", "content": prompt}], **options)
+                options["messages"] = [{"role": "user", "content": prompt}]
             else:
-                stream = await resources.completions.create(prompt=prompt, **options)
-            stream.response.stream = _OwnedHTTPBody(stream.response.stream)
+                options["prompt"] = prompt
+            stream = await client.stream(options, style=style, max_chars=max_chars)
             raw = emitted = ""
             count = received = 0
             finish_reason = None
@@ -812,12 +765,13 @@ class HttpReasoner:
                         from src.llm.idle_watchdog import IdleTimeoutError
                         raise IdleTimeoutError(self.idle_timeout_s, received) from error
                     received += 1
-                    if not chunk.choices:
+                    if chunk.empty:
                         continue
-                    choice = chunk.choices[0]
-                    if choice.finish_reason is not None:
-                        finish_reason = choice.finish_reason
-                    token = (choice.delta.content if style == "chat" else choice.text) or ""
+                    if finish_reason is not None and (chunk.text or chunk.finish_reason is not None):
+                        raise ValueError("generation_after_finish")
+                    if chunk.finish_reason is not None:
+                        finish_reason = chunk.finish_reason
+                    token = chunk.text
                     if type(token) is not str:
                         raise ValueError("invalid_stream_text")
                     if len(raw) + len(token) > max_chars:
@@ -895,68 +849,33 @@ class HttpReasoner:
         temperature: float = 0.7,
         **_ignored,
     ) -> str:
-        """API unificada para LLMRouter — async, retorna texto plano.
+        """Return complete text using owned native HTTP or idle-limited SSE.
 
-        Si `idle_timeout_s` está configurado, usa stream con watchdog: aborta
-        si el 72B no emite chunks por N segundos. Sin watchdog, hace request
-        no-streaming convencional.
+        Both paths retain the configured endpoint/model and require a terminal
+        stop. Usage metrics come only from the nonstream provider response.
         """
-        import asyncio
+        self._last_metrics = None
+        if self.idle_timeout_s:
+            async with aclosing(self.astream(prompt, max_tokens, temperature)) as stream:
+                return "".join([chunk["token"] async for chunk in stream]).strip()
 
-        self.policy.require_allowed(self.base_url)
-        if self._client is None:
-            self.load()
-
-        if self.api_style == "chat" and self.policy.destination is ProcessingDestination.CLOUD:
-            logger.info(
-                "Cloud reasoning: sending ~%d chars to %s (model=%s)",
-                len(prompt), urlparse(self.base_url).hostname, self._resolved_model,
-            )
-
-        if not self.idle_timeout_s:
-            def _call():
-                t0 = time.perf_counter()
-                resp = self._create_completion(
-                    prompt,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-                elapsed_ms = (time.perf_counter() - t0) * 1000
-                usage = getattr(resp, "usage", None)
-                if usage is not None:
-                    tokens = getattr(usage, "completion_tokens", 0) or 0
-                    self._last_metrics = {"tokens": tokens, "ms": elapsed_ms}
-                    if self._metrics_tracker is not None and self._endpoint_id and tokens > 0:
-                        self._metrics_tracker.record(self._endpoint_id, tokens, elapsed_ms)
-                return self._extract_text(resp)
-            return await asyncio.to_thread(_call)
-
-        # Path con stream + idle_watchdog
-        from src.llm.idle_watchdog import idle_watchdog
-
-        def _open_stream():
-            return self._create_completion(
-                prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                stream=True,
-            )
-
-        sync_stream = await asyncio.to_thread(_open_stream)
-
-        async def _async_iter():
-            it = iter(sync_stream)
-            sentinel = object()
-            while True:
-                chunk = await asyncio.to_thread(next, it, sentinel)
-                if chunk is sentinel:
-                    return
-                yield chunk
-
-        text_parts: list[str] = []
-        async for chunk in idle_watchdog(_async_iter(), self.idle_timeout_s):
-            text_parts.append(self._extract_stream_delta(chunk))
-        return _strip_reasoning("".join(text_parts)).strip()
+        async with self._async_generation_session() as (client, model, style):
+            if style == "chat" and self.policy.destination is ProcessingDestination.CLOUD:
+                logger.info("Cloud reasoning: sending ~%d chars to %s (model=%s)",
+                            len(prompt), urlparse(self.base_url).hostname, model)
+            options = {"model": model, "max_tokens": max_tokens, "temperature": temperature, "stream": False}
+            if style == "chat":
+                options["messages"] = [{"role": "user", "content": prompt}]
+            else:
+                options["prompt"] = prompt
+            t0 = time.perf_counter()
+            result = await client.complete(options, style=style, max_chars=65536)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            if result.tokens is not None:
+                self._last_metrics = {"tokens": result.tokens, "ms": elapsed_ms}
+                if self._metrics_tracker is not None and self._endpoint_id and result.tokens > 0:
+                    self._metrics_tracker.record(self._endpoint_id, result.tokens, elapsed_ms)
+            return _strip_reasoning(result.text).strip()
 
     # Métodos no aplicables (LoRA, GGUF load) — stubs para backward compat
     def load_lora(self, *a, **kw):

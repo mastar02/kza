@@ -1,4 +1,4 @@
-"""Real queue/dispatcher/worker/context with native SDK and memory-only HTTP."""
+"""Real queue/dispatcher/worker/context with native HTTP and memory-only transport."""
 
 import asyncio
 import json
