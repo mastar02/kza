@@ -3,6 +3,8 @@ import asyncio
 import json
 import logging
 
+from uuid import UUID
+
 from src.ambient.distiller import Distiller, _parse_facts, make_langid_fn
 
 
@@ -28,7 +30,7 @@ class FakeStore:
         self.last_min_vad = None
         self.last_spanish_only = None
 
-    async def undistilled_live(self, limit=200, min_vad_prob=0.0, spanish_only=False):
+    async def undistilled_live(self, limit=200, min_vad_prob=0.0, spanish_only=False, require_provenance=False):
         self.last_min_vad = min_vad_prob
         self.last_spanish_only = spanish_only
         rows = [r for r in self.rows if (r.get("vad_prob") or 0) >= min_vad_prob]
@@ -42,7 +44,9 @@ class FakeStore:
 
 def _row(i, text):
     return {"id": i, "room_id": "escritorio", "t0": 1000.0 + i, "t1": 1002.0 + i,
-            "text": text, "speaker": "gabriel", "source": "live"}
+            "text": text, "speaker": "gabriel", "source": "live",
+            "capture_id": str(UUID(int=i)), "conversation_id": str(UUID(int=100)),
+            "expires_at": 1000.0+i+48*3600}
 
 
 def test_distill_once_extracts_and_marks():
@@ -58,7 +62,7 @@ def test_distill_once_extracts_and_marks():
             {"fact": "Le gusta la pizza del lugar habitual", "category": "preference", "confidence": 0.7},
         ])
 
-    def fake_store_fact(fact, category, confidence=0.8, metadata=None):
+    def fake_store_fact(fact, category, confidence=0.8, metadata=None, *, sources=()):
         facts_out.append((fact, category, confidence, metadata))
         return f"fact_{len(facts_out)}"
 

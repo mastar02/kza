@@ -239,11 +239,17 @@ class AmbientTranscriber:
                     mono_now = time.monotonic()
                     wall_now = time.time()
                     utterance_started_ts = mono_now - max(0.0, wall_now - seg.t0)
+                    provenance = {}
+                    if utt.conversation_id is not None and utt.expires_at is not None:
+                        from src.memory.fact_ledger import MemoryOrigin, MemorySource
+                        provenance["memory_source"] = MemorySource(utt.capture_id, utt.conversation_id,
+                                                                   utt.t0, utt.expires_at, MemoryOrigin.AMBIENT)
                     await self._textual_wake.maybe_dispatch(
                         room_id, text, source, speaker,
                         audio=self._stt.asr_mono(seg.audio),
                         vad_prob=seg.vad_prob,
                         utterance_started_ts=utterance_started_ts,
+                        **provenance,
                     )
                 except Exception:
                     logger.exception(

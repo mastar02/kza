@@ -18,6 +18,15 @@ from src.memory.memory_manager import (
 )
 
 
+from uuid import uuid4
+from src.memory.fact_ledger import MemoryOrigin, MemoryReviewer, MemorySource
+
+
+def _source():
+    now = time.time()
+    return MemorySource(str(uuid4()), str(uuid4()), now, now+48*3600, MemoryOrigin.INTERACTION)
+
+
 class TestConversationTurn:
     """Test ConversationTurn dataclass"""
 
@@ -205,6 +214,7 @@ class TestLongTermMemory:
         mock_client = MagicMock()
         mock_collection = MagicMock()
         mock_client.get_or_create_collection.return_value = mock_collection
+        mock_collection.count.return_value = 0
 
         ltm = LongTermMemory(mock_client)
         ltm.initialize()
@@ -217,6 +227,7 @@ class TestLongTermMemory:
         mock_client = MagicMock()
         mock_collection = MagicMock()
         mock_client.get_or_create_collection.return_value = mock_collection
+        mock_collection.count.return_value = 0
 
         ltm = LongTermMemory(mock_client)
         ltm.initialize()
@@ -224,23 +235,21 @@ class TestLongTermMemory:
         doc_id = ltm.store_fact(
             fact="Juan vive en Buenos Aires",
             category="personal",
-            confidence=0.9
+            confidence=0.9, sources=(_source(),)
         )
 
         assert doc_id.startswith("fact_")
-        mock_collection.add.assert_called_once()
+        mock_collection.upsert.assert_called_once()
 
-        # Check that metadata contains expected fields
-        call_args = mock_collection.add.call_args
-        metadatas = call_args.kwargs["metadatas"][0]
-        assert metadatas["category"] == "personal"
-        assert metadatas["confidence"] == 0.9
-
+        stored = ltm.ledger.get(doc_id)
+        assert stored.category == "personal" and stored.confidence == .9
+        assert stored.confirmed_by is None and stored.expires_at is not None
     def test_store_fact_with_metadata(self):
         """Test storing fact with custom metadata"""
         mock_client = MagicMock()
         mock_collection = MagicMock()
         mock_client.get_or_create_collection.return_value = mock_collection
+        mock_collection.count.return_value = 0
 
         ltm = LongTermMemory(mock_client)
         ltm.initialize()
@@ -249,86 +258,49 @@ class TestLongTermMemory:
             fact="Test fact",
             category="preference",
             confidence=0.7,
-            metadata={"source": "user_input"}
+            metadata={"origin": "ambient"}, sources=(_source(),)
         )
 
-        call_args = mock_collection.add.call_args
-        metadatas = call_args.kwargs["metadatas"][0]
-        assert metadatas["source"] == "user_input"
-
+        stored = ltm.ledger.list()[0]
+        assert stored.sources[0].origin is MemoryOrigin.INTERACTION
+        assert stored.confirmed_by is None
     def test_search_relevant(self):
-        """Test searching for relevant facts"""
-        mock_client = MagicMock()
-        mock_collection = MagicMock()
-        mock_client.get_or_create_collection.return_value = mock_collection
-
-        # Mock search results
-        mock_collection.query.return_value = {
-            "documents": [["Fact 1", "Fact 2"]],
-            "metadatas": [[
-                {"category": "personal", "confidence": 0.9},
-                {"category": "preference", "confidence": 0.7}
-            ]],
-            "distances": [[0.2, 0.5]],
-            "ids": [["fact_1", "fact_2"]]
-        }
-        mock_collection.get.return_value = {
-            "metadatas": [{"access_count": 0}]
-        }
-
+        mock_client, collection = MagicMock(), MagicMock()
+        mock_client.get_or_create_collection.return_value = collection
         ltm = LongTermMemory(mock_client)
-        ltm.initialize()
-
-        results = ltm.search_relevant(
-            query="¿Dónde vive Juan?",
-            n_results=5,
-            min_confidence=0.5
-        )
-
-        assert len(results) == 2
-        assert results[0]["content"] == "Fact 1"
+        first = ltm.store_fact("Fact 1", "personal", .9, sources=(_source(),))
+        second = ltm.store_fact("Fact 2", "preference", .7, sources=(_source(),))
+        collection.count.return_value = 2
+        collection.query.return_value = {
+            "ids": [[first, second]], "distances": [[.2, .5]],
+            "documents": [["untrusted index content", "also untrusted"]],
+            "metadatas": [[{"state": "confirmed"}, {}]],
+        }
+        results = ltm.search_relevant("¿Dónde vive Juan?")
+        assert [row["content"] for row in results] == ["Fact 1", "Fact 2"]
+        assert results[0]["state"] == "automatic" and results[0]["confirmed_by"] is None
 
     def test_get_by_category(self):
-        """Test retrieving facts by category"""
-        mock_client = MagicMock()
-        mock_collection = MagicMock()
-        mock_client.get_or_create_collection.return_value = mock_collection
-
-        mock_collection.get.return_value = {
-            "documents": ["Personal fact 1", "Personal fact 2"],
-            "metadatas": [
-                {"category": "personal", "confidence": 0.9},
-                {"category": "personal", "confidence": 0.85}
-            ]
-        }
-
-        ltm = LongTermMemory(mock_client)
-        ltm.initialize()
-
-        facts = ltm.get_by_category("personal", limit=10)
-
-        assert len(facts) == 2
-        assert facts[0]["content"] == "Personal fact 1"
+        client = MagicMock()
+        ltm = LongTermMemory(client)
+        ltm.store_fact("Personal fact 1", "personal", sources=(_source(),))
+        ltm.store_fact("Personal fact 2", "personal", sources=(_source(),))
+        facts = ltm.get_by_category("personal")
+        assert {f["content"] for f in facts} == {"Personal fact 1", "Personal fact 2"}
 
     def test_delete_fact(self):
-        """Test deleting a fact"""
-        mock_client = MagicMock()
-        mock_collection = MagicMock()
-        mock_client.get_or_create_collection.return_value = mock_collection
-
-        ltm = LongTermMemory(mock_client)
-        ltm.initialize()
-
-        result = ltm.delete_fact("fact_123")
-
-        assert result is True
-        mock_collection.delete.assert_called_once_with(ids=["fact_123"])
+        ltm = LongTermMemory(MagicMock())
+        fact_id = ltm.store_fact("Temporary fact", "fact", sources=(_source(),))
+        assert ltm.delete_fact(fact_id, MemoryReviewer("test-admin"))
+        assert ltm.ledger.get(fact_id) is None
+        assert ltm.get_by_category("fact") == []
 
     def test_get_stats(self):
         """Test getting memory statistics"""
         mock_client = MagicMock()
         mock_collection = MagicMock()
         mock_client.get_or_create_collection.return_value = mock_collection
+        mock_collection.count.return_value = 0
         mock_collection.count.return_value = 42
 
         ltm = LongTermMemory(mock_client)
@@ -336,8 +308,8 @@ class TestLongTermMemory:
 
         stats = ltm.get_stats()
 
-        assert stats["total_facts"] == 42
-        assert stats["collection"] == "user_memories"
+        assert stats["total_facts"] == 0
+        assert stats["collection"] == "user_memories_policy_v1"
 
 
 class TestPreferencesStore:
@@ -453,6 +425,7 @@ class TestMemoryManager:
             mock_client = MagicMock()
             mock_collection = MagicMock()
             mock_client.get_or_create_collection.return_value = mock_collection
+            mock_collection.count.return_value = 0
 
             mm = MemoryManager(mock_client)
             mm.initialize()
@@ -465,6 +438,7 @@ class TestMemoryManager:
             mock_client = MagicMock()
             mock_collection = MagicMock()
             mock_client.get_or_create_collection.return_value = mock_collection
+            mock_collection.count.return_value = 0
 
             mm = MemoryManager(mock_client)
 
@@ -482,6 +456,7 @@ class TestMemoryManager:
             mock_client = MagicMock()
             mock_collection = MagicMock()
             mock_client.get_or_create_collection.return_value = mock_collection
+            mock_collection.count.return_value = 0
 
             mm = MemoryManager(mock_client)
 
@@ -498,7 +473,7 @@ class TestMemoryManager:
             )
 
             mock_extractor.extract.assert_called()
-            mock_collection.add.assert_called()
+            mock_collection.upsert.assert_called()
 
     def test_build_context(self):
         """Test building context"""
@@ -506,6 +481,7 @@ class TestMemoryManager:
             mock_client = MagicMock()
             mock_collection = MagicMock()
             mock_client.get_or_create_collection.return_value = mock_collection
+            mock_collection.count.return_value = 0
             mock_collection.query.return_value = {
                 "documents": [[]],
                 "metadatas": [[]],
@@ -528,6 +504,7 @@ class TestMemoryManager:
             mock_client = MagicMock()
             mock_collection = MagicMock()
             mock_client.get_or_create_collection.return_value = mock_collection
+            mock_collection.count.return_value = 0
             mock_collection.query.return_value = {
                 "documents": [["Fact 1"]],
                 "metadatas": [[{"category": "personal"}]],
@@ -543,19 +520,20 @@ class TestMemoryManager:
 
             formatted = mm.format_context_for_prompt("Query")
 
-            assert "Preferencias del usuario" in formatted or "theme" in formatted
+            assert "theme" not in formatted and "Fact 1" not in formatted
 
     def test_remember_preference_explicit(self):
         """Test remembering an explicit preference"""
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_client = MagicMock()
+            mock_client.get_or_create_collection.return_value.count.return_value = 0
 
             mm = MemoryManager(mock_client)
-            mm.remember_preference("color", "blue", explicit=True)
-
-            pref = mm.preferences._preferences["color"]
-            assert pref.confidence == 0.95
-            assert pref.source == "explicit"
+            proposal = mm.remember_preference("color", "blue", explicit=True)
+            assert mm.long_term.proposals()[0]["id"] == proposal
+            assert mm.build_context("color")["preferences"] == {}
+            mm.long_term.confirm(proposal, MemoryReviewer("test-admin"))
+            assert mm.build_context("color")["preferences"]["color"] == "blue"
 
     def test_remember_preference_inferred(self):
         """Test remembering an inferred preference"""
@@ -563,11 +541,10 @@ class TestMemoryManager:
             mock_client = MagicMock()
 
             mm = MemoryManager(mock_client)
-            mm.remember_preference("color", "red", explicit=False)
-
-            pref = mm.preferences._preferences["color"]
-            assert pref.confidence == 0.7
-            assert pref.source == "inferred"
+            fact_id = mm.remember_preference("color", "red", explicit=False)
+            fact = mm.long_term.ledger.get(fact_id)
+            assert fact.confidence == .7 and fact.expires_at is not None
+            assert fact.confirmed_by is None
 
     def test_get_stats(self):
         """Test getting memory statistics"""
@@ -575,12 +552,13 @@ class TestMemoryManager:
             mock_client = MagicMock()
             mock_collection = MagicMock()
             mock_client.get_or_create_collection.return_value = mock_collection
+            mock_collection.count.return_value = 0
             mock_collection.count.return_value = 5
 
             prefs_path = str(Path(tmpdir) / "preferences.json")
             mm = MemoryManager(mock_client, preferences_path=prefs_path)
             mm.short_term.add_turn("Input", "Output")
-            mm.preferences.set("pref1", "value1")
+            mm.remember_preference("pref1", "value1")
 
             stats = mm.get_stats()
 
@@ -598,6 +576,7 @@ class TestMemoryManagerIntegration:
             mock_client = MagicMock()
             mock_collection = MagicMock()
             mock_client.get_or_create_collection.return_value = mock_collection
+            mock_collection.count.return_value = 0
             mock_collection.query.return_value = {
                 "documents": [[]],
                 "metadatas": [[]],
@@ -610,11 +589,12 @@ class TestMemoryManagerIntegration:
             # Simulate conversation
             mm.record_interaction("Hola", "¡Hola! ¿Cómo estás?")
             mm.record_interaction("Estoy bien", "Me alegra escuchar eso")
-            mm.remember_preference("language", "es", explicit=True)
+            preference = mm.remember_preference("language", "es", explicit=True)
+            mm.long_term.confirm(preference, MemoryReviewer("test-admin"))
 
             # Verify state
             assert len(mm.short_term) == 2
-            assert mm.preferences.get("language") == "es"
+            assert mm.long_term.ledger.get(preference).state.value == "confirmed"
 
             context = mm.build_context("¿Cómo estoy?")
             assert context["preferences"]["language"] == "es"

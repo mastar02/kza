@@ -642,6 +642,8 @@ memory:
   preferences_path: "./data/preferences.json"
   short_term_size: 10  # Últimos N turnos de conversación
   long_term_collection: "user_memories"
+  privacy_db_path: "./data/memory_privacy.db"
+  automatic_retention_days: 30
 
 # =============================================================================
 # Lists & Reminders

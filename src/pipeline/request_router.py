@@ -9,6 +9,7 @@ Owns all command routing logic:
 """
 
 import asyncio
+import inspect
 from contextvars import ContextVar
 import logging
 import time
@@ -329,6 +330,7 @@ class RequestRouter:
         self._last_response = None
         self._command_count = 0
         self._response_zone = ContextVar("response_zone", default=None)
+        self._memory_source = ContextVar("memory_source", default=None)
 
         # Last-action tracker para comandos ambiguos (Q6: contextual + pregunta fallback)
         if action_tracker is None:
@@ -336,10 +338,45 @@ class RequestRouter:
             action_tracker = LastActionTracker(ttl_seconds=60.0)
         self.action_tracker = action_tracker
 
+    async def _memory_call(self, name: str, *args, **kwargs):
+        operation = getattr(self.memory, "a"+name, None)
+        if inspect.iscoroutinefunction(operation):
+            return await operation(*args, **kwargs)
+        return await asyncio.to_thread(getattr(self.memory, name), *args, **kwargs)
+
     async def _speak_response(self, text: str, **kwargs) -> None:
         """Serialize synthesis/playback in a worker while capture keeps running."""
         kwargs.setdefault("zone_id", self._response_zone.get())
         return await self.response_handler.aspeak(text, **kwargs)
+
+    async def _try_memory_proposal(self, text: str, result: dict) -> bool:
+        """Create a review proposal from an explicit request, never confirm it."""
+        import re
+        from src.memory.memory_manager import MemoryManager
+        if not isinstance(self.memory, MemoryManager):
+            return False
+        value = text.strip()
+        for word in self._wake_words or ("nexa",):
+            value = re.sub(r"^"+re.escape(word)+r"\b[, :]*", "", value, count=1, flags=re.IGNORECASE).strip()
+        match = re.fullmatch(r"(?:record[aá]|acordate|acu[eé]rdate|guard[aá] en (?:la )?memoria)\s+que\s+(.{1,2000})", value, re.IGNORECASE)
+        if match is None:
+            return False
+        source = self._memory_source.get()
+        if source is None:
+            result.update(intent="memory_unavailable", success=False,
+                          response="No pude preparar ese recuerdo para revisión.")
+        else:
+            try:
+                proposal = await self.memory.long_term.acall(self.memory.long_term.propose, match[1].strip(), (source,))
+                result.update(intent="memory_proposal", success=True, memory_proposal=proposal,
+                              memory_review_required=True, response="Dejé la propuesta de recuerdo para que la revises en el panel.")
+            except Exception:
+                logger.exception("[Memory] Proposal could not be retained")
+                result.update(intent="memory_unavailable", success=False,
+                              response="No pude preparar ese recuerdo para revisión.")
+        delivered = await self._speak_response(result["response"])
+        result["voice_delivery"] = delivered.delivery.value
+        return True
 
     async def _try_home_command(self, text: str, result: dict, *, room_id: str | None,
                                 pipeline_start: float, extra_gate: bool) -> bool:
@@ -469,19 +506,51 @@ class RequestRouter:
             if audio is not None and len(audio) else 0.0
         )
 
+        from src.memory.memory_manager import MemoryManager
+        from src.memory.fact_ledger import MemoryOrigin
+        from uuid import uuid4
+        self._memory_source.set(None)
+        if isinstance(self.memory, MemoryManager):
+            try:
+                captured_at = getattr(audio_or_event, "captured_at", None)
+                if captured_at is None:
+                    captured_at = getattr(audio_or_event, "timestamp", time.time())
+                self._memory_source.set(self.memory.source_for_capture(
+                    getattr(audio_or_event, "capture_id", str(uuid4())), captured_at, room_id,
+                    conversation_id=getattr(audio_or_event, "conversation_id", None),
+                    expires_at=getattr(audio_or_event, "source_expires_at", None),
+                    origin=MemoryOrigin.AMBIENT if textual_wake else MemoryOrigin.VOICE))
+            except (ValueError, TypeError):
+                logger.warning("[Memory] Capture provenance unavailable")
+
         if self.orchestrator_enabled and self._orchestrator:
-            return await self._process_command_orchestrated(
+            result = await self._process_command_orchestrated(
                 audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
                 ambient_strict=ambient_strict,
                 wake_score=wake_score, wake_rms=wake_rms,
                 textual_wake=textual_wake,
             )
         else:
-            return await self._process_command_legacy(
+            result = await self._process_command_legacy(
                 audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
                 wake_score=wake_score, wake_rms=wake_rms,
                 textual_wake=textual_wake, ambient_strict=ambient_strict,
             )
+        if self.memory is not None and result.get("success") and result.get("intent") in {"conversation", "domotics"}:
+            try:
+                source_options = {}
+                if isinstance(self.memory, MemoryManager):
+                    source = self._memory_source.get()
+                    if source is None:
+                        return result
+                    source_options["sources"] = (source,)
+                    result["capture_id"] = source.capture_id
+                    result["conversation_id"] = source.conversation_id
+                await self._memory_call("record_interaction", user_input=result.get("text", ""),
+                    assistant_response=result.get("response", ""), intent=result["intent"], **source_options)
+            except Exception:
+                logger.exception("[Memory] Completed interaction could not be recorded")
+        return result
 
     async def _process_command_orchestrated(self, audio: np.ndarray, room_id: str = None,
                                               pretranscribed_text: str | None = None,
@@ -551,6 +620,10 @@ class RequestRouter:
             gate_decision.signals or {}, wake_score, wake_rms,
         )
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
+
+        if await self._try_memory_proposal(text, result):
+            result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
+            return result
 
         if await self._try_home_command(
             text, result, room_id=room_id, pipeline_start=pipeline_start,
@@ -967,6 +1040,10 @@ class RequestRouter:
         )
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
 
+        if await self._try_memory_proposal(text, result):
+            result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
+            return result
+
         if await self._try_home_command(
             text, result, room_id=room_id, pipeline_start=pipeline_start,
             extra_gate=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
@@ -1278,15 +1355,6 @@ class RequestRouter:
                 room_context=room_context,
             )
 
-            # Record in memory
-            if self.memory:
-                self.memory.record_interaction(
-                    user_input=text,
-                    assistant_response=result["response"],
-                    intent="domotics",
-                    entities_used=[command["entity_id"]]
-                )
-
             # Log event
             if self.event_logger and success:
                 self._log_domotics_event(
@@ -1353,13 +1421,6 @@ class RequestRouter:
             if delivery.timeout_stage is not None:
                 result["timeout_stage"] = delivery.timeout_stage.value
                 result["intent"] = "timeout"
-
-        if self.memory and result["success"]:
-            self.memory.record_interaction(
-                user_input=text,
-                assistant_response=result["response"],
-                intent="conversation"
-            )
 
         result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
         return result
@@ -1668,7 +1729,7 @@ class RequestRouter:
         memory_context = ""
         if self.memory:
             try:
-                memory_context = self.memory.format_context_for_prompt(user_text)
+                memory_context = await self._memory_call("format_context_for_prompt", user_text)
                 if memory_context:
                     memory_context = f"\n{memory_context}\n"
             except Exception as e:

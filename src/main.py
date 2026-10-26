@@ -38,7 +38,7 @@ from src.pipeline.audio_manager import AudioManager
 from src.pipeline.command_processor import CommandProcessor
 from src.pipeline.voice_services import build_voice_services
 from src.pipeline.request_router import RequestRouter
-from src.memory.memory_manager import MemoryManager
+from src.memory.services import build_memory_services
 from src.users.speaker_identifier import SpeakerIdentifier
 from src.users.user_manager import UserManager
 from src.users.voice_enrollment import VoiceEnrollment
@@ -582,19 +582,8 @@ async def _run_main(shutdown: AsyncExitStack):
         )
 
     # Memory Manager - memoria contextual
-    memory_config = config.get("memory", {})
-    memory_manager = None
-    if memory_config.get("enabled", True):
-        import chromadb
-        memory_chroma_client = chromadb.PersistentClient(
-            path=memory_config.get("chroma_path", "./data/memory_db")
-        )
-        memory_manager = MemoryManager(
-            chroma_client=memory_chroma_client,
-            preferences_path=memory_config.get("preferences_path", "./data/preferences.json"),
-            max_short_term_turns=memory_config.get("short_term_size", 10)
-        )
-        logger.info("Memory manager habilitado")
+    memory_services = await build_memory_services(config, shutdown=shutdown)
+    memory_manager = memory_services.manager if memory_services is not None else None
 
     # Speaker Identification (cuda:0 — pipeline de audio consolidado)
     # Fuente de verdad: settings.yaml § speaker_id.
@@ -1127,7 +1116,7 @@ async def _run_main(shutdown: AsyncExitStack):
                 try:
                     from src.ambient.transcriber import build_ambient_path
                     _store_fact = (
-                        memory_manager.long_term.store_fact
+                        memory_manager.long_term.astore_fact
                         if memory_manager is not None else None
                     )
                     ambient_path = build_ambient_path(
@@ -1438,6 +1427,7 @@ async def _run_main(shutdown: AsyncExitStack):
             # Sin esto el dispatcher del orquestador no puede avisar de un
             # fallo de HA y el comando se pierde en silencio (fix 2026-07-25).
             response_handler=response_handler,
+            memory_manager=memory_manager,
             response_timeout_s=config.get("orchestrator", {}).get("response_timeout_s", 180.0),
             home_actions=home_action_service,
             # Plan #2 OpenClaw
@@ -1637,6 +1627,7 @@ async def _run_main(shutdown: AsyncExitStack):
             home_actions=home_action_service,
             microphone_snapshot_provider=home_services.microphone_snapshot_provider,
             home_enabled=dashboard_config.get("home", {}).get("enabled", False),
+            memory_manager=memory_manager,
         )
         shutdown.push_async_callback(dashboard.stop)
         logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 9500)}")

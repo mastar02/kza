@@ -12,6 +12,7 @@ import hashlib
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import numpy as np
 
@@ -84,3 +85,7 @@ class CommandEvent:
     # El router NO toma grammar fast-path: el texto ya contiene "nexa" (así
     # matcheó) y un verbo+luz alucinado ejecutaba luces fantasma.
     textual_wake: bool = False
+    capture_id: str = field(default_factory=lambda: str(uuid4()))
+    conversation_id: str | None = None
+    captured_at: float | None = None
+    source_expires_at: float | None = None

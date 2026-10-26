@@ -24,6 +24,7 @@ supone una duración medida que todavía no tenemos.
 | Texto ambiental | Retención de 48 horas. |
 | Hechos extraídos automáticamente | Retención de 30 días. |
 | Recuerdos confirmados | Se conservan hasta borrarlos. La voz propone y el dashboard autenticado confirma. |
+| Hechos legacy sin procedencia verificable | En cuarentena, fuera de las respuestas automáticas, hasta revisión manual; decisión del usuario del 26 de octubre. |
 | Borrados amplios de memoria | Se autorizan desde el dashboard autenticado. |
 | Vista de voces | Grupos sugeridos, asignación de nombre y corrección de uniones o separaciones. |
 | Audio para revisar voces | Fragmentos locales que caducan a las 48 horas. |
@@ -58,8 +59,9 @@ Los diez fallos están clasificados y el staging tiene pruebas de restauración
 conjunta de runtime y datos. Se recibió el inventario privado persistido de HA
 y se registró la selección inicial del usuario fuera de Git. Quedan pendientes
 la evidencia viva y los efectos sin resolver del inventario. Los metadatos
-legacy tienen inventario de sólo lectura y vista previa privada; su tratamiento
-y la migración en copia siguen pendientes. H0 todavía no está cerrado.
+legacy tienen inventario de sólo lectura y vista previa privada; el usuario eligió
+conservarlos en cuarentena. La prueba de migración en copia sigue pendiente.
+H0 todavía no está cerrado.
 
 **Entregables:** clasificación de los diez tests fallidos del rescate, matriz de
 flujos realmente conectados y plan probado de instalación, promoción y rollback
@@ -166,11 +168,21 @@ arrancar. La escritura de archivo cancelada conserva ownership hasta su salida
 real y descarta el resultado tardío. Son pruebas con SQLite/FLAC sintéticos;
 no se migraron ni borraron datos privados reales.
 
+El siguiente avance de H3 agrega un catálogo SQLite como autoridad de memoria,
+con procedencia de las capturas nuevas, hechos automáticos de hasta 30 días y
+propuestas que vencen con sus fuentes (hasta 48 h). La consulta no renueva esos
+plazos. La voz propone; la pestaña Memoria del dashboard autenticado confirma,
+descarta o elimina. Sólo la confirmación manual crea recuerdos sin vencimiento.
+El índice Chroma nuevo excluye la colección legacy; el JSON de preferencias
+legacy también queda fuera de los prompts y ambos originales se conservan.
+Se implementan tombstones de conversación para impedir nuevas derivaciones en
+el catálogo, y una cola durable de reconciliación con Chroma. Esto todavía no
+constituye un borrado coordinado de conversación entre todos los almacenes.
+
 La retención de huellas autorizada arriba todavía no está implementada. Siguen
-pendientes los IDs de conversación y el vínculo de hechos con sus capturas,
-TTL de hechos y demás copias de texto, confirmación de recuerdos, borrado de
-derivados con tombstones para jobs, pausa/mute, agrupación de voces y su vista
-autenticada. El cierre de la retención de capturas no cierra H3.
+pendientes las demás copias de texto y audio, el borrado completo de conversación,
+pausa/mute, agrupación de voces, su vista autenticada y evaluación acústica, y la
+migración ensayada sobre copia de datos reales. Este avance no cierra H3.
 
 La [validación de capturas](../research/2026-10-26-h3-capture-retention-validation.json)
 del commit `e186430` registra **4226 passed, 1 xfailed**, sin fallos, en

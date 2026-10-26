@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import inspect
 import logging
 import re
 import time
 from typing import Awaitable, Callable
+
+from src.memory.fact_ledger import MemoryOrigin, MemorySource
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +196,8 @@ class Distiller:
     async def distill_once(self) -> int:
         """Un ciclo de destilación. Devuelve cantidad de hechos guardados."""
         rows = await self._store.undistilled_live(
-            limit=200, min_vad_prob=self.min_vad_prob, spanish_only=self.spanish_only
+            limit=200, min_vad_prob=self.min_vad_prob, spanish_only=self.spanish_only,
+            require_provenance=True,
         )
         if len(rows) < self.min_batch:
             return 0
@@ -237,18 +241,20 @@ class Distiller:
             try:
                 # to_thread: LongTermMemory.store_fact es sync (ChromaDB add
                 # con cómputo de embeddings) — no bloquear el event loop.
-                await asyncio.to_thread(
-                    self._store_fact,
-                    f["fact"], f["category"],
-                    confidence=f["confidence"],
-                    metadata={"origin": "ambient"},
-                )
+                sources = tuple(MemorySource(r["capture_id"], r["conversation_id"], r["t0"],
+                                             r["expires_at"], MemoryOrigin.AMBIENT) for r in kept)
+                arguments = {"confidence": f["confidence"], "metadata": {"origin": "ambient"}, "sources": sources}
+                if inspect.iscoroutinefunction(self._store_fact):
+                    await self._store_fact(f["fact"], f["category"], **arguments)
+                else:
+                    await asyncio.to_thread(self._store_fact, f["fact"], f["category"], **arguments)
                 stored += 1
             except Exception as e:
                 logger.warning(f"Distiller: store_fact falló: {e}")
-        # Marcar TODO lo evaluado (kept procesado + dropped por idioma): nada
-        # se reprocesa el próximo ciclo.
-        await self._store.mark_distilled([r["id"] for r in kept + dropped])
+        # Mark retained input only after all facts are durable. A partial
+        # failure retries with deterministic IDs, without renewing prior TTLs.
+        completed = kept + dropped if stored == len(facts) else dropped
+        await self._store.mark_distilled([r["id"] for r in completed])
         if stored:
             logger.info(f"Distiller: {stored} hechos de {len(kept)} utterances")
         return stored

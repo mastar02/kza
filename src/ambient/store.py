@@ -23,6 +23,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 import aiosqlite
 
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS utterances (
   audio_path TEXT,
   capture_id TEXT,
   expires_at REAL,
+  conversation_id TEXT,
   created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_utt_room_time ON utterances(room_id, t0);
@@ -63,6 +65,9 @@ CREATE TABLE IF NOT EXISTS pending_audio_deletions (
   requested_at REAL NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT
+);
+CREATE TABLE IF NOT EXISTS capture_conversations (
+  id TEXT PRIMARY KEY, room_id TEXT NOT NULL, started_at REAL NOT NULL, last_seen_at REAL NOT NULL
 );
 """
 
@@ -81,6 +86,7 @@ _MIGRATIONS: dict[str, str] = {
     "audio_path": "ALTER TABLE utterances ADD COLUMN audio_path TEXT",
     "capture_id": "ALTER TABLE utterances ADD COLUMN capture_id TEXT",
     "expires_at": "ALTER TABLE utterances ADD COLUMN expires_at REAL",
+    "conversation_id": "ALTER TABLE utterances ADD COLUMN conversation_id TEXT",
 }
 
 _LIVE = "t0 > :cutoff AND created_at > :cutoff AND (expires_at IS NULL OR expires_at > :now)"
@@ -103,6 +109,7 @@ class AmbientStore:
         retention_hours: float = 48.0,
         audio_dir: str | None = None,
         *, clock: Callable[[], float] | None = None,
+        conversation_idle_s: float = 120,
     ):
         """Inicializar el store.
 
@@ -119,6 +126,9 @@ class AmbientStore:
         if type(retention_hours) not in (int, float) or not math.isfinite(retention_hours) or not 0 < retention_hours <= 48:
             raise ValueError("Capture retention must be positive and at most 48 hours")
         self.db_path = db_path
+        if type(conversation_idle_s) not in (int, float) or not math.isfinite(conversation_idle_s) or not 0 < conversation_idle_s <= 3600:
+            raise ValueError("invalid_capture_conversation_idle")
+        self.conversation_idle_s = conversation_idle_s
         self.retention_hours = retention_hours
         self.audio_dir = Path(audio_dir) if audio_dir else None
         self._db: aiosqlite.Connection | None = None
@@ -213,15 +223,27 @@ class AmbientStore:
             raise ValueError("Capture timestamps must be finite and ordered")
         now = self._clock()
         expires_at = min(utt.t0, now) + self.retention_hours * 3600
+        utt.expires_at = expires_at
 
         async def insert():
+            if utt.conversation_id is None:
+                cur = await self._db.execute(
+                    "SELECT id FROM capture_conversations WHERE room_id=? AND started_at<=? AND last_seen_at>=? AND started_at>=? "
+                    "ORDER BY last_seen_at DESC LIMIT 1", (utt.room_id, utt.t0, utt.t0-self.conversation_idle_s, utt.t0-3600),
+                )
+                conversation = await cur.fetchone()
+                utt.conversation_id = conversation["id"] if conversation else str(uuid4())
+            await self._db.execute(
+                "INSERT INTO capture_conversations VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET last_seen_at=max(last_seen_at,excluded.last_seen_at)",
+                (utt.conversation_id, utt.room_id, utt.t0, utt.t1),
+            )
             cur = await self._db.execute(
                 """INSERT INTO utterances
                    (room_id, t0, t1, text, speaker, speaker_confidence, azimuth,
                     azimuth_stability, source, confidence, no_speech_prob,
                     vad_prob, lang, lang_prob, lang_ok, during_tts, distilled,
-                    text_empty, audio_path, created_at, capture_id, expires_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    text_empty, audio_path, created_at, capture_id, expires_at, conversation_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     utt.room_id, utt.t0, utt.t1, utt.text, utt.speaker,
                     utt.speaker_confidence, utt.azimuth, utt.azimuth_stability,
@@ -230,7 +252,7 @@ class AmbientStore:
                     None if utt.lang_ok is None else int(utt.lang_ok),
                     int(utt.during_tts), int(utt.distilled),
                     int(utt.text_empty), utt.audio_path,
-                    now, utt.capture_id, expires_at,
+                    now, utt.capture_id, expires_at, utt.conversation_id,
                 ),
             )
             if self._next_expiry is None or expires_at < self._next_expiry:
@@ -313,7 +335,8 @@ class AmbientStore:
         return [dict(r) for r in await cur.fetchall()]
 
     async def undistilled_live(
-        self, limit: int = 200, min_vad_prob: float = 0.0, spanish_only: bool = False
+        self, limit: int = 200, min_vad_prob: float = 0.0, spanish_only: bool = False,
+        require_provenance: bool = False,
     ) -> list[dict]:
         """Lote para el Distiller: utterances destilables sin destilar.
 
@@ -351,6 +374,8 @@ class AmbientStore:
         params = self._retention_parameters() | {"vad": min_vad_prob, "limit": limit}
         if spanish_only:
             query += "AND COALESCE(lang_ok, 1) = 1 "
+        if require_provenance:
+            query += "AND capture_id IS NOT NULL AND conversation_id IS NOT NULL AND expires_at IS NOT NULL "
         query += "ORDER BY t0 LIMIT :limit"
         cur = await self._db.execute(query, params)
         return [dict(r) for r in await cur.fetchall()]
@@ -453,6 +478,7 @@ class AmbientStore:
             for row in await cur.fetchall():
                 await self._queue_audio_deletion(row["audio_path"])
             cur = await self._db.execute("DELETE FROM utterances WHERE " + _EXPIRED, parameters)  # nosec B608 -- Predicate is constant; all values use bound parameters.
+            await self._db.execute("DELETE FROM capture_conversations WHERE id NOT IN (SELECT conversation_id FROM utterances WHERE conversation_id IS NOT NULL)")
             return cur.rowcount
 
         deleted = await self._mutate(expire)

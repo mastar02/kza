@@ -158,8 +158,12 @@ la metadata de la colección existente mediante SQLite `mode=ro`,
 bajo `data/` no copia documentos ni embeddings: registra presencia de campos,
 procedencia declarada y el efecto hipotético de usar la inserción como inicio
 de 30 días. No la presenta como fecha de origen de la conversación ni como
-confirmación autenticada, y no autoriza eliminaciones. Falta decidir tratamiento
-y probar la migración sobre una copia consistente con rollback compatible.
+confirmación autenticada, y no autoriza eliminaciones. El 26 de octubre el
+usuario decidió conservar los 870 hechos sin procedencia verificable en
+cuarentena, fuera de las respuestas automáticas, hasta revisión manual. La
+implementación nueva usa un catálogo e índice separados; no importa ni modifica
+automáticamente esos documentos. Falta probar la migración sobre una copia
+consistente con rollback compatible.
 
 Decisión del usuario del 26 de octubre para H3: huellas y grupos sin confirmar
 vencen a las 48 h; perfiles confirmados manualmente se conservan hasta borrado
@@ -289,9 +293,10 @@ la prueba con audio, HA y unit reales corresponden a la única release de H6.
 - Inventario privado y selección inicial: recibidos y revisados; faltan servicios
   y disponibilidad en vivo, resolución completa de efectos y selección de alertas.
 - Metadata de memoria legacy: inventariada por lectura, con vista previa privada
-  de retención hipotética. Tratamiento y prueba de migración en copia: pendientes.
+  de retención hipotética. Cuarentena autorizada; prueba de migración en copia
+  pendiente.
 
 H1 puede desarrollar política y pruebas con inventarios sintéticos sin habilitar
 entidades reales. H3 puede concretar interfaces; la migración de registros reales
-espera la vista previa y la decisión de tratamiento. Los gates de H6 siguen
+requiere el ensayo en copia con la cuarentena elegida. Los gates de H6 siguen
 pendientes: este ensayo no constituye una release validada.

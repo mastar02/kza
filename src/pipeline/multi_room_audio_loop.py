@@ -1270,6 +1270,7 @@ class MultiRoomAudioLoop:
                                 and self._guard.state_for(room_id) is GuardState.STRICT
                             ),
                             wake_score=rs.wake_score,
+                            captured_at=rs.command_start_time,
                         )
                         asyncio.create_task(self._dispatch_command(event))
                         self._reset_listening(rs)

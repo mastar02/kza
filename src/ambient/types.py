@@ -71,9 +71,13 @@ class AmbientUtterance:
     text_empty: bool = False
     audio_path: str | None = None   # ruta del FLAC, o None si no se archivó
     capture_id: str = field(default_factory=lambda: str(uuid4()))
+    conversation_id: str | None = None
+    expires_at: float | None = None
 
     def __post_init__(self):
         self.capture_id = str(UUID(self.capture_id))
+        if self.conversation_id is not None:
+            self.conversation_id = str(UUID(self.conversation_id))
         # text_empty es derivado de text: la única fuente legal es el
         # transcriber persistiendo un segmento que el STT devolvió vacío.
         # Un segundo call-site (backfill, fixture) que los haga divergir

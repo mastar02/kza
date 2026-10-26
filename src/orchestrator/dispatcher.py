@@ -1711,6 +1711,7 @@ class MultiUserOrchestrator:
         weather_entity: str = DEFAULT_WEATHER_ENTITY,
         home_actions: HomeActionService | None = None,
         response_timeout_s: float = 180.0,
+        memory_manager=None,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -1744,6 +1745,7 @@ class MultiUserOrchestrator:
         self.llm = llm
         self.tts = tts
         self.response_timeout_s = response_timeout_s
+        self.memory_manager = memory_manager
         self.speaker_id = speaker_identifier
         self._generation = GenerationStream(llm)
         self.response_handler = response_handler
@@ -1976,12 +1978,17 @@ class MultiUserOrchestrator:
     async def _process_llm_request(self, request: Request):
         """Consume generation off the loop; cancel pending reads and late results."""
         async def generate() -> str:
+            effective_prompt = prompt
+            if self.memory_manager is not None:
+                memory_context = await self.memory_manager.aformat_context_for_prompt(request.text)
+                if memory_context:
+                    effective_prompt = memory_context + "\n\n" + effective_prompt
             if self.response_handler is not None:
                 def owned():
                     request.speech_handled = True
 
                 delivered = await self.response_handler.arespond(
-                    prompt, zone_id=request.zone_id, generation=self._generation,
+                    effective_prompt, zone_id=request.zone_id, generation=self._generation,
                     deadline=request.response_deadline, on_owned=owned,
                 )
                 request.speech_handled = delivered.speech_handled
@@ -1995,7 +2002,7 @@ class MultiUserOrchestrator:
                     raise RuntimeError(delivered.error or "response_delivery_failed")
                 return delivered.text
             parts = []
-            async with aclosing(self._generation.astream(prompt)) as source:
+            async with aclosing(self._generation.astream(effective_prompt)) as source:
                 async for chunk in source:
                     token = chunk.get("token", "")
                     if token:

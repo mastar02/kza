@@ -92,7 +92,12 @@ class VoicePipeline:
 
         # Initialize memory
         if self.memory:
-            self.memory.initialize()
+            import inspect
+            initialize = getattr(self.memory, "ainitialize", None)
+            if inspect.iscoroutinefunction(initialize):
+                await initialize()
+            else:
+                await asyncio.to_thread(self.memory.initialize)
 
         # Start orchestrator
         if self._orchestrator:

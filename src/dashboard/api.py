@@ -27,6 +27,7 @@ from src.dashboard.home_api import (
 )
 from src.dashboard.home_catalog import HomeCatalogService
 from src.dashboard.live_event_bus import LiveEventBus
+from src.dashboard.memory_api import register_memory_routes
 from src.dashboard.observability import register_observability_routes
 from src.rooms.room_context import RoomConfig
 from src.routines.models import (
@@ -177,6 +178,7 @@ class DashboardAPI:
         microphone_snapshot_provider: Callable[[], MicrophonesSnapshot | None] | None = None,
         home_catalog: HomeCatalogService | None = None,
         home_enabled: bool = True,
+        memory_manager=None,
     ):
         self.scheduler = routine_scheduler
         self.executor = routine_executor
@@ -199,6 +201,7 @@ class DashboardAPI:
         self.observability_use_mocks = observability_use_mocks
         self.microphone_snapshot_provider = microphone_snapshot_provider
         self.home_enabled = home_enabled
+        self.memory_manager = memory_manager
         self.home_actions = home_actions if home_actions is not None else (
             HomeActionService(ha_client) if ha_client is not None else None
         )
@@ -846,6 +849,7 @@ class DashboardAPI:
             speaker_identifier=self.speaker_identifier,
             alert_manager=self.alert_manager,
         )
+        register_memory_routes(self.app, manager=self.memory_manager)
 
         register_home_routes(
             self.app, catalog=self.home_catalog, actions=self.home_actions,

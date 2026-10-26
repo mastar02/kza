@@ -271,6 +271,7 @@ class TextualWakeDetector:
         audio: np.ndarray,
         vad_prob: float | None = None,
         utterance_started_ts: float | None = None,
+        memory_source=None,
     ) -> bool:
         """Evaluar una utterance y despachar un comando si corresponde.
 
@@ -387,6 +388,9 @@ class TextualWakeDetector:
             capture_complete=True,
             wake_score=1.0,
             textual_wake=True,
+            **({"capture_id": memory_source.capture_id, "conversation_id": memory_source.conversation_id,
+                "captured_at": memory_source.captured_at, "source_expires_at": memory_source.expires_at}
+               if memory_source is not None else {}),
         )
         try:
             await self._dispatch_fn(event)

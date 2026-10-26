@@ -525,8 +525,8 @@
         const selected = element.dataset.view === id; element.classList.toggle('active', selected);
         if (selected) element.setAttribute('aria-current', 'page'); else element.removeAttribute('aria-current');
       }
-      byId('view-title').textContent = id === 'house' ? 'Casa' : id === 'microphones' ? 'Micrófonos' : id === 'routines' ? 'Rutinas' : id;
-      byId('view-kicker').textContent = id === 'house' ? 'AMBIENTES Y DISPOSITIVOS' : id === 'microphones' ? 'IDENTIDAD, CAPTURA Y VERIFICACIÓN' : 'CONTROL DE LA CASA';
+      byId('view-title').textContent = id === 'house' ? 'Casa' : id === 'microphones' ? 'Micrófonos' : id === 'routines' ? 'Rutinas' : id === 'memory' ? 'Memoria' : id;
+      byId('view-kicker').textContent = id === 'house' ? 'AMBIENTES Y DISPOSITIVOS' : id === 'microphones' ? 'IDENTIDAD, CAPTURA Y VERIFICACIÓN' : id === 'memory' ? 'RECUERDOS Y PRIVACIDAD' : 'CONTROL DE LA CASA';
       const previous = cache.get(id); cache.set(id, { data: previous?.data || null, clock: previous?.clock, error: previous?.error || null, loading: !previous?.data }); render();
       if (views.has(id)) return;
       if (!doc.hidden) freshnessTicker.start();
@@ -571,11 +571,17 @@
       onLoading(container) { container.replaceChildren(empty('Abriendo Rutinas', 'Cargando el editor de tu casa.', true)); },
       onError(container) { container.replaceChildren(empty('No pudimos abrir Rutinas', 'Tocá Actualizar para volver a intentar.')); }
     }));
+    const loadMemory = createScriptLoader({ document: doc, src: '/home/memory.js', getValue: () => root.MemoryUI?.mountMemory });
+    exported.registerView('memory', createLazyView({
+      load: async () => { const mount = await loadMemory(); return (container, context) => mount(container, { apiFetch: context.api }); },
+      onLoading(container) { container.replaceChildren(empty('Abriendo Memoria', 'Consultando tus recuerdos y propuestas.', true)); },
+      onError(container) { container.replaceChildren(empty('No pudimos abrir Memoria', 'Tocá Actualizar para volver a intentar.')); }
+    }));
     application = {
       markDemo, sessionExpired() { showLogin('Iniciá sesión para consultar tu casa.'); },
       register(id) {
         if (byId('view-nav').querySelector(`[data-view="${id}"]`)) return;
-        const control = button(id === 'routines' ? 'Rutinas' : id, () => activate(id), 'view-button'); control.dataset.view = id; byId('view-nav').append(control);
+        const control = button(id === 'routines' ? 'Rutinas' : id === 'memory' ? 'Memoria' : id, () => activate(id), 'view-button'); control.dataset.view = id; byId('view-nav').append(control);
       }
     };
     for (const id of views.keys()) application.register(id);
