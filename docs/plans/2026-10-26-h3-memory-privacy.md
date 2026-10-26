@@ -624,6 +624,43 @@ de test no establecen el origen de los objetos retenidos ni una causa de runtime
 La aceptación integrada de GC/latencia en H4/H6 sigue abierta; pasar la suite no
 la sustituye.
 
+## Avance: participante de eventos
+
+El grafo de `main` registra ahora el participante `events` además de capturas e
+índice. Se construye aunque analytics esté apagado, registra la ubicación actual
+y conserva las históricas del journal. El writer registra la ubicación canónica
+antes de abrir SQLite y sigue usando esa ubicación si cambia un alias posterior.
+Un destino añadido después de una solicitud recibe su propio paso pendiente.
+
+El adaptador abre sólo bases existentes en modo `rw`, sin inicializar schemas ni
+crear archivos. Recorre hasta 128 IDs y fuentes por lote; no carga frases,
+nombres ni contextos. Retira eventos que dependen de la conversación revocada,
+incluidas fuentes mixtas y recibos de hechos derivados ya retirados. Conserva
+eventos ajenos y métricas sin texto. La tabla legacy sigue intacta y fuera de
+las consultas: completar este destino demuestra sólo la limpieza de
+`events_policy_v1`, sin atribuir conversaciones a filas legacy.
+
+Fuentes malformadas, texto sin atribución, IDs no reconocidos, bases corruptas
+y versiones desconocidas no producen una confirmación falsa. Un lote con
+procedencia desconocida revierte completo. Los recibos públicos conservan
+códigos fijos, sin rutas ni contenido. El arranque con lease reabre los pasos de
+eventos desde el principio para comprobar posibles filas restauradas detrás de
+un cursor o recibo anterior; repetir initialize no reinicia un claim vivo.
+
+La admisión existente del writer conserva el commit bajo la barrera de fuentes:
+o termina antes del tombstone y el adaptador lo encuentra, o se rechaza. Un
+provider tardío que sobrevive al timeout no puede reponer texto borrado. Writer y
+adaptador tienen cada uno dos threads propios y ocho operaciones retenidas como
+máximo; el provider ya no ocupa el pool de la autoridad. El factory registra el
+writer como prestatario de la lease antes de inicializarlo. El cierre cierra
+admisión y conserva mantenimiento, llamadas nativas y pools hasta su salida real.
+
+Quedan siete participantes sin conectar y las copias derivadas de eventos en
+sugerencias, colectores y streams. El mantenimiento de TTL del logger activo ya
+existía; todavía falta independizar también esa purga del feature y extenderla
+a todas las bases históricas. El borrado de conversación aquí implementado no
+sustituye ese trabajo ni autoriza una promesa global de borrado. No cierra H3.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

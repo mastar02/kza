@@ -334,6 +334,15 @@ observación de GC del proceso de tests registra pausas de hasta 495,68 ms fuera
 de ellos. La aceptación de runtime/GC de H4/H6 sigue pendiente; no se interpreta
 esta suite como prueba de latencia integrada ni se desactiva GC para aprobarla.
 
+El participante de eventos se conecta al journal aun con analytics apagado.
+Recorre bases actuales e históricas en lotes de 128 metadatos y conserva las
+filas ajenas y la cuarentena legacy. Las escrituras comparten la barrera de
+revocación, y su trabajo nativo mantiene la lease incluso al vencer la espera
+del cierre. Cada writer y adaptador usa dos threads propios; los providers ya
+no comparten el pool de la autoridad. Siguen pendientes siete participantes,
+las copias derivadas y la purga de TTL independiente de analytics en ubicaciones
+históricas; no se expone una confirmación global de borrado.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke

@@ -4,6 +4,9 @@ Registra todos los eventos de domotica para analisis de patrones.
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
+from functools import partial
 import math
 import os
 import re
@@ -18,7 +21,9 @@ from enum import StrEnum
 from pathlib import Path
 import json
 
-from src.core.owned_work import OwnedBlockingWork
+from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.analytics.erasure import event_descriptor
+from src.memory.erasure_journal import ErasureParticipant
 from src.memory.fact_ledger import FactLedger, MemorySource, sources_current
 
 logger = logging.getLogger(__name__)
@@ -130,7 +135,9 @@ class EventLogger:
         self.observation_timeout_s = observation_timeout_s
         self._initializing = threading.RLock()
         self._initialized = False
-        self._work = OwnedBlockingWork(worker=io_worker)
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='event-writer') if io_worker is None else None
+        self._work = OwnedBlockingWork(worker=io_worker or self._offload)
+        self._closing: asyncio.Task | None = None
         self._maintenance: asyncio.Task | None = None
         self._maintenance_loop = None
         self._changed = asyncio.Event()
@@ -144,6 +151,10 @@ class EventLogger:
                 return
             if self.source_policy is not None:
                 self.source_policy.initialize()
+            descriptor = event_descriptor(self.db_path)
+            self.db_path = Path(descriptor['path'])
+            if self.source_policy is not None:
+                self.source_policy.erasures.register_target(ErasureParticipant.EVENTS, 1, descriptor)
             self.db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             descriptor = os.open(self.db_path, os.O_CREAT | os.O_RDWR, 0o600)
             os.close(descriptor)
@@ -253,7 +264,7 @@ class EventLogger:
             raise ValueError("invalid_event_user_id")
         if not isinstance(event_type, EventType):
             raise ValueError("invalid_event_type")
-        if not isinstance(sources, tuple) or any(not isinstance(source, MemorySource) for source in sources):
+        if not isinstance(sources, tuple) or len(sources) > 256 or any(not isinstance(source, MemorySource) for source in sources):
             raise ValueError("invalid_event_sources")
         if sources and (not sources_current(sources, timestamp) or self.source_policy is not None and not self.source_policy.sources_available(sources)):
             raise PermissionError("event_source_expired_or_deleted")
@@ -590,6 +601,10 @@ class EventLogger:
         """Run actual disk work in the tracked native scope."""
         return await self._work.run(function, *args, **kwargs)
 
+    async def _offload(self, function, *args, **kwargs):
+        return await asyncio.get_running_loop().run_in_executor(self._executor,
+            copy_context().run, partial(function, *args, **kwargs))
+
     async def alog(self, *args, **kwargs) -> Event:
         """Bound the caller's wait; a slow write retains native ownership."""
         async with asyncio.timeout(self.observation_timeout_s):
@@ -625,9 +640,26 @@ class EventLogger:
         """Expose retained native work even after caller timeout/cancellation."""
         return self._work.status()
 
+    def begin_close(self) -> asyncio.Task:
+        """Close event admission and retain writes/maintenance until actual exit."""
+        if self._closing is None:
+            drain = self._work.begin_close()
+            if self._maintenance is not None:
+                self._maintenance.cancel()
+            async def finish():
+                if self._maintenance is not None:
+                    await asyncio.gather(self._maintenance, return_exceptions=True)
+                await drain
+                if self._executor is not None:
+                    await asyncio.to_thread(self._executor.shutdown, wait=True)
+            self._closing = asyncio.create_task(finish())
+        return self._closing
+
     async def aclose(self) -> None:
-        """Stop cleanup before closing and awaiting real native operations."""
-        if self._maintenance is not None:
-            self._maintenance.cancel()
-            await asyncio.gather(self._maintenance, return_exceptions=True)
-        await self._work.aclose()
+        """Bound observation while the shared privacy lease retains actual writes."""
+        closing = self.begin_close()
+        try:
+            async with asyncio.timeout(1):
+                await asyncio.shield(closing)
+        except TimeoutError as error:
+            raise WorkCloseTimeout('event_resources_still_running') from error

@@ -214,7 +214,7 @@ async def test_slow_metric_does_not_block_loop_and_native_scope_remains_bounded(
         source = memory_source(now=clock.now)
         calls = [asyncio.create_task(events.alog('light.synthetic', 'turn_on', sources=(source,))) for _ in range(8)]
         try:
-            await until(lambda: len(entered) == 8)
+            await until(lambda: len(entered) == 2)
             results = await asyncio.gather(*calls, return_exceptions=True)
             assert all(isinstance(result, TimeoutError) for result in results)
             assert events.resource_status()['operations'] == 8

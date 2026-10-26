@@ -48,6 +48,7 @@ from src.users.voice_enrollment import VoiceEnrollment
 from src.users.emotion_detector import EmotionDetector
 from src.monitoring.latency_monitor import LatencyMonitor
 from src.analytics.services import build_event_logger
+from src.analytics.erasure import build_event_erasure
 from src.analytics.pattern_analyzer import PatternAnalyzer
 from src.analytics.suggestion_engine import SuggestionEngine
 from src.audio.zone_manager import ZoneManager, Zone
@@ -565,6 +566,7 @@ async def _run_main(shutdown: AsyncExitStack):
     erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
         memory=memory_manager.long_term if memory_manager is not None else None)
     capture_erasure = await build_capture_erasure(config, privacy=privacy_services, owner=erasure_services)
+    await build_event_erasure(config, privacy=privacy_services, owner=erasure_services)
 
     # LLM Command Router (Opción 2 NLU) — clasificador de comandos vía vLLM 7B.
     # Independiente del LLMRouter: este valida texto post-wake contra
@@ -671,8 +673,7 @@ async def _run_main(shutdown: AsyncExitStack):
 
     if analytics_config.get("enabled", True):
         event_logger = await build_event_logger(config, shutdown=shutdown,
-            source_policy=privacy_services.ledger,
-            io_worker=privacy_services.acall)
+            privacy=privacy_services)
 
         pattern_analyzer = PatternAnalyzer(event_logger)
 
