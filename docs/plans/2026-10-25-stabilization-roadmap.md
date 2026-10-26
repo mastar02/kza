@@ -524,6 +524,20 @@ podía reinsertar audio retirado; la primera suite interrumpida no se acepta
 como verde. Siguen abiertas la integración al journal y la aceptación física
 y de runtime/GC del roadmap completo.
 
+El procesador de comandos conserva ahora STT primario/sombra, lectura de
+perfiles, identificación y emoción tras cancelar. Ambos routers le transmiten
+las fuentes incluso sin memoria semántica; los resultados revocados o vencidos
+no pasan al control. El timeout del veto limita la observación sin ocultar el
+hilo real. La espera de modelo comprueba también cancelación, y el warmup del
+pipeline conserva la misma autoridad hasta su salida efectiva.
+La [validación de comandos](../research/2026-10-26-h3-command-producers-validation.json)
+del commit `8ff3076` registra **4880 passed, 1 xfailed**, sin fallos, con 32 casos
+nuevos, 625 pruebas dirigidas, checks y artefacto compilado aceptados. Conserva
+las regresiones del helper paralelo y del aislamiento de un test de Piper y sus
+correcciones. Quedan captura previa, wake/VAD, STT temprano, aprendizaje y journal
+completo, los demás participantes y voces de H3 y el resto de H0–H6. No cierra
+H3 ni la aceptación física o de runtime/GC.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

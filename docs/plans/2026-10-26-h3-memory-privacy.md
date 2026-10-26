@@ -1280,8 +1280,8 @@ sus errores de teardown de pytest corresponden a esa interrupción. La suite
 verde posterior no reevalúa las pausas de GC medidas antes ni sustituye los
 ensayos de hardware, recuperación y arranque de H4/H6.
 
-`PRODUCERS` sigue abierto: faltan los buffers y jobs del command path, wake VAD,
-STT/sombra y consumidores de aprendizaje, y conectar los scopes completos al
+`PRODUCERS` sigue abierto: faltan los buffers y jobs previos al procesador de
+comandos, wake VAD, STT temprano y consumidores de aprendizaje, y conectar los scopes completos al
 journal. No se anuncia borrado global ni se habilita la UI de borrado amplio.
 Los otros participantes, revisión de voces, pausa/mute, migración y las
 aceptaciones físicas e integradas de H0–H6 siguen pendientes. La suite sintética
@@ -1322,16 +1322,37 @@ cierre tardío y liberación de audio/resultados con weakrefs, sin manipular GC.
 wake/VAD, STT temprano, consumidores de aprendizaje y su integración completa
 con el journal. Este cambio no permite anunciar borrado global ni habilitar la
 UI de borrado amplio. Tampoco sustituye las aceptaciones de hardware, runtime,
-GC y recuperación pendientes. La validación completa de este cambio se registra
-después de construir y probar el commit, sin desplegarlo en producción.
+GC y recuperación pendientes.
+
+La [validación de comandos](../research/2026-10-26-h3-command-producers-validation.json)
+del commit `8ff3076` registra **4880 passed, 1 xfailed**, sin fallos, en 207,04 s.
+Incluye 32 casos nuevos conectados y 625 pruebas dirigidas con optimizaciones
+antes de los tests de audio. Pasan Ruff, Bandit sin hallazgos medios/altos,
+18 tests de frontend y el smoke del dashboard. El artefacto sin fuentes verifica
+sus 314 hashes y ejercita ambos cierres nativos fuera del checkout en 2,22 s.
+El heartbeat obtiene p95 de 0,23 ms y máximo de 1,21 ms; la cancelación de control
+llega a 0,08 ms y el cleanup a 11,20 ms. Se conservan límites y GC normal.
+
+La primera suite completa detectó dos usos del helper paralelo eliminado;
+se restituye su contrato y la ruta de producción lo usa con los mismos trabajos
+nativos retenidos. La verificación dirigida encontró además que el test de
+warmup de Piper dejaba dos módulos distintos según el orden de ejecución;
+ahora reemplaza sólo la librería importada de forma perezosa, sin recargar el
+módulo de la aplicación. La evidencia conserva esos fallos y sus correcciones.
+No se han vuelto a medir ni corregido las pausas globales de GC observadas antes.
+La producción y los datos privados reales permanecen sin cambios.
 
 ## Trabajo restante
 
-1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
+1. Completar fuentes, buffers y scopes de captura previos al procesador de
+   comandos, wake/VAD y STT temprano; cubrir aprendizaje posterior y conectar
+   todos los productores reales al journal. El procesador y ambient retenidos
+   todavía no completan `PRODUCERS`.
+2. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
    streams y frontend; auditar las demás rutas de persistencia, caché y
    consumidores alternos de prompts, incluido el
    `RequestProcessor` antiguo no cableado.
-2. Coordinar el borrado autenticado de conversación entre capturas, clips,
+3. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
    frente a productores y guardados tardíos. Conectar al journal los participantes
    restantes y los scopes de destilación ya retenidos; contrastar los destinos y clips
@@ -1339,13 +1360,13 @@ después de construir y probar el commit, sin desplegarlo en producción.
    vivo y la restauración compatible con autoridad vigente. Agregar selección y recibos en el
    dashboard autenticado después de cerrar esas garantías. La limpieza local
    del catálogo y del índice no sustituye la operación completa.
-3. Implementar pausa ambiental y mute total con reactivación independiente del
+4. Implementar pausa ambiental y mute total con reactivación independiente del
    audio; definir qué productores se detienen y qué buffers se descartan.
-4. Aplicar 48 horas a huellas y grupos acústicos no confirmados; conservar perfiles
+5. Aplicar 48 horas a huellas y grupos acústicos no confirmados; conservar perfiles
    confirmados manualmente hasta borrado, registrando la revisión verificable.
-5. Construir agrupación y revisión de voces, correcciones de unión/separación y
+6. Construir agrupación y revisión de voces, correcciones de unión/separación y
    abstención. Fijar métricas y corpus de calibración antes de evaluar el resultado.
-6. Probar migración en copia y completar aceptación de runtime, micrófono,
+7. Probar migración en copia y completar aceptación de runtime, micrófono,
    reproducción, HA y rollback durante H6. La restauración debe conservar la
    intención de borrado y evitar reintroducir datos eliminados. No se ha
    modificado producción.

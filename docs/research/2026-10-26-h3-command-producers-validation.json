@@ -1,0 +1,256 @@
+{
+  "checked_on": "2026-10-26",
+  "feature_commit": "07841f3eb2706ad6e0077bae3d0d4fb2d18f6587",
+  "tested_commit": "8ff3076d98be3f1b30d29431ef3b5ef87749d937",
+  "tested_runtime_source_tree": "d21ba95d03f11fa6930566da1727ac5e70563e05",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 actual command primary/shadow/profile/speaker/emotion ownership, source-bound command processing in both routers, source/cancellation-aware native admission, retained startup and shared privacy lease; pre-command producers and full journal integration remain pending",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "collected": 4881,
+    "passed": 4880,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "junit_time_s": 206.972,
+    "runtime_s": 207.04,
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-command-producers-fixed.xml",
+    "log": "/tmp/kza-command-producers-fixed.log",
+    "xml": "/tmp/kza-command-producers-fixed.xml",
+    "accepted": true,
+    "integrated_runtime_gc_acceptance": false
+  },
+  "new_cases": 32,
+  "new_case_names": [
+    "test_all_command_paths_move_models_and_profiles_off_loop[True-False]",
+    "test_all_command_paths_move_models_and_profiles_off_loop[False-False]",
+    "test_all_command_paths_move_models_and_profiles_off_loop[True-True]",
+    "test_all_command_paths_move_models_and_profiles_off_loop[False-True]",
+    "test_revocation_aborts_command_but_retains_actual_native_stage[primary]",
+    "test_revocation_aborts_command_but_retains_actual_native_stage[shadow]",
+    "test_revocation_aborts_command_but_retains_actual_native_stage[profiles]",
+    "test_revocation_aborts_command_but_retains_actual_native_stage[speaker]",
+    "test_revocation_aborts_command_but_retains_actual_native_stage[emotion]",
+    "test_native_command_keeps_privacy_lease_after_bounded_close[primary]",
+    "test_native_command_keeps_privacy_lease_after_bounded_close[shadow]",
+    "test_native_command_keeps_privacy_lease_after_bounded_close[profiles]",
+    "test_native_command_keeps_privacy_lease_after_bounded_close[speaker]",
+    "test_native_command_keeps_privacy_lease_after_bounded_close[emotion]",
+    "test_cancelled_command_drops_input_and_late_result_without_gc_manipulation",
+    "test_veto_timeout_keeps_native_shadow_visible_and_releases_its_late_result",
+    "test_observer_shadow_is_source_watched_after_primary_response",
+    "test_expired_queued_model_exits_while_another_room_still_uses_it",
+    "test_raw_expiry_prevents_late_output_and_idle_identification_reads",
+    "test_model_error_does_not_expose_or_retain_private_native_traceback",
+    "test_real_router_binds_actual_native_lineage_without_semantic_memory[False]",
+    "test_real_router_binds_actual_native_lineage_without_semantic_memory[True]",
+    "test_owned_startup_keeps_writer_lease_until_real_model_load_exits",
+    "test_real_whisper_pinned_delegate_stays_owned_after_command_cancel",
+    "test_real_emotion_adapter_accepts_same_input_in_both_command_paths[False]",
+    "test_real_emotion_adapter_accepts_same_input_in_both_command_paths[True]",
+    "test_pending_failed_marker_discards_transient_command_and_allows_fresh_retry",
+    "test_queued_executor_command_rechecks_source_before_native_entry",
+    "test_cancelled_model_waiter_releases_input_while_other_room_stays_live",
+    "test_cancelled_identification_cannot_start_next_stage_or_update_last_seen[profiles]",
+    "test_cancelled_identification_cannot_start_next_stage_or_update_last_seen[speaker]",
+    "test_privacy_enabled_processor_rejects_missing_lineage_before_model_entry"
+  ],
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.22993329912424088,
+        "max": 1.214941032230854
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05828891880810261,
+          "p95": 0.08015194907784462,
+          "max": 0.08015194907784462
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.93673100695014,
+          "p95": 11.196886887773871,
+          "max": 11.196886887773871
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 428,
+        "loop_lag_p95_ms": 0.23361807689070702,
+        "loop_lag_max_ms": 1.0798261500895023,
+        "cancel_cleanup_max_ms": 3.591983113437891,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2758,
+        "loop_lag_p95_ms": 0.9831889811903237,
+        "loop_lag_max_ms": 8.869581045582889,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.5658799782395363,
+        "p95": 5.646086065098643,
+        "max": 5.646086065098643,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_runs": [
+    {
+      "log": "/tmp/kza-command-producers-new.log",
+      "passed": 22,
+      "failed": 0,
+      "runtime_s": 1.65
+    },
+    {
+      "log": "/tmp/kza-command-producers-focused.log",
+      "passed": 601,
+      "failed": 0,
+      "runtime_s": 10.37,
+      "note": "Before final queued-cancellation guard and compatibility correction"
+    },
+    {
+      "log": "/tmp/kza-command-producers-final-focused.log",
+      "passed": 52,
+      "failed": 0,
+      "runtime_s": 2.5,
+      "note": "32 new connected cases and 20 command regressions; before compatibility correction"
+    },
+    {
+      "log": "/tmp/kza-command-producers-compat-fixed-focused.log",
+      "passed": 625,
+      "failed": 0,
+      "runtime_s": 10.6,
+      "note": "Final helper contract and Piper fixture correction; optimization tests deliberately precede command and barge-in tests"
+    }
+  ],
+  "initial_full_suite": {
+    "collected": 4881,
+    "passed": 4878,
+    "failed": 2,
+    "xfailed": 1,
+    "skipped": 0,
+    "failed_tests": [
+      "tests.unit.test_optimizations.TestAsyncGatherParallel::test_process_parallel_uses_gather",
+      "tests.unit.test_optimizations.TestAsyncGatherParallel::test_process_parallel_handles_exceptions"
+    ],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "junit_time_s": 209.881,
+    "tested_commit": "07841f3eb2706ad6e0077bae3d0d4fb2d18f6587",
+    "log": "/tmp/kza-command-producers-full.log",
+    "accepted": false,
+    "runtime_s": 209.95,
+    "reason": "Removed private parallel helper still had callers in optimization tests; restore its result contract and use it in the production command path with the same owned native stages."
+  },
+  "additional_findings": [
+    "Sequential and pretranscribed identification/emotion ran synchronously on the event loop; real EmotionDetector.detect accepts audio alone, unlike the old pretranscribed call.",
+    "The veto timeout cancelled its observer Future while a native shadow thread continued; timeout now shields a retained, source-watched owner.",
+    "Source policy alone did not stop a cancelled model waiter or late last-seen update; a per-operation cancellation signal is checked at queued entry and identification handoffs.",
+    {
+      "log": "/tmp/kza-command-producers-compat-focused.log",
+      "passed": 624,
+      "failed": 1,
+      "runtime_s": 11.57,
+      "failed_test": "tests/unit/pipeline/test_barge_in.py::TestResponseHandlerIsSpeaking::test_is_speaking_tracks_owned_device_and_cancel",
+      "reason": "The existing Piper warmup fixture reloaded src.tts.piper_tts and restored sys.modules without restoring the package attribute; optimization-before-barge-in order patched a different backend module.",
+      "correction": "Patch only the lazily imported piper library via monkeypatch; preserve application module/class identity and the original one-second audio deadline."
+    }
+  ],
+  "implementation": {
+    "actual_native_lineage_visible_after_control_cancellation": true,
+    "all_processor_stt_profile_speaker_emotion_paths_off_loop": true,
+    "shared_model_admission_with_source_and_cancellation_poll_s": 0.05,
+    "source_monitor_poll_s": 0.01,
+    "veto_timeout_does_not_cancel_actual_shadow": true,
+    "observer_shadow_watched_after_primary_response": true,
+    "native_errors_drop_private_message_traceback_and_late_result": true,
+    "processor_logs_presence_and_latency_without_text_names_or_native_traceback": true,
+    "idle_current_identification_source_guarded": true,
+    "real_whisper_pinned_delegate_and_emotion_adapter_exercised": true,
+    "both_actual_routers_bind_sources_without_semantic_memory": true,
+    "main_registers_common_privacy_and_close_before_startup": true,
+    "actual_voice_pipeline_startup_and_native_lease_retained": true,
+    "failed_pending_marker_discards_transients_without_claiming_durable_erasure": true,
+    "producer_journal_participant_marked_complete": false,
+    "new_dependencies": false,
+    "new_configuration_files": false,
+    "gpu_assignment_changed": false,
+    "shadow_error_timeout_and_empty_veto_semantics_preserved": true,
+    "primary_failure_returns_empty_without_private_native_traceback": true
+  },
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-command-producers-ruff-fixed.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 30,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-command-producers-bandit-fixed.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-command-producers-frontend.log",
+      "note": "Frontend source unchanged by compatibility correction"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-command-producers-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 2.217,
+      "git_commit": "8ff3076d98be3f1b30d29431ef3b5ef87749d937",
+      "artifact": "/tmp/kza-command-runtime-paljyfnw/runtime.tar.gz",
+      "log": "/tmp/kza-command-producers-runtime-report.json",
+      "exercise": "Outside checkout, verify every artifact hash and absence of sources; actual emotion adapter and processor process covered text off loop; actual router binds source, revokes blocked native command and returns cancelled; close timeout retains writer lease through native exit and drops late result; actual VoicePipeline warmup cancellation retains model load and common authority until real completion. CPU endpoints only, no microphones or trained models."
+    }
+  },
+  "unchanged_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancel_ms": 100,
+    "cooperative_cleanup_ms": 1000,
+    "gc_forced_disabled_or_frozen": false
+  },
+  "remaining_scope": [
+    "PRODUCERS still requires pre-command capture buffers, wake/VAD, early STT and audio/command learning consumers plus complete producer/distillation journal integration; command-processor and ambient ownership do not authorize broad erasure completion",
+    "DIAGNOSTICS, COLLECTORS, STREAMS and VOICES remain; diagnostic/SQL/JSONL/Logstash, collector/stream/frontend copies and alternate prompt consumers require their own source/TTL/erasure coverage",
+    "Pause ambient and total mute with non-audio reactivation; 48h automatic voiceprint/group expiry and authenticated calibrated voice grouping/review/merge/split, confirmed profiles until deletion",
+    "Private real-copy quarantine migration of 870 legacy facts, compatible catalog/tombstone/runtime restore, live semantic index rebuild and authenticated broad erasure UI after guarantees",
+    "H0/H1 live HA memberships/effects, H2 physical audio/barge-in, H4 recovery and large-history/runtime/GC acceptance, H5 real typed local execution/routines/timers/reminders, H6 fully integrated candidate and one final release/rollback",
+    "Previously instrumented GC pauses up to 495.68ms remain unresolved; this uninstrumented suite does not remeasure or accept integrated runtime/GC."
+  ],
+  "production_modified": false
+}
