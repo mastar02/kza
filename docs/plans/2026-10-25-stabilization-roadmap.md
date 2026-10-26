@@ -504,6 +504,11 @@ nativos hasta su salida real y mantiene la lease tras cancelar al observador.
 Corrige también una retención de resultados tardíos desde el traceback del
 monitor compartido. `PRODUCERS` sigue pendiente hasta cubrir STT, tagger,
 buffers y comandos y conectar sus scopes al journal; este avance no cierra H3.
+La [validación de destilación](../research/2026-10-26-h3-distillation-validation.json)
+del commit `acee3be` registra **4812 passed, 1 xfailed**, sin fallos, con 30
+casos nuevos, checks aceptados y el builder compilado ejercitado fuera del
+checkout. Conserva evidencia de la retención de traceback corregida, sin
+manipular GC ni ampliar límites; la aceptación integrada de H4/H6 sigue abierta.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.

@@ -1178,6 +1178,17 @@ pool general saturado, cierre cancelado y wiring del builder. La prueba del
 artefacto compilado construye el mismo builder, guarda un hecho con sus fuentes
 y revoca otro lote durante el modelo, sin iniciar micrófonos ni cargar modelos.
 
+La [validación de destilación](../research/2026-10-26-h3-distillation-validation.json)
+del commit `acee3be` registra **4812 passed, 1 xfailed**, sin fallos, en 204,66 s.
+Incluye 30 casos nuevos, 362 pruebas dirigidas, Ruff, Bandit sin hallazgos
+medios/altos, 18 tests de frontend y smoke del dashboard. El artefacto compilado
+pasa fuera del checkout en 7,58 s. El heartbeat obtiene p95 de 0,44 ms y máximo
+de 2,24 ms; la cancelación de control llega a 0,16 ms y el cleanup a 11,24 ms,
+con límites intactos. La evidencia conserva el primer ensayo con cinco fallos:
+cuatro aserciones de fixture corregidas y la retención real desde el traceback
+de cancelación. La suite sin instrumentación no reevalúa las pausas de GC
+anteriores ni acepta por sí sola el runtime integrado.
+
 El participante `PRODUCERS` sigue sin darse por completo: faltan el seguimiento
 real de STT, tagger, taps, segmentación y captura de comandos, y su conexión al
 journal. Este avance prepara el scope de destilación; no emite un recibo que
