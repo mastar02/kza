@@ -1,0 +1,135 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "951bc4a980dd472ec1ff7ceef6d6b58ce9de3c08",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 prompt dependency receipts, transitive semantic revocation, native prompt-send admission, both active voice routes, context/cache/event projections and compatible schema quarantine",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-lineage-final.xml",
+    "collected": 4435,
+    "passed": 4434,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 158.11,
+    "junit_time_s": 158.068,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "accepted": true,
+    "log": "/tmp/kza-h3-lineage-final.log",
+    "xml": "/tmp/kza-h3-lineage-final.xml"
+  },
+  "new_connected_cases": 29,
+  "focused_validation": {
+    "passed": 79,
+    "runtime_s": 5.92,
+    "log": "/tmp/kza-h3-lineage-candidate.log",
+    "scope": "Final candidate: 29 new provenance cases plus context privacy, memory services/retention and persister tests"
+  },
+  "earlier_broad_validation": {
+    "passed": 830,
+    "failed": 2,
+    "runtime_s": 37.84,
+    "log": "/tmp/kza-h3-lineage-broad.log",
+    "scope": "Before final schema quarantine/snapshot-version work; two existing tests incorrectly equated pre-inference ASR source receipts with the later enriched response receipts",
+    "correction": "Keep exact equality of the original capture fields; assert semantic dependencies only on the generated interaction. ASR acceptance occurs before memory selection and does not depend on recalled facts."
+  },
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.18754205666482449,
+        "max": 1.0164829436689615
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05233916454017162,
+          "p95": 0.07964204996824265,
+          "max": 0.07964204996824265
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.852741077542305,
+          "p95": 10.99951402284205,
+          "max": 10.99951402284205
+        }
+      }
+    }
+  },
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000
+  },
+  "proven": [
+    "PromptContext carries selected text, raw capture sources and content-free semantic receipts; duplicate capture merges preserve all dependencies and the earliest deadline",
+    "Semantic facts remain eligible beyond the 48-hour raw capture deadline under their own automatic/confirmed lifetime; recalling them does not renew that deadline or rehydrate expired raw input",
+    "Automatic semantic descendants cannot outlive their parent fact deadline; durable graph edges cascade deletion through descendants and revisioned index cleanup in the same transaction",
+    "Lock-free on-loop authority checks validate fact ID/revision/expiry against the sole writer projection; pending revocations deny use before durable commit returns",
+    "Tests pause after an actual durable deletion commit before projection publication, and inject commit errors both before and after disk commit; authority follows the real database rather than an assumed rollback",
+    "Queued generation retains both historical/summary and recalled fact dependencies, and also rejects cleared or replaced context epochs",
+    "Native HTTP generation rechecks source admission after model discovery and before POST; a late or retracted memory snapshot cannot send the stale prompt",
+    "Both active voice modes preserve enriched sources through terminal dispatch results and interaction recording; privacy cancellation closes HTTP/body resources and does not emit error speech or stop the queue worker",
+    "Legacy fast native inference checks admission before actual worker execution and again after result return; cancelled observation does not abandon the native work or publish its late reply",
+    "Short-term memory, context turns/summary/snapshots, transient cache and policy events reject fact-retracted contents before physical index/file cleanup",
+    "Repeated cancellation during delivery cleanup keeps the privacy monitor attached until the operation actually exits",
+    "The source-free CPython 3.13 runtime exercises fact receipts and deletion of a semantic descendant outside the development checkout"
+  ],
+  "schema_and_migration": {
+    "source_dependency_column": "fact_sources.dependencies",
+    "semantic_graph_table": "fact_dependencies",
+    "snapshot_version": 3,
+    "snapshot_directory": "contexts/policy_v3",
+    "prior_snapshot_policy": "Version 2 summaries are excluded from hydration; known files retain their original capture deadline and are removed at expiry/revocation",
+    "prior_policy_automatic_facts": "Preserved in quarantine under the original expiry; inference and index eligibility denied and durable delete jobs replace old index authority",
+    "prior_policy_confirmed_facts": "Existing authenticated confirmation remains valid; no invented dependency graph or new authority is inferred",
+    "writer_lease": "LongTermMemory acquires its sole-writer lease before any schema migration; a blocked competing writer cannot alter the old schema",
+    "permanent_proposals": "A direct fresh capture may propose; inherited semantic derivations cannot be represented as direct voice statements by the proposal API",
+    "legacy_collection": "The 870 unverified legacy records and production data were not modified; real-copy migration and compatible restore rehearsal remain pending"
+  },
+  "gates": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true,
+      "log": "/tmp/kza-h3-lineage-ruff.log"
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-lineage-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-lineage-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-lineage-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "included_in_full_suite": true,
+      "test": "tests/unit/tools/test_stage_runtime.py::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 is still incomplete: authenticated conversation erasure must durably coordinate captures/clips, raw context, summaries, semantic descendants and indexes with late producers and retries",
+    "Other diagnostic logs, collectors, stream/frontend copies, suggestions and alternate caches/persistence remain outside this completed runtime prompt path",
+    "The unwired RequestProcessor in src/orchestrator/priority_queue.py still uses the older prompt API; it must be audited or retired before H6 and is excluded from the active-runtime guarantee",
+    "Unconditional privacy authority when memory is disabled, ambient pause, total mute with independent reactivation, voice fingerprint/group retention and authenticated voice review/calibration remain pending",
+    "Schema tests use temporary private databases and prove forward quarantine only; real legacy-copy migration, manual quarantine review and restoration of compatible runtime/data still need rehearsal",
+    "H0/H1 selected HA effects, H2 actual audio/capture/barge-in, H4 recovery, H5 remaining voice functions and H6 integrated runtime/GC/hardware acceptance and release remain open",
+    "No deployment, service restart, GPU reassignment or production data change occurred; no new dependency or latency-limit change was introduced"
+  ]
+}

@@ -221,9 +221,29 @@ una vez los controles aceptados. El mantenimiento en inactividad y el cierre
 pertenecen al pipeline; búsquedas y clasificaciones tardías no repueblan la
 caché cerrada ni publican el contenido invalidado.
 
+El seguimiento de prompts activos conserva ahora las capturas incluidas y los
+recibos de hechos recordados. Ambos modos de voz transmiten sus dependencias al
+intercambio registrado. Borrar un padre semántico invalida sus derivados; leerlo
+no renueva el plazo. Se comprueba admisión después de discovery, por fragmento
+y durante la entrega. Limpiar o reemplazar un contexto también invalida el prompt
+en curso. El catálogo publica revocaciones antes de devolver el commit, conserva
+cleanup ante cancelaciones repetidas y no confunde un commit incierto con un
+rollback probado. Los snapshots nuevos usan versión 3; los resúmenes de versión
+2 quedan fuera de inferencia hasta su vencimiento original. La migración de
+esquema, bajo lease, conserva en cuarentena los automáticos anteriores sin
+dependencias verificables y mantiene las confirmaciones manuales.
+
+La [validación de procedencia de prompts](../research/2026-10-26-h3-prompt-provenance-validation.json)
+del commit `951bc4a` registra **4434 passed, 1 xfailed**, sin fallos, en 158,11 s.
+Incluye 29 casos nuevos y pasa Ruff, Bandit medio/alto, 18 tests Node, smoke y
+artefacto compilado. El heartbeat mantiene los límites de 25/75 ms: p95 de
+0,19 ms y máximo de 1,02 ms. Estas pruebas usan datos sintéticos; los 870 hechos
+legacy y producción permanecen sin cambios.
+
 La retención de huellas autorizada arriba todavía no está implementada. Siguen
 pendientes otras copias de texto y audio (otros logs, colectores,
-caches alternas, streams y frontend), dependencias transitivas de prompts,
+caches alternas, streams y frontend), sugerencias y consumidores alternos de
+prompts —incluido `RequestProcessor`, antiguo y no cableado al runtime—,
 el borrado completo de conversación,
 pausa/mute, agrupación de voces, su vista autenticada y evaluación acústica, y la
 migración ensayada sobre copia de datos reales. Este avance no cierra H3.

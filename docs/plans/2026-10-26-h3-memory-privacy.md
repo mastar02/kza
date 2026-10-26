@@ -89,9 +89,11 @@ vencidas o revocadas. El contexto corto del MemoryManager usa esa misma polític
 La escritura de un snapshot valida fuentes mientras mantiene la transacción
 que ordena su commit respecto de los tombstones. Una escritura anterior al
 marker ya no es legible después de éste; una escritura que llega después se
-rechaza. Los snapshots nuevos privados viven bajo `contexts/policy_v2`, con
-procedencia explícita. Los JSON legacy permanecen fuera de esta lectura, sin
-reescribirlos. El worker elimina snapshots conocidos vencidos o revocados y
+rechaza. Los snapshots nuevos privados viven bajo `contexts/policy_v3`, con
+procedencia de los prompts explícita. Los resúmenes anteriores de `policy_v2`
+no se rehidratan como independientes: se conservan fuera de inferencia hasta
+su vencimiento original de captura. Los JSON anteriores a esa política siguen
+fuera de esta lectura, sin reescribirlos. El worker elimina snapshots conocidos vencidos o revocados y
 temporales que no se promovieron, también al arrancar.
 
 La compacción comprueba identidad y revisión del contexto antes de publicar,
@@ -195,17 +197,91 @@ acción desde una captura invalidada. Se retiran los campos de texto del resulta
 que ya no puede publicarse, conservando los recibos de efectos ya efectuados.
 
 Siguen pendientes las copias en otros logs, colectores, streams y frontend, y
-la coordinación durable de todos los almacenes. También falta completar la
-procedencia transitiva de respuestas generadas a partir de otros recuerdos:
-cancelar por las fuentes de la captura actual no sustituye el seguimiento de
-todos los hechos y contextos que contribuyeron al prompt. El corpus y la
+la coordinación durable de todos los almacenes. El seguimiento transitivo de
+los prompts de las rutas activas se incorpora en el avance siguiente; todavía
+no equivale a una auditoría completa de todos los productores. El corpus y la
 evaluación acústica de voces permanecen separados de estas pruebas de software.
+
+## Dependencias de prompts y respuestas derivadas
+
+`PromptContext` conserva el texto seleccionado junto con las capturas y recibos
+de hechos efectivamente incluidos. Cada recibo contiene ID, revisión y plazo,
+sin duplicar contenido. Se enlazan al intercambio actual y sobreviven en sus
+fuentes, memoria corta, turnos, resúmenes, snapshots, cachés y eventos. Unir
+fuentes del mismo UUID conserva ambas dependencias y el menor plazo; no permite
+que una copia menos completa reemplace a la enriquecida.
+
+Un hecho semántico sigue siendo consultable después de vencer su captura
+literal, durante sus 30 días o mientras siga confirmado. El prompt no vuelve a
+introducir por esa vía el texto original de una captura vencida. Una respuesta
+cruda conserva como máximo 48 horas y el menor plazo de las entradas que usó.
+Un hecho automático extraído de esa respuesta tampoco renueva el plazo de sus
+padres semánticos. El catálogo guarda sus relaciones y el borrado de un padre
+retira transitivamente los hijos y encola sus eliminaciones del índice en la
+misma transacción. Los resultados tardíos no pueden recrearlos.
+
+La proyección de autoridad para el loop contiene sólo recibos, no contenido ni
+conexiones SQLite. Comprueba revisión, vencimiento y revocaciones sin disco ni
+locks de SQLite. Los IDs afectados se bloquean antes de que el commit libere
+el GIL; la autoridad positiva nueva se publica después del commit. Un commit
+fallido vuelve a consultar el estado real tras rollback, sin suponer que no
+llegó a disco. Una reconstrucción de índice o un borrado Chroma fallido no
+restaura permiso para usar un hecho eliminado.
+
+La cola conversacional adjunta tanto el historial/resumen usado como la
+selección de memoria. Vigila las fuentes durante generación y entrega. Limpiar
+o reemplazar el contexto invalida además su época, aunque las capturas sigan
+vigentes. El reasoner vuelve a comprobar admisión en el punto de enviar el
+prompt, incluso después de discovery. Cada fragmento se valida antes de
+publicarse y los recibos terminales conservan las dependencias hasta el router
+que registra el intercambio. Una cancelación por privacidad no detiene el
+worker de la cola ni genera un aviso audible de error.
+
+El modo legacy aplica la misma selección y vigilancia a la respuesta profunda,
+al contexto del router rápido y a su reproducción. La operación nativa rápida
+comprueba fuentes al admitir trabajo y al devolverlo; sigue bajo seguimiento si
+su observador se cancela. El monitor conserva el cierre de la entrega incluso
+con cancelaciones repetidas. Esto no reemplaza la coordinación pendiente de
+los demás productores ni promete interrumpir por fuerza un motor síncrono.
+
+Una propuesta permanente sigue partiendo de una afirmación directa del usuario.
+La API no acepta convertir una derivación con recuerdos heredados en una
+propuesta de origen directo; una nueva captura explícita puede proponerse y
+requiere la revisión autenticada existente.
+
+La actualización del catálogo agrega almacenamiento de dependencias bajo la
+lease del único escritor. Los hechos automáticos del esquema previo, cuya
+independencia no se puede verificar, conservan su contenido en cuarentena y su
+vencimiento original; sus filas vectoriales dejan de autorizar búsquedas y se
+encola su retirada. Los confirmados manualmente conservan su autoridad. Los
+snapshots nuevos usan versión 3: no se inventa procedencia para los resúmenes de
+versión 2, y su purga sigue el plazo original. Estas pruebas usan bases
+temporales. Los 870 hechos de la colección legacy y los datos de producción no
+se modificaron; la migración y restauración con datos reales en copia siguen
+pendientes. Volver a un runtime anterior requiere también datos compatibles.
+
+El procesador `RequestProcessor` antiguo de `priority_queue.py` no está cableado
+en el grafo de runtime; conserva una API vieja de prompts y queda señalado para
+la auditoría de rutas alternas antes de H6. La garantía probada aquí corresponde
+a `MultiUserOrchestrator` y a ambos modos del `RequestRouter` activo.
+
+
+La [validación de procedencia de prompts](../research/2026-10-26-h3-prompt-provenance-validation.json)
+del commit `951bc4a` registra **4434 passed, 1 xfailed**, sin fallos, en 158,11 s.
+Los 29 casos nuevos cubren ambos modos activos, revocación durante discovery,
+lecturas tardías, historial y épocas de contexto, derivados semánticos, commit
+incierto, reinicio, esquema anterior y lease, snapshots y cierre cancelado.
+Pasan Ruff, Bandit medio/alto (30 bajos de la línea base), 18 tests Node, smoke
+del dashboard y artefacto compilado con recibos y borrado transitivo. El heartbeat
+de la suite obtuvo p95 de 0,19 ms y máximo de 1,02 ms frente a 25/75 ms. No se
+publicó una release y H3 sigue abierto.
 
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
    streams y frontend; auditar otras rutas de persistencia y caché e integrar
-   sugerencias derivadas y dependencias transitivas de los prompts.
+   sugerencias derivadas y consumidores alternos de prompts, incluido el
+   `RequestProcessor` antiguo no cableado.
 2. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
    frente a productores y guardados tardíos. La limpieza local del catálogo no
