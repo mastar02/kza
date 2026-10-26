@@ -24,7 +24,7 @@ import json
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.analytics.event_storage import event_descriptor, event_sources
 from src.analytics.event_evidence import (
-    EventDependency, PatternHistory, event_target_id, project_pattern_event,
+    EventDependency, PatternHistory, PatternInputs, event_target_id, project_pattern_event,
 )
 from src.memory.erasure_journal import ErasureParticipant
 from src.memory.fact_ledger import FactLedger, MemorySource, sources_current
@@ -157,6 +157,8 @@ class EventLogger:
             if self.source_policy is not None:
                 self.source_policy.initialize()
             descriptor = event_descriptor(self.db_path)
+            if self.source_policy is not None and self.source_policy.path != ":memory:" and descriptor["path"] == str(Path(self.source_policy.path).resolve()):
+                raise ValueError("event_store_authority_location_conflict")
             self.db_path = Path(descriptor['path'])
             if self.source_policy is not None:
                 self.source_policy.erasures.register_target(ErasureParticipant.EVENTS, 1, descriptor)
@@ -470,43 +472,75 @@ class EventLogger:
                 return PatternHistory((), False)
             return PatternHistory(tuple(project_pattern_event(row, target) for row in rows), True)
 
-    def pattern_evidence_current(self, evidence: tuple[EventDependency, ...]) -> bool:
-        """Resolve receipts against actual rows, original deadlines and revocations.
-
-        This is a read observation, not a write/presentation capability. A later
-        consumer must recheck its own admission rather than trust a cached bool.
-        Text maintenance cannot change a receipt; metadata or lineage changes do.
-        """
+    def _resolve_pattern_evidence(self, db, evidence: tuple[EventDependency, ...]) -> PatternInputs | None:
         if (
             type(evidence) is not tuple or not 0 < len(evidence) <= 10_000
             or any(not isinstance(item, EventDependency) for item in evidence)
         ):
-            return False
+            return None
+        target = event_target_id(event_descriptor(self.db_path))
+        if any(item.target_id != target or self._clock() >= item.expires_at for item in evidence):
+            return None
+        expected = {item.event_id: item for item in evidence}
+        if len(expected) != len(evidence):
+            return None
+        db.row_factory = sqlite3.Row
+        ids = tuple(expected)
+        events, sources = [], set()
+        for offset in range(0, len(ids), 128):
+            batch = ids[offset:offset + 128]
+            rows = db.execute(
+                """SELECT id,timestamp,event_type,entity_id,action,user_id,sources_json,expires_at
+                FROM events WHERE id IN (SELECT value FROM json_each(?))""",
+                (json.dumps(batch),),
+            ).fetchall()
+            if len(rows) != len(batch):
+                return None
+            for row in rows:
+                event = project_pattern_event(row, target)
+                if event.dependency != expected[row["id"]]:
+                    return None
+                events.append(event)
+                sources.update(event_sources(row["sources_json"], False))
+                if len(sources) > 10_000:
+                    raise ValueError("pattern_lineage_capacity")
+        if any(self._clock() >= item.expires_at for item in evidence) or (
+            self.source_policy is not None and not self.source_policy.activity_sources_available(tuple(sources))
+        ):
+            return None
+        return PatternInputs(
+            tuple(sorted(events, key=lambda e: (e.timestamp, e.dependency.event_id))),
+            tuple(sorted(sources, key=lambda source: json.dumps(source.to_dict(), sort_keys=True))),
+        )
+
+    def resolve_pattern_evidence(self, evidence: tuple[EventDependency, ...]) -> PatternInputs | None:
+        """Read actual receipts and lineage; this observation cannot admit writes."""
         with self._connect() as db:
-            target = event_target_id(event_descriptor(self.db_path))
-            if any(item.target_id != target or self._clock() >= item.expires_at for item in evidence):
-                return False
-            expected = {item.event_id: item for item in evidence}
-            if len(expected) != len(evidence):
-                return False
-            db.row_factory = sqlite3.Row
-            # A read transaction keeps batches on the same database snapshot.
-            # Source authority remains live through the filtered policy view.
             db.execute("BEGIN")
-            ids = tuple(expected)
-            for offset in range(0, len(ids), 128):
-                batch = ids[offset:offset + 128]
-                rows = db.execute(
-                    """SELECT id,timestamp,event_type,entity_id,action,user_id,sources_json,expires_at
-                    FROM events WHERE id IN (SELECT value FROM json_each(?))""",
-                    (json.dumps(batch),),
-                ).fetchall()
-                if len(rows) != len(batch):
-                    return False
-                if any(project_pattern_event(row, target).dependency != expected[row["id"]] for row in rows):
-                    return False
-            return all(self._clock() < item.expires_at for item in evidence)
-    
+            return self._resolve_pattern_evidence(db, evidence)
+
+    def pattern_evidence_current(self, evidence: tuple[EventDependency, ...]) -> bool:
+        """Check original metadata deadlines and authority without renewing them."""
+        return self.resolve_pattern_evidence(evidence) is not None
+
+    @contextmanager
+    def admit_pattern_write(self, evidence: tuple[EventDependency, ...]):
+        """Fence a metadata derivative commit against markers and event mutation.
+
+        Lock order is the leased authority, event database, then the derivative
+        store. Resolution is repeated inside both guards; a prior read result
+        or a raw capture's expired TTL never authorizes this metadata channel.
+        """
+        if self.source_policy is None:
+            raise PermissionError("activity_write_requires_privacy_authority")
+        self.initialize()
+        with self.source_policy.serialize_activity_write(), self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            inputs = self._resolve_pattern_evidence(db, evidence)
+            if inputs is None:
+                raise PermissionError("activity_evidence_unavailable")
+            yield inputs
+
     def get_hourly_distribution(
         self,
         entity_id: str,

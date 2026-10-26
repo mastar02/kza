@@ -14,6 +14,7 @@ import math
 import re
 
 from src.analytics.event_storage import event_sources
+from src.memory.fact_ledger import MemorySource
 
 
 def _digest(value: dict) -> str:
@@ -91,6 +92,22 @@ class PatternHistory:
 
     events: tuple[PatternEvent, ...]
     complete: bool
+
+
+@dataclass(frozen=True)
+class PatternInputs:
+    """Resolved activity metadata and exact lineage, without raw content."""
+
+    events: tuple[PatternEvent, ...]
+    sources: tuple[MemorySource, ...]
+
+    @property
+    def expires_at(self) -> float:
+        return min(event.dependency.expires_at for event in self.events)
+
+    @property
+    def observed_at(self) -> float:
+        return max(event.timestamp for event in self.events)
 
 
 def event_target_id(descriptor: dict) -> str:

@@ -4,27 +4,20 @@ Genera sugerencias de automatizacion basadas en patrones detectados.
 """
 
 import logging
-import json
+import math
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 
-from .pattern_analyzer import Pattern, PatternType, PatternAnalyzer
-from .event_logger import EventLogger
+from src.analytics.pattern_analyzer import Pattern, PatternType, PatternAnalyzer
+from src.analytics.event_logger import EventLogger
+from src.analytics.pattern_projection import pattern_key
+from src.analytics.suggestion_store import SuggestionRecord, SuggestionStatus, SuggestionStore
+from src.memory.fact_ledger import MemorySource
 
 logger = logging.getLogger(__name__)
 
 
-class SuggestionStatus(StrEnum):
-    """Estado de una sugerencia"""
-    PENDING = "pending"       # Esperando respuesta del usuario
-    ACCEPTED = "accepted"     # Usuario acepto
-    REJECTED = "rejected"     # Usuario rechazo
-    SNOOZED = "snoozed"       # Usuario pospuso
-    IMPLEMENTED = "implemented"  # Automatizacion creada
-
-
-@dataclass
+@dataclass(frozen=True)
 class Suggestion:
     """Una sugerencia de automatizacion"""
     id: str
@@ -35,6 +28,8 @@ class Suggestion:
     status: SuggestionStatus = SuggestionStatus.PENDING
     user_response: str | None = None
     snooze_until: float | None = None
+    expires_at: float | None = None
+    sources: tuple[MemorySource, ...] = ()
     
     def to_dict(self) -> dict:
         return {
@@ -44,7 +39,9 @@ class Suggestion:
             "automation_yaml": self.automation_yaml,
             "created_at": self.created_at,
             "status": self.status.value,
-            "user_response": self.user_response
+            "user_response": self.user_response,
+            "snooze_until": self.snooze_until,
+            "expires_at": self.expires_at,
         }
 
 
@@ -57,7 +54,7 @@ class SuggestionEngine:
     2. Genera sugerencia en lenguaje natural
     3. Crea YAML de automatizacion para Home Assistant
     4. Presenta al usuario
-    5. Si acepta, crea la automatizacion
+    5. Registra la respuesta y prepara el borrador para revisión
     """
     
     def __init__(
@@ -74,136 +71,71 @@ class SuggestionEngine:
         self.llm = llm_reasoner
         self.ha = ha_client
         
-        self._suggestions: dict[str, Suggestion] = {}
-        self._load_suggestions()
-    
-    def _load_suggestions(self):
-        """Cargar sugerencias guardadas"""
-        if self.suggestions_path.exists():
-            try:
-                with open(self.suggestions_path) as f:
-                    data = json.load(f)
-                
-                for s_data in data.get("suggestions", []):
-                    # Reconstruir Pattern
-                    p_data = s_data["pattern"]
-                    pattern = Pattern(
-                        pattern_type=PatternType(p_data["type"]),
-                        entity_id=p_data["entity_id"],
-                        action=p_data["action"],
-                        confidence=p_data["confidence"],
-                        occurrences=p_data["occurrences"],
-                        description=p_data["description"],
-                        hour=p_data.get("hour"),
-                        minute=p_data.get("minute"),
-                        weekdays=p_data.get("weekdays", []),
-                        trigger_entity=p_data.get("trigger_entity"),
-                        trigger_action=p_data.get("trigger_action")
-                    )
-                    
-                    suggestion = Suggestion(
-                        id=s_data["id"],
-                        pattern=pattern,
-                        message=s_data["message"],
-                        automation_yaml=s_data["automation_yaml"],
-                        created_at=s_data["created_at"],
-                        status=SuggestionStatus(s_data["status"]),
-                        user_response=s_data.get("user_response"),
-                        snooze_until=s_data.get("snooze_until")
-                    )
-                    self._suggestions[suggestion.id] = suggestion
-                
-                logger.info(f"Cargadas {len(self._suggestions)} sugerencias")
-            except Exception as e:
-                logger.error(f"Error cargando sugerencias: {e}")
-    
-    def _save_suggestions(self):
-        """Guardar sugerencias"""
-        self.suggestions_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        data = {
-            "suggestions": [s.to_dict() for s in self._suggestions.values()]
-        }
-        
-        with open(self.suggestions_path, "w") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    
-    def generate_suggestions(
-        self,
-        min_confidence: float = 0.7,
-        max_suggestions: int = 5
-    ) -> list[Suggestion]:
-        """
-        Generar nuevas sugerencias basadas en patrones.
-        
-        Args:
-            min_confidence: Confianza minima para sugerir
-            max_suggestions: Maximo de sugerencias a generar
-        
-        Returns:
-            Lista de nuevas sugerencias
-        """
-        # Obtener patrones con alta confianza
-        patterns = self.pattern_analyzer.get_actionable_patterns(min_confidence)
-        
-        new_suggestions = []
-        
-        for pattern in patterns[:max_suggestions * 2]:
-            # Verificar si ya existe sugerencia para este patron
-            existing = self._find_existing_suggestion(pattern)
-            if existing:
-                continue
-            
-            # Generar sugerencia
-            suggestion = self._create_suggestion(pattern)
-            if suggestion:
-                self._suggestions[suggestion.id] = suggestion
-                new_suggestions.append(suggestion)
-                
-                if len(new_suggestions) >= max_suggestions:
-                    break
-        
-        if new_suggestions:
-            self._save_suggestions()
-            logger.info(f"Generadas {len(new_suggestions)} nuevas sugerencias")
-        
-        return new_suggestions
-    
-    def _find_existing_suggestion(self, pattern: Pattern) -> Suggestion | None:
-        """Buscar si ya existe una sugerencia similar"""
-        for suggestion in self._suggestions.values():
-            p = suggestion.pattern
-            if (p.entity_id == pattern.entity_id and
-                p.action == pattern.action and
-                p.pattern_type == pattern.pattern_type and
-                p.hour == pattern.hour):
-                return suggestion
-        return None
-    
-    def _create_suggestion(self, pattern: Pattern) -> Suggestion | None:
-        """Crear una sugerencia a partir de un patron"""
-        import time
-        
-        suggestion_id = f"sug_{int(time.time() * 1000)}"
-        
-        # Generar mensaje para el usuario
-        message = self._generate_message(pattern)
-        
-        # Generar YAML de automatizacion
-        automation_yaml = self._generate_automation_yaml(pattern)
-        
-        if not message or not automation_yaml:
-            return None
-        
+        self.store = SuggestionStore(event_logger, suggestions_path)
+        self._clock = self.store.policy.clock
+
+    def _project(self, record: SuggestionRecord) -> Suggestion:
+        status = record.status
+        if status is SuggestionStatus.SNOOZED and record.snooze_until <= self._clock():
+            status = SuggestionStatus.PENDING
         return Suggestion(
-            id=suggestion_id,
-            pattern=pattern,
-            message=message,
-            automation_yaml=automation_yaml,
-            created_at=time.time(),
-            status=SuggestionStatus.PENDING
+            record.id, record.pattern, record.message, self._generate_automation_yaml(record.pattern),
+            record.created_at, status=status, snooze_until=record.snooze_until,
+            expires_at=record.expires_at, sources=record.sources,
         )
-    
+
+    @property
+    def _suggestions(self) -> dict[str, Suggestion]:
+        """Compatibility projection for the CLI; no private in-memory store exists."""
+        return {record.id: self._project(record) for record in self.store.records()}
+
+    def available_now(self, suggestion: Suggestion) -> bool:
+        """Cheap expiry/revocation fence for an already resolved voice projection."""
+        policy = self.store.policy
+        return (
+            isinstance(suggestion, Suggestion) and suggestion.expires_at is not None
+            and not self.event_logger.resource_status()["closed"]
+            and suggestion.created_at <= self._clock() < suggestion.expires_at
+            and policy.activity_sources_available(suggestion.sources)
+        )
+
+    def generate_suggestions(self, min_confidence: float = .7, max_suggestions: int = 5) -> list[Suggestion]:
+        """Generate bounded proposals, revalidating actual events at final commit."""
+        if type(min_confidence) not in (int, float) or not math.isfinite(min_confidence) or not 0 <= min_confidence <= 1:
+            raise ValueError("invalid_suggestion_confidence")
+        if type(max_suggestions) is not int or not 0 < max_suggestions <= 50:
+            raise ValueError("invalid_suggestion_limit")
+        patterns = self.pattern_analyzer.get_actionable_patterns(min_confidence)
+        result = []
+        for pattern in patterns[:max_suggestions * 2]:
+            try:
+                # A supplied description/confidence is not event evidence.
+                normalized = self.store.prepare(pattern)
+                if normalized.confidence < min_confidence:
+                    continue
+                if self._find_existing_suggestion(normalized):
+                    continue
+                suggestion = self._create_suggestion(normalized)
+                if suggestion is not None and self.available_now(suggestion):
+                    result.append(suggestion)
+            except (PermissionError, ValueError) as error:
+                logger.debug("Suggestion generation discarded: %s", type(error).__name__)
+            if len(result) >= max_suggestions:
+                break
+        return [suggestion for suggestion in result if self.available_now(suggestion)]
+
+    def _find_existing_suggestion(self, pattern: Pattern) -> Suggestion | None:
+        records = self.store.records(selection_key=pattern_key(pattern))
+        return self._project(records[0]) if records else None
+
+    def _create_suggestion(self, pattern: Pattern) -> Suggestion | None:
+        created_at = self._clock()
+        message = self._generate_message(pattern)
+        if not message or not self._generate_automation_yaml(pattern):
+            return None
+        record = self.store.create(pattern, message, created_at)
+        return self._project(record) if record is not None else None
+
     def _generate_message(self, pattern: Pattern) -> str:
         """Generar mensaje en lenguaje natural para el usuario"""
         
@@ -266,9 +198,9 @@ Responde SOLO con el mensaje, sin explicaciones:"""
 
         try:
             response = self.llm.generate(prompt, max_tokens=150, temperature=0.7)
-            return response.strip()
-        except Exception as e:
-            logger.warning(f"Error generando mensaje con LLM: {e}")
+            return response.strip() if isinstance(response, str) and 0 < len(response.strip()) <= 4096 else self._generate_message_template(pattern)
+        except Exception as error:
+            logger.warning("Suggestion wording unavailable: %s", type(error).__name__)
             return self._generate_message_template(pattern)
     
     def _generate_automation_yaml(self, pattern: Pattern) -> str:
@@ -302,7 +234,7 @@ Responde SOLO con el mensaje, sin explicaciones:"""
         domain = pattern.entity_id.split(".")[0]
         service = f"{domain}.{pattern.action}"
         
-        hour = pattern.hour or 12
+        hour = pattern.hour if pattern.hour is not None else 12
         minute = pattern.minute or 0
         
         yaml = f"""# Automatizacion generada por KZA Voice
@@ -383,122 +315,44 @@ mode: single
         return action_names.get(action, action.replace("_", " ").title())
     
     def get_pending_suggestions(self) -> list[Suggestion]:
-        """Obtener sugerencias pendientes de respuesta"""
-        import time
-        now = time.time()
-        
-        pending = []
-        for s in self._suggestions.values():
-            if s.status == SuggestionStatus.PENDING:
-                pending.append(s)
-            elif s.status == SuggestionStatus.SNOOZED and s.snooze_until and s.snooze_until <= now:
-                s.status = SuggestionStatus.PENDING
-                pending.append(s)
-        
-        return sorted(pending, key=lambda s: s.pattern.confidence, reverse=True)
-    
-    def respond_to_suggestion(
-        self,
-        suggestion_id: str,
-        accept: bool,
-        snooze_hours: int = 0
-    ) -> dict:
-        """
-        Responder a una sugerencia.
-        
-        Args:
-            suggestion_id: ID de la sugerencia
-            accept: True para aceptar, False para rechazar
-            snooze_hours: Horas para posponer (si > 0)
-        
-        Returns:
-            Resultado de la operacion
-        """
-        import time
-        
-        if suggestion_id not in self._suggestions:
-            return {"success": False, "error": "Sugerencia no encontrada"}
-        
-        suggestion = self._suggestions[suggestion_id]
-        
-        if snooze_hours > 0:
-            suggestion.status = SuggestionStatus.SNOOZED
-            suggestion.snooze_until = time.time() + (snooze_hours * 3600)
-            suggestion.user_response = f"Pospuesto por {snooze_hours} horas"
-            self._save_suggestions()
-            return {"success": True, "message": f"Sugerencia pospuesta por {snooze_hours} horas"}
-        
+        """Return only current proposals; snoozing never renews their expiry."""
+        pending = [self._project(record) for record in self.store.records(pending=True)]
+        return sorted((s for s in pending if self.available_now(s)), key=lambda s: s.pattern.confidence, reverse=True)
+
+    def respond_to_suggestion(self, suggestion_id: str, accept: bool, snooze_hours: int = 0) -> dict:
+        """Record a response to a live proposal, without claiming HA execution."""
+        try:
+            record = self.store.respond(suggestion_id, accept=accept, snooze_hours=snooze_hours)
+        except PermissionError:
+            record = None
+        if record is None:
+            return {"success": False, "error": "La sugerencia ya no está disponible."}
+        if snooze_hours:
+            return {"success": True, "message": "Sugerencia pospuesta mientras siga vigente."}
         if accept:
-            suggestion.status = SuggestionStatus.ACCEPTED
-            suggestion.user_response = "Aceptado"
-            
-            # Intentar crear la automatizacion en Home Assistant
-            if self.ha:
-                result = self._create_automation_in_ha(suggestion)
-                if result["success"]:
-                    suggestion.status = SuggestionStatus.IMPLEMENTED
-                self._save_suggestions()
-                return result
-            
-            self._save_suggestions()
             return {
                 "success": True,
-                "message": "Sugerencia aceptada. Copia el YAML a tu Home Assistant.",
-                "yaml": suggestion.automation_yaml
+                "message": "Sugerencia aceptada para revisión. El borrador está disponible.",
+                "yaml": self._generate_automation_yaml(record.pattern),
             }
-        else:
-            suggestion.status = SuggestionStatus.REJECTED
-            suggestion.user_response = "Rechazado"
-            self._save_suggestions()
-            return {"success": True, "message": "Sugerencia descartada"}
-    
-    def _create_automation_in_ha(self, suggestion: Suggestion) -> dict:
-        """Crear automatizacion directamente en Home Assistant"""
-        # TODO: Implementar cuando HA client soporte crear automatizaciones
-        # Por ahora, solo retornar el YAML
-        return {
-            "success": True,
-            "message": "Automatizacion lista. Copia este YAML a tu automations.yaml:",
-            "yaml": suggestion.automation_yaml
-        }
-    
+        return {"success": True, "message": "Sugerencia descartada."}
+
     def get_suggestion_to_present(self) -> Suggestion | None:
-        """
-        Obtener la sugerencia mas relevante para presentar al usuario.
-        Usado por el pipeline de voz.
-        """
-        pending = self.get_pending_suggestions()
-        
+        """Resolve the current proposal again before handing it to a voice consumer."""
+        pending = self.get_pending_suggestions() or self.generate_suggestions(max_suggestions=3)
         if not pending:
-            # Generar nuevas si no hay pendientes
-            new_suggestions = self.generate_suggestions(max_suggestions=3)
-            if new_suggestions:
-                return new_suggestions[0]
             return None
-        
-        return pending[0]
-    
+        records = self.store.records(suggestion_id=pending[0].id)
+        selected = self._project(records[0]) if records else None
+        return selected if selected is not None and self.available_now(selected) else None
+
     def get_stats(self) -> dict:
-        """Obtener estadisticas de sugerencias"""
-        by_status = {}
-        for s in self._suggestions.values():
-            status = s.status.value
-            by_status[status] = by_status.get(status, 0) + 1
-        
-        return {
-            "total_suggestions": len(self._suggestions),
-            "by_status": by_status,
-            "acceptance_rate": self._calculate_acceptance_rate()
-        }
-    
-    def _calculate_acceptance_rate(self) -> float:
-        """Calcular tasa de aceptacion"""
-        accepted = sum(1 for s in self._suggestions.values() 
-                      if s.status in [SuggestionStatus.ACCEPTED, SuggestionStatus.IMPLEMENTED])
-        responded = sum(1 for s in self._suggestions.values()
-                       if s.status in [SuggestionStatus.ACCEPTED, SuggestionStatus.IMPLEMENTED, 
-                                       SuggestionStatus.REJECTED])
-        
-        if responded == 0:
-            return 0.0
-        return accepted / responded
+        """Count valid proposals only; legacy, expired and revoked rows are excluded."""
+        suggestions = self._suggestions
+        counts = {}
+        for suggestion in suggestions.values():
+            key = suggestion.status.value
+            counts[key] = counts.get(key, 0) + 1
+        accepted, rejected = counts.get("accepted", 0), counts.get("rejected", 0)
+        return {"total_suggestions": len(suggestions), "by_status": counts,
+                "acceptance_rate": accepted / (accepted + rejected) if accepted + rejected else 0}

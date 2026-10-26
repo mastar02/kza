@@ -895,6 +895,64 @@ su borrado/revisión real y su vencimiento. También registra el reemplazo del S
 dinámico por parámetros y los 50 hallazgos previos de scripts legacy ajenos al
 alcance de lint de CI. No se vuelve a medir ni se resuelve la aceptación de GC.
 
+## Avance: propuestas con almacenamiento de política
+
+El motor activo deja de cargar o sobrescribir el JSON legacy. Las propuestas
+nuevas usan una tabla SQLite separada junto a la ruta configurada, con archivo
+privado y destino físico registrado antes de abrirlo. Cada lectura resuelve
+los recibos contra los eventos reales, comprueba fechas y fuentes, y reconstruye
+el patrón antes de proyectar el mensaje. Las filas con protocolo desconocido se
+conservan fuera de las respuestas automáticas. No se mantiene un diccionario
+privado que pueda reponer una fila retirada.
+
+La descripción, el conteo y la consistencia se recalculan desde metadatos de
+actividad: un `Pattern` recibido con texto o estadísticas alteradas no se toma
+como fuente. El prompt del modelo opcional recibe esa proyección; el texto bruto,
+los nombres y el contexto libre de los eventos no entran en él. La salida tiene
+un límite de 4096 caracteres y los errores conservan sólo el tipo, con fallback
+a la plantilla. El YAML se reconstruye desde la selección estructurada, sin
+hidratar un YAML antiguo. La exportación de una hora cero conserva medianoche.
+
+El plazo de cada propuesta es el menor de los eventos, sus dependencias
+semánticas y 30 días desde la última observación real incluida, o el límite
+más corto configurado para hechos automáticos. La fecha de generación se toma
+antes de llamar al modelo. Volver a leer o calcular los mismos eventos, esperar
+una generación, reiniciar, posponer o aceptar la propuesta no renueva ese plazo.
+La vigencia de los metadatos permite patrones de varios días después de retirar
+el texto a las 48 h; no autoriza a prolongar el contenido bruto.
+
+Para confirmar una escritura, el motor toma primero la barrera de autoridad,
+luego el bloqueo de escritura del registro de eventos, y finalmente el de
+propuestas. Resuelve de nuevo los recibos y mantiene ambas barreras hasta el
+commit. Una revocación queda después de un commit previo o rechaza una salida
+posterior; una mutación de los eventos también espera ese commit. La generación
+del modelo permanece fuera de las barreras para no bloquear el marker. La
+resolución termina revalidando las fuentes de todos los lotes, no sólo las
+últimas filas. Un marker pendiente que después falla oculta la propuesta sin
+borrarla ni cambiar sus fechas; el rollback restaura su elegibilidad original.
+
+La voz descarta la propuesta pendiente al vencer o revocarse y cancela su entrega
+si pierde una dependencia. Los errores de lectura no convierten en fallida una
+acción doméstica ya terminada; los de escritura no se presentan como aceptación
+exitosa. Aceptar registra una propuesta y entrega su borrador; el stub anterior
+ya no la etiqueta como automatización implementada. La ejecución efectiva de
+rutinas sigue dentro de H5 y debe usar el servicio de control compartido.
+
+La CLI usa la configuración existente, la misma autoridad con lease exclusiva y
+el scope nativo del logger. No abre otro escritor si el runtime conserva la
+lease, y cierra los recursos al terminar. La consulta de duplicados usa el índice
+de la selección completa. El protocolo acota 1000 propuestas aún vigentes,
+10.000 recibos/fuentes y 4 MiB por campo de metadatos; rechaza ubicaciones que
+compartan archivo con eventos o con la autoridad, evitando bloqueos circulares.
+
+La exclusión por TTL y revocación al leer y las barreras de escritura ya están
+activas. Falta conectar el mantenimiento físico independiente de features y el
+adaptador durable de sugerencias, incluidos los destinos históricos y los
+buffers/productores restantes. Registrar destinos no equivale a completar ese
+participante: siguen siendo seis los pendientes. No se habilita un borrado global,
+no se migra el JSON original y no se modifica producción. La aceptación de GC,
+hardware, voces, migración privada y el resto de H0–H6 continúa abierta.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

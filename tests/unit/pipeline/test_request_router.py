@@ -525,25 +525,27 @@ class TestSuggestionHandling:
     async def test_reject_suggestion(self):
         """Reject suggestion when user says 'no'."""
         engine = MagicMock()
+        engine.respond_to_suggestion.return_value = {"success": True, "message": "Sugerencia descartada."}
         router = _build_router(suggestion_engine=engine)
         router._pending_suggestion = MagicMock()
         router._pending_suggestion.id = "s1"
 
         result = await router._handle_suggestion_response("no quiero")
         assert result["handled"] is True
-        assert "no creare" in result["response"]
+        assert result["response"] == "Sugerencia descartada."
         assert router._pending_suggestion is None
 
     async def test_snooze_suggestion(self):
         """Snooze suggestion when user says 'despues'."""
         engine = MagicMock()
+        engine.respond_to_suggestion.return_value = {"success": True, "message": "Sugerencia pospuesta mientras siga vigente."}
         router = _build_router(suggestion_engine=engine)
         router._pending_suggestion = MagicMock()
         router._pending_suggestion.id = "s1"
 
         result = await router._handle_suggestion_response("despues")
         assert result["handled"] is True
-        assert "manana" in result["response"]
+        assert "pospuesta" in result["response"]
 
     async def test_no_pending_suggestion(self):
         """No handling if no suggestion is pending."""

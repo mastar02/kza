@@ -5,10 +5,10 @@ Herramientas para analizar patrones y gestionar sugerencias.
 """
 
 import argparse
-import json
+import asyncio
+from contextlib import AsyncExitStack
 import sys
 from pathlib import Path
-from datetime import datetime
 
 # Agregar src al path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -16,9 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def cmd_stats(args):
     """Mostrar estadisticas de eventos"""
-    from src.analytics.event_logger import EventLogger
     
-    logger = EventLogger(db_path=args.db_path)
+    logger = args.event_logger
     stats = logger.get_stats()
     
     print("\n📊 Estadisticas de Eventos")
@@ -42,10 +41,9 @@ def cmd_stats(args):
 
 def cmd_patterns(args):
     """Analizar y mostrar patrones detectados"""
-    from src.analytics.event_logger import EventLogger
     from src.analytics.pattern_analyzer import PatternAnalyzer
     
-    logger = EventLogger(db_path=args.db_path)
+    logger = args.event_logger
     analyzer = PatternAnalyzer(logger)
     
     print(f"\n🔍 Analizando patrones (ultimos {args.days} dias)...")
@@ -78,11 +76,10 @@ def cmd_patterns(args):
 
 def cmd_suggestions(args):
     """Gestionar sugerencias de automatizacion"""
-    from src.analytics.event_logger import EventLogger
     from src.analytics.pattern_analyzer import PatternAnalyzer
     from src.analytics.suggestion_engine import SuggestionEngine
     
-    logger = EventLogger(db_path=args.db_path)
+    logger = args.event_logger
     analyzer = PatternAnalyzer(logger)
     engine = SuggestionEngine(
         event_logger=logger,
@@ -144,7 +141,7 @@ def cmd_suggestions(args):
             print("Error: --id requerido para rechazar")
             return 1
         result = engine.respond_to_suggestion(args.id, accept=False)
-        print(f"\n{'✅' if result['success'] else '❌'} {result['message']}")
+        print(f"\n{'✅' if result['success'] else '❌'} {result.get('message') or result.get('error')}")
     
     elif args.action == "show-yaml":
         if not args.id:
@@ -166,9 +163,8 @@ def cmd_suggestions(args):
 
 def cmd_distribution(args):
     """Mostrar distribucion de eventos"""
-    from src.analytics.event_logger import EventLogger
     
-    logger = EventLogger(db_path=args.db_path)
+    logger = args.event_logger
     
     if not args.entity:
         # Mostrar distribucion general
@@ -212,9 +208,8 @@ def cmd_distribution(args):
 
 def cmd_sequences(args):
     """Mostrar secuencias detectadas"""
-    from src.analytics.event_logger import EventLogger
     
-    logger = EventLogger(db_path=args.db_path)
+    logger = args.event_logger
     sequences = logger.get_sequences(
         window_minutes=args.window,
         min_occurrences=args.min_occurrences,
@@ -234,6 +229,42 @@ def cmd_sequences(args):
         print(f"  {second}")
     
     return 0
+
+
+async def run_command(args, *, config=None, clock=None):
+    """Use the configured leased authority and retain all native CLI work."""
+    from src.analytics.services import build_event_logger
+    from src.core.settings_schema import resolve_env_vars
+    from src.memory.privacy_services import build_privacy_services
+
+    if config is None:
+        import yaml
+        def read_config():
+            with open(args.config) as file:
+                return yaml.safe_load(file)
+        config = await asyncio.to_thread(read_config)
+    config = resolve_env_vars({key: dict(config.get(key, {})) for key in ("memory", "analytics")})
+    analytics = config["analytics"]
+    analytics["enabled"] = True
+    if args.db_path is not None:
+        analytics["events_db"] = args.db_path
+    if args.suggestions_path is not None:
+        analytics["suggestions_path"] = args.suggestions_path
+    paths = (config["memory"].get("privacy_db_path", "./data/memory_privacy.db"),
+             analytics.get("events_db", "./data/events.db"), analytics.get("suggestions_path", "./data/suggestions.json"))
+    if any(type(path) is not str or not path or "${" in path for path in paths):
+        raise ValueError("analytics_cli_paths_unresolved")
+    args.suggestions_path = paths[2]
+    commands = {"stats": cmd_stats, "patterns": cmd_patterns, "suggestions": cmd_suggestions,
+                "distribution": cmd_distribution, "sequences": cmd_sequences}
+    async with AsyncExitStack() as shutdown:
+        privacy = await build_privacy_services(config, shutdown=shutdown, clock=clock)
+        events = await build_event_logger(config, shutdown=shutdown, privacy=privacy)
+        args.event_logger = events
+        try:
+            return await events.acall(commands[args.command], args)
+        finally:
+            del args.event_logger
 
 
 def main():
@@ -267,15 +298,16 @@ Ejemplos:
     )
     
     # Argumentos globales
-    parser.add_argument("--db-path", default="./data/events.db",
+    parser.add_argument("--config", default="config/settings.yaml", help="Configuración existente de KZA")
+    parser.add_argument("--db-path", default=None,
                        help="Ruta a la base de datos de eventos")
-    parser.add_argument("--suggestions-path", default="./data/suggestions.json",
+    parser.add_argument("--suggestions-path", default=None,
                        help="Ruta al archivo de sugerencias")
     
     subparsers = parser.add_subparsers(dest="command", help="Comando")
     
     # Stats
-    stats_parser = subparsers.add_parser("stats", help="Estadisticas de eventos")
+    subparsers.add_parser("stats", help="Estadisticas de eventos")
     
     # Patterns
     patterns_parser = subparsers.add_parser("patterns", help="Analizar patrones")
@@ -307,19 +339,15 @@ Ejemplos:
     
     args = parser.parse_args()
     
-    if args.command == "stats":
-        return cmd_stats(args)
-    elif args.command == "patterns":
-        return cmd_patterns(args)
-    elif args.command == "suggestions":
-        return cmd_suggestions(args)
-    elif args.command == "distribution":
-        return cmd_distribution(args)
-    elif args.command == "sequences":
-        return cmd_sequences(args)
-    else:
+    if args.command is None:
         parser.print_help()
         return 0
+    try:
+        return asyncio.run(run_command(args))
+    except Exception as error:
+        # Paths, credentials and private SQL/model errors do not enter output.
+        print(f"No pude abrir la analítica privada: {type(error).__name__}.", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

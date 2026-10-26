@@ -1173,7 +1173,7 @@ class RequestRouter:
             if suggestion_result["handled"]:
                 result["intent"] = "suggestion_response"
                 result["response"] = suggestion_result["response"]
-                result["success"] = True
+                result["success"] = suggestion_result.get("success", True)
                 await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
@@ -1673,54 +1673,89 @@ class RequestRouter:
 
     async def _handle_suggestion_response(self, text: str) -> dict:
         """Handle user response to a pending automation suggestion."""
-        if not self._pending_suggestion or not self.suggestion_engine:
+        pending = self._pending_suggestion
+        if pending is None or not self.suggestion_engine:
             return {"handled": False}
 
         text_lower = text.lower().strip()
-        suggestion_id = self._pending_suggestion.id
+        suggestion_id = pending.id
 
         for phrase in self.SUGGESTION_ACCEPT:
             if phrase in text_lower or text_lower == phrase:
-                result = await self._call_suggestion(self.suggestion_engine.respond_to_suggestion, suggestion_id, accept=True)
+                result = await self._record_suggestion_response(suggestion_id, accept=True)
                 self._pending_suggestion = None
                 return {
                     "handled": True,
+                    "success": result.get("success", True),
                     "response": result.get("message") or result.get("error") or "Registré tu respuesta.",
                 }
 
         for phrase in self.SUGGESTION_REJECT:
             if phrase in text_lower or text_lower == phrase:
-                await self._call_suggestion(self.suggestion_engine.respond_to_suggestion, suggestion_id, accept=False)
+                result = await self._record_suggestion_response(suggestion_id, accept=False)
                 self._pending_suggestion = None
                 return {
                     "handled": True,
-                    "response": "Entendido, no creare esa automatizacion."
+                    "success": result.get("success", True),
+                    "response": result.get("message") or result.get("error") or "Registré tu respuesta.",
                 }
 
         for phrase in self.SUGGESTION_SNOOZE:
             if phrase in text_lower:
-                await self._call_suggestion(
-                    self.suggestion_engine.respond_to_suggestion, suggestion_id, accept=False, snooze_hours=24
-                )
+                result = await self._record_suggestion_response(suggestion_id, accept=False, snooze_hours=24)
                 self._pending_suggestion = None
                 return {
                     "handled": True,
-                    "response": "Ok, te lo recordare manana."
+                    "success": result.get("success", True),
+                    "response": result.get("message") or result.get("error") or "Registré tu respuesta.",
                 }
 
         self._pending_suggestion = None
         return {"handled": False}
+
+    async def _record_suggestion_response(self, suggestion_id: str, **kwargs) -> dict:
+        try:
+            return await self._call_suggestion(self.suggestion_engine.respond_to_suggestion, suggestion_id, **kwargs)
+        except Exception as error:
+            logger.warning("Suggestion response deferred: %s", type(error).__name__)
+            return {"success": False, "error": "No pude registrar tu respuesta a la sugerencia."}
 
     async def _maybe_present_suggestion(self):
         """Present an automation suggestion if one is available."""
         if not self.suggestion_engine:
             return
 
-        suggestion = await self._call_suggestion(self.suggestion_engine.get_suggestion_to_present)
+        try:
+            suggestion = await self._call_suggestion(self.suggestion_engine.get_suggestion_to_present)
+        except Exception as error:
+            logger.warning("Suggestion presentation deferred: %s", type(error).__name__)
+            self._pending_suggestion = None
+            return
         if suggestion:
             self._pending_suggestion = suggestion
             message = suggestion.message + " Responde si, no, o despues."
-            await self._speak_response(message)
+            from src.analytics.suggestion_engine import SuggestionEngine
+            if isinstance(self.suggestion_engine, SuggestionEngine):
+                try:
+                    await run_private(self._speak_response(message),
+                        lambda: not self._closed and self.suggestion_engine.available_now(suggestion))
+                except SourcesInvalidated:
+                    self._pending_suggestion = None
+            else:
+                await self._speak_response(message)
+
+    @property
+    def _pending_suggestion(self):
+        from src.analytics.suggestion_engine import SuggestionEngine
+        value = getattr(self, "_pending_proposal", None)
+        if value is not None and isinstance(self.suggestion_engine, SuggestionEngine) and not self.suggestion_engine.available_now(value):
+            self._pending_proposal = None
+            return None
+        return value
+
+    @_pending_suggestion.setter
+    def _pending_suggestion(self, value):
+        self._pending_proposal = value
 
     async def _log_domotics_event(self, entity_id: str, action: str, trigger_phrase: str = None):
         """Log a domotics event."""
@@ -1880,6 +1915,7 @@ Asistente:"""
     def prune_private(self) -> None:
         """Drop idle query/history copies; every read enforces the same policy."""
         self._query_cache.prune()
+        self._pending_suggestion  # Resolve expiry/revocation on idle proposals too.
         if isinstance(self.llm_command_router, LLMCommandRouter):
             self.llm_command_router.prune_private()
         if self._orchestrator is not None:
@@ -1901,6 +1937,7 @@ Asistente:"""
     async def aclose(self) -> None:
         """Stop maintenance and discard private cached text before classifier close."""
         self._closed = True
+        self._pending_suggestion = None
         self._query_cache.close()
         if self._private_maintenance_task is not None:
             self._private_maintenance_task.cancel()

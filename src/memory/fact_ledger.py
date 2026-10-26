@@ -270,6 +270,17 @@ class FactLedger:
         """Read a committed revocation without disk or a SQLite lock."""
         return conversation_id in self._deleted_conversations or conversation_id in self._pending_conversations
 
+    def activity_sources_available(self, sources: tuple[MemorySource, ...]) -> bool:
+        """Check metadata revocations, separately from raw capture lifetimes.
+
+        Pair this with resolved event receipts and their metadata deadline. It
+        cannot authorize raw text or turn a cached proposal into write authority.
+        """
+        return self._authority_available and all(
+            not self.conversation_revoked(source.conversation_id)
+            and self.facts_available(source.fact_dependencies) for source in sources
+        )
+
     def sources_committed_unavailable(self, sources: tuple[MemorySource, ...]) -> bool:
         """Authorize irreversible cleanup from published commits, not pending fences.
 
@@ -302,6 +313,20 @@ class FactLedger:
             previous = self._fact_receipts.get(fact_id)
             receipts[fact_id] = previous if previous is not None and (previous.revision, previous.expires_at) == (revision, expiry) else FactDependency(fact_id, revision, expiry)
         return receipts
+
+    @contextmanager
+    def serialize_activity_write(self):
+        """Keep revocations stable while an event store validates real receipts.
+
+        This lock is not source authorization. The event store must resolve its
+        actual metadata rows and deadlines inside this scope before committing
+        a derivative. Raw text continues to require ``admit_source_write``.
+        Acquire this before event/derivative database locks, from an owned worker.
+        """
+        with self._transaction():
+            if not self._authority_available:
+                raise RuntimeError("privacy_authority_unavailable")
+            yield
 
     @contextmanager
     def admit_source_write(self, sources: tuple[MemorySource, ...]):

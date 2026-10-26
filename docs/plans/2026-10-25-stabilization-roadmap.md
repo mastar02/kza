@@ -456,6 +456,14 @@ del commit `568d1fd` obtiene **4682 passed, 1 xfailed**, sin fallos, con 30 caso
 nuevos, los checks y el artefacto compilado aceptados. La aceptación integrada
 de runtime/GC y hardware continúa pendiente.
 
+Las propuestas nuevas ya usan un almacén de política separado del JSON legacy.
+Resuelven sus eventos reales al leer y al confirmar la escritura, conservan el
+plazo anclado a la última observación y no lo renuevan al aceptar o posponer.
+La voz interrumpe la entrega de una propuesta revocada, y la CLI comparte la
+autoridad configurada y su lease. Aceptar entrega un borrador; la ejecución
+efectiva sigue en H5. Falta conectar el mantenimiento físico y el participante
+durable de sugerencias, además de los otros pendientes de H3 y del plan completo.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una
