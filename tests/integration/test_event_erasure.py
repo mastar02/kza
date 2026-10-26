@@ -42,7 +42,8 @@ async def graph(tmp_path, *, enabled=True, timeout=1):
         stack.push_async_callback(owner.aclose)
         driver = await build_event_erasure(config, privacy=privacy, owner=owner)
         # This file observes conversation cleanup independently of TTL sweeps.
-        await driver.retention.begin_close()
+        driver.retention._maintenance.cancel()
+        await asyncio.gather(driver.retention._maintenance, return_exceptions=True)
         events = await build_event_logger(config, shutdown=stack, privacy=privacy)
         if events is not None:
             events._maintenance.cancel()
@@ -616,6 +617,7 @@ async def test_saturated_default_executor_does_not_starve_event_writer_or_cleanu
             )
             # Executor shutdown itself uses the general pool only after native
             # event work is drained; release it before closing the fixture.
+            assert not blocked.done()
             release.set()
     finally:
         release.set()

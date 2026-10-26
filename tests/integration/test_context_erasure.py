@@ -49,6 +49,9 @@ async def graph(tmp_path, *, clock=None, base=None, compactor=None, timeout=1):
         owner = ErasureCoordinator(privacy, close_timeout_s=timeout)
         stack.push_async_callback(owner.aclose)
         driver = await build_context_erasure(config, privacy=privacy, owner=owner)
+        # Conversation receipts are observed independently of periodic expiry.
+        driver.retention._maintenance.cancel()
+        await asyncio.gather(driver.retention._maintenance, return_exceptions=True)
         persister = ContextPersister(
             config["orchestrator"]["context"]["persistence"]["base_path"],
             source_policy=privacy.ledger,
@@ -782,6 +785,7 @@ async def test_saturated_default_pool_does_not_starve_context_writes_or_physical
             await flush(owner)
             assert not (persister.base_path / "erased.json").exists()
             assert all(s["state"] == "complete" for s in await steps(privacy, receipt))
+            assert not waiting.done()
             release.set()
     finally:
         release.set()

@@ -792,6 +792,49 @@ snapshot y de buffers incluso con los features apagados. El heartbeat obtiene
 p95 de 0,20 ms y máximo de 1,03 ms; la cancelación de control alcanza 0,16 ms
 y el cleanup 11,20 ms. La aceptación integrada de runtime/GC sigue abierta.
 
+## Avance: vencimiento independiente de contextos
+
+El mantenimiento de contextos se construye siempre con el adaptador del journal,
+sin habilitar orchestrator, persistence ni recall. Recorre los directorios de
+política actuales e históricos y retira snapshots con fuentes vencidas o
+revocadas, sin inventar fechas a partir de lecturas, reinicios o mtime. Los
+archivos legacy originales siguen intactos. Cada lote procesa hasta 32 entradas
+con el límite existente de 1 MiB por archivo y cede a otros directorios entre
+lotes. Los temporales reconocidos se retiran sólo bajo la barrera compartida
+con los writers.
+
+Los archivos sin procedencia, corruptos, de protocolo desconocido o con symlinks
+se conservan pendientes y no impiden llegar a otros archivos atribuibles del
+directorio. Los contadores se acumulan hasta terminar el recorrido; las fechas
+conocidas conservan el deadline original. Los resultados retenidos no contienen
+texto ni excepciones privadas. Los fallos del directorio usan backoff acotado.
+
+La actualización del registro es una tarea retenida separada. Una escritura que
+mantiene la barrera del catálogo no detiene el barrido de otros directorios ya
+conocidos. El factory carga esos destinos antes de admitir writers opcionales.
+Las escrituras despiertan el mantenimiento y las actualizaciones del registro
+se observan sin renovar los plazos calculados anteriormente.
+
+También se limpian los turnos, resúmenes, entidades preservadas y memoria corta
+que siguen en objetos inactivos, sin depender de otra consulta. El recorrido
+cede entre grupos de 32 usuarios. Una compactación vencida se cancela una vez
+y sigue figurando como operación pendiente hasta su salida; no detiene la purga
+de otros buffers. El mantenimiento de archivos usa dos threads propios y ocho
+operaciones retenidas; cerrar o cancelar la espera conserva sus lotes, registro
+y recursos reales hasta liberar la lease.
+
+La lectura y escritura de snapshots exigen ahora fuentes incluso cuando el
+resumen está vacío, para no hidratar nombres u otros metadatos sin plazo. Los
+originales sin fuentes no se borran por esa exclusión. La validación de IDs usa
+el mismo protocolo de nombre completo del limpiador. La revisión de pruebas
+de saturación añadió una comprobación explícita de que el pool general sigue
+ocupado hasta terminar la operación; el fixture suspende sólo el observador
+de TTL y deja el cierre de su pool para después de liberar ese bloqueo.
+
+Este avance cubre los contextos de política atribuibles y los buffers registrados.
+No da procedencia a los archivos desconocidos, no sustituye la migración privada
+ni completa los seis participantes restantes, la revisión de voces o H3/H6.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

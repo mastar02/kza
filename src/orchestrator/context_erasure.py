@@ -11,6 +11,7 @@ from src.memory.erasure_journal import ErasureParticipant, ErasureResult, Erasur
 from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.privacy_services import PrivacyServices
 from src.orchestrator.context_storage import cleanup_snapshots, register_snapshots
+from src.orchestrator.context_retention import ContextRetention
 
 
 async def _await(function, *args, **kwargs):
@@ -31,6 +32,7 @@ class ContextEraser:
         self._disk = OwnedBlockingWork(worker=self._offload)
         self._runtime = OwnedBlockingWork(worker=_await)
         self._closing = None
+        self.retention = ContextRetention(privacy, runtime_sweep=self._sweep_runtime)
 
     async def _offload(self, function, *args, **kwargs):
         return await asyncio.get_running_loop().run_in_executor(
@@ -47,6 +49,10 @@ class ContextEraser:
         ):
             raise ValueError("context_persister_authority_mismatch")
         self._managers.add(manager)
+        manager.retention_notify = self.retention.notify
+        if manager.persister is not None:
+            manager.persister.retention_notify = self.retention.notify
+        self.retention.notify()
         self.privacy.add_borrower(manager.begin_close)
 
     def attach_short_term(self, memory) -> None:
@@ -54,12 +60,28 @@ class ContextEraser:
         if memory._source_policy is not self.privacy.ledger:
             raise ValueError("short_term_authority_mismatch")
         self._short_terms.add(memory)
+        memory.retention_notify = self.retention.notify
+        self.retention.notify()
 
     def attach_router(self, router) -> None:
         """Include idle query/classifier/queue copies; active producers stay separate."""
         if router._source_policy is not self.privacy.ledger:
             raise ValueError("context_router_authority_mismatch")
         self._routers.add(router)
+        self.retention.notify()
+
+    async def _sweep_runtime(self) -> dict:
+        now = self.privacy.ledger.clock()
+        results = []
+        for manager in list(self._managers):
+            results.append(await manager.prune_retained())
+        for memory in list(self._short_terms):
+            results.append(memory.prune_retained())
+        for router in list(self._routers):
+            router.prune_private()
+        return {'checked_at':now,'next_at':min([now+30,*(r['next_at'] for r in results)]),
+            'pruned':sum(r['pruned'] for r in results),'unknown':sum(r['unknown'] for r in results),
+            'pending_operations':sum(r['pending_operations'] for r in results)}
 
     async def _clean_runtime(self, step: ErasureStep) -> ErasureResult:
         if step.descriptor != {"kind": "runtime", "name": "conversation_buffers"}:
@@ -102,9 +124,11 @@ class ContextEraser:
     def begin_close(self) -> asyncio.Task:
         """Drain actual callbacks before releasing their private native pool."""
         if self._closing is None:
+            retention = self.retention.begin_close()
             disk, runtime = self._disk.begin_close(), self._runtime.begin_close()
 
             async def finish():
+                await retention
                 await asyncio.gather(disk, runtime)
                 await asyncio.to_thread(self._executor.shutdown, wait=True)
 
@@ -138,4 +162,6 @@ async def build_context_erasure(
     )
     if memory is not None:
         driver.attach_short_term(memory.short_term)
+    await driver.retention.refresh()
+    driver.retention.start()
     return driver

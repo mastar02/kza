@@ -64,6 +64,7 @@ class ContextPersister:
         self._lock = threading.RLock()
         self._preparing = threading.RLock()
         self._prepared = False
+        self.retention_notify = None
 
     def _prepare(self) -> None:
         """Register canonical physical roots off-loop before any writer access."""
@@ -81,13 +82,11 @@ class ContextPersister:
     def _available(self, payload: dict) -> bool:
         if self.source_policy is not None and not self.source_policy.authority_available:
             raise RuntimeError("privacy_authority_unavailable")
-        if not payload.get("compacted_summary"):
-            return not payload.get("preserved_ids")
         sources = self._sources(payload)
         return sources_authorized(sources, self._clock(), self.source_policy)
 
     def _validate_user_id(self, user_id: str) -> None:
-        if not _SAFE_USER_ID.match(user_id):
+        if not _SAFE_USER_ID.fullmatch(user_id):
             raise ValueError(
                 f"Unsafe user_id for filesystem path: {user_id!r}. "
                 "Allowed: alphanumeric, underscore, hyphen."
@@ -184,6 +183,8 @@ class ContextPersister:
                 os.replace(tmp, self._path(user_id))
             finally:
                 tmp.unlink(missing_ok=True)
+        if self.retention_notify is not None:
+            self.retention_notify(str(self.base_path))
 
     def load(self, user_id: str) -> dict | None:
         """Load a snapshot if it exists and is valid.

@@ -67,6 +67,7 @@ class ShortTermMemory:
         self._clock = time.time if clock is None else clock
         self._lock = threading.RLock()
         self._source_policy = source_policy
+        self.retention_notify = None
 
     def add_turn(
         self,
@@ -88,6 +89,8 @@ class ShortTermMemory:
             if self._source_policy is not None and not self._source_policy.sources_available(sources):
                 return
             self._turns.append(turn)
+            if self.retention_notify is not None:
+                self.retention_notify()
         logger.debug(f"Short-term memory: {len(self._turns)} turns")
 
     def get_recent(self, n: int = 3) -> list[ConversationTurn]:
@@ -116,6 +119,20 @@ class ShortTermMemory:
             lines.append(f"Asistente: {turn.assistant_response}")
 
         return "\n".join(lines)
+
+    def prune_retained(self) -> dict:
+        """Expire idle turns from committed receipts, preserving unknown buffers."""
+        policy = self._source_policy
+        if policy is None or not policy.authority_available:
+            raise RuntimeError('short_term_retention_authority_unavailable')
+        with self._lock:
+            now = self._clock()
+            before = len(self._turns)
+            self._turns = deque((turn for turn in self._turns if not (
+                any(s.expires_at <= now for s in turn.sources) or policy.sources_committed_unavailable(turn.sources))), maxlen=self.max_turns)
+            deadlines = [s.expires_at for turn in self._turns for s in turn.sources]
+            return {'checked_at':now,'next_at':min([now+30,*deadlines]),'pruned':before-len(self._turns),
+                'unknown':sum(not turn.sources for turn in self._turns),'pending_operations':0}
 
     def erase_conversation(self, conversation_id: str) -> int:
         """Remove committed derived turns under the same barrier as admission."""

@@ -350,6 +350,7 @@ class ContextManager:
         self.source_policy = source_policy
         self._clock = clock
         self._io_worker = io_worker
+        self.retention_notify = None
         self._io_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='context-io') if io_worker is None else None
         self._io_work = OwnedBlockingWork(worker=io_worker or self._native_io)
         self._io_tasks = self._io_work._tasks
@@ -487,6 +488,8 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
 
             self._contexts[user_id] = ctx
             self._total_contexts_created += 1
+            if self.retention_notify is not None:
+                self.retention_notify()
 
             logger.debug(f"Contexto creado: {user_id} ({ctx.user_name})")
             return ctx
@@ -525,7 +528,8 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             if self._cleanup_async_task is not None:
                 tasks.add(self._cleanup_async_task)
             for task in tasks:
-                task.cancel()
+                if not task.cancelling():
+                    task.cancel()
             drain = self._io_work.begin_close()
             async def finish():
                 await asyncio.gather(*tasks, return_exceptions=True)
@@ -576,12 +580,54 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         with self._lock:
             tasks = [task for task, (_, sources) in self._active_compactions.items() if removed(sources)]
         for task in tasks:
-            task.cancel()
+            if not task.cancelling():
+                task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         # Hydration and snapshots admitted before the marker may still own raw
         # payloads even after their callers stop observing them.
         await asyncio.gather(*(asyncio.shield(task) for task in list(self._io_tasks)), return_exceptions=True)
         return unknown
+
+    async def prune_retained(self) -> dict:
+        """Expire idle sourced buffers without waiting for unrelated native work."""
+        policy = self.source_policy
+        if policy is None or not policy.authority_available:
+            raise RuntimeError('context_retention_authority_unavailable')
+        now = policy.clock()
+        deadlines = []
+        removed = unknown = pending = 0
+        def expired(sources):
+            return bool(sources) and (any(s.expires_at <= now for s in sources) or policy.sources_committed_unavailable(sources))
+        with self._lock:
+            contexts = list(self._contexts.values())
+        for start in range(0,len(contexts),32):
+            with self._lock:
+                for ctx in contexts[start:start+32]:
+                    if self._contexts.get(ctx.user_id) is not ctx:
+                        continue
+                    turns = [turn for turn in ctx.conversation_history if not expired(turn.sources)]
+                    changed = len(ctx.conversation_history)-len(turns)
+                    ctx.conversation_history = turns
+                    if expired(ctx.summary_sources):
+                        ctx.compacted_summary, ctx.summary_sources, ctx.preserved_ids = None,(),[]
+                        changed += 1
+                    if changed:
+                        ctx.privacy_revision += 1
+                    removed += changed
+                    unknown += sum(not t.sources for t in turns)
+                    unknown += int(bool(ctx.compacted_summary) and not ctx.summary_sources)
+                    unknown += int(ctx.pending_confirmation is not None)
+                    deadlines.extend(s.expires_at for turn in turns for s in turn.sources)
+                    deadlines.extend(s.expires_at for s in ctx.summary_sources)
+            await asyncio.sleep(0)
+        with self._lock:
+            tasks = [task for task,(_,sources) in self._active_compactions.items() if expired(sources)]
+        for task in tasks:
+            if not task.cancelling():
+                task.cancel()
+        pending = len(self._io_tasks)+sum(not task.done() for task in tasks)
+        next_at = now+.05 if pending else min([now+30,*deadlines])
+        return {'checked_at':now,'next_at':next_at,'pruned':removed,'unknown':unknown,'pending_operations':pending}
 
     def get(self, user_id: str) -> UserContext | None:
         """Obtener contexto si existe"""
@@ -628,6 +674,8 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
                 ctx.compaction_inflight = True
                 should_compact = True
 
+        if self.retention_notify is not None:
+            self.retention_notify()
         if should_compact:
             try:
                 loop = asyncio.get_running_loop()
@@ -692,6 +740,8 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
                 ctx.preserved_ids = sorted(set(ctx.preserved_ids) | set(result.preserved_ids))
                 ctx.conversation_history = [t for t in ctx.conversation_history if id(t) not in turn_ids]
                 ctx.privacy_revision += 1
+                if self.retention_notify is not None:
+                    self.retention_notify()
         except Exception as error:
             self._compaction_failures += 1
             from src.orchestrator.compactor import CompactionError

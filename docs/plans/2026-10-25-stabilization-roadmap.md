@@ -383,6 +383,15 @@ aceptados. El ensayo verifica snapshot y buffers eliminados con los features
 apagados. El heartbeat obtiene p95 de 0,20 ms y máximo de 1,03 ms con límites
 intactos. No cierra H3 ni la aceptación integrada de runtime/GC y hardware.
 
+El vencimiento de contextos ya se mantiene con los features apagados, tanto en
+snapshots históricos como en buffers registrados que nadie vuelve a consultar.
+Los archivos atribuibles vencidos se retiran en lotes de 32; los desconocidos
+permanecen pendientes sin frenar los demás. La actualización del registro no
+bloquea otros directorios conocidos cuando un writer retiene el catálogo.
+Las compactaciones pendientes tampoco detienen otros buffers. Siguen abiertos
+los seis participantes restantes, los datos sin procedencia, la migración,
+voces y la aceptación integrada; no se publica una release intermedia.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke
