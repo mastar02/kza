@@ -1,0 +1,268 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "63495dc6a47056c2874eeea80df7ee6a3d40b418",
+  "initial_implementation_commit": "afd52f9e82b96129d29b8dc825592a14ed6fac6e",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 capture/clip conversation-erasure participant with durable pre-encoder locators, actual native drain, private UUID files and historical archive roots",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-capture-erasure-reviewed-final.xml",
+    "collected": 4508,
+    "passed": 4507,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 162.85,
+    "junit_time_s": 162.807,
+    "log": "/tmp/kza-h3-capture-erasure-reviewed-final-suite.log",
+    "xml": "/tmp/kza-h3-capture-erasure-reviewed-final.xml",
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "metrics": {
+      "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+        "heartbeat_ms": {
+          "repetitions": 10,
+          "stall_ms": 200,
+          "interval_ms": 5,
+          "samples": 400,
+          "p95": 0.39039808325469494,
+          "max": 1.2352911289781332
+        }
+      },
+      "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+        "cancellation_ms": {
+          "repetitions": 10,
+          "request_control": {
+            "p50": 0.0502169132232666,
+            "p95": 0.11283112689852715,
+            "max": 0.11283112689852715
+          },
+          "stream_and_client_cleanup": {
+            "p50": 10.80941897816956,
+            "p95": 10.903501883149147,
+            "max": 10.903501883149147
+          }
+        }
+      },
+      "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+        "owned_voice_metrics": {
+          "repetitions": 10,
+          "stall_ms": 200,
+          "heartbeat_interval_ms": 5,
+          "heartbeat_samples": 424,
+          "loop_lag_p95_ms": 0.47783018089830875,
+          "loop_lag_max_ms": 1.1327750980854034,
+          "cancel_cleanup_max_ms": 1.7462719697505236,
+          "exact_pcm_runs": 10
+        }
+      },
+      "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+        "long_complete_voice_metrics": {
+          "repetitions": 10,
+          "sentences_per_run": 100,
+          "samples_per_run": 2400000,
+          "provider_wait_ms": 200,
+          "heartbeat_interval_ms": 5,
+          "heartbeat_samples": 2708,
+          "loop_lag_p95_ms": 0.9894570149481295,
+          "loop_lag_max_ms": 1.1138570308685303,
+          "exact_pcm_runs": 10
+        }
+      },
+      "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+        "voice_application_close_ms": {
+          "repetitions": 10,
+          "p50": 0.5276820156723261,
+          "p95": 5.630291067063808,
+          "max": 5.630291067063808,
+          "cooperative_cleanup_limit_ms": 1000
+        }
+      }
+    },
+    "accepted": true,
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 5.816,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    },
+    "new_connected_cases": 23
+  },
+  "initial_full_suite": {
+    "tested_commit": "afd52f9e82b96129d29b8dc825592a14ed6fac6e",
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-capture-erasure-final.xml",
+    "collected": 4507,
+    "passed": 4505,
+    "failed": 1,
+    "xfailed": 1,
+    "runtime_s": 168.76,
+    "junit_time_s": 168.71,
+    "log": "/tmp/kza-h3-capture-erasure-final.log",
+    "xml": "/tmp/kza-h3-capture-erasure-final.xml",
+    "failed_tests": [
+      "tests.integration.test_capture_retention::test_cancelled_expiry_transaction_keeps_atomic_cleanup_intent"
+    ],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "metrics": {
+      "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+        "heartbeat_ms": {
+          "repetitions": 10,
+          "stall_ms": 200,
+          "interval_ms": 5,
+          "samples": 400,
+          "p95": 0.2788139972835779,
+          "max": 1.0214520152658224
+        }
+      },
+      "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+        "cancellation_ms": {
+          "repetitions": 10,
+          "request_control": {
+            "p50": 0.052138930186629295,
+            "p95": 0.08674198761582375,
+            "max": 0.08674198761582375
+          },
+          "stream_and_client_cleanup": {
+            "p50": 10.793613968417048,
+            "p95": 10.920127155259252,
+            "max": 10.920127155259252
+          }
+        }
+      },
+      "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+        "owned_voice_metrics": {
+          "repetitions": 10,
+          "stall_ms": 200,
+          "heartbeat_interval_ms": 5,
+          "heartbeat_samples": 423,
+          "loop_lag_p95_ms": 0.3788552712649107,
+          "loop_lag_max_ms": 2.8901321347802877,
+          "cancel_cleanup_max_ms": 0.691642053425312,
+          "exact_pcm_runs": 10
+        }
+      },
+      "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+        "long_complete_voice_metrics": {
+          "repetitions": 10,
+          "sentences_per_run": 100,
+          "samples_per_run": 2400000,
+          "provider_wait_ms": 200,
+          "heartbeat_interval_ms": 5,
+          "heartbeat_samples": 2734,
+          "loop_lag_p95_ms": 0.9967639390379189,
+          "loop_lag_max_ms": 3.2355060148984194,
+          "exact_pcm_runs": 10
+        }
+      },
+      "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+        "voice_application_close_ms": {
+          "repetitions": 10,
+          "p50": 0.5106059834361076,
+          "p95": 6.359724793583155,
+          "max": 6.359724793583155,
+          "cooperative_cleanup_limit_ms": 1000
+        }
+      }
+    },
+    "accepted": false,
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 5.767,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    },
+    "new_connected_cases": 22,
+    "cause": "An existing atomic-cancellation test monkeypatched the deletion queue with its old one-argument signature; adding conversation metadata caused TypeError before the test gate was entered",
+    "correction": "Update the hook to accept/forward the conversation ID and preserve the same pause point, cancellation assertions and unchanged one-second observation gate"
+  },
+  "deadline_counterexample": {
+    "against_implementation_commit": "afd52f9e82b96129d29b8dc825592a14ed6fac6e",
+    "log": "/tmp/kza-h3-capture-erasure-deadline-repro.log",
+    "failed": 1,
+    "cause": "A slow encoder used the original source deadline even when its capture row had an earlier configured store deadline; a late unattached clip could be returned after that earlier expiry",
+    "correction": "AudioReservation returns the minimum effective store/source deadline; the archive owner uses that deadline for native admission and return checks, discarding the late file before attachment"
+  },
+  "focused_validation": {
+    "passed": 309,
+    "runtime_s": 8.15,
+    "log": "/tmp/kza-h3-capture-erasure-reviewed-final.log",
+    "scope": "Final capture erasure, capture retention, all ambient unit cases, independent authority and journal/index coordinator cases"
+  },
+  "proven": [
+    "main registers capture storage locations and the capture cleanup driver even with ambient or keep_audio disabled, before constructing/starting ambient producers",
+    "Attaching the actual graph verifies the shared authority, store and matching archive root, then persists the effective target before native file admission",
+    "An intent with path, conversation and expiry is committed before encoding; crash before attachment preserves a locator for erasure or active-store TTL cleanup",
+    "New policy clips use capture UUIDs so equal rowids from different databases do not overwrite or delete each other; files and new SQLite databases are 0600 and new final directories are 0700",
+    "The archive owner bounds native encoders to eight, guards source admission before/after reservation and native work, and retains actual writes through repeated caller cancellation",
+    "The minimum store/source deadline survives inside the native encoder owner rather than relying on a later audio-path attachment to reject an expired result",
+    "Conversation cleanup waits bound native encoders before atomically retiring matching raw rows, capture scopes and write intents while queuing file deletion",
+    "TTL purge preserves intents for still-running encoders and defers unlink until their actual exit; purge-before-erasure cannot lose a late file locator",
+    "Unlink failure keeps a pending count and durable locator through restart; erasure leaves unrelated conversations and their clips intact",
+    "All roots previously registered for the same database remain eligible after keep_audio.dir changes; an arbitrary unregistered path remains pending without deleting a foreign file",
+    "Existing-only cleanup does not create missing databases; orphaned clips without a database, corrupt databases and unreadable directories do not count as successful erasure",
+    "Private writer lease ownership outlives native encoders after close timeout; a competing writer remains rejected until actual drain",
+    "A textual wake completing after revocation cannot start a late archive; cancellation during attachment uses durable discard rather than leaving an untracked file",
+    "The source-free CPython 3.13 smoke constructs the disabled-recall capture graph, writes a real synthetic FLAC, erases its unattached locator and verifies blocked aggregate status plus completed capture/index receipts"
+  ],
+  "ownership": {
+    "max_native_archive_writes": 8,
+    "policy_filename": "policy_v1/<capture_uuid>.flac",
+    "file_mode": "0600",
+    "new_final_directory_mode": "0700",
+    "durable_locator_table": "audio_write_intents",
+    "durable_unlink_table": "pending_audio_deletions",
+    "erasure_order": "source revocation, actual encoders, atomic row/scope/locator retirement and unlink intent, actual file cleanup, journal receipt",
+    "lease_order": "coordinator callbacks and bound encoder drains precede privacy ledger/executor/lease release"
+  },
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000
+  },
+  "gates": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true,
+      "log": "/tmp/kza-h3-capture-erasure-reviewed-ruff.log"
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-capture-erasure-reviewed-bandit.log",
+      "initial_log": "/tmp/kza-h3-capture-erasure-bandit.log",
+      "initial_medium": 1,
+      "correction": "Replace a constant SQL-predicate concatenation with a literal bound-parameter row lookup and the existing live-row guard; no new suppression"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-capture-erasure-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-capture-erasure-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 5.816,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 remains incomplete. Captures and semantic index are connected; producers, contexts, events, diagnostics, collectors, streams, suggestions and voices remain unregistered. No broad erasure endpoint or completion promise is exposed",
+    "Active-store TTL cleanup includes durable audio intents, but independent TTL maintenance of all registered capture locations and historical archive roots while ambient is disabled remains pending",
+    "The capture participant drains known file encoders, not STT, audio reads, tap buffers, active distillation or other raw copies; those producers/readers must join the remaining participants",
+    "Individual-fact deletion and TTL index cleanup with recall disabled still require independent physical reconciliation beyond registered conversation operations",
+    "Registered targets do not discover unknown historical locations; clips without attributable databases and paths outside registered roots remain pending for inventory/review",
+    "Other structured logs, JSONL/Logstash metrics, collectors, live events/frontend queues and alternate prompt consumers still need source/retention policy",
+    "Ambient pause, total mute with non-audio reactivation, acoustic fingerprint/group retention, manual voice review and calibrated evaluation remain pending",
+    "The real 870-record legacy-copy migration and compatible restore rehearsal remain pending; restore must preserve tombstones and durable cleanup intent",
+    "H0/H1 real HA effects, H2 physical capture/audio/barge-in, H4 recovery, H5 remaining voice functions and H6 integrated runtime/GC/hardware/release/rollback acceptance remain open",
+    "No deployment, service restart, GPU reassignment, new dependency or production-data mutation occurred"
+  ]
+}

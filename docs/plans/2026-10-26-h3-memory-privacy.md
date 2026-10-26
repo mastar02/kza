@@ -449,7 +449,7 @@ La limpieza abre sólo bases existentes. Una base ausente no se recrea; si queda
 FLACs sin base que permita atribuirlos, el destino sigue pendiente. Una base
 corrupta o un directorio ilegible tampoco equivalen a ausencia. El recorrido de
 audio no usa rglob como prueba de vacío, porque Python 3.13 puede ocultar errores
-de traversal. Las rutas de archivos se restringen a las raíces registradas para
+de recorrido. Las rutas de archivos se restringen a las raíces registradas para
 esa base: incluye un keep_audio.dir anterior, pero no una ruta arbitraria en
 una fila. Un localizador fuera de esas raíces queda pendiente, sin eliminar
 archivos ajenos. No se atribuyen conversaciones inventadas a clips legacy.
@@ -462,6 +462,18 @@ mantener la purga de 48 h sobre todos los destinos registrados cuando ambient
 está apagado y sobre raíces anteriores sin un pedido de borrado; la purga actual
 del transcriber continúa dependiendo del ambient path activo. La migración y
 restauración de datos reales y el resto de H3 siguen pendientes.
+
+La [validación del participante de capturas](../research/2026-10-26-h3-capture-erasure-validation.json)
+del commit `63495dc` registra **4507 passed, 1 xfailed**, sin fallos, en 162,85 s.
+Incluye 23 casos nuevos, SQLite y FLAC reales temporales, 309 pruebas dirigidas,
+Ruff, Bandit medio/alto, 18 tests de frontend, smoke y artefacto compilado. El
+heartbeat mantiene p95 de 0,39 ms y máximo de 1,24 ms frente a 25/75 ms. El primer
+intento completo falló porque el hook de una prueba de cancelación conservaba
+la firma anterior de la cola; se adaptó conservando sus comprobaciones de
+atomicidad. La revisión adicional reprodujo el encoder que usaba un plazo mayor
+que su fila; el candidato final incluye su corrección y regresión. La evidencia
+conserva ambos resultados y el aviso inicial de Bandit, resuelto con una consulta
+literal parametrizada y el guard de vigencia. Esto no cierra H3.
 
 ## Trabajo restante
 

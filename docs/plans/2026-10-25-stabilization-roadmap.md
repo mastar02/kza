@@ -292,6 +292,13 @@ ocho participantes sin conectar, el drenado de otros productores y lectores,
 la purga de todos los destinos aun con ambient apagado y el borrado global en
 el dashboard autenticado. No se modificaron datos reales ni producción.
 
+La [validación de borrado de capturas](../research/2026-10-26-h3-capture-erasure-validation.json)
+del commit `63495dc` registra **4507 passed, 1 xfailed**, sin fallos, en 162,85 s,
+con 23 casos nuevos y checks y artefacto compilado aceptados. El encoder aplica
+también el plazo menor del store cuando vence antes que la fuente. El heartbeat
+obtuvo p95 de 0,39 ms y máximo de 1,24 ms frente a 25/75 ms. Las correcciones del
+hook de cancelación y del vencimiento se incluyen en el candidato final.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke
