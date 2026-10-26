@@ -1,0 +1,159 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "83d064fb270ace05c784db9349e888999475956c",
+  "implementation_commit": "98c3467ff43b3d93921e28bceb59efc598a95dc3",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H2/H4 native async HTTP generation without SDK lazy type initialization; complete() off-loop admission and native JSON/SSE, bounded validation and retained resource cleanup",
+  "plan_reference": "docs/plans/2026-10-25-h2-complete-voice-responses.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-native-http-offline-final.xml",
+    "collected": 4406,
+    "passed": 4405,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 156.38,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "accepted": true,
+    "log": "/tmp/kza-native-http-offline-final.log",
+    "xml": "/tmp/kza-native-http-offline-final.xml",
+    "junit_time_s": 156.339
+  },
+  "new_cases": 80,
+  "focused_validation": {
+    "passed": 294,
+    "runtime_s": 4.6,
+    "log": "/tmp/kza-native-http-offline-directed.log",
+    "scope": "All LLM unit tests and the connected cloud-consent consumers after the real async transport guard was added"
+  },
+  "prior_latency_failure": {
+    "reference": "docs/research/2026-10-26-h3-transient-privacy-validation.json",
+    "heartbeat_max_ms": 226.4451440423727,
+    "generation_2_gc_ms": 226.93193494342268,
+    "diagnosis": "SDK lazy fine-tuning/Pydantic type construction in asyncio_0 triggered process-wide GC; moving this import to a worker did not prevent the capture stall",
+    "resolution": "Async HttpReasoner uses HTTPX directly; a new-process regression rejects every openai import while executing both async APIs with GC enabled"
+  },
+  "full_collection_diagnostic": {
+    "seed": 1,
+    "profile": "/tmp/kza-h3-gc-profile-native-http.json",
+    "xml": "/tmp/kza-h3-gc-profile-native-http.xml",
+    "returncode": 0,
+    "test": "test_complete_response_and_context_without_blocking_capture",
+    "collection": "All tests collected; only this test selected, in the same shared process",
+    "heartbeat_ms": {
+      "repetitions": 10,
+      "stall_ms": 200,
+      "interval_ms": 5,
+      "samples": 400,
+      "p95": 0.17153099179267883,
+      "max": 0.9332622867077589
+    },
+    "call_gc_pauses_over_5ms": [],
+    "teardown_gc_pauses_over_5ms": [
+      212.5927060842514,
+      213.56399590149522,
+      214.64039594866335,
+      206.13967115059495,
+      211.90647897310555
+    ],
+    "gc_enabled": true
+  },
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.24939700961112976,
+        "max": 1.0687352623790503
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.0542330089956522,
+          "p95": 0.09141000919044018,
+          "max": 0.09141000919044018
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.889890138059855,
+          "p95": 11.104956967756152,
+          "max": 11.104956967756152
+        }
+      }
+    }
+  },
+  "latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000
+  },
+  "first_full_run": {
+    "tested_commit": "98c3467ff43b3d93921e28bceb59efc598a95dc3",
+    "passed": 4403,
+    "failed": 1,
+    "xfailed": 1,
+    "runtime_s": 155.24,
+    "failed_tests": [
+      "tests.integration.test_cloud_consent_consumers::test_inherited_local_compaction_remains_available_without_cloud_consent"
+    ],
+    "log": "/tmp/kza-native-http-final.log",
+    "xml": "/tmp/kza-native-http-final.xml",
+    "cause": "The inherited-local-compaction test still injected the old synchronous SDK mock, allowing GET models and a synthetic POST to the real local endpoint; POST was rejected with 401, no inference accepted",
+    "correction": "Test now injects the native in-memory transport; an autouse fixture denies real AsyncHTTPTransport before connection and a regression verifies this guard",
+    "runtime_change_needed": false,
+    "junit_time_s": 155.195
+  },
+  "proven": [
+    "Both async generation entry points run without importing any OpenAI SDK module; sync legacy APIs retain their worker-only SDK contract",
+    "TLS/client preparation stays off-loop and consent, configured endpoint, model and style are checked before prompt transmission and after model discovery",
+    "Streaming and nonstream requests never follow redirects or retry internally; native HTTP errors preserve structured authentication, quota and transient-network classification",
+    "SSE framing supports fragmented UTF-8, BOM, CR/LF/CRLF and multiline data; metadata/events/JSON and raw text are bounded, including escaped non-BMP codepoints",
+    "Terminal stop is mandatory; truncation, malformed protocol, premature EOF and text after finish never flush the unvalidated held tail as a complete answer",
+    "Repeated cancellation retains constructor, actual HTTP body and client close ownership; complete() no longer calls synchronous load() from the event loop",
+    "Nonstream usage metrics use validated provider completion_tokens only, never stale values or token guesses",
+    "The committed source-free CPython 3.13 artifact exercises native SSE and JSON completion outside the source checkout"
+  ],
+  "gates": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true,
+      "log": "/tmp/kza-native-http-ruff.log"
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-native-http-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-native-http-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-native-http-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "included_in_full_suite": true,
+      "test": "tests/unit/tools/test_stage_runtime.py::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "This removes the reproduced SDK cold-import trigger; it does not establish that the complete production heap can never trigger long process-wide GC pauses",
+    "No GC thresholds or collection behavior changed, no latency limit was widened and the existing shared-process conversation test was neither skipped nor moved to a separate process",
+    "H2 remains open for actual audio/capture/barge-in and the complete runtime acceptance; H4/H6 must evaluate remaining GC and native-worker lifecycle risks",
+    "H3 remains open: transitive dependencies of generated text on recalled facts/history, other retained copies, coordinated erasure, pause/mute and voice review/retention still require implementation",
+    "The 870 legacy facts remain quarantined outside inference; private-copy migration and compatible restore rehearsal remain pending",
+    "HA effect verification, selected real controls, H5 voice functions and H6 integrated release/rollback remain pending; no deployment or service restart was performed"
+  ]
+}

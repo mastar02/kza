@@ -139,6 +139,16 @@ con el heap de la suite. La medición aislada del grafo no cierra H2.
 La [validación del 26 de octubre](../research/2026-10-26-h2-response-deadline-validation.json)
 registra 4199 pruebas pasadas y el fallo conocido de VAD/idioma pendiente de H3.
 
+La [revisión del transporte nativo](../research/2026-10-26-h2-native-http-validation.json)
+del commit `83d064f` elimina la inicialización perezosa de tipos del SDK de
+`astream()` y `complete()`, que provocaba la pausa reproducida durante GC.
+Conserva consentimiento, modelo, validación de respuesta y cierre real; ambas
+entradas usan HTTPX, con parsing acotado. La suite completa pasa **4405 tests,
+1 xfailed**, sin fallos, en 156,38 s; el heartbeat alcanza p95 de 0,25 ms y máximo
+de 1,07 ms frente a 25/75 ms. Pasan los checks y el artefacto compilado. Esto
+corrige ese disparador concreto; las pausas globales bajo otras cargas y la
+aceptación física siguen pendientes de H4/H6. No cierra H2.
+
 **Entregables:** consumo no bloqueante del reasoner, un único responsable de
 locutar cada respuesta y reproducción que conserve todos los samples. Integrar
 cancelación, presión de retorno al productor y mensajes de error audibles.
@@ -224,9 +234,11 @@ Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke
 autenticado y artefacto compilado. La suite completa **no está aceptada**: el
 heartbeat llegó a 226,45 ms frente al máximo de 75 ms. La instrumentación
 reprodujo una pausa global de GC de unos 227 ms durante las importaciones
-perezosas de tipos del SDK en su worker. H2/H4 debe corregir ese camino y
-volver a medir; se conserva el umbral y el fallo, sin presentar el avance
-de privacidad como aceptación de latencia del runtime.
+perezosas de tipos del SDK en su worker. Ese camino se corrige y vuelve a medir
+en la [revisión HTTP nativa](../research/2026-10-26-h2-native-http-validation.json)
+indicada en H2, con suite posterior sin fallos. El registro original conserva
+su fallo y los límites; el avance de privacidad no sustituye la aceptación de
+latencia del runtime completo.
 
 La [validación de eventos](../research/2026-10-26-h3-event-privacy-validation.json)
 del commit `4ef72bf` registra **4307 passed, 1 xfailed**, sin fallos, en

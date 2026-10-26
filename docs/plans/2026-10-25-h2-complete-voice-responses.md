@@ -104,9 +104,9 @@ comandos, métricas y criterios de H2 todavía pendientes.
 ## Segunda implementación: generación asíncrona conectada
 
 El worker de `MultiUserOrchestrator` consume `GenerationStream`. El reasoner
-HTTP usa el SDK asíncrono instalado, con los mismos estilos chat/completions,
-destino y modelo configurados. La construcción del transporte y el primer
-acceso a los recursos lazy del SDK quedan fuera del loop. La primera suite
+HTTP usaba inicialmente el SDK asíncrono instalado, con los mismos estilos
+chat/completions, destino y modelo configurados. La construcción del transporte
+y el primer acceso a los recursos lazy del SDK quedaron fuera del loop. La primera suite
 conectada en frío midió un bloqueo de 135 ms por esa inicialización diferida;
 se corrigió sin ampliar el límite de 75 ms. Las pruebas conservan el arranque
 en frío y una inicialización lazy simulada de 200 ms, incluido su fallo.
@@ -143,7 +143,9 @@ Las pruebas usan el SDK 2.24.0 y HTTPX instalados, con HTTP/SSE en memoria.
 Se contrastó el ciclo de vida con la
 [referencia de Python](https://developers.openai.com/api/reference/python) y la
 [guía de streaming](https://developers.openai.com/api/docs/guides/streaming-responses).
-No se cambia el SDK, proveedor, modelo ni familia de API para este trabajo.
+Esa versión conservó el SDK, proveedor, modelo y familia de API. La revisión
+posterior de transporte HTTP nativo, al final de este documento, sustituye el
+SDK sólo en las entradas asíncronas tras reproducir la pausa global de GC.
 
 Verificación del commit `892f422`: **4081 passed, 1 failed, 1 xfailed** en
 116,67 s. El fallo es el mismo de VAD/idioma de la línea base; pasan las 49
@@ -392,3 +394,63 @@ de 33,94 ms, frente a 25/75 ms; la cancelación del grafo de voz anterior tuvo
 un máximo de 1,74 ms y el cierre cooperativo del factory, 0,94 ms.
 El [registro de deadlines](../research/2026-10-26-h2-response-deadline-validation.json)
 conserva alcance, métricas sin redondear, evidencia de GC y límites pendientes.
+
+
+## Revisión del transporte asíncrono: importaciones y pausa global
+
+La suite de transitorios del commit `85f5d39` hizo fallar de nuevo el heartbeat:
+máximo de 226,45 ms frente a 75 ms. La instrumentación reprodujo una colección
+de generación 2 de 226,93 ms durante la inicialización perezosa de tipos OpenAI/
+Pydantic en `asyncio_0`. Mover esa inicialización a un thread no evita la pausa
+global del proceso. Se conserva el fallo y su evidencia en la
+[validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json).
+
+`HttpReasoner.astream()` y `complete()` ahora usan HTTPX directamente. La
+construcción de TLS y transporte sigue fuera del loop, pero ya no importa ni
+materializa los tipos del SDK. Una sesión común fija consentimiento, endpoint,
+modelo y estilo; conserva discovery y sus comprobaciones antes de enviar el
+prompt. No agrega redirecciones ni reintentos. Los métodos síncronos legacy
+conservan su interfaz y SDK para sus consumidores en workers.
+
+El lector SSE admite UTF-8 fragmentado, BOM y terminadores LF/CRLF/CR, y acota
+líneas y eventos antes de decodificar JSON. Valida choice, índice, contenido y
+fin; un EOF incompleto o texto después del fin no se convierte en éxito. Conserva
+el límite de texto crudo, el filtrado de razonamiento, el tail retenido, el
+watchdog y el cierre real de cuerpo y cliente ante cancelaciones repetidas.
+Discovery tiene un límite de 256 KiB; cada evento o respuesta JSON admite hasta
+1 MiB, con un límite menor derivado del presupuesto de texto y su escape JSON.
+
+`complete()` tampoco ejecuta `load()` síncrono desde el loop: usa la misma sesión
+nativa, en modo JSON o SSE según su watchdog. Requiere `stop`, rechaza contenido
+truncado y conserva únicamente las métricas de tokens informadas por el
+proveedor; no reutiliza métricas viejas ni estima tokens. Los errores HTTP y de
+red se clasifican por tipo y status: una URL o un mensaje vacío no cambia el
+tratamiento de autenticación, rate limit o timeout del router existente.
+
+Una regresión en proceso nuevo bloquea todos los imports de `openai` y comprueba
+ambas entradas con GC habilitado. La reproducción con toda la colección de tests
+y la misma semilla obtuvo p95 de 0,17 ms y máximo de 0,93 ms; no observó GC de más
+de 5 ms durante el cuerpo de esa prueba, aunque sí colecciones largas en teardown.
+No se modifica el GC ni los límites de 25/75 ms, ni se aísla la regresión de
+conversación del heap compartido. Esta corrección no garantiza latencia de todo
+el runtime ante otras colecciones globales; la aceptación de H4/H6 sigue abierta.
+
+La primera suite completa de esta revisión (`98c3467`) pasó la regresión de
+latencia y el smoke compilado, pero detectó un test de consentimiento local que
+seguía inyectando el cliente síncrono anterior: dejó escapar un GET de discovery
+y un POST sintético al endpoint local; el POST fue rechazado con 401, sin
+inferencia aceptada. Se adaptó ese caso al transporte en memoria y se agregó un
+fixture automático que rechaza `AsyncHTTPTransport` real antes de conectar.
+Una regresión comprueba esa prohibición. Los transportes Mock/ASGI siguen
+permitidos; no se cambió la política de egreso de la aplicación para el test.
+
+La [validación del transporte nativo](../research/2026-10-26-h2-native-http-validation.json)
+del commit `83d064f` registra **4405 passed, 1 xfailed**, sin fallos, en 156,38 s.
+Los 80 casos agregados cubren protocolo, ambas APIs asíncronas, clasificación de
+errores e independencia del SDK. El heartbeat en la suite completa obtuvo p95
+de 0,25 ms y máximo de 1,07 ms; la cancelación se atendió en un máximo de
+0,09 ms y el cierre cooperativo terminó en 11,10 ms. Pasan Ruff, Bandit
+medio/alto (30 hallazgos bajos de la línea base), 18 tests Node, el smoke del
+dashboard y el artefacto compilado. Este último comprueba SSE y JSON nativos,
+con métricas del proveedor, fuera del checkout. H2 permanece abierto para la
+validación física y la aceptación del runtime completo; no hubo despliegue.
