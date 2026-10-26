@@ -1,0 +1,231 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "5aec4fb90ebc3eb9849d1a429662d735e25b1f2d",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 context erasure participant for sourced policy snapshots, runtime conversation/short-term buffers, idle router caches and retained compaction/hydration/snapshot scopes",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-context-erasure-final.xml",
+    "collected": 4631,
+    "passed": 4630,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 178.16,
+    "junit_time_s": 178.108,
+    "log": "/tmp/kza-h3-context-erasure-final.log",
+    "xml": "/tmp/kza-h3-context-erasure-final.xml",
+    "accepted": true,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "integrated_runtime_gc_acceptance": false
+  },
+  "new_connected_cases": 23,
+  "new_case_names": [
+    "test_connected_erasure_clears_history_summary_short_term_and_file_but_preserves_others",
+    "test_fact_dependency_erasure_reaches_contexts_with_other_conversation_id",
+    "test_disabled_features_clean_registered_historical_roots_after_restart",
+    "test_policy_v2_is_erased_by_recorded_sources_while_original_legacy_is_untouched",
+    "test_missing_roots_are_not_created_and_no_optional_models_are_required",
+    "test_erasure_waits_noncooperative_compaction_and_rejects_late_summary",
+    "test_late_native_save_is_retained_then_rejected_after_erasure",
+    "test_file_replace_finishes_before_marker_and_cannot_outlive_physical_receipt",
+    "test_unknown_snapshots_remain_pending_without_exposing_private_errors[{bad json]",
+    "test_unknown_snapshots_remain_pending_without_exposing_private_errors[{\"version\": 3, \"user_id\": \"unknown\", \"compacted_summary\": \"synthetic unknown summary\"}]",
+    "test_orphan_draft_is_removed_but_unknown_corrupt_quarantine_stays_pending",
+    "test_shared_persisters_do_not_delete_an_active_draft",
+    "test_unknown_unsourced_live_buffers_prevent_runtime_completion",
+    "test_context_native_save_keeps_writer_lease_after_close_observation_timeout",
+    "test_cancelled_disk_cleanup_observer_does_not_abandon_claim_or_lease",
+    "test_cancelled_hydration_is_retained_until_erasure_and_cannot_publish_old_summary",
+    "test_persister_uses_registered_physical_directory_after_config_alias_changes",
+    "test_completed_context_receipts_are_rechecked_after_restored_file_on_leased_restart",
+    "test_snapshot_cleanup_batches_65_files_with_private_hash_cursors",
+    "test_pending_failed_commit_never_authorizes_irreversible_snapshot_purge",
+    "test_router_idle_query_cache_is_physically_pruned_and_cannot_be_refilled",
+    "test_saturated_default_pool_does_not_starve_context_writes_or_physical_cleanup",
+    "test_disabled_context_cleanup_does_not_import_optional_models"
+  ],
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.1962399110198021,
+        "max": 1.0342842433601618
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05698599852621555,
+          "p95": 0.15513598918914795,
+          "max": 0.15513598918914795
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.926150949671865,
+          "p95": 11.199295986443758,
+          "max": 11.199295986443758
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 427,
+        "loop_lag_p95_ms": 0.28562615625560284,
+        "loop_lag_max_ms": 1.0201830882579088,
+        "cancel_cleanup_max_ms": 1.8408989999443293,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2714,
+        "loop_lag_p95_ms": 0.9845289215445517,
+        "loop_lag_max_ms": 2.094715954735875,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6374388467520475,
+        "p95": 5.751322954893112,
+        "max": 5.751322954893112,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_validation": {
+    "passed": 462,
+    "failed": 0,
+    "runtime_s": 9.26,
+    "log": "/tmp/kza-h3-context-erasure-focused-final.log",
+    "scope": "All orchestrator/memory unit cases, context compaction/privacy/erasure, shared privacy authority and coordinator"
+  },
+  "worktree_review_failures": [
+    {
+      "log": "/tmp/kza-h3-context-erasure-first.log",
+      "passed": 87,
+      "failed": 1,
+      "runtime_s": 3.96,
+      "test": "test_disabled_features_clean_registered_historical_roots_after_restart",
+      "cause": "The test helper stopped after one scheduling batch, leaving a historical destination beyond coordinator capacity unobserved",
+      "correction": "A quiescence helper must inspect both active callbacks and remaining supported due work, without advancing retry time or relaxing budgets"
+    },
+    {
+      "log": "/tmp/kza-h3-context-erasure-candidate.log",
+      "passed": 142,
+      "failed": 3,
+      "runtime_s": 7.52,
+      "causes": [
+        "End-of-cycle harvest can empty the active set after four callbacks even though a fifth supported target remains due; the first helper correction still mistook that boundary for quiescence",
+        "Two newly added tests referenced WorkCloseTimeout after an earlier unused-import fix had removed it"
+      ],
+      "corrections": [
+        "Check supported journal.due work as well as active tasks before declaring the test helper quiescent",
+        "Restore the required exception import; no production coordinator or timing semantics changed for these test failures"
+      ]
+    },
+    {
+      "log": "/tmp/kza-h3-context-erasure-reviewed.log",
+      "passed": 145,
+      "failed": 0,
+      "runtime_s": 7.16,
+      "scope": "Corrected helper, close-observation cases and context baseline before adding router cache/default-pool/model-import coverage"
+    }
+  ],
+  "ownership": {
+    "snapshot_entries_per_batch": 32,
+    "snapshot_byte_limit": 1048576,
+    "context_users_per_yield": 32,
+    "context_disk_threads": 2,
+    "context_owned_io_capacity": 8,
+    "erasure_disk_threads": 2,
+    "erasure_owned_disk_capacity": 8,
+    "erasure_owned_runtime_capacity": 8,
+    "cursor": "SHA-256 of directory entry names, bounded selection with heapq.nsmallest and no raw user ID/path in API receipts",
+    "snapshot_writes": "Canonical policy directories are registered before first access. Persisters and cleanup share physical-directory RLocks. Source admission guards atomic replace; unrelated legacy parent JSON files are excluded",
+    "compaction": "Track every active compact scope including cleanup-driven calls, cancel matching revoked dependencies, reject late publication by source/revision and wait actual scope exit",
+    "io": "Track both private and delegated worker futures through OwnedBlockingWork; cancelled observers retain native hydration/snapshot calls. Runtime context cleanup waits admitted I/O and lease close drains actual native work",
+    "shutdown": "Close manager admission, stop cleanup scheduling, cancel/drain tracked async cleanup and compactions, await native I/O, join interruptible cleanup thread, shut down private pools, then release shared privacy writer lease",
+    "borrowers": "Duplicate registrations of the same begin_close callback are idempotent"
+  },
+  "proven": [
+    "main constructs context erasure before optional context producers, using orchestrator.context.persistence.base_path and retaining both policy_v2/policy_v3 historical physical roots even with persistence/orchestration/recall disabled",
+    "The actual writer prepares and registers canonical policy directories before filesystem access; changing a configured alias later cannot move its writes outside the registered physical location",
+    "Conversation erasure removes matching/mixed fact-derived summaries, turns, preserved IDs, short-term histories and policy JSON snapshots while keeping unrelated data and original legacy JSON files",
+    "Idle RequestRouter query/classifier/queue copies are pruned through the actual router callback; the real TransientCache rejects refilling a revoked source after physical pruning",
+    "Short-term admission and erasure share a lock, so a late raw append cannot recreate revoked history; existing context writers also validate source liveness and context revision before publication",
+    "A non-cooperative compactor keeps runtime cleanup running until its actual exit and cannot publish its late summary; direct cleanup-driven compaction scopes are tracked as well as automatic tasks",
+    "A snapshot delayed before its source guard remains owned and is rejected after the marker; a replace already inside the guard commits before the marker and is then removed before successful receipt",
+    "Cancelled hydration remains owned until erasure, cannot publish an old sourced summary, and finishes before the runtime context target can acknowledge completion",
+    "Two persisters over the same physical directory share a barrier so purge cannot remove another active draft; abandoned protocol drafts are removed only after no writer owns them",
+    "Malformed/unsourced snapshots, unknown corrupt quarantine files, unsupported protocols and unsourced live buffers leave pending receipts instead of inventing source attribution or broad success",
+    "Standalone persister purge uses committed source revocations; a controlled pending commit denies reads, then fails and rolls back while its valid snapshot remains intact",
+    "Completed context receipts and cursors are reopened on leased startup to remove restored old snapshots; history changes add new destinations rather than replacing old registered roots",
+    "A 65-snapshot directory is cleaned as 32,32,1 entries with opaque bounded cursors; missing roots are never created",
+    "Cancelling a native cleanup observer or observing a 10 ms close timeout retains actual work and the writer lease until the native operation exits",
+    "Saturating the default executor does not starve context writes or cleanup; an independent process forbids optional model imports while disabled context cleanup removes a sourced snapshot",
+    "The source-free compiled runtime, with context persistence/orchestration and recall disabled, writes a sourced summary through the real persister and verifies completed context receipts, an empty live context and physical file removal after erasure; the aggregate remains blocked on other participants"
+  ],
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000
+  },
+  "gates": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-h3-context-erasure-ruff.log"
+    },
+    "bandit": {
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-context-erasure-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-context-erasure-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-context-erasure-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 6.013,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 remains incomplete: producers, diagnostics, collectors, streams, suggestions and voices are still unregistered participants. No broad authenticated erasure completion endpoint is exposed",
+    "Independent context TTL maintenance across disabled features, live managers and every historical snapshot root remains pending; existing active-manager cleanup and explicit conversation erasure do not replace that requirement",
+    "The contexts receipt covers registered policy snapshots and attached primary buffers/idle caches. Active inference/audio producers, other prompt consumers, distillation/tap scopes and derived copies still need their own coordination",
+    "Pre-policy legacy files, unknown/corrupt snapshots/quarantines, unsourced pending confirmations and unsupported formats stay outside source-based completion pending private inventory/manual review; no provenance or ownership is invented",
+    "File batches are idempotent, not cross-file transactions: an already authorized unlink may have completed when another entry causes a pending retry. A failed receipt never reports full cleanup",
+    "Only registered roots are covered. The real 870-record legacy-copy migration and compatible rollback retaining latest fact authority/tombstones remain pending",
+    "Restoring physical snapshots with current tombstones is rechecked; this does not make restoring an old source catalog safe",
+    "New/empty live-index reconstruction, pause/mute, acoustic profile/group retention and calibrated authenticated voice review remain pending",
+    "The earlier instrumented suite observed process GC pauses up to 495.68 ms outside voice cases. Passing this uninstrumented suite does not remeasure or resolve integrated runtime/GC latency",
+    "H0/H1 real HA effects, H2 physical audio, H4 recovery, H5 voice features and H6 hardware/migration/release/rollback acceptance remain open",
+    "No production deployment, service restart, private production-data mutation, new dependency, GPU reassignment or configuration-file creation occurred"
+  ],
+  "prior_gc_evidence_reference": "docs/research/2026-10-26-h3-index-maintenance-validation.json"
+}

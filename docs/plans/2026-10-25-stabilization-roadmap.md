@@ -376,6 +376,13 @@ cancelar al observador. Quedan seis participantes, la purga de TTL de contextos
 independiente de los features y el resto de H3; no hay una promesa global de
 borrado ni cambios en producción.
 
+La [validación del participante de contextos](../research/2026-10-26-h3-context-erasure-validation.json)
+del commit `5aec4fb` registra **4630 passed, 1 xfailed**, sin fallos, en 178,16 s,
+con 23 casos nuevos, 462 pruebas dirigidas, checks y artefacto compilado
+aceptados. El ensayo verifica snapshot y buffers eliminados con los features
+apagados. El heartbeat obtiene p95 de 0,20 ms y máximo de 1,03 ms con límites
+intactos. No cierra H3 ni la aceptación integrada de runtime/GC y hardware.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke

@@ -746,7 +746,8 @@ recupera claims de un propietario vivo.
 El adaptador elimina snapshots con fuentes de la conversación o dependencias
 revocadas, conserva archivos ajenos y no toca los JSON legacy del directorio
 original. Cada lote recorre hasta 32 entradas, con cursor hash y hasta 1 MiB por
-snapshot. No sigue symlinks de archivos. Procedencia desconocida, corrupción,+protocolos o tamaños no soportados quedan pendientes. Los borrados de archivo
+snapshot. No sigue symlinks de archivos. Procedencia desconocida, corrupción,
+protocolos o tamaños no soportados quedan pendientes. Los borrados de archivo
 ya realizados son idempotentes si otro archivo del lote falla; el recibo no se
 confirma completo. Sólo los drafts reconocidos del protocolo se retiran como
 restos no recuperables de escrituras interrumpidas.
@@ -779,6 +780,17 @@ activos de inferencia/audio, los otros consumidores, las copias derivadas ni la
 interfaz de borrado amplio. La purga de TTL de contextos independiente de los
 features y sobre todas las ubicaciones históricas todavía está pendiente,
 además del inventario/migración privada, voces y aceptación integrada de H6.
+
+La [validación del participante de contextos](../research/2026-10-26-h3-context-erasure-validation.json)
+del commit `5aec4fb` registra **4630 passed, 1 xfailed**, sin fallos, en 178,16 s.
+Incluye 23 casos nuevos, 462 pruebas dirigidas, Ruff, Bandit sin hallazgos
+medios/altos, 18 tests de frontend, smoke y artefacto compilado. La evidencia
+conserva los primeros fallos del helper de quiescencia y de imports de tests;
+la corrección observa también los destinos todavía debidos, sin cambiar
+capacidad, backoff ni límites. El ensayo compilado comprueba borrado físico de
+snapshot y de buffers incluso con los features apagados. El heartbeat obtiene
+p95 de 0,20 ms y máximo de 1,03 ms; la cancelación de control alcanza 0,16 ms
+y el cleanup 11,20 ms. La aceptación integrada de runtime/GC sigue abierta.
 
 ## Trabajo restante
 
