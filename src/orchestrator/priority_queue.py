@@ -35,6 +35,7 @@ from enum import IntEnum
 from typing import Any, Callable
 
 from src.core.logging import get_logger
+from src.memory.fact_ledger import MemorySource
 from src.orchestrator.cancellation import (
     CancellationToken,
     CancellationReason
@@ -83,6 +84,7 @@ class Request:
     zone_id: str = field(compare=False, default=None)
     text: str = field(compare=False, default="")
     intent: str = field(compare=False, default=None)
+    memory_sources: tuple[MemorySource, ...] | None = field(compare=False, default=None)
 
     # Estado y control
     status: RequestStatus = field(compare=False, default=RequestStatus.PENDING)
@@ -281,7 +283,8 @@ class PriorityRequestQueue:
         intent: str = None,
         on_complete: Callable = None,
         on_cancel: Callable = None,
-        on_fail: Callable = None
+        on_fail: Callable = None,
+        memory_sources: tuple[MemorySource, ...] | None = None,
     ) -> Request:
         """
         Agregar peticion a la cola.
@@ -308,7 +311,8 @@ class PriorityRequestQueue:
             intent=intent,
             on_complete=on_complete,
             on_cancel=on_cancel,
-            on_fail=on_fail
+            on_fail=on_fail,
+            memory_sources=memory_sources,
         )
 
         with self._lock:

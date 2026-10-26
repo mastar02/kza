@@ -59,11 +59,12 @@ class ShortTermMemory:
     Permite mantener contexto conversacional inmediato.
     """
 
-    def __init__(self, max_turns: int = 10, *, clock=None):
+    def __init__(self, max_turns: int = 10, *, clock=None, source_policy=None):
         self.max_turns = max_turns
         self._turns: deque[ConversationTurn] = deque(maxlen=max_turns)
         self._clock = time.time if clock is None else clock
         self._lock = threading.RLock()
+        self._source_policy = source_policy
 
     def add_turn(
         self,
@@ -90,7 +91,8 @@ class ShortTermMemory:
         with self._lock:
             now = self._clock()
             self._turns = deque((t for t in self._turns
-                if t.timestamp+48*3600 > now and all(s.expires_at > now for s in t.sources)),
+                if t.timestamp+48*3600 > now and all(s.expires_at > now for s in t.sources)
+                and (self._source_policy is None or self._source_policy.sources_available(t.sources))),
                 maxlen=self.max_turns)
             return list(self._turns)[-n:]
 
@@ -218,9 +220,10 @@ class MemoryManager:
         clock=None, automatic_days: float = 30,
     ):
         self._clock = time.time if clock is None else clock
-        self.short_term = ShortTermMemory(max_turns=max_short_term_turns, clock=self._clock)
         self.long_term = LongTermMemory(chroma_client, collection_name,
                                        ledger_path=ledger_path, clock=self._clock, automatic_days=automatic_days)
+        self.short_term = ShortTermMemory(max_turns=max_short_term_turns, clock=self._clock,
+                                          source_policy=self.long_term.ledger)
         self.preferences = PreferencesStore(preferences_path)
         self._scopes = {}
         self._scope_lock = threading.Lock()
@@ -251,7 +254,7 @@ class MemoryManager:
             key = (origin, room_id)
             with self._scope_lock:
                 previous = self._scopes.get(key)
-                if previous is None or not 0 <= captured_at-previous[1] <= 120 or captured_at-previous[2] > 3600:
+                if previous is None or self.long_term.ledger.conversation_revoked(previous[0]) or not 0 <= captured_at-previous[1] <= 120 or captured_at-previous[2] > 3600:
                     conversation_id = str(uuid4())
                     started = captured_at
                 else:

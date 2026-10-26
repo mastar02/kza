@@ -557,7 +557,7 @@ class TestMemoryManager:
 
             prefs_path = str(Path(tmpdir) / "preferences.json")
             mm = MemoryManager(mock_client, preferences_path=prefs_path)
-            mm.short_term.add_turn("Input", "Output")
+            mm.record_interaction("Input", "Output")
             mm.remember_preference("pref1", "value1")
 
             stats = mm.get_stats()

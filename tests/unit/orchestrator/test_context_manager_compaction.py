@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.orchestrator.context_manager import ContextManager
+from tests.mocks.memory_sources import memory_source
 from src.orchestrator.compactor import CompactionResult, CompactionError, CompactionErrorKind
 
 
@@ -259,6 +260,7 @@ class TestHydration:
             user_id="returning",
             user_name="Carla",
             compacted_summary="Resumen viejo.",
+            summary_sources=(memory_source(),),
             preserved_ids=["light.cocina"],
             session_count=3,
         )
@@ -300,6 +302,7 @@ class TestPromptInjection:
         mgr = ContextManager(max_history=10)
         ctx = mgr.get_or_create("u1", "Juan")
         ctx.compacted_summary = "Resumen antiguo."
+        ctx.summary_sources = (memory_source(),)
         ctx.preserved_ids = ["light.cocina", "scene.lectura"]
 
         prompt = mgr.build_prompt("u1", "¿qué hago ahora?")
@@ -310,6 +313,7 @@ class TestPromptInjection:
         mgr = ContextManager(max_history=10)
         ctx = mgr.get_or_create("u1", "Juan")
         ctx.compacted_summary = "Resumen antiguo."
+        ctx.summary_sources = (memory_source(),)
 
         messages = mgr.build_chat_messages("u1", "hola")
         joined = " ".join(m["content"] for m in messages)
@@ -514,6 +518,7 @@ class TestToDictSerialization:
             user_id="u1",
             user_name="Juan",
             compacted_summary="resumen",
+            summary_sources=(memory_source(),),
             preserved_ids=["light.x", "scene.y"],
             session_count=3,
         )

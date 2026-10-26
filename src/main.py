@@ -1406,6 +1406,7 @@ async def _run_main(shutdown: AsyncExitStack):
             from src.orchestrator import ContextPersister
             persister = ContextPersister(
                 base_path=persistence_cfg.get("base_path", "data/contexts"),
+                source_policy=memory_manager.long_term.ledger if memory_manager is not None else None,
             )
             logger.info(f"[main] Context persister enabled at {persister.base_path}")
 

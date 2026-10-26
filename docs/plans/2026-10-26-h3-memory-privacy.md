@@ -77,10 +77,40 @@ filas vencidas, descarta respuestas tardías y limpia datos del DOM al perder la
 sesión o cambiar de vista. Un resultado desconocido obliga a consultar el estado
 antes de actuar nuevamente.
 
+## Contexto y resúmenes del orquestador
+
+El avance posterior propaga las mismas fuentes a los dos turnos de cada
+intercambio del orquestador y al resumen de compacción. El resumen y sus IDs
+referenciados vencen con la fuente más temprana; ni compactar nuevamente,
+guardar un snapshot, consultar ni rehidratar una sesión renuevan ese plazo.
+Las proyecciones de texto, chat, entidades y serialización descartan fuentes
+vencidas o revocadas. El contexto corto del MemoryManager usa esa misma política.
+
+La escritura de un snapshot valida fuentes mientras mantiene la transacción
+que ordena su commit respecto de los tombstones. Una escritura anterior al
+marker ya no es legible después de éste; una escritura que llega después se
+rechaza. Los snapshots nuevos privados viven bajo `contexts/policy_v2`, con
+procedencia explícita. Los JSON legacy permanecen fuera de esta lectura, sin
+reescribirlos. El worker elimina snapshots conocidos vencidos o revocados y
+temporales que no se promovieron, también al arrancar.
+
+La compacción comprueba identidad y revisión del contexto antes de publicar,
+y vuelve a validar sus fuentes tras esperar al reasoner. Limpiar o reemplazar
+un contexto invalida su resultado tardío. El snapshot final conserva un contexto
+que volvió a activarse mientras esperaba. La carga y escritura de disco se
+ejecutan fuera del loop, sin mantener el lock del contexto durante I/O. Se
+registran los trabajos nativos incluso si se cancela al llamador; el cierre
+espera su salida real o comunica el vencimiento de su presupuesto.
+
+Esta integración no expone todavía un borrado amplio de conversación: faltan
+las capturas/clips y otras copias, sus productores y la coordinación durable
+desde el dashboard. Tampoco transforma los perfiles de usuario ni las
+preferencias legacy en confirmaciones manuales.
+
 ## Trabajo restante
 
-1. Propagar procedencia y TTL a contexto del orquestador, resúmenes y persistencia,
-   eventos y colectores que aún conservan copias de texto o audio.
+1. Propagar procedencia y TTL a eventos y colectores que aún conservan copias
+   de texto o audio, y auditar otras rutas de persistencia y caché.
 2. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
    frente a productores y guardados tardíos. La limpieza local del catálogo no

@@ -895,6 +895,8 @@ class RequestRouter:
             service_filter=_service_filter,
             query_slots=_query_slots,
             **({"target_entity_id": target_entity_id} if target_entity_id else {}),
+            **({"memory_sources": (self._memory_source.get(),) if self._memory_source.get() is not None else ()}
+               if self.memory is not None and hasattr(type(self.memory), "source_for_capture") else {}),
         )
 
         # 6. Build result

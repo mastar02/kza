@@ -47,6 +47,7 @@ from src.core.voice_delivery import DeliveryState
 from src.home_assistant.home_actions import HomeActionService
 from src.home_assistant.voice_actions import VoiceHomeActionExecutor
 from src.llm.generation_stream import GenerationStream
+from src.memory.fact_ledger import MemorySource
 from src.orchestrator.cancellation import CancellationReason
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
@@ -641,6 +642,7 @@ class RequestDispatcher:
         service_filter: str | None = None,
         query_slots: dict | None = None,
         target_entity_id: str | None = None,
+        memory_sources: tuple[MemorySource, ...] | None = None,
     ) -> DispatchResult:
         """
         Procesar una peticion, enrutando al path correcto.
@@ -669,8 +671,11 @@ class RequestDispatcher:
         text = text.strip()
         text_lower = text.lower()
 
+        if memory_sources is None:
+            memory_sources = self.context_manager.interaction_sources()
+
         # Obtener/crear contexto del usuario
-        ctx = self.context_manager.get_or_create(
+        ctx = await self.context_manager.aget_or_create(
             user_id=user_id,
             user_name=user_name,
             zone_id=zone_id,
@@ -734,7 +739,8 @@ class RequestDispatcher:
                 zone_id=zone_id,
                 priority=priority,
                 on_response=on_response,
-                timeout=timeout
+                timeout=timeout,
+                memory_sources=memory_sources,
             )
             self._stats["slow_path"] += 1
 
@@ -1121,7 +1127,8 @@ class RequestDispatcher:
         zone_id: str,
         priority: Priority,
         on_response: Callable,
-        timeout: float
+        timeout: float,
+        memory_sources: tuple[MemorySource, ...] | None = None,
     ) -> DispatchResult:
         """
         Procesar peticion por slow path (cola priorizada).
@@ -1170,7 +1177,8 @@ class RequestDispatcher:
             zone_id=zone_id,
             on_complete=on_complete,
             on_cancel=on_cancel,
-            on_fail=on_fail
+            on_fail=on_fail,
+            memory_sources=memory_sources,
         )
         request.response_deadline = response_loop.time() + timeout
         timings["queue"] = (time.perf_counter() - t0) * 1000
@@ -1763,6 +1771,9 @@ class MultiUserOrchestrator:
             persister=persister,
             compaction_threshold=compaction_threshold,
             keep_recent_turns=keep_recent_turns,
+            source_policy=memory_manager.long_term.ledger if memory_manager is not None else None,
+            clock=memory_manager.long_term.ledger.clock if memory_manager is not None else None,
+            io_worker=memory_manager.long_term.acall if memory_manager is not None else None,
         )
 
         self._queue = PriorityRequestQueue(
@@ -1847,6 +1858,7 @@ class MultiUserOrchestrator:
         if self._persister is not None:
             self.context_manager.stop_cleanup_loop_async()
             if self._async_cleanup_task:
+                self._async_cleanup_task.cancel()
                 try:
                     await self._async_cleanup_task
                 except asyncio.CancelledError:
@@ -1867,6 +1879,7 @@ class MultiUserOrchestrator:
             except asyncio.CancelledError:
                 pass
 
+        await self.context_manager.aclose()
         logger.info("MultiUserOrchestrator detenido")
 
     async def process(
@@ -1879,6 +1892,7 @@ class MultiUserOrchestrator:
         service_filter: str | None = None,
         query_slots: dict | None = None,
         target_entity_id: str | None = None,
+        memory_sources: tuple[MemorySource, ...] | None = None,
     ) -> DispatchResult:
         """
         Procesar una peticion de usuario.
@@ -1924,6 +1938,7 @@ class MultiUserOrchestrator:
             service_filter=service_filter,
             query_slots=query_slots,
             target_entity_id=target_entity_id,
+            memory_sources=memory_sources,
         )
 
     async def _identify_speaker(self, audio) -> tuple[str, str]:
@@ -2039,8 +2054,10 @@ class MultiUserOrchestrator:
 
             # A cancelled/terminal request cannot be resurrected by a late result.
             if request.complete(response):
-                self.context_manager.add_turn(request.user_id, "user", request.text)
-                self.context_manager.add_turn(request.user_id, "assistant", response)
+                if request.memory_sources is None:
+                    request.memory_sources = self.context_manager.interaction_sources(request.timestamp)
+                self.context_manager.add_turn(request.user_id, "user", request.text, sources=request.memory_sources)
+                self.context_manager.add_turn(request.user_id, "assistant", response, sources=request.memory_sources)
 
         except asyncio.CancelledError:
             request.cancel(CancellationReason.SYSTEM_SHUTDOWN)

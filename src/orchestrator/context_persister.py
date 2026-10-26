@@ -1,17 +1,21 @@
-"""ContextPersister — atomic JSON snapshot of UserContext per user_id."""
+"""Private, sourced context snapshots with raw-capture expiry."""
 
 import json
 import logging
 import os
 import re
 import time
+import tempfile
+import threading
+from contextlib import nullcontext
 from pathlib import Path
 
 from src.orchestrator.context_manager import UserContext
+from src.memory.fact_ledger import MemorySource, sources_current
 
 logger = logging.getLogger(__name__)
 
-PERSISTED_VERSION = 1
+PERSISTED_VERSION = 2
 
 # Path-traversal guard: user_id is concatenated into base_path/<user_id>.json,
 # so we reject anything that could escape the directory ('..', '/', NUL,
@@ -25,11 +29,13 @@ class ContextPersister:
 
     Plan #2 OpenClaw — see docs/superpowers/specs/2026-04-28-openclaw-context-compaction-design.md
 
-    Format: one JSON file per user at base_path/<user_id>.json. Writes are
-    atomic via .tmp + os.replace.
+    New snapshots live in base_path/policy_v2/<user_id>.json. Legacy files
+    remain untouched and are never hydrated. Writes use private unique
+    temporary files and an atomic replace, serialized against revocations.
 
     Persisted fields (subset of UserContext): version, user_id, user_name,
-    last_seen, session_count, compacted_summary, preserved_ids.
+    last_seen, session_count, compacted_summary, preserved_ids, summary_sources.
+    Sources determine the deadline; snapshot/access time never renews it.
 
     NOT persisted: conversation_history (literal turns die at session
     boundary — assumed already compacted into summary before snapshot),
@@ -46,8 +52,21 @@ class ContextPersister:
       to prevent next snapshot from overwriting them.
     """
 
-    def __init__(self, base_path: Path | str = Path("data/contexts")):
-        self.base_path = Path(base_path)
+    def __init__(self, base_path: Path | str = Path("data/contexts"), *, source_policy=None, clock=None):
+        self.legacy_base_path = Path(base_path)
+        self.base_path = self.legacy_base_path / "policy_v2"
+        self.source_policy = source_policy
+        self._clock = time.time if clock is None else clock
+        self._lock = threading.RLock()
+
+    def _sources(self, payload: dict) -> tuple[MemorySource, ...]:
+        return tuple(MemorySource.from_dict(s) for s in payload.get("summary_sources", []))
+
+    def _available(self, payload: dict) -> bool:
+        if not payload.get("compacted_summary"):
+            return not payload.get("preserved_ids")
+        sources = self._sources(payload)
+        return sources_current(sources, self._clock()) and (self.source_policy is None or self.source_policy.sources_available(sources))
 
     def _validate_user_id(self, user_id: str) -> None:
         if not _SAFE_USER_ID.match(user_id):
@@ -75,7 +94,7 @@ class ContextPersister:
     def save(self, ctx: UserContext) -> None:
         """Atomic snapshot to base_path/<user_id>.json.
 
-        Writes to a .tmp sibling and os.replace's into place, so a crash
+        Writes to a private temporary sibling and replaces it, so a crash
         mid-write cannot leave a half-written file. The .tmp is unlinked
         on failure (debug-logged if cleanup fails).
 
@@ -100,6 +119,7 @@ class ContextPersister:
         need to build a snapshot under lock and then call save_payload
         outside the lock. Keep in sync with the load() reader contract.
         """
+        ctx.prune()
         return {
             "version": PERSISTED_VERSION,
             "user_id": ctx.user_id,
@@ -108,14 +128,14 @@ class ContextPersister:
             "session_count": ctx.session_count,
             "compacted_summary": ctx.compacted_summary,
             "preserved_ids": list(ctx.preserved_ids),
+            "summary_sources": [s.to_dict() for s in ctx.summary_sources],
         }
 
     def save_payload(self, payload: dict) -> None:
         """Atomic write of an already-built payload dict.
 
-        Caller is responsible for shape correctness (matching what load()
-        expects). This exists so callers building snapshots under a lock
-        can release the lock before disk I/O.
+        Revalidates sources and expiry at commit. Callers building snapshots
+        under a lock can release that in-memory lock before disk I/O.
 
         Args:
             payload: dict with at minimum 'user_id'. Must already include
@@ -129,25 +149,22 @@ class ContextPersister:
         if not isinstance(user_id, str):
             raise ValueError(f"payload missing string user_id: {user_id!r}")
         self._validate_user_id(user_id)
-        self.base_path.mkdir(parents=True, exist_ok=True)
-
-        target = self._path(user_id)
-        tmp = target.with_suffix(".json.tmp")
-        try:
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-            os.replace(tmp, target)
-            logger.info(
-                f"[ContextPersister] saved user={user_id} "
-                f"summary_chars={len(payload.get('compacted_summary') or '')} "
-                f"preserved_ids={len(payload.get('preserved_ids') or [])}"
-            )
-        except Exception:
+        if payload.get("version") != PERSISTED_VERSION or not self._available(payload):
+            raise PermissionError("context_snapshot_sources_unavailable")
+        sources = self._sources(payload)
+        guard = self.source_policy.admit_source_write(sources) if self.source_policy is not None and sources else nullcontext()
+        with self._lock, guard:
+            self.base_path.mkdir(parents=True, exist_ok=True, mode=0o700)
+            descriptor, filename = tempfile.mkstemp(prefix=".snapshot-", dir=self.base_path)
+            tmp = Path(filename)
             try:
-                if tmp.exists():
-                    tmp.unlink()
-            except OSError as cleanup_err:
-                logger.debug(f"[ContextPersister] could not remove tmp {tmp}: {cleanup_err}")
-            raise
+                with os.fdopen(descriptor, "w") as output:
+                    output.write(json.dumps(payload, ensure_ascii=False, indent=2))
+                if not self._available(payload):
+                    raise PermissionError("context_snapshot_sources_unavailable")
+                os.replace(tmp, self._path(user_id))
+            finally:
+                tmp.unlink(missing_ok=True)
 
     def load(self, user_id: str) -> dict | None:
         """Load a snapshot if it exists and is valid.
@@ -163,6 +180,10 @@ class ContextPersister:
             - version mismatch with PERSISTED_VERSION (logged warning)
             - other OS error (logged warning)
         """
+        with self._lock:
+            return self._load(user_id)
+
+    def _load(self, user_id: str) -> dict | None:
         try:
             self._validate_user_id(user_id)
         except ValueError as e:
@@ -192,6 +213,8 @@ class ContextPersister:
             logger.warning(f"[ContextPersister] unreadable JSON for {user_id}: {e}")
             return None
 
+        if not isinstance(data, dict):
+            return None
         stored_version = data.get("version")
         if stored_version != PERSISTED_VERSION:
             logger.warning(
@@ -199,4 +222,29 @@ class ContextPersister:
                 f"stored={stored_version} expected={PERSISTED_VERSION}. Treating as no prior context."
             )
             return None
+        try:
+            if data.get("user_id") != user_id or not self._available(data):
+                return None
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return None
         return data
+
+    def purge_expired(self) -> int:
+        """Remove only expired/revoked policy snapshots; preserve legacy files."""
+        removed = 0
+        with self._lock:
+            # The single policy writer holds this same lock until its actual
+            # write exits. Uncommitted leftovers are never recoverable context.
+            for temporary in self.base_path.glob(".snapshot-*"):
+                temporary.unlink()
+                removed += 1
+            for path in self.base_path.glob("*.json"):
+                try:
+                    data = json.loads(path.read_text())
+                    if isinstance(data, dict) and data.get("version") == PERSISTED_VERSION and not self._available(data):
+                        path.unlink()
+                        removed += 1
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    # Unknown/corrupt payloads are not accepted as live context.
+                    continue
+        return removed

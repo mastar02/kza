@@ -56,6 +56,22 @@ class MemorySource:
         if not self.captured_at < self.expires_at <= self.captured_at + 48 * 3600:
             raise ValueError("invalid_memory_source_expiry")
 
+    def to_dict(self) -> dict:
+        """Serialize verified provenance without adding derived authority."""
+        return {"capture_id": self.capture_id, "conversation_id": self.conversation_id,
+                "captured_at": self.captured_at, "expires_at": self.expires_at, "origin": self.origin.value}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> MemorySource:
+        """Validate persisted provenance; missing legacy fields are not invented."""
+        return cls(data["capture_id"], data["conversation_id"], data["captured_at"],
+                   data["expires_at"], MemoryOrigin(data["origin"]))
+
+
+def sources_current(sources: tuple[MemorySource, ...], now: float) -> bool:
+    """Check raw-source deadlines without touching disk or renewing retention."""
+    return bool(sources) and all(isinstance(s, MemorySource) and s.captured_at <= now < s.expires_at for s in sources)
+
 
 @dataclass(frozen=True)
 class MemoryReviewer:
@@ -139,6 +155,7 @@ class FactLedger:
         self.clock = time.time if clock is None else clock
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
+        self._deleted_conversations: frozenset[str] = frozenset()
 
     def initialize(self) -> None:
         """Create the private ledger without importing legacy documents."""
@@ -154,6 +171,28 @@ class FactLedger:
             self._db.row_factory = sqlite3.Row
             self._db.execute("PRAGMA foreign_keys=ON")
             self._db.executescript(_SCHEMA)
+            self._deleted_conversations = frozenset(r[0] for r in self._db.execute("SELECT conversation_id FROM conversation_tombstones"))
+
+    def sources_available(self, sources: tuple[MemorySource, ...]) -> bool:
+        """Read this sole writer's committed revocations without disk on-loop."""
+        deleted = self._deleted_conversations
+        return sources_current(sources, self.clock()) and all(s.conversation_id not in deleted for s in sources)
+
+    def conversation_revoked(self, conversation_id: str) -> bool:
+        """Read a committed revocation without disk or a SQLite lock."""
+        return conversation_id in self._deleted_conversations
+
+    @contextmanager
+    def admit_source_write(self, sources: tuple[MemorySource, ...]):
+        """Serialize a derived-file commit before a conversation tombstone.
+
+        Call only from an owned disk worker. A future deletion sees either
+        the committed file or a rejected write, never a write after its marker.
+        """
+        with self._transaction() as db:
+            if not self._sources_live(db, sources):
+                raise PermissionError("memory_source_expired_or_deleted")
+            yield
 
     def close(self) -> None:
         """Release the connection after all owning worker operations finish."""
@@ -339,11 +378,14 @@ class FactLedger:
         """Tombstone a conversation before scrubbing all currently derived facts."""
         self._reviewer(actor)
         conversation_id = str(UUID(conversation_id))
-        with self._transaction() as db:
-            db.execute("INSERT OR IGNORE INTO conversation_tombstones VALUES (?,?,?)",
-                       (conversation_id, self.clock(), actor.subject))
-            ids = [r[0] for r in db.execute("SELECT DISTINCT fact_id FROM fact_sources WHERE conversation_id=?", (conversation_id,))]
-            return sum(self._delete(db, fact_id) for fact_id in ids)
+        with self._lock:
+            with self._transaction() as db:
+                db.execute("INSERT OR IGNORE INTO conversation_tombstones VALUES (?,?,?)",
+                           (conversation_id, self.clock(), actor.subject))
+                ids = [r[0] for r in db.execute("SELECT DISTINCT fact_id FROM fact_sources WHERE conversation_id=?", (conversation_id,))]
+                deleted = sum(self._delete(db, fact_id) for fact_id in ids)
+            self._deleted_conversations = self._deleted_conversations | {conversation_id}
+            return deleted
 
     def expire(self) -> int:
         """Scrub expired contents and enqueue index cleanup in one transaction."""

@@ -238,6 +238,10 @@ async def test_both_voice_routes_retrieve_policy_memory_and_record_actual_captur
             turns = services.manager.short_term.get_recent()
             assert len(turns) == 1 and turns[0].sources[0].capture_id == event.capture_id
             assert result['capture_id'] == event.capture_id and turns[0].sources[0].conversation_id == result['conversation_id']
+            if orchestrator:
+                history = orchestrator.context_manager.get('unknown').conversation_history
+                assert len(history) == 2 and all(t.sources[0] == turns[0].sources[0] for t in history)
+                assert all(t.timestamp == event.captured_at for t in history)
         finally:
             if worker:
                 orchestrator._running = False

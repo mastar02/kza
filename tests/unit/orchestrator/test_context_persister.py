@@ -7,6 +7,7 @@ import pytest
 
 from src.orchestrator.context_persister import ContextPersister, PERSISTED_VERSION
 from src.orchestrator.context_manager import UserContext
+from tests.mocks.memory_sources import memory_source
 
 
 @pytest.fixture
@@ -21,6 +22,7 @@ def _ctx(user_id: str = "u1", **overrides) -> UserContext:
         compacted_summary="Resumen previo.",
         preserved_ids=["light.escritorio"],
         session_count=2,
+        summary_sources=(memory_source(),),
     )
     base.update(overrides)
     return UserContext(**base)
@@ -30,7 +32,7 @@ class TestContextPersister:
     def test_save_creates_directory_and_file(self, tmp_path: Path):
         persister = ContextPersister(base_path=tmp_path / "contexts")
         persister.save(_ctx())
-        assert (tmp_path / "contexts" / "u1.json").exists()
+        assert (persister.base_path / "u1.json").exists()
 
     def test_save_load_roundtrip(self, tmp_persister):
         ctx = _ctx(user_id="alice", compacted_summary="Hola.", preserved_ids=["a.b"])
