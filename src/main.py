@@ -1182,7 +1182,9 @@ async def _run_main(shutdown: AsyncExitStack):
         sample_rate=16000,
         shadow_stt=shadow_stt,
         shadow_veto=bool((config.get("stt", {}) or {}).get("shadow_veto", False)),
+        privacy=privacy_services,
     )
+    shutdown.push_async_callback(command_processor.aclose)
 
     # === Plan #3 OpenClaw — Plugin hooks (optional) ===
     hooks_cfg = config.get("hooks", {}) or {}

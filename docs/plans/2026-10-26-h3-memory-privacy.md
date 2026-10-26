@@ -1288,6 +1288,43 @@ aceptaciones físicas e integradas de H0–H6 siguen pendientes. La suite sinté
 no resuelve las pausas de GC previamente medidas ni la recuperación real de H4.
 Producción permanece sin cambios.
 
+### Propietario nativo del procesador de comandos
+
+El `CommandProcessor` conserva las operaciones reales de STT primario y sombra,
+lectura de perfiles, identificación y emoción. Las rutas secuencial, paralela y
+con transcripción previamente verificada ejecutan esos trabajos fuera del bucle
+principal. La llamada al detector de emociones usa su firma real también con
+texto reutilizado; los endpoints sintéticos anteriores no bastaban para probarla.
+
+Ambos routers heredan la procedencia del capture antes de entrar al procesador,
+también sin memoria semántica. El monitor cancela el controlador al vencer o
+revocar una fuente; los trabajos nativos siguen visibles hasta salir. La entrada
+al modelo compartido dentro del procesador se serializa y vuelve a comprobar la
+fuente cuando espera. Los resultados tardíos se descartan y el estado de usuario
+y emoción del último comando comprueba la misma fuente al leer y al mantenerlo.
+
+El veto conserva la distinción entre silencio primario y descarte por sombra;
+error o timeout del shadow siguen permitiendo el texto primario. Su timeout limita
+la observación, sin cancelar el trabajo real. El modo observador conserva su
+propietario y monitor después de responder. Los logs del procesador registran
+presencia de texto y latencia, sin transcripciones, nombres ni traceback nativo.
+Esto no resuelve los demás destinos de `DIAGNOSTICS`.
+
+`main` inyecta la autoridad común y registra el cierre al construir el componente.
+El warmup del `VoicePipeline` usa el mismo propietario; el cierre de la autoridad
+espera su salida efectiva aunque venza el plazo del observador. Los ensayos usan
+catálogo real, ambos routers, el warmup del pipeline, el executor dedicado real de
+Whisper y el adaptador real de emoción, con endpoints CPU sintéticos. Cubren
+revocación, TTL, rollback del marcador, espera de modelo y executor, cancelación,
+cierre tardío y liberación de audio/resultados con weakrefs, sin manipular GC.
+
+`PRODUCERS` permanece abierto: aún faltan los buffers de captura de comandos,
+wake/VAD, STT temprano, consumidores de aprendizaje y su integración completa
+con el journal. Este cambio no permite anunciar borrado global ni habilitar la
+UI de borrado amplio. Tampoco sustituye las aceptaciones de hardware, runtime,
+GC y recuperación pendientes. La validación completa de este cambio se registra
+después de construir y probar el commit, sin desplegarlo en producción.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

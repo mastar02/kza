@@ -82,7 +82,10 @@ class VoicePipeline:
 
         # Load models
         # Keep HA's pending snapshot and WS handshakes live during model warmup.
-        await asyncio.to_thread(self.command_processor.load_models)
+        if isinstance(self.command_processor, CommandProcessor):
+            await self.command_processor.aload_models()
+        else:
+            await asyncio.to_thread(self.command_processor.load_models)
 
         # Initialize vector DB
         if self.chroma:
@@ -130,11 +133,14 @@ class VoicePipeline:
     async def stop(self) -> None:
         """Stop all components."""
         self._running = False
+        if isinstance(self.command_processor, CommandProcessor):
+            self.command_processor.begin_close()
 
         for name, coro in [
             ("request_router", self.request_router.aclose() if isinstance(self.request_router, RequestRouter) else None),
             ("orchestrator", self._orchestrator.stop() if self._orchestrator else None),
             ("audio_loop", self.audio_loop.stop() if self.audio_loop else None),
+            ("command_processor", self.command_processor.aclose() if isinstance(self.command_processor, CommandProcessor) else None),
             ("features", self.features.stop() if self.features else None),
         ]:
             if coro:

@@ -558,19 +558,25 @@ class RequestRouter:
         if self._source_policy is not None and not self._current_source_available():
             return {"intent": "cancelled", "success": False, "text": "", "response": "", "timings": {}, "latency_ms": 0}
 
-        if self.orchestrator_enabled and self._orchestrator:
-            result = await self._process_command_orchestrated(
-                audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
-                ambient_strict=ambient_strict,
-                wake_score=wake_score, wake_rms=wake_rms,
-                textual_wake=textual_wake,
-            )
-        else:
-            result = await self._process_command_legacy(
-                audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
-                wake_score=wake_score, wake_rms=wake_rms,
-                textual_wake=textual_wake, ambient_strict=ambient_strict,
-            )
+        from src.memory.producer_context import producer_context
+        from src.memory.prompt_context import SourcesInvalidated
+        try:
+            with producer_context(room_id, self._active_sources()):
+                if self.orchestrator_enabled and self._orchestrator:
+                    result = await self._process_command_orchestrated(
+                        audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
+                        ambient_strict=ambient_strict,
+                        wake_score=wake_score, wake_rms=wake_rms,
+                        textual_wake=textual_wake,
+                    )
+                else:
+                    result = await self._process_command_legacy(
+                        audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
+                        wake_score=wake_score, wake_rms=wake_rms,
+                        textual_wake=textual_wake, ambient_strict=ambient_strict,
+                    )
+        except SourcesInvalidated:
+            return {"intent": "cancelled", "success": False, "text": "", "response": "", "timings": {}, "latency_ms": 0}
         classification = result.get("llm_classification")
         if self.llm_command_router is not None and result.get("success") and (result.get("intent") == "domotics" or classification is not None):
             try:
@@ -1977,6 +1983,9 @@ Asistente:"""
 
     def prune_private(self) -> None:
         """Drop idle query/history copies; every read enforces the same policy."""
+        from src.pipeline.command_processor import CommandProcessor
+        if isinstance(self.command_processor, CommandProcessor):
+            self.command_processor.prune_private()
         self._query_cache.prune()
         self._pending_suggestion  # Resolve expiry/revocation on idle proposals too.
         if isinstance(self.llm_command_router, LLMCommandRouter):

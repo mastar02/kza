@@ -68,7 +68,8 @@ async def test_shadow_logs_comparison(caplog):
         await asyncio.gather(*cp._shadow_tasks)
     line = next((r.message for r in caplog.records if "[STT-shadow]" in r.message), None)
     assert line is not None
-    assert "prendé la luz" in line and "prende la luz" in line
+    assert "primary_present=True" in line and "shadow_present=True" in line
+    assert "prendé la luz" not in caplog.text and "prende la luz" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -118,7 +119,7 @@ async def test_veto_discards_when_shadow_empty(caplog):
         result = await cp.process_command(AUDIO, use_parallel=False)
     assert result.text == ""
     assert result.success is False
-    assert any("[STT-veto] descartado" in r.message for r in caplog.records)
+    assert any("[STT-veto] discarded" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -155,7 +156,7 @@ async def test_veto_fail_open_on_shadow_error(caplog):
         result = await cp.process_command(AUDIO, use_parallel=False)
     # error del shadow → SIN veto, el comando pasa intacto
     assert result.text == "prendé la luz"
-    assert any("[STT-veto] shadow no disponible" in r.message for r in caplog.records)
+    assert any("[STT-veto] shadow unavailable" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -174,6 +175,7 @@ async def test_veto_fail_open_on_timeout():
     result = await cp.process_command(AUDIO, use_parallel=False)
     # timeout → sin veto (jamás retrasar/descartar por un shadow colgado)
     assert result.text == "prendé la luz"
+    await cp.aclose()
 
 
 @pytest.mark.asyncio
@@ -183,7 +185,7 @@ async def test_veto_logs_shadow_comparison_same_format(caplog):
     with caplog.at_level(logging.INFO):
         await cp.process_command(AUDIO, use_parallel=False)
     line = next((r.message for r in caplog.records if "[STT-shadow]" in r.message), None)
-    assert line is not None and "primary=" in line and "shadow_ms=" in line
+    assert line is not None and "primary_present=" in line and "shadow_ms=" in line
 
 
 @pytest.mark.asyncio
