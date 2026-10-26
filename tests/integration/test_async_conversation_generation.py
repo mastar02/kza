@@ -92,7 +92,7 @@ async def test_dispatch_timeout_closes_pending_generation_and_keeps_context_empt
         request = owner.queue._user_requests["household"]
         assert request.cancellation_token.reason == CancellationReason.TIMEOUT
         async with asyncio.timeout(1):
-            while not endpoint.body.closed:
+            while not endpoint.body.closed or not endpoint.client.is_closed():
                 await asyncio.sleep(0.001)
         assert endpoint.client.is_closed()
         assert request.status == RequestStatus.CANCELLED and request.result is None
@@ -107,7 +107,7 @@ async def test_cancelled_dispatch_cancels_work_instead_of_leaving_request_runnin
         with pytest.raises(asyncio.CancelledError):
             await task
         async with asyncio.timeout(1):
-            while not endpoint.body.closed:
+            while not endpoint.body.closed or not endpoint.client.is_closed():
                 await asyncio.sleep(0.001)
         assert owner.queue._user_requests["household"].is_cancelled
         assert owner.context_manager.get("household").conversation_history == []
@@ -123,7 +123,7 @@ async def test_direct_token_cancellation_also_notifies_waiter(monkeypatch):
         assert result.intent == "cancelled" and result.response == ""
         assert request.status == RequestStatus.CANCELLED
         async with asyncio.timeout(1):
-            while not endpoint.body.closed:
+            while not endpoint.body.closed or not endpoint.client.is_closed():
                 await asyncio.sleep(0.001)
         assert endpoint.client.is_closed()
         assert owner.context_manager.get("household").conversation_history == []
