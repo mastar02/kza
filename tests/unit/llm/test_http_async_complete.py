@@ -9,6 +9,7 @@ import pytest
 
 from src.core.egress import EgressDenied, EgressPolicy
 from src.llm.idle_watchdog import IdleTimeoutError
+from src.llm.reasoner import HttpReasoner
 from tests.mocks.llm_http import SSEBody, event
 from tests.unit.llm.test_http_async_stream import setup
 
@@ -134,3 +135,9 @@ async def test_idle_complete_requires_stop_and_closes_stalled_or_incomplete_stre
     with pytest.raises(IdleTimeoutError if timeout else RuntimeError):
         await reasoner.complete('consulta')
     assert endpoint.body.closed and endpoint.client.is_closed()
+
+
+async def test_unmocked_async_reasoner_transport_is_blocked_by_suite():
+    reasoner = HttpReasoner(cloud_consent=True)
+    with pytest.raises(AssertionError, match='synthetic HTTPX transport'):
+        await reasoner.complete('synthetic')

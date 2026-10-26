@@ -64,6 +64,17 @@ del _module_name
 
 # ==================== Pytest Configuration ====================
 
+@pytest.fixture(autouse=True)
+def _deny_real_async_http_transport(monkeypatch):
+    """Require synthetic HTTPX transports; stale SDK mocks must not reach services."""
+    import httpx
+
+    async def denied(self, request):
+        raise AssertionError("Tests must inject a synthetic HTTPX transport")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", denied)
+
+
 @pytest.fixture
 def dashboard_auth(monkeypatch):
     """Configure a test-only dashboard credential and return its Bearer header."""

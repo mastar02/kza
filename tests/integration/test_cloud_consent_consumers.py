@@ -19,6 +19,7 @@ from src.providers.remote import (
     RemoteLLMProvider, RemoteProviderConfig, RemoteRouterProvider,
     RemoteSTTProvider, RemoteTTSProvider,
 )
+from tests.mocks.llm_http import Endpoint, SSEBody
 
 
 @pytest.mark.asyncio
@@ -151,15 +152,16 @@ def test_sync_inventory_client_also_denies_before_creating_an_sdk():
 
 
 @pytest.mark.asyncio
-async def test_inherited_local_compaction_remains_available_without_cloud_consent():
+async def test_inherited_local_compaction_remains_available_without_cloud_consent(monkeypatch):
     endpoint = resolve_compaction_endpoint({}, {"http_base_url": "http://127.0.0.1:8101/v1", "destination": "local", "cloud": {"consent": False}}, True)
     reasoner = HttpReasoner(**{key: getattr(endpoint, key) for key in ("base_url", "destination", "cloud_consent", "api_style")})
-    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="local answer"))], usage=None)
-    sdk = MagicMock()
-    sdk.chat.completions.create.return_value = response
-    reasoner._client = sdk
+    transport = Endpoint(SSEBody([]))
+    transport.completion_payload = {"choices": [{"message": {"content": "local answer"}, "finish_reason": "stop"}]}
+    monkeypatch.setattr(reasoner, "_new_async_client", transport.build)
     assert await reasoner.complete("private turn") == "local answer"
-    sdk.chat.completions.create.assert_called_once()
+    assert [request.method for request in transport.requests] == ["GET", "POST"]
+    assert str(transport.requests[-1].url) == endpoint.base_url + "/chat/completions"
+    assert transport.client.is_closed()
 
 
 async def test_failover_chain_cannot_override_a_consumer_denial(tmp_path):
