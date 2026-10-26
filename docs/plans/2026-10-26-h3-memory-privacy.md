@@ -1102,6 +1102,18 @@ lotes, fallos/reintentos, registro y SQLite bloqueados, pool general saturado,
 generación tardía y síntesis no cooperativa. El artefacto compilado también
 ensaya vencimiento físico después de cerrar el logger productor.
 
+La primera suite completa expuso una carrera previa de capturas: entre un
+`SELECT` de archivos vencidos y el `DELETE`, una revocación podía cambiar el
+predicado y retirar una fila cuyo localizador no se había encolado. El journal
+podía declarar el destino completo mientras quedaba audio sin localizador.
+Un ensayo con interleaving controlado reprodujo ese caso; otro reprodujo la
+purga irreversible de una revocación pendiente que después hacía rollback.
+Ahora `DELETE … RETURNING` devuelve el conjunto exacto retirado y encola sus
+archivos en la misma transacción. Los lectores mantienen el fence inmediato,
+pero la purga y el borrado explícito exigen revocaciones confirmadas. Ambos
+ensayos pasan con la corrección, junto con los demás casos de capturas y TTL.
+No se descarta ni se acepta como verde aquella primera ejecución completa.
+
 Este avance no cierra H3. Siguen pendientes los otros cinco participantes,
 consumidores alternos, revisión de voces, pausa/mute y migración real en copia.
 La suite sin instrumentación no resuelve la aceptación integrada de GC,

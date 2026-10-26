@@ -71,7 +71,7 @@ class CaptureEraser:
             raise ValueError('invalid_capture_erasure_target')
         if any(type(value) is not str or not Path(value).is_absolute() for value in descriptor.values()):
             raise ValueError('invalid_capture_erasure_location')
-        if not self.privacy.ledger.conversation_revoked(step.conversation_id):
+        if not self.privacy.ledger.conversation_committed_revoked(step.conversation_id):
             raise PermissionError('capture_erasure_requires_revocation')
         await asyncio.gather(*(a.drain_conversation(step.conversation_id) for a in self._archivers))
         targets = await self.privacy.acall(self.privacy.ledger.erasures.targets, ErasureParticipant.CAPTURES)

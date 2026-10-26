@@ -198,6 +198,88 @@ async def test_unlink_failure_stays_pending_through_restart_and_keeps_no_text(tm
         assert not Path(path).exists() and (await status(g, receipt))[0]['state'] == 'complete'
 
 
+async def pause_retention(g):
+    retention = g.driver.retention
+    retention._maintenance.cancel()
+    await asyncio.gather(retention._maintenance, return_exceptions=True)
+    if retention._cycle is not None:
+        await asyncio.gather(retention._cycle, return_exceptions=True)
+    await asyncio.gather(*(task for _, task in retention._active.values()))
+
+
+async def test_revocation_between_expiry_selection_and_delete_cannot_lose_clip_locator(tmp_path, monkeypatch):
+    async with graph(tmp_path) as g:
+        await pause_retention(g)
+        source, row = await capture(g)
+        path = await g.archive.write('synthetic-room', row, AUDIO, source=source)
+        await g.store.set_audio_path(row, path)
+        unlink = Path.unlink
+        def denied(candidate, *args, **kwargs):
+            if str(candidate) == path:
+                raise PermissionError('synthetic clip unavailable')
+            return unlink(candidate, *args, **kwargs)
+        monkeypatch.setattr(Path, 'unlink', denied)
+        entered, release = asyncio.Event(), asyncio.Event()
+        execute = g.store._db.execute
+        async def interleave(sql, *args, **kwargs):
+            cursor = await execute(sql, *args, **kwargs)
+            if ':cutoff' in sql and sql.startswith(('SELECT audio_path, conversation_id FROM utterances WHERE', 'DELETE FROM utterances WHERE')):
+                entered.set()
+                await release.wait()
+            return cursor
+        monkeypatch.setattr(g.store._db, 'execute', interleave)
+        purging = asyncio.create_task(g.store.purge_expired(sweep_orphans=False))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            await g.privacy.acall(g.privacy.ledger.delete_conversation, source.conversation_id, ACTOR)
+            release.set()
+            await purging
+            snapshot = counts(g.store.db_path)
+            # A surviving clip needs either its row or a durable retry locator.
+            assert snapshot['utterances'] or snapshot['pending_audio_deletions'] == 1
+            monkeypatch.setattr(g.store._db, 'execute', execute)
+            await g.store.purge_expired(sweep_orphans=False)
+            snapshot = counts(g.store.db_path)
+            assert snapshot['utterances'] == 0 and snapshot['pending_audio_deletions'] == 1
+            assert Path(path).exists()
+        finally:
+            release.set()
+            await asyncio.gather(purging, return_exceptions=True)
+
+
+async def test_failed_pending_marker_hides_capture_but_does_not_destroy_clip_or_row(tmp_path):
+    async with graph(tmp_path) as g:
+        await pause_retention(g)
+        source, row = await capture(g)
+        path = await g.archive.write('synthetic-room', row, AUDIO, source=source)
+        await g.store.set_audio_path(row, path)
+        entered, release = threading.Event(), threading.Event()
+        original = g.privacy.ledger._db
+        class FailedCommit:
+            def __getattr__(self, key):
+                return getattr(original, key)
+            def commit(self):
+                entered.set()
+                assert release.wait(3)
+                raise OSError('synthetic failed marker')
+        g.privacy.ledger._db = FailedCommit()
+        marking = asyncio.create_task(g.privacy.acall(g.privacy.ledger.delete_conversation, source.conversation_id, ACTOR))
+        try:
+            await until(entered.is_set)
+            assert await g.store.undistilled_live() == []
+            with pytest.raises(PermissionError, match='requires_revocation'):
+                await g.store.erase_conversation(source.conversation_id)
+            assert await g.store.purge_expired(sweep_orphans=False) == 0
+            assert counts(g.store.db_path)['utterances'] == 1
+            assert Path(path).exists()
+        finally:
+            release.set()
+            with pytest.raises(OSError, match='failed marker'):
+                await marking
+            g.privacy.ledger._db = original
+        assert len(await g.store.undistilled_live()) == 1
+
+
 async def test_historical_disabled_location_remains_required_after_configuration_change(tmp_path):
     async with graph(tmp_path, location='old') as g:
         source, row = await capture(g)

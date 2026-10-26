@@ -96,7 +96,7 @@ _MIGRATIONS: dict[str, str] = {
 }
 
 _LIVE = "t0 > :cutoff AND created_at > :cutoff AND (expires_at IS NULL OR expires_at > :now) AND conversation_live(conversation_id)"
-_EXPIRED = "t0 <= :cutoff OR created_at <= :cutoff OR expires_at <= :now OR NOT conversation_live(conversation_id)"
+_EXPIRED = "t0 <= :cutoff OR created_at <= :cutoff OR expires_at <= :now OR NOT conversation_retained(conversation_id)"
 
 
 @dataclass(frozen=True)
@@ -202,6 +202,7 @@ class AmbientStore:
         self._db = await aiosqlite.connect(location, uri=existing_only)
         self._db.row_factory = aiosqlite.Row
         await self._db.create_function("conversation_live", 1, self._conversation_live)
+        await self._db.create_function("conversation_retained", 1, self._conversation_retained)
         try:
             await self._migrate()
         except BaseException:
@@ -239,6 +240,12 @@ class AmbientStore:
         if self.source_policy is not None and not self.source_policy.authority_available:
             raise RuntimeError("privacy_authority_unavailable")
         return self.source_policy is None or conversation_id is None or not self.source_policy.conversation_revoked(conversation_id)
+
+    def _conversation_retained(self, conversation_id: str | None) -> bool:
+        """Only published revocations authorize irreversible capture retirement."""
+        if self.source_policy is not None and not self.source_policy.authority_available:
+            raise RuntimeError("privacy_authority_unavailable")
+        return self.source_policy is None or conversation_id is None or not self.source_policy.conversation_committed_revoked(conversation_id)
 
     def _row_live(self, row) -> bool:
         now = self._clock()
@@ -586,19 +593,23 @@ class AmbientStore:
 
         async def expire():
             cur = await self._db.execute(
-                "SELECT audio_path, conversation_id FROM utterances WHERE (" + _EXPIRED + ") AND audio_path IS NOT NULL", parameters,  # nosec B608 -- Predicate is constant; all values use bound parameters.
+                "DELETE FROM utterances WHERE " + _EXPIRED + " RETURNING audio_path, conversation_id", parameters,  # nosec B608 -- Predicate is constant; all values use bound parameters.
             )
-            for row in await cur.fetchall():
-                await self._queue_audio_deletion(row["audio_path"], row['conversation_id'])
+            # DELETE's exact result set and its file locators share this one
+            # commit. A live authority change between separate SELECT/DELETE
+            # predicates must never retire a row without its retry locator.
+            removed = await cur.fetchall()
+            for row in removed:
+                if row["audio_path"] is not None:
+                    await self._queue_audio_deletion(row["audio_path"], row['conversation_id'])
             cur = await self._db.execute('''SELECT * FROM audio_write_intents WHERE expires_at<=:now
-                OR NOT conversation_live(conversation_id) OR utterance_id NOT IN (SELECT id FROM utterances)''', parameters)
+                OR NOT conversation_retained(conversation_id) OR utterance_id NOT IN (SELECT id FROM utterances)''', parameters)
             for row in await cur.fetchall():
                 await self._queue_audio_deletion(row['path'], row['conversation_id'])
                 if not self.audio_inflight(row['path']):
                     await self._db.execute('DELETE FROM audio_write_intents WHERE path=?', (row['path'],))
-            cur = await self._db.execute("DELETE FROM utterances WHERE " + _EXPIRED, parameters)  # nosec B608 -- Predicate is constant; all values use bound parameters.
             await self._db.execute("DELETE FROM capture_conversations WHERE id NOT IN (SELECT conversation_id FROM utterances WHERE conversation_id IS NOT NULL)")
-            return cur.rowcount
+            return len(removed)
 
         deleted = await self._mutate(expire)
         unlinked = await self._retry_audio_deletions()
@@ -615,7 +626,7 @@ class AmbientStore:
         """Retire revoked rows and durable locators after their encoders drain."""
         if self.source_policy is None or not self.source_policy.authority_available:
             raise RuntimeError('privacy_authority_unavailable')
-        if not self.source_policy.conversation_revoked(conversation_id):
+        if not self.source_policy.conversation_committed_revoked(conversation_id):
             raise PermissionError('capture_erasure_requires_revocation')
         async def erase():
             cur = await self._db.execute('SELECT audio_path AS path FROM utterances WHERE conversation_id=? AND audio_path IS NOT NULL UNION SELECT path FROM audio_write_intents WHERE conversation_id=?', (conversation_id, conversation_id))
