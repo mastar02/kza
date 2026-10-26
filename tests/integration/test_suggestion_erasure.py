@@ -58,6 +58,13 @@ async def graph(tmp_path, *, enabled=True, clock=None, legacy=None, close_timeou
             events_driver.retention._maintenance, return_exceptions=True
         )
         driver = await build_suggestion_erasure(config, privacy=privacy, owner=owner)
+        # Observe CVO independently of periodic TTL. Keep the actual pools open
+        # so shutdown cannot wait behind a deliberately saturated general pool.
+        driver.retention._maintenance.cancel()
+        await asyncio.gather(driver.retention._maintenance, return_exceptions=True)
+        if driver.retention._cycle is not None:
+            await asyncio.gather(driver.retention._cycle, return_exceptions=True)
+        await asyncio.gather(*driver.retention._active.values(), return_exceptions=True)
         events = await build_event_logger(
             config, shutdown=stack, privacy=privacy, retention=events_driver.retention
         )

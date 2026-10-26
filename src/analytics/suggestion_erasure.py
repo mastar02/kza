@@ -8,6 +8,7 @@ from functools import partial
 from weakref import WeakSet, ref
 
 from src.analytics.suggestion_engine import SuggestionEngine
+from src.analytics.suggestion_retention import SuggestionRetention
 from src.analytics.suggestion_storage import (
     RUNTIME_TARGET,
     cleanup_suggestions,
@@ -50,7 +51,7 @@ class RuntimeBarrier:
 class SuggestionEraser:
     """Clean registered sidecars even with analytics off; wait for real producers."""
 
-    def __init__(self, privacy: PrivacyServices):
+    def __init__(self, privacy: PrivacyServices, *, retention_days: float = 90):
         self.privacy = privacy
         self._engines, self._routers = WeakSet(), WeakSet()
         self._barriers: dict[str, RuntimeBarrier] = {}
@@ -59,6 +60,7 @@ class SuggestionEraser:
         )
         self._disk = OwnedBlockingWork(worker=self._offload)
         self._closing = None
+        self.retention = SuggestionRetention(privacy, runtime_sweep=self._sweep_runtime, retention_days=retention_days)
 
     async def _offload(self, function, *args, **kwargs):
         return await asyncio.get_running_loop().run_in_executor(
@@ -76,6 +78,8 @@ class SuggestionEraser:
             raise ValueError("suggestion_owner_requires_registration_before_work")
         self._engines.add(engine)
         self.privacy.add_borrower(engine.event_logger.begin_close)
+        engine.store.retention_notify = self.retention.notify
+        self.retention.notify(str(engine.store.path))
 
     def attach_router(self, router) -> None:
         """Bind scoped voice flows, excluding unsupported backend ownership."""
@@ -95,6 +99,24 @@ class SuggestionEraser:
                 raise ValueError("unsupported_suggestion_response_owner")
         self._routers.add(router)
         self.privacy.add_borrower(router.begin_close_suggestions)
+        self.retention.notify()
+
+    async def _sweep_runtime(self) -> dict:
+        """Prune idle projections while exposing actual native/delivery lifetimes."""
+        tasks, voice = set(), set()
+        deadlines = [self.privacy.ledger.clock() + 30]
+        for engine in self._engines:
+            tasks.update(task for task in engine.event_logger.snapshot_operations() if not task.done())
+        for router in self._routers:
+            router.prune_private()
+            tasks.update(task for task in router.snapshot_suggestion_flows() if not task.done())
+            proposal = router._pending_suggestion
+            if proposal is not None:
+                deadlines.append(proposal.expires_at)
+            if router.suggestion_engine is not None and router.response_handler is not None:
+                voice.update((id(router.response_handler), token) for token in router.response_handler.retained_delivery_scopes())
+        return {"checked_at": self.privacy.ledger.clock(), "next_at": min(deadlines),
+                "pending_operations": len(tasks) + len(voice)}
 
     def _snapshot_runtime(self) -> RuntimeBarrier:
         barrier = RuntimeBarrier()
@@ -161,12 +183,13 @@ class SuggestionEraser:
     def begin_close(self) -> asyncio.Task:
         """Retain native callbacks, scoped voice cleanup and their actual workers."""
         if self._closing is None:
+            retention = self.retention.begin_close()
             barrier = self._snapshot_runtime()
             drains = [router.begin_close_suggestions() for router in self._routers]
             disk = self._disk.begin_close()
 
             async def finish():
-                await asyncio.gather(disk, *drains)
+                await asyncio.gather(retention, disk, *drains)
                 while barrier.pending() or any(
                     b.pending() for b in self._barriers.values()
                 ):
@@ -193,11 +216,13 @@ async def build_suggestion_erasure(
             1,
             target,
         )
-    driver = SuggestionEraser(privacy)
+    driver = SuggestionEraser(privacy, retention_days=config.get("analytics", {}).get("retention_days", 90))
     owner.register(
         ErasureParticipant.SUGGESTIONS,
         driver.clean,
         versions=frozenset({1}),
         begin_close=driver.begin_close,
     )
+    await driver.retention.refresh()
+    driver.retention.start()
     return driver

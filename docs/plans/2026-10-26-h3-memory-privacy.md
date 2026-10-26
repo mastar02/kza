@@ -1056,6 +1056,58 @@ el segundo corrige el código de ownership, con inspección de referencias y un
 ensayo que no fuerza GC. La suite sin instrumentación no vuelve a medir ni
 resuelve las pausas de GC anteriores, ni sustituye la aceptación física de H6.
 
+## Avance: vencimiento físico independiente de propuestas
+
+El participante de sugerencias mantiene un barrido de TTL aunque analytics,
+recall y la generación estén apagados. Descubre los sidecars y las fuentes de
+eventos registrados, incluidos destinos históricos, sin inicializar loggers,
+modelos ni archivos ausentes. No consulta mensajes, patrones ni YAML para
+limpiar: sólo metadatos de procedencia, recibos y fechas originales.
+
+Cada lote recorre hasta 32 propuestas y verifica hasta 128 recibos contra las
+filas reales de eventos. Una propuesta con más recibos continúa en otro lote;
+el cursor conserva un hash de identidad, un offset y fechas, sin arrays de
+fuentes ni contenido. Si la fila cambia entre lotes, la verificación comienza
+de nuevo. Una fuente inaccesible o de esquema desconocido no prueba un borrado:
+queda pendiente hasta poder revisarla o hasta el vencimiento propio verificable.
+Una fila desconocida tampoco impide procesar un retiro confirmado posterior.
+
+Se eliminan propuestas vencidas, de eventos retirados o modificados, y de
+fuentes cuya revocación ya se confirmó. Los fences de una transacción pendiente
+ocultan inferencia, pero no autorizan una eliminación irreversible. El scrub
+de texto a las 48 horas no retira los metadatos válidos de actividad.
+
+El máximo propio sigue anclado a la última observación, nunca a una lectura,
+reinicio, aceptación o snooze. Un plazo configurado menor se persiste antes de
+hidratar consumidores, aunque preceda la antigua fecha de generación. Una
+ampliación posterior no restaura ese plazo. La generación rechaza candidatos
+ya vencidos antes de llamar al modelo y revalida después de que éste termine.
+
+El mantenimiento tiene un pool nativo propio, dos destinos en paralelo,
+reintentos acotados y estados sin rutas o contenido privado. La consulta al
+registro no bloquea el barrido de destinos conocidos; un archivo ocupado tampoco
+detiene al segundo. Notificaciones de escrituras adelantan el siguiente ciclo;
+el polling máximo es de 30 segundos. No promete borrado forense del medio.
+
+El barrido del runtime elimina la copia pendiente del router al vencer y expone
+los jobs y scopes de voz que siguen vivos. La entrega interrumpe voz vencida;
+un worker nativo no cooperativo conserva ownership hasta salir y no puede
+guardar una propuesta tarde. El cierre espera esos recursos y los barridos
+reales antes de soltar la lease del catálogo.
+
+Los ensayos dirigidos cubren limpieza sin consultas ni pedidos de borrado,
+analytics apagado, reinicios y destinos históricos, plazos reducidos, eventos
+retirados o desconocidos, 300 recibos con continuación, cuarentena en varios
+lotes, fallos/reintentos, registro y SQLite bloqueados, pool general saturado,
+generación tardía y síntesis no cooperativa. El artefacto compilado también
+ensaya vencimiento físico después de cerrar el logger productor.
+
+Este avance no cierra H3. Siguen pendientes los otros cinco participantes,
+consumidores alternos, revisión de voces, pausa/mute y migración real en copia.
+La suite sin instrumentación no resuelve la aceptación integrada de GC,
+arranque, grandes historiales ni hardware; H0–H6 y la única release final
+conservan su alcance. Producción permanece sin cambios.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

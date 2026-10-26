@@ -17,7 +17,7 @@ from src.analytics.pattern_analyzer import Pattern
 from src.analytics.pattern_projection import pattern_key, pattern_spec, project_pattern
 from src.memory.erasure_journal import ErasureParticipant
 from src.memory.fact_ledger import MemorySource
-from src.analytics.suggestion_storage import MAX_METADATA_BYTES, suggestion_descriptor
+from src.analytics.suggestion_storage import MAX_METADATA_BYTES, suggestion_descriptor, clamp_suggestion_deadlines
 
 MAX_RECORDS = 1000
 
@@ -64,6 +64,7 @@ class SuggestionStore:
 
     def __init__(self, events: EventLogger, legacy_path: str | Path):
         self.events = events
+        self.retention_notify = None
         self.policy = events.source_policy
         if self.policy is None or not self.policy.authority_available:
             raise PermissionError("suggestions_require_privacy_authority")
@@ -98,6 +99,7 @@ class SuggestionStore:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_suggestion_pattern ON suggestions_policy_v1(pattern_key)"
             )
+            clamp_suggestion_deadlines(db, self.policy.automatic_days)
 
     @contextmanager
     def _connect(self):
@@ -110,6 +112,8 @@ class SuggestionStore:
         inputs = self.events.resolve_pattern_evidence(pattern.evidence)
         if inputs is None:
             raise PermissionError("suggestion_evidence_unavailable")
+        if self.policy.clock() >= min(inputs.expires_at, inputs.observed_at + self.policy.automatic_days*86400):
+            raise PermissionError("suggestion_expired")
         return project_pattern(pattern_spec(pattern), inputs)
 
     def _materialize(self, db, row) -> SuggestionRecord | None:
@@ -284,6 +288,8 @@ class SuggestionStore:
                 )
                 if self.policy.clock() >= expiry:
                     raise PermissionError("suggestion_expired")
+            if self.retention_notify is not None:
+                self.retention_notify(str(self.path))
             return SuggestionRecord(
                 identifier,
                 normalized,

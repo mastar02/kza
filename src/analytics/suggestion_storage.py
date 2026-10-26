@@ -89,6 +89,8 @@ class SuggestionMetadata:
 
     sources: tuple[MemorySource, ...]
     expires_at: float
+    observed_at: float
+    evidence: tuple[EventDependency, ...]
 
 
 def suggestion_metadata(row) -> SuggestionMetadata:
@@ -101,7 +103,7 @@ def suggestion_metadata(row) -> SuggestionMetadata:
             type(v) in (int, float) and math.isfinite(v)
             for v in (created, observed, expiry)
         )
-        or not observed <= created < expiry <= observed + 30 * 86400
+        or not observed <= created or not observed < expiry <= observed + 30 * 86400
         or type(row["id"]) is not str
         or re.fullmatch(r"sug_[0-9a-f]{32}", row["id"]) is None
     ):
@@ -134,7 +136,23 @@ def suggestion_metadata(row) -> SuggestionMetadata:
         )
     ):
         raise ValueError("unknown_suggestion_evidence")
-    return SuggestionMetadata(sources, expiry)
+    return SuggestionMetadata(sources, expiry, observed, evidence)
+
+
+def clamp_suggestion_deadlines(db, automatic_days: float) -> None:
+    """Persist a shorter own policy before readers can hydrate old proposals."""
+    def clamp(identifier, created, observed, expiry, sources, evidence):
+        row = {"id": identifier, "created_at": created, "observed_at": observed,
+               "expires_at": expiry, "sources_json": sources, "evidence_json": evidence}
+        try:
+            suggestion_metadata(row)
+            return min(expiry, observed + automatic_days * 86400)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return expiry
+    db.create_function("clamped_suggestion_deadline", 6, clamp)
+    db.execute("""UPDATE suggestions_policy_v1 SET expires_at=clamped_suggestion_deadline(
+        id,created_at,observed_at,expires_at,sources_json,evidence_json)
+        WHERE expires_at>observed_at+?""", (automatic_days * 86400,))
 
 
 def _cursor(encoded: str | None) -> tuple[int, int]:
