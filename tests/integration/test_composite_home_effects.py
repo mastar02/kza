@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 import numpy as np
 import pytest
 
+from tests.mocks.responses import response_handler_mock
 from src.dashboard.api import DashboardAPI
 from src.dashboard.home_catalog import HomeCatalogService
 from src.home_assistant.control_policy import ActionOrigin, EntityGrant, HomeActor, HomeControlPolicy
@@ -292,7 +293,7 @@ async def test_both_voice_modes_use_the_same_expanded_effects(composite_graph, o
     chroma = MagicMock()
     orchestrator = MultiUserOrchestrator(chroma, ha, MagicMock(), home_actions=actions)
     rooms = {"test_room": RoomConfig("test_room", "Test", "el salón", default_light=GROUP, aliases=["salón"])}
-    router = RequestRouter(processor, MagicMock(), MagicMock(), orchestrator=orchestrator, orchestrator_enabled=orchestrated,
+    router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator=orchestrator, orchestrator_enabled=orchestrated,
         chroma_sync=chroma, ha_client=ha, home_actions=actions, command_gate=CommandAcceptanceGate(),
         home_voice_resolver=HomeVoiceResolver(actions, rooms))
     result = await router.process_command(CommandEvent(np.zeros(16000, dtype=np.float32), "test_room", capture_complete=True))
@@ -309,7 +310,7 @@ async def test_scene_speech_keeps_shared_non_immediate_blockers(composite_graph,
     processor = MagicMock()
     processor.process_command = AsyncMock(return_value=ProcessedCommand(text=text, timings={}, success=True))
     orchestrator = MultiUserOrchestrator(MagicMock(), ha, MagicMock(), home_actions=actions)
-    router = RequestRouter(processor, MagicMock(), MagicMock(), orchestrator_enabled=orchestrated, orchestrator=orchestrator,
+    router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator_enabled=orchestrated, orchestrator=orchestrator,
         ha_client=ha, home_actions=actions, command_gate=CommandAcceptanceGate())
     result = await router.process_command(np.zeros(16000, dtype=np.float32))
     assert result["intent"].startswith("gate_rejected:non_immediate:")

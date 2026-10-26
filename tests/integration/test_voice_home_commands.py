@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
+from tests.mocks.responses import response_handler_mock
 from src.home_assistant.control_policy import EntityGrant, HomeControlPolicy
 from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.hooks import HookRegistry, RewriteResult
@@ -31,7 +32,7 @@ def voice_graph(request):
     orchestrator = MultiUserOrchestrator(chroma, ha, MagicMock(), home_actions=actions)
     manager = MagicMock()
     manager.check_entity_permission.side_effect = AssertionError("Voice profiles are not authorization")
-    router = RequestRouter(processor, MagicMock(), MagicMock(), orchestrator=orchestrator,
+    router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator=orchestrator,
         orchestrator_enabled=request.param, chroma_sync=chroma, ha_client=ha, home_actions=actions,
         home_voice_resolver=HomeVoiceResolver(actions, rooms), user_manager=manager,
         command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True)

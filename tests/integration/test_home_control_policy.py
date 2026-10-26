@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import numpy as np
 import pytest
 
+from tests.mocks.responses import response_handler_mock
 from src.dashboard.api import DashboardAPI
 from src.home_assistant.control_policy import ActionOrigin, ActorKind, HomeActor, HomeControlPolicy
 from src.home_assistant.ha_client import HomeAssistantClient, ServiceCallOutcome, ServiceCallStatus
@@ -258,7 +259,7 @@ async def test_legacy_router_uses_policy_and_confirmed_receipt(graph, selected, 
     routines.handle = AsyncMock(return_value={"handled": False})
     manager = MagicMock()
     manager.check_entity_permission.side_effect = AssertionError("Voice profile cannot authorize or deny household controls")
-    router = RequestRouter(processor, MagicMock(), MagicMock(), orchestrator_enabled=False, chroma_sync=chroma, ha_client=ha, home_actions=actions, routine_manager=routines, user_manager=manager)
+    router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator_enabled=False, chroma_sync=chroma, ha_client=ha, home_actions=actions, routine_manager=routines, user_manager=manager)
     result = await router.process_command(np.zeros(16000, dtype=np.float32))
     assert result["success"] is selected
     assert len(ha.sends) == int(selected)

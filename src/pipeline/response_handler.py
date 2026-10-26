@@ -397,8 +397,8 @@ class ResponseHandler:
         interrupted = asyncio.create_task(session.interrupted.wait())
         try:
             await asyncio.wait({worker, interrupted}, return_when=asyncio.FIRST_COMPLETED)
-            if worker.done():
-                await worker
+            if worker.done() or session.delivery in {DeliveryState.FAILED, DeliveryState.BLOCKED}:
+                await asyncio.shield(worker)
         finally:
             interrupted.cancel()
             await asyncio.gather(interrupted, return_exceptions=True)
@@ -547,6 +547,8 @@ class ResponseHandler:
             if session.cancelled.is_set():
                 producer.cancel()
             await asyncio.gather(producer, return_exceptions=True)
+            if session.delivery in {DeliveryState.FAILED, DeliveryState.BLOCKED}:
+                await asyncio.shield(worker)
             return self._result(session, response, generation_state, generation_error)
         except asyncio.CancelledError:
             player = self._interrupt(session)
