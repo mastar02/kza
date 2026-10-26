@@ -45,7 +45,8 @@ from datetime import datetime
 from uuid import uuid4
 
 from src.core.logging import get_logger
-from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource, sources_current
+from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource, sources_authorized
+from src.memory.prompt_context import PromptContext, merge_sources
 
 logger = get_logger(__name__)
 
@@ -166,7 +167,7 @@ class UserContext:
     def sources_available(self, sources: tuple[MemorySource, ...]) -> bool:
         """Apply raw expiry and, when connected, committed conversation revocations."""
         now = time.time() if self._clock is None else self._clock()
-        return sources_current(sources, now) and (self._source_policy is None or self._source_policy.sources_available(sources))
+        return sources_authorized(sources, now, self._source_policy)
 
     def prune(self) -> None:
         """Remove expired/revoked text and summaries before any projection."""
@@ -270,6 +271,15 @@ class UserContext:
             "session_count": self.session_count,
             "summary_sources": [s.to_dict() for s in self.summary_sources],
         }
+
+
+@dataclass(frozen=True)
+class ContextPrompt:
+    """A prompt and its in-memory context epoch, without reconstructing sources."""
+
+    prompt: PromptContext
+    context: UserContext | None
+    revision: int
 
 
 class ContextManager:
@@ -591,7 +601,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             ctx.compaction_inflight = True
             turns = list(ctx.conversation_history[:count])
             turn_ids = {id(t) for t in turns}
-            sources = tuple({s.capture_id: s for s in (*ctx.summary_sources, *(s for t in turns for s in t.sources))}.values())
+            sources = merge_sources(ctx.summary_sources, *(t.sources for t in turns))
             preserved = list(ctx.preserved_ids)
             for turn in turns:
                 preserved.extend(turn.entities)
@@ -620,6 +630,26 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
                 if original._compaction_token is token:
                     original.compaction_inflight = False
                     original._compaction_token = None
+
+    def build_prompt_context(self, user_id: str, user_input: str) -> ContextPrompt:
+        """Capture text, included history/summary sources and context epoch together."""
+        with self._lock:
+            text = self.build_prompt(user_id, user_input)
+            ctx = self._contexts.get(user_id)
+            groups = []
+            if ctx is not None:
+                if ctx.compacted_summary or ctx.preserved_ids:
+                    groups.append(ctx.summary_sources)
+                groups.extend(t.sources for t in ctx.conversation_history if t.role != "system")
+            return ContextPrompt(PromptContext(text, merge_sources(*groups)), ctx,
+                                 ctx.privacy_revision if ctx is not None else 0)
+
+    def prompt_available(self, user_id: str, snapshot: ContextPrompt) -> bool:
+        """Reject a prompt after clear/replacement as well as source invalidation."""
+        with self._lock:
+            ctx = self._contexts.get(user_id)
+            return ctx is snapshot.context and (ctx is None or ctx.privacy_revision == snapshot.revision) and (
+                not snapshot.prompt.sources or ctx is not None and ctx.sources_available(snapshot.prompt.sources))
 
     def build_prompt(
         self,

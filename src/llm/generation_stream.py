@@ -3,7 +3,7 @@
 import asyncio
 import threading
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any
@@ -21,6 +21,31 @@ class _SyncRun:
     chunks: deque = field(default_factory=deque)
     done: bool = False
     error: BaseException | None = None
+
+
+class GuardedGeneration:
+    """Share the original producer while checking privacy at every async boundary."""
+
+    def __init__(self, source, available: Callable[[], bool]):
+        self.source, self.available = source, available
+        self.max_chars = source.max_chars
+
+    @property
+    def sync_busy(self) -> bool:
+        """Retain the original producer's admission and actual work ownership."""
+        return self.source.sync_busy
+
+    async def astream(self, prompt: str, **kwargs) -> AsyncIterator[dict]:
+        """Deny network admission and discard chunks from invalidated inputs."""
+        if not self.available():
+            raise asyncio.CancelledError
+        async with aclosing(self.source.astream(prompt, admission=self.available, **kwargs)) as stream:
+            async for chunk in stream:
+                if not self.available():
+                    raise asyncio.CancelledError
+                yield chunk
+        if not self.available():
+            raise asyncio.CancelledError
 
 
 class GenerationStream:
@@ -47,9 +72,15 @@ class GenerationStream:
         """Whether a synchronous producer still owns this backend."""
         return self._producer_lock.locked()
 
-    async def astream(self, prompt: str, **kwargs) -> AsyncIterator[dict]:
+    async def astream(self, prompt: str, *, admission: Callable[[], bool] | None = None, **kwargs) -> AsyncIterator[dict]:
         """Yield text deltas without synchronous inference on the event loop."""
+        if admission is not None and not admission():
+            raise asyncio.CancelledError
         native = getattr(self.reasoner, "astream", None)
+        admitted = getattr(self.reasoner, "astream_with_admission", None) if admission is not None else None
+        if callable(admitted):
+            native = admitted
+            kwargs["admission"] = admission
         if callable(native):
             async with aclosing(native(prompt, max_chars=self.max_chars, **kwargs)) as source:
                 async for chunk in source:
@@ -70,13 +101,15 @@ class GenerationStream:
         def produce() -> None:
             source = None
             try:
+                if admission is not None and not admission():
+                    return
                 streaming = getattr(self.reasoner, "generate_stream", None)
                 if callable(streaming):
                     source = iter(streaming(prompt, **kwargs))
                 else:
                     source = iter([{"token": self.reasoner.generate(prompt, **kwargs)}])
                 total = 0
-                while not run.cancelled.is_set():
+                while not run.cancelled.is_set() and (admission is None or admission()):
                     try:
                         chunk = next(source)
                     except StopIteration:

@@ -46,7 +46,7 @@ from src.core.logging import get_logger
 from src.core.voice_delivery import DeliveryState
 from src.home_assistant.home_actions import HomeActionService
 from src.home_assistant.voice_actions import VoiceHomeActionExecutor
-from src.llm.generation_stream import GenerationStream
+from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.memory.fact_ledger import MemorySource
 from src.orchestrator.cancellation import CancellationReason
 from src.orchestrator.context_manager import ContextManager
@@ -316,6 +316,7 @@ class DispatchResult:
     speech_handled: bool = False
     timeout_stage: str | None = None
     voice_delivery: str | None = None
+    memory_sources: tuple[MemorySource, ...] | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict:
         return {
@@ -1214,6 +1215,7 @@ class RequestDispatcher:
                 intent="timeout",
                 error="timeout",
                 speech_handled=request.speech_handled,
+                memory_sources=request.memory_sources,
                 was_queued=True,
                 timings=timings
             )
@@ -1224,6 +1226,7 @@ class RequestDispatcher:
             request.cancel(CancellationReason.USER_EXPLICIT)
             raise
 
+        request.prune_private()
         timings["llm"] = request.processing_time * 1000 if request.processing_time else 0
 
         # Issue C: el reasoner falló (red/cloud caído/excepción). Despertamos por
@@ -1242,6 +1245,7 @@ class RequestDispatcher:
                 intent="timeout" if request.timeout_stage is not None else "error",
                 error=result_holder.get("error"),
                 speech_handled=request.speech_handled,
+                memory_sources=request.memory_sources,
                 timeout_stage=request.timeout_stage, voice_delivery=request.voice_delivery,
                 was_queued=True,
                 queue_position=position,
@@ -1253,6 +1257,7 @@ class RequestDispatcher:
                 path=PathType.SLOW_LLM, priority=priority, success=False,
                 response="", intent="cancelled", was_queued=True, timings=timings,
                 speech_handled=request.speech_handled,
+                memory_sources=request.memory_sources,
             )
 
         response = result_holder["result"]
@@ -1262,6 +1267,7 @@ class RequestDispatcher:
             priority=priority,
             success=request.status.name == "COMPLETED",
             response=response or "Sin respuesta",
+            memory_sources=request.memory_sources,
             speech_handled=request.speech_handled,
             voice_delivery=request.voice_delivery,
             intent="conversation",
@@ -1995,18 +2001,30 @@ class MultiUserOrchestrator:
 
     async def _process_llm_request(self, request: Request):
         """Consume generation off the loop; cancel pending reads and late results."""
+        snapshot = None
+
+        def available() -> bool:
+            if snapshot is not None and not self.context_manager.prompt_available(request.user_id, snapshot):
+                request.prune_private(force=True)
+                return False
+            return not request.prune_private()
+
         async def generate() -> str:
-            effective_prompt = prompt
+            effective_prompt = snapshot.prompt.text
             if self.memory_manager is not None:
-                memory_context = await self.memory_manager.aformat_context_for_prompt(request.text)
-                if memory_context:
-                    effective_prompt = memory_context + "\n\n" + effective_prompt
+                memory_context = await self.memory_manager.aprompt_context(request.text)
+                request.memory_sources = memory_context.bind_sources(request.memory_sources)
+                if not available():
+                    return ""
+                if memory_context.text:
+                    effective_prompt = memory_context.text + "\n\n" + effective_prompt
+            guarded = GuardedGeneration(self._generation, available)
             if self.response_handler is not None:
                 def owned():
                     request.speech_handled = True
 
                 delivered = await self.response_handler.arespond(
-                    effective_prompt, zone_id=request.zone_id, generation=self._generation,
+                    effective_prompt, zone_id=request.zone_id, generation=guarded,
                     deadline=request.response_deadline, on_owned=owned,
                 )
                 if request.prune_private():
@@ -2022,7 +2040,7 @@ class MultiUserOrchestrator:
                     raise RuntimeError(delivered.error or "response_delivery_failed")
                 return delivered.text
             parts = []
-            async with aclosing(self._generation.astream(effective_prompt)) as source:
+            async with aclosing(guarded.astream(effective_prompt)) as source:
                 async for chunk in source:
                     token = chunk.get("token", "")
                     if token:
@@ -2031,7 +2049,7 @@ class MultiUserOrchestrator:
 
         async def watch_cancellation() -> None:
             while not request.is_cancelled:
-                request.prune_private()
+                available()
                 if self.queue.interrupt_for_priority(request.priority):
                     request.cancel(CancellationReason.HIGHER_PRIORITY)
                     return
@@ -2045,10 +2063,10 @@ class MultiUserOrchestrator:
                 request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
                 return
             # Construir prompt con contexto
-            prompt = self.context_manager.build_prompt(
-                request.user_id,
-                request.text
-            )
+            snapshot = self.context_manager.build_prompt_context(request.user_id, request.text)
+            request.memory_sources = snapshot.prompt.bind_sources(request.memory_sources)
+            if not available():
+                return
 
             generation = asyncio.create_task(generate())
             monitor = asyncio.create_task(watch_cancellation())
@@ -2057,10 +2075,14 @@ class MultiUserOrchestrator:
                 request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
                 return
             response = await generation
+            if not available():
+                return
             if not response.strip():
                 raise RuntimeError("generation_empty")
 
         except asyncio.CancelledError:
+            if request.cancellation_token.reason is CancellationReason.PRIVACY:
+                return
             request.cancel(CancellationReason.SYSTEM_SHUTDOWN)
             raise
 

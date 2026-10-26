@@ -15,8 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from src.memory.fact_ledger import MemoryOrigin, MemorySource
+from src.memory.fact_ledger import FactDependency, MemoryOrigin, MemorySource
 from src.memory.long_term import LongTermMemory
+from src.memory.prompt_context import PromptContext, merge_sources
 
 logger = logging.getLogger(__name__)
 
@@ -92,13 +93,17 @@ class ShortTermMemory:
             now = self._clock()
             self._turns = deque((t for t in self._turns
                 if t.timestamp+48*3600 > now and all(s.expires_at > now for s in t.sources)
-                and (self._source_policy is None or self._source_policy.sources_available(t.sources))),
+                and (not any(s.fact_dependencies for s in t.sources) if self._source_policy is None else self._source_policy.sources_available(t.sources))),
                 maxlen=self.max_turns)
             return list(self._turns)[-n:]
 
     def format_for_prompt(self, n: int = 3) -> str:
         """Formatear últimos turnos para incluir en prompt"""
-        recent = self.get_recent(n)
+        return self.format_turns(self.get_recent(n))
+
+    @staticmethod
+    def format_turns(recent: list[ConversationTurn]) -> str:
+        """Format the same selected snapshot whose source receipts are retained."""
         if not recent:
             return ""
 
@@ -276,6 +281,15 @@ class MemoryManager:
         """Build memory context without performing disk or embeddings on-loop."""
         return await self.long_term.acall(self.format_context_for_prompt, query)
 
+    def recent_prompt_context(self, limit: int = 3) -> PromptContext:
+        """Select short-term router context with the same raw dependency snapshot."""
+        recent = self.short_term.get_recent(limit)
+        return PromptContext(self.short_term.format_turns(recent), merge_sources(*(t.sources for t in recent)))
+
+    async def aprompt_context(self, query: str) -> PromptContext:
+        """Build text and provenance in one owned memory operation."""
+        return await self.long_term.acall(self.prompt_context, query)
+
     def record_interaction(
         self,
         user_input: str,
@@ -325,7 +339,8 @@ class MemoryManager:
             }
         """
         # Conversación reciente
-        short_term_context = self.short_term.format_for_prompt(n=3)
+        recent = self.short_term.get_recent(n=3)
+        short_term_context = self.short_term.format_turns(recent)
 
         # Hechos relevantes
         relevant_facts = self.long_term.search_relevant(
@@ -338,19 +353,28 @@ class MemoryManager:
         # Preserve that file for review; only policy-confirmed preferences
         # enter this context channel. Automatic preference facts use search.
         preferences = {}
+        preference_facts = {}
         for fact in self.long_term.get_by_category("preference", limit=100):
             if fact["state"] == "confirmed":
                 key, separator, value = fact["content"].partition(": ")
                 preferences[key if separator else fact["id"]] = value if separator else key
+                preference_facts[key if separator else fact["id"]] = fact
 
         return {
             "short_term": short_term_context,
             "relevant_facts": relevant_facts,
-            "preferences": preferences
+            "preferences": preferences,
+            "sources": merge_sources(*(turn.sources for turn in recent)),
+            "fact_dependencies": tuple(FactDependency(f["id"], f["revision"], f["expires_at"])
+                for f in {f["id"]: f for f in [*preference_facts.values(), *relevant_facts[:3]]}.values()),
         }
 
     def format_context_for_prompt(self, current_query: str) -> str:
         """Formatear contexto como string para incluir en prompt"""
+        return self.prompt_context(current_query).text
+
+    def prompt_context(self, current_query: str) -> PromptContext:
+        """Select prompt text and exactly its short-term/fact dependencies."""
         context = self.build_context(current_query)
 
         sections = []
@@ -369,7 +393,7 @@ class MemoryManager:
         if context["short_term"]:
             sections.append(context["short_term"])
 
-        return "\n\n".join(sections) if sections else ""
+        return PromptContext("\n\n".join(sections), context["sources"], context["fact_dependencies"])
 
     def remember_preference(self, key: str, value: str, explicit: bool = False):
         """Propose an explicit preference; inference gets only an automatic TTL."""

@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -669,8 +669,10 @@ class HttpReasoner:
         return resources
 
     @asynccontextmanager
-    async def _async_generation_session(self):
+    async def _async_generation_session(self, admission: Callable[[], bool] | None = None):
         """Pin consent/configuration and retain constructor and client cleanup."""
+        if admission is not None and not admission():
+            raise asyncio.CancelledError
         base_url, style, configured_model = self.base_url, self.api_style, self.model
         self.policy.require_allowed(base_url)
         if style not in {"chat", "completions"}:
@@ -715,11 +717,17 @@ class HttpReasoner:
             self.policy.require_allowed(base_url)
             if (self.base_url, self.api_style, self.model) != (base_url, style, configured_model):
                 raise RuntimeError("reasoner_configuration_changed")
+            if admission is not None and not admission():
+                raise asyncio.CancelledError
             yield resources.client, model, style
+
+    def astream_with_admission(self, prompt: str, *, admission: Callable[[], bool], **kwargs) -> AsyncIterator[dict]:
+        """Expose source admission at the actual native prompt-send boundary."""
+        return self.astream(prompt, admission=admission, **kwargs)
 
     async def astream(
         self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7,
-        *, max_chars: int = 65536,
+        *, max_chars: int = 65536, admission: Callable[[], bool] | None = None,
     ) -> AsyncIterator[dict]:
         """Yield sanitized text deltas with native async I/O and owned resources.
 
@@ -744,7 +752,7 @@ class HttpReasoner:
         """
         if type(max_chars) is not int or max_chars <= 0:
             raise ValueError("invalid_generation_limit")
-        async with self._async_generation_session() as (client, model, style):
+        async with self._async_generation_session(admission) as (client, model, style):
             options = {"model": model, "max_tokens": max_tokens, "temperature": temperature, "stream": True}
             if style == "chat":
                 options["messages"] = [{"role": "user", "content": prompt}]

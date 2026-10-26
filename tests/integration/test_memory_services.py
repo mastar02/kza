@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -247,7 +248,11 @@ async def test_both_voice_routes_retrieve_policy_memory_and_record_actual_captur
                 assert len(history) == 2 and all(t.sources[0] == turns[0].sources[0] for t in history)
                 assert all(t.timestamp == event.captured_at for t in history)
             recorded = await events.acall(events.get_events)
-            assert len(recorded) == 1 and recorded[0].sources[0] == turns[0].sources[0]
+            assert len(recorded) == 1
+            # ASR acceptance precedes memory selection; only the generated
+            # interaction carries the subsequently recalled semantic receipt.
+            assert recorded[0].sources[0] == replace(turns[0].sources[0], fact_dependencies=())
+            assert turns[0].sources[0].fact_dependencies
             assert recorded[0].trigger_phrase == 'Nexa explicame el cielo'
             clock.now += 48*3600
             assert (await events.acall(events.get_events))[0].trigger_phrase is None

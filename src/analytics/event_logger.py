@@ -185,7 +185,10 @@ class EventLogger:
     def _unrevoked(self, encoded: str) -> bool:
         try:
             sources = tuple(MemorySource.from_dict(item) for item in json.loads(encoded))
-            return self.source_policy is None or not any(self.source_policy.conversation_revoked(s.conversation_id) for s in sources)
+            if self.source_policy is None:
+                return not any(s.fact_dependencies for s in sources)
+            return all(not self.source_policy.conversation_revoked(s.conversation_id)
+                       and self.source_policy.facts_available(s.fact_dependencies) for s in sources)
         except (TypeError, ValueError, KeyError, AttributeError):
             return False
 

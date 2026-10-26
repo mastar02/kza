@@ -29,6 +29,8 @@ from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
 from src.analytics.asr_quality import alog_asr_outcome
 from src.memory.transient import TransientCache
+from src.memory.prompt_context import PromptContext, SourcesInvalidated, run_private
+from src.llm.generation_stream import GuardedGeneration
 from src.core.owned_work import OwnedBlockingWork
 from src.nlu.llm_router import LLMCommandRouter
 
@@ -339,6 +341,7 @@ class RequestRouter:
         self._command_count = 0
         self._response_zone = ContextVar("response_zone", default=None)
         self._memory_source = ContextVar("memory_source", default=None)
+        self._response_sources = ContextVar("response_sources", default=())
 
         # Last-action tracker para comandos ambiguos (Q6: contextual + pregunta fallback)
         if action_tracker is None:
@@ -520,6 +523,7 @@ class RequestRouter:
         from src.memory.fact_ledger import MemoryOrigin
         from uuid import uuid4
         self._memory_source.set(None)
+        self._response_sources.set(())
         try:
             captured_at = getattr(audio_or_event, "captured_at", None)
             if captured_at is None:
@@ -569,7 +573,7 @@ class RequestRouter:
                     source = self._memory_source.get()
                     if source is None:
                         return result
-                    source_options["sources"] = (source,)
+                    source_options["sources"] = self._active_sources()
                     result["capture_id"] = source.capture_id
                     result["conversation_id"] = source.conversation_id
                 await self._memory_call("record_interaction", user_input=result.get("text", ""),
@@ -930,6 +934,13 @@ class RequestRouter:
             memory_sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
 
+        if isinstance(getattr(dispatch_result, "memory_sources", None), tuple):
+            self._response_sources.set(dispatch_result.memory_sources)
+        if dispatch_result.intent in {"conversation", "cancelled"} and not self._current_source_available():
+            result.update(intent="cancelled", success=False, response="")
+            result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
+            return result
+
         # 6. Build result
         result["intent"] = dispatch_result.intent
         result["response"] = dispatch_result.response
@@ -972,12 +983,14 @@ class RequestRouter:
         )
         if dispatch_result.speech_handled is not True and not _domotics_ok:
             emotion_adj = emotion.response_adjustment if emotion else None
-            delivery = await self._speak_response(
-                result["response"],
-                zone_id=zone_id,
-                emotion_adjustment=emotion_adj,
-                room_context=room_context,
+            operation = self._speak_response(
+                result["response"], zone_id=zone_id, emotion_adjustment=emotion_adj, room_context=room_context,
             )
+            try:
+                delivery = await run_private(operation, self._current_source_available) if dispatch_result.intent == "conversation" else await operation
+            except SourcesInvalidated:
+                result.update(intent="cancelled", success=False, response="")
+                return result
             result["voice_delivery"] = delivery.delivery.value
             if dispatch_result.intent == "conversation" and not delivery.success:
                 result["success"] = False
@@ -1407,11 +1420,16 @@ class RequestRouter:
             try:
                 t_router = time.perf_counter()
                 # Classify and respond in ONE inference (saves ~20ms)
-                use_deep, router_response = await self._query_work.run(self.router.classify_and_respond,
-                    text,
-                    context=self._get_conversation_context(),
-                    max_tokens=256
-                )
+                recent_context = await self._get_conversation_context()
+                def infer_router():
+                    if self._closed or not self._current_source_available():
+                        raise SourcesInvalidated("prompt_sources_invalidated")
+                    response = self.router.classify_and_respond(text, context=recent_context, max_tokens=256)
+                    if self._closed or not self._current_source_available():
+                        response = None
+                        raise SourcesInvalidated("prompt_sources_invalidated")
+                    return response
+                use_deep, router_response = await run_private(self._query_work.run(infer_router), self._current_source_available)
                 result["timings"]["router"] = (time.perf_counter() - t_router) * 1000
             except Exception as e:
                 logger.warning(f"Router failed: {e}")
@@ -1425,22 +1443,29 @@ class RequestRouter:
             result["response"] = router_response
             result["success"] = True
             emotion_adj = emotion.response_adjustment if emotion else None
-            delivery = await self._speak_response(
-                result["response"],
-                emotion_adjustment=emotion_adj,
-                room_context=room_context,
-            )
+            try:
+                delivery = await run_private(self._speak_response(
+                    result["response"], emotion_adjustment=emotion_adj, room_context=room_context,
+                ), self._current_source_available)
+            except SourcesInvalidated:
+                result.update(intent="cancelled", success=False, response="")
+                return result
             result["success"] = delivery.success
         else:
             prompt = await self._build_prompt(text)
             emotion_adj = emotion.response_adjustment if emotion else None
-            delivery = await self.response_handler.arespond(
-                prompt,
-                zone_id=f"zone_{room_context.room_id}" if room_context else (f"zone_{room_id}" if room_id else None),
-                max_tokens=512,
-                temperature=0.7,
-                emotion_adjustment=emotion_adj
-            )
+            try:
+                delivery = await run_private(self.response_handler.arespond(
+                    prompt,
+                    zone_id=f"zone_{room_context.room_id}" if room_context else (f"zone_{room_id}" if room_id else None),
+                    generation=GuardedGeneration(self.response_handler._generation, self._current_source_available),
+                    max_tokens=512,
+                    temperature=0.7,
+                    emotion_adjustment=emotion_adj
+                ), self._current_source_available)
+            except SourcesInvalidated:
+                result.update(intent="cancelled", success=False, response="")
+                return result
             result["timings"]["llm_stream"] = (time.perf_counter() - pipeline_start) * 1000
             result["response"] = delivery.text.strip()
             result["success"] = delivery.success
@@ -1737,20 +1762,19 @@ class RequestRouter:
             except Exception as e:
                 logger.warning(f"MetricsEmitter emit_request failed: {e}")
 
-    def _get_conversation_context(self) -> str:
-        """Get brief context for the router (optimized for speed)."""
-        context_parts = []
-
-        # Memory context (if available)
-        if self.memory:
-            try:
-                recent = self.memory.get_recent_context(limit=3)
-                if recent:
-                    context_parts.append(f"Reciente: {recent}")
-            except Exception as e:
-                logger.debug(f"Failed to get memory context: {e}")
-
-        return " | ".join(context_parts) if context_parts else ""
+    async def _get_conversation_context(self) -> str:
+        """Select recent text and its sources off-loop for the fast reasoner."""
+        if self.memory is None:
+            return ""
+        try:
+            selected = await self._memory_call("recent_prompt_context", limit=3)
+            if not isinstance(selected, PromptContext):
+                raise TypeError("memory_prompt_provenance_required")
+            self._response_sources.set(selected.bind_sources(self._active_sources()))
+            return selected.text
+        except Exception as error:
+            logger.debug("Recent prompt context unavailable: %s", type(error).__name__)
+            return ""
 
     async def _build_prompt(self, user_text: str) -> str:
         """Build prompt with context for LLM reasoning."""
@@ -1762,9 +1786,12 @@ class RequestRouter:
         memory_context = ""
         if self.memory:
             try:
-                memory_context = await self._memory_call("format_context_for_prompt", user_text)
-                if memory_context:
-                    memory_context = f"\n{memory_context}\n"
+                selected = await self._memory_call("prompt_context", user_text)
+                if not isinstance(selected, PromptContext):
+                    raise TypeError("memory_prompt_provenance_required")
+                self._response_sources.set(selected.bind_sources(self._active_sources()))
+                if selected.text:
+                    memory_context = f"\n{selected.text}\n"
             except Exception as e:
                 logger.debug(f"Error getting memory context: {e}")
 
@@ -1803,8 +1830,7 @@ Asistente:"""
 
     def _add_to_cache(self, key: str, value: dict):
         """Retain a bounded query result only while its actual capture survives."""
-        source = self._memory_source.get()
-        return self._query_cache.put(key, value, (source,) if source is not None else ())
+        return self._query_cache.put(key, value, self._active_sources())
 
     async def _classify_command(self, text: str, *, room_id: str | None = None):
         options = {}
@@ -1813,12 +1839,15 @@ Asistente:"""
             options["sources"] = (source,) if source is not None else ()
         return await self.llm_command_router.classify(text, room_id=room_id, **options)
 
-    def _current_source_available(self) -> bool:
-        from src.memory.fact_ledger import sources_current
+    def _active_sources(self):
+        """Use derived lineage once selected; original capture remains the fallback."""
+        sources = self._response_sources.get()
         source = self._memory_source.get()
-        sources = (source,) if source is not None else ()
-        return sources_current(sources, self._query_cache.clock()) and (
-            self._source_policy is None or self._source_policy.sources_available(sources))
+        return sources or ((source,) if source is not None else ())
+
+    def _current_source_available(self) -> bool:
+        from src.memory.fact_ledger import sources_authorized
+        return not self._closed and sources_authorized(self._active_sources(), self._query_cache.clock(), self._source_policy)
 
     def prune_private(self) -> None:
         """Drop idle query/history copies; every read enforces the same policy."""

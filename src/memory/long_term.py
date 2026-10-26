@@ -61,8 +61,8 @@ class LongTermMemory:
             self._require_open()
             if self._collection is not None:
                 return
-            self.ledger.initialize()
             if self.ledger.path != ":memory:" and self._lease is None:
+                Path(self.ledger.path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 descriptor = os.open(str(Path(self.ledger.path)) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
                 try:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -70,6 +70,8 @@ class LongTermMemory:
                     os.close(descriptor)
                     raise RuntimeError("memory_writer_already_active") from None
                 self._lease = descriptor
+            # Acquire the writer lease before schema migration can mutate data.
+            self.ledger.initialize()
             self._collection = self._client.get_or_create_collection(
                 name=self.index_collection_name,
                 metadata={"description": "Policy-managed memory index", "fact_policy": 1},

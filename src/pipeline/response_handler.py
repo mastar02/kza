@@ -12,7 +12,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from src.llm.generation_stream import GenerationStream
+from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.core.voice_delivery import (
     DeliveryState, GenerationState, ResponseBudgets, ResponseResult, ResponseStage, ResponseTimedOut,
 )
@@ -117,7 +117,7 @@ class ResponseHandler:
         self._active_zone_id = None
         self._earcon_audio, self._earcon_sr = None, 24000
         self._generation = GenerationStream(llm)
-        self._generation_sources: set[GenerationStream] = {self._generation}
+        self._generation_sources: set[GenerationStream | GuardedGeneration] = {self._generation}
 
     @property
     def is_speaking(self) -> bool:
@@ -637,7 +637,7 @@ class ResponseHandler:
                 phrases.append(phrase.strip())
         return phrases, text
 
-    async def arespond(self, prompt: str, zone_id=None, *, generation: GenerationStream | None = None,
+    async def arespond(self, prompt: str, zone_id=None, *, generation: GenerationStream | GuardedGeneration | None = None,
                        max_tokens: int = 1024, temperature: float = 0.7, room_context=None,
                        emotion_adjustment=None, use_filler: bool | None = None,
                        deadline: float | None = None, on_owned: Callable[[], None] | None = None) -> ResponseResult:

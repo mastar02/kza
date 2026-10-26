@@ -11,11 +11,11 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from src.orchestrator.context_manager import UserContext
-from src.memory.fact_ledger import MemorySource, sources_current
+from src.memory.fact_ledger import MemorySource, sources_authorized
 
 logger = logging.getLogger(__name__)
 
-PERSISTED_VERSION = 2
+PERSISTED_VERSION = 3
 
 # Path-traversal guard: user_id is concatenated into base_path/<user_id>.json,
 # so we reject anything that could escape the directory ('..', '/', NUL,
@@ -29,8 +29,9 @@ class ContextPersister:
 
     Plan #2 OpenClaw — see docs/superpowers/specs/2026-04-28-openclaw-context-compaction-design.md
 
-    New snapshots live in base_path/policy_v2/<user_id>.json. Legacy files
-    remain untouched and are never hydrated. Writes use private unique
+    New snapshots live in base_path/policy_v3/<user_id>.json. Prior policy_v2
+    summaries have no verified prompt lineage and are never hydrated. Their
+    original raw expiry is still cleaned; pre-policy legacy files remain intact. Writes use private unique
     temporary files and an atomic replace, serialized against revocations.
 
     Persisted fields (subset of UserContext): version, user_id, user_name,
@@ -54,7 +55,8 @@ class ContextPersister:
 
     def __init__(self, base_path: Path | str = Path("data/contexts"), *, source_policy=None, clock=None):
         self.legacy_base_path = Path(base_path)
-        self.base_path = self.legacy_base_path / "policy_v2"
+        self.base_path = self.legacy_base_path / "policy_v3"
+        self.previous_policy_path = self.legacy_base_path / "policy_v2"
         self.source_policy = source_policy
         self._clock = time.time if clock is None else clock
         self._lock = threading.RLock()
@@ -66,7 +68,7 @@ class ContextPersister:
         if not payload.get("compacted_summary"):
             return not payload.get("preserved_ids")
         sources = self._sources(payload)
-        return sources_current(sources, self._clock()) and (self.source_policy is None or self.source_policy.sources_available(sources))
+        return sources_authorized(sources, self._clock(), self.source_policy)
 
     def _validate_user_id(self, user_id: str) -> None:
         if not _SAFE_USER_ID.match(user_id):
@@ -238,13 +240,14 @@ class ContextPersister:
             for temporary in self.base_path.glob(".snapshot-*"):
                 temporary.unlink()
                 removed += 1
-            for path in self.base_path.glob("*.json"):
-                try:
-                    data = json.loads(path.read_text())
-                    if isinstance(data, dict) and data.get("version") == PERSISTED_VERSION and not self._available(data):
-                        path.unlink()
-                        removed += 1
-                except (ValueError, TypeError, KeyError, AttributeError):
-                    # Unknown/corrupt payloads are not accepted as live context.
-                    continue
+            for directory, version in ((self.base_path, PERSISTED_VERSION), (self.previous_policy_path, 2)):
+                for path in directory.glob("*.json"):
+                    try:
+                        data = json.loads(path.read_text())
+                        if isinstance(data, dict) and data.get("version") == version and not self._available(data):
+                            path.unlink()
+                            removed += 1
+                    except (ValueError, TypeError, KeyError, AttributeError):
+                        # Unknown/corrupt payloads are not accepted as live context.
+                        continue
         return removed

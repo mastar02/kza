@@ -35,7 +35,7 @@ from enum import IntEnum
 from typing import Any, Callable
 
 from src.core.logging import get_logger
-from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource, sources_current
+from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource, sources_authorized
 from src.orchestrator.cancellation import (
     CancellationToken,
     CancellationReason
@@ -125,8 +125,7 @@ class Request:
 
     def private_available(self) -> bool:
         """Check original capture deadlines and committed source revocations."""
-        return not self._scrubbed and sources_current(self.memory_sources, self._clock()) and (
-            self._source_policy is None or self._source_policy.sources_available(self.memory_sources))
+        return not self._scrubbed and sources_authorized(self.memory_sources, self._clock(), self._source_policy)
 
     def prune_private(self, *, force: bool = False) -> bool:
         """Cancel invalid work and scrub its text, response, errors and closures."""

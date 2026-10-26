@@ -663,7 +663,9 @@ class TestBuildPrompt:
         ha.get_domotics_entities = AsyncMock(return_value=[])
 
         memory = MagicMock()
-        memory.format_context_for_prompt.return_value = "User likes warm lights"
+        from src.memory.prompt_context import PromptContext
+        from tests.mocks.memory_sources import memory_source
+        memory.prompt_context.return_value = PromptContext("User likes warm lights", (memory_source(),))
 
         router = _build_router(ha_client=ha, memory_manager=memory)
         prompt = await router._build_prompt("que hora es")

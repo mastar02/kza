@@ -26,12 +26,41 @@ class FactState(StrEnum):
     PROPOSED = "proposed"
     CONFIRMED = "confirmed"
     DELETED = "deleted"
+    QUARANTINED = "quarantined"
 
 
 class MemoryOrigin(StrEnum):
     AMBIENT = "ambient"
     VOICE = "voice"
     INTERACTION = "interaction"
+
+
+@dataclass(frozen=True)
+class FactDependency:
+    """Content-free receipt for one semantic fact included in a prompt."""
+
+    fact_id: str
+    revision: int
+    expires_at: float | None
+
+    def __post_init__(self) -> None:
+        if type(self.fact_id) is not str or not self.fact_id.startswith("fact_") or len(self.fact_id) != 69:
+            raise ValueError("invalid_fact_dependency")
+        if any(c not in "0123456789abcdef" for c in self.fact_id[5:]):
+            raise ValueError("invalid_fact_dependency")
+        if type(self.revision) is not int or self.revision < 1:
+            raise ValueError("invalid_fact_dependency_revision")
+        if self.expires_at is not None and (type(self.expires_at) not in (int, float) or not math.isfinite(self.expires_at)):
+            raise ValueError("invalid_fact_dependency_expiry")
+
+    def to_dict(self) -> dict:
+        """Serialize a receipt without copying semantic content."""
+        return {"fact_id": self.fact_id, "revision": self.revision, "expires_at": self.expires_at}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> FactDependency:
+        """Validate persisted receipts; malformed provenance fails closed."""
+        return cls(data["fact_id"], data["revision"], data["expires_at"])
 
 
 @dataclass(frozen=True)
@@ -43,6 +72,7 @@ class MemorySource:
     captured_at: float
     expires_at: float
     origin: MemoryOrigin
+    fact_dependencies: tuple[FactDependency, ...] = ()
 
     def __post_init__(self) -> None:
         for value in (self.capture_id, self.conversation_id):
@@ -55,22 +85,36 @@ class MemorySource:
             raise ValueError("invalid_memory_source_time")
         if not self.captured_at < self.expires_at <= self.captured_at + 48 * 3600:
             raise ValueError("invalid_memory_source_expiry")
+        if not isinstance(self.fact_dependencies, tuple) or any(not isinstance(d, FactDependency) for d in self.fact_dependencies):
+            raise ValueError("invalid_memory_fact_dependencies")
+        if len({d.fact_id for d in self.fact_dependencies}) != len(self.fact_dependencies):
+            raise ValueError("duplicate_memory_fact_dependency")
+        if any(d.expires_at is not None and self.expires_at > d.expires_at for d in self.fact_dependencies):
+            raise ValueError("memory_source_exceeds_dependency_expiry")
 
     def to_dict(self) -> dict:
         """Serialize verified provenance without adding derived authority."""
         return {"capture_id": self.capture_id, "conversation_id": self.conversation_id,
-                "captured_at": self.captured_at, "expires_at": self.expires_at, "origin": self.origin.value}
+                "captured_at": self.captured_at, "expires_at": self.expires_at, "origin": self.origin.value,
+                **({"fact_dependencies": [d.to_dict() for d in self.fact_dependencies]} if self.fact_dependencies else {})}
 
     @classmethod
     def from_dict(cls, data: dict) -> MemorySource:
         """Validate persisted provenance; missing legacy fields are not invented."""
         return cls(data["capture_id"], data["conversation_id"], data["captured_at"],
-                   data["expires_at"], MemoryOrigin(data["origin"]))
+                   data["expires_at"], MemoryOrigin(data["origin"]),
+                   tuple(FactDependency.from_dict(d) for d in data.get("fact_dependencies", [])))
 
 
 def sources_current(sources: tuple[MemorySource, ...], now: float) -> bool:
     """Check raw-source deadlines without touching disk or renewing retention."""
     return bool(sources) and all(isinstance(s, MemorySource) and s.captured_at <= now < s.expires_at for s in sources)
+
+
+def sources_authorized(sources: tuple[MemorySource, ...], now: float, policy=None) -> bool:
+    """Fail closed for fact receipts when their authoritative ledger is absent."""
+    return sources_current(sources, now) and (
+        policy.sources_available(sources) if policy is not None else not any(s.fact_dependencies for s in sources))
 
 
 @dataclass(frozen=True)
@@ -110,11 +154,9 @@ class StoredFact:
             "id": self.id, "content": self.content, "category": self.category,
             "confidence": self.confidence, "state": self.state.value,
             "created_at": self.extracted_at, "extracted_at": self.extracted_at,
-            "expires_at": self.expires_at, "confirmed_at": self.confirmed_at,
+            "expires_at": self.expires_at, "revision": self.revision, "confirmed_at": self.confirmed_at,
             "confirmed_by": self.confirmed_by,
-            "sources": [{"capture_id": s.capture_id, "conversation_id": s.conversation_id,
-                         "captured_at": s.captured_at, "expires_at": s.expires_at,
-                         "origin": s.origin.value} for s in self.sources],
+            "sources": [s.to_dict() for s in self.sources],
         }
 
 
@@ -128,9 +170,14 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE TABLE IF NOT EXISTS fact_sources (
   fact_id TEXT NOT NULL REFERENCES facts(id), capture_id TEXT NOT NULL,
   conversation_id TEXT NOT NULL, captured_at REAL NOT NULL,
-  expires_at REAL NOT NULL, origin TEXT NOT NULL,
+  expires_at REAL NOT NULL, origin TEXT NOT NULL, dependencies TEXT NOT NULL DEFAULT '[]',
   PRIMARY KEY(fact_id, capture_id)
 );
+CREATE TABLE IF NOT EXISTS fact_dependencies (
+  fact_id TEXT NOT NULL REFERENCES facts(id), source_fact_id TEXT NOT NULL REFERENCES facts(id),
+  PRIMARY KEY(fact_id, source_fact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_dependency_source ON fact_dependencies(source_fact_id);
 CREATE INDEX IF NOT EXISTS idx_fact_conversation ON fact_sources(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_fact_expiry ON facts(expires_at);
 CREATE TABLE IF NOT EXISTS conversation_tombstones (
@@ -156,6 +203,10 @@ class FactLedger:
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
         self._deleted_conversations: frozenset[str] = frozenset()
+        self._fact_receipts: dict[str, FactDependency] = {}
+        self._pending_fact_ids: frozenset[str] = frozenset()
+        self._pending_conversations: frozenset[str] = frozenset()
+        self._authority_version = 0
 
     def initialize(self) -> None:
         """Create the private ledger without importing legacy documents."""
@@ -171,16 +222,53 @@ class FactLedger:
             self._db.row_factory = sqlite3.Row
             self._db.execute("PRAGMA foreign_keys=ON")
             self._db.executescript(_SCHEMA)
+            if "dependencies" not in {r[1] for r in self._db.execute("PRAGMA table_info(fact_sources)")}:
+                try:
+                    self._db.execute("BEGIN IMMEDIATE")
+                    self._db.execute("ALTER TABLE fact_sources ADD COLUMN dependencies TEXT NOT NULL DEFAULT '[]'")
+                    # Previous automatic derivations did not record prompt
+                    # parents. Preserve their content privately, but do not
+                    # invent independence or let old index rows authorize use.
+                    for row in list(self._db.execute("SELECT id, revision FROM facts WHERE state=?", (FactState.AUTOMATIC.value,))):
+                        revision = row["revision"]+1
+                        self._db.execute("UPDATE facts SET state=?, revision=? WHERE id=?",
+                            (FactState.QUARANTINED.value, revision, row["id"]))
+                        self._queue(self._db, row["id"], revision, "delete")
+                    self._db.commit()
+                except BaseException:
+                    try:
+                        self._db.rollback()
+                    finally:
+                        self._db.close()
+                        self._db = None
+                    raise
+            self._fact_receipts = self._read_fact_receipts(self._db)
             self._deleted_conversations = frozenset(r[0] for r in self._db.execute("SELECT conversation_id FROM conversation_tombstones"))
 
     def sources_available(self, sources: tuple[MemorySource, ...]) -> bool:
         """Read this sole writer's committed revocations without disk on-loop."""
-        deleted = self._deleted_conversations
-        return sources_current(sources, self.clock()) and all(s.conversation_id not in deleted for s in sources)
+        return sources_current(sources, self.clock()) and all(
+            s.conversation_id not in self._deleted_conversations and s.conversation_id not in self._pending_conversations
+            and self.facts_available(s.fact_dependencies) for s in sources)
 
     def conversation_revoked(self, conversation_id: str) -> bool:
         """Read a committed revocation without disk or a SQLite lock."""
-        return conversation_id in self._deleted_conversations
+        return conversation_id in self._deleted_conversations or conversation_id in self._pending_conversations
+
+    def facts_available(self, dependencies: tuple[FactDependency, ...]) -> bool:
+        """Validate committed fact receipts without SQLite or locks on-loop."""
+        now = self.clock()
+        return all(d.fact_id not in self._pending_fact_ids and self._fact_receipts.get(d.fact_id) == d
+                   and (d.expires_at is None or now < d.expires_at) for d in dependencies)
+
+    def _read_fact_receipts(self, db) -> dict[str, FactDependency]:
+        receipts = {}
+        for fact_id, revision, expiry in db.execute(
+            "SELECT id, revision, expires_at FROM facts WHERE state IN (?,?)",
+            (FactState.AUTOMATIC.value, FactState.CONFIRMED.value)):
+            previous = self._fact_receipts.get(fact_id)
+            receipts[fact_id] = previous if previous is not None and (previous.revision, previous.expires_at) == (revision, expiry) else FactDependency(fact_id, revision, expiry)
+        return receipts
 
     @contextmanager
     def admit_source_write(self, sources: tuple[MemorySource, ...]):
@@ -206,12 +294,40 @@ class FactLedger:
         with self._lock:
             self.initialize()
             self._db.execute("BEGIN IMMEDIATE")
+            changes = self._authority_version
+            recovering = bool(self._pending_fact_ids or self._pending_conversations)
+            clear_pending = True
             try:
                 yield self._db
+                changed = self._authority_version != changes or recovering
+                if changed:
+                    receipts = self._read_fact_receipts(self._db)
+                    deleted = frozenset(r[0] for r in self._db.execute("SELECT conversation_id FROM conversation_tombstones"))
+                    # Deny affected readers before commit releases the GIL. New
+                    # positive authority is published only after durable commit.
+                    self._pending_fact_ids = frozenset(key for key in self._fact_receipts.keys() | receipts.keys()
+                        if self._fact_receipts.get(key) != receipts.get(key))
+                    self._pending_conversations = deleted - self._deleted_conversations
                 self._db.commit()
+                if changed:
+                    self._fact_receipts = receipts
+                    self._deleted_conversations = deleted
             except BaseException:
-                self._db.rollback()
+                clear_pending = False
+                try:
+                    self._db.rollback()
+                    # A failing commit may have reached disk. Re-read actual
+                    # authority after rollback; never restore an assumed state.
+                    self._fact_receipts = self._read_fact_receipts(self._db)
+                    self._deleted_conversations = frozenset(r[0] for r in self._db.execute("SELECT conversation_id FROM conversation_tombstones"))
+                    clear_pending = True
+                finally:
+                    if clear_pending:
+                        self._pending_fact_ids = self._pending_conversations = frozenset()
                 raise
+            finally:
+                if clear_pending:
+                    self._pending_fact_ids = self._pending_conversations = frozenset()
 
     def _queue(self, db, fact_id: str, revision: int, operation: str) -> None:
         db.execute(
@@ -225,6 +341,7 @@ class FactLedger:
         now = self.clock()
         return bool(sources) and all(
             s.captured_at <= now < s.expires_at
+            and all(self._fact_receipts.get(d.fact_id) == d and (d.expires_at is None or now < d.expires_at) for d in s.fact_dependencies)
             and db.execute("SELECT 1 FROM conversation_tombstones WHERE conversation_id=?", (s.conversation_id,)).fetchone() is None
             for s in sources
         )
@@ -242,13 +359,20 @@ class FactLedger:
             raise ValueError("memory_sources_required")
         if len({s.capture_id for s in sources}) != len(sources):
             raise ValueError("duplicate_memory_source")
+        dependencies = {d.fact_id: d for source in sources for d in source.fact_dependencies}
+        if proposed and dependencies:
+            raise PermissionError("memory_proposal_requires_direct_capture")
         with self._transaction() as db:
             if not self._sources_live(db, sources):
                 raise PermissionError("memory_source_expired_or_deleted")
             now = self.clock()
             state = FactState.PROPOSED if proposed else FactState.AUTOMATIC
             expiry = min(s.expires_at for s in sources) if proposed else now + self.automatic_days * 86400
-            key = json.dumps([content.strip(), category, sorted(s.capture_id for s in sources), proposed], ensure_ascii=False)
+            expiry = min([expiry, *(d.expires_at for d in dependencies.values() if d.expires_at is not None)])
+            identity = [content.strip(), category, sorted(s.capture_id for s in sources), proposed]
+            if dependencies:
+                identity.append([dependencies[key].to_dict() for key in sorted(dependencies)])
+            key = json.dumps(identity, ensure_ascii=False)
             fact_id = "fact_" + hashlib.sha256(key.encode()).hexdigest()
             previous = db.execute("SELECT id FROM facts WHERE id=?", (fact_id,)).fetchone()
             if previous is not None:
@@ -258,8 +382,11 @@ class FactLedger:
                 return existing
             db.execute("INSERT INTO facts VALUES (?,?,?,?,?,?,?,?,NULL,NULL)",
                        (fact_id, content.strip(), category, confidence, state.value, now, expiry, 1))
-            db.executemany("INSERT INTO fact_sources VALUES (?,?,?,?,?,?)", [
-                (fact_id, s.capture_id, s.conversation_id, s.captured_at, s.expires_at, s.origin.value) for s in sources])
+            db.executemany("INSERT INTO fact_sources VALUES (?,?,?,?,?,?,?)", [
+                (fact_id, s.capture_id, s.conversation_id, s.captured_at, s.expires_at, s.origin.value,
+                 json.dumps([d.to_dict() for d in s.fact_dependencies])) for s in sources])
+            db.executemany("INSERT INTO fact_dependencies VALUES (?,?)", [(fact_id, d.fact_id) for d in dependencies.values()])
+            self._authority_version += 1
             if not proposed:
                 self._queue(db, fact_id, 1, "upsert")
             return self._fact(db, fact_id)
@@ -269,14 +396,15 @@ class FactLedger:
         if row is None or row["state"] == FactState.DELETED:
             return None
         sources = tuple(MemorySource(s["capture_id"], s["conversation_id"], s["captured_at"],
-                                     s["expires_at"], MemoryOrigin(s["origin"]))
+                                     s["expires_at"], MemoryOrigin(s["origin"]),
+                                     tuple(FactDependency.from_dict(d) for d in json.loads(s["dependencies"])))
                         for s in db.execute("SELECT * FROM fact_sources WHERE fact_id=? ORDER BY capture_id", (fact_id,)))
         return StoredFact(row["id"], row["content"], row["category"], row["confidence"], FactState(row["state"]),
                           row["extracted_at"], row["expires_at"], row["revision"], sources,
                           row["confirmed_at"], row["confirmed_by"])
 
     def _eligible(self, db, fact: StoredFact | None, *, review: bool = False) -> bool:
-        if fact is None or (fact.expires_at is not None and fact.expires_at <= self.clock()):
+        if fact is None or fact.state is FactState.QUARANTINED or (fact.expires_at is not None and fact.expires_at <= self.clock()):
             return False
         if fact.state is FactState.PROPOSED and not review:
             return False
@@ -329,24 +457,29 @@ class FactLedger:
             db.execute("UPDATE facts SET state=?, expires_at=NULL, confirmed_at=?, confirmed_by=?, revision=? WHERE id=?",
                        (FactState.CONFIRMED.value, self.clock(), actor.subject, revision, fact_id))
             self._queue(db, fact_id, revision, "upsert")
+            self._authority_version += 1
             return self._fact(db, fact_id)
 
-    def _delete(self, db, fact_id: str) -> bool:
-        row = db.execute("SELECT revision, state FROM facts WHERE id=?", (fact_id,)).fetchone()
-        if row is None or row["state"] == FactState.DELETED:
-            return False
-        revision = row["revision"] + 1
-        db.execute("UPDATE facts SET content=NULL, state=?, expires_at=NULL, confirmed_at=NULL, confirmed_by=NULL, revision=? WHERE id=?",
-                   (FactState.DELETED.value, revision, fact_id))
-        db.execute("DELETE FROM fact_sources WHERE fact_id=?", (fact_id,))
-        self._queue(db, fact_id, revision, "delete")
-        return True
+    def _delete(self, db, fact_id: str) -> int:
+        rows = list(db.execute("""WITH RECURSIVE affected(id) AS (
+            SELECT ? UNION SELECT d.fact_id FROM fact_dependencies d JOIN affected a ON d.source_fact_id=a.id
+            ) SELECT f.id, f.revision FROM facts f JOIN affected a ON f.id=a.id WHERE f.state!=?""",
+            (fact_id, FactState.DELETED.value)))
+        for row in rows:
+            revision = row["revision"] + 1
+            db.execute("UPDATE facts SET content=NULL, state=?, expires_at=NULL, confirmed_at=NULL, confirmed_by=NULL, revision=? WHERE id=?",
+                       (FactState.DELETED.value, revision, row["id"]))
+            db.execute("DELETE FROM fact_sources WHERE fact_id=?", (row["id"],))
+            self._queue(db, row["id"], revision, "delete")
+        if rows:
+            self._authority_version += 1
+        return len(rows)
 
     def delete_fact(self, fact_id: str, actor: MemoryReviewer) -> bool:
         """Reject/delete a fact through the authenticated review boundary."""
         self._reviewer(actor)
         with self._transaction() as db:
-            return self._delete(db, fact_id)
+            return bool(self._delete(db, fact_id))
 
     def reject_proposal(self, fact_id: str, actor: MemoryReviewer) -> bool:
         """A stale rejection must not delete a proposal confirmed elsewhere."""
@@ -357,7 +490,7 @@ class FactLedger:
                 return False
             if fact.state is not FactState.PROPOSED:
                 raise ValueError("memory_proposal_state_changed")
-            return self._delete(db, fact_id)
+            return bool(self._delete(db, fact_id))
 
     def snapshot(self) -> dict:
         """Read one coherent review snapshot with a server expiry clock."""
@@ -382,6 +515,7 @@ class FactLedger:
             with self._transaction() as db:
                 db.execute("INSERT OR IGNORE INTO conversation_tombstones VALUES (?,?,?)",
                            (conversation_id, self.clock(), actor.subject))
+                self._authority_version += 1
                 ids = [r[0] for r in db.execute("SELECT DISTINCT fact_id FROM fact_sources WHERE conversation_id=?", (conversation_id,))]
                 deleted = sum(self._delete(db, fact_id) for fact_id in ids)
             self._deleted_conversations = self._deleted_conversations | {conversation_id}

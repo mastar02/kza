@@ -31,7 +31,8 @@ from typing import Optional
 from uuid import uuid4
 
 from src.core.owned_work import OwnedBlockingWork
-from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource, sources_current
+from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource, sources_authorized
+from src.memory.prompt_context import merge_sources
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +283,7 @@ class LLMCommandRouter:
         self._history: deque[_HistoryEntry] = deque(maxlen=max_history)
 
     def _available(self, sources: tuple[MemorySource, ...]) -> bool:
-        return not self._work.status()["closed"] and sources_current(sources, self._clock()) and (self.source_policy is None or self.source_policy.sources_available(sources))
+        return not self._work.status()["closed"] and sources_authorized(sources, self._clock(), self.source_policy)
 
     def _admission_sources(self) -> tuple[MemorySource, ...]:
         now = self._clock()
@@ -363,7 +364,7 @@ class LLMCommandRouter:
         if not self._available(sources):
             return CommandClassification(is_command=None, rejection_reason="unavailable")
         prompt = self._build_prompt(text, room_id)
-        dependencies = tuple({s.capture_id: s for s in (*sources, *(s for h in self._history for s in h.sources))}.values())
+        dependencies = merge_sources(sources, *(h.sources for h in self._history))
 
         def generate_if_current():
             if not self._available(dependencies):

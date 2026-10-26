@@ -7,7 +7,7 @@ import threading
 import time
 from typing import Generic, TypeVar
 
-from src.memory.fact_ledger import FactLedger, MemorySource, sources_current
+from src.memory.fact_ledger import FactLedger, MemorySource, sources_authorized
 
 T = TypeVar("T")
 
@@ -34,7 +34,7 @@ class TransientCache(Mapping[str, T]):
         self._closed = False
 
     def _live(self, sources: tuple[MemorySource, ...]) -> bool:
-        return sources_current(sources, self.clock()) and (self.source_policy is None or self.source_policy.sources_available(sources))
+        return sources_authorized(sources, self.clock(), self.source_policy)
 
     def put(self, key: str, value: T, sources: tuple[MemorySource, ...]) -> bool:
         """Store a copy with its source deadline; cache hits never renew it."""
