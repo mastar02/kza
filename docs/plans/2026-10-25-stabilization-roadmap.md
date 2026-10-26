@@ -253,9 +253,9 @@ La [validación de autoridad independiente](../research/2026-10-26-h3-privacy-au
 del commit `74edec5` registra **4459 passed, 1 xfailed**, sin fallos, en 159,57 s.
 Incluye 25 casos nuevos, conserva conversación y control local con memoria
 apagada, y pasa checks y artefacto compilado. El heartbeat mantiene p95 de
-0,23 ms y máximo de 1,09 ms frente a 25/75 ms. Todavía falta el coordinador
-con journal y participantes, incluida la limpieza de índices con memoria
-apagada y los lotes de destilación en curso; no se expone un borrado global.
+0,23 ms y máximo de 1,09 ms frente a 25/75 ms. Ese paso todavía no incluía el
+coordinador con journal y participantes, la limpieza de índices con memoria
+apagada ni los lotes de destilación en curso; no expone un borrado global.
 
 El avance siguiente agrega el journal transaccional de borrado y un manifiesto
 obligatorio de diez participantes. Sólo está conectado el índice: la limpieza
@@ -267,6 +267,12 @@ el plazo de cierre no libera su trabajo nativo ni la lease. Faltan los demás
 productores/copias y la integración autenticada del borrado global. La
 reconciliación de todos los vencimientos y borrados individuales sin recall
 también sigue pendiente. El detalle está en el plan de H3.
+
+La [validación del journal](../research/2026-10-26-h3-erasure-journal-validation.json)
+del commit `572aad5` registra **4484 passed, 1 xfailed**, sin fallos, en 161,58 s,
+con 25 casos nuevos y los checks y artefacto compilado aceptados. El heartbeat
+mantiene p95 de 0,18 ms y máximo de 1,00 ms frente a 25/75 ms. La revisión cubre
+la retención sanitizada de resultados mientras falla el guardado de recibos.
 
 La retención de huellas autorizada arriba todavía no está implementada. Siguen
 pendientes otras copias de texto y audio (otros logs, colectores,

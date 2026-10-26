@@ -1,0 +1,277 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "572aad55a730969c11c37f17e9047f75f91eb7dd",
+  "initial_implementation_commit": "30da2795aa7cadd111279c4c01945ebb1a5a80c5",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 atomic conversation erasure journal, retained cleanup claims and cleanup-only policy vector index across disabled recall and historical storage locations",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "collected": 4485,
+    "passed": 4484,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 161.58,
+    "junit_time_s": 161.539,
+    "log": "/tmp/kza-h3-erasure-reviewed-final-suite.log",
+    "xml": "/tmp/kza-h3-erasure-reviewed-final.xml",
+    "accepted": true,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "metrics": {
+      "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+        "heartbeat_ms": {
+          "repetitions": 10,
+          "stall_ms": 200,
+          "interval_ms": 5,
+          "samples": 400,
+          "p95": 0.17539109103381634,
+          "max": 1.001531258225441
+        }
+      },
+      "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+        "cancellation_ms": {
+          "repetitions": 10,
+          "request_control": {
+            "p50": 0.05611497908830643,
+            "p95": 0.0766250304877758,
+            "max": 0.0766250304877758
+          },
+          "stream_and_client_cleanup": {
+            "p50": 10.861414950340986,
+            "p95": 11.059164069592953,
+            "max": 11.059164069592953
+          }
+        }
+      },
+      "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+        "owned_voice_metrics": {
+          "repetitions": 10,
+          "stall_ms": 200,
+          "heartbeat_interval_ms": 5,
+          "heartbeat_samples": 427,
+          "loop_lag_p95_ms": 0.42423815466463566,
+          "loop_lag_max_ms": 1.0392691474407911,
+          "cancel_cleanup_max_ms": 1.7102581914514303,
+          "exact_pcm_runs": 10
+        }
+      },
+      "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+        "long_complete_voice_metrics": {
+          "repetitions": 10,
+          "sentences_per_run": 100,
+          "samples_per_run": 2400000,
+          "provider_wait_ms": 200,
+          "heartbeat_interval_ms": 5,
+          "heartbeat_samples": 2730,
+          "loop_lag_p95_ms": 0.9904251247644423,
+          "loop_lag_max_ms": 3.684832137078047,
+          "exact_pcm_runs": 10
+        }
+      },
+      "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+        "voice_application_close_ms": {
+          "repetitions": 10,
+          "p50": 0.7979979272931814,
+          "p95": 6.461829878389835,
+          "max": 6.461829878389835,
+          "cooperative_cleanup_limit_ms": 1000
+        }
+      }
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 5.781,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    },
+    "new_connected_cases": 25
+  },
+  "first_full_suite": {
+    "tested_commit": "30da2795aa7cadd111279c4c01945ebb1a5a80c5",
+    "collected": 4482,
+    "passed": 4481,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 163.3,
+    "junit_time_s": 163.248,
+    "log": "/tmp/kza-h3-erasure-final.log",
+    "xml": "/tmp/kza-h3-erasure-final.xml",
+    "accepted": true,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "metrics": {
+      "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+        "heartbeat_ms": {
+          "repetitions": 10,
+          "stall_ms": 200,
+          "interval_ms": 5,
+          "samples": 400,
+          "p95": 0.4258989356458187,
+          "max": 1.115861115977168
+        }
+      },
+      "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+        "cancellation_ms": {
+          "repetitions": 10,
+          "request_control": {
+            "p50": 0.05860906094312668,
+            "p95": 0.06545917131006718,
+            "max": 0.06545917131006718
+          },
+          "stream_and_client_cleanup": {
+            "p50": 10.904076043516397,
+            "p95": 11.077468050643802,
+            "max": 11.077468050643802
+          }
+        }
+      },
+      "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+        "owned_voice_metrics": {
+          "repetitions": 10,
+          "stall_ms": 200,
+          "heartbeat_interval_ms": 5,
+          "heartbeat_samples": 428,
+          "loop_lag_p95_ms": 0.32967422157526016,
+          "loop_lag_max_ms": 2.497941255569458,
+          "cancel_cleanup_max_ms": 1.7956129740923643,
+          "exact_pcm_runs": 10
+        }
+      },
+      "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+        "long_complete_voice_metrics": {
+          "repetitions": 10,
+          "sentences_per_run": 100,
+          "samples_per_run": 2400000,
+          "provider_wait_ms": 200,
+          "heartbeat_interval_ms": 5,
+          "heartbeat_samples": 2738,
+          "loop_lag_p95_ms": 0.9972230810672044,
+          "loop_lag_max_ms": 3.6176840122789145,
+          "exact_pcm_runs": 10
+        }
+      },
+      "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+        "voice_application_close_ms": {
+          "repetitions": 10,
+          "p50": 0.6742391269654036,
+          "p95": 5.9574139304459095,
+          "max": 5.9574139304459095,
+          "cooperative_cleanup_limit_ms": 1000
+        }
+      }
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 6.19,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    },
+    "new_connected_cases": 22
+  },
+  "review_counterexample": {
+    "log": "/tmp/kza-h3-erasure-private-exception-repro.log",
+    "failed": 1,
+    "against_implementation_commit": "30da2795aa7cadd111279c4c01945ebb1a5a80c5",
+    "cause": "If journal acknowledgement failed, the retained callback task still owned its original driver exception and traceback, including private exception text",
+    "correction": "Normalize callback success/failure inside the owned task to a content-free outcome; reject invalid results and copy only the exact result DTO fields",
+    "final_regressions": 3,
+    "scenarios": [
+      "driver exception",
+      "invalid result with raw fields",
+      "valid result subclass with extra private fields"
+    ]
+  },
+  "focused_validation": {
+    "reviewed_memory_graph": {
+      "passed": 72,
+      "runtime_s": 5.82,
+      "log": "/tmp/kza-h3-erasure-reviewed-final.log"
+    },
+    "final_coordinator_cases": {
+      "passed": 25,
+      "runtime_s": 2.0,
+      "log": "/tmp/kza-h3-erasure-sanitized-final.log"
+    }
+  },
+  "test_development_corrections": [
+    {
+      "log": "/tmp/kza-h3-erasure-first.log",
+      "cause": "Test expected an empty string instead of the ledger existing NULL scrub representation",
+      "resolution": "Assert SQL NULL; runtime scrub policy unchanged"
+    },
+    {
+      "log": "/tmp/kza-h3-erasure-reviewed.log",
+      "cause": "Test assumed that releasing the native gate meant disk/client cleanup had already finished within a deliberately tiny 10 ms observation deadline",
+      "resolution": "Keep the tested observation deadline unchanged and await actual retained drain tasks before final resource assertions"
+    }
+  ],
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000
+  },
+  "proven": [
+    "Conversation revocation, descendant fact scrub, cleanup operation and all required participant placeholders commit atomically; failures roll them back together",
+    "Repeated requests preserve operation ID, original actor and request time; old pre-journal tombstones recover pending operations with original metadata",
+    "Missing participants, missing driver versions and historical targets remain pending or blocked; all required receipts are needed for aggregate completion",
+    "Private target registry persists every registered historical location; new targets reopen previous operations; semantic factory registers a location before first index access even when initialization later fails",
+    "Opaque exclusive claim tokens and target versions reject stale acknowledgements; running claim recovery occurs once after leased runtime initialization rather than ordinary ledger opens",
+    "Claim-to-task handoff, bounded callbacks and actual native resources survive observer cancellation and close timeout; a competing writer remains rejected until actual drain",
+    "Failed acknowledgement retains a sanitized completed outcome and retries only the receipt, without rerunning physical cleanup for the same live claim",
+    "Journal status excludes descriptors, paths, claim tokens, cursors and provider exception text",
+    "Cleanup-only Chroma access opens existing policy collections without embeddings or collection creation, even with semantic recall disabled",
+    "Deleted policy IDs are swept in batches of 32; progress resumes after restart; current index jobs use revision acknowledgement and historical targets retain individual receipts",
+    "The index participant shares the active writer barrier, so a pre-revocation upsert cannot arrive after successful deletion receipt",
+    "Missing index paths are not created; cleanup errors remain pending; live and legacy/quarantined facts are preserved",
+    "The source-free CPython 3.13 runtime exercises disabled recall, atomic erasure intent, blocked aggregate status, completed absent-index cleanup and actual shared-owner shutdown outside the checkout"
+  ],
+  "ownership": {
+    "max_cleanup_callbacks": 4,
+    "index_cleanup_executor_threads": 1,
+    "index_cleanup_owned_capacity": 4,
+    "privacy_executor_threads": 2,
+    "privacy_owned_capacity": 8,
+    "recovery_order": "writer lease, schema, interrupted claim recovery, ready admission",
+    "close_order": "close admission, retained claim handoff, actual callbacks, actual index worker/executor, ledger and shared writer lease"
+  },
+  "gates": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true,
+      "log": "/tmp/kza-h3-erasure-reviewed-ruff.log"
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-erasure-reviewed-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-erasure-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-erasure-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 5.781,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 remains incomplete. Only the semantic-index erasure participant is connected; producers, captures/clips, contexts, events, diagnostics, collectors, streams, suggestions and voices remain unregistered. No global erasure endpoint or dashboard completion promise is exposed",
+    "Individual-fact deletion and all TTL cleanup with semantic recall disabled still require independent physical index reconciliation beyond the registered conversation operations",
+    "Structured logs, JSONL and Logstash metrics, live events/frontend queues and legacy conversation JSON copies still require source and retention policy; active distillation batches require cancellation and actual-resource cleanup coordination",
+    "The target registry tracks known registered locations and must be reconciled against the private real-data inventory before release; it cannot discover paths never registered",
+    "Ambient pause, total mute with non-audio reactivation, acoustic fingerprint/group retention, manual voice review and calibrated evaluation remain pending",
+    "The real 870-record legacy-copy migration and compatible restore rehearsal remain pending; restore must preserve tombstones and cleanup intent",
+    "H0/H1 real HA effects, H2 physical capture/audio/barge-in, H4 recovery, H5 remaining voice functions and H6 integrated runtime/GC/hardware/release/rollback acceptance remain open",
+    "No deployment, service restart, GPU reassignment, new dependency or production-data mutation occurred"
+  ]
+}

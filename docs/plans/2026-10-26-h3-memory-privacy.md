@@ -401,6 +401,15 @@ lease retenida durante trabajo nativo y upsert tardío. La aceptación del grafo
 completo, la migración real y la conservación de la intención de borrado durante
 restore continúan pendientes. No se modificó producción.
 
+La [validación del journal y del índice](../research/2026-10-26-h3-erasure-journal-validation.json)
+del commit `572aad5` registra **4484 passed, 1 xfailed**, sin fallos, en 161,58 s.
+Pasan los 25 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke
+y artefacto compilado. El heartbeat mantiene los límites de 25/75 ms: p95 de
+0,18 ms y máximo de 1,00 ms. El primer candidato pasó la suite; la revisión
+posterior reprodujo la retención de una excepción original cuando fallaba su
+recibo. El candidato final incluye su corrección y tres regresiones para
+excepciones, resultados inválidos y campos extra. No cierra H3.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
