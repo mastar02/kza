@@ -1,0 +1,281 @@
+{
+  "checked_on": "2026-10-26",
+  "feature_commit": "cbb07fe9e71b60f16730219f75ef90dce5abef9a",
+  "tested_commit": "cdc27bf8194548a83d53d3d8f8c090525abed43d",
+  "tested_runtime_source_tree": "40dba2973fcf5fcf39612e693df4962e3e8448ff",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 actual ambient ASR/profile/speaker/quality/DoA ownership, serialized native room segmentation and recurrent-state reset, independent idle buffer retirement, callback queue/fence ordering and cancellable shared-model admission; PRODUCERS journal integration and command capture remain pending",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-ambient-owners-fixed.xml",
+    "collected": 4849,
+    "passed": 4848,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 197.88,
+    "junit_time_s": 197.814,
+    "log": "/tmp/kza-h3-ambient-owners-fixed.log",
+    "xml": "/tmp/kza-h3-ambient-owners-fixed.xml",
+    "accepted": true,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "integrated_runtime_gc_acceptance": false
+  },
+  "new_cases": 36,
+  "new_case_names": [
+    "test_real_pipeline_retains_capture_lineage_and_runs_profile_reads_off_loop",
+    "test_revocation_cancels_pipeline_but_actual_native_stage_remains_visible[stt]",
+    "test_revocation_cancels_pipeline_but_actual_native_stage_remains_visible[profiles]",
+    "test_revocation_cancels_pipeline_but_actual_native_stage_remains_visible[speaker]",
+    "test_revocation_cancels_pipeline_but_actual_native_stage_remains_visible[quality]",
+    "test_revocation_cancels_pipeline_but_actual_native_stage_remains_visible[doa]",
+    "test_native_stage_keeps_original_store_and_writer_lease_after_close_timeout[stt]",
+    "test_native_stage_keeps_original_store_and_writer_lease_after_close_timeout[profiles]",
+    "test_native_stage_keeps_original_store_and_writer_lease_after_close_timeout[speaker]",
+    "test_native_stage_keeps_original_store_and_writer_lease_after_close_timeout[quality]",
+    "test_native_stage_keeps_original_store_and_writer_lease_after_close_timeout[doa]",
+    "test_expired_inflight_native_result_cannot_start_later_stages_or_persist",
+    "test_cancelled_observer_releases_audio_and_late_stt_result_without_gc_manipulation",
+    "test_asr_queued_behind_default_executor_rechecks_source_before_native_entry",
+    "test_real_whisper_pinned_delegate_survives_cancelled_outer_observer",
+    "test_native_room_factory_and_vad_do_not_block_capture_or_disappear_on_close[factory]",
+    "test_native_room_factory_and_vad_do_not_block_capture_or_disappear_on_close[vad]",
+    "test_idle_preroll_expires_and_releases_audio_without_new_input_or_read",
+    "test_revoking_one_room_prunes_only_its_idle_buffers_and_rejects_renaming_old_audio",
+    "test_revocation_while_vad_runs_filters_both_output_and_native_state",
+    "test_inflight_callback_cannot_resurrect_a_detached_tap_queue[fence]",
+    "test_inflight_callback_cannot_resurrect_a_detached_tap_queue[close]",
+    "test_ready_segments_retire_at_original_timestamps_and_scope_closes_after_cancel",
+    "test_future_start_and_original_48h_boundaries_do_not_follow_read_times",
+    "test_delayed_boundary_publication_and_clock_rollback_cannot_restore_retired_audio",
+    "test_native_reset_keeps_writer_lease_until_real_state_cleanup_exits",
+    "test_actual_builder_attaches_all_native_adapters_and_path_to_same_privacy",
+    "test_cancelled_vad_batch_does_not_retain_completed_audio_in_observer_traceback",
+    "test_native_segmentation_failure_exposes_only_fixed_status_and_discards_buffers[factory]",
+    "test_native_segmentation_failure_exposes_only_fixed_status_and_discards_buffers[feed]",
+    "test_pending_failed_marker_discards_transient_work_but_preserves_durable_capture",
+    "test_native_lineage_distinguishes_revoked_scope_from_another_live_room",
+    "test_concurrent_silero_factories_serialize_cache_load_and_keep_independent_state",
+    "test_callback_cannot_combine_old_boundary_with_new_queue",
+    "test_shared_native_model_serializes_entries_but_revoked_waiter_exits_without_live_room[stt]",
+    "test_shared_native_model_serializes_entries_but_revoked_waiter_exits_without_live_room[speaker]"
+  ],
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.2146849874407053,
+        "max": 1.0506650432944298
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.06520003080368042,
+          "p95": 0.0992210116237402,
+          "max": 0.0992210116237402
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.993508156388998,
+          "p95": 11.949791107326746,
+          "max": 11.949791107326746
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 427,
+        "loop_lag_p95_ms": 0.18769409507513046,
+        "loop_lag_max_ms": 1.040381146594882,
+        "cancel_cleanup_max_ms": 1.7811369616538286,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2735,
+        "loop_lag_p95_ms": 0.9792769607156514,
+        "loop_lag_max_ms": 2.750819902867079,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6326620932668447,
+        "p95": 0.7967010606080294,
+        "max": 0.7967010606080294,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_validation": [
+    {
+      "log": "/tmp/kza-h3-ambient-owners-baseline-fixed.log",
+      "passed": 291,
+      "failed": 0,
+      "runtime_s": 7.62
+    },
+    {
+      "log": "/tmp/kza-h3-ambient-owners-new.log",
+      "passed": 24,
+      "failed": 0,
+      "runtime_s": 1.51
+    },
+    {
+      "log": "/tmp/kza-h3-ambient-owners-regressions.log",
+      "passed": 55,
+      "failed": 0,
+      "runtime_s": 3.95
+    },
+    {
+      "log": "/tmp/kza-h3-ambient-owners-final-focused.log",
+      "passed": 520,
+      "failed": 0,
+      "runtime_s": 23.5,
+      "note": "Before the last shared-model and callback ordering correction"
+    },
+    {
+      "log": "/tmp/kza-h3-ambient-owners-new-final.log",
+      "passed": 33,
+      "failed": 0,
+      "runtime_s": 1.99
+    },
+    {
+      "log": "/tmp/kza-h3-ambient-tap-race-fixed.log",
+      "passed": 43,
+      "failed": 0,
+      "runtime_s": 2.59
+    },
+    {
+      "log": "/tmp/kza-h3-ambient-tap-model-fixed.log",
+      "passed": 296,
+      "failed": 0,
+      "runtime_s": 8.05,
+      "note": "Includes the final queue ordering and shared-model admission"
+    }
+  ],
+  "initial_findings": [
+    {
+      "log": "/tmp/kza-h3-ambient-owners-baseline.log",
+      "passed": 290,
+      "failed": 1,
+      "runtime_s": 14.47,
+      "finding": "The previous late-wake fixture expected a cooperative wake to continue after revocation. The new source monitor cancels it before that fixture handoff.",
+      "correction": "Make that fixture deliberately ignore cancellation and continue through real capture erasure; assert its segment scope remains pending until late wake exits and no clip reappears."
+    },
+    {
+      "log": "/tmp/kza-h3-ambient-owners-focused.log",
+      "passed": 359,
+      "failed": 1,
+      "runtime_s": 14.07,
+      "finding": "Closing the child segment scope propagated CancelledError to a still-live direct caller.",
+      "correction": "Only propagate observer cancellation when the parent task is actually cancelling; owner-driven child cancellation remains a best-effort ambient abort."
+    },
+    {
+      "reproduction_log": "/tmp/kza-ambient-tap-race-reproduction.log",
+      "retired_chunks_reintroduced_before_fix": 1,
+      "finding": "A callback could read an old boundary, pause, then obtain the newly published queue and append retired audio to it. The earlier detached-old-queue race test did not cover this order.",
+      "correction": "Snapshot the queue before its fence; publish the stricter fence before queue replacement. New regression preserves fresh admission and rejects the interleaved retired chunk."
+    },
+    {
+      "finding": "Shared ASR and speaker backends could be entered concurrently, including their lazy initialization. Native workers waiting for the shared backend also need independent revocation exit.",
+      "correction": "Serialize native entry and poll source authority every 50ms while waiting; a revoked queued room exits while the unrelated active room remains blocked."
+    }
+  ],
+  "interrupted_first_full_suite": {
+    "tested_commit": "cbb07fe9e71b60f16730219f75ef90dce5abef9a",
+    "log": "/tmp/kza-h3-ambient-owners-final.log",
+    "accepted": false,
+    "reason": "A controlled standalone callback reproduction found retired audio reintroduced. The known-invalid test run was deliberately interrupted with SIGINT, not restarted due to an observation timeout.",
+    "teardown_note": "The intentional interruption produced pytest tmp_path teardown stash errors/KeyboardInterrupt; this run supplies no full-suite acceptance."
+  },
+  "implementation": {
+    "producer_context_is_immutable_metadata_not_authority": true,
+    "actual_native_tasks_retain_lineage": true,
+    "profile_loading_off_event_loop": true,
+    "speaker_embeddings_not_returned_in_task_result": true,
+    "actual_whisper_pinned_delegate_verified": true,
+    "one_native_room_feed_or_reset_at_a_time": true,
+    "silero_repository_cache_load_serialized_per_process": true,
+    "per_room_recurrent_models_independent": true,
+    "room_batch_and_result_handoff_owned": true,
+    "idle_preroll_voice_partial_ready_segments_and_recurrent_state_retired": true,
+    "buffer_poll_s": 0.05,
+    "shared_model_waiter_source_poll_s": 0.05,
+    "capture_boundaries_tighten_across_delayed_publication_and_clock_rollback_after_observed_expiry": true,
+    "retired_audio_cannot_be_automatically_renamed_to_new_capture": true,
+    "pending_fences_may_discard_transients_but_not_persistent_captures": true,
+    "persistent_capture_survives_failed_marker": true,
+    "other_room_buffer_and_native_scope_preserved": true,
+    "audio_callback_has_no_blocking_locks_or_ledger_queries": true,
+    "queue_snapshotted_before_boundary_and_boundary_published_before_queue_replacement": true,
+    "closed_tap_detaches_old_deques_and_rejects_late_writes": true,
+    "observer_cancellation_does_not_hide_native_exit_or_reset": true,
+    "caller_not_cancelled_by_owner_child_abort": true,
+    "privacy_writer_lease_and_original_store_retained_until_actual_cleanup": true,
+    "real_builder_registers_borrowers_before_start": true,
+    "status_contains_counts_and_fixed_codes_only": true,
+    "producer_journal_participant_marked_complete": false,
+    "new_dependencies": false,
+    "new_configuration_files": false,
+    "gpu_assignment_changed": false
+  },
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-h3-ambient-owners-ruff-fixed.log"
+    },
+    "bandit": {
+      "medium": 0,
+      "high": 0,
+      "low_baseline": 30,
+      "log": "/tmp/kza-h3-ambient-owners-bandit-fixed.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-ambient-owners-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-ambient-owners-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 7.671,
+      "exercise": "Source-free runtime outside checkout constructs real ambient builder, feeds real native room/segmenter scope with synthetic VAD, retires ready audio, then revokes a capture during actual native ASR, observes its retained task, exhausts close observation without releasing writer lease/original store, releases native endpoint and verifies real cleanup completion; no microphones or trained models started"
+    }
+  },
+  "unchanged_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancel_ms": 100,
+    "cooperative_cleanup_ms": 1000,
+    "gc_forced_disabled_or_frozen": false
+  },
+  "remaining_scope": [
+    "PRODUCERS still requires command capture/wake VAD/early and shadow STT/audio learning consumers plus complete journal integration; these ambient scopes do not authorize broad erasure completion",
+    "DIAGNOSTICS, COLLECTORS, STREAMS and VOICES remain; diagnostic/SQL/JSONL/Logstash, collector/stream/frontend copies and alternate prompt consumers require their own source/TTL/erasure coverage",
+    "Pause ambient and total mute with non-audio reactivation; 48h automatic voiceprint/group expiry and authenticated calibrated voice grouping/review/merge/split, confirmed profiles until deletion",
+    "Private real-copy quarantine migration of 870 legacy facts, compatible catalog/tombstone/runtime restore, live semantic index rebuild and authenticated broad erasure UI after guarantees",
+    "H0/H1 live HA memberships/effects, H2 physical audio/barge-in, H4 recovery and large-history/runtime/GC acceptance, H5 real typed local execution/routines/timers/reminders, H6 fully integrated candidate and one final release/rollback",
+    "Previously instrumented GC pauses up to 495.68ms remain unresolved; this uninstrumented suite does not remeasure or accept integrated runtime/GC."
+  ],
+  "production_modified": false
+}

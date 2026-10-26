@@ -1264,6 +1264,22 @@ Un waiter vuelve a comprobar su captura cada 50 ms: si se revoca, libera sus
 inputs sin esperar a que termine otra sala viva. El callback de audio no usa
 estos locks; sólo los workers nativos esperan en ellos.
 
+La [validación de productores ambientales](../research/2026-10-26-h3-ambient-producers-validation.json)
+del commit `cdc27bf` registra **4848 passed, 1 xfailed**, sin fallos, en 197,88 s.
+Incluye 36 casos nuevos, 520 pruebas dirigidas antes de las últimas correcciones
+y 296 después, Ruff, Bandit sin hallazgos medios/altos, 18 tests de frontend y
+smoke del dashboard. El artefacto compilado pasa fuera del checkout en 7,67 s.
+El heartbeat obtiene p95 de 0,21 ms y máximo de 1,05 ms; la cancelación de control
+llega a 0,10 ms y el cleanup a 11,95 ms, sin ampliar límites ni manipular GC.
+
+La evidencia conserva el ensayo de wake ajustado para continuar de forma
+deliberadamente no cooperativa, el fallo de propagación de cancelación al
+padre y su corrección, y la reproducción del callback que reinsertaba un chunk.
+La ejecución completa interrumpida por ese hallazgo queda fuera de aceptación;
+sus errores de teardown de pytest corresponden a esa interrupción. La suite
+verde posterior no reevalúa las pausas de GC medidas antes ni sustituye los
+ensayos de hardware, recuperación y arranque de H4/H6.
+
 `PRODUCERS` sigue abierto: faltan los buffers y jobs del command path, wake VAD,
 STT/sombra y consumidores de aprendizaje, y conectar los scopes completos al
 journal. No se anuncia borrado global ni se habilita la UI de borrado amplio.

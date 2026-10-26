@@ -516,6 +516,13 @@ colas funciona sin otra entrada. El callback conserva su operación sin locks
 bloqueantes y el cierre espera los jobs antes de soltar la lease. Quedan los
 productores del command path, wake/sombra y su conexión completa al journal,
 además de los otros pendientes de H3 y del alcance íntegro H0–H6.
+La [validación ambiental](../research/2026-10-26-h3-ambient-producers-validation.json)
+del commit `cdc27bf` registra **4848 passed, 1 xfailed**, sin fallos, con 36
+casos nuevos, checks aceptados y scopes nativos ejercitados en el artefacto
+compilado. Conserva la reproducción y corrección de una carrera del tap que
+podía reinsertar audio retirado; la primera suite interrumpida no se acepta
+como verde. Siguen abiertas la integración al journal y la aceptación física
+y de runtime/GC del roadmap completo.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
