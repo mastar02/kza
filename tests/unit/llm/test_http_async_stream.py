@@ -212,6 +212,49 @@ async def test_repeated_cancellation_during_constructor_cleans_resource(monkeypa
     assert endpoint.client.is_closed() and endpoint.requests == []
 
 
+@pytest.mark.parametrize("fail", [False, True])
+async def test_lazy_sdk_resource_initialization_keeps_loop_available_and_closes_on_error(monkeypatch, fail):
+    reasoner, endpoint = setup(monkeypatch)
+    client = endpoint.build(ENDPOINT)
+
+    class LazyClient:
+        @property
+        def models(self):
+            time.sleep(0.2)
+            if fail:
+                raise RuntimeError("synthetic SDK initialization failure")
+            return client.models
+
+        @property
+        def chat(self):
+            return client.chat
+
+        async def __aenter__(self):
+            await client.__aenter__()
+            return self
+
+        async def __aexit__(self, *args):
+            await client.__aexit__(*args)
+
+        async def close(self):
+            await client.close()
+
+    monkeypatch.setattr(reasoner, "_new_async_client", lambda _: LazyClient())
+    task = asyncio.create_task(collect(reasoner))
+    beats = 0
+    while not task.done():
+        await asyncio.sleep(0.005)
+        beats += 1
+    if fail:
+        with pytest.raises(RuntimeError, match="synthetic SDK initialization failure"):
+            await task
+        assert endpoint.requests == []
+    else:
+        assert (await task)[-1]["text"] == "Hola"
+        assert endpoint.body.closed
+    assert beats >= 20 and client.is_closed()
+
+
 async def test_stalled_network_keeps_five_ms_heartbeat_available(monkeypatch):
     """The H2 predeclared 200 ms stall, repeated ten times without network."""
     all_lags = []

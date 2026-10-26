@@ -11,8 +11,9 @@ import os
 import re
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
@@ -21,6 +22,14 @@ from src.core.egress import EgressPolicy, ProcessingDestination
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
+
+
+@dataclass
+class _AsyncGenerationResources:
+    client: AsyncOpenAI
+    models: Any = None
+    completions: Any = None
+    error: Exception | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -656,6 +665,16 @@ class HttpReasoner:
             http_client=httpx.AsyncClient(follow_redirects=False, verify=self.verify_ssl),
         )
 
+    def _prepare_async_generation(self, base_url: str, style: str) -> _AsyncGenerationResources:
+        """Resolve SDK lazy resources off-loop, retaining ownership on failure."""
+        resources = _AsyncGenerationResources(self._new_async_client(base_url))
+        try:
+            resources.models = resources.client.models
+            resources.completions = resources.client.chat.completions if style == "chat" else resources.client.completions
+        except Exception as error:
+            resources.error = error
+        return resources
+
     async def astream(
         self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7,
         *, max_chars: int = 65536,
@@ -687,14 +706,14 @@ class HttpReasoner:
             raise ValueError("invalid_generation_limit")
         if style not in {"chat", "completions"}:
             raise ValueError("unsupported_api_style")
-        initializing = asyncio.create_task(asyncio.to_thread(self._new_async_client, base_url))
+        initializing = asyncio.create_task(asyncio.to_thread(self._prepare_async_generation, base_url, style))
         try:
-            client = await asyncio.shield(initializing)
+            resources = await asyncio.shield(initializing)
         except asyncio.CancelledError:
             # Do not abandon a newly constructed async client in a worker.
             async def discard_client() -> None:
-                client = await initializing
-                await client.close()
+                resources = await initializing
+                await resources.client.close()
 
             cleanup = asyncio.create_task(discard_client())
             # A second cancellation must not abandon constructor-owned resources.
@@ -705,14 +724,16 @@ class HttpReasoner:
                     continue
             cleanup.result()
             raise
-        async with client:
+        async with resources.client:
+            if resources.error is not None:
+                raise resources.error
             self.policy.require_allowed(base_url)
             model = self._resolved_model if (
                 self._resolved_base_url == base_url
                 and (configured_model is None or self._resolved_model == configured_model)
             ) else None
             if model is None:
-                models = await client.models.list()
+                models = await resources.models.list()
                 ids = [item.id for item in models.data]
                 if configured_model is not None:
                     if configured_model not in ids:
@@ -728,9 +749,9 @@ class HttpReasoner:
                 raise RuntimeError("reasoner_configuration_changed")
             options = {"model": model, "max_tokens": max_tokens, "temperature": temperature, "stream": True}
             if style == "chat":
-                stream = await client.chat.completions.create(messages=[{"role": "user", "content": prompt}], **options)
+                stream = await resources.completions.create(messages=[{"role": "user", "content": prompt}], **options)
             else:
-                stream = await client.completions.create(prompt=prompt, **options)
+                stream = await resources.completions.create(prompt=prompt, **options)
             raw = emitted = ""
             count = received = 0
             finish_reason = None
