@@ -159,13 +159,84 @@ conserva métricas sin redondear, alcance y limitaciones.
 
 ## Estado
 
-Plan abierto. PCM y generación encolada tienen implementación y grafos
-sintéticos conectados. Quedan la responsabilidad única de locución, el stream
-de frases hacia TTS con presión de retorno y la cancelación de todas las
-salidas de `ResponseHandler`, incluidos cache y síntesis completa. Ambos
-routers deben usar ese propietario; sigue pendiente retirar la exclusión de
-`SLOW_LLM` y hacer audibles sus errores. También hay que alinear los
-presupuestos de espera de cola, generación y reproducción: una espera heredada
-de 5 s no valida una respuesta larga. Las medidas actuales del loop y cierre
-HTTP no cubren ese grafo de voz completo. La prueba acústica queda en H6.
-H2 no está cerrado.
+Plan abierto. PCM, generación y entrega conversacional tienen implementación
+y grafos sintéticos conectados. La siguiente sección conserva el alcance
+conectado y los productores que todavía requieren auditoría; el grafo construido
+por `main` y su cierre completo siguen siendo requisitos antes de cerrar H2.
+La prueba acústica queda en H6.
+
+## Tercera implementación: propietario de respuesta y entrega de PCM
+
+`ResponseHandler` conserva un propietario hasta que el worker de síntesis y
+salida termina realmente. Las esperas asíncronas de ese propietario no crean
+threads; se admiten hasta 16 respuestas pendientes. Una sesión cancelada dentro
+de una llamada bloqueante a TTS conserva la ocupación, descarta su PCM tardío
+y no permite empezar otro worker TTS. No se presupone que cancelar una task
+mate el motor. Los adaptadores síncronos usan el mismo propietario.
+
+La sesión captura la zona antes de esperar o generar. El valor global de zona
+activa sólo sirve de default para nuevas sesiones. Un hook puede reescribir
+texto pero no cambiar esa procedencia. Cache, síntesis completa, síntesis por
+chunks, earcons y broadcast usan `StreamingAudioPlayer` con handle registrado,
+token previo al arranque y resultado explícito. Un fallo de salida no reintenta
+la respuesta completa. El estado `is_speaking` refleja un dispositivo arrancado;
+`is_responding` incluye espera de generación/síntesis, sin tratarla como eco.
+
+La generación produce frases con cola de dos elementos y máximo de 400
+caracteres por frase. La falta de delimitador fuerza corte acotado; un punto
+al final de un delta no divide un decimal antes de recibir el siguiente delta.
+El texto completo sigue limitado por `GenerationStream`. Un fallo de generación
+descarta frases todavía pendientes y entrega un único error por el mismo
+propietario, si la salida está disponible. Cancelar no genera ese error. Se
+conserva el filler opcional, también serializado y cancelable.
+
+El worker encolado llama `arespond` y registra en la petición si la entrega fue
+atendida. El router deja de excluir `SLOW_LLM` por su tipo: usa ese resultado
+para evitar repetir voz, y locuta errores que aún no se atendieron. El modo
+legacy consume el mismo stream asíncrono y sólo registra una conversación
+exitosa. Confirmaciones, feedback, sugerencias, earcons y los avisos del
+ejecutor HA se esperan por la API asíncrona. El clasificador y la búsqueda
+vectorial legacy se ejecutan fuera del loop. Cada captura admitida cancela la
+respuesta anterior de su zona; el barge-in también limita la cancelación a su
+zona, incluyendo broadcast.
+
+El presupuesto de respuesta del dispatcher se configura en
+`orchestrator.response_timeout_s`, por defecto 180 s para cola, generación y
+entrega, en lugar del timeout fijo heredado de 5 s. Los límites de cola de
+frases, tamaño de frase, espera de locución y plazos del dispositivo se
+inyectan desde `tts.streaming` en el YAML existente. Esta implementación no
+prueba todavía que 180 s sea el presupuesto doméstico adecuado: la evaluación
+de respuestas largas no cacheadas y la separación de presupuestos por etapa
+siguen pendientes.
+
+Las pruebas de routers usan un doble explícito de la API asíncrona. Las pruebas
+de entrega usan clases reales de respuesta, zonas y player con SDK/HTTP en
+memoria y driver callback. Se retiran tests que sólo cambiaban flags privados
+o suponían `tts.speak`/`sd.play`; se comprueban estados y cancelación sobre el
+dispositivo simulado que realmente consume PCM.
+
+Verificación del commit `5182a01`: **4101 passed, 1 failed, 1 xfailed** en
+123,08 s. El único fallo sigue siendo VAD/idioma. Pasan 19 grafos de entrega,
+cuatro combinaciones de router real con éxito/fallo de generación, Ruff,
+Bandit medio/alto, doce tests Node, smoke autenticado y smoke compilado. En
+diez respuestas de 24.000 frames con espera de red de 200 ms se conservó el
+PCM completo; el retraso p95 del loop fue 0,36 ms y el máximo 1,57 ms. La
+cancelación con limpieza de la salida simulada tardó como máximo 1,63 ms.
+El [registro del propietario](../research/2026-10-25-h2-owned-response-validation.json)
+conserva métricas, límites y alcance; no son medidas físicas ni una validación
+del ciclo de vida completo de `main`.
+
+### Trabajo pendiente de H2
+
+- Auditar los demás consumidores TTS conectados por `main`, incluidos
+  recordatorios, rutinas, avisos y alertas, para que no compitan con este
+  propietario ni bloqueen la captura; su funcionalidad de producto se completa
+  en H5, pero su disciplina de entrega pertenece también a este contrato.
+- Verificar el cierre del propietario y los workers dentro del ciclo de vida
+  completo de la aplicación, con cancelación y fallos durante arranque/parada.
+- Probar timeout de petición durante entrega parcial y distinguir quién anuncia
+  ese error de la cancelación normal, sin duplicar un error ya en reproducción.
+- Ampliar el corpus conectado con respuesta larga, captura/barge-in del loop
+  real simulado y presupuesto por etapa; no confundir los grafos de respuesta
+  aislados con el grafo completo de `main`.
+- Validar salida, micrófono, amplificador, latencia física y barge-in en H6.

@@ -122,8 +122,11 @@ Los límites offline y la validación acústica pendiente se fijan allí antes d
 La capa PCM conserva los samples y espera drenado en grafos sintéticos. El
 worker encolado ya consume HTTP asíncrono y un adaptador acotado para motores
 síncronos; comparte la cola del dispatcher, cancela lecturas pendientes y
-descarta resultados tardíos del historial. Falta conectar la locución única,
-la cola de frases hacia TTS y toda la cancelación de salida en ambos routers.
+descarta resultados tardíos del historial. Ambos routers y el worker usan un
+propietario de respuesta, cola de frases acotada y PCM con cancelación para
+cache, síntesis completa, streaming, earcons y broadcast. Quedan la auditoría
+de otros productores TTS conectados por `main`, su cierre completo y escenarios
+de timeout, captura y barge-in del grafo integrado.
 
 **Entregables:** consumo no bloqueante del reasoner, un único responsable de
 locutar cada respuesta y reproducción que conserve todos los samples. Integrar

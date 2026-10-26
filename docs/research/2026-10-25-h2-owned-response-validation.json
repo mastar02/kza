@@ -1,0 +1,104 @@
+{
+  "checked_on": "2026-10-25",
+  "tested_commit": "5182a01a67c2d0762687bc2451b0780278f0cef0",
+  "scope": "H2 conversational response ownership: bounded sentence streaming, serialized synthesis, immutable origin, actual PCM cancellation and delivery outcomes, connected through both real routers and queued worker. Full application producer/shutdown audit remains pending.",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "plan_reference": "docs/plans/2026-10-25-h2-complete-voice-responses.md",
+  "prior_validation_reference": "docs/research/2026-10-25-h2-generation-validation.json",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h2-owned-candidate.xml",
+    "passed": 4101,
+    "failed": 1,
+    "xfailed": 1,
+    "runtime_s": 123.08,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad"
+    ],
+    "new_failure_ids": []
+  },
+  "focused": {
+    "pipeline_orchestrator_and_connected_delivery_passed": 913,
+    "home_control_regressions_with_explicit_async_doubles_passed": 273,
+    "final_owned_voice_graph_tests": 19,
+    "real_router_success_and_generation_failure_graphs": 4,
+    "historical_private_flag_tests": "Replaced seven synthetic flag/legacy speak assumptions with four actual owner/device/failure/idempotence tests; the remaining multi-room barge-in tests retain their scope"
+  },
+  "measurements": {
+    "repetitions": 10,
+    "stall_ms": 200,
+    "heartbeat_interval_ms": 5,
+    "heartbeat_samples": 430,
+    "loop_lag_p95_ms": 0.3557242453098297,
+    "loop_lag_max_ms": 1.564007019624114,
+    "cancel_cleanup_max_ms": 1.6262491699308157,
+    "exact_pcm_runs": 10
+  },
+  "predeclared_limits": {
+    "reference": "docs/plans/2026-10-25-h2-complete-voice-responses.md",
+    "loop_lag_p95_ms": 25,
+    "loop_lag_max_ms": 75,
+    "cancel_control_ms": 100,
+    "output_stop_ms": 200,
+    "cooperative_cleanup_ms": 1000,
+    "passed_within_simulated_owned_response_graph": true
+  },
+  "bounds": {
+    "sentence_queue_capacity": 2,
+    "sentence_max_chars": 400,
+    "max_pending_responses": 16,
+    "generation_max_chars": 65536,
+    "pcm_ring_ms": 150,
+    "output_stall_timeout_s": 1.0,
+    "whole_response_timeout_s": 180,
+    "config": "config/settings.yaml:tts.streaming and orchestrator.response_timeout_s"
+  },
+  "proven": [
+    "Both real router modes reach the same response handler, native SDK/SSE, real ZoneManager and real StreamingAudioPlayer using synthetic PCM and driver callbacks",
+    "A normal conversational response is spoken once and matches all expected PCM frames; a generation failure is announced once and never recorded as a successful conversation",
+    "Queued generation returns speech_handled so router delivery depends on actual ownership rather than excluding the SLOW_LLM path",
+    "Cached arrays, full-array synthesis, streaming synthesis, earcons and broadcast all use the registered cancelable player and normal drain contract",
+    "Slow synthesis does not count as audible output; the is_speaking state starts with the device, while is_responding includes generation/synthesis",
+    "Cancelling a blocked synthesis retains its owner slot, prevents a second TTS worker and discards the cancelled old PCM when it finally arrives",
+    "A slow consumer bounds the sentence queue at two; cancel wakes a producer blocked on capacity and closes native HTTP resources",
+    "Pending response admission is bounded without starting additional synthesis workers",
+    "Origin zone remains fixed during waits despite a changed global default; a hook cannot redirect the captured origin and unrelated-zone cancel leaves it running",
+    "Unknown zone and missing ZoneManager for an explicit zone fail without playing the default device; unstarted PCM sources close once",
+    "Playback failure cancels a pending generation without retrying voice; failed output receipt waits for cooperative cleanup before returning",
+    "Sentence splitting preserves a decimal whose point and fractional digits arrive in separate deltas",
+    "Accepted captures and barge-in cancel the originating zone; callback/capture code does not perform synthesis or device close",
+    "Legacy classifier and vector queries, feedback, confirmations, suggestions, home-action feedback and the HA speak integration use off-loop or managed async delivery",
+    "Source-free runtime imports response DTOs/handler and verifies the empty-delivery contract without hardware"
+  ],
+  "checks": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium_high_findings": 0
+    },
+    "node": {
+      "passed": 12,
+      "failed": 0
+    },
+    "authenticated_dashboard_smoke": "passed",
+    "source_free_runtime_smoke": "passed within final full suite",
+    "chromium": "Not repeated; frontend unchanged from prior effect-expansion validation"
+  },
+  "dependencies_changed": false,
+  "environment": "Existing runtime virtualenv read-only, bytecode writes disabled and GPUs hidden; HTTP/SSE in memory and callback-driven synthetic output",
+  "limits": [
+    "No physical speaker, microphone, amplifier, home service, gateway or GPU model was used; synthetic PCM timing is not acoustic latency or provider performance",
+    "Main shares this response handler with both conversational modes, but other direct TTS producers still need a full audit: reminders, routine speech, alerts and announcements",
+    "The complete application startup/shutdown graph still needs ownership cleanup and failure/cancellation evidence",
+    "Timeout during partial voice delivery and error-announcement ownership need additional connected cases; 180 seconds is an explicit whole-response budget, not an evaluated household latency result or a per-stage deadline design",
+    "Existing multi-room barge-in tests and new owned-output tests do not together prove the full main capture-to-cancel graph; that integrated corpus remains pending",
+    "A blocking native TTS call cannot be killed by cancelling asyncio; it retains the only owner slot until real exit, and dependency recovery remains H4 work",
+    "H0 live home effects/physical MQTT group members and legacy memory treatment remain incomplete, and H3-H6 remain open",
+    "Real home control selection stays disabled and production remains unchanged"
+  ],
+  "h2_complete": false,
+  "production_changed": false
+}
