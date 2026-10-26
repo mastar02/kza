@@ -152,6 +152,9 @@ cancelación; fijar sus límites en el plan antes de evaluar el resultado.
 
 ### H3 Aplicar privacidad y revisar voces
 
+Plan concreto del avance de memoria:
+[procedencia, retención y revisión](2026-10-26-h3-memory-privacy.md).
+
 Decisión del usuario del 26 de octubre: huellas y grupos sin confirmar vencen
 a las 48 h; los perfiles confirmados manualmente se conservan hasta borrado
 manual. Los clips y las transcripciones siguen venciendo a las 48 h. Nombrar
@@ -183,6 +186,14 @@ La retención de huellas autorizada arriba todavía no está implementada. Sigue
 pendientes las demás copias de texto y audio, el borrado completo de conversación,
 pausa/mute, agrupación de voces, su vista autenticada y evaluación acústica, y la
 migración ensayada sobre copia de datos reales. Este avance no cierra H3.
+
+La [validación de memoria](../research/2026-10-26-h3-memory-retention-validation.json)
+del commit `cfa949c` registra **4275 passed, 1 xfailed**, sin fallos, en
+151,10 s; incluye 25 casos conectados nuevos con SQLite y Chroma temporales,
+ambos routers y HTTP/SSE sintético. Pasan Ruff, Bandit medio/alto, 18 tests de
+frontend, el smoke autenticado, Chromium en escritorio y móvil y el artefacto
+compilado con el servicio de memoria. No es evidencia de migración real ni de
+evaluación acústica o release.
 
 La [validación de capturas](../research/2026-10-26-h3-capture-retention-validation.json)
 del commit `e186430` registra **4226 passed, 1 xfailed**, sin fallos, en
