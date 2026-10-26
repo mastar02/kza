@@ -202,12 +202,31 @@ Ambos routers adjuntan la captura original incluso sin catálogo de memoria.
 El diagnóstico tiene espera acotada y seguimiento del trabajo nativo; la API
 autenticada consulta fuera del loop y responde con `Cache-Control: no-store`.
 
+Las solicitudes, la caché de consultas y el historial del clasificador ahora
+conservan sus capturas y plazos originales. Se retiran cuerpos y closures
+vencidos o revocados; una generación activa se cancela si pierde su fuente.
+Las entradas históricas incluidas en el prompt del clasificador también se
+comprueban al iniciar y terminar el trabajo nativo. Ambos routers registran
+una vez los controles aceptados. El mantenimiento en inactividad y el cierre
+pertenecen al pipeline; búsquedas y clasificaciones tardías no repueblan la
+caché cerrada ni publican el contenido invalidado.
+
 La retención de huellas autorizada arriba todavía no está implementada. Siguen
-pendientes otras copias de texto y audio (otros logs, colectores, colas,
-caches, streams y frontend),
+pendientes otras copias de texto y audio (otros logs, colectores,
+caches alternas, streams y frontend), dependencias transitivas de prompts,
 el borrado completo de conversación,
 pausa/mute, agrupación de voces, su vista autenticada y evaluación acústica, y la
 migración ensayada sobre copia de datos reales. Este avance no cierra H3.
+
+La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
+del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
+Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke
+autenticado y artefacto compilado. La suite completa **no está aceptada**: el
+heartbeat llegó a 226,45 ms frente al máximo de 75 ms. La instrumentación
+reprodujo una pausa global de GC de unos 227 ms durante las importaciones
+perezosas de tipos del SDK en su worker. H2/H4 debe corregir ese camino y
+volver a medir; se conserva el umbral y el fallo, sin presentar el avance
+de privacidad como aceptación de latencia del runtime.
 
 La [validación de eventos](../research/2026-10-26-h3-event-privacy-validation.json)
 del commit `4ef72bf` registra **4307 passed, 1 xfailed**, sin fallos, en

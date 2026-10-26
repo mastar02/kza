@@ -1,0 +1,178 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "85f5d3986cc212055d9c5d17ffcc1b3dad563813",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 queued receipt expiry, source-bound query cache and classifier history, idle purge, retained native classification/vector work and publication suppression",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-transient-final.xml",
+    "collected": 4326,
+    "passed": 4324,
+    "failed": 1,
+    "xfailed": 1,
+    "runtime_s": 154.91,
+    "failed_tests": [
+      "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture"
+    ],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "log": "/tmp/kza-h3-transient-final.log",
+    "accepted": false
+  },
+  "new_connected_cases": 18,
+  "new_connected_cases_failed": 0,
+  "focused_validation": {
+    "passed": 107,
+    "runtime_s": 10.61,
+    "log": "/tmp/kza-h3-transient-precommit.log"
+  },
+  "earlier_broad_validation": {
+    "passed": 988,
+    "runtime_s": 44.52,
+    "log": "/tmp/kza-h3-transient-final-broad.log",
+    "scope": "Before the final classifier history-dependency and typed-control producer additions; final new cases also ran in the full suite"
+  },
+  "proven": [
+    "Completed, failed and cancelled queue receipts keep their original capture deadline; expiry scrubs text, copied name, result and error fields and removes their per-user tracking",
+    "Terminal callbacks release closures; late cancellation listeners execute outside the token lock so private cleanup may reenter safely",
+    "A revoked pending request is cancelled once without changing unrelated live work; active HTTP/SSE generation cancels on source expiry/revocation and records no successful context",
+    "Source-bound cache keys and values are physically pruned on access and in idle maintenance; reads never renew source expiry and defensive copies prevent consumer mutations from changing the retained value",
+    "Closed cache admission rejects late writes; a revoked, cancelled or closing vector lookup cannot refill the query cache or issue a subsequent HA action in the connected test graph",
+    "Command history uses capture time and the minimum of its configured NLU window and source expiry, rejects a record already outside that window and removes revoked entries",
+    "Classifier native generation checks both current-input and included-history sources before native admission and after result return, suppressing invalidated raw output",
+    "Native classifier and vector operations remain tracked after observation timeout or caller cancellation; close waits for actual completion rather than abandoning the worker",
+    "Both real routing modes record accepted typed controls once with the actual capture UUID, timestamp and deadline, including paths that previously returned before command-history recording",
+    "The runtime router owns an idle maintenance task with a nominal one-second interval; reads and publication enforce expiry without waiting for that tick",
+    "The source-free CPython 3.13 artifact exercises cache expiry, queue receipt scrubbing and rejection of expired classifier input"
+  ],
+  "latency_failure": {
+    "heartbeat": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 421,
+        "p95": 0.436536967754364,
+        "max": 226.4451440423727
+      }
+    },
+    "limit_max_ms": 75,
+    "limit_p95_ms": 25,
+    "diagnosis": "A generation-2 GC pause was reproduced during SDK lazy type imports in the constructor worker; the process-wide pause stalls the event loop despite off-loop SDK preparation",
+    "diagnostic_returncode": 1,
+    "diagnostic_profile": "/tmp/kza-h3-gc-profile-attempt-1.json",
+    "diagnostic_log": "/tmp/kza-h3-gc-profile-attempt-1.log",
+    "call_gc_pauses": [
+      {
+        "phase": "call",
+        "generation": 2,
+        "duration_ms": 226.93193494342268,
+        "collected": 258,
+        "thread": "asyncio_0",
+        "stack": [
+          {
+            "file": "<frozen importlib._bootstrap>",
+            "function": "_load_unlocked",
+            "line": 935
+          },
+          {
+            "file": "<frozen importlib._bootstrap_external>",
+            "function": "exec_module",
+            "line": 1023
+          },
+          {
+            "file": "<frozen importlib._bootstrap>",
+            "function": "_call_with_frames_removed",
+            "line": 488
+          },
+          {
+            "file": "/home/kza/kza/.venv/lib/python3.13/site-packages/openai/types/fine_tuning/fine_tuning_job_wandb_integration.py",
+            "function": "<module>",
+            "line": 10
+          },
+          {
+            "file": "/home/kza/kza/.venv/lib/python3.13/site-packages/pydantic/_internal/_model_construction.py",
+            "function": "__new__",
+            "line": 242
+          },
+          {
+            "file": "/home/kza/kza/.venv/lib/python3.13/site-packages/pydantic/_internal/_model_construction.py",
+            "function": "set_model_fields",
+            "line": 566
+          },
+          {
+            "file": "/home/kza/kza/.venv/lib/python3.13/site-packages/pydantic/_internal/_fields.py",
+            "function": "collect_model_fields",
+            "line": 256
+          },
+          {
+            "file": "/home/kza/kza/.venv/lib/python3.13/site-packages/pydantic/_internal/_typing_extra.py",
+            "function": "get_model_type_hints",
+            "line": 350
+          },
+          {
+            "file": "/home/kza/kza/.venv/lib/python3.13/site-packages/pydantic/_internal/_typing_extra.py",
+            "function": "try_eval_type",
+            "line": 401
+          },
+          {
+            "file": "/home/kza/kza/.venv/lib/python3.13/site-packages/pydantic/_internal/_typing_extra.py",
+            "function": "_type_convert",
+            "line": 291
+          },
+          {
+            "file": "/usr/lib/python3.13/typing.py",
+            "function": "__init__",
+            "line": 1035
+          },
+          {
+            "file": "/tmp/kza_profile_collection.py",
+            "function": "callback",
+            "line": 25
+          }
+        ]
+      }
+    ],
+    "next_action": "Remove the costly SDK lazy-type initialization from live generation while preserving native streaming, protocol validation, consent and resource ownership; remeasure the unchanged latency limits",
+    "resolved": false
+  },
+  "gates": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true,
+      "log": "/tmp/kza-h3-transient-ruff-precommit.log"
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-transient-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-transient-node.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-transient-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "included_in_full_suite": true,
+      "test": "tests/unit/tools/test_stage_runtime.py::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "The full suite is not green: the 226 ms heartbeat failure remains a required H2/H4 acceptance issue; no limit was widened or test skipped",
+    "H3 is incomplete and no coordinated authenticated broad conversation erase is exposed; capture/clip deletion and every affected producer still need durable coordination",
+    "Transitive dependencies of general LLM responses on recalled facts and historical context remain incomplete; checking the current capture alone does not prove deletion of every derived response copy",
+    "Other diagnostic logs, collectors, streams, frontend copies and alternate caches/persistence still need audit, expiry and source revocation integration",
+    "Unconditional privacy authority when the memory catalogue is disabled still requires the broader deletion-service integration; raw deadlines remain enforced in these consumers",
+    "Ambient pause, total mute with non-audio reactivation, fingerprint/group retention, manually confirmed voice profiles, voice grouping/review and calibrated acoustic evaluation remain pending",
+    "Legacy private-copy migration, actual HA effects and complete runtime/hardware acceptance remain pending; no production data, release or running services were modified"
+  ]
+}
