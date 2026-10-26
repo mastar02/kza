@@ -482,6 +482,8 @@ class TestCache:
     def test_cache_stores_and_retrieves(self):
         """Cache stores a value and retrieves it."""
         router = _build_router(cache_max_size=10)
+        from tests.mocks.memory_sources import memory_source
+        router._memory_source.set(memory_source())
         router._add_to_cache("enciende luz", {"entity_id": "light.sala"})
 
         assert "enciende luz" in router._query_cache
@@ -490,6 +492,8 @@ class TestCache:
     def test_cache_evicts_oldest(self):
         """Cache evicts oldest entry when full."""
         router = _build_router(cache_max_size=3)
+        from tests.mocks.memory_sources import memory_source
+        router._memory_source.set(memory_source())
         router._add_to_cache("cmd1", {"id": 1})
         router._add_to_cache("cmd2", {"id": 2})
         router._add_to_cache("cmd3", {"id": 3})

@@ -35,7 +35,7 @@ from enum import IntEnum
 from typing import Any, Callable
 
 from src.core.logging import get_logger
-from src.memory.fact_ledger import MemorySource
+from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource, sources_current
 from src.orchestrator.cancellation import (
     CancellationToken,
     CancellationReason
@@ -85,6 +85,9 @@ class Request:
     text: str = field(compare=False, default="")
     intent: str = field(compare=False, default=None)
     memory_sources: tuple[MemorySource, ...] | None = field(compare=False, default=None)
+    _source_policy: FactLedger | None = field(compare=False, default=None, repr=False)
+    _clock: Callable = field(compare=False, default=time.time, repr=False)
+    _scrubbed: bool = field(compare=False, default=False, repr=False)
 
     # Estado y control
     status: RequestStatus = field(compare=False, default=RequestStatus.PENDING)
@@ -107,6 +110,9 @@ class Request:
     _state_lock: threading.RLock = field(compare=False, default_factory=threading.RLock, repr=False)
 
     def __post_init__(self):
+        if self.memory_sources is None:
+            self.memory_sources = (MemorySource(str(uuid.uuid4()), str(uuid.uuid4()), self.timestamp,
+                self.timestamp+48*3600, MemoryOrigin.INTERACTION),)
         if self.cancellation_token is None:
             self.cancellation_token = CancellationToken(
                 request_id=self.request_id,
@@ -117,11 +123,29 @@ class Request:
     def is_cancelled(self) -> bool:
         return self.cancellation_token.is_cancelled
 
+    def private_available(self) -> bool:
+        """Check original capture deadlines and committed source revocations."""
+        return not self._scrubbed and sources_current(self.memory_sources, self._clock()) and (
+            self._source_policy is None or self._source_policy.sources_available(self.memory_sources))
+
+    def prune_private(self, *, force: bool = False) -> bool:
+        """Cancel invalid work and scrub its text, response, errors and closures."""
+        if not force and self.private_available():
+            return False
+        self.cancel(CancellationReason.PRIVACY)
+        with self._state_lock:
+            self._scrubbed = True
+            self.text = self.user_name = ""
+            self.result = self.error = self.error_response = None
+            self.on_complete = self.on_fail = self.on_cancel = None
+        self.cancellation_token.discard_callbacks()
+        return True
+
     @property
     def wait_time(self) -> float:
         """Tiempo en cola (segundos)"""
         if self.status == RequestStatus.PENDING:
-            return time.time() - self.timestamp
+            return self._clock() - self.timestamp
         return 0
 
     @property
@@ -137,27 +161,35 @@ class Request:
             if self.status not in {RequestStatus.PENDING, RequestStatus.PROCESSING}:
                 return
             self.status = RequestStatus.CANCELLED
-            self.completed_at = time.time()
-            self.cancellation_token.cancel(reason)
-        if self.on_cancel:
+            self.completed_at = self._clock()
+            callback = self.on_cancel
+            self.on_complete = self.on_cancel = self.on_fail = None
+        self.cancellation_token.cancel(reason)
+        if callback:
             try:
-                self.on_cancel(self)
+                callback(self)
             except Exception as e:
                 logger.error(f"Error en on_cancel callback: {e}")
+        self.cancellation_token.discard_callbacks()
 
     def complete(self, result: Any) -> bool:
         """Marcar como completada"""
+        if self.prune_private():
+            return False
         with self._state_lock:
             if self.is_cancelled or self.status not in {RequestStatus.PENDING, RequestStatus.PROCESSING}:
                 return False
             self.result = result
             self.status = RequestStatus.COMPLETED
-            self.completed_at = time.time()
-        if self.on_complete:
+            self.completed_at = self._clock()
+            callback = self.on_complete
+            self.on_complete = self.on_cancel = self.on_fail = None
+        if callback:
             try:
-                self.on_complete(self)
+                callback(self)
             except Exception as e:
                 logger.error(f"Error en on_complete callback: {e}")
+        self.cancellation_token.discard_callbacks()
         return True
 
     def fail(self, error: str):
@@ -170,20 +202,25 @@ class Request:
         reasoner. Ahora invocamos `on_fail` (o `on_complete` como fallback)
         para despertar al llamador de inmediato con un error accionable.
         """
+        if self.prune_private():
+            return
         with self._state_lock:
             if self.is_cancelled or self.status not in {RequestStatus.PENDING, RequestStatus.PROCESSING}:
                 return
             self.error = error
             self.status = RequestStatus.FAILED
-            self.completed_at = time.time()
-        cb = self.on_fail or self.on_complete
+            self.completed_at = self._clock()
+            cb = self.on_fail or self.on_complete
+            self.on_complete = self.on_cancel = self.on_fail = None
         if cb:
             try:
                 cb(self)
             except Exception as e:
                 logger.error(f"Error en on_fail callback: {e}")
+        self.cancellation_token.discard_callbacks()
 
     def to_dict(self) -> dict:
+        self.prune_private()
         return {
             "request_id": self.request_id,
             "user_id": self.user_id,
@@ -238,7 +275,8 @@ class PriorityRequestQueue:
         self,
         auto_cancel_previous: bool = True,
         timeouts: dict[Priority, float] = None,
-        max_queue_size: int = 100
+        max_queue_size: int = 100,
+        *, source_policy: FactLedger | None = None, clock=None,
     ):
         """
         Args:
@@ -249,10 +287,12 @@ class PriorityRequestQueue:
         self.auto_cancel = auto_cancel_previous
         self.timeouts = timeouts or self.DEFAULT_TIMEOUTS
         self.max_queue_size = max_queue_size
+        self.source_policy = source_policy
+        self._clock = clock or (source_policy.clock if source_policy is not None else time.time)
 
         # Cola priorizada (heap)
         self._queue: list[Request] = []
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         # Event para notificar nuevas peticiones
         self._not_empty = threading.Condition(self._lock)
@@ -303,6 +343,7 @@ class PriorityRequestQueue:
             Request creado
         """
         request = Request(
+            timestamp=self._clock(), _clock=self._clock, _source_policy=self.source_policy,
             priority=priority,
             user_id=user_id,
             user_name=user_name or user_id,
@@ -314,6 +355,9 @@ class PriorityRequestQueue:
             on_fail=on_fail,
             memory_sources=memory_sources,
         )
+
+        self.prune_private()
+        request.prune_private()
 
         with self._lock:
             # Verificar tamaño maximo
@@ -430,6 +474,7 @@ class PriorityRequestQueue:
         """
         while self._queue:
             request = heapq.heappop(self._queue)
+            request.prune_private()
 
             # Saltar peticiones canceladas
             if request.is_cancelled:
@@ -488,7 +533,32 @@ class PriorityRequestQueue:
 
     def get_current(self) -> Request | None:
         """Obtener peticion actualmente en proceso"""
+        self.prune_private()
         return self._current
+
+    def prune_private(self) -> int:
+        """Scrub expired/revoked receipts and queued work without hiding owners."""
+        with self._lock:
+            requests = {id(r): r for r in (*self._queue, *self._user_requests.values())}
+            if self._current is not None:
+                requests[id(self._current)] = self._current
+        removed = {key for key, request in requests.items() if request.prune_private()}
+        with self._lock:
+            self._queue = [r for r in self._queue if id(r) not in removed]
+            heapq.heapify(self._queue)
+            self._user_requests = {user: r for user, r in self._user_requests.items() if id(r) not in removed}
+        return len(removed)
+
+    def discard_private(self) -> None:
+        """Discard retained receipt bodies and closures after shutdown cancellation."""
+        with self._lock:
+            requests = {id(r): r for r in (*self._queue, *self._user_requests.values())}
+            if self._current is not None:
+                requests[id(self._current)] = self._current
+            for request in requests.values():
+                request.prune_private(force=True)
+            self._queue.clear()
+            self._user_requests.clear()
 
     def clear_current(self, expected: Request | None = None) -> None:
         """Release only the request owned by this completing worker."""
@@ -498,11 +568,13 @@ class PriorityRequestQueue:
 
     def get_queue_status(self) -> list[dict]:
         """Obtener estado de la cola"""
+        self.prune_private()
         with self._lock:
             return [r.to_dict() for r in sorted(self._queue) if not r.is_cancelled]
 
     def get_position(self, request_id: str) -> int | None:
         """Obtener posicion en la cola de una peticion"""
+        self.prune_private()
         with self._lock:
             sorted_queue = sorted(
                 [r for r in self._queue if not r.is_cancelled]
@@ -530,6 +602,7 @@ class PriorityRequestQueue:
 
     def get_stats(self) -> dict:
         """Obtener estadisticas de la cola"""
+        self.prune_private()
         with self._lock:
             pending = len([r for r in self._queue if not r.is_cancelled])
 
@@ -541,6 +614,7 @@ class PriorityRequestQueue:
             }
 
     def __len__(self) -> int:
+        self.prune_private()
         with self._lock:
             return len([r for r in self._queue if not r.is_cancelled])
 

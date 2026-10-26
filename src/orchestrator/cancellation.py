@@ -39,6 +39,7 @@ class CancellationReason(StrEnum):
     USER_EXPLICIT = "user_explicit"            # Usuario dijo "cancela" o similar
     SYSTEM_SHUTDOWN = "system_shutdown"        # Sistema apagandose
     ERROR = "error"                            # Error en procesamiento
+    PRIVACY = "privacy"                        # Source expired or conversation revoked
 
 
 @dataclass
@@ -133,11 +134,11 @@ class CancellationToken:
         El callback recibe el token como argumento.
         """
         with self._lock:
-            if self._cancelled:
-                # Ya cancelado, ejecutar inmediatamente
-                callback(self)
-            else:
+            cancelled = self._cancelled
+            if not cancelled:
                 self._callbacks.append(callback)
+        if cancelled:
+            callback(self)
 
     def raise_if_cancelled(self):
         """Lanzar excepcion si esta cancelado"""
@@ -152,6 +153,11 @@ class CancellationToken:
             self._message = None
             self._cancelled_at = None
             self._callbacks = []
+
+    def discard_callbacks(self) -> None:
+        """Release callback closures after the owning request becomes terminal."""
+        with self._lock:
+            self._callbacks.clear()
 
     def get_elapsed_since_cancel(self) -> float | None:
         """Tiempo transcurrido desde la cancelacion"""

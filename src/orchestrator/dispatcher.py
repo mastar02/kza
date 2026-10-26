@@ -1777,7 +1777,8 @@ class MultiUserOrchestrator:
         )
 
         self._queue = PriorityRequestQueue(
-            auto_cancel_previous=auto_cancel_previous
+            auto_cancel_previous=auto_cancel_previous,
+            source_policy=memory_manager.long_term.ledger if memory_manager is not None else None,
         )
 
         self._cancel_manager = self._queue  # Para acceso desde VoicePipeline
@@ -1879,6 +1880,7 @@ class MultiUserOrchestrator:
             except asyncio.CancelledError:
                 pass
 
+        self.queue.discard_private()
         await self.context_manager.aclose()
         logger.info("MultiUserOrchestrator detenido")
 
@@ -1962,6 +1964,7 @@ class MultiUserOrchestrator:
         """Procesar peticiones de la cola"""
         while self._running:
             try:
+                self.queue.prune_private()
                 request = await self.queue.dequeue_async(timeout=1.0)
                 if request is None:
                     continue
@@ -2006,6 +2009,8 @@ class MultiUserOrchestrator:
                     effective_prompt, zone_id=request.zone_id, generation=self._generation,
                     deadline=request.response_deadline, on_owned=owned,
                 )
+                if request.prune_private():
+                    return ""
                 request.speech_handled = delivered.speech_handled
                 request.error_response = delivered.text
                 request.timeout_stage = delivered.timeout_stage
@@ -2026,6 +2031,7 @@ class MultiUserOrchestrator:
 
         async def watch_cancellation() -> None:
             while not request.is_cancelled:
+                request.prune_private()
                 if self.queue.interrupt_for_priority(request.priority):
                     request.cancel(CancellationReason.HIGHER_PRIORITY)
                     return
@@ -2034,6 +2040,7 @@ class MultiUserOrchestrator:
         generation = monitor = None
         response = failure = None
         try:
+            request.prune_private()
             if request.is_cancelled:
                 request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
                 return

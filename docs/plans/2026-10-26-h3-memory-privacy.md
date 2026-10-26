@@ -150,16 +150,62 @@ no revierte una acción ni convierte su diagnóstico en otro intento de HA. Las
 lecturas de eventos de la API autenticada también se ejecutan fuera del loop;
 sus respuestas y errores llevan `Cache-Control: no-store`.
 
-Esta retención todavía no cubre los demás logs de diagnóstico, colectores,
-colas, cachés y copias mantenidas por consumidores del stream o del frontend.
+Quedan fuera del registro SQL los demás logs de diagnóstico, colectores y copias
+mantenidas por consumidores del stream o del frontend.
 La revisión de sugerencias derivadas y su procedencia se integra con el trabajo
 restante de H3/H5. El borrado coordinado continúa pendiente.
+
+## Solicitudes e índices transitorios
+
+Las solicitudes nuevas conservan fuentes desde su admisión. Si se ingresan
+directamente por la API interna de cola, el intercambio se registra como
+`interaction`; una captura de voz conserva su UUID y plazo originales.
+Las proyecciones de cola y la publicación de resultados consultan vencimiento
+y revocaciones. Un pedido inválido pendiente o activo se cancela con motivo de
+privacidad; se retiran texto, nombre copiado, resultado, errores y closures.
+Los callbacks también se liberan al llegar a un estado terminal, y un listener
+registrado sobre un token ya cancelado se ejecuta fuera de su lock.
+
+Los recibos completados se conservan sólo mientras sus fuentes están vigentes.
+La limpieza elimina esos cuerpos del tracking por usuario y de la cola; el
+puntero del trabajo actualmente en cleanup conserva su ownership hasta la salida
+real. Una cancelación no presenta ese trabajo como terminado. El cierre del
+orquestador descarta los cuerpos que todavía se retenían.
+
+`TransientCache` limita la caché de consultas y conserva las fuentes y su plazo,
+sin renovar por hits. Claves y valores desaparecen al vencer o revocarse; las
+copias defensivas impiden que un consumidor modifique el valor retenido. Cerrar
+la caché impide que un resultado tardío vuelva a poblarla.
+
+El historial del clasificador usa el menor plazo entre las capturas y la ventana
+configurada de NLU (120 s por defecto). La ventana parte del tiempo de captura,
+no del momento de completar la llamada. El resultado del modelo depende tanto
+de la captura actual como de las entradas históricas incluidas en el prompt:
+se comprueban antes de iniciar la operación nativa y después de su retorno.
+Ambas rutas registran una vez los controles aceptados, incluidos los que terminan
+en el camino tipado, con las fuentes reales de ese intercambio.
+
+El router mantiene una tarea propia que purga estas copias en inactividad con
+intervalo nominal de un segundo. Las lecturas aplican el plazo sin esperar ese
+tick. La inicialización y el cierre se conectan a VoicePipeline. Clasificación
+nativa, búsqueda vectorial y la interpretación rápida del router tienen trabajo
+acotado y retenido tras cancelación o timeout. Se cierra la admisión antes de
+esperar su salida; un lookup tardío no vuelve a llenar la caché ni envía una
+acción desde una captura invalidada. Se retiran los campos de texto del resultado
+que ya no puede publicarse, conservando los recibos de efectos ya efectuados.
+
+Siguen pendientes las copias en otros logs, colectores, streams y frontend, y
+la coordinación durable de todos los almacenes. También falta completar la
+procedencia transitiva de respuestas generadas a partir de otros recuerdos:
+cancelar por las fuentes de la captura actual no sustituye el seguimiento de
+todos los hechos y contextos que contribuyeron al prompt. El corpus y la
+evaluación acústica de voces permanecen separados de estas pruebas de software.
 
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
-   solicitudes de cola, últimas respuestas y otras rutas de persistencia,
-   caché, streams y frontend; integrar las sugerencias derivadas.
+   streams y frontend; auditar otras rutas de persistencia y caché e integrar
+   sugerencias derivadas y dependencias transitivas de los prompts.
 2. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
    frente a productores y guardados tardíos. La limpieza local del catálogo no

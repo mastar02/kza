@@ -555,6 +555,10 @@ async def _run_main(shutdown: AsyncExitStack):
             logger.error(f"No se pudo construir LLMRouter, sigo con fast_router suelto: {e}")
             llm_router = None
 
+    # Memory Manager - memoria contextual
+    memory_services = await build_memory_services(config, shutdown=shutdown)
+    memory_manager = memory_services.manager if memory_services is not None else None
+
     # LLM Command Router (Opción 2 NLU) — clasificador de comandos vía vLLM 7B.
     # Independiente del LLMRouter: este valida texto post-wake contra
     # alucinaciones de TV / replays / frases noise. Hereda el FastRouter
@@ -575,15 +579,13 @@ async def _run_main(shutdown: AsyncExitStack):
             timeout_s=nlu_cfg.get("timeout_s", 1.5),
             max_tokens=nlu_cfg.get("max_tokens", 200),
             temperature=nlu_cfg.get("temperature", 0.0),
+            source_policy=memory_manager.long_term.ledger if memory_manager is not None else None,
         )
+        shutdown.push_async_callback(llm_command_router.aclose)
         logger.info(
             f"LLMCommandRouter habilitado (timeout={nlu_cfg.get('timeout_s', 1.5)}s, "
             f"max_history={nlu_cfg.get('max_history', 5)})"
         )
-
-    # Memory Manager - memoria contextual
-    memory_services = await build_memory_services(config, shutdown=shutdown)
-    memory_manager = memory_services.manager if memory_services is not None else None
 
     # Speaker Identification (cuda:0 — pipeline de audio consolidado)
     # Fuente de verdad: settings.yaml § speaker_id.

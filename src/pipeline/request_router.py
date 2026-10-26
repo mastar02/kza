@@ -28,6 +28,9 @@ from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
 from src.analytics.asr_quality import alog_asr_outcome
+from src.memory.transient import TransientCache
+from src.core.owned_work import OwnedBlockingWork
+from src.nlu.llm_router import LLMCommandRouter
 
 logger = logging.getLogger(__name__)
 
@@ -324,8 +327,13 @@ class RequestRouter:
         )
 
         # State
-        self._query_cache = {}
+        from src.memory.memory_manager import MemoryManager
+        self._source_policy = self.memory.long_term.ledger if isinstance(self.memory, MemoryManager) else None
+        self._query_cache = TransientCache(cache_max_size, source_policy=self._source_policy)
         self._cache_max_size = cache_max_size
+        self._private_maintenance_task = None
+        self._query_work = OwnedBlockingWork()
+        self._closed = False
         self._pending_suggestion = None
         self._last_response = None
         self._command_count = 0
@@ -397,7 +405,7 @@ class RequestRouter:
             started = time.perf_counter()
             if self.llm_command_router is not None:
                 try:
-                    classification = await self.llm_command_router.classify(text, room_id=room_id)
+                    classification = await self._classify_command(text, room_id=room_id)
                 except Exception:
                     logger.exception("[HomeVoice] Command gate unavailable")
             result["timings"]["llm_router"] = (time.perf_counter() - started) * 1000
@@ -462,6 +470,8 @@ class RequestRouter:
             latency_ms, user, timings, and optionally path, room.
         """
         from src.pipeline.command_event import CommandEvent, TranscriptSource
+        if self._closed:
+            return {"text": "", "intent": "cancelled", "success": False, "response": "", "timings": {}, "latency_ms": 0}
 
         pretranscribed_text: str | None = None
         used_wake_text = False
@@ -542,6 +552,16 @@ class RequestRouter:
                 wake_score=wake_score, wake_rms=wake_rms,
                 textual_wake=textual_wake, ambient_strict=ambient_strict,
             )
+        classification = result.get("llm_classification")
+        if self.llm_command_router is not None and result.get("success") and (result.get("intent") == "domotics" or classification is not None):
+            try:
+                source = self._memory_source.get()
+                options = {"sources": (source,) if source is not None else ()} if isinstance(self.llm_command_router, LLMCommandRouter) else {}
+                action = result.get("action") or {}
+                self.llm_command_router.record_command(result.get("text", ""),
+                    getattr(classification, "intent", None) or action.get("service") or "unknown", **options)
+            except Exception as error:
+                logger.debug("Command history write skipped: %s", type(error).__name__)
         if self.memory is not None and result.get("success") and result.get("intent") in {"conversation", "domotics"}:
             try:
                 source_options = {}
@@ -556,6 +576,11 @@ class RequestRouter:
                     assistant_response=result.get("response", ""), intent=result["intent"], **source_options)
             except Exception:
                 logger.exception("[Memory] Completed interaction could not be recorded")
+        if self._closed or not self._current_source_available():
+            result["text"] = result["response"] = ""
+            result.pop("llm_classification", None)
+            result.pop("memory_proposal", None)
+            result.pop("confirmation_question", None)
         return result
 
     async def _process_command_orchestrated(self, audio: np.ndarray, room_id: str = None,
@@ -682,7 +707,7 @@ class RequestRouter:
             result["llm_classification"] = classification
         elif self.llm_command_router is not None:
             t_llm = time.perf_counter()
-            classification = await self.llm_command_router.classify(text, room_id=room_id)
+            classification = await self._classify_command(text, room_id=room_id)
             llm_ms = (time.perf_counter() - t_llm) * 1000
             result["timings"]["llm_router"] = llm_ms
             logger.info(
@@ -967,21 +992,6 @@ class RequestRouter:
                 action=result["action"]["service"] if result["action"] else None,
                 trigger_phrase=text
             )
-
-        # Registrar el comando aceptado en el historial del LLMCommandRouter
-        # para que próximas clasificaciones puedan detectar replays.
-        if (
-            self.llm_command_router is not None
-            and result["success"]
-            and result.get("llm_classification") is not None
-        ):
-            try:
-                self.llm_command_router.record_command(
-                    text=text,
-                    intent=result["llm_classification"].intent or "unknown",
-                )
-            except Exception as e:
-                logger.debug(f"LLMCommandRouter.record_command falló: {e}")
 
         return result
 
@@ -1288,7 +1298,7 @@ class RequestRouter:
         # Estrategia: 1) Buscar por entity sin filtro de service, 2) mirar LastActionTracker,
         # 3) toggle si hay contexto reciente, si no → TTS "¿prendo o apago?".
         if intent is None:
-            probe = await asyncio.to_thread(self.chroma.search_command,
+            probe = await self._query_work.run(self.chroma.search_command,
                 text, threshold=0.55, service_filter=None, query_slots={},
             )
             if probe and probe["similarity"] >= 0.60:
@@ -1321,7 +1331,7 @@ class RequestRouter:
         command = self._query_cache.get(cache_key)
 
         if not command:
-            command = await asyncio.to_thread(self.chroma.search_command,
+            command = await self._query_work.run(self.chroma.search_command,
                 text,
                 self.vector_search_threshold,
                 service_filter=intent,
@@ -1331,6 +1341,10 @@ class RequestRouter:
                 self._add_to_cache(cache_key, command)
 
         result["timings"]["vector_search"] = (time.perf_counter() - t_search) * 1000
+
+        if self._closed or not self._current_source_available():
+            result.update(intent="cancelled", success=False, response="")
+            return result
 
         if command:
             result["intent"] = "domotics"
@@ -1393,7 +1407,7 @@ class RequestRouter:
             try:
                 t_router = time.perf_counter()
                 # Classify and respond in ONE inference (saves ~20ms)
-                use_deep, router_response = await asyncio.to_thread(self.router.classify_and_respond,
+                use_deep, router_response = await self._query_work.run(self.router.classify_and_respond,
                     text,
                     context=self._get_conversation_context(),
                     max_tokens=256
@@ -1401,6 +1415,10 @@ class RequestRouter:
                 result["timings"]["router"] = (time.perf_counter() - t_router) * 1000
             except Exception as e:
                 logger.warning(f"Router failed: {e}")
+
+        if self._closed or not self._current_source_available():
+            result.update(intent="cancelled", success=False, response="")
+            return result
 
         if not use_deep and router_response:
             # Router already generated the response, no second inference needed
@@ -1784,8 +1802,59 @@ Usuario: {user_text}
 Asistente:"""
 
     def _add_to_cache(self, key: str, value: dict):
-        """Add to cache with size limit."""
-        if len(self._query_cache) >= self._cache_max_size:
-            oldest_key = next(iter(self._query_cache))
-            del self._query_cache[oldest_key]
-        self._query_cache[key] = value
+        """Retain a bounded query result only while its actual capture survives."""
+        source = self._memory_source.get()
+        return self._query_cache.put(key, value, (source,) if source is not None else ())
+
+    async def _classify_command(self, text: str, *, room_id: str | None = None):
+        options = {}
+        if isinstance(self.llm_command_router, LLMCommandRouter):
+            source = self._memory_source.get()
+            options["sources"] = (source,) if source is not None else ()
+        return await self.llm_command_router.classify(text, room_id=room_id, **options)
+
+    def _current_source_available(self) -> bool:
+        from src.memory.fact_ledger import sources_current
+        source = self._memory_source.get()
+        sources = (source,) if source is not None else ()
+        return sources_current(sources, self._query_cache.clock()) and (
+            self._source_policy is None or self._source_policy.sources_available(sources))
+
+    def prune_private(self) -> None:
+        """Drop idle query/history copies; every read enforces the same policy."""
+        self._query_cache.prune()
+        if isinstance(self.llm_command_router, LLMCommandRouter):
+            self.llm_command_router.prune_private()
+        if self._orchestrator is not None:
+            queue = getattr(self._orchestrator, "queue", None)
+            if queue is not None and hasattr(queue, "prune_private"):
+                queue.prune_private()
+
+    def start(self) -> None:
+        """Own one cheap in-memory maintenance task for idle text copies."""
+        if self._closed:
+            raise RuntimeError("request_router_closed")
+        if self._private_maintenance_task is None:
+            async def maintain():
+                while True:
+                    self.prune_private()
+                    await asyncio.sleep(1)
+            self._private_maintenance_task = asyncio.create_task(maintain())
+
+    async def aclose(self) -> None:
+        """Stop maintenance and discard private cached text before classifier close."""
+        self._closed = True
+        self._query_cache.close()
+        if self._private_maintenance_task is not None:
+            self._private_maintenance_task.cancel()
+            await asyncio.gather(self._private_maintenance_task, return_exceptions=True)
+        try:
+            if isinstance(self.llm_command_router, LLMCommandRouter):
+                await self.llm_command_router.aclose()
+        finally:
+            await self._query_work.aclose()
+
+    def resource_status(self) -> dict:
+        """Expose retained query/classifier work and private cache admission."""
+        return {"closed": self._closed, "queries": self._query_work.status(),
+                "classifier": self.llm_command_router.resource_status() if isinstance(self.llm_command_router, LLMCommandRouter) else None}

@@ -23,10 +23,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
+from uuid import uuid4
+
+from src.core.owned_work import OwnedBlockingWork
+from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource, sources_current
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +133,8 @@ class _HistoryEntry:
     text: str
     intent: str
     timestamp: float
+    sources: tuple[MemorySource, ...] = ()
+    expires_at: float = 0
 
 
 # Prompt SYSTEM ultra-compacto. El shape JSON y los enums de intent /
@@ -247,6 +254,7 @@ class LLMCommandRouter:
         timeout_s: float = 1.5,
         max_tokens: int = 150,
         temperature: float = 0.0,
+        *, source_policy: FactLedger | None = None, clock=None,
     ):
         """
         Args:
@@ -266,25 +274,56 @@ class LLMCommandRouter:
         self.timeout_s = timeout_s
         self.max_tokens = max_tokens
         self.temperature = temperature
+        if type(history_ttl_s) not in (int, float) or not math.isfinite(history_ttl_s) or not 0 < history_ttl_s <= 48*3600:
+            raise ValueError("invalid_command_history_ttl")
+        self.source_policy = source_policy
+        self._clock = clock or (source_policy.clock if source_policy is not None else time.time)
+        self._work = OwnedBlockingWork()
         self._history: deque[_HistoryEntry] = deque(maxlen=max_history)
 
-    def record_command(self, text: str, intent: str) -> None:
+    def _available(self, sources: tuple[MemorySource, ...]) -> bool:
+        return not self._work.status()["closed"] and sources_current(sources, self._clock()) and (self.source_policy is None or self.source_policy.sources_available(sources))
+
+    def _admission_sources(self) -> tuple[MemorySource, ...]:
+        now = self._clock()
+        return (MemorySource(str(uuid4()), str(uuid4()), now, now+48*3600, MemoryOrigin.INTERACTION),)
+
+    def record_command(self, text: str, intent: str, *, sources: tuple[MemorySource, ...] | None = None) -> None:
         """Registrar un comando ejecutado (para contexto de futuros calls)."""
-        if not text or not intent:
+        self.prune_private()
+        sources = self._admission_sources() if sources is None else sources
+        if not text or not intent or not self._available(sources) or self._work.status()["closed"]:
+            return
+        expiry = min(min(s.expires_at for s in sources), min(s.captured_at for s in sources)+self.history_ttl_s)
+        if expiry <= self._clock():
             return
         self._history.append(_HistoryEntry(
             text=text.strip(),
             intent=intent,
-            timestamp=time.time(),
+            timestamp=min(s.captured_at for s in sources), sources=sources,
+            expires_at=expiry,
         ))
+
+    def prune_private(self) -> int:
+        """Physically drop expired/revoked command history, including idle periods."""
+        before = len(self._history)
+        self._history = deque((h for h in self._history if h.expires_at > self._clock() and self._available(h.sources)), maxlen=self._history.maxlen)
+        return before-len(self._history)
+
+    def resource_status(self) -> dict:
+        """Expose the actual classifier workers retained after cancellation."""
+        return self._work.status()
+
+    async def aclose(self) -> None:
+        """Discard historical text and wait for real native classifier completion."""
+        self._history.clear()
+        await self._work.aclose()
 
     def _build_history_block(self) -> str:
         """Renderear los últimos comandos válidos como contexto en el prompt."""
-        now = time.time()
-        valid = [
-            h for h in self._history
-            if (now - h.timestamp) <= self.history_ttl_s
-        ]
+        self.prune_private()
+        now = self._clock()
+        valid = list(self._history)
         if not valid:
             return "HISTORIAL DE COMANDOS RECIENTES: (vacío)"
         lines = ["HISTORIAL DE COMANDOS RECIENTES (más reciente primero):"]
@@ -316,19 +355,24 @@ class LLMCommandRouter:
         self,
         text: str,
         room_id: Optional[str] = None,
+        *, sources: tuple[MemorySource, ...] | None = None,
     ) -> CommandClassification:
         """Clasificar un texto. No bloquea — corre el LLM en thread pool."""
         t0 = time.perf_counter()
+        sources = self._admission_sources() if sources is None else sources
+        if not self._available(sources):
+            return CommandClassification(is_command=None, rejection_reason="unavailable")
         prompt = self._build_prompt(text, room_id)
+        dependencies = tuple({s.capture_id: s for s in (*sources, *(s for h in self._history for s in h.sources))}.values())
+
+        def generate_if_current():
+            if not self._available(dependencies):
+                return []
+            return self.router.generate([prompt], self.max_tokens, self.temperature, _RESPONSE_FORMAT_BODY)
+
         try:
             results = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self.router.generate,
-                    [prompt],
-                    self.max_tokens,
-                    self.temperature,
-                    _RESPONSE_FORMAT_BODY,  # vLLM ≥0.10: response_format json_schema
-                ),
+                self._work.run(generate_if_current),
                 timeout=self.timeout_s,
             )
         except asyncio.TimeoutError:
@@ -352,6 +396,8 @@ class LLMCommandRouter:
                 elapsed_ms=elapsed,
             )
         elapsed = (time.perf_counter() - t0) * 1000
+        if not self._available(dependencies):
+            return CommandClassification(is_command=None, rejection_reason="unavailable", elapsed_ms=elapsed)
         raw = (results[0] if results else "").strip()
         return self._parse_response(raw, elapsed)
 

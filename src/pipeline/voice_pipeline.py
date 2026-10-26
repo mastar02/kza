@@ -100,6 +100,8 @@ class VoicePipeline:
                 await asyncio.to_thread(self.memory.initialize)
 
         # Start orchestrator
+        if isinstance(self.request_router, RequestRouter):
+            self.request_router.start()
         if self._orchestrator:
             try:
                 await self._orchestrator.start()
@@ -130,6 +132,7 @@ class VoicePipeline:
         self._running = False
 
         for name, coro in [
+            ("request_router", self.request_router.aclose() if isinstance(self.request_router, RequestRouter) else None),
             ("orchestrator", self._orchestrator.stop() if self._orchestrator else None),
             ("audio_loop", self.audio_loop.stop() if self.audio_loop else None),
             ("features", self.features.stop() if self.features else None),
