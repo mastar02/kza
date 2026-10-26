@@ -41,6 +41,8 @@ async def graph(tmp_path, *, enabled=True, timeout=1):
         owner = ErasureCoordinator(privacy, close_timeout_s=timeout)
         stack.push_async_callback(owner.aclose)
         driver = await build_event_erasure(config, privacy=privacy, owner=owner)
+        # This file observes conversation cleanup independently of TTL sweeps.
+        await driver.retention.begin_close()
         events = await build_event_logger(config, shutdown=stack, privacy=privacy)
         if events is not None:
             events._maintenance.cancel()

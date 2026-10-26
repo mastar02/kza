@@ -350,6 +350,14 @@ con borrado físico de SQLite y recibo de eventos completo. El heartbeat alcanza
 p95 de 0,22 ms y máximo de 1,07 ms, con los límites intactos. La validación de
 GC/latencia integrada continúa abierta; no se infiere de esta suite sin fallos.
 
+La retención de eventos también se construye ya con analytics apagado y recorre
+los destinos históricos en lotes de 128 metadatos. Respeta y persiste fechas
+anteriores, despierta ante nuevas escrituras y conserva trabajo real durante el
+cierre. El factory usa ese mantenimiento acotado en lugar de otro barrido del
+logger. La limpieza física usa sólo revocaciones confirmadas: un commit fallido
+puede bloquear lecturas provisionalmente, pero no destruir eventos válidos.
+Siguen abiertos los siete participantes restantes, las otras copias, voces,+migración y aceptación de runtime; no hay cambios en producción.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke

@@ -566,7 +566,7 @@ async def _run_main(shutdown: AsyncExitStack):
     erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
         memory=memory_manager.long_term if memory_manager is not None else None)
     capture_erasure = await build_capture_erasure(config, privacy=privacy_services, owner=erasure_services)
-    await build_event_erasure(config, privacy=privacy_services, owner=erasure_services)
+    event_erasure = await build_event_erasure(config, privacy=privacy_services, owner=erasure_services)
 
     # LLM Command Router (Opción 2 NLU) — clasificador de comandos vía vLLM 7B.
     # Independiente del LLMRouter: este valida texto post-wake contra
@@ -673,7 +673,7 @@ async def _run_main(shutdown: AsyncExitStack):
 
     if analytics_config.get("enabled", True):
         event_logger = await build_event_logger(config, shutdown=shutdown,
-            privacy=privacy_services)
+            privacy=privacy_services, retention=event_erasure.retention)
 
         pattern_analyzer = PatternAnalyzer(event_logger)
 

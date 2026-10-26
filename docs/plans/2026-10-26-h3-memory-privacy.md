@@ -672,6 +672,45 @@ sin ampliar límites. La aceptación de GC/latencia integrada sigue pendiente:
 esta suite sin instrumentación de GC no vuelve a medir ni resuelve las pausas
 globales observadas en la validación anterior.
 
+## Avance: retención de eventos sin analytics
+
+El adaptador de eventos construye ahora un mantenimiento independiente del
+logger, del feature analytics y de recall. Recorre las bases registradas,
+incluidas las históricas, sin crear archivos ni schemas ni modificar tablas
+legacy. Cada transacción procesa hasta 128 IDs, fechas y fuentes: borra eventos
+con metadatos vencidos o dependencias revocadas y reemplaza frases, nombres y
+contextos vencidos por las métricas numéricas ya filtradas. No carga texto en
+Python. Las fechas persistidas no se renuevan; un límite de metadatos menor se
+guarda antes de vencer para que ampliarlo después tampoco lo extienda.
+
+Dos lotes y dos threads propios limitan el trabajo nativo. El planificador cede
+entre lotes para que una base grande no monopolice los destinos pendientes.
+Un SQLite bloqueado no conserva la barrera de la autoridad ni frena otro destino
+independiente. Las escrituras del factory despiertan el mantenimiento ante fechas
+anteriores; el poll del registro y las revocaciones se limita a 30 s. El factory
+conectado usa este mantenimiento en lugar de duplicarlo con el barrido completo
+del logger. El logger standalone conserva su mecanismo existente.
+
+Las filas y sus fechas son la intención durable de purga: tras fallo o reinicio
+se vuelven a examinar. Fuentes o fechas desconocidas revierten el lote y quedan
+pendientes con un código fijo; las versiones desconocidas no se confirman.
+Los resultados retenidos contienen sólo contadores, cursores y fechas. La espera
+cancelada no cancela el lote, y el cierre conserva su pool y la lease hasta su
+salida real. Los deadlines se anclan al momento de calcularlos para no extender
+la espera cuando el loop observa tarde un resultado.
+
+La revisión detectó además que una revocación provisional previa al commit no
+sirve como prueba para destruir una copia física. Los lectores siguen bloqueados
+durante ese commit, pero la limpieza irreversible usa sólo las revocaciones y
+recibos publicados tras un commit confirmado. Esto cubre al nuevo mantenimiento,
+al participante del journal y al borrado del logger standalone. Un caso mantiene
+el commit pendiente, ejecuta las dos vías físicas y fuerza rollback: el evento
+válido se conserva y vuelve a estar autorizado.
+
+No completa los otros siete participantes ni las copias derivadas, la migración,
+voces o el resto de H3. Las ubicaciones nunca registradas y los datos sin
+procedencia todavía requieren el inventario privado y el ensayo de migración.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

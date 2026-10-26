@@ -22,7 +22,7 @@ from pathlib import Path
 import json
 
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
-from src.analytics.erasure import event_descriptor
+from src.analytics.event_storage import event_descriptor
 from src.memory.erasure_journal import ErasureParticipant
 from src.memory.fact_ledger import FactLedger, MemorySource, sources_current
 
@@ -116,6 +116,7 @@ class EventLogger:
         context_provider=None,
         *, source_policy: FactLedger | None = None, clock=None, io_worker=None,
         observation_timeout_s: float = .1,
+        retention_notify=None,
     ):
         """
         Args:
@@ -133,6 +134,7 @@ class EventLogger:
         self.source_policy = source_policy
         self._clock = clock if clock is not None else (source_policy.clock if source_policy is not None else time.time)
         self.observation_timeout_s = observation_timeout_s
+        self._retention_notify = retention_notify
         self._initializing = threading.RLock()
         self._initialized = False
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='event-writer') if io_worker is None else None
@@ -193,16 +195,20 @@ class EventLogger:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_policy_event_expiry ON events_policy_v1(expires_at)")
             conn.commit()
 
-    def _unrevoked(self, encoded: str) -> bool:
+    def _unrevoked(self, encoded: str, *, committed: bool = False) -> bool:
         try:
             sources = tuple(MemorySource.from_dict(item) for item in json.loads(encoded))
             if self.source_policy is None:
-                return not any(s.fact_dependencies for s in sources)
+                return committed or not any(s.fact_dependencies for s in sources)
             if not self.source_policy.authority_available:
                 raise RuntimeError("privacy_authority_unavailable")
+            if committed:
+                return not self.source_policy.sources_committed_unavailable(sources)
             return all(not self.source_policy.conversation_revoked(s.conversation_id)
                        and self.source_policy.facts_available(s.fact_dependencies) for s in sources)
         except (TypeError, ValueError, KeyError, AttributeError):
+            if committed:
+                raise ValueError('unknown_event_sources') from None
             return False
 
     @contextmanager
@@ -211,6 +217,7 @@ class EventLogger:
         with closing(sqlite3.connect(self.db_path)) as db, db:
             db.create_function("policy_now", 0, self._clock)
             db.create_function("event_unrevoked", 1, self._unrevoked)
+            db.create_function("event_committed_unrevoked", 1, lambda encoded: self._unrevoked(encoded, committed=True))
             # All existing analytics SQL resolves this temporary view. Legacy
             # rows cannot enter retrieval, distributions, sequences or stats.
             db.execute("""CREATE TEMP VIEW events AS SELECT
@@ -269,7 +276,7 @@ class EventLogger:
         if sources and (not sources_current(sources, timestamp) or self.source_policy is not None and not self.source_policy.sources_available(sources)):
             raise PermissionError("event_source_expired_or_deleted")
         expires_at = timestamp + self.retention_days*86400
-        if not math.isfinite(expires_at):
+        if not math.isfinite(expires_at) or expires_at <= timestamp:
             raise ValueError("invalid_event_retention")
         text_expiry = min((source.expires_at for source in sources), default=None)
         
@@ -304,6 +311,8 @@ class EventLogger:
                 json.dumps([source.to_dict() for source in sources]), json.dumps(metrics), expires_at, text_expiry))
         if self._maintenance_loop is not None:
             self._maintenance_loop.call_soon_threadsafe(self._changed.set)
+        if self._retention_notify is not None:
+            self._retention_notify(str(self.db_path))
         return event
 
     def _build_context(self, extra: dict = None) -> dict:
@@ -583,7 +592,7 @@ class EventLogger:
     def cleanup_old_events(self) -> int:
         """Delete expired/revoked policy events and scrub expired raw text."""
         with self._connect() as conn:
-            removed = conn.execute("DELETE FROM events_policy_v1 WHERE expires_at<=? OR NOT event_unrevoked(sources_json)", (self._clock(),)).rowcount
+            removed = conn.execute("DELETE FROM events_policy_v1 WHERE expires_at<=? OR NOT event_committed_unrevoked(sources_json)", (self._clock(),)).rowcount
             conn.execute("""UPDATE events_policy_v1 SET trigger_phrase=NULL, user_name=NULL,
                 context_json=metrics_json WHERE text_expires_at<=?""", (self._clock(),))
         return removed

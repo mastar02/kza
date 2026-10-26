@@ -270,6 +270,20 @@ class FactLedger:
         """Read a committed revocation without disk or a SQLite lock."""
         return conversation_id in self._deleted_conversations or conversation_id in self._pending_conversations
 
+    def sources_committed_unavailable(self, sources: tuple[MemorySource, ...]) -> bool:
+        """Authorize irreversible cleanup from published commits, not pending fences.
+
+        A native event worker calls this after acquiring its SQLite write lock.
+        Pending fences deny readers before commit, but a failed transaction may
+        roll them back and must not trigger irreversible derived-row removal.
+        Published receipt dictionaries are replaced, never mutated in place.
+        """
+        if not self._authority_available:
+            raise RuntimeError('privacy_authority_unavailable')
+        deleted, receipts, now = self._deleted_conversations, self._fact_receipts, self.clock()
+        return any(s.conversation_id in deleted or any(receipts.get(d.fact_id) != d
+                   or d.expires_at is not None and now >= d.expires_at for d in s.fact_dependencies) for s in sources)
+
     def conversation_deleted_at(self, conversation_id: str) -> float | None:
         """Read the capture-time fence without disk or source-scope renewal."""
         return self._pending_deleted_times.get(conversation_id, self._deleted_times.get(conversation_id))
