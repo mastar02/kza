@@ -325,6 +325,15 @@ o autoridades desconocidas quedan pendientes. La reconstrucción de índices
 vivos, los otros ocho participantes y la restauración compatible siguen abiertos;
 no se expone todavía un borrado global ni se modificó producción.
 
+La [validación del mantenimiento del índice](../research/2026-10-26-h3-index-maintenance-validation.json)
+del commit `5faa945` registra **4557 passed, 1 xfailed**, sin fallos, en 175,95 s,
+con 28 casos nuevos del índice, dos del arranque del logger, checks y artefacto
+compilado aceptados. El primer fallo de admisión en frío queda documentado con
+su corrección y presupuesto de 100 ms intacto. Los casos de voz pasan, pero la
+observación de GC del proceso de tests registra pausas de hasta 495,68 ms fuera
+de ellos. La aceptación de runtime/GC de H4/H6 sigue pendiente; no se interpreta
+esta suite como prueba de latencia integrada ni se desactiva GC para aprobarla.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke

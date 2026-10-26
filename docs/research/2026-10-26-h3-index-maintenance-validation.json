@@ -1,0 +1,488 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "5faa9450eec19b965e3c886b459fa5c5424e9317",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 always-on per-target physical policy-index reconciliation of fact expiry and individual deletion, independent of semantic recall; real temporary SQLite/Chroma and source-free runtime",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python /tmp/kza-index-maintenance-probe.py",
+    "pytest_arguments": [
+      "tests/",
+      "-q",
+      "--tb=short",
+      "-o",
+      "junit_family=xunit1",
+      "--junitxml=/tmp/kza-h3-index-maintenance-reviewed-final.xml"
+    ],
+    "collected": 4558,
+    "passed": 4557,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 175.95,
+    "junit_time_s": 175.889,
+    "log": "/tmp/kza-h3-index-maintenance-reviewed-final.log",
+    "xml": "/tmp/kza-h3-index-maintenance-reviewed-final.xml",
+    "accepted": true,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_gc_release_acceptance": false
+  },
+  "new_index_cases": 28,
+  "new_index_case_names": [
+    "test_individual_deletion_cleans_real_policy_index_and_preserves_live_confirmed_and_legacy",
+    "test_automatic_expiry_removes_vector_without_conversation_tombstone_or_recall",
+    "test_deletion_wakes_sleeping_cleanup_without_manual_reconcile",
+    "test_new_earlier_expiry_wakes_cleanup_without_enabling_recall",
+    "test_all_historical_targets_get_independent_receipts",
+    "test_later_registered_target_backfills_after_global_job_was_acknowledged",
+    "test_failed_target_remains_durable_while_another_target_cleans",
+    "test_ack_failure_retries_receipt_without_repeating_native_delete",
+    "test_fact_and_destination_cleanup_roll_back_together",
+    "test_leased_restart_rechecks_completed_receipts_against_restored_index",
+    "test_repeated_initialize_does_not_recover_live_claim_and_old_token_cannot_ack_restart",
+    "test_stale_revision_receipt_cannot_clear_current_claim",
+    "test_claim_binds_target_version_and_descriptor_before_native_deletion[version]",
+    "test_claim_binds_target_version_and_descriptor_before_native_deletion[descriptor]",
+    "test_native_cleanup_claim_survives_observer_cancel_and_close_timeout",
+    "test_missing_policy_collection_is_not_created_and_legacy_is_untouched",
+    "test_unsupported_target_remains_pending_without_erasing_its_data",
+    "test_cleanup_does_not_reinitialize_persisted_embedding_function",
+    "test_blocked_historical_target_does_not_hold_current_target_barrier",
+    "test_old_upsert_finishes_before_individual_cleanup_receipt",
+    "test_cleanup_removes_quarantined_policy_projection_but_keeps_quarantined_content",
+    "test_claim_handoff_is_retained_when_scheduler_observer_is_cancelled",
+    "test_index_cleanup_is_bounded_to_32_ids_per_native_batch",
+    "test_saturated_default_executor_does_not_starve_cleanup",
+    "test_runtime_cleanup_of_absent_index_never_imports_models_or_creates_directory",
+    "test_writer_uses_registered_canonical_location_if_configured_symlink_changes",
+    "test_unknown_fact_authority_keeps_cleanup_pending_instead_of_claiming_erasure",
+    "test_conversation_receipt_cannot_hide_unknown_index_cleanup_authority"
+  ],
+  "additional_event_initialization_regressions": [
+    "test_runtime_factory_initializes_before_first_bounded_event",
+    "test_lazy_cold_event_timeout_retains_actual_initialization_and_single_write"
+  ],
+  "focused_validation": {
+    "passed": 119,
+    "failed": 0,
+    "runtime_s": 12.32,
+    "log": "/tmp/kza-h3-index-maintenance-reviewed-focused.log",
+    "scope": "Index maintenance, erasure coordinator, event privacy, fact retention, memory services and shared privacy authority"
+  },
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.21148216910660267,
+        "max": 1.0720340069383383
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05436316132545471,
+          "p95": 0.08459994569420815,
+          "max": 0.08459994569420815
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.850264923647046,
+          "p95": 10.98405010998249,
+          "max": 10.98405010998249
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 429,
+        "loop_lag_p95_ms": 0.4104331601411104,
+        "loop_lag_max_ms": 1.0897989850491285,
+        "cancel_cleanup_max_ms": 1.74942915327847,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2728,
+        "loop_lag_p95_ms": 0.979600129649043,
+        "loop_lag_max_ms": 2.6628068927675486,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6603968795388937,
+        "p95": 5.882030818611383,
+        "max": 5.882030818611383,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "prior_validation_failures": [
+    {
+      "log": "/tmp/kza-h3-index-maintenance-baseline.log",
+      "passed": 74,
+      "failed": 1,
+      "runtime_s": 6.8,
+      "cause": "The existing cursor test assumed completed semantic cleanup would never be rechecked after restart; leased recovery must recheck old receipts against possibly restored physical indexes",
+      "correction": "Check both the original completed batch and one new-generation recheck, while proving no further duplicate deletes within that generation; preserve cursor and timing budgets"
+    },
+    {
+      "tested_commit": "fd832b9bca4ae3133e34a15190c48f3fc7431013",
+      "log": "/tmp/kza-h3-index-maintenance-final.log",
+      "xml": "/tmp/kza-h3-index-maintenance-final.xml",
+      "passed": 4554,
+      "failed": 1,
+      "xfailed": 1,
+      "runtime_s": 184.86,
+      "junit_time_s": 184.804,
+      "accepted": false,
+      "failed_test": "tests.integration.test_event_privacy::test_revocation_filters_all_event_analytics_before_physical_cleanup",
+      "cause": "The first bounded alog observation timed out while the fixture admitted cold initialization. Production build_event_logger initializes before admission. A specific GC or scheduling cause for this initial timeout was not established",
+      "correction": "Initialize the fixture through the same private worker before admitting bounded writes; add controlled slow-start and cold-timeout ownership regressions. The 100 ms operation budget remains unchanged"
+    }
+  ],
+  "gc_observation": {
+    "probe_file": "/tmp/kza-index-maintenance-probe.py",
+    "raw_report": "/tmp/kza-h3-index-maintenance-gc-probe.json",
+    "method": "Temporary pytest plugin observes gc.callbacks and EventLogger initialize/_init_db/log wall time; records fixed stage names, active test labels and durations only. No explicit collect, disabling/freezing, threshold change, timeout change or test exclusion",
+    "gc_enabled": true,
+    "observed_thresholds": [
+      2000,
+      10,
+      10
+    ],
+    "pauses_ge_10_ms": 42,
+    "max_pause_ms": 495.6838199868798,
+    "pauses_over_heartbeat_max_75_ms": 41,
+    "peak_rss_kib": 1672012,
+    "largest_pauses": [
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[wrong-GET-/api/templates/actions]",
+        "generation": 2,
+        "ms": 495.6838199868798
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[foreign_origin-GET-/api/admin/auth/whoami]",
+        "generation": 2,
+        "ms": 490.5052490066737
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[missing-POST-/api/llm/endpoints/example/clear-cooldown]",
+        "generation": 2,
+        "ms": 488.3545399643481
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[wrong-GET-/api/home/actions]",
+        "generation": 2,
+        "ms": 486.97703890502453
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[unconfigured-POST-/api/lists]",
+        "generation": 2,
+        "ms": 486.8352091871202
+      }
+    ],
+    "all_observed_pauses": [
+      {
+        "node": "collection",
+        "generation": 2,
+        "ms": 39.33000401593745
+      },
+      {
+        "node": "collection",
+        "generation": 2,
+        "ms": 101.03516699746251
+      },
+      {
+        "node": "collection",
+        "generation": 2,
+        "ms": 97.72111102938652
+      },
+      {
+        "node": "collection",
+        "generation": 2,
+        "ms": 109.45463296957314
+      },
+      {
+        "node": "collection",
+        "generation": 2,
+        "ms": 126.12134404480457
+      },
+      {
+        "node": "collection",
+        "generation": 2,
+        "ms": 131.57521397806704
+      },
+      {
+        "node": "collection",
+        "generation": 2,
+        "ms": 138.69341393001378
+      },
+      {
+        "node": "collection",
+        "generation": 2,
+        "ms": 185.22430979646742
+      },
+      {
+        "node": "collection",
+        "generation": 2,
+        "ms": 221.35528596118093
+      },
+      {
+        "node": "tests/integration/test_cloud_consent_consumers.py::test_local_sdk_transport_does_not_follow_cloud_redirects",
+        "generation": 2,
+        "ms": 252.5400489103049
+      },
+      {
+        "node": "tests/integration/test_typed_home_operations.py::test_authenticated_http_accepts_only_exact_typed_intents[climate.test_ac-set_hvac_mode-parameters6]",
+        "generation": 2,
+        "ms": 313.81667288951576
+      },
+      {
+        "node": "tests/safety/test_cors_restrictive.py::TestAPIBindAddress::test_explicit_host_override",
+        "generation": 2,
+        "ms": 357.9757711850107
+      },
+      {
+        "node": "tests/unit/dashboard/test_api_observability.py::TestHealthEndpoint::test_health_has_timestamp",
+        "generation": 2,
+        "ms": 424.3227317929268
+      },
+      {
+        "node": "tests/unit/dashboard/test_api_observability.py::TestRemindersStatusEndpoint::test_status_without_dependencies",
+        "generation": 2,
+        "ms": 447.25735392421484
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[missing-GET-/api/services]",
+        "generation": 2,
+        "ms": 472.17061393894255
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[missing-POST-/api/llm/endpoints/example/clear-cooldown]",
+        "generation": 2,
+        "ms": 488.3545399643481
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[missing-GET-/api/home/microphones]",
+        "generation": 2,
+        "ms": 455.51799796521664
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[wrong-GET-/api/templates/actions]",
+        "generation": 2,
+        "ms": 495.6838199868798
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[wrong-GET-/api/alerts]",
+        "generation": 2,
+        "ms": 448.1740640476346
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[wrong-GET-/api/home/actions]",
+        "generation": 2,
+        "ms": 486.97703890502453
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[unconfigured-POST-/api/lists]",
+        "generation": 2,
+        "ms": 486.8352091871202
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[unconfigured-GET-/api/system/services]",
+        "generation": 2,
+        "ms": 462.5641710590571
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[foreign_origin-POST-/api/routines/preview]",
+        "generation": 2,
+        "ms": 476.08027793467045
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[foreign_origin-POST-/api/lists/example/items]",
+        "generation": 2,
+        "ms": 429.9394979607314
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_all_private_http_routes_reject_before_using_dependencies[foreign_origin-GET-/api/admin/auth/whoami]",
+        "generation": 2,
+        "ms": 490.5052490066737
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_private_websockets_reject_before_subscribing[unconfigured-/ws]",
+        "generation": 2,
+        "ms": 443.9878750126809
+      },
+      {
+        "node": "tests/unit/dashboard/test_private_access.py::test_public_shell_assets_and_unconfigured_login_have_no_private_data",
+        "generation": 2,
+        "ms": 417.8434149362147
+      },
+      {
+        "node": "tests/unit/pipeline/test_model_manager.py::TestModelUnloading::test_unload_model_clears_instance",
+        "generation": 2,
+        "ms": 329.56413086503744
+      },
+      {
+        "node": "tests/unit/pipeline/test_model_manager.py::TestModelUnloading::test_unload_all_clears_all_models",
+        "generation": 2,
+        "ms": 317.90926516987383
+      },
+      {
+        "node": "tests/unit/pipeline/test_model_manager.py::TestModelUnloading::test_unload_all_clears_all_models",
+        "generation": 2,
+        "ms": 311.1945679411292
+      },
+      {
+        "node": "tests/unit/pipeline/test_model_manager.py::TestModelUnloading::test_unload_all_clears_all_models",
+        "generation": 2,
+        "ms": 314.3031350336969
+      },
+      {
+        "node": "tests/unit/pipeline/test_model_manager.py::TestLoadUnloadCycle::test_full_cycle_for_nightly_training",
+        "generation": 2,
+        "ms": 313.2614279165864
+      },
+      {
+        "node": "tests/unit/pipeline/test_model_manager.py::TestLoadUnloadCycle::test_full_cycle_for_nightly_training",
+        "generation": 2,
+        "ms": 315.10198093019426
+      },
+      {
+        "node": "tests/unit/pipeline/test_model_manager.py::TestLoadUnloadCycle::test_full_cycle_for_nightly_training",
+        "generation": 2,
+        "ms": 314.91392315365374
+      },
+      {
+        "node": "tests/unit/pipeline/test_model_manager.py::TestLoadUnloadCycle::test_full_cycle_for_nightly_training",
+        "generation": 2,
+        "ms": 313.82607482373714
+      },
+      {
+        "node": "tests/unit/pipeline/test_model_manager.py::TestLoadUnloadCycle::test_full_cycle_for_nightly_training",
+        "generation": 2,
+        "ms": 313.0923949647695
+      },
+      {
+        "node": "tests/unit/pipeline/test_model_manager.py::TestLoadUnloadCycle::test_full_cycle_for_nightly_training",
+        "generation": 2,
+        "ms": 311.7777588777244
+      },
+      {
+        "node": "tests/unit/world/test_weather.py::test_describe_forecast_pasado_manana_short_forecast_is_honest",
+        "generation": 2,
+        "ms": 346.17384895682335
+      },
+      {
+        "node": "tests/unit/world/test_weather.py::test_describe_forecast_pasado_manana_short_forecast_is_honest",
+        "generation": 2,
+        "ms": 328.30071402713656
+      },
+      {
+        "node": "tests/unit/world/test_weather.py::test_describe_forecast_pasado_manana_short_forecast_is_honest",
+        "generation": 2,
+        "ms": 329.4644239358604
+      },
+      {
+        "node": "tests/unit/world/test_weather.py::test_describe_forecast_pasado_manana_short_forecast_is_honest",
+        "generation": 2,
+        "ms": 335.18530102446675
+      },
+      {
+        "node": "tests/unit/world/test_weather.py::test_describe_forecast_pasado_manana_short_forecast_is_honest",
+        "generation": 2,
+        "ms": 336.23791486024857
+      }
+    ],
+    "interpretation": "Full-suite assertions and the five explicit voice latency/cancellation cases pass. The process also has generation-2 GC pauses beyond 75 ms elsewhere, mainly during later dashboard tests. Active test labels do not establish retained-object origin or a production root cause. H4/H6 integrated runtime/GC acceptance remains open; this is not an end-to-end latency acceptance",
+    "probe_source_sha256": "c0d91ba60f9b631c4beb075ee5c797722ce0324b01c907baa7f7553cb86124c0",
+    "probe_source": "import functools\nimport gc\nimport json\nfrom pathlib import Path\nimport resource\nimport sys\nimport threading\nimport time\nsys.path.insert(0, '/home/yo/projects/kza')\nimport pytest\n\ncurrent = ['collection']\nstarts = {}\npauses = []\nevent_stages = []\n\ndef observe(phase, info):\n    key = (threading.get_ident(), info['generation'])\n    if phase == 'start':\n        starts[key] = time.perf_counter()\n    else:\n        begin = starts.pop(key, None)\n        if begin is not None:\n            elapsed = (time.perf_counter()-begin)*1000\n            if elapsed >= 10:\n                pauses.append({'node':current[0], 'generation':info['generation'], 'ms':elapsed})\n\nclass Probe:\n    def pytest_runtest_setup(self, item):\n        current[0] = item.nodeid\n    def pytest_collection_finish(self, session):\n        cls = sys.modules['src.analytics.event_logger'].EventLogger\n        for name in ('initialize', '_init_db', 'log'):\n            original = getattr(cls,name)\n            def wrap(function=original, label=name):\n                @functools.wraps(function)\n                def measured(*args, **kwargs):\n                    begin = time.perf_counter()\n                    try:\n                        return function(*args, **kwargs)\n                    finally:\n                        elapsed = (time.perf_counter()-begin)*1000\n                        if elapsed >= 10:\n                            event_stages.append({'node':current[0], 'stage':label, 'ms':elapsed})\n                return measured\n            setattr(cls,name,wrap())\n\ngc.callbacks.append(observe)\ntry:\n    code = pytest.main(['tests/','-q','--tb=short','-o','junit_family=xunit1',\n                        '--junitxml=/tmp/kza-h3-index-maintenance-reviewed-final.xml'], plugins=[Probe()])\nfinally:\n    gc.callbacks.remove(observe)\n    Path('/tmp/kza-h3-index-maintenance-gc-probe.json').write_text(json.dumps({\n        'gc_enabled':gc.isenabled(), 'gc_thresholds':gc.get_threshold(),\n        'pauses_over_10_ms':pauses, 'event_stages_over_10_ms':event_stages,\n        'peak_rss_kib':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}, indent=2)+'\\n')\nsys.exit(code)\n"
+  },
+  "ownership": {
+    "native_batch_max_ids": 32,
+    "max_active_targets": 2,
+    "dedicated_native_executor_threads": 2,
+    "owned_native_capacity": 8,
+    "registry_poll_max_s": 30,
+    "failure_backoff_max_s": 60,
+    "claim_expiry": "No timed expiry of live native claims; only leased startup recovers interrupted work",
+    "close_order": "Stop maintenance admission, retain claim handoff and actual native tasks, attempt receipt acknowledgement, drain native pool, then close private ledger and release writer lease"
+  },
+  "proven": [
+    "Fact deletion/expiry and every known destination receipt commit atomically; transaction rollback preserves both fact and receipt state",
+    "Always-on reconciliation expires automatic/proposed facts and removes individual tombstones even when recall is disabled; mutations wake an earlier due deadline",
+    "Late registration backfills deleted/quarantined revisions even after the active index acknowledged its prior global job",
+    "Historical targets have independent barriers; one blocked or failed target cannot falsely complete or block all independent cleanup",
+    "Actual writer canonical location and lock are retained even if a configured symlink later changes; stale upserts finish before cleanup acknowledgement",
+    "Leased restart rechecks completed physical receipts and semantic conversation steps against restored indexes; ordinary initialization never resets live claims",
+    "Revision, token, target version and canonical descriptor checks reject stale or forged acknowledgement; unknown authority and unsupported targets stay pending",
+    "Failed metadata acknowledgement retains a sanitized native result and retries only the receipt; cancelling observers does not release actual work or its writer lease",
+    "Only existing policy collections are opened without embedding functions; absent targets do not create directories/collections and original legacy collections are preserved",
+    "Quarantined policy projections are removed while quarantined SQLite content remains outside inference pending manual review",
+    "Conversation cleanup shares current-generation receipts but cannot hide unfinished deletion authority behind a cursor that scans only deleted facts",
+    "Saturating the default executor does not starve the private cleanup scope; an independent process forbids model imports while reconciling an absent index",
+    "The source-free compiled runtime removes individually deleted and expired facts with recall disabled, without a conversation tombstone or creating the absent semantic index",
+    "Production event factory initialization precedes 100 ms bounded event admission; a genuinely cold timed-out operation still owns initialization and commits exactly one write"
+  ],
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000,
+    "event_observation": 100
+  },
+  "gates": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-h3-index-maintenance-reviewed-ruff.log"
+    },
+    "bandit": {
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-index-maintenance-reviewed-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-index-maintenance-frontend.log",
+      "note": "Frontend source unchanged by the follow-up receipt and event-fixture corrections"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-index-maintenance-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 5.942,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 remains incomplete: producers, contexts, events, diagnostics, collectors, streams, suggestions and voices are not registered erasure participants; no broad completion endpoint is exposed",
+    "Only known registered locations are covered; reconcile registry with private real-data inventory before release",
+    "Rebuilding a new/empty live index from eligible source-of-truth facts is not implemented or accepted by this deletion-only maintenance",
+    "The real 870-record legacy-copy migration and compatible rollback remain pending; startup index recheck assumes the latest fact authority/tombstones survived and does not make an old catalog restore safe",
+    "STT, audio readers, tap/distillation scopes, structured logs, live queues, alternate prompt consumers and authenticated global-erasure UI remain pending",
+    "Ambient pause, total mute with non-audio reactivation, automatic acoustic profiles/groups at 48 h, manually confirmed profiles and calibrated voice review remain pending",
+    "Full-suite process GC pauses up to about 496 ms remain unresolved for integrated runtime acceptance; passing dedicated voice cases does not prove all runtime paths satisfy latency budgets",
+    "H0/H1 real HA effects, H2 physical audio/barge-in, H4 recovery, H5 voice features and H6 migration/runtime/hardware/release/rollback acceptance remain open",
+    "No production deployment, service restart, real-data mutation, GPU reassignment or dependency change occurred"
+  ]
+}

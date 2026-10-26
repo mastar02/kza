@@ -605,6 +605,25 @@ de admitir datos o prompts. El resto de participantes, productores, copias,
 interfaz autenticada del borrado global, voces y migración real siguen abiertos.
 No cierra H3 ni constituye un cambio en producción.
 
+La [validación del mantenimiento del índice](../research/2026-10-26-h3-index-maintenance-validation.json)
+del commit `5faa945` registra **4557 passed, 1 xfailed**, sin fallos, en 175,95 s.
+Incluye 28 casos nuevos del índice, dos regresiones del arranque del logger,
+119 pruebas dirigidas, Ruff, Bandit sin hallazgos medios/altos, 18 tests de
+frontend, smoke y artefacto compilado. El ensayo compilado comprueba borrado
+individual y vencimiento sin recall ni tombstone de conversación. El heartbeat
+de voz obtiene p95 de 0,21 ms y máximo de 1,07 ms frente a 25/75 ms.
+
+La evidencia conserva el primer fallo de la suite: el fixture admitía eventos
+antes de inicializar el logger, mientras el factory real inicializa antes de
+aplicar el presupuesto de cada escritura. La corrección sigue ese orden y prueba
+tanto el arranque lento como la continuidad del trabajo nativo tras un timeout
+en frío. No se amplían los 100 ms. La observación adicional de GC, sin desactivarlo
+ni cambiar sus umbrales, registra 42 pausas de al menos 10 ms, 41 superiores a
+75 ms y un máximo de 495,68 ms fuera de los casos de latencia de voz. Las etiquetas
+de test no establecen el origen de los objetos retenidos ni una causa de runtime.
+La aceptación integrada de GC/latencia en H4/H6 sigue abierta; pasar la suite no
+la sustituye.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
