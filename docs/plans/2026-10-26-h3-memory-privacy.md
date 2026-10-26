@@ -931,6 +931,15 @@ resolución termina revalidando las fuentes de todos los lotes, no sólo las
 últimas filas. Un marker pendiente que después falla oculta la propuesta sin
 borrarla ni cambiar sus fechas; el rollback restaura su elegibilidad original.
 
+La revisión encontró y reprodujo una ventana al reiniciar con menor retención
+de eventos: antes del primer barrido aún se podían leer propuestas basadas en
+plazos anteriores. La inicialización nativa del logger persiste ahora las
+reducciones de las filas de política reconocidas antes de admitir consumidores.
+Volver a aumentar la configuración no restaura el plazo viejo. Las filas de
+fuentes desconocidas se conservan fuera de inferencia y no impiden acortar las
+reconocidas. Es una actualización SQL de inicialización; el coste de arranque
+con historiales grandes sigue dentro de la aceptación integrada de H4/H6.
+
 La voz descarta la propuesta pendiente al vencer o revocarse y cancela su entrega
 si pierde una dependencia. Los errores de lectura no convierten en fallida una
 acción doméstica ya terminada; los de escritura no se presentan como aceptación

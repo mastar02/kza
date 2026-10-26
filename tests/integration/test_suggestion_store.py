@@ -716,6 +716,53 @@ def cli_args():
     )
 
 
+async def test_shorter_event_policy_applies_before_sweep_and_cannot_expand_on_next_restart(
+    tmp_path,
+):
+    clock = Clock()
+    async with graph(tmp_path, clock=clock) as (_, events, _):
+        engine, proposals, _ = await generate(tmp_path, events, clock)
+        clock.now += 3 * DAY
+        assert await events.acall(engine.get_pending_suggestions)
+    # No periodic sweep runs here: consumers cannot rely on its scheduling.
+    async with graph(tmp_path, clock=clock, days=1) as (_, events, _):
+        engine = await engine_for(tmp_path, events)
+        assert await events.acall(engine.get_pending_suggestions) == []
+        assert (await events.acall(events.get_pattern_history)).events == ()
+        with sqlite3.connect(events.db_path) as db:
+            deadlines = db.execute(
+                "SELECT timestamp,expires_at FROM events_policy_v1"
+            ).fetchall()
+        assert all(expiry == timestamp + DAY for timestamp, expiry in deadlines)
+        assert count(engine) == len(proposals)
+    async with graph(tmp_path, clock=clock, days=90) as (_, events, _):
+        engine = await engine_for(tmp_path, events)
+        assert await events.acall(engine.get_pending_suggestions) == []
+        assert (await events.acall(events.get_pattern_history)).events == ()
+
+
+async def test_startup_retention_clamp_preserves_unknown_event_sources(tmp_path):
+    clock = Clock()
+    async with graph(tmp_path, clock=clock) as (_, events, _):
+        await seed_days(events, clock)
+        with sqlite3.connect(events.db_path) as db:
+            db.execute(
+                "UPDATE events_policy_v1 SET sources_json='unknown protocol' WHERE id=1"
+            )
+        clock.now += 3 * DAY
+    async with graph(tmp_path, clock=clock, days=1) as (_, events, _):
+        assert (await events.acall(events.get_pattern_history)).events == ()
+        with sqlite3.connect(events.db_path) as db:
+            unknown = db.execute(
+                "SELECT sources_json,expires_at FROM events_policy_v1 WHERE id=1"
+            ).fetchone()
+            known = db.execute(
+                "SELECT timestamp,expires_at FROM events_policy_v1 WHERE id>1"
+            ).fetchall()
+        assert unknown == ("unknown protocol", START + 90 * DAY)
+        assert all(expiry == timestamp + DAY for timestamp, expiry in known)
+
+
 def cli_config(tmp_path):
     return {
         "memory": {"enabled": False, "privacy_db_path": str(tmp_path / "privacy.db")},

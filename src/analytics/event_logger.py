@@ -198,7 +198,27 @@ class EventLogger:
             
             conn.execute("CREATE INDEX IF NOT EXISTS idx_policy_event_timestamp ON events_policy_v1(timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_policy_event_expiry ON events_policy_v1(expires_at)")
+            # Optional consumers must not race the first retention sweep after
+            # a shorter configuration is loaded. Persist the reduction before
+            # admitting reads, so a later expansion cannot restore the old TTL.
+            conn.create_function("clamped_event_deadline", 5, self._clamped_deadline)
+            conn.execute("""UPDATE events_policy_v1 SET expires_at=clamped_event_deadline(
+                timestamp,expires_at,text_expires_at,sources_json,
+                trigger_phrase IS NOT NULL OR user_name IS NOT NULL OR context_json IS NULL OR context_json!=metrics_json)
+                WHERE expires_at>timestamp+?""", (self.retention_days * 86400,))
             conn.commit()
+
+    def _clamped_deadline(self, captured, expiry, raw_expiry, encoded, raw):
+        """Shorten only recognized policy rows; preserve unknown quarantine data."""
+        try:
+            if not all(type(v) in (int, float) and math.isfinite(v) for v in (captured, expiry)) or expiry <= captured:
+                return expiry
+            sources = event_sources(encoded, raw)
+            if sources and (type(raw_expiry) not in (int, float) or not math.isfinite(raw_expiry)):
+                return expiry
+            return min(expiry, captured + self.retention_days * 86400)
+        except (TypeError, ValueError, KeyError, AttributeError):
+            return expiry
 
     def _unrevoked(self, encoded: str, raw: bool = False, *, committed: bool = False) -> bool:
         try:
