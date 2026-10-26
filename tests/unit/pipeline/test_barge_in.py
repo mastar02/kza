@@ -12,161 +12,21 @@ Cubre:
 
 from __future__ import annotations
 
-import importlib.util
+import asyncio
 import sys
-import types
-from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock
 
-# StrEnum shim para Python 3.9 (StrEnum llega en 3.11). El server corre 3.13
-# y no lo necesita, pero el dev local sí.
-import enum as _enum
-
-if not hasattr(_enum, "StrEnum"):
-    class _StrEnumShim(str, _enum.Enum):
-        pass
-    _enum.StrEnum = _StrEnumShim
-
-# Mock system-level modules ANTES de cualquier import — sounddevice/torch/etc
-# no están disponibles en macOS local y romperían la carga de los módulos.
 sys.modules.setdefault("sounddevice", MagicMock())
 sys.modules.setdefault("soundfile", MagicMock())
 sys.modules.setdefault("pyaudio", MagicMock())
 sys.modules.setdefault("torch", MagicMock())
 sys.modules.setdefault("torch.cuda", MagicMock())
 
+import numpy as np
+import pytest
 
-# El paquete `src.pipeline.__init__` carga transitivamente muchos módulos que
-# usan sintaxis de tipos de Python 3.10+ sin `from __future__ import
-# annotations` (e.g. `src.conversation.follow_up_mode` con `str | None` a
-# nivel de clase). En Python 3.13 (server) no hay problema, pero macOS local
-# tiene Python 3.9. Para que este test corra en ambos:
-#   1. Stubbeamos `src.pipeline` y las dependencias de MultiRoomAudioLoop
-#      que no necesitamos ejercitar (audio_loop, conversation, etc).
-#   2. Cargamos `multi_room_audio_loop.py` y `response_handler.py` directo
-#      del archivo vía importlib, saltando `__init__.py`.
-
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _stub_module(name: str, **attrs) -> types.ModuleType:
-    """Registra un módulo fake en sys.modules si aún no existe."""
-    if name in sys.modules:
-        return sys.modules[name]
-    mod = types.ModuleType(name)
-    for k, v in attrs.items():
-        setattr(mod, k, v)
-    sys.modules[name] = mod
-    return mod
-
-
-# src.audio — solo necesitamos EchoSuppressor (mock)
-_stub_module(
-    "src.audio",
-    EchoSuppressor=MagicMock,
-    ZoneManager=MagicMock,
-    Zone=MagicMock,
-)
-_stub_module(
-    "src.audio.echo_suppressor",
-    EchoSuppressor=MagicMock,
-)
-
-# src.conversation — FollowUpMode (mock)
-_stub_module(
-    "src.conversation",
-    FollowUpMode=MagicMock,
-    ConversationState=MagicMock,
-    ConversationContext=MagicMock,
-)
-_stub_module(
-    "src.conversation.follow_up_mode",
-    FollowUpMode=MagicMock,
-    ConversationState=MagicMock,
-    ConversationContext=MagicMock,
-)
-
-# src.wakeword — WakeWordDetector (mock)
-_stub_module("src.wakeword", WakeWordDetector=MagicMock)
-_stub_module("src.wakeword.detector", WakeWordDetector=MagicMock)
-_stub_module("src.wakeword.whisper_wake", _text_likely_truncated=MagicMock())
-
-# src.llm.buffered_streamer — usado por response_handler
-_stub_module(
-    "src.llm.buffered_streamer",
-    BufferedLLMStreamer=MagicMock,
-    BufferConfig=MagicMock,
-    create_buffered_streamer=MagicMock(),
-)
-
-# src.tts.response_cache — usado por response_handler
-_stub_module(
-    "src.tts.response_cache",
-    CachedAudio=MagicMock,
-    ResponseCache=MagicMock,
-)
-
-# src.pipeline.command_event
-_stub_module("src.pipeline.command_event", CommandEvent=MagicMock)
-
-# src.pipeline.ambient_guard — multi_room_audio_loop importa AmbientGuard,
-# GuardState y classify_outcome a nivel de módulo. Stubbeamos los tres nombres
-# (estos tests no ejercitan el guard; los suyos viven en test_ambient_guard.py
-# y test_multi_room_audio_loop.py).
-_stub_module(
-    "src.pipeline.ambient_guard",
-    AmbientGuard=MagicMock,
-    GuardState=MagicMock,
-    classify_outcome=MagicMock(),
-)
-
-# src.nlu.command_grammar — el módulo real es seguro de importar; dejamos
-# intentar el import real antes de stubear.
-try:
-    import src.nlu.command_grammar  # noqa: F401
-except Exception:
-    _stub_module(
-        "src.nlu.command_grammar",
-        PartialCommand=MagicMock,
-        parse_partial_command=MagicMock(),
-    )
-
-
-def _load_source_module(dotted_name: str, rel_path: str) -> types.ModuleType:
-    """Carga un .py directo con importlib sin pasar por el __init__ del paquete."""
-    # Asegurar que el paquete padre exista como módulo stubbeado.
-    parent_name = dotted_name.rsplit(".", 1)[0]
-    if parent_name not in sys.modules:
-        _stub_module(parent_name)
-    spec = importlib.util.spec_from_file_location(
-        dotted_name, str(_REPO_ROOT / rel_path)
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[dotted_name] = module
-    spec.loader.exec_module(module)
-    # Exponer como submódulo del padre para imports encadenados.
-    setattr(sys.modules[parent_name], dotted_name.rsplit(".", 1)[1], module)
-    return module
-
-
-# Cargar los dos módulos que realmente queremos ejercitar.
-_mral = _load_source_module(
-    "src.pipeline.multi_room_audio_loop",
-    "src/pipeline/multi_room_audio_loop.py",
-)
-_rh = _load_source_module(
-    "src.pipeline.response_handler",
-    "src/pipeline/response_handler.py",
-)
-
-MultiRoomAudioLoop = _mral.MultiRoomAudioLoop
-RoomStream = _mral.RoomStream
-ResponseHandler = _rh.ResponseHandler
-
-import asyncio  # noqa: E402
-
-import numpy as np  # noqa: E402
-import pytest  # noqa: E402
+from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
+from src.pipeline.response_handler import ResponseHandler
 
 
 # =========================================================================

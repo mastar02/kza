@@ -4,6 +4,7 @@ Detecta la zona de origen del comando y enruta la respuesta.
 """
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Callable
 from enum import StrEnum
@@ -312,62 +313,70 @@ class ZoneManager:
     # =========================================================================
 
     def play_stream_to_zone(
-        self,
-        zone_id: str,
-        audio_generator,
-        sample_rate: int = 22050,
-        buffer_ms: int = 150,
-        prebuffer_ms: int = 30
-    ):
-        """
-        Reproducir audio en streaming a una zona específica.
-        El audio empieza a sonar mientras se sigue generando.
+        self, zone_id: str, audio_generator, sample_rate: int = 22050,
+        buffer_ms: int = 150, prebuffer_ms: int = 30, *,
+        on_player: Callable | None = None, cancel_event: threading.Event | None = None,
+        stall_timeout_s: float = 1.0, drain_timeout_s: float | None = None,
+    ) -> bool:
+        """Route owned PCM to one explicit zone and preserve its delivery result.
 
         Args:
-            zone_id: ID de la zona
-            audio_generator: Generador que yield chunks de audio (numpy arrays)
-            sample_rate: Sample rate del audio
-            buffer_ms: Tamaño del buffer circular (mayor = más suave)
-            prebuffer_ms: Pre-buffer antes de iniciar (latencia inicial)
+            zone_id: Originating request's output zone, never a mutable fallback.
+            audio_generator: Owned PCM source, closed on all exits.
+            sample_rate: Frames per second.
+            buffer_ms: Fixed ring capacity.
+            prebuffer_ms: Frames accumulated before output starts.
+            on_player: Register the cancellation handle before starting audio.
+            cancel_event: Session cancellation token, including before startup.
+            stall_timeout_s: Maximum wait without buffer progress.
+            drain_timeout_s: Maximum device-tail drain wait.
+
+        Returns:
+            True after device drain, False on cancellation.
+
+        Raises:
+            Exception: Route, producer or output failure; never reported as success.
         """
+        iterator = iter(audio_generator)
         zone = self.get_zone(zone_id)
-        if not zone:
-            logger.error(f"Zona no encontrada: {zone_id}")
-            return
-
-        zone.state = ZoneState.SPEAKING
-
-        if self._on_zone_speaking:
-            self._on_zone_speaking(zone)
-
+        began = handed_to_player = False
         try:
-            # Configurar MA1260 para esta zona
+            if zone is None:
+                raise ValueError("Requested audio zone is not configured")
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            zone.state = ZoneState.SPEAKING
+            began = True
+            if self._on_zone_speaking:
+                self._on_zone_speaking(zone)
             if self.ma1260:
                 self.ma1260.select_zone(zone.ma1260_zone)
                 self.ma1260.set_volume(zone.ma1260_zone, zone.volume)
-
-            # Crear streaming player con buffer configurado
             from src.tts.piper_tts import StreamingAudioPlayer
             player = StreamingAudioPlayer(
                 sample_rate=sample_rate,
                 device=self.ma1260.audio_output_device if self.ma1260 else None,
-                buffer_ms=buffer_ms,
-                prebuffer_ms=prebuffer_ms
+                buffer_ms=buffer_ms, prebuffer_ms=prebuffer_ms,
+                cancel_event=cancel_event, stall_timeout_s=stall_timeout_s,
+                drain_timeout_s=drain_timeout_s,
             )
-
-            # Reproducir en streaming
-            player.play_stream(audio_generator)
-
-            stats = player.get_stats()
-            if stats["underruns"] > 0:
-                logger.warning(f"Streaming zona {zone.name}: {stats['underruns']} underruns (aumentar buffer)")
-            else:
-                logger.debug(f"Streaming completado en zona: {zone.name} (sin underruns)")
-
-        except Exception as e:
-            logger.error(f"Error en streaming a zona {zone_id}: {e}")
+            if on_player is not None:
+                try:
+                    on_player(player)
+                except Exception:
+                    player.stop()
+                    raise
+            handed_to_player = True
+            completed = player.play_stream(iterator)
+            logger.debug("[ZoneAudio] zone=%s completed=%s stats=%s", zone_id, completed, player.get_stats())
+            return completed
         finally:
-            zone.state = ZoneState.IDLE
+            if not handed_to_player:
+                close = getattr(iterator, "close", None)
+                if close is not None:
+                    close()
+            if began:
+                zone.state = ZoneState.IDLE
 
     def play_stream_to_active_zone(
         self,

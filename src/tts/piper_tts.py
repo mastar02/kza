@@ -7,8 +7,10 @@ Soporta streaming para menor latencia percibida.
 from __future__ import annotations
 
 import logging
+import math
 import time
 import threading
+from enum import StrEnum
 from pathlib import Path
 from typing import Generator, Callable
 import numpy as np
@@ -17,255 +19,331 @@ import sounddevice as sd
 logger = logging.getLogger(__name__)
 
 
-class StreamingAudioPlayer:
-    """
-    Reproductor de audio en streaming con buffering adaptativo.
+class PlaybackState(StrEnum):
+    """Lifecycle of one PCM stream, independent of the text producer."""
 
-    Garantiza reproducción suave sin cortes mediante:
-    - Pre-buffering: acumula audio antes de empezar
-    - Buffer circular: absorbe variaciones de velocidad
-    - Latencia configurable vs suavidad
+    IDLE = "idle"
+    PLAYING = "playing"
+    DRAINING = "draining"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class AudioPlaybackError(RuntimeError):
+    """The output stopped or failed to make progress before its deadline."""
+
+
+class StreamingAudioPlayer:
+    """Fixed-size PCM ring with complete writes and cancelable backpressure.
+
+    The producer runs outside the asyncio loop. The device callback only copies
+    available frames, pads silence and notifies space; it never waits for data.
+    Normal completion waits for the device's finished callback, including tail
+    buffers. Cancellation aborts and wakes blocked writers immediately.
     """
 
     def __init__(
-        self,
-        sample_rate: int = 22050,
-        channels: int = 1,
-        device: int = None,
-        buffer_ms: int = 150,        # Buffer total en ms
-        prebuffer_ms: int = 30,      # Pre-buffer antes de iniciar (OPTIMIZADO: 30ms)
-        block_size: int = 512        # Tamaño de bloque de audio
-    ):
-        """
-        Args:
-            sample_rate: Sample rate del audio
-            channels: Número de canales
-            device: Dispositivo de salida (None = default)
-            buffer_ms: Tamaño del buffer circular en ms
-            prebuffer_ms: Audio a acumular antes de iniciar reproducción
-            block_size: Tamaño de bloque para el stream
-        """
-        self.sample_rate = sample_rate
-        self.channels = channels
-        self.device = device
+        self, sample_rate: int = 22050, channels: int = 1, device: int = None,
+        buffer_ms: int = 150, prebuffer_ms: int = 30, block_size: int = 512,
+        *, stall_timeout_s: float = 1.0, drain_timeout_s: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
+        if any(type(value) is not int or value <= 0 for value in (sample_rate, channels, buffer_ms, block_size)):
+            raise ValueError("Invalid PCM buffer configuration")
+        if type(prebuffer_ms) is not int or not 0 <= prebuffer_ms <= buffer_ms:
+            raise ValueError("Prebuffer must fit inside the PCM buffer")
+        if drain_timeout_s is None:
+            drain_timeout_s = max(2.0, buffer_ms / 1000 + 1.0)
+        if any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0 for value in (stall_timeout_s, drain_timeout_s)):
+            raise ValueError("Playback deadlines must be finite and positive")
+        self.sample_rate, self.channels, self.device = sample_rate, channels, device
         self.block_size = block_size
-
-        # Calcular tamaños en samples
-        self.buffer_samples = int(sample_rate * buffer_ms / 1000)
+        self.buffer_samples = max(1, int(sample_rate * buffer_ms / 1000))
         self.prebuffer_samples = int(sample_rate * prebuffer_ms / 1000)
-
-        # Buffer circular thread-safe
-        self._buffer = np.zeros(self.buffer_samples, dtype=np.float32)
-        self._write_pos = 0
-        self._read_pos = 0
-        self._samples_available = 0
-        self._lock = threading.Lock()
-
-        # Control
+        self.stall_timeout_s, self.drain_timeout_s = stall_timeout_s, drain_timeout_s
+        self._cancel_event = cancel_event
+        self._buffer = np.zeros((self.buffer_samples, channels), dtype=np.float32)
+        self._condition = threading.Condition()
+        self._lock = self._condition
+        self._device_lock = threading.Lock()
         self._stream = None
+        self._state = PlaybackState.IDLE
         self._running = False
         self._started_playback = False
         self._finished_writing = False
         self._playback_complete = threading.Event()
+        self._generation = 0
+        self._producer_owner = None
+        self._error = None
+        self._write_pos = self._read_pos = self._samples_available = 0
+        self._underruns = self._total_samples_written = self._played_samples = 0
+        self._max_buffered = 0
+        self._software_underruns = 0
 
-        # Stats
-        self._underruns = 0
-        self._total_samples_written = 0
+    def _cancelled(self) -> bool:
+        return not self._running or (self._cancel_event is not None and self._cancel_event.is_set())
 
-    def _audio_callback(self, outdata, frames, time_info, status):
-        """Callback para sounddevice - lee del buffer circular"""
-        if status.output_underflow:
-            self._underruns += 1
-            logger.warning(f"Audio underrun #{self._underruns}")
+    def _fail(self, reason: str) -> None:
+        with self._condition:
+            self._error = reason
+            self._state = PlaybackState.FAILED
+            self._running = False
+            self._playback_complete.set()
+            self._condition.notify_all()
 
-        with self._lock:
-            if self._samples_available >= frames:
-                # Leer del buffer circular
-                end_pos = self._read_pos + frames
-                if end_pos <= self.buffer_samples:
-                    outdata[:, 0] = self._buffer[self._read_pos:end_pos]
-                else:
-                    # Wrap around
-                    first_part = self.buffer_samples - self._read_pos
-                    outdata[:first_part, 0] = self._buffer[self._read_pos:]
-                    outdata[first_part:, 0] = self._buffer[:frames - first_part]
-
-                self._read_pos = end_pos % self.buffer_samples
-                self._samples_available -= frames
-
-            elif self._finished_writing and self._samples_available > 0:
-                # Últimos samples
-                available = self._samples_available
-                end_pos = self._read_pos + available
-                if end_pos <= self.buffer_samples:
-                    outdata[:available, 0] = self._buffer[self._read_pos:end_pos]
-                else:
-                    first_part = self.buffer_samples - self._read_pos
-                    outdata[:first_part, 0] = self._buffer[self._read_pos:]
-                    outdata[first_part:available, 0] = self._buffer[:available - first_part]
-
-                outdata[available:, 0] = 0
-                self._samples_available = 0
-                self._playback_complete.set()
+    def _audio_callback(self, outdata, frames, time_info, status) -> None:
+        outdata.fill(0)
+        with self._condition:
+            if self._cancelled():
+                raise sd.CallbackAbort()
+            if status.output_underflow:
+                self._underruns += 1
+            count = min(frames, self._samples_available)
+            if count < frames and not self._finished_writing:
+                self._software_underruns += 1
+            first = min(count, self.buffer_samples - self._read_pos)
+            outdata[:first, :] = self._buffer[self._read_pos:self._read_pos + first]
+            if first < count:
+                outdata[first:count, :] = self._buffer[:count - first]
+            self._read_pos = (self._read_pos + count) % self.buffer_samples
+            self._samples_available -= count
+            self._played_samples += count
+            self._condition.notify_all()
+            if self._finished_writing and self._samples_available == 0:
+                # finished_callback, not this callback, proves device draining.
                 raise sd.CallbackStop()
 
-            elif self._finished_writing:
-                # No más audio
-                outdata.fill(0)
-                self._playback_complete.set()
-                raise sd.CallbackStop()
-            else:
-                # Buffer underrun - llenar con silencio
-                outdata.fill(0)
+    def _driver_finished(self) -> None:
+        with self._condition:
+            if self._state in {PlaybackState.PLAYING, PlaybackState.DRAINING}:
+                if self._cancel_event is not None and self._cancel_event.is_set():
+                    self._state = PlaybackState.CANCELLED
+                    self._running = False
+                elif self._finished_writing and self._samples_available == 0:
+                    self._state = PlaybackState.COMPLETED
+                    self._running = False
+                else:
+                    self._state = PlaybackState.FAILED
+                    self._error = "audio_device_stopped"
+                    self._running = False
+            self._playback_complete.set()
+            self._condition.notify_all()
 
-    def _write_to_buffer(self, audio: np.ndarray):
-        """Escribir audio al buffer circular"""
-        samples = len(audio)
-
-        with self._lock:
-            # Verificar espacio disponible
-            space_available = self.buffer_samples - self._samples_available
-            if samples > space_available:
-                # Buffer lleno - esperar o descartar
-                samples = space_available
-                if samples == 0:
+    def _start_stream(self) -> None:
+        with self._device_lock:
+            with self._condition:
+                if self._started_playback or self._cancelled():
                     return
-                audio = audio[:samples]
-
-            # Escribir al buffer circular
-            end_pos = self._write_pos + samples
-            if end_pos <= self.buffer_samples:
-                self._buffer[self._write_pos:end_pos] = audio
-            else:
-                # Wrap around
-                first_part = self.buffer_samples - self._write_pos
-                self._buffer[self._write_pos:] = audio[:first_part]
-                self._buffer[:samples - first_part] = audio[first_part:]
-
-            self._write_pos = end_pos % self.buffer_samples
-            self._samples_available += samples
-            self._total_samples_written += samples
-
-    def _start_stream(self):
-        """Iniciar stream de audio"""
-        self._stream = sd.OutputStream(
-            samplerate=self.sample_rate,
-            channels=self.channels,
-            device=self.device,
-            callback=self._audio_callback,
-            blocksize=self.block_size,
-            latency='low'
-        )
-        self._stream.start()
-        self._started_playback = True
-        logger.debug(f"Stream iniciado (buffer: {self._samples_available} samples)")
-
-    def feed(self, audio_chunk: np.ndarray):
-        """
-        Alimentar chunk de audio al buffer.
-        Inicia reproducción automáticamente cuando hay suficiente buffer.
-        """
-        if not self._running:
-            return
-
-        # Asegurar float32
-        if audio_chunk.dtype != np.float32:
-            audio_chunk = audio_chunk.astype(np.float32)
-
-        # Escribir al buffer
-        self._write_to_buffer(audio_chunk)
-
-        # Iniciar reproducción cuando tengamos suficiente pre-buffer
-        if not self._started_playback and self._samples_available >= self.prebuffer_samples:
-            self._start_stream()
-
-    def start(self):
-        """Preparar para recibir audio"""
-        self._running = True
-        self._started_playback = False
-        self._finished_writing = False
-        self._playback_complete.clear()
-        self._write_pos = 0
-        self._read_pos = 0
-        self._samples_available = 0
-        self._underruns = 0
-        self._total_samples_written = 0
-
-    def finish(self):
-        """Señalar fin del audio y esperar reproducción completa"""
-        self._finished_writing = True
-
-        # Si nunca empezamos a reproducir (audio muy corto), iniciar ahora
-        if not self._started_playback and self._samples_available > 0:
-            self._start_stream()
-
-        # Esperar que termine la reproducción
-        if self._started_playback:
-            self._playback_complete.wait(timeout=30.0)
-
-        self.stop()
-
-        # Log stats
-        if self._underruns > 0:
-            logger.warning(f"Streaming completado con {self._underruns} underruns")
-        else:
-            logger.debug(f"Streaming completado sin underruns ({self._total_samples_written} samples)")
-
-    def stop(self):
-        """Detener stream inmediatamente"""
-        self._running = False
-        if self._stream:
+            stream = sd.OutputStream(
+                samplerate=self.sample_rate, channels=self.channels, device=self.device,
+                callback=self._audio_callback, finished_callback=self._driver_finished,
+                blocksize=self.block_size, dtype="float32", latency="low",
+            )
+            with self._condition:
+                self._stream = stream
+                if self._cancelled():
+                    stream.close()
+                    self._stream = None
+                    return
+                self._started_playback = True
             try:
-                self._stream.stop()
-                self._stream.close()
+                stream.start()
             except Exception:
-                pass
-            self._stream = None
+                self._fail("audio_device_start_failed")
+                # The caller's finally closes this registered handle.
+                raise
 
-    def play_stream(
-        self,
-        audio_generator: Generator[np.ndarray, None, None],
-        on_first_chunk: Callable = None
-    ):
-        """
-        Reproducir audio desde un generador en streaming.
+    def _close_stream(self, *, abort: bool) -> None:
+        with self._device_lock:
+            with self._condition:
+                stream, self._stream = self._stream, None
+            if stream is not None:
+                try:
+                    stream.abort() if abort else stream.stop()
+                finally:
+                    stream.close()
 
-        Args:
-            audio_generator: Generador que yield chunks de audio
-            on_first_chunk: Callback cuando llega el primer chunk (para medir latencia)
-        """
-        self.start()
-        first_chunk = True
+    def _write_to_buffer(self, audio: np.ndarray) -> bool:
+        values = np.asarray(audio, dtype=np.float32)
+        if values.ndim == 1 and self.channels == 1:
+            values = values[:, None]
+        if values.ndim != 2 or values.shape[1] != self.channels or not np.isfinite(values).all():
+            raise ValueError("PCM must contain finite frames with the configured channels")
+        offset = 0
+        with self._condition:
+            generation = self._generation
+        last_progress = time.monotonic()
+        while offset < len(values):
+            start_stream = False
+            with self._condition:
+                if self._error is not None:
+                    raise AudioPlaybackError(self._error)
+                if self._cancelled() or generation != self._generation:
+                    return False
+                if self._finished_writing:
+                    raise RuntimeError("Cannot feed a finished PCM stream")
+                space = self.buffer_samples - self._samples_available
+                if space:
+                    count = min(space, len(values) - offset)
+                    first = min(count, self.buffer_samples - self._write_pos)
+                    self._buffer[self._write_pos:self._write_pos + first] = values[offset:offset + first]
+                    if first < count:
+                        self._buffer[:count - first] = values[offset + first:offset + count]
+                    self._write_pos = (self._write_pos + count) % self.buffer_samples
+                    self._samples_available += count
+                    self._total_samples_written += count
+                    self._max_buffered = max(self._max_buffered, self._samples_available)
+                    offset += count
+                    last_progress = time.monotonic()
+                    start_stream = not self._started_playback and self._samples_available >= self.prebuffer_samples
+                elif not self._started_playback:
+                    start_stream = True
+                else:
+                    remaining = self.stall_timeout_s - (time.monotonic() - last_progress)
+                    if remaining <= 0:
+                        self._fail("audio_buffer_stalled")
+                        raise AudioPlaybackError("audio_buffer_stalled")
+                    self._condition.wait(timeout=min(remaining, 0.05))
+            if start_stream:
+                self._start_stream()
+        with self._condition:
+            if self._error is not None:
+                raise AudioPlaybackError(self._error)
+            return not self._cancelled()
 
+    def feed(self, audio_chunk: np.ndarray) -> bool:
+        """Write every frame, waiting for space until drained, failed or cancelled."""
+        return self._write_to_buffer(audio_chunk)
+
+    def start(self) -> bool:
+        """Prepare a fresh session; an already-cancelled external token stays cancelled."""
+        with self._condition:
+            if self._producer_owner is not None and self._producer_owner != threading.get_ident():
+                raise RuntimeError("Previous PCM producer is still stopping")
+            if self._running or self._stream is not None:
+                raise RuntimeError("PCM stream is already active")
+            self._generation += 1
+            self._state = PlaybackState.PLAYING
+            self._running = True
+            self._started_playback = self._finished_writing = False
+            self._playback_complete.clear()
+            self._error = None
+            self._write_pos = self._read_pos = self._samples_available = 0
+            self._underruns = self._total_samples_written = self._played_samples = 0
+            self._max_buffered = 0
+            self._software_underruns = 0
+            if self._cancel_event is not None and self._cancel_event.is_set():
+                self._state = PlaybackState.CANCELLED
+                self._running = False
+                self._playback_complete.set()
+            return self._running
+
+    def finish(self) -> bool:
+        """Drain queued frames and device tail; never turn a timeout into success."""
         try:
-            for chunk in audio_generator:
-                if first_chunk:
-                    first_chunk = False
-                    if on_first_chunk:
+            with self._condition:
+                if self._error:
+                    raise AudioPlaybackError(self._error)
+                if self._cancelled():
+                    return False
+                self._finished_writing = True
+                self._state = PlaybackState.DRAINING
+                has_audio = self._samples_available > 0
+                started = self._started_playback
+                if not started and not has_audio:
+                    self._state = PlaybackState.COMPLETED
+                    self._running = False
+                    self._playback_complete.set()
+            if has_audio and not started:
+                self._start_stream()
+            deadline = time.monotonic() + self.drain_timeout_s
+            while not self._playback_complete.is_set():
+                if self._cancel_event is not None and self._cancel_event.is_set():
+                    self.stop()
+                    return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._fail("audio_drain_timeout")
+                    break
+                self._playback_complete.wait(timeout=min(remaining, 0.05))
+            if self._error:
+                raise AudioPlaybackError(self._error)
+            return self._state is PlaybackState.COMPLETED
+        finally:
+            self._close_stream(abort=self._state is not PlaybackState.COMPLETED)
+
+    def stop(self) -> None:
+        """Abort playback and wake blocked writers without draining old audio."""
+        with self._condition:
+            self._running = False
+            if self._state not in {PlaybackState.COMPLETED, PlaybackState.FAILED}:
+                self._state = PlaybackState.CANCELLED
+            self._generation += 1
+            self._playback_complete.set()
+            self._condition.notify_all()
+        self._close_stream(abort=True)
+
+    def play_stream(self, audio_generator: Generator[np.ndarray, None, None], on_first_chunk: Callable = None) -> bool:
+        """Own a generator through bounded playback and close it on every exit."""
+        iterator = iter(audio_generator)
+        first = True
+        completed = False
+        owned = False
+        exhausted = object()
+        try:
+            with self._condition:
+                if self._producer_owner is not None:
+                    raise RuntimeError("PCM producer is already active")
+                self._producer_owner = threading.get_ident()
+                owned = True
+            if not self.start():
+                return False
+            while not self._cancelled():
+                chunk = next(iterator, exhausted)
+                if chunk is exhausted:
+                    break
+                if np.size(chunk) == 0:
+                    if not self.feed(chunk):
+                        return False
+                    continue
+                if first:
+                    first = False
+                    if on_first_chunk is not None:
                         on_first_chunk()
-
-                self.feed(chunk)
-
-                # Pequeña pausa si el buffer está muy lleno para no bloquear
-                with self._lock:
-                    if self._samples_available > self.buffer_samples * 0.9:
-                        time.sleep(0.01)
-
-            self.finish()
-
-        except Exception as e:
-            logger.error(f"Error en streaming: {e}")
-            self.stop()
+                if not self.feed(chunk):
+                    return False
+            completed = self.finish()
+            return completed
+        except Exception:
+            if owned and self._state is not PlaybackState.CANCELLED and self._error is None:
+                self._fail("audio_stream_failed")
             raise
+        finally:
+            try:
+                if owned and not completed:
+                    self.stop()
+            finally:
+                try:
+                    close = getattr(iterator, "close", None)
+                    if close is not None:
+                        close()
+                finally:
+                    if owned:
+                        with self._condition:
+                            self._producer_owner = None
 
     def get_stats(self) -> dict:
-        """Obtener estadísticas del streaming"""
-        return {
-            "total_samples": self._total_samples_written,
-            "underruns": self._underruns,
-            "buffer_size_ms": self.buffer_samples * 1000 / self.sample_rate,
-            "prebuffer_ms": self.prebuffer_samples * 1000 / self.sample_rate
-        }
+        """Read frame accounting and terminal state without copying audio."""
+        with self._condition:
+            return {
+                "total_samples": self._total_samples_written, "played_samples": self._played_samples,
+                "queued_samples": self._samples_available, "max_buffered_samples": self._max_buffered,
+                "software_underruns": self._software_underruns,
+                "underruns": self._underruns, "state": self._state.value,
+                "buffer_size_ms": self.buffer_samples * 1000 / self.sample_rate,
+                "prebuffer_ms": self.prebuffer_samples * 1000 / self.sample_rate,
+            }
 
 
 class PiperTTS:
@@ -379,8 +457,10 @@ class PiperTTS:
         text: str,
         device: int = None,
         buffer_ms: int = 150,
-        prebuffer_ms: int = 30
-    ):
+        prebuffer_ms: int = 30,
+        *, on_player: Callable | None = None, cancel_event: threading.Event | None = None,
+        stall_timeout_s: float = 1.0, drain_timeout_s: float | None = None,
+    ) -> bool:
         """
         Sintetizar y reproducir en streaming (menor latencia).
 
@@ -396,8 +476,15 @@ class PiperTTS:
             sample_rate=self.sample_rate,
             device=device,
             buffer_ms=buffer_ms,
-            prebuffer_ms=prebuffer_ms
+            prebuffer_ms=prebuffer_ms, cancel_event=cancel_event,
+            stall_timeout_s=stall_timeout_s, drain_timeout_s=drain_timeout_s,
         )
+        if on_player is not None:
+            try:
+                on_player(player)
+            except Exception:
+                player.stop()
+                raise
 
         start_time = time.perf_counter()
         first_audio_time = [None]
@@ -405,7 +492,7 @@ class PiperTTS:
         def on_first_chunk():
             first_audio_time[0] = time.perf_counter()
 
-        player.play_stream(self.synthesize_stream(text), on_first_chunk=on_first_chunk)
+        completed = player.play_stream(self.synthesize_stream(text), on_first_chunk=on_first_chunk)
 
         # Log latencia
         if first_audio_time[0]:
@@ -416,6 +503,7 @@ class PiperTTS:
                 f"underruns={stats['underruns']}, "
                 f"prebuffer={prebuffer_ms}ms"
             )
+        return completed
 
     def get_stream_generator(self, text: str) -> Generator[np.ndarray, None, None]:
         """

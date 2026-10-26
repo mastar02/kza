@@ -117,6 +117,9 @@ inválidos; el consentimiento denegado impide el envío al cloud en sus consumid
 
 ### H2 Completar generación y reproducción de voz
 
+Plan abierto: [respuestas completas y captura disponible](2026-10-25-h2-complete-voice-responses.md).
+Los límites offline y la validación acústica pendiente se fijan allí antes de medir.
+
 **Entregables:** consumo no bloqueante del reasoner, un único responsable de
 locutar cada respuesta y reproducción que conserve todos los samples. Integrar
 cancelación, presión de retorno al productor y mensajes de error audibles.
