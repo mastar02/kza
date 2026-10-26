@@ -7,18 +7,21 @@ memoria de largo plazo (ChromaDB). Solo texto por default. Con
 (columna ``audio_path``) para poder medir WER y re-transcribir; la purga
 por TTL borra fila y archivo juntos.
 
-Nota de diseño (purga):
-  purge_expired() borra por `t0 < cutoff`, NO por `created_at`.
-  Semántica: el TTL aplica a la ANTIGÜEDAD DEL AUDIO, no al momento
-  de inserción. En operación normal ambos son casi iguales; en tests
-  y en replays difieren. created_at sigue siendo time.time() del INSERT
-  para auditoría/debugging.
+Los lectores aplican el vencimiento sin depender de la purga. Las capturas
+nuevas conservan un ID global y una fecha límite que no se extiende al ampliar
+la configuración. El inicio del audio manda; una fecha futura queda limitada
+por la inserción. Las filas legacy conservan sus metadatos sin inventar IDs.
+La purga registra los archivos pendientes en la misma transacción que retira
+sus filas; un unlink fallido se reintenta incluso después de reiniciar.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import aiosqlite
@@ -49,10 +52,18 @@ CREATE TABLE IF NOT EXISTS utterances (
   distilled INTEGER NOT NULL DEFAULT 0,
   text_empty INTEGER NOT NULL DEFAULT 0,
   audio_path TEXT,
+  capture_id TEXT,
+  expires_at REAL,
   created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_utt_room_time ON utterances(room_id, t0);
 CREATE INDEX IF NOT EXISTS idx_utt_distill ON utterances(distilled, source);
+CREATE TABLE IF NOT EXISTS pending_audio_deletions (
+  path TEXT PRIMARY KEY,
+  requested_at REAL NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
 """
 
 # Columnas agregadas después del deploy Fase 2 (la DB de prod ya existía):
@@ -68,7 +79,19 @@ _MIGRATIONS: dict[str, str] = {
     # Medición de fidelidad (2026-08-05): la DB de prod ya existe.
     "text_empty": "ALTER TABLE utterances ADD COLUMN text_empty INTEGER NOT NULL DEFAULT 0",
     "audio_path": "ALTER TABLE utterances ADD COLUMN audio_path TEXT",
+    "capture_id": "ALTER TABLE utterances ADD COLUMN capture_id TEXT",
+    "expires_at": "ALTER TABLE utterances ADD COLUMN expires_at REAL",
 }
+
+_LIVE = "t0 > :cutoff AND created_at > :cutoff AND (expires_at IS NULL OR expires_at > :now)"
+_EXPIRED = "t0 <= :cutoff OR created_at <= :cutoff OR expires_at <= :now"
+
+
+@dataclass(frozen=True)
+class _AudioDeletion:
+    path: str
+    removed: bool = False
+    error: str | None = None
 
 
 class AmbientStore:
@@ -77,8 +100,9 @@ class AmbientStore:
     def __init__(
         self,
         db_path: str = "./data/ambient.db",
-        retention_hours: float = 12.0,
+        retention_hours: float = 48.0,
         audio_dir: str | None = None,
+        *, clock: Callable[[], float] | None = None,
     ):
         """Inicializar el store.
 
@@ -90,15 +114,23 @@ class AmbientStore:
                 que el TTL): un unlink fallido o un crash entre write() y
                 set_audio_path() dejaban audio crudo del hogar fuera de la
                 política de retención para siempre (review PR #14).
+            clock: Reloj de segundos epoch para vencimiento y pruebas.
         """
+        if type(retention_hours) not in (int, float) or not math.isfinite(retention_hours) or not 0 < retention_hours <= 48:
+            raise ValueError("Capture retention must be positive and at most 48 hours")
         self.db_path = db_path
         self.retention_hours = retention_hours
         self.audio_dir = Path(audio_dir) if audio_dir else None
         self._db: aiosqlite.Connection | None = None
+        self._clock = time.time if clock is None else clock
+        self._write_lock = asyncio.Lock()
+        self._cleanup_lock = asyncio.Lock()
+        self.expiry_changed = asyncio.Event()
+        self._next_expiry: float | None = None
 
     async def init(self) -> None:
         """Crear/abrir la DB y aplicar el schema."""
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(Path(self.db_path).parent.mkdir, parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(_SCHEMA)
@@ -108,14 +140,60 @@ class AmbientStore:
             if col not in existing:
                 await self._db.execute(ddl)
                 logger.info("AmbientStore migración: columna %s agregada", col)
+        await self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_utt_capture ON utterances(capture_id) WHERE capture_id IS NOT NULL")
         await self._db.commit()
         logger.info("AmbientStore listo (%s, TTL %.1fh)", self.db_path, self.retention_hours)
 
     async def close(self) -> None:
         """Cerrar la conexión."""
-        if self._db is not None:
-            await self._db.close()
-            self._db = None
+        async with self._cleanup_lock, self._write_lock:
+            if self._db is not None:
+                await self._db.close()
+                self._db = None
+
+    def _retention_parameters(self) -> dict:
+        now = self._clock()
+        return {"now": now, "cutoff": now - self.retention_hours * 3600}
+
+    async def next_expiration_delay(self) -> float:
+        """Time until the earliest capture deadline or a pending retry."""
+        cur = await self._db.execute(
+            "SELECT MIN(min(COALESCE(expires_at, t0+:ttl), t0+:ttl, created_at+:ttl)) AS deadline FROM utterances",
+            {"ttl": self.retention_hours * 3600},
+        )
+        self._next_expiry = (await cur.fetchone())["deadline"]
+        delay = 3600.0 if self._next_expiry is None else max(0.0, self._next_expiry - self._clock())
+        if (await self.audio_cleanup_status())["pending"]:
+            delay = min(delay, 60.0)
+        return min(delay, 3600.0)
+
+    async def _mutate(self, operation):
+        """Keep a SQLite transaction atomic and owned through cancellation."""
+        async def transaction():
+            await self._db.execute("BEGIN IMMEDIATE")
+            try:
+                result = await operation()
+                await self._db.commit()
+                return result
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+        async with self._write_lock:
+            return await self._finish_owned(transaction())
+
+    async def _finish_owned(self, operation):
+        task = asyncio.create_task(operation)
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        result = task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
 
     async def add(self, utt: AmbientUtterance) -> int:
         """Insertar utterance; devuelve el id asignado.
@@ -131,28 +209,37 @@ class AmbientStore:
         """
         if utt.source not in SOURCE_VALUES:
             raise ValueError(f"source inválido: {utt.source!r} (∉ {SOURCE_VALUES})")
-        cur = await self._db.execute(
-            """INSERT INTO utterances
-               (room_id, t0, t1, text, speaker, speaker_confidence, azimuth,
-                azimuth_stability, source, confidence, no_speech_prob,
-                vad_prob, lang, lang_prob, lang_ok, during_tts, distilled,
-                text_empty, audio_path, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                utt.room_id, utt.t0, utt.t1, utt.text, utt.speaker,
-                utt.speaker_confidence, utt.azimuth, utt.azimuth_stability,
-                utt.source, utt.confidence, utt.no_speech_prob,
-                utt.vad_prob, utt.lang, utt.lang_prob,
-                None if utt.lang_ok is None else int(utt.lang_ok),
-                int(utt.during_tts), int(utt.distilled),
-                int(utt.text_empty), utt.audio_path,
-                time.time(),
-            ),
-        )
-        await self._db.commit()
-        return cur.lastrowid
+        if any(type(value) not in (int, float) or not math.isfinite(value) for value in (utt.t0, utt.t1)) or utt.t1 < utt.t0:
+            raise ValueError("Capture timestamps must be finite and ordered")
+        now = self._clock()
+        expires_at = min(utt.t0, now) + self.retention_hours * 3600
 
-    async def set_audio_path(self, utt_id: int, path: str) -> None:
+        async def insert():
+            cur = await self._db.execute(
+                """INSERT INTO utterances
+                   (room_id, t0, t1, text, speaker, speaker_confidence, azimuth,
+                    azimuth_stability, source, confidence, no_speech_prob,
+                    vad_prob, lang, lang_prob, lang_ok, during_tts, distilled,
+                    text_empty, audio_path, created_at, capture_id, expires_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    utt.room_id, utt.t0, utt.t1, utt.text, utt.speaker,
+                    utt.speaker_confidence, utt.azimuth, utt.azimuth_stability,
+                    utt.source, utt.confidence, utt.no_speech_prob,
+                    utt.vad_prob, utt.lang, utt.lang_prob,
+                    None if utt.lang_ok is None else int(utt.lang_ok),
+                    int(utt.during_tts), int(utt.distilled),
+                    int(utt.text_empty), utt.audio_path,
+                    now, utt.capture_id, expires_at,
+                ),
+            )
+            if self._next_expiry is None or expires_at < self._next_expiry:
+                self._next_expiry = expires_at
+                self.expiry_changed.set()
+            return cur.lastrowid
+        return await self._mutate(insert)
+
+    async def set_audio_path(self, utt_id: int, path: str) -> bool:
         """Registrar la ruta del FLAC archivado para una utterance.
 
         Se llama después de escribir el archivo, porque el nombre depende del
@@ -161,16 +248,50 @@ class AmbientStore:
         Args:
             utt_id: rowid devuelto por add().
             path: ruta del archivo, tal como la devolvió el AudioArchiver.
+
+        Returns:
+            True si la captura sigue vigente. False registra el archivo para
+            borrado durable sin recrear una captura vencida o ausente.
         """
-        cur = await self._db.execute(
-            "UPDATE utterances SET audio_path=? WHERE id=?", (path, utt_id)
-        )
-        await self._db.commit()
-        if cur.rowcount == 0:
-            logger.warning(
-                "AmbientStore.set_audio_path: id %d no existe — %s queda "
-                "huérfano hasta el sweep de la purga", utt_id, path,
+        async def attach():
+            parameters = self._retention_parameters() | {"id": utt_id, "path": path}
+            cur = await self._db.execute(
+                "UPDATE utterances SET audio_path=:path WHERE id=:id AND " + _LIVE, parameters,  # nosec B608 -- Predicate is constant; all values use bound parameters.
             )
+            if cur.rowcount == 0:
+                await self._queue_audio_deletion(path)
+            return cur.rowcount > 0
+
+        attached = await self._mutate(attach)
+        if not attached:
+            logger.warning(
+                "AmbientStore.set_audio_path: id %d missing or expired; cleanup queued", utt_id,
+            )
+            await self._retry_audio_deletions()
+        return attached
+
+    async def read_audio(self, utt_id: int) -> bytes | None:
+        """Read live clip bytes, rechecking expiry after asynchronous disk I/O."""
+        async def live_path():
+            cur = await self._db.execute(
+                "SELECT audio_path FROM utterances WHERE id=:id AND " + _LIVE,  # nosec B608 -- Predicate is constant; all values use bound parameters.
+                self._retention_parameters() | {"id": utt_id},
+            )
+            row = await cur.fetchone()
+            return row["audio_path"] if row else None
+
+        path = await live_path()
+        if not path:
+            return None
+
+        def read():
+            return self._audio_path(path).read_bytes()
+
+        try:
+            data = await asyncio.to_thread(read)
+        except (OSError, ValueError):
+            return None
+        return data if await live_path() == path else None
 
     async def utterances_between(
         self, room_id: str, t0: float, t1: float
@@ -186,8 +307,8 @@ class AmbientStore:
             Lista de dicts ordenada por t0 ascendente.
         """
         cur = await self._db.execute(
-            "SELECT * FROM utterances WHERE room_id=? AND t0>=? AND t0<=? ORDER BY t0",
-            (room_id, t0, t1),
+            "SELECT * FROM utterances WHERE room_id=:room AND t0>=:start AND t0<=:end AND " + _LIVE + " ORDER BY t0",  # nosec B608 -- Predicate is constant; all values use bound parameters.
+            self._retention_parameters() | {"room": room_id, "start": t0, "end": t1},
         )
         return [dict(r) for r in await cur.fetchall()]
 
@@ -222,16 +343,15 @@ class AmbientStore:
             Lista de dicts ordenada por t0 ascendente.
         """
         query = (
-            "SELECT * FROM utterances WHERE distilled=0 "
+            "SELECT * FROM utterances WHERE distilled=0 "  # nosec B608 -- Predicate is constant; all values use bound parameters.
             "AND source NOT IN ('self','tv') "
             "AND COALESCE(text_empty, 0) = 0 "
-            "AND COALESCE(vad_prob, 0) >= ? "
+            "AND COALESCE(vad_prob, 0) >= :vad AND " + _LIVE + " "
         )
-        params: list = [min_vad_prob]
+        params = self._retention_parameters() | {"vad": min_vad_prob, "limit": limit}
         if spanish_only:
             query += "AND COALESCE(lang_ok, 1) = 1 "
-        query += "ORDER BY t0 LIMIT ?"
-        params.append(limit)
+        query += "ORDER BY t0 LIMIT :limit"
         cur = await self._db.execute(query, params)
         return [dict(r) for r in await cur.fetchall()]
 
@@ -244,10 +364,11 @@ class AmbientStore:
         if not ids:
             return
         marks = ",".join("?" * len(ids))
-        await self._db.execute(
-            f"UPDATE utterances SET distilled=1 WHERE id IN ({marks})", ids  # nosec B608 -- {marks} son solo placeholders "?,?,..." (uno por elemento de ids); los valores van parametrizados en el segundo argumento de execute, no hay interpolación de datos
-        )
-        await self._db.commit()
+        async def mark():
+            await self._db.execute(
+                f"UPDATE utterances SET distilled=1 WHERE id IN ({marks})", ids  # nosec B608 -- Only placeholders are interpolated.
+            )
+        await self._mutate(mark)
 
     async def spanish_keep_rate(self, since_s: float | None = None) -> dict:
         """Tasa de español conservable (``lang_ok``) — métrica de producto del ambient.
@@ -262,11 +383,11 @@ class AmbientStore:
         Returns:
             Dict con n, ok, not_ok, unclassified, rate (float|None), by_room.
         """
-        where = ""
-        params: tuple = ()
+        where = "WHERE " + _LIVE
+        params = self._retention_parameters()
         if since_s is not None:
-            where = "WHERE t0 >= ?"
-            params = (since_s,)
+            where += " AND t0 >= :since"
+            params["since"] = since_s
         cur = await self._db.execute(
             f"SELECT "
             f"COUNT(*) AS n, "
@@ -316,59 +437,107 @@ class AmbientStore:
     async def purge_expired(self) -> int:
         """Borrar utterances cuyo audio es más viejo que retention_hours.
 
-        La purga filtra por `t0` (antigüedad del audio), no por `created_at`
-        (momento de inserción). Esto garantiza TTL correcto tanto en operación
-        normal como en replays/tests donde t0 puede diferir mucho de created_at.
+        El plazo usa el inicio del audio, la inserción como límite para fechas
+        futuras y el vencimiento persistido de las capturas nuevas. Las rutas
+        se registran para cleanup antes de eliminar las filas, atómicamente.
 
         Returns:
             Número de filas borradas.
         """
-        cutoff = time.time() - self.retention_hours * 3600
-        cur = await self._db.execute(
-            "SELECT audio_path FROM utterances WHERE t0 < ? AND audio_path IS NOT NULL",
-            (cutoff,),
-        )
-        doomed = [row["audio_path"] for row in await cur.fetchall()]
-        cur = await self._db.execute(
-            "DELETE FROM utterances WHERE t0 < ?", (cutoff,)
-        )
-        await self._db.commit()
-        unlinked = await asyncio.to_thread(self._unlink_batch, doomed)
+        parameters = self._retention_parameters()
+
+        async def expire():
+            cur = await self._db.execute(
+                "SELECT audio_path FROM utterances WHERE (" + _EXPIRED + ") AND audio_path IS NOT NULL", parameters,  # nosec B608 -- Predicate is constant; all values use bound parameters.
+            )
+            for row in await cur.fetchall():
+                await self._queue_audio_deletion(row["audio_path"])
+            cur = await self._db.execute("DELETE FROM utterances WHERE " + _EXPIRED, parameters)  # nosec B608 -- Predicate is constant; all values use bound parameters.
+            return cur.rowcount
+
+        deleted = await self._mutate(expire)
+        unlinked = await self._retry_audio_deletions()
         orphans = 0
         if self.audio_dir is not None:
             id_cur = await self._db.execute("SELECT id FROM utterances")
             live_ids = {row["id"] for row in await id_cur.fetchall()}
-            orphans = await asyncio.to_thread(self._sweep_orphans, live_ids, cutoff)
-        if cur.rowcount or orphans:
-            logger.info(
-                "AmbientStore purga: %d utterances borradas (TTL %.1fh), "
-                "%d/%d audios borrados, %d huérfanos barridos",
-                cur.rowcount, self.retention_hours, unlinked, len(doomed), orphans,
+            orphans = await asyncio.to_thread(self._sweep_orphans, live_ids, parameters["cutoff"])
+        if deleted or unlinked or orphans:
+            logger.info("AmbientStore expiry: rows=%d audio=%d orphans=%d", deleted, unlinked, orphans)
+        return deleted
+
+    async def _queue_audio_deletion(self, path: str) -> None:
+        # Called only inside the same transaction that removes the reference.
+        await self._db.execute(
+            "INSERT OR IGNORE INTO pending_audio_deletions(path, requested_at) VALUES (?, ?)",
+            (path, self._clock()),
+        )
+        self.expiry_changed.set()
+
+    async def discard_audio(self, path: str) -> None:
+        """Durably discard an unaccepted or cancelled archive, including retries."""
+        await self._mutate(lambda: self._queue_audio_deletion(path))
+        await self._retry_audio_deletions()
+
+    async def audio_cleanup_status(self) -> dict:
+        """Report pending file removal without exposing clip paths or content."""
+        cur = await self._db.execute(
+            "SELECT COUNT(*) AS pending, COALESCE(SUM(attempts), 0) AS attempts, "
+            "MIN(requested_at) AS oldest_request FROM pending_audio_deletions"
+        )
+        return dict(await cur.fetchone())
+
+    async def _retry_audio_deletions(self) -> int:
+        async def attempt():
+            cur = await self._db.execute(
+                "SELECT path FROM pending_audio_deletions ORDER BY attempts, requested_at, path LIMIT 256"
             )
-        return cur.rowcount
+            paths = [row["path"] for row in await cur.fetchall()]
+            if not paths:
+                return 0
+            outcomes = await asyncio.to_thread(self._unlink_outcomes, paths)
 
-    def _unlink_batch(self, paths: list[str]) -> int:
-        """Borrar archivos best-effort. Devuelve cuántos se borraron de verdad.
+            async def acknowledge():
+                for result in outcomes:
+                    if result.error is None:
+                        await self._db.execute("DELETE FROM pending_audio_deletions WHERE path=?", (result.path,))
+                    else:
+                        await self._db.execute(
+                            "UPDATE pending_audio_deletions SET attempts=attempts+1, last_error=? WHERE path=?",
+                            (result.error, result.path),
+                        )
 
-        `missing_ok=False` a propósito (M1, review PR #15): con
-        `missing_ok=True` un archivo YA ausente (borrado en una purga
-        anterior, o nunca escrito) contaba como "borrado" en el log —
-        "%d/%d audios borrados" mentía sobre cuántos unlinks reales pasaron.
-        Ausente no es un fallo (no se loguea ni se cuenta); cualquier otro
-        OSError sí es un fallo real y se loguea.
-        """
-        ok = 0
+            await self._mutate(acknowledge)
+            return sum(result.removed for result in outcomes)
+
+        async with self._cleanup_lock:
+            return await self._finish_owned(attempt())
+
+    def _audio_path(self, path: str) -> Path:
+        candidate = Path(path)
+        if self.audio_dir is not None:
+            root = self.audio_dir.resolve()
+            resolved = candidate.resolve()
+            if resolved == root or not resolved.is_relative_to(root) or candidate.suffix != ".flac":
+                raise ValueError("audio_path_outside_archive")
+        return candidate
+
+    def _unlink_outcomes(self, paths: list[str]) -> list[_AudioDeletion]:
+        outcomes = []
         for path in paths:
             try:
-                Path(path).unlink(missing_ok=False)
-                ok += 1
+                self._audio_path(path).unlink(missing_ok=False)
+                outcomes.append(_AudioDeletion(path, removed=True))
             except FileNotFoundError:
-                pass  # ya no estaba — no cuenta como borrado, no es un fallo
-            except OSError as e:
-                logger.warning(
-                    "AmbientStore purga: no se pudo borrar %s: %s", path, e
-                )
-        return ok
+                outcomes.append(_AudioDeletion(path))
+            except (OSError, ValueError) as error:
+                logger.warning("AmbientStore audio cleanup failed: %s", type(error).__name__)
+                outcomes.append(_AudioDeletion(path, error=type(error).__name__))
+        return outcomes
+
+    def _unlink_batch(self, paths: list[str]) -> int:
+        """Count actual removals; a missing file is already reconciled."""
+        return sum(result.removed for result in self._unlink_outcomes(paths))
 
     def _sweep_orphans(self, live_ids: set[int], cutoff: float) -> int:
         """Borrar FLACs sin fila viva y más viejos que el TTL.
@@ -400,8 +569,7 @@ class AmbientStore:
                 # caso no lo cubre esta guarda.
                 if utt_id in live_ids or f.stat().st_mtime >= cutoff:
                     continue
-                f.unlink(missing_ok=True)
-                swept += 1
+                swept += self._unlink_batch([str(f)])
             except OSError as e:
                 logger.warning(
                     "AmbientStore sweep: no se pudo borrar/inspeccionar %s: %s", f, e

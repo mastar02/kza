@@ -17,6 +17,7 @@ import asyncio
 import logging
 import shutil
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import numpy as np
@@ -35,11 +36,13 @@ class AudioArchiver:
         enabled: bool = False,
         sample_rate: int = 16000,
         min_free_bytes: int = 1_000_000_000,
+        discard_audio: Callable[[str], Awaitable[None]] | None = None,
     ):
         self.base_dir = Path(base_dir)
         self.enabled = enabled
         self.sample_rate = sample_rate
         self.min_free_bytes = min_free_bytes
+        self._discard_audio = discard_audio
         self._last_disk_warn = 0.0
         self.stats = {"written": 0, "skipped_disk": 0, "failed": 0}
 
@@ -70,7 +73,32 @@ class AudioArchiver:
             # El chequeo de disco (stat/statvfs) va DENTRO del thread: en el
             # loop bloqueaba el voice path una vez por segmento (review
             # PR #14, 2026-08-06).
-            written = await asyncio.to_thread(self._write_sync, path, mono)
+            writing = asyncio.create_task(asyncio.to_thread(self._write_sync, path, mono))
+            cancelled = False
+            while not writing.done():
+                try:
+                    await asyncio.shield(writing)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception:
+                    break  # Retrieve the actual write outcome below.
+            error = writing.exception()
+            if cancelled or error is not None:
+                cleanup = asyncio.create_task(self._discard(str(path)))
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                    except Exception:
+                        break
+                if cancelled:
+                    if not cleanup.cancelled() and cleanup.exception() is not None:
+                        logger.warning("AudioArchiver cancelled-write cleanup failed: %s", type(cleanup.exception()).__name__)
+                    raise asyncio.CancelledError
+                cleanup.result()
+                raise error
+            written = writing.result()
             if not written:
                 self.stats["skipped_disk"] += 1
                 return None
@@ -82,6 +110,12 @@ class AudioArchiver:
                 "AudioArchiver: no se pudo guardar %s/%d (%s)", room_id, utt_id, e
             )
             return None
+
+    async def _discard(self, path: str) -> None:
+        if self._discard_audio is not None:
+            await self._discard_audio(path)
+        else:
+            await asyncio.to_thread(Path(path).unlink, missing_ok=True)
 
     def _write_sync(self, path: Path, mono: np.ndarray) -> bool:
         """Escritura bloqueante — corre en un hilo aparte.

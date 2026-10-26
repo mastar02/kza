@@ -145,11 +145,12 @@ def test_init_migrates_old_schema_adding_vad_prob(tmp_path):
     conn.close()
 
     async def inner():
-        store = AmbientStore(db_path=db_path, retention_hours=12)
+        store = AmbientStore(db_path=db_path, retention_hours=12, clock=lambda: 200.0)
         await store.init()  # debe migrar sin romper
         rows = await store.utterances_between("escritorio", 0, 200)
         assert [r["text"] for r in rows] == ["fila vieja"]
         assert rows[0]["vad_prob"] is None
+        assert rows[0]["capture_id"] is None and rows[0]["expires_at"] is None
         # y aceptar inserts con la columna nueva
         await store.add(_utt(150.0, text="fila nueva", vad_prob=0.8))
         rows = await store.utterances_between("escritorio", 0, 200)
@@ -241,7 +242,7 @@ def test_init_migrates_old_schema_adding_lang_columns(tmp_path):
     conn.close()
 
     async def inner():
-        store = AmbientStore(db_path=db_path, retention_hours=12)
+        store = AmbientStore(db_path=db_path, retention_hours=12, clock=lambda: 200.0)
         await store.init()  # debe migrar sin romper
         rows = await store.utterances_between("escritorio", 0, 200)
         assert [r["text"] for r in rows] == ["fila vieja"]

@@ -6,7 +6,8 @@ segmentador (audio multicanal crudo, aún sin transcribir).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from uuid import UUID, uuid4
 
 import numpy as np
 
@@ -69,8 +70,10 @@ class AmbientUtterance:
     # ambient.keep_audio está activo (campaña de medición).
     text_empty: bool = False
     audio_path: str | None = None   # ruta del FLAC, o None si no se archivó
+    capture_id: str = field(default_factory=lambda: str(uuid4()))
 
     def __post_init__(self):
+        self.capture_id = str(UUID(self.capture_id))
         # text_empty es derivado de text: la única fuente legal es el
         # transcriber persistiendo un segmento que el STT devolvió vacío.
         # Un segundo call-site (backfill, fixture) que los haga divergir

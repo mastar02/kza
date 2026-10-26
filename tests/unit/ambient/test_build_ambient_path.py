@@ -30,6 +30,9 @@ class _CapturingAmbientStore:
     def __init__(self, **kwargs):
         _CapturingAmbientStore.last_kwargs = kwargs
 
+    async def discard_audio(self, path):
+        pass
+
 
 def test_audio_dir_reaches_ambient_store(monkeypatch):
     monkeypatch.setattr(store_module, "AmbientStore", _CapturingAmbientStore)
@@ -66,3 +69,4 @@ def test_audio_dir_defaults_match_the_archiver_base_dir(monkeypatch):
     assert Path(_CapturingAmbientStore.last_kwargs["audio_dir"]) == (
         path.transcriber._archiver.base_dir
     )
+    assert path.transcriber._archiver._discard_audio.__self__ is path.store

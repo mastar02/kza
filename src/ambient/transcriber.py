@@ -290,13 +290,13 @@ class AmbientTranscriber:
         try:
             await self._store.set_audio_path(utt_id, path)
         except Exception:
-            Path(path).unlink(missing_ok=True)
+            await asyncio.to_thread(Path(path).unlink, missing_ok=True)
             raise
 
     async def _purge_worker(self) -> None:
         while self._running:
             try:
-                await asyncio.sleep(_PURGE_INTERVAL_S)
+                self._store.expiry_changed.clear()
                 await self._store.purge_expired()
                 # I3 (review PR #15): AudioArchiver.stats se incrementaba pero
                 # nadie lo leía ni lo logueaba — write-only, cero visibilidad
@@ -304,10 +304,19 @@ class AmbientTranscriber:
                 # (1/hora) es suficiente cadencia sin agregar un endpoint.
                 if self._archiver is not None and self._archiver.enabled:
                     logger.info("AudioArchiver stats: %s", self._archiver.stats)
+                if not self._running:
+                    return
+                delay = await self._store.next_expiration_delay()
+                try:
+                    async with asyncio.timeout(delay):
+                        await self._store.expiry_changed.wait()
+                except TimeoutError:
+                    pass
             except asyncio.CancelledError:
                 return
             except Exception:
                 logger.exception("AmbientTranscriber: purga falló (sigo)")
+                await asyncio.sleep(min(_PURGE_INTERVAL_S, 60.0))
 
 
 @dataclass
@@ -462,7 +471,7 @@ def build_ambient_path(
     ka_cfg = ambient_cfg.get("keep_audio", {}) or {}
     store = AmbientStore(
         db_path=ambient_cfg.get("db_path", "./data/ambient.db"),
-        retention_hours=ambient_cfg.get("retention_hours", 12.0),
+        retention_hours=ambient_cfg.get("retention_hours", 48.0),
         audio_dir=ka_cfg.get("dir", "./data/ambient_audio"),
     )
 
@@ -485,6 +494,7 @@ def build_ambient_path(
         base_dir=ka_cfg.get("dir", "./data/ambient_audio"),
         enabled=bool(ka_cfg.get("enabled", False)),
         min_free_bytes=int(ka_cfg.get("min_free_mb", 1000)) * 1_000_000,
+        discard_audio=store.discard_audio,
     )
 
     tap = MultiChannelTap()

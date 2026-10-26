@@ -54,6 +54,10 @@ class FakeStore:
     def __init__(self):
         self.added = []
         self.audio_paths = {}     # utt_id → path registrado
+        self.expiry_changed = asyncio.Event()
+
+    async def next_expiration_delay(self):
+        return 3600
 
     async def add(self, utt):
         self.added.append(utt)
@@ -522,28 +526,17 @@ def test_segmento_sin_texto_NO_se_persiste_con_archiver_deshabilitado(tmp_path):
 # ---------------------------------------------------------------------------
 
 async def _run_one_purge_cycle(tr, monkeypatch):
-    """Fuerza un solo ciclo de _purge_worker sin esperar _PURGE_INTERVAL_S real.
-
-    _purge_worker es un `while self._running: sleep(3600); ...` — bajar el
-    intervalo del módulo a algo mínimo y frenar `_running` apenas arranca el
-    primer ciclo deja correr el cuerpo real una vez sin bloquear el test 1h.
-    """
-    import src.ambient.transcriber as transcriber_module
-
-    monkeypatch.setattr(transcriber_module, "_PURGE_INTERVAL_S", 0.0)
+    """Run one real purge cycle, then stop before waiting for a deadline."""
     tr._running = True
+    purge = tr._store.purge_expired
 
-    original_sleep = asyncio.sleep
-
-    async def sleep_once_then_stop(_delay):
-        await original_sleep(0)
+    async def purge_once():
+        result = await purge()
         tr._running = False
+        return result
 
-    monkeypatch.setattr(transcriber_module.asyncio, "sleep", sleep_once_then_stop)
-    try:
-        await tr._purge_worker()
-    finally:
-        monkeypatch.setattr(transcriber_module.asyncio, "sleep", original_sleep)
+    monkeypatch.setattr(tr._store, "purge_expired", purge_once)
+    await tr._purge_worker()
 
 
 async def test_purge_worker_logs_archiver_stats_when_enabled(monkeypatch, caplog, tmp_path):

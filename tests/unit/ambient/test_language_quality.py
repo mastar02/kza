@@ -43,8 +43,10 @@ def test_drops_short_text():
     assert not is_spanish_keepable("Oh", "es", 0.5, 0.8)  # len < 8
 
 
-def test_drops_low_vad():
-    assert not is_spanish_keepable("hola que tal todo bien", "es", 0.9, 0.20)
+def test_language_flag_preserves_low_vad_spanish():
+    # Language quality preserves far-field evidence. Distillation applies its
+    # own VAD gate; the connected retention test verifies the stored text too.
+    assert is_spanish_keepable("hola que tal todo bien", "es", 0.9, 0.20)
 
 
 def test_none_vad_does_not_block():
