@@ -228,11 +228,12 @@ del ciclo de vida completo de `main`.
 
 ### Trabajo pendiente de H2
 
-- Probar timeout de petición durante entrega parcial y distinguir quién anuncia
-  ese error de la cancelación normal, sin duplicar un error ya en reproducción.
-- Separar presupuestos por etapa y cubrir una respuesta larga completa; el
-  corpus ya incluye una respuesta larga cancelada desde el callback real de
-  captura, pero no la aceptación acústica ni toda la aplicación inicializada.
+- Aceptar captura y respuestas largas con toda la aplicación inicializada; las
+  pruebas de deadlines y de PCM largo descritas abajo cubren el grafo sintético
+  de voz, no todo el heap, los modelos ni el driver de producción.
+- Investigar las pausas globales de GC observadas con el heap de la suite. Una
+  medida aislada que cumple los límites no prueba que el runtime completo los
+  cumpla; conservar este escenario en la evaluación de H4/H6.
 - Integrar la recuperación y el diagnóstico de recursos nativos bloqueados con
   H4, y comprobar parada/señales con el perfil de runtime en H6.
 - Validar salida, micrófono, amplificador, latencia física y barge-in en H6.
@@ -301,7 +302,93 @@ No es una medida física ni prueba la salida forzada de un kernel nativo.
 El [registro de aplicación](../research/2026-10-25-h2-application-voice-validation.json)
 conserva métricas sin redondear, alcance y limitaciones.
 
-Siguiente caso concreto: por lectura, el dispatcher sólo conoce
-`request.speech_handled` al terminar `arespond`. Hay que contrastar esa ventana
-con un error ya locutado cuyos buffers todavía estén drenando cuando vence el
-timeout exterior, y dar a un único propietario la autoridad para anunciarlo.
+La siguiente revisión reprodujo la ventana entre `arespond` y el dispatcher:
+un error ya en reproducción se repetía si el drenado superaba el timeout
+exterior. La quinta implementación corrige esa autoridad y amplía la evidencia.
+
+## Quinta implementación: deadlines y cancelación del aviso de error
+
+`arespond` comunica al dispatcher que asumió la locución desde su admisión,
+antes de esperar al motor o al proveedor. El deadline absoluto acompaña a la
+petición encolada. Al vencer, el propietario interrumpe el PCM anterior y puede
+intentar un único aviso de error, con un presupuesto propio. El dispatcher
+espera una gracia terminal acotada y no vuelve a anunciarlo. Los resultados
+HTTP/voz conservan el texto anunciado, la etapa agotada y el estado de entrega.
+Una generación completa cuya entrega agotó el plazo no se registra como turno
+conversacional exitoso aunque termine el aviso posterior.
+
+Los límites se inyectan desde `tts.streaming.response_timeouts`, sin archivo
+de configuración nuevo:
+
+| Presupuesto | Default | Alcance |
+|---|---|---|
+| `queue_wait_s` | 30 s | Adquirir el propietario de síntesis y salida. |
+| `generation_s` | 60 s | Espera acumulada de lecturas de generación; excluye espera por presión de retorno de frases. |
+| `delivery_s` | 120 s | Desde la primera síntesis hasta el drenado de la respuesta. |
+| `feedback_s` | 10 s | Único aviso de error, incluida su espera de motor y su drenado. |
+| `cleanup_s` | 1 s | Espera cooperativa; los recursos que no terminan siguen registrados. |
+
+`orchestrator.response_timeout_s` sigue limitando el trabajo total a 180 s por
+defecto. La gracia terminal contempla feedback y hasta cuatro esperas de
+cleanup, 14 s con estos defaults. Todos los presupuestos deben ser finitos y
+positivos; los deadlines absolutos deben ser finitos. El anuncio de posición
+en cola comparte el deadline y la cancelación de la petición: no puede
+consumir un plazo independiente antes de que empiece el timeout exterior.
+Estos defaults aún necesitan aceptación con el perfil doméstico de H6.
+
+La cancelación explícita conserva un estado distinto de la interrupción interna
+del trabajo fallido. Así alcanza también el intervalo de cleanup anterior al
+aviso. Barge-in, nueva consulta y shutdown no dejan un aviso tardío ni generan
+otro error. Una síntesis nativa bloqueada conserva su slot después de agotar
+trabajo y feedback; no admite un segundo motor ni arranca su PCM al salir tarde.
+
+Los cierres de cliente y cuerpo HTTP permanecen adjuntos a la generación aun
+si llegan cancelaciones repetidas. Se protege tanto el cierre explícito del SDK
+como el cierre automático del cuerpo al llegar a EOF: HTTPX marca la respuesta
+cerrada antes de esperar al byte stream subyacente. Una respuesta marcada como
+cerrada no basta para afirmar que ese cleanup terminó. Si queda bloqueado,
+el registro de recursos sigue visible y nuevas generaciones no abren más
+conexiones hasta que salga el recurso anterior.
+
+El corpus conectado incluye timeout antes del primer audio, durante una entrega
+parcial y después de una generación completa; feedback que no drena; cola y
+síntesis bloqueadas; presión de retorno superior al presupuesto de generación;
+cierre nativo retenido; cancelación en la transición al error y durante el aviso;
+y una nueva petición durante el error en ambos routers. Las pruebas de dominio
+rechazan valores que harían desaparecer los límites. El smoke compilado
+comprueba que el factory consuma los presupuestos configurados.
+
+La validación integrada también hizo visible un override legacy de
+`use_filler=True`: podía sonar «Un momento...» aun con filler desactivado en el
+propietario. Ambos routers ahora respetan su selección, y el factory consume
+`llm.buffering.use_filler` y `filler_phrases` del YAML existente. `preset` se
+conserva como atributo de compatibilidad; los límites activos de frases y PCM
+se configuran en `tts.streaming`. Su presentación en el perfil de release
+se revisa en H6.
+Se prueba la opción activada y desactivada con espera de proveedor controlada.
+Las comprobaciones de cancelación esperan por separado el cierre del cuerpo y
+del cliente dentro del límite cooperativo; no suponen que sean una sola fase.
+
+La evaluación larga usa un único propietario para diez respuestas completas de
+cien frases, sin cache, con 2.400.000 samples por respuesta a 24 kHz y una espera
+HTTP simulada de 200 ms. Comprueba igualdad exacta del PCM, orden y una única
+síntesis por frase. El driver callback es acelerado y el TTS es sintético: no
+mide cien segundos de reproducción física ni calidad del modelo.
+
+Durante el desarrollo, la evaluación compartida con la suite registró un máximo
+de loop de 128,24 ms y una colección global de GC de 129,07 ms, por encima de
+75 ms. Este hallazgo sigue abierto para H4/H6. La regresión automatizada mide
+también el grafo en un proceso separado de las importaciones de modelos y de
+las capturas de pytest, con GC habilitado y los mismos límites de 25/75 ms.
+Ese aislamiento define el alcance de la medida; no corrige ni prueba la latencia
+del heap completo de producción. H2 permanece abierto hasta contrastar el
+runtime completo y cumplir la aceptación física prevista en H6.
+
+Verificación del commit `08be017`: **4199 passed, 1 failed, 1 xfailed** en
+140,17 s; el único fallo sigue siendo VAD/idioma. Pasan los 82 casos nuevos,
+Ruff 0.15.1, Bandit medio/alto, doce tests Node, el smoke autenticado y el
+artefacto compilado. La medida larga aislada obtuvo p95 de 0,98 ms y máximo
+de 33,94 ms, frente a 25/75 ms; la cancelación del grafo de voz anterior tuvo
+un máximo de 1,74 ms y el cierre cooperativo del factory, 0,94 ms.
+El [registro de deadlines](../research/2026-10-26-h2-response-deadline-validation.json)
+conserva alcance, métricas sin redondear, evidencia de GC y límites pendientes.

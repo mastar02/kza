@@ -127,13 +127,15 @@ propietario de respuesta, cola de frases acotada y PCM con cancelación para
 cache, síntesis completa, streaming, earcons y broadcast. El factory usado por
 `main` conecta también productores de features y síntesis de arranque/cache al
 propietario, con cierre de admisión y espera de recursos reales. El callback de
-captura tiene un caso conectado de barge-in sobre salida simulada. El avance del
-26 de octubre incorpora presupuestos por etapa y una prueba conectada que evita
-duplicar el aviso de error mientras se drena la salida. Es trabajo en curso:
-faltan ampliar los casos de timeout y entrega parcial, ejecutar la suite completa
-sobre estos cambios y aceptar el grafo completo con runtime y hardware. La
-[validación dirigida](../research/2026-10-26-h2-response-deadline-checkpoint.json)
-no cierra H2.
+captura tiene un caso conectado de barge-in sobre salida simulada. La revisión
+del 26 de octubre incorpora presupuestos por etapa, timeout durante entrega
+parcial y autoridad única para el error, incluso al cancelar durante su cleanup
+o drenado. El corpus incluye una respuesta larga completa y cierres nativos
+retenidos sin abrir conexiones sucesivas. Sigue pendiente aceptar el grafo
+completo con runtime y hardware, incluidas las pausas globales de GC observadas
+con el heap de la suite. La medición aislada del grafo no cierra H2.
+La [validación del 26 de octubre](../research/2026-10-26-h2-response-deadline-validation.json)
+registra 4199 pruebas pasadas y el fallo conocido de VAD/idioma pendiente de H3.
 
 **Entregables:** consumo no bloqueante del reasoner, un único responsable de
 locutar cada respuesta y reproducción que conserve todos los samples. Integrar
@@ -147,6 +149,12 @@ salida reales durante la validación de release. Medir la latencia del loop y la
 cancelación; fijar sus límites en el plan antes de evaluar el resultado.
 
 ### H3 Aplicar privacidad y revisar voces
+
+Decisión del usuario del 26 de octubre: huellas y grupos sin confirmar vencen
+a las 48 h; los perfiles confirmados manualmente se conservan hasta borrado
+manual. Los clips y las transcripciones siguen venciendo a las 48 h. Nombrar
+un grupo no le concede permisos; una sugerencia automática no equivale a una
+confirmación manual. La implementación y la migración siguen pendientes.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.

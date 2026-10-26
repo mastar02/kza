@@ -161,8 +161,11 @@ de 30 días. No la presenta como fecha de origen de la conversación ni como
 confirmación autenticada, y no autoriza eliminaciones. Falta decidir tratamiento
 y probar la migración sobre una copia consistente con rollback compatible.
 
-La vigencia de embeddings, grupos y perfiles nombrados requiere decisión en el
-plan de H3; los 48 h de clips no autorizan retención indefinida de huellas.
+Decisión del usuario del 26 de octubre para H3: huellas y grupos sin confirmar
+vencen a las 48 h; perfiles confirmados manualmente se conservan hasta borrado
+manual. La confirmación deberá registrar procedencia y fecha; una sugerencia
+automática o etiqueta legacy no la prueba. Clips y texto conservan
+su TTL de 48 h. Falta implementar y probar esta política y su migración.
 Antes de evaluar se fijarán umbrales, corpus de calibración separado y límites
 de uniones/separaciones erróneas. El corpus incluirá distancias, habitaciones,
 otras personas, TV, eco y superposición. Ningún test de UI cierra esa evaluación.

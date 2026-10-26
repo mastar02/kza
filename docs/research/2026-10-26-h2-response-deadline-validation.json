@@ -1,0 +1,156 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "08be017400baa3571462ea34998f628d0d477648",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H2 stage deadlines, single error ownership, cancellation during error transitions/delivery, retained native HTTP cleanup, configured filler and complete long synthetic PCM responses",
+  "plan_reference": "docs/plans/2026-10-25-h2-complete-voice-responses.md",
+  "previous_validation_reference": "docs/research/2026-10-25-h2-application-voice-validation.json",
+  "checkpoint_reference": "docs/research/2026-10-26-h2-response-deadline-checkpoint.json",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h2-deadline-final-2.xml",
+    "collected": 4201,
+    "passed": 4199,
+    "failed": 1,
+    "xfailed": 1,
+    "runtime_s": 140.17,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad"
+    ],
+    "new_failure_ids": [],
+    "log": "/tmp/kza-h2-deadline-final-2.log"
+  },
+  "new_tests": {
+    "total": 82,
+    "connected_deadline_and_factory_cases": 22,
+    "invalid_budget_and_deadline_inputs": 60
+  },
+  "existing_tests_updated": [
+    "Cancellation waits for actual body and client closure independently within the same cooperative deadline",
+    "Both routed voice paths exceed the filler delay with filler disabled; teardown closes the response owner",
+    "Compiled application factory consumes configured stage budgets"
+  ],
+  "proven": [
+    "A draining generation error cannot trigger a second dispatcher/router timeout utterance",
+    "An absolute request work deadline reaches the owner before generation; queue feedback shares deadline and caller cancellation",
+    "Queue waiting, accumulated provider reads, first-synthesis-to-drain delivery and error feedback have separate finite budgets",
+    "Downstream sentence pressure longer than the generation budget does not spend the provider read budget",
+    "Timeout after partial output aborts the old device and attempts one error in the original zone without saving a completed conversational turn",
+    "Completed generation with timed-out delivery remains unsuccessful even when the subsequent error is delivered",
+    "Feedback timeout is final, with no additional error attempt",
+    "Cancel in the cleanup-to-error transition, during error playback, by caller, shutdown or a new request prevents late or duplicate feedback",
+    "A native TTS worker retains its slot after work and feedback deadlines and cannot start old PCM after eventual return",
+    "SDK/client close and HTTPX automatic EOF body close remain attached to tracked generation resources despite cancellation",
+    "Blocked body/client cleanup rejects successive provider attempts without opening more connections until actual close completes",
+    "Both routers and the application factory respect llm.buffering filler selection and configured phrases",
+    "Ten uncached 100-sentence responses each preserve 2400000 PCM samples in order, with one synthesis per phrase",
+    "Factory, stage budget DTOs and shared lifecycle work in the compiled artifact outside the source checkout"
+  ],
+  "measurements": {
+    "heartbeat_ms": {
+      "repetitions": 10,
+      "stall_ms": 200,
+      "interval_ms": 5,
+      "samples": 420,
+      "p95": 0.5543162114918232,
+      "max": 5.463208071887493
+    },
+    "cancellation_ms": {
+      "repetitions": 10,
+      "request_control": {
+        "p50": 0.05011702887713909,
+        "p95": 0.06347708404064178,
+        "max": 0.06347708404064178
+      },
+      "stream_and_client_cleanup": {
+        "p50": 9.775327984243631,
+        "p95": 9.829781018197536,
+        "max": 9.829781018197536
+      }
+    },
+    "owned_voice_metrics": {
+      "repetitions": 10,
+      "stall_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 430,
+      "loop_lag_p95_ms": 0.3515372518450022,
+      "loop_lag_max_ms": 1.0252550709992647,
+      "cancel_cleanup_max_ms": 1.7448230646550655,
+      "exact_pcm_runs": 10
+    },
+    "long_complete_voice_metrics": {
+      "repetitions": 10,
+      "sentences_per_run": 100,
+      "samples_per_run": 2400000,
+      "provider_wait_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 2744,
+      "loop_lag_p95_ms": 0.9755989350378512,
+      "loop_lag_max_ms": 33.94416894763708,
+      "exact_pcm_runs": 10
+    },
+    "voice_application_close_ms": {
+      "repetitions": 10,
+      "p50": 0.5365891847759485,
+      "p95": 0.9363889694213867,
+      "max": 0.9363889694213867,
+      "cooperative_cleanup_limit_ms": 1000
+    }
+  },
+  "measurement_environment": {
+    "physical_audio_measured": false,
+    "gpu_models_loaded": false,
+    "long_response": "Separate Python process with GC enabled, one response owner reused ten times, real SDK/HTTPX with memory-only SSE, deterministic PCM engine and accelerated callback driver",
+    "driver_frame_sizes": [
+      128,
+      512,
+      1024
+    ],
+    "driver_callback_pause_s": 0.0002,
+    "sample_rate_hz": 24000,
+    "assertion_work_excluded_from_heartbeat": true
+  },
+  "development_gc_observation": {
+    "context": "Long-response measurement sharing the pytest interpreter/model imports before isolation; uncommitted development tree based on d0b881e",
+    "loop_lag_max_ms": 128.23606410995126,
+    "gc_generation": 2,
+    "gc_pause_ms": 129.0722240228206,
+    "gc_thread": "asyncio_0",
+    "objects_collected": 8374,
+    "diagnostic_profile": "/tmp/kza-long-profile.json",
+    "acceptance_limit_ms": 75,
+    "accepted": false,
+    "production_reproduced": false,
+    "follow_up": "H4/H6 must evaluate the complete runtime heap; isolated measurements do not resolve the global pause"
+  },
+  "checks": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium_high_findings": 0
+    },
+    "node": {
+      "passed": 12,
+      "failed": 0
+    },
+    "authenticated_dashboard_smoke": "passed",
+    "source_free_runtime_smoke": "passed in final full suite",
+    "chromium": "Not repeated; no frontend changes"
+  },
+  "limits": [
+    "The only final suite failure remains the known VAD/language contract case assigned to H3",
+    "Synthetic driver, SSE and PCM engine establish software behavior, not acoustic quality or actual provider/TTS performance",
+    "Global GC pause with the shared test/model heap exceeded the limit; no claim of complete production-runtime latency acceptance",
+    "Complete model/USB/GPU/systemd startup, recovery and shutdown still need H4/H6 evidence",
+    "Native resources cannot be forcibly killed by asyncio; retained ownership is reported instead",
+    "Configured domestic budgets and real output destinations still require release profile acceptance",
+    "Physical long-response, capture, barge-in, echo and latency validation remains H6",
+    "H0/H1 home effect evidence, legacy data treatment and H3-H6 remain incomplete"
+  ],
+  "dependencies_changed": false,
+  "production_changed": false,
+  "h2_complete": false
+}
