@@ -732,6 +732,54 @@ alcanza un máximo de 0,15 ms y el cleanup 11,09 ms con los límites intactos.
 No se vuelve a medir ni se da por resuelta la pausa global de GC previa:
 la aceptación integrada de runtime/GC en H4/H6 sigue abierta.
 
+## Avance: participante de contextos y snapshots
+
+El grafo de `main` conecta ahora el participante `contexts`, con destinos para
+los buffers en memoria y para cada directorio físico de `policy_v2` y
+`policy_v3`. Se registran las ubicaciones aunque estén apagados orchestrator,
+persistence y recall; las anteriores permanecen en el journal. El persister
+registra su ubicación canónica antes del primer acceso y la conserva aunque
+cambie luego un alias configurado. El arranque con lease reabre recibos y
+cursores para volver a comprobar archivos restaurados; initialize repetido no
+recupera claims de un propietario vivo.
+
+El adaptador elimina snapshots con fuentes de la conversación o dependencias
+revocadas, conserva archivos ajenos y no toca los JSON legacy del directorio
+original. Cada lote recorre hasta 32 entradas, con cursor hash y hasta 1 MiB por
+snapshot. No sigue symlinks de archivos. Procedencia desconocida, corrupción,+protocolos o tamaños no soportados quedan pendientes. Los borrados de archivo
+ya realizados son idempotentes si otro archivo del lote falla; el recibo no se
+confirma completo. Sólo los drafts reconocidos del protocolo se retiran como
+restos no recuperables de escrituras interrumpidas.
+
+Los persisters y el limpiador comparten la barrera del directorio físico. Esto
+impide que otro persister borre un temporal aún en escritura. Un replace ya
+admitido termina antes del tombstone y su archivo se encuentra después; un
+payload que llega tarde al guard se rechaza. La purga existente del persister
+también usa sólo revocaciones confirmadas para no destruir archivos ante un
+commit provisional que luego falla.
+
+En memoria se retiran turnos, resúmenes y entidades preservadas de los gestores
+registrados, el buffer corto y las copias inactivas de consultas/classifier/cola
+del router. Las admisiones tardías se vuelven a validar bajo sus barreras. Se
+cancelan las compactaciones afectadas y se espera su salida, incluidas las
+iniciadas por el cleanup. También se retienen hidrataciones y guardados nativos
+ya admitidos, aunque sus observadores se hayan cancelado. Un resumen tardío no
+puede publicarse sobre una revisión revocada. Los buffers sin procedencia y las
+confirmaciones pendientes sin fuentes impiden confirmar el destino runtime.
+
+El gestor usa dos threads propios y ocho operaciones I/O retenidas como máximo;
+el adaptador de archivos tiene otros dos threads y ocho operaciones. Ambos
+mantienen la lease hasta su cierre real. La espera del thread de cleanup es
+interrumpible; el cierre no abandona llamadas delegadas. El registro de
+prestatarios evita duplicar el mismo propietario. La limpieza de usuarios cede
+entre grupos de 32 para no sostener el loop durante todo el recorrido.
+
+Quedan seis participantes sin conectar. Este avance no completa los productores
+activos de inferencia/audio, los otros consumidores, las copias derivadas ni la
+interfaz de borrado amplio. La purga de TTL de contextos independiente de los
+features y sobre todas las ubicaciones históricas todavía está pendiente,
+además del inventario/migración privada, voces y aceptación integrada de H6.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

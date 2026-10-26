@@ -12,6 +12,7 @@ from pathlib import Path
 
 from src.orchestrator.context_manager import UserContext
 from src.memory.fact_ledger import MemorySource, sources_authorized
+from src.orchestrator.context_storage import register_snapshots, snapshot_lock, snapshot_sources
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +60,23 @@ class ContextPersister:
         self.base_path = self.legacy_base_path / "policy_v3"
         self.previous_policy_path = self.legacy_base_path / "policy_v2"
         self.source_policy = source_policy
-        self._clock = time.time if clock is None else clock
+        self._clock = clock if clock is not None else (source_policy.clock if source_policy is not None else time.time)
         self._lock = threading.RLock()
+        self._preparing = threading.RLock()
+        self._prepared = False
+
+    def _prepare(self) -> None:
+        """Register canonical physical roots off-loop before any writer access."""
+        with self._preparing:
+            if not self._prepared:
+                targets = register_snapshots(self.source_policy, self.legacy_base_path)
+                self.previous_policy_path = Path(targets[0]['path'])
+                self.base_path = Path(targets[1]['path'])
+                self._lock = snapshot_lock(self.base_path)
+                self._prepared = True
 
     def _sources(self, payload: dict) -> tuple[MemorySource, ...]:
-        return tuple(MemorySource.from_dict(s) for s in payload.get("summary_sources", []))
+        return snapshot_sources(payload)
 
     def _available(self, payload: dict) -> bool:
         if self.source_policy is not None and not self.source_policy.authority_available:
@@ -156,6 +169,7 @@ class ContextPersister:
         self._validate_user_id(user_id)
         if payload.get("version") != PERSISTED_VERSION or not self._available(payload):
             raise PermissionError("context_snapshot_sources_unavailable")
+        self._prepare()
         sources = self._sources(payload)
         guard = self.source_policy.admit_source_write(sources) if self.source_policy is not None and sources else nullcontext()
         with self._lock, guard:
@@ -185,6 +199,7 @@ class ContextPersister:
             - version mismatch with PERSISTED_VERSION (logged warning)
             - other OS error (logged warning)
         """
+        self._prepare()
         with self._lock:
             return self._load(user_id)
 
@@ -236,21 +251,28 @@ class ContextPersister:
 
     def purge_expired(self) -> int:
         """Remove only expired/revoked policy snapshots; preserve legacy files."""
+        self._prepare()
         removed = 0
         with self._lock:
-            # The single policy writer holds this same lock until its actual
-            # write exits. Uncommitted leftovers are never recoverable context.
+            # No other in-process writer can own a draft while this shared
+            # physical barrier is held.
             for temporary in self.base_path.glob(".snapshot-*"):
                 temporary.unlink()
                 removed += 1
-            for directory, version in ((self.base_path, PERSISTED_VERSION), (self.previous_policy_path, 2)):
+        for directory, version in ((self.base_path, PERSISTED_VERSION), (self.previous_policy_path, 2)):
+            with snapshot_lock(directory):
                 for path in directory.glob("*.json"):
                     try:
                         data = json.loads(path.read_text())
-                        if isinstance(data, dict) and data.get("version") == version and not self._available(data):
+                        if not isinstance(data, dict) or data.get("version") != version:
+                            continue
+                        sources = self._sources(data)
+                        expired = any(s.expires_at <= self._clock() for s in sources)
+                        revoked = self.source_policy is not None and self.source_policy.sources_committed_unavailable(sources)
+                        if expired or revoked:
                             path.unlink()
                             removed += 1
                     except (ValueError, TypeError, KeyError, AttributeError):
-                        # Unknown/corrupt payloads are not accepted as live context.
+                        # Unknown/corrupt payloads remain outside inference.
                         continue
         return removed

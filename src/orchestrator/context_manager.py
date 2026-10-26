@@ -40,6 +40,11 @@ import asyncio
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
+from functools import partial
+
+from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import uuid4
@@ -345,14 +350,20 @@ class ContextManager:
         self.source_policy = source_policy
         self._clock = clock
         self._io_worker = io_worker
-        self._io_tasks: set[asyncio.Task] = set()
+        self._io_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='context-io') if io_worker is None else None
+        self._io_work = OwnedBlockingWork(worker=io_worker or self._native_io)
+        self._io_tasks = self._io_work._tasks
+        self._closing: asyncio.Task | None = None
+        self._active_compactions: dict[asyncio.Task, tuple[str, tuple[MemorySource, ...]]] = {}
         self._io_closed = False
 
         self._contexts: dict[str, UserContext] = {}
         self._lock = threading.RLock()
 
         self._cleanup_running = False
+        self._cleanup_stop = threading.Event()
         self._cleanup_thread: threading.Thread | None = None
+        self._cleanup_async_task: asyncio.Task | None = None
 
         self._total_contexts_created = 0
         self._total_contexts_cleaned = 0
@@ -386,6 +397,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             return
 
         self._cleanup_running = True
+        self._cleanup_stop.clear()
         self._cleanup_thread = threading.Thread(
             target=self._cleanup_loop,
             daemon=True,
@@ -397,13 +409,15 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
     def stop_cleanup_thread(self):
         """Detener thread de limpieza"""
         self._cleanup_running = False
+        self._cleanup_stop.set()
         if self._cleanup_thread:
             self._cleanup_thread.join(timeout=5)
 
     def _cleanup_loop(self):
         """Loop de limpieza de contextos inactivos"""
         while self._cleanup_running:
-            time.sleep(self.cleanup_interval)
+            if self._cleanup_stop.wait(self.cleanup_interval):
+                break
             try:
                 self.cleanup_inactive()
             except Exception as e:
@@ -436,6 +450,8 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             UserContext del usuario
         """
         with self._lock:
+            if self._io_closed:
+                raise RuntimeError("context_io_closed")
             if user_id in self._contexts:
                 ctx = self._contexts[user_id]
                 if zone_id:
@@ -475,21 +491,14 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             logger.debug(f"Contexto creado: {user_id} ({ctx.user_name})")
             return ctx
 
+    async def _native_io(self, function, *args, **kwargs):
+        return await asyncio.get_running_loop().run_in_executor(self._io_executor,
+            copy_context().run, partial(function, *args, **kwargs))
+
     async def _offload(self, function, *args, **kwargs):
         if self._io_closed:
             raise RuntimeError("context_io_closed")
-        if self._io_worker is not None:
-            return await self._io_worker(function, *args, **kwargs)
-        if len(self._io_tasks) >= 8:
-            raise RuntimeError("context_io_capacity")
-        task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-        self._io_tasks.add(task)
-        def finished(done):
-            self._io_tasks.discard(done)
-            if not done.cancelled():
-                done.exception()
-        task.add_done_callback(finished)
-        return await asyncio.shield(task)
+        return await self._io_work.run(function, *args, **kwargs)
 
     async def aget_or_create(self, user_id: str, *args, **kwargs) -> UserContext:
         """Hydrate private disk state through an owned off-loop operation."""
@@ -506,16 +515,73 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         captured_at = now if captured_at is None else captured_at
         return (MemorySource(str(uuid4()), str(uuid4()), captured_at, captured_at+48*3600, MemoryOrigin.INTERACTION),)
 
-    async def aclose(self) -> None:
-        """Stop compaction and wait for actual owned disk operations to finish."""
+    def begin_close(self) -> asyncio.Task:
+        """Close admission and retain actual compaction/disk work for the lease."""
         self._io_closed = True
-        tasks = list(self._compaction_tasks)
+        self._cleanup_running = False
+        self._cleanup_stop.set()
+        if self._closing is None:
+            tasks = self._compaction_tasks | self._active_compactions.keys()
+            if self._cleanup_async_task is not None:
+                tasks.add(self._cleanup_async_task)
+            for task in tasks:
+                task.cancel()
+            drain = self._io_work.begin_close()
+            async def finish():
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await drain
+                if self._cleanup_thread is not None:
+                    await asyncio.to_thread(self._cleanup_thread.join)
+                if self._io_executor is not None:
+                    await asyncio.to_thread(self._io_executor.shutdown, wait=True)
+            self._closing = asyncio.create_task(finish())
+        return self._closing
+
+    async def aclose(self) -> None:
+        """Bound close observation without abandoning actual native operations."""
+        try:
+            async with asyncio.timeout(1):
+                await asyncio.shield(self.begin_close())
+        except TimeoutError as error:
+            raise WorkCloseTimeout('context_resources_still_running') from error
+
+    async def erase_conversation(self, conversation_id: str) -> int:
+        """Remove committed derived buffers and drain affected compaction scopes."""
+        policy = self.source_policy
+        if policy is None or not policy.authority_available or not policy.conversation_revoked(conversation_id):
+            raise RuntimeError('context_erasure_authority_unavailable')
+        now = policy.clock()
+        def removed(sources):
+            return any(s.conversation_id == conversation_id or s.expires_at <= now for s in sources) or policy.sources_committed_unavailable(sources)
+        unknown = 0
+        with self._lock:
+            contexts = list(self._contexts.values())
+        for start in range(0, len(contexts), 32):
+            with self._lock:
+                for ctx in contexts[start:start+32]:
+                    if self._contexts.get(ctx.user_id) is not ctx:
+                        continue
+                    turns = [turn for turn in ctx.conversation_history if not removed(turn.sources)]
+                    changed = len(turns) != len(ctx.conversation_history)
+                    ctx.conversation_history = turns
+                    if removed(ctx.summary_sources):
+                        ctx.compacted_summary, ctx.summary_sources, ctx.preserved_ids = None, (), []
+                        changed = True
+                    if changed:
+                        ctx.privacy_revision += 1
+                    unknown += sum(not turn.sources for turn in turns)
+                    unknown += int(bool(ctx.compacted_summary) and not ctx.summary_sources)
+                    unknown += int(ctx.pending_confirmation is not None)
+            await asyncio.sleep(0)
+        with self._lock:
+            tasks = [task for task, (_, sources) in self._active_compactions.items() if removed(sources)]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        if self._io_tasks:
-            async with asyncio.timeout(1):
-                await asyncio.shield(asyncio.gather(*list(self._io_tasks), return_exceptions=True))
+        # Hydration and snapshots admitted before the marker may still own raw
+        # payloads even after their callers stop observing them.
+        await asyncio.gather(*(asyncio.shield(task) for task in list(self._io_tasks)), return_exceptions=True)
+        return unknown
 
     def get(self, user_id: str) -> UserContext | None:
         """Obtener contexto si existe"""
@@ -546,6 +612,8 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         """
         should_compact = False
         with self._lock:
+            if self._io_closed:
+                raise RuntimeError("context_io_closed")
             ctx = self._contexts.get(user_id)
             if not ctx:
                 logger.warning(f"Contexto no encontrado: {user_id}")
@@ -587,7 +655,9 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         """Publish a summary only while its original context and sources survive."""
         with self._lock:
             ctx = self._contexts.get(user_id)
-            if ctx is None:
+            if self._io_closed or ctx is None:
+                if ctx is not None:
+                    ctx.compaction_inflight = False
                 return
             ctx.prune()
             count = max(0, len(ctx.conversation_history) - (self.keep_recent_turns if keep_recent is None else keep_recent))
@@ -602,6 +672,8 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             turns = list(ctx.conversation_history[:count])
             turn_ids = {id(t) for t in turns}
             sources = merge_sources(ctx.summary_sources, *(t.sources for t in turns))
+            current = asyncio.current_task()
+            self._active_compactions[current] = (user_id, sources)
             preserved = list(ctx.preserved_ids)
             for turn in turns:
                 preserved.extend(turn.entities)
@@ -626,6 +698,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             self._compaction_last_error = error.kind.name if isinstance(error, CompactionError) else type(error).__name__
             logger.warning("[ContextManager] compaction failed: %s", type(error).__name__)
         finally:
+            self._active_compactions.pop(current, None)
             with self._lock:
                 if original._compaction_token is token:
                     original.compaction_inflight = False
@@ -834,17 +907,24 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         self._persister; este método sólo debe invocarse manualmente en tests
         o admin tools.
         """
+        if self._io_closed:
+            return
+        self._cleanup_async_task = asyncio.current_task()
         self._cleanup_running = True
         logger.info("[ContextManager] async cleanup loop started")
-        while self._cleanup_running:
-            try:
-                await self._cleanup_inactive_async()
-                await asyncio.sleep(self.cleanup_interval)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"[ContextManager] cleanup loop error: {e}")
-        logger.info("[ContextManager] async cleanup loop stopped")
+        try:
+            while self._cleanup_running:
+                try:
+                    await self._cleanup_inactive_async()
+                    await asyncio.sleep(self.cleanup_interval)
+                except asyncio.CancelledError:
+                    break
+                except Exception as error:
+                    logger.warning("[ContextManager] cleanup deferred: %s", type(error).__name__)
+                    await asyncio.sleep(self.cleanup_interval)
+        finally:
+            self._cleanup_async_task = None
+            logger.info("[ContextManager] async cleanup loop stopped")
 
     def stop_cleanup_loop_async(self) -> None:
         """Pedirle al loop async que termine en la próxima iteración.
@@ -904,7 +984,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         """
         with self._lock:
             original = self._contexts.get(user_id)
-            if original is None or original.compaction_inflight:
+            if self._io_closed or original is None or original.compaction_inflight:
                 return False
             original.prune()
             revision = original.privacy_revision

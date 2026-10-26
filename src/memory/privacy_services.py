@@ -68,6 +68,8 @@ class PrivacyServices:
         """Register actual native-user cleanup without retaining its private caches."""
         with self._lock:
             self.require_available()
+            if any(reference() == begin_close for reference in self._borrowers):
+                return
             self._borrowers.append(WeakMethod(begin_close))
 
     async def _offload(self, function, *args, **kwargs):

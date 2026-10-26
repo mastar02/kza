@@ -85,6 +85,8 @@ class ShortTermMemory:
             entities_used=entities_used or [], sources=sources,
         )
         with self._lock:
+            if self._source_policy is not None and not self._source_policy.sources_available(sources):
+                return
             self._turns.append(turn)
         logger.debug(f"Short-term memory: {len(self._turns)} turns")
 
@@ -114,6 +116,18 @@ class ShortTermMemory:
             lines.append(f"Asistente: {turn.assistant_response}")
 
         return "\n".join(lines)
+
+    def erase_conversation(self, conversation_id: str) -> int:
+        """Remove committed derived turns under the same barrier as admission."""
+        policy = self._source_policy
+        if policy is None or not policy.authority_available or not policy.conversation_revoked(conversation_id):
+            raise RuntimeError('short_term_erasure_authority_unavailable')
+        with self._lock:
+            now = self._clock()
+            self._turns = deque((turn for turn in self._turns if not (
+                any(s.conversation_id == conversation_id or s.expires_at <= now for s in turn.sources)
+                or policy.sources_committed_unavailable(turn.sources))), maxlen=self.max_turns)
+            return sum(not turn.sources for turn in self._turns)
 
     def clear(self):
         """Limpiar memoria de corto plazo"""

@@ -367,6 +367,15 @@ fuentes y fechas, con exclusión anterior a la purga física. El heartbeat obtie
 p95 de 0,21 ms y máximo de 1,73 ms, sin ampliar límites. La aceptación integrada
 de runtime/GC y hardware continúa pendiente.
 
+El participante de contextos ya conecta snapshots actuales/históricos de los
+formatos de política y los buffers de contexto, memoria corta y consultas.
+Conserva archivos ajenos/legacy y deja pendiente lo que no puede atribuir.
+Las escrituras comparten barreras físicas y las compactaciones, hidrataciones y
+guardados afectados se retienen hasta su salida real. La lease no se libera por
+cancelar al observador. Quedan seis participantes, la purga de TTL de contextos
+independiente de los features y el resto de H3; no hay una promesa global de
+borrado ni cambios en producción.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke
