@@ -21,6 +21,7 @@ from pathlib import Path
 from uuid import UUID
 
 from src.memory.erasure_journal import ERASURE_SCHEMA, ErasureJournal
+from src.memory.index_deletions import INDEX_DELETION_SCHEMA, IndexDeletionQueue
 
 
 class FactState(StrEnum):
@@ -213,6 +214,7 @@ class FactLedger:
         self._pending_conversations: frozenset[str] = frozenset()
         self._authority_version = 0
         self.erasures = ErasureJournal(self)
+        self.index_deletions = IndexDeletionQueue(self)
 
     def initialize(self) -> None:
         """Create the private ledger without importing legacy documents."""
@@ -227,7 +229,7 @@ class FactLedger:
             self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
             self._db.row_factory = sqlite3.Row
             self._db.execute("PRAGMA foreign_keys=ON")
-            self._db.executescript(_SCHEMA + ERASURE_SCHEMA)
+            self._db.executescript(_SCHEMA + ERASURE_SCHEMA + INDEX_DELETION_SCHEMA)
             if "dependencies" not in {r[1] for r in self._db.execute("PRAGMA table_info(fact_sources)")}:
                 try:
                     self._db.execute("BEGIN IMMEDIATE")
@@ -354,6 +356,10 @@ class FactLedger:
                     self._pending_deleted_times = {}
 
     def _queue(self, db, fact_id: str, revision: int, operation: str) -> None:
+        if operation == 'delete':
+            self.index_deletions.enqueue(db, fact_id, revision)
+        else:
+            self.index_deletions.changed()
         db.execute(
             "INSERT INTO index_jobs(fact_id, revision, operation, queued_at) VALUES (?,?,?,?) "
             "ON CONFLICT(fact_id) DO UPDATE SET revision=excluded.revision, operation=excluded.operation, "
@@ -413,6 +419,8 @@ class FactLedger:
             self._authority_version += 1
             if not proposed:
                 self._queue(db, fact_id, 1, "upsert")
+            else:
+                self.index_deletions.changed()
             return self._fact(db, fact_id)
 
     def _fact(self, db, fact_id: str) -> StoredFact | None:
@@ -529,6 +537,7 @@ class FactLedger:
                     target.append(fact.to_dict())
             return {"facts": facts, "proposals": proposals, "observed_at": self.clock(),
                     "legacy_policy": "quarantined",
+                    "pending_index_cleanup": db.execute("SELECT COUNT(*) FROM policy_index_deletions WHERE state!='complete'").fetchone()[0],
                     "pending_index": db.execute("SELECT COUNT(*) FROM index_jobs").fetchone()[0]}
 
     def delete_conversation(self, conversation_id: str, actor: MemoryReviewer) -> int:
@@ -592,5 +601,6 @@ class FactLedger:
         """Report lifecycle counts without exposing deleted text or clip paths."""
         with self._transaction() as db:
             return {"pending_index": db.execute("SELECT COUNT(*) FROM index_jobs").fetchone()[0],
+                    "pending_index_cleanup": db.execute("SELECT COUNT(*) FROM policy_index_deletions WHERE state!='complete'").fetchone()[0],
                     "tombstones": db.execute("SELECT COUNT(*) FROM conversation_tombstones").fetchone()[0],
                     "states": {row[0]: row[1] for row in db.execute("SELECT state, COUNT(*) FROM facts GROUP BY state")}}

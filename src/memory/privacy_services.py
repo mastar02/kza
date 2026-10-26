@@ -56,6 +56,7 @@ class PrivacyServices:
             self.ledger.initialize()
             if not self._ready:
                 self.ledger.erasures.recover()
+                self.ledger.index_deletions.recover()
                 self._ready = True
 
     def require_available(self) -> None:

@@ -34,21 +34,22 @@ async def build_memory_services(config: dict, *, shutdown: AsyncExitStack, chrom
     settings = config.get("memory", {})
     if not settings.get("enabled", True):
         return None
+    descriptor = None
     if privacy is not None:
         privacy.require_available()
-        await register_policy_index_target(config, privacy)
+        descriptor = await register_policy_index_target(config, privacy)
 
     def construct():
         client = chroma_client
         if client is None:
             import chromadb
-            client = chromadb.PersistentClient(path=settings.get("chroma_path", "./data/memory_db"))
+            client = chromadb.PersistentClient(path=descriptor['path'] if descriptor is not None else settings.get("chroma_path", "./data/memory_db"))
         return MemoryManager(client,
             preferences_path=settings.get("preferences_path", "./data/preferences.json"),
             max_short_term_turns=settings.get("short_term_size", 10),
             collection_name=settings.get("long_term_collection", "user_memories"),
             ledger_path=settings.get("privacy_db_path", "./data/memory_privacy.db"),
-            automatic_days=settings.get("automatic_retention_days", 30), clock=clock, privacy=privacy)
+            automatic_days=settings.get("automatic_retention_days", 30), clock=clock, privacy=privacy, index_descriptor=descriptor)
 
     building = asyncio.create_task(asyncio.to_thread(construct))
     cancelled = False

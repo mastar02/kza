@@ -223,11 +223,11 @@ class MemoryManager:
         preferences_path: str = "./data/preferences.json",
         max_short_term_turns: int = 10,
         *, ledger_path: str = ":memory:", collection_name: str = "user_memories",
-        clock=None, automatic_days: float = 30, privacy=None,
+        clock=None, automatic_days: float = 30, privacy=None, index_descriptor: dict | None = None,
     ):
         self._clock = privacy.ledger.clock if privacy is not None else (time.time if clock is None else clock)
         self.long_term = LongTermMemory(chroma_client, collection_name,
-                                       ledger_path=ledger_path, clock=self._clock, automatic_days=automatic_days, privacy=privacy)
+                                       ledger_path=ledger_path, clock=self._clock, automatic_days=automatic_days, privacy=privacy, index_descriptor=index_descriptor)
         self.short_term = ShortTermMemory(max_turns=max_short_term_turns, clock=self._clock,
                                           source_policy=self.long_term.ledger)
         self.preferences = PreferencesStore(preferences_path)

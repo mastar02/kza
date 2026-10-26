@@ -145,6 +145,8 @@ class ErasureJournal:
         key = hashlib.sha256(json.dumps([participant.value, version, encoded]).encode()).hexdigest()
         with self.ledger._transaction() as db:
             db.execute("INSERT OR IGNORE INTO erasure_targets VALUES (?,?,?,?)", (key, participant.value, version, encoded))
+            if participant is ErasureParticipant.SEMANTIC_INDEX:
+                self.ledger.index_deletions.register_target(db, key)
             for row in list(db.execute("SELECT id FROM conversation_erasures")):
                 self._ensure_steps(db, row[0])
         return key

@@ -1,6 +1,7 @@
 """Atomic erasure intent, durable claims and real policy-only index cleanup."""
 
 import asyncio
+from collections import Counter
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
 import json
@@ -458,7 +459,7 @@ async def test_cursor_receipts_cannot_ack_another_version_or_claim(tmp_path):
         assert context['last_error'] == ErasureError.PENDING
 
 
-async def test_real_index_batch_cursor_survives_restart_without_redeleting_completed_batch(tmp_path, monkeypatch):
+async def test_real_index_batch_cursor_survives_restart_and_rechecks_old_receipts(tmp_path, monkeypatch):
     clock = Clock()
     config = {'memory': {'enabled': False, 'privacy_db_path': str(tmp_path/'privacy.db'), 'chroma_path': str(tmp_path/'chroma')}}
     descriptor = {'path': str(tmp_path/'chroma'), 'collection': 'user_memories_policy_v1'}
@@ -489,8 +490,19 @@ async def test_real_index_batch_cursor_survives_restart_without_redeleting_compl
         owner = await build_erasure_services(config, privacy=privacy, shutdown=stack)
         await flush(owner)
         assert policy.count() == 0
-        assert [len(batch) for batch in batches] == [32, 1]
-        assert not set(batches[0]) & set(batches[1])
+        maintenance = owner._drivers[Participant.SEMANTIC_INDEX].callback.__self__.maintenance
+        await maintenance.reconcile()
+        await asyncio.gather(*(task for _, task in maintenance._active.values()))
+        await maintenance.reconcile()
+        counts = Counter(fact_id for batch in batches for fact_id in batch)
+        assert set(counts) == {fact.id for fact in facts}
+        # Startup must recheck physical storage; a restored old index cannot
+        # hide behind a receipt from the previous leased generation.
+        assert sum(counts.values()) == 32+33
+        assert all(counts[fact_id]==2 for fact_id in batches[0])
+        clock.now += 1
+        await flush(owner)
+        assert counts == Counter(fact_id for batch in batches for fact_id in batch)
         assert next(s for s in (await snapshot(privacy, receipt))['steps'] if s['participant'] == 'semantic_index')['state'] == 'complete'
 
 

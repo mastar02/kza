@@ -543,6 +543,68 @@ compilado. El heartbeat mantiene p95 de 0,40 ms y máximo de 1,05 ms frente a
 25/75 ms. La evidencia conserva las primeras carreras y la corrección de la
 observación del cierre sin ampliar sus presupuestos. No cierra H3.
 
+## Avance: limpieza de hechos sin recall
+
+El índice de hechos tiene ahora recibos durables por destino, ID y revisión en
+`policy_index_deletions`. Borrar un hecho o vencer su plazo registra todas las
+copias conocidas dentro de la misma transacción que retira su contenido del
+catálogo. Esto incluye recuerdos confirmados borrados manualmente, propuestas
+rechazadas/vencidas y hechos automáticos de hasta 30 días. El mantenimiento se
+construye siempre con el driver del índice, sin habilitar la memoria semántica.
+
+Registrar otro destino incorpora también hechos ya eliminados o en cuarentena,
+aunque el índice activo haya confirmado su cola anterior. Los recibos conservan
+revisión y token de intento; no hay expiración automática de un claim cuyo
+trabajo nativo siga vivo. Un recibo con versión, descriptor o token incorrectos
+no confirma otro trabajo. El código vuelve a comprobar la autoridad antes de
+abrir el índice. Un estado de hecho desconocido deja la limpieza pendiente.
+
+El arranque con lease reabre los recibos para comprobar el estado físico de cada
+índice: restaurar una proyección anterior no puede esconderse detrás de una
+confirmación vieja. También reabre el paso semántico de operaciones de borrado
+ya completadas. Repetir initialize o abrir un catálogo auxiliar no reinicia
+claims vivos. Dentro de un mismo arranque, el borrado de conversación y el
+mantenimiento comparten recibos para no duplicar eliminaciones ya confirmadas.
+El recibo de conversación sigue pendiente si quedan trabajos de índice que un
+cursor sobre filas deleted no puede demostrar resueltos.
+
+Los lotes tienen hasta 32 IDs, dos destinos en trabajo y dos threads dedicados,
+con ocho operaciones nativas retenidas como máximo. El destino activo usa la
+barrera del writer real; los destinos históricos independientes tienen sus
+propias barreras. Un upsert que leyó antes del borrado termina antes de publicar
+el recibo físico. El factory abre la ubicación canónica que registró antes de
+construir el cliente, y el limpiador conserva ese descriptor del writer incluso
+si cambia después el alias configurado.
+
+La limpieza abre sólo colecciones existentes de la política, sin embeddings ni
+creación de colecciones/directorios. Las ausencias comprobadas se concilian; una
+versión no soportada o un fallo queda pendiente con un código fijo. Si el trabajo
+nativo terminó y falla el recibo, se conserva su resultado sin excepción privada
+y se reintenta sólo el guardado. Los fallos físicos usan backoff hasta 60 s.
+Una reserva de claim o un trabajo nativo sobreviven a la cancelación del
+observador; su cierre real precede a liberar la lease.
+
+Las mutaciones despiertan el mantenimiento, incluso ante un plazo nuevo anterior
+al que estaba esperando. La cadencia no depende del pool general ni de arrancar
+recall. El planificador consulta pendientes indexados, sin recorrer repetidamente
+el historial de recibos completados. `pending_index_cleanup` informa las copias
+todavía pendientes; la cola anterior del índice activo por sí sola no prueba
+que los destinos históricos terminaron.
+
+Los hechos vigentes y confirmados se conservan. El contenido del catálogo que
+ya estaba en cuarentena se mantiene fuera de inferencia, mientras se retira su
+proyección de la colección de política. No se toca la colección legacy original
+de los 870 hechos. No se reconstruyen ni publican hechos vivos en índices
+históricos con recall apagado. La reconstrucción de un índice vivo nuevo/vacío
+y el inventario de datos sin autoridad siguen siendo parte de la aceptación.
+
+Esto completa la vía de limpieza de vencimientos y borrados individuales sobre
+los destinos registrados. No demuestra una restauración del catálogo antiguo:
+el ensayo compatible debe conservar la autoridad/tombstones recientes antes
+de admitir datos o prompts. El resto de participantes, productores, copias,
+interfaz autenticada del borrado global, voces y migración real siguen abiertos.
+No cierra H3 ni constituye un cambio en producción.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
@@ -553,8 +615,8 @@ observación del cierre sin ampliar sus presupuestos. No cierra H3.
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
    frente a productores y guardados tardíos. Conectar al journal los participantes
    restantes y los lotes de destilación en curso; contrastar los destinos y clips
-   legacy indeterminados del inventario; ampliar la limpieza sin recall
-   a vencimientos y borrados individuales. Agregar selección y recibos en el
+   legacy indeterminados del inventario; completar la reconstrucción del índice
+   vivo y la restauración compatible con autoridad vigente. Agregar selección y recibos en el
    dashboard autenticado después de cerrar esas garantías. La limpieza local
    del catálogo y del índice no sustituye la operación completa.
 3. Implementar pausa ambiental y mute total con reactivación independiente del

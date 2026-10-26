@@ -315,6 +315,16 @@ con 20 casos nuevos y los checks y artefacto compilado aceptados. El heartbeat
 obtuvo p95 de 0,40 ms y máximo de 1,05 ms frente a 25/75 ms. El ensayo compilado
 comprueba vencimiento físico sin un tombstone de conversación ni ambient activo.
 
+El mantenimiento del índice de hechos ya procesa también vencimientos y borrados
+individuales con recall apagado. Los recibos se guardan por destino y revisión
+en la transacción del catálogo; registrar otra ubicación incorpora pendientes
+anteriores. El arranque con lease revalida los índices físicos y las operaciones
+semánticas previas, sin confiar en que no se restauró una copia vieja. Comparte
+la barrera del writer real y los recibos del borrado de conversación; versiones
+o autoridades desconocidas quedan pendientes. La reconstrucción de índices
+vivos, los otros ocho participantes y la restauración compatible siguen abiertos;
+no se expone todavía un borrado global ni se modificó producción.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke
