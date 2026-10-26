@@ -375,32 +375,23 @@ class TestTTSWarmup:
         assert hasattr(tts, "_warmup")
         assert callable(tts._warmup)
 
-    def test_load_calls_warmup_by_default(self):
+    def test_load_calls_warmup_by_default(self, monkeypatch):
         """load() debe llamar _warmup por defecto"""
         import sys
-        # Mock sounddevice and piper if not installed
-        if "sounddevice" not in sys.modules:
-            sys.modules["sounddevice"] = MagicMock()
+        from src.tts.piper_tts import PiperTTS
+
+        # Piper is imported lazily by load(). Replacing the application module
+        # leaves a different object on src.tts than in sys.modules, so later
+        # audio tests patch the wrong device backend. Keep its identity intact.
         mock_piper_module = MagicMock()
         mock_piper_module.PiperVoice.load = Mock(return_value=Mock())
-        sys.modules["piper"] = mock_piper_module
-        original_module = sys.modules.get("src.tts.piper_tts")
-        try:
-            # Force re-import with mocked modules
-            if "src.tts.piper_tts" in sys.modules:
-                del sys.modules["src.tts.piper_tts"]
-            from src.tts.piper_tts import PiperTTS
+        monkeypatch.setitem(sys.modules, "piper", mock_piper_module)
+        tts = PiperTTS()
 
-            tts = PiperTTS()
-
-            with patch.object(tts, "_warmup") as mock_warmup:
-                tts.load(warmup=True)
-                mock_warmup.assert_called_once()
-        finally:
-            sys.modules.pop("piper", None)
-            # Restore original module to avoid class identity issues in later tests
-            if original_module is not None:
-                sys.modules["src.tts.piper_tts"] = original_module
+        with patch.object(tts, "_warmup") as mock_warmup:
+            tts.load(warmup=True)
+            mock_warmup.assert_called_once()
+            mock_piper_module.PiperVoice.load.assert_called_once_with(tts.model_path)
 
     def test_streaming_player_prebuffer_is_30ms(self):
         """StreamingAudioPlayer debe tener prebuffer de 30ms por defecto"""

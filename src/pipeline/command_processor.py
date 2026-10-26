@@ -165,9 +165,8 @@ class CommandProcessor:
                 result.timings.update(stt=0.0, stt_skipped=1)
                 speaker, emotion = await self._auxiliary(audio, use_parallel)
             elif use_parallel:
-                stt_result, speaker, emotion = await self._collect(
-                    self._primary(audio), self._speaker(audio), self._emotion(audio))
-                text = stt_result.text if stt_result is not None else ""
+                text, stt_ms, speaker, emotion, stt_result = await self._process_parallel(audio)
+                result.timings["stt"] = stt_ms
             else:
                 stt_result = await self._primary(audio)
                 text = stt_result.text if stt_result is not None else ""
@@ -209,6 +208,17 @@ class CommandProcessor:
             return results
         finally:
             operations = results = value = None
+
+    async def _process_parallel(self, audio: np.ndarray) -> tuple[str, float, tuple | None, object | None, STTResult | None]:
+        """Keep the parallel result contract while retaining every actual worker."""
+        stt = speaker = emotion = None
+        try:
+            stt, speaker, emotion = await self._collect(
+                self._primary(audio), self._speaker(audio), self._emotion(audio))
+            return (stt.text if stt is not None else "",
+                    stt.elapsed_ms if stt is not None else 0., speaker, emotion, stt)
+        finally:
+            audio = stt = speaker = emotion = None
 
     async def _primary(self, audio):
         try:
