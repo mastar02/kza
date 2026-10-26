@@ -49,6 +49,7 @@ from src.users.emotion_detector import EmotionDetector
 from src.monitoring.latency_monitor import LatencyMonitor
 from src.analytics.services import build_event_logger
 from src.analytics.erasure import build_event_erasure
+from src.analytics.suggestion_erasure import build_suggestion_erasure
 from src.orchestrator.context_erasure import build_context_erasure
 from src.analytics.pattern_analyzer import PatternAnalyzer
 from src.analytics.suggestion_engine import SuggestionEngine
@@ -568,6 +569,7 @@ async def _run_main(shutdown: AsyncExitStack):
         memory=memory_manager.long_term if memory_manager is not None else None)
     capture_erasure = await build_capture_erasure(config, privacy=privacy_services, owner=erasure_services)
     event_erasure = await build_event_erasure(config, privacy=privacy_services, owner=erasure_services)
+    suggestion_erasure = await build_suggestion_erasure(config, privacy=privacy_services, owner=erasure_services)
     context_erasure = await build_context_erasure(config, privacy=privacy_services, owner=erasure_services, memory=memory_manager)
 
     # LLM Command Router (Opción 2 NLU) — clasificador de comandos vía vLLM 7B.
@@ -684,6 +686,7 @@ async def _run_main(shutdown: AsyncExitStack):
             pattern_analyzer=pattern_analyzer,
             suggestions_path=analytics_config.get("suggestions_path", "./data/suggestions.json"),
         )
+        suggestion_erasure.attach_engine(suggestion_engine)
         logger.info("Smart automations habilitado")
 
     # Lists & Reminders
@@ -1536,6 +1539,7 @@ async def _run_main(shutdown: AsyncExitStack):
     )
 
     context_erasure.attach_router(request_router)
+    suggestion_erasure.attach_router(request_router)
 
     # Wake textual (spec 2026-07-05): red de seguridad puramente textual sobre
     # el ambient path — "nexa" en una utterance no-TV dispara el command path

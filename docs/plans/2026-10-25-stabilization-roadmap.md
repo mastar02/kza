@@ -470,6 +470,14 @@ reiniciar con menor retención, antes del primer barrido; la suite verde anterio
 no lo había detectado. La aceptación integrada de GC, arranque y hardware sigue
 pendiente.
 
+El participante durable de sugerencias ya conecta sidecars actuales e históricos
+y su runtime, también con analytics apagado. El borrado espera a los jobs y a los
+workers de voz ya admitidos, conserva la cuarentena desconocida y revalida las
+copias restauradas al reiniciar. Corrige además un enlace de traceback que podía
+retener el resultado de un worker después de cancelar al observador. Quedan cinco
+participantes y el mantenimiento físico independiente de TTL de propuestas; no
+hay un borrado global ni una release habilitada por este avance.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

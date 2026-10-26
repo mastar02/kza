@@ -17,9 +17,9 @@ from src.analytics.pattern_analyzer import Pattern
 from src.analytics.pattern_projection import pattern_key, pattern_spec, project_pattern
 from src.memory.erasure_journal import ErasureParticipant
 from src.memory.fact_ledger import MemorySource
+from src.analytics.suggestion_storage import MAX_METADATA_BYTES, suggestion_descriptor
 
 MAX_RECORDS = 1000
-MAX_METADATA_BYTES = 4 * 1024 * 1024
 
 
 class SuggestionStatus(StrEnum):
@@ -44,15 +44,6 @@ class SuggestionRecord:
     status: SuggestionStatus
     snooze_until: float | None
     sources: tuple[MemorySource, ...]
-
-
-def suggestion_descriptor(legacy_path: str | Path) -> dict:
-    """Pin a separate physical policy destination before any private I/O."""
-    legacy = Path(legacy_path).resolve()
-    return {
-        "path": str(legacy.with_name(legacy.name + ".policy-v1.sqlite3")),
-        "table": "suggestions_policy_v1",
-    }
 
 
 def _json(value) -> str:
@@ -127,6 +118,8 @@ class SuggestionStore:
             dates = (row["created_at"], row["observed_at"], row["expires_at"])
             if (
                 not self.policy.authority_available
+                or type(row["row_id"]) is not int
+                or row["row_id"] <= 0
                 or not all(_number(v) for v in dates)
                 or not row["observed_at"]
                 <= row["created_at"]

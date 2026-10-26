@@ -34,6 +34,7 @@ class _Utterance:
 class _Session:
     zone_id: str | None
     loop: asyncio.AbstractEventLoop | None = None
+    scope_id: int = 0
     cancelled: threading.Event = field(default_factory=threading.Event)
     cancel_requested: threading.Event = field(default_factory=threading.Event)
     condition: threading.Condition = field(default_factory=threading.Condition)
@@ -112,6 +113,8 @@ class ResponseHandler:
         self._generation_tasks: set[asyncio.Task] = set()
         self._retained_generations: set[asyncio.Task] = set()
         self._abort_tasks: set[asyncio.Task] = set()
+        self._abort_scopes: dict[asyncio.Task, int] = {}
+        self._scope_sequence = 0
         self._owner: _Session | None = None
         self._pending: list[_Session] = []
         self._active_zone_id = None
@@ -156,6 +159,8 @@ class ResponseHandler:
                 raise RuntimeError("voice_delivery_closed")
             if len(self._pending) >= self.max_pending_responses:
                 raise RuntimeError("response_queue_full")
+            self._scope_sequence += 1
+            session.scope_id = self._scope_sequence
             self._pending.append(session)
             self._controllers[id(session)] = session
         return session
@@ -222,6 +227,14 @@ class ResponseHandler:
                 "blocked_generations": sum(source.sync_busy for source in self._generation_sources),
                 "aborts": sum(not task.done() for task in self._abort_tasks),
             }
+
+    def retained_delivery_scopes(self) -> frozenset[int]:
+        """Return content-free lifetime tokens, including late workers and aborts."""
+        with self._ownership:
+            return frozenset(
+                [s.scope_id for s in (*self._controllers.values(), *self._workers.values())]
+                + [scope for task, scope in self._abort_scopes.items() if not task.done()]
+            )
 
     def _controller_finished(self, session: _Session) -> None:
         with self._ownership:
@@ -524,10 +537,12 @@ class ResponseHandler:
             task = asyncio.create_task(asyncio.to_thread(player.stop))
             with self._ownership:
                 self._abort_tasks.add(task)
+                self._abort_scopes[task] = session.scope_id
 
             def finished(completed):
                 with self._ownership:
                     self._abort_tasks.discard(completed)
+                    self._abort_scopes.pop(completed, None)
                 if not completed.cancelled():
                     completed.exception()
 

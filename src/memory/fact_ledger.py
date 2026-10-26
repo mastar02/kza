@@ -270,6 +270,10 @@ class FactLedger:
         """Read a committed revocation without disk or a SQLite lock."""
         return conversation_id in self._deleted_conversations or conversation_id in self._pending_conversations
 
+    def conversation_committed_revoked(self, conversation_id: str) -> bool:
+        """Read only published deletion authority for irreversible cleanup."""
+        return self._authority_available and conversation_id in self._deleted_conversations
+
     def activity_sources_available(self, sources: tuple[MemorySource, ...]) -> bool:
         """Check metadata revocations, separately from raw capture lifetimes.
 

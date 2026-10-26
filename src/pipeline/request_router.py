@@ -341,6 +341,9 @@ class RequestRouter:
         self._private_maintenance_task = None
         self._query_work = OwnedBlockingWork()
         self._suggestion_lock = threading.RLock()
+        self._suggestion_flows: set[asyncio.Task] = set()
+        self._suggestions_closed = False
+        self._suggestion_closing = None
         self._closed = False
         self._pending_suggestion = None
         self._last_response = None
@@ -1671,7 +1674,64 @@ class RequestRouter:
             return await events.acall(call)
         return await self._query_work.run(call)
 
+    async def _run_suggestion_flow(self, operation, cancelled_result):
+        """Own the native-read to voice handoff without cancelling the parent loop."""
+        if self._suggestions_closed or len(self._suggestion_flows) >= 8:
+            operation.close()
+            return cancelled_result
+        task = asyncio.create_task(operation)
+        self._suggestion_flows.add(task)
+
+        def finished(done):
+            self._suggestion_flows.discard(done)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # A cleanup driver cancels only this child scope. User/parent
+            # cancellation still propagates after the child's actual cleanup.
+            parent_cancelled = bool(asyncio.current_task().cancelling())
+            if not task.done() and not task.cancelling():
+                task.cancel()
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    parent_cancelled |= bool(asyncio.current_task().cancelling())
+                except Exception:
+                    # Ownership remains with the response/native backends;
+                    # cleanup failure cannot replace the parent's cancellation.
+                    break
+            if parent_cancelled:
+                raise
+            return cancelled_result
+        finally:
+            task, operation, cancelled_result = None, None, None
+
+    def snapshot_suggestion_flows(self) -> tuple[asyncio.Task, ...]:
+        """Return actual admitted async scopes for an on-loop erasure barrier."""
+        return tuple(self._suggestion_flows)
+
+    def begin_close_suggestions(self) -> asyncio.Task:
+        """Close only proposal admission and retain cancelled flow cleanup."""
+        self._suggestions_closed = True
+        if self._suggestion_closing is None:
+            tasks = self.snapshot_suggestion_flows()
+            for task in tasks:
+                if not task.done() and not task.cancelling():
+                    task.cancel()
+            async def finish():
+                await asyncio.gather(*tasks, return_exceptions=True)
+                self._pending_suggestion = None
+            self._suggestion_closing = asyncio.create_task(finish())
+        return self._suggestion_closing
+
     async def _handle_suggestion_response(self, text: str) -> dict:
+        return await self._run_suggestion_flow(self._handle_suggestion_response_inner(text), {"handled": False})
+
+    async def _handle_suggestion_response_inner(self, text: str) -> dict:
         """Handle user response to a pending automation suggestion."""
         pending = self._pending_suggestion
         if pending is None or not self.suggestion_engine:
@@ -1722,6 +1782,9 @@ class RequestRouter:
 
     async def _maybe_present_suggestion(self):
         """Present an automation suggestion if one is available."""
+        return await self._run_suggestion_flow(self._present_suggestion_inner(), None)
+
+    async def _present_suggestion_inner(self):
         if not self.suggestion_engine:
             return
 
@@ -1937,6 +2000,7 @@ Asistente:"""
     async def aclose(self) -> None:
         """Stop maintenance and discard private cached text before classifier close."""
         self._closed = True
+        suggestions = self.begin_close_suggestions()
         self._pending_suggestion = None
         self._query_cache.close()
         if self._private_maintenance_task is not None:
@@ -1946,6 +2010,7 @@ Asistente:"""
             if isinstance(self.llm_command_router, LLMCommandRouter):
                 await self.llm_command_router.aclose()
         finally:
+            await asyncio.shield(suggestions)
             await self._query_work.aclose()
 
     def resource_status(self) -> dict:

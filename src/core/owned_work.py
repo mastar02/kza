@@ -39,7 +39,14 @@ class OwnedBlockingWork:
                 done.exception()
 
         task.add_done_callback(finished)
-        return await asyncio.shield(task)
+        try:
+            return await asyncio.shield(task)
+        finally:
+            # A cancelled observer can retain this frame through its exception.
+            # The owner set, not that traceback, keeps actual native work alive.
+            # Drop the observer's task/argument links so a later result cannot
+            # remain reachable after the native completion callback releases it.
+            task, function, args, kwargs = None, None, (), {}
 
     def status(self) -> dict:
         """Report actual retained operations, not cancelled callers."""

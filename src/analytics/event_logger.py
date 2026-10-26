@@ -782,6 +782,10 @@ class EventLogger:
         """Expose retained native work even after caller timeout/cancellation."""
         return self._work.status()
 
+    def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
+        """On-loop ownership snapshot; cancellation cannot hide native workers."""
+        return tuple(self._work._tasks)
+
     def begin_close(self) -> asyncio.Task:
         """Close event admission and retain writes/maintenance until actual exit."""
         if self._closing is None:

@@ -980,6 +980,65 @@ borrarla. La suite final incluye ese refuerzo y las pruebas de 90 → 1 → 90 d
 No completa el mantenimiento físico de propuestas, su participante durable ni
 la aceptación integrada de GC y hardware.
 
+## Avance: participante durable de sugerencias
+
+El journal conecta ahora los sidecars actuales e históricos de propuestas y un
+destino de runtime. Se registran antes de admitir los productores opcionales,
+también con analytics apagado. La limpieza abre únicamente archivos de política
+existentes y valida su esquema; no crea datos, sigue redirecciones por symlink
+ni lee mensajes, descripciones o YAML. Recorre hasta 32 filas por transacción,
+materializando un solo array de metadatos cada vez. Retira propuestas de cualquier
+estado que incluyan la conversación revocada, fuentes mixtas o dependencias
+semánticas ya retiradas; conserva las ajenas y el JSON legacy.
+
+La procedencia y las fechas desconocidas quedan pendientes sin impedir que se
+procesen las filas conocidas posteriores. También se conserva en cuarentena un
+ID de fila que no podría producir el writer, sin hidratarlo ni saltarlo en el
+recibo final. El cursor versionado conserva el avance y el conteo de desconocidos.
+Los recibos incompletos no certifican el borrado de esa cuarentena. Un reinicio
+con lease vuelve a comprobar los destinos de sugerencias desde el principio,
+incluso los que tenían recibo completo, para detectar copias restauradas detrás
+del cursor. Una versión no soportada o un fallo nativo quedan visibles con
+códigos fijos, sin publicar rutas ni contenido privado.
+
+La prueba de runtime toma un cohort de operaciones del logger ya admitidas y
+flujos asíncronos de propuestas. Cancela esos flujos hijos y espera su salida
+real; el loop de voz que los llamó conserva su propia cancelación. El cierre del
+observador no oculta la generación nativa. Los jobs posteriores pasan por las
+barreras de fuentes vigentes y no retrasan el recibo del cohort anterior. Los
+owners deben registrarse antes de tener trabajo o propuestas pendientes; se
+rechaza adoptar silenciosamente un owner que ya estaba activo sin registro.
+
+Los tokens de entrega del `ResponseHandler` son metadatos monotónicos, separados
+del texto y de la identidad de hablantes. Permanecen mientras exista controlador,
+worker de síntesis o tarea de abortado, incluso cuando la respuesta cancelada ya
+volvió al caller. El participante no declara completo ese destino hasta que
+terminan los recursos capturados en la prueba. Las sesiones nuevas no reutilizan
+esos tokens ni prolongan la espera de los anteriores. El cierre de privacidad
+conserva la lease mientras los workers nativos o de voz sigan realmente activos.
+Las demás copias de streams y productores siguen en sus participantes propios.
+
+Una prueba detectó una retención adicional: el traceback de un observador
+cancelado guardaba el enlace al task nativo y, por él, a su resultado posterior.
+La inspección de referencias confirmó ese camino. El frame de `OwnedBlockingWork`
+libera ahora sus enlaces a tarea y argumentos al salir; su conjunto de ownership
+mantiene el trabajo real hasta terminar. El flujo de propuestas hace lo mismo.
+El ensayo conserva al observador cancelado y el recibo pendiente, y comprueba
+que el resultado deja de estar alcanzable sin forzar ni desactivar GC.
+
+Los callbacks de disco usan dos threads propios y mantienen su ownership tras
+cancelación. Los reintentos de ack conservan el resultado ya terminado sin repetir
+la eliminación física. El runtime difiere un cohort pendiente sin bloquear los
+demás destinos; el pool general saturado tampoco impide limpiar el sidecar. La
+ruta deshabilitada no importa modelos ni el backend de audio.
+
+Este avance conecta el quinto participante, no un borrado global. Quedan
+productores, diagnósticos, colectores, streams y voces, además del resto de H3.
+El vencimiento al leer y las barreras de escritura de propuestas ya existen;
+el mantenimiento físico de sus TTL sin una solicitud de borrado sigue pendiente.
+Tampoco cierra la migración privada, la aceptación de GC y hardware ni H0–H6.
+No se modifica producción ni se publica una release.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
