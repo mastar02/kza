@@ -1598,7 +1598,7 @@ class RequestDispatcher:
             "contexts": self.context_manager.get_stats()
         }
 
-    def notify_user_waiting(
+    async def notify_user_waiting(
         self,
         user_id: str,
         zone_id: str,
@@ -1610,9 +1610,8 @@ class RequestDispatcher:
         Usado cuando llega una peticion y hay otra en proceso.
         """
         message = f"Un momento, estoy respondiendo a {other_user_name}"
-        if self.tts:
-            # TODO: Enviar a zona especifica
-            self.tts.speak(message)
+        if self.response_handler is not None:
+            await self.response_handler.aspeak(message, zone_id=zone_id)
         return message
 
     async def _fire_and_reconcile_ha(self, command: dict) -> bool:

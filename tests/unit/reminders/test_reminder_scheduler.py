@@ -50,7 +50,7 @@ async def test_fire_reminder_with_tts(scheduler, store, mock_deps):
     mock_deps["presence_detector"].get_user_zone = MagicMock(return_value="living")
     r = await store.create(user_id="u1", text="basura", trigger_at=time.time() - 10)
     await scheduler._fire_reminder(r)
-    mock_deps["tts"].speak.assert_called_once()
+    mock_deps["tts"].aspeak.assert_awaited_once()
     updated = await store.get_by_id(r.id)
     assert updated.state == "fired"
 

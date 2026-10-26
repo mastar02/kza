@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Any
 
+from src.core.voice_delivery import VoiceDeliveryError, invoke_voice_callback
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_store import Reminder, ReminderStore
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
@@ -44,6 +45,8 @@ class ReminderScheduler:
         self._wake_event = asyncio.Event()
         self._retry_counts: dict[str, int] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._runner_task: asyncio.Task | None = None
+        self._arrival_tasks: set[asyncio.Task] = set()
 
         self._max_retries = self._config.get("max_retries", 3)
         self._retry_interval = self._config.get("retry_interval_seconds", 60)
@@ -55,7 +58,10 @@ class ReminderScheduler:
 
     async def start(self) -> None:
         """Main scheduler loop: poll for due reminders and fire them."""
+        if self._running:
+            return
         self._running = True
+        self._runner_task = asyncio.current_task()
         self._loop = asyncio.get_running_loop()
         logger.info("ReminderScheduler started")
 
@@ -99,12 +105,23 @@ class ReminderScheduler:
                 logger.exception("Error in scheduler loop")
                 await asyncio.sleep(1)
 
+        self._running = False
+        self._runner_task = None
+        self._loop = None
         logger.info("ReminderScheduler stopped")
 
     async def stop(self) -> None:
         """Stop the scheduler loop."""
         self._running = False
         self._wake_event.set()
+        self._loop = None
+        tasks = set(self._arrival_tasks)
+        if self._runner_task is not None and self._runner_task is not asyncio.current_task():
+            tasks.add(self._runner_task)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._arrival_tasks.clear()
         logger.info("ReminderScheduler stop requested")
 
     def notify_new_reminder(self) -> None:
@@ -117,7 +134,9 @@ class ReminderScheduler:
         Args:
             reminder: The reminder to fire.
         """
-        zone = self._presence_detector.get_user_zone(reminder.user_id)
+        zone = self._presence_detector.get_user_zone(reminder.user_id) if self._presence_detector is not None else self._config.get("output_zone")
+        if self._presence_detector is None and zone is None:
+            raise VoiceDeliveryError("reminder_output_zone_required")
 
         if zone is None:
             retries = self._retry_counts.get(reminder.id, 0)
@@ -140,7 +159,7 @@ class ReminderScheduler:
 
         if zone is not None:
             message = f"{self._tts_prefix} {reminder.text}"
-            await self._tts.speak(message, zone_id=zone)
+            await invoke_voice_callback(self._tts.aspeak, message, zone_id=zone)
             logger.info(
                 "TTS fired for reminder %s in zone %s", reminder.id, zone
             )
@@ -183,7 +202,8 @@ class ReminderScheduler:
             user_id: The arriving user.
             presence: UserPresence dataclass (unused beyond zone).
         """
-        if self._loop is None:
+        loop = self._loop
+        if loop is None:
             logger.debug(
                 "Scheduler loop not available yet, skipping missed delivery for %s",
                 user_id,
@@ -191,10 +211,23 @@ class ReminderScheduler:
             return
 
         logger.info("User %s arrived, checking for missed reminders", user_id)
-        asyncio.run_coroutine_threadsafe(
-            self.missed_reminder_on_arrival(user_id, presence.current_zone),
-            self._loop,
-        )
+        def launch() -> None:
+            if not self._running:
+                return
+            task = asyncio.create_task(self.missed_reminder_on_arrival(user_id, presence.current_zone))
+            self._arrival_tasks.add(task)
+
+            def finished(completed):
+                self._arrival_tasks.discard(completed)
+                if not completed.cancelled() and completed.exception() is not None:
+                    logger.error("Missed reminder voice delivery failed")
+
+            task.add_done_callback(finished)
+
+        try:
+            loop.call_soon_threadsafe(launch)
+        except RuntimeError:
+            logger.debug("Reminder callback arrived after loop shutdown")
 
     async def missed_reminder_on_arrival(
         self, user_id: str, zone_id: str | None
@@ -226,15 +259,14 @@ class ReminderScheduler:
 
         delivered = 0
         for reminder in overdue:
-            target_zone = zone_id or self._presence_detector.get_user_zone(user_id)
-            if target_zone and self._tts:
-                message = f"{self._tts_prefix} {reminder.text}"
-                await self._tts.speak(message, zone_id=target_zone)
-                logger.info(
-                    "Missed reminder %s delivered in zone %s",
-                    reminder.id,
-                    target_zone,
-                )
+            target_zone = zone_id or (self._presence_detector.get_user_zone(user_id) if self._presence_detector is not None else self._config.get("output_zone"))
+            if not target_zone or self._tts is None:
+                raise VoiceDeliveryError("reminder_output_zone_required")
+            message = f"{self._tts_prefix} {reminder.text}"
+            await invoke_voice_callback(self._tts.aspeak, message, zone_id=target_zone)
+            logger.info(
+                "Missed reminder %s delivered in zone %s", reminder.id, target_zone,
+            )
 
             await self._execute_home_actions(reminder)
 

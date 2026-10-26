@@ -14,6 +14,7 @@ from src.home_assistant.operations import action_parameters
 from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult, HomeActionService
 from src.routines.models import ActionStatus, RoutineActionResult, RoutineRun, RunStatus
 from src.routines.routine_store import RoutineStore
+from src.core.voice_delivery import invoke_voice_callback
 
 logger = logging.getLogger(__name__)
 
@@ -405,13 +406,8 @@ class RoutineExecutor:
             )
 
         try:
-            # Generar y reproducir audio
-            audio_data = self.tts.speak(text)
-
-            # Si hay zona específica, reproducir ahí
-            zone = action.get("zone")
-            if zone and self.zones:
-                await self.zones.play_audio_in_zone(zone, audio_data)
+            # One owner synthesizes and routes PCM once, with an actual receipt.
+            await invoke_voice_callback(self.tts.aspeak, text, zone_id=action.get("zone"))
 
             elapsed = (time_module.perf_counter() - t_start) * 1000
 

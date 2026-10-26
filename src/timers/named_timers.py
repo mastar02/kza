@@ -19,6 +19,8 @@ from typing import Callable
 from enum import StrEnum
 import uuid
 
+from src.core.voice_delivery import invoke_voice_callback
+
 logger = logging.getLogger(__name__)
 
 
@@ -552,7 +554,7 @@ class NamedTimerManager:
             self._on_timer_warning(timer, seconds_left)
 
         if self.tts:
-            self.tts(message, timer.zone_id)
+            await invoke_voice_callback(self.tts, message, timer.zone_id)
 
     async def _announce_complete(self, timer: NamedTimer):
         """Anunciar timer completado"""
@@ -562,7 +564,7 @@ class NamedTimerManager:
         if self.tts:
             # Anunciar 3 veces para asegurar que se escuche
             for _ in range(3):
-                self.tts(message, timer.zone_id)
+                await invoke_voice_callback(self.tts, message, timer.zone_id)
                 await asyncio.sleep(2)
 
     # ==================== API ====================

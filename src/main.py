@@ -36,8 +36,7 @@ from src.pipeline.voice_pipeline import VoicePipeline
 from src.pipeline.audio_loop import AudioLoop
 from src.pipeline.audio_manager import AudioManager
 from src.pipeline.command_processor import CommandProcessor
-from src.pipeline.response_handler import ResponseHandler
-from src.pipeline.feature_manager import FeatureManager
+from src.pipeline.voice_services import build_voice_services
 from src.pipeline.request_router import RequestRouter
 from src.memory.memory_manager import MemoryManager
 from src.users.speaker_identifier import SpeakerIdentifier
@@ -55,11 +54,6 @@ from src.audio.direction_observer import parse_direction_observation
 from src.conversation.follow_up_mode import FollowUpMode
 from src.orchestrator import MultiUserOrchestrator
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
-from src.timers.named_timers import NamedTimerManager
-from src.intercom.intercom_system import IntercomSystem
-from src.notifications.smart_notifications import SmartNotificationManager
-from src.alerts.alert_manager import AlertManager
-from src.alerts.alert_scheduler import AlertScheduler
 from src.training.conversation_collector import ConversationCollector
 from src.training.habit_dataset_generator import HabitDatasetGenerator
 from src.training.nightly_trainer import NightlyTrainer, NightlyConfig
@@ -71,7 +65,6 @@ from src.lists.list_store import ListStore
 from src.lists.list_manager import ListManager
 from src.reminders.reminder_store import ReminderStore
 from src.reminders.reminder_manager import ReminderManager
-from src.reminders.reminder_scheduler import ReminderScheduler
 from src.dashboard.api import DashboardAPI
 from src.dashboard.home_api import build_home_services, build_microphone_rooms
 from src.dashboard.live_event_bus import LiveEventBus
@@ -152,7 +145,7 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
     if stt is not None:
         t0 = time.perf_counter()
         try:
-            stt.transcribe(silence, sample_rate=16000)
+            await asyncio.to_thread(stt.transcribe, silence, sample_rate=16000)
             timings["stt"] = (time.perf_counter() - t0) * 1000
         except Exception as e:
             logger.warning(f"Warmup STT skipped: {e}")
@@ -161,7 +154,7 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
     if tts is not None:
         t0 = time.perf_counter()
         try:
-            maybe = tts.synthesize("hola") if hasattr(tts, "synthesize") else None
+            maybe = await asyncio.to_thread(tts.synthesize, "hola") if hasattr(tts, "synthesize") else None
             if asyncio.iscoroutine(maybe):
                 await maybe
             timings["tts"] = (time.perf_counter() - t0) * 1000
@@ -175,7 +168,7 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
     if speaker_identifier is not None:
         t0 = time.perf_counter()
         try:
-            speaker_identifier.get_embedding(silence)
+            await asyncio.to_thread(speaker_identifier.get_embedding, silence)
             timings["speaker_id"] = (time.perf_counter() - t0) * 1000
         except Exception as e:
             logger.warning(f"Warmup speaker_id skipped: {e}")
@@ -185,7 +178,7 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
         t0 = time.perf_counter()
         try:
             if hasattr(emotion_detector, "detect"):
-                emotion_detector.detect(silence)
+                await asyncio.to_thread(emotion_detector.detect, silence)
             timings["emotion"] = (time.perf_counter() - t0) * 1000
         except Exception as e:
             logger.warning(f"Warmup emotion skipped: {e}")
@@ -195,7 +188,7 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma)
     # que daba False y salteaba el warmup → el primer comando pagaba ~48ms cold.
     if chroma is not None:
         try:
-            timings["bge_m3"] = chroma.warmup_embedder()
+            timings["bge_m3"] = await asyncio.to_thread(chroma.warmup_embedder)
         except Exception as e:
             logger.warning(f"Warmup BGE-M3 skipped: {e}")
 
@@ -694,10 +687,12 @@ async def _run_main(shutdown: AsyncExitStack):
     lists_config = config.get("lists", {})
     reminders_config = config.get("reminders", {})
     list_store = ListStore(lists_config.get("db_path", "./data/lists.db"))
+    shutdown.push_async_callback(list_store.close)
     await list_store.initialize()
     list_manager = ListManager(store=list_store, ha_client=ha_client, config=lists_config)
 
     reminder_store = ReminderStore(reminders_config.get("db_path", "./data/reminders.db"))
+    shutdown.push_async_callback(reminder_store.close)
     await reminder_store.initialize()
     reminder_manager = ReminderManager(store=reminder_store, config=reminders_config, home_actions=home_action_service)
     reminder_scheduler = None  # Created after presence_detector is ready
@@ -771,16 +766,8 @@ async def _run_main(shutdown: AsyncExitStack):
                 away_timeout=presence_config.get("away_timeout", 300),
                 just_arrived_duration=presence_config.get("just_arrived_duration", 300),
             )
+            shutdown.push_async_callback(presence_detector.stop)
             logger.info("Presence detector created")
-
-        # Reminder scheduler (needs presence_detector)
-        if reminder_store:
-            reminder_scheduler = ReminderScheduler(
-                store=reminder_store, tts=tts,
-                presence_detector=presence_detector,
-                ha_client=ha_client, config=reminders_config,
-                home_actions=home_action_service,
-            )
 
         # Room context manager
         room_context_manager = RoomContextManager(
@@ -1146,6 +1133,7 @@ async def _run_main(shutdown: AsyncExitStack):
                         room_ids=list(room_streams.keys()),
                         store_fact_fn=_store_fact,
                     )
+                    shutdown.push_async_callback(ambient_path.stop)
                     multi_room_loop.attach_ambient(
                         tap=ambient_path.tap,
                         transcriber=ambient_path.transcriber,
@@ -1167,7 +1155,6 @@ async def _run_main(shutdown: AsyncExitStack):
 
     # TTS / streaming config
     tts_config = config.get("tts", {})
-    streaming_config = tts_config.get("streaming", {})
 
     # Audio manager (wake word + VAD)
     audio_manager = AudioManager(
@@ -1261,21 +1248,14 @@ async def _run_main(shutdown: AsyncExitStack):
     # Response handler (TTS + streaming + zone routing)
     # El response_cache (S2) se inicializa post-warmup abajo y se inyecta via
     # attach_response_cache — esto mantiene el orden: DI → warmup → build cache.
-    response_handler = ResponseHandler(
-        tts=tts,
-        zone_manager=zone_manager,
-        llm=llm,
-        streaming_enabled=streaming_config.get("enabled", True),
-        streaming_buffer_ms=streaming_config.get("buffer_ms", 150),
-        streaming_prebuffer_ms=streaming_config.get("prebuffer_ms", 80),
-        sentence_queue_capacity=streaming_config.get("sentence_queue_capacity", 2),
-        sentence_max_chars=streaming_config.get("sentence_max_chars", 400),
-        max_pending_responses=streaming_config.get("max_pending_responses", 16),
-        playback_stall_timeout_s=streaming_config.get("stall_timeout_s", 1.0),
-        playback_drain_timeout_s=streaming_config.get("drain_timeout_s"),
-        hooks=hooks,
-        before_handler_warn_ms=self_warn_ms,
+    voice_services = build_voice_services(
+        config, tts=tts, shutdown=shutdown, zone_manager=zone_manager, llm=llm,
+        hooks=hooks, before_handler_warn_ms=self_warn_ms, user_manager=user_manager,
+        ha_client=ha_client, home_actions=home_action_service, reminder_store=reminder_store,
+        presence_detector=presence_detector,
     )
+    response_handler = voice_services.responses
+    reminder_scheduler = voice_services.reminders
 
     # Earcon "te oí, no te entendí" (2026-06-15): cargar asset y configurar
     # en el response_handler para que play_earcon() lo reproduzca en zonas.
@@ -1598,48 +1578,8 @@ async def _run_main(shutdown: AsyncExitStack):
                 "el ambient path sigue sin él"
             )
 
-    # Feature subsystems (timers, intercom, notifications, alerts)
-    alerts_config = config.get("alerts", {})
-    alert_manager = None
-    alert_scheduler = None
-    timer_manager = None
-    intercom = None
-    notifications = None
-
-    if alerts_config.get("enabled", True):
-        general = alerts_config.get("general", {})
-        alert_manager = AlertManager(
-            cooldown_seconds=general.get("cooldown_seconds", 300.0),
-            max_history=general.get("max_history", 1000),
-        )
-
-        sched = alerts_config.get("scheduler", {})
-        if sched.get("enabled", True):
-            alert_scheduler = AlertScheduler(
-                alert_manager=alert_manager,
-                security_interval=sched.get("security_interval_seconds", 60.0),
-                pattern_interval=sched.get("pattern_interval_seconds", 300.0),
-                device_interval=sched.get("device_interval_seconds", 600.0),
-            )
-        logger.info("Alert system enabled")
-
-    timer_manager = NamedTimerManager()
-    intercom = IntercomSystem(
-        zone_manager=zone_manager,
-        ha_client=ha_client,
-    )
-    notifications = SmartNotificationManager(
-        user_manager=user_manager,
-        ha_client=ha_client,
-    )
-
-    feature_manager = FeatureManager(
-        timer_manager=timer_manager,
-        intercom=intercom,
-        notifications=notifications,
-        alert_manager=alert_manager,
-        alert_scheduler=alert_scheduler,
-    )
+    feature_manager = voice_services.features
+    alert_manager = feature_manager.alert_manager
 
     # ----------------------------------------------------------------
     # Dashboard API + Health Aggregator
@@ -1772,6 +1712,8 @@ async def _run_main(shutdown: AsyncExitStack):
         event_bus=live_event_bus,
     )
 
+    shutdown.push_async_callback(pipeline.stop)
+
     # Precalentar modelos para eliminar cold-start del primer comando (~600ms→~200ms)
     warmup_config = config.get("warmup", {})
     if warmup_config.get("enabled", True):
@@ -1814,7 +1756,7 @@ async def _run_main(shutdown: AsyncExitStack):
         logger.info("Presence detector started")
 
     if reminder_scheduler:
-        asyncio.create_task(reminder_scheduler.start())
+        voice_services.start_reminders()
         logger.info("Reminder scheduler started")
 
     # Ejecutar
@@ -1850,11 +1792,9 @@ async def _run_main(shutdown: AsyncExitStack):
         if presence_detector:
             await presence_detector.stop()
         if reminder_scheduler:
-            await reminder_scheduler.stop()
+            await voice_services.stop_reminders()
         if ambient_path is not None:
             await ambient_path.stop()
-        await list_store.close()
-        await reminder_store.close()
         await pipeline.stop()
         # The outer owner stops routines and closes their store, then drains
         # shared home actions. HA.close() finally stops state sync

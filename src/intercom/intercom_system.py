@@ -16,6 +16,8 @@ from typing import Callable, Any
 from enum import StrEnum
 import uuid
 
+from src.core.voice_delivery import invoke_voice_callback
+
 logger = logging.getLogger(__name__)
 
 
@@ -397,11 +399,10 @@ class IntercomSystem:
         """Anunciar mensaje en una zona específica"""
         zone = self._zones.get(zone_id)
         if not zone:
-            logger.warning(f"Zona desconocida: {zone_id}")
-            return
+            raise ValueError("Unknown announcement output zone")
 
         # Reproducir chime primero (si está configurado)
-        if chime and self.announcement_chime and self.ha:
+        if chime and self.announcement_chime and self.ha and zone.get("media_player"):
             try:
                 await self.ha.call_service(
                     "media_player",
@@ -418,7 +419,7 @@ class IntercomSystem:
 
         # Anunciar con TTS
         if self.tts:
-            self.tts(message, zone_id)
+            await invoke_voice_callback(self.tts, message, zone_id)
         elif self.ha and zone.get("tts_target"):
             # Usar TTS de Home Assistant directamente
             await self.ha.call_service(
@@ -430,6 +431,8 @@ class IntercomSystem:
                     "cache": False
                 }
             )
+        else:
+            raise RuntimeError("announcement_voice_output_unavailable")
 
     # ==================== API Programática ====================
 

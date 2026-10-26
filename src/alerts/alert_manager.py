@@ -39,6 +39,7 @@ from enum import Enum, StrEnum
 from typing import Callable
 from uuid import uuid4
 
+from src.core.voice_delivery import invoke_voice_callback
 from src.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -249,10 +250,7 @@ class AlertManager:
         try:
             message = self._format_voice_message(alert)
             # Soportar tanto callbacks sync como async
-            if asyncio.iscoroutinefunction(self.tts_callback):
-                await self.tts_callback(message)
-            else:
-                self.tts_callback(message)
+            await invoke_voice_callback(self.tts_callback, message)
         except Exception as e:
             logger.error(f"Error in voice notification: {e}")
 

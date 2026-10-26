@@ -52,6 +52,7 @@ class FeatureManager:
         self.ha_integration = ha_integration
         self.briefing = briefing
         self._running = False
+        self._started: list = []
         self._alert_scheduler_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
@@ -64,68 +65,40 @@ class FeatureManager:
             logger.warning("FeatureManager already running")
             return
 
-        if self.timer_manager:
-            await self.timer_manager.start()
-            logger.info("Timer manager started")
-
-        if self.intercom:
-            await self.intercom.start()
-            logger.info("Intercom started")
-
-        if self.notifications:
-            await self.notifications.start()
-            logger.info("Notifications started")
-
-        if self.alert_scheduler:
-            # AlertScheduler.start() hace `await asyncio.gather(*tasks)` sobre
-            # 3 periodic check loops que corren indefinidamente → bloquea para
-            # siempre. Lo arrancamos como task background y continuamos.
-            self._alert_scheduler_task = asyncio.create_task(
-                self.alert_scheduler.start()
-            )
-            logger.info("Alert scheduler started (background task)")
-
-        if self.ha_integration:
-            await self.ha_integration.start()
-            logger.info("HA integration started")
-
-        self._running = True
-        logger.info("FeatureManager started")
+        try:
+            for service in (self.timer_manager, self.intercom, self.notifications):
+                if service is not None:
+                    self._started.append(service)
+                    await service.start()
+            if self.alert_scheduler is not None:
+                self._started.append(self.alert_scheduler)
+                self._alert_scheduler_task = asyncio.create_task(self.alert_scheduler.start())
+            if self.ha_integration is not None:
+                self._started.append(self.ha_integration)
+                await self.ha_integration.start()
+            self._running = True
+            logger.info("FeatureManager started")
+        except BaseException:
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
-        """Stop all non-None subsystems."""
-        if not self._running:
-            return
-
-        if self.timer_manager:
-            await self.timer_manager.stop()
-            logger.info("Timer manager stopped")
-
-        if self.intercom:
-            await self.intercom.stop()
-            logger.info("Intercom stopped")
-
-        if self.notifications:
-            await self.notifications.stop()
-            logger.info("Notifications stopped")
-
-        if self.alert_scheduler:
-            await self.alert_scheduler.stop()
-            logger.info("Alert scheduler stopped")
-            # Cancel the background task that ran AlertScheduler.start()
-            if self._alert_scheduler_task and not self._alert_scheduler_task.done():
-                self._alert_scheduler_task.cancel()
-                try:
-                    await self._alert_scheduler_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            self._alert_scheduler_task = None
-
-        if self.ha_integration:
-            await self.ha_integration.stop()
-            logger.info("HA integration stopped")
-
+        """Stop attempted producers even after a partial startup failure."""
         self._running = False
+        errors = []
+        started, self._started = self._started, []
+        for service in reversed(started):
+            try:
+                await service.stop()
+            except Exception as error:
+                errors.append(error)
+        task, self._alert_scheduler_task = self._alert_scheduler_task, None
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if errors:
+            raise ExceptionGroup("Feature producer shutdown failed", errors)
         logger.info("FeatureManager stopped")
 
     # ------------------------------------------------------------------
@@ -422,3 +395,48 @@ class FeatureManager:
         if not self.alert_manager or not hasattr(self.alert_manager, "get_summary"):
             return "No hay alertas activas"
         return self.alert_manager.get_summary()
+
+
+def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
+                          user_manager=None, ha_client=None) -> FeatureManager:
+    """Build the application's feature producers with one local voice owner.
+
+    Args:
+        config: Existing central configuration, including fixed output defaults.
+        response_handler: Application-owned synthesis/output boundary.
+        zone_manager: Configured local zone routes, if any.
+        user_manager: Notification profile lookup.
+        ha_client: Existing feature data source, never a TTS fallback here.
+
+    Returns:
+        Feature manager whose voice-producing callbacks await shared delivery.
+    """
+    from src.core.voice_delivery import LocalVoiceDelivery
+
+    streaming = config.get("tts", {}).get("streaming", {})
+    voice = LocalVoiceDelivery(response_handler, streaming.get("default_output_zone"), zone_manager is not None)
+    alerts = config.get("alerts", {})
+    manager = scheduler = None
+    if alerts.get("enabled", True):
+        general = alerts.get("general", {})
+        manager = AlertManager(
+            tts_callback=response_handler.aspeak_to_all_zones if general.get("voice_notifications", True) else None,
+            cooldown_seconds=general.get("cooldown_seconds", 300.0),
+            max_history=general.get("max_history", 1000),
+        )
+        schedule = alerts.get("scheduler", {})
+        if schedule.get("enabled", True):
+            scheduler = AlertScheduler(
+                alert_manager=manager,
+                security_interval=schedule.get("security_interval_seconds", 60.0),
+                pattern_interval=schedule.get("pattern_interval_seconds", 300.0),
+                device_interval=schedule.get("device_interval_seconds", 600.0),
+            )
+    features = FeatureManager(
+        timer_manager=NamedTimerManager(tts_callback=voice.aspeak),
+        intercom=IntercomSystem(tts_callback=voice.aspeak, zone_manager=zone_manager, ha_client=ha_client),
+        notifications=SmartNotificationManager(tts_callback=voice.aspeak, user_manager=user_manager, ha_client=ha_client),
+        alert_manager=manager, alert_scheduler=scheduler,
+    )
+    features.voice_delivery = voice
+    return features

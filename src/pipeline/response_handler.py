@@ -4,50 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import threading
 import time
 from collections import deque
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from enum import StrEnum
 
 from src.llm.generation_stream import GenerationStream
+from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
 from src.tts.piper_tts import AudioPlaybackError, StreamingAudioPlayer
 from src.tts.response_cache import CachedAudio, ResponseCache
 
 logger = logging.getLogger(__name__)
-
-
-class GenerationState(StrEnum):
-    INCOMPLETE = "incomplete"
-    COMPLETE = "complete"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-class DeliveryState(StrEnum):
-    COMPLETE = "complete"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    BLOCKED = "blocked"
-    EMPTY = "empty"
-
-
-@dataclass(frozen=True)
-class ResponseResult:
-    """Keep generation validity separate from actual voice delivery."""
-
-    text: str
-    generation: GenerationState
-    delivery: DeliveryState
-    error: str | None = None
-    speech_handled: bool = True
-    spoken_segments: int = 0
-
-    @property
-    def success(self) -> bool:
-        return self.generation is GenerationState.COMPLETE and self.delivery is DeliveryState.COMPLETE
 
 
 @dataclass
@@ -88,6 +58,10 @@ class _DeliveryBlocked(Exception):
     pass
 
 
+class ResponseCloseTimeout(RuntimeError):
+    """Owned voice resources did not exit before the shutdown deadline."""
+
+
 class ResponseHandler:
     """Serialize the TTS engine and route every PCM source through owned output.
 
@@ -106,6 +80,7 @@ class ResponseHandler:
         sentence_queue_capacity: int = 2, sentence_max_chars: int = 400,
         max_pending_responses: int = 16, playback_stall_timeout_s: float = 1.0,
         playback_drain_timeout_s: float | None = None,
+        shutdown_timeout_s: float = 1.0,
     ) -> None:
         if any(type(n) is not int or n <= 0 for n in
                (sentence_queue_capacity, sentence_max_chars, max_pending_responses)):
@@ -121,11 +96,20 @@ class ResponseHandler:
         self.max_pending_responses = max_pending_responses
         self.playback_stall_timeout_s, self.playback_drain_timeout_s = playback_stall_timeout_s, playback_drain_timeout_s
         self._ownership = threading.Condition()
+        if type(shutdown_timeout_s) not in (int, float) or not math.isfinite(shutdown_timeout_s) or shutdown_timeout_s <= 0:
+            raise ValueError("Invalid voice shutdown deadline")
+        self.shutdown_timeout_s = shutdown_timeout_s
+        self._closed = False
+        self._shutdown_task: asyncio.Task | None = None
+        self._controllers: dict[int, _Session] = {}
+        self._workers: dict[int, _Session] = {}
+        self._generation_tasks: set[asyncio.Task] = set()
         self._owner: _Session | None = None
         self._pending: list[_Session] = []
         self._active_zone_id = None
         self._earcon_audio, self._earcon_sr = None, 24000
         self._generation = GenerationStream(llm)
+        self._generation_sources: set[GenerationStream] = {self._generation}
 
     @property
     def is_speaking(self) -> bool:
@@ -160,9 +144,12 @@ class ResponseHandler:
         session = _Session(zone_id if zone_id is not None else self._active_zone_id,
                            asyncio.get_running_loop() if asynchronous else None)
         with self._ownership:
+            if self._closed:
+                raise RuntimeError("voice_delivery_closed")
             if len(self._pending) >= self.max_pending_responses:
                 raise RuntimeError("response_queue_full")
             self._pending.append(session)
+            self._controllers[id(session)] = session
         return session
 
     def _claim(self, session: _Session) -> bool:
@@ -174,6 +161,7 @@ class ResponseHandler:
             if self._owner is None and self._pending and self._pending[0] is session:
                 self._pending.pop(0)
                 self._owner = session
+                self._workers[id(session)] = session
                 return True
             return False
 
@@ -213,6 +201,53 @@ class ResponseHandler:
         if players:
             await asyncio.gather(*(asyncio.to_thread(p.stop) for p in players))
         return bool(targets)
+
+    def get_delivery_status(self) -> dict:
+        """Report actual retained resources, including cancelled native workers."""
+        with self._ownership:
+            return {
+                "closed": self._closed, "pending": len(self._pending),
+                "controllers": len(self._controllers), "workers": len(self._workers),
+                "generations": sum(not task.done() for task in self._generation_tasks),
+                "blocked_generations": sum(source.sync_busy for source in self._generation_sources),
+            }
+
+    def _controller_finished(self, session: _Session) -> None:
+        with self._ownership:
+            self._controllers.pop(id(session), None)
+
+    async def _close_resources(self) -> None:
+        try:
+            async with asyncio.timeout(self.shutdown_timeout_s):
+                await self.cancel()
+                while True:
+                    status = self.get_delivery_status()
+                    if not any(status[key] for key in ("controllers", "workers", "generations", "blocked_generations")):
+                        return
+                    await asyncio.sleep(0.005)
+        except TimeoutError as error:
+            raise ResponseCloseTimeout("voice_resources_still_running") from error
+
+    async def aclose(self) -> None:
+        """Close admission, cancel and drain owned resources within the deadline.
+
+        Repeated caller cancellation cannot abandon cleanup. A blocked native
+        synthesis remains visible and retains its slot after a close timeout;
+        it can never start late PCM. A later close may await its real exit.
+        """
+        with self._ownership:
+            self._closed = True
+        if self._shutdown_task is None or self._shutdown_task.done():
+            self._shutdown_task = asyncio.create_task(self._close_resources())
+        cancelled = False
+        while not self._shutdown_task.done():
+            try:
+                await asyncio.shield(self._shutdown_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        self._shutdown_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _put(self, session: _Session, utterance: _Utterance) -> None:
         while True:
@@ -382,6 +417,7 @@ class ResponseHandler:
             with self._ownership:
                 if self._owner is session:
                     self._owner = None
+                self._workers.pop(id(session), None)
                 self._ownership.notify_all()
             session.signal(session.space)
 
@@ -429,22 +465,27 @@ class ResponseHandler:
             if player is not None:
                 await asyncio.to_thread(player.stop)
             raise
+        finally:
+            self._controller_finished(session)
 
     def speak(self, text: str, zone_id=None, stream=None, emotion_adjustment=None, room_context=None) -> ResponseResult:
         """Blocking adapter for synchronous callers, using the same owner/output."""
         if not text:
             return ResponseResult("", GenerationState.COMPLETE, DeliveryState.EMPTY, speech_handled=False)
         session = self._session(zone_id, room_context, asynchronous=False)
-        with self._ownership:
-            while not self._claim(session) and not session.cancelled.is_set():
-                self._ownership.wait(0.02)
-        if session.cancelled.is_set():
-            return ResponseResult(text, GenerationState.CANCELLED, DeliveryState.CANCELLED)
-        session.queue.append(_Utterance(text=text, stream=self.streaming_enabled if stream is None else stream,
-                                        emotion=emotion_adjustment))
-        session.done = True
-        self._worker(session)
-        return self._result(session, text)
+        try:
+            with self._ownership:
+                while not self._claim(session) and not session.cancelled.is_set():
+                    self._ownership.wait(0.02)
+            if session.cancelled.is_set():
+                return ResponseResult(text, GenerationState.CANCELLED, DeliveryState.CANCELLED)
+            session.queue.append(_Utterance(text=text, stream=self.streaming_enabled if stream is None else stream,
+                                            emotion=emotion_adjustment))
+            session.done = True
+            self._worker(session)
+            return self._result(session, text)
+        finally:
+            self._controller_finished(session)
 
     async def aplay_earcon(self, zone_id=None, room_context=None) -> ResponseResult:
         """Deliver the configured earcon through the same cancellation owner."""
@@ -506,6 +547,9 @@ class ResponseHandler:
             pending = ""
             try:
                 source = generation if generation is not None else self._generation
+                with self._ownership:
+                    self._generation_sources = {item for item in self._generation_sources if item.sync_busy}
+                    self._generation_sources.add(source)
                 async with aclosing(source.astream(prompt, max_tokens=max_tokens, temperature=temperature)) as tokens:
                     async for chunk in tokens:
                         token = chunk.get("token", "")
@@ -541,6 +585,14 @@ class ResponseHandler:
                 session.filler = self.llm_filler_phrases[0]
             worker = asyncio.create_task(asyncio.to_thread(self._worker, session))
             producer = asyncio.create_task(produce())
+            with self._ownership:
+                self._generation_tasks.add(producer)
+
+            def generation_finished(task):
+                with self._ownership:
+                    self._generation_tasks.discard(task)
+
+            producer.add_done_callback(generation_finished)
             interrupted = asyncio.create_task(session.interrupted.wait())
             await asyncio.wait({worker, producer, interrupted}, return_when=asyncio.FIRST_COMPLETED)
             if producer.done() and not session.cancelled.is_set():
@@ -561,7 +613,19 @@ class ResponseHandler:
             for task in (producer, interrupted):
                 if task is not None and not task.done():
                     task.cancel()
-            await asyncio.gather(*(t for t in (producer, interrupted) if t is not None), return_exceptions=True)
+            cleanup = asyncio.ensure_future(asyncio.gather(*(t for t in (producer, interrupted) if t is not None), return_exceptions=True))
+            cancelled = False
+            try:
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                cleanup.result()
+            finally:
+                self._controller_finished(session)
+            if cancelled:
+                raise asyncio.CancelledError
 
     def speak_with_llm_stream(self, prompt: str, zone_id=None, **kwargs) -> str:
         """Blocking compatibility adapter; async routers use arespond."""

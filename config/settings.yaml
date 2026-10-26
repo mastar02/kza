@@ -292,6 +292,8 @@ tts:
     max_pending_responses: 16   # Esperas de locución; no crean workers adicionales
     stall_timeout_s: 1.0        # Ring de audio sin progreso -> fallo visible
     drain_timeout_s: null      # Automático: al menos 2 s y buffer + 1 s
+    shutdown_timeout_s: 1.0    # Cierre cooperativo; un motor bloqueado queda visible como fallo
+    default_output_zone: null # Zona fija para avisos sin origen; no usa la última habitación activa
     # Ajustes recomendados:
     # - Audio se corta: aumentar buffer_ms (200-300) o prebuffer_ms (80)
     # - Mucha latencia: reducir prebuffer_ms (40-50)
@@ -651,6 +653,7 @@ reminders:
   missed_reminder_on_arrival: true
   default_time: "09:00"
   tts_prefix: "Oye, recuerda"
+  output_zone: null # Si no hay presencia, usa esta zona o tts.streaming.default_output_zone
 
 # Rutinas web persistentes, independientes de las automatizaciones de HA.
 routines:

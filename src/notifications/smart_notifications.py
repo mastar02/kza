@@ -16,6 +16,8 @@ from typing import Callable, Any
 from enum import Enum, StrEnum
 import uuid
 
+from src.core.voice_delivery import invoke_voice_callback
+
 logger = logging.getLogger(__name__)
 
 
@@ -472,12 +474,11 @@ class SmartNotificationManager:
         logger.info(f"🔔 Notificación [{channel.value}] para {user_id}: {notification.message[:50]}...")
 
         if channel == NotificationChannel.VOICE:
-            if self.tts:
-                zone = notification.zone_id or context.get("current_zone") or "default"
-                text = notification.message
-                if notification.title:
-                    text = f"{notification.title}. {text}"
-                self.tts(text, zone)
+            zone = notification.zone_id or context.get("current_zone") or "default"
+            text = notification.message
+            if notification.title:
+                text = f"{notification.title}. {text}"
+            await invoke_voice_callback(self.tts, text, zone)
 
         elif channel == NotificationChannel.PUSH:
             if self.push:
