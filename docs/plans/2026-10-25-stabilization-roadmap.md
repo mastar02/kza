@@ -124,9 +124,12 @@ worker encolado ya consume HTTP asíncrono y un adaptador acotado para motores
 síncronos; comparte la cola del dispatcher, cancela lecturas pendientes y
 descarta resultados tardíos del historial. Ambos routers y el worker usan un
 propietario de respuesta, cola de frases acotada y PCM con cancelación para
-cache, síntesis completa, streaming, earcons y broadcast. Quedan la auditoría
-de otros productores TTS conectados por `main`, su cierre completo y escenarios
-de timeout, captura y barge-in del grafo integrado.
+cache, síntesis completa, streaming, earcons y broadcast. El factory usado por
+`main` conecta también productores de features y síntesis de arranque/cache al
+propietario, con cierre de admisión y espera de recursos reales. El callback de
+captura tiene un caso conectado de barge-in sobre salida simulada. Quedan los
+timeouts durante entrega parcial, los presupuestos por etapa y la aceptación
+del grafo completo con runtime y hardware.
 
 **Entregables:** consumo no bloqueante del reasoner, un único responsable de
 locutar cada respuesta y reproducción que conserve todos los samples. Integrar

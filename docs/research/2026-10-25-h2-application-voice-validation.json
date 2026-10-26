@@ -1,0 +1,104 @@
+{
+  "checked_on": "2026-10-25",
+  "tested_commit": "f26e2d0fdc179edcfc9741e5b5220b26153dae2d",
+  "scope": "H2 application voice graph: feature producers, fixed background routes, owned startup/cache synthesis, closed admission, tracked cooperative cleanup and capture-callback barge-in. Partial-delivery timeout authority and per-stage budgets remain incomplete.",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "plan_reference": "docs/plans/2026-10-25-h2-complete-voice-responses.md",
+  "prior_validation_reference": "docs/research/2026-10-25-h2-owned-response-validation.json",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h2-application-candidate.xml",
+    "passed": 4117,
+    "failed": 1,
+    "xfailed": 1,
+    "runtime_s": 119.34,
+    "failed_tests": [
+      "tests/unit/ambient/test_language_quality.py::test_drops_low_vad"
+    ],
+    "new_failure_ids": []
+  },
+  "new_tests": {
+    "total": 16,
+    "capture_callback_and_owned_voice": 1,
+    "feature_voice_factory": 6,
+    "voice_lifecycle_including_startup_and_cache": 9,
+    "source_free_factory_lifecycle": "Added to existing compiled smoke"
+  },
+  "focused": {
+    "application_graph_before_owned_startup_synthesis": {
+      "passed": 14,
+      "runtime_s": 1.32
+    },
+    "startup_graph_and_related_cache_reminder_regressions": {
+      "passed": 57,
+      "runtime_s": 4.35
+    }
+  },
+  "measurements": {
+    "application_close_ms": {
+      "repetitions": 10,
+      "p50": 0.6203511729836464,
+      "p95": 6.046602036803961,
+      "max": 6.046602036803961,
+      "cooperative_cleanup_limit_ms": 1000
+    },
+    "retained_voice_delivery_regressions": {
+      "repetitions": 10,
+      "stall_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 430,
+      "loop_lag_p95_ms": 0.3755842335522175,
+      "loop_lag_max_ms": 1.0716102551668882,
+      "cancel_cleanup_max_ms": 1.4609661884605885,
+      "exact_pcm_runs": 10
+    },
+    "physical_audio_measured": false
+  },
+  "proven": [
+    "The build_voice_services factory invoked by main injects one local output owner into timers, intercom, notification voice, high/critical alert broadcast and reminder delivery",
+    "Feature callbacks await actual response receipts; failed local intercom output is not marked delivered and does not fall through to HA TTS",
+    "Notification voice with no destination is not counted as delivered; background defaults are fixed configuration rather than mutable active-room state",
+    "Reminder without a presence detector delivers to an explicitly configured output zone; stopping owns its exact background task even before its first turn",
+    "Legacy routine speech uses one managed synthesis/output operation instead of treating the result of an independent speak call as PCM to play again",
+    "Warmup and response-cache TTS synthesis share the engine slot, run off-loop without playing, retain cancellation ownership until real worker exit, and cannot publish a late cancelled cache array",
+    "Close rejects new voice admission and waits active/pending controllers, actual audio/synthesis workers, async generation cleanup and quarantined legacy generation",
+    "Closing waits native client cleanup even when its output worker already exited; repeated caller cancellation cannot abandon the cooperative close",
+    "A native synthesis that outlives the deadline produces ResponseCloseTimeout with an occupied worker still reported, rejects new work and cannot start late audio; a later close can observe real exit",
+    "Partial feature startup failure stops attempted services, and the shared application lifecycle closes producers before voice output and stores",
+    "The real MultiRoomAudioLoop callback accepts synthetic frames during network thinking, detects barge-in while actual owned PCM is consumed, cancels the HTTP/SSE and device, opens listening and accepts the next capture",
+    "A following response contains only its own PCM; the cancelled device does not receive a late tail",
+    "The compiled runtime outside the source checkout builds/starts/stops the feature factory and confirms closed voice status and terminated producer tasks without hardware"
+  ],
+  "checks": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium_high_findings": 0
+    },
+    "node": {
+      "passed": 12,
+      "failed": 0
+    },
+    "authenticated_dashboard_smoke": "passed",
+    "source_free_runtime_smoke": "passed within final full suite",
+    "chromium": "Not repeated; no frontend changes from the prior effect-expansion validation"
+  },
+  "dependencies_changed": false,
+  "environment": "Existing runtime virtualenv read-only, bytecode writes disabled, GPUs hidden; synthetic PCM, capture/VAD observations and callback driver, memory-only HTTP/SSE and temporary SQLite stores",
+  "limits": [
+    "Capture/output drivers and human-voice classification are doubles; this is software integration evidence, not acoustic VAD/echo/wake quality, physical latency or provider performance",
+    "The actual factory and callbacks used by main are exercised, but the complete production model/USB/GPU/systemd startup and shutdown graph has not been run; recovery and real runtime validation remain H4/H6",
+    "A native thread cannot be killed by asyncio cancellation: timeout reports retained ownership and prevents late PCM, rather than proving GPU or external resource release",
+    "Dispatcher/response timeout ownership during partially delivered normal/error voice and per-stage budgets still need connected cases and implementation before H2 can close",
+    "Timer/routine/reminder voice feature completeness, retry and durable delivery semantics, alert sources and non-voice notification channels still require H5 work",
+    "Legacy standalone callbacks without a structured receipt retain their prior acknowledgement convention; the main application uses the strict shared ResponseResult delivery contract",
+    "Admission/resource exhaustion of outer feature queues remains part of the H4/H5 audit; bounding the voice owner queue is not proof that every producer queue is bounded",
+    "Voice output defaults are intentionally unconfigured in Git and must be reviewed in the runtime profile; no home control selection or home capability/effect evidence was enabled",
+    "H0 live home evidence/legacy memory treatment and H3-H6 remain incomplete; only the historical VAD/language failure remains in the final suite"
+  ],
+  "h2_complete": false,
+  "production_changed": false
+}

@@ -228,15 +228,80 @@ del ciclo de vida completo de `main`.
 
 ### Trabajo pendiente de H2
 
-- Auditar los demás consumidores TTS conectados por `main`, incluidos
-  recordatorios, rutinas, avisos y alertas, para que no compitan con este
-  propietario ni bloqueen la captura; su funcionalidad de producto se completa
-  en H5, pero su disciplina de entrega pertenece también a este contrato.
-- Verificar el cierre del propietario y los workers dentro del ciclo de vida
-  completo de la aplicación, con cancelación y fallos durante arranque/parada.
 - Probar timeout de petición durante entrega parcial y distinguir quién anuncia
   ese error de la cancelación normal, sin duplicar un error ya en reproducción.
-- Ampliar el corpus conectado con respuesta larga, captura/barge-in del loop
-  real simulado y presupuesto por etapa; no confundir los grafos de respuesta
-  aislados con el grafo completo de `main`.
+- Separar presupuestos por etapa y cubrir una respuesta larga completa; el
+  corpus ya incluye una respuesta larga cancelada desde el callback real de
+  captura, pero no la aceptación acústica ni toda la aplicación inicializada.
+- Integrar la recuperación y el diagnóstico de recursos nativos bloqueados con
+  H4, y comprobar parada/señales con el perfil de runtime en H6.
 - Validar salida, micrófono, amplificador, latencia física y barge-in en H6.
+
+## Cuarta implementación: productores y cierre de aplicación
+
+`build_voice_services`, usado por `main`, construye la respuesta compartida y
+los productores de features con callbacks asíncronos. `VoiceServices` conserva
+el handle exacto del scheduler de recordatorios, incluso antes de su primer
+turno. Los tipos de resultado viven en `core.voice_delivery`; el import anterior
+desde `response_handler` se conserva. Los callbacks legacy síncronos se ejecutan
+fuera del loop; los callbacks de la aplicación devuelven el recibo del
+propietario y propagan entregas fallidas, bloqueadas o canceladas al productor.
+
+| Productor | Entrega conectada |
+|---|---|
+| Timers | Avisos por el callback local compartido; sus repeticiones explícitas de finalización conservan la semántica existente. |
+| Intercom | Espera el resultado por zona; una zona desconocida o un fallo local no se registra como entrega ni cae a TTS remoto. |
+| Notificaciones | El canal de voz sólo se registra tras la entrega; un callback o destino ausente genera fallo. Los demás canales se revisan en H5. |
+| Alertas altas/críticas | Callback de broadcast local según `alerts.general.voice_notifications`; las fuentes y reglas útiles de alertas siguen pendientes en H5. |
+| Recordatorios | Usa `aspeak` compartido y espera su recibo. Sin detector de presencia puede usar `reminders.output_zone` o el default fijo de voz. La política completa de reintentos y persistencia de entrega sigue pendiente en H5. |
+| TTS del ejecutor legacy de rutinas | Una síntesis/reproducción por el propietario, sin volver a tratar el resultado de `speak` como PCM. El scheduler persistente no gana nuevas operaciones TTS por este cambio. |
+| Warmup y cache | Síntesis sin reproducción por `asynthesize`; el mismo slot conserva el motor hasta su salida real. Cancelar impide publicar el array tardío en el cache. |
+
+Los avisos sin origen usan una zona fija de `tts.streaming.default_output_zone`.
+Si hay un `ZoneManager` y falta ese destino, se informa
+`voice_output_zone_required`: la última habitación activa no selecciona dónde
+se entrega un timer o una notificación tardía. La release debe concretar estos
+defaults privados y sus destinos antes de activarlos.
+
+`ResponseHandler.aclose` cierra admisión, cancela sesiones y espera controladores,
+workers y generaciones que realmente siguen vivos. Los workers síncronos
+cancelados de generación cuentan aunque su adaptador asíncrono ya haya salido.
+`get_delivery_status` conserva esos recursos para diagnóstico. Si una llamada
+nativa no sale dentro de `tts.streaming.shutdown_timeout_s` (1 s), el cierre
+genera `ResponseCloseTimeout` y sigue mostrando la ocupación; no afirma haber
+matado ese thread. Puede esperar su salida real en un cierre posterior y no
+admite audio nuevo mientras tanto. Cancelar repetidamente al llamador de cierre
+no abandona el cleanup cooperativo.
+
+El `AsyncExitStack` de `main` registra el grafo de voz al construirlo; primero
+detiene productores y después cierra la salida compartida. También conserva
+los stores desde antes de inicializarlos y registra parada de presencia,
+ambient y pipeline. Un fallo de arranque parcial de features detiene los
+componentes cuyo arranque se intentó. La parada de recordatorios espera su
+loop y sus tareas de llegada antes de cerrar el store. Warmup de los modelos
+sale del event loop; warmup y cache TTS, además, están bajo el propietario de
+voz. Esto no sustituye la recuperación de GPU, modelos o dependencias de H4.
+
+El corpus conectado agrega catorce casos de lifecycle, productores y captura,
+más dos de síntesis de arranque/cache. El callback real de `MultiRoomAudioLoop`
+recibe frames sintéticos durante la espera HTTP de una respuesta de cien
+oraciones. Después detecta barge-in mientras el player consume PCM, cancela el
+stream nativo y el dispositivo, abre listening y acepta frames para la nueva
+consulta. La siguiente respuesta conserva su propio PCM sin tail de la anterior.
+El detector de voz y el driver son dobles; no es una evaluación acústica de VAD,
+eco o wake. El factory que usa `main` y su cierre también se ejecutan en el
+artefacto compilado fuera del checkout.
+
+Verificación del commit `f26e2d0`: **4117 passed, 1 failed, 1 xfailed** en
+119,34 s; sólo sigue abierto VAD/idioma. Pasan los dieciséis casos nuevos,
+Ruff 0.15.1, Bandit medio/alto, doce tests Node, smoke autenticado y smoke
+compilado. En diez cierres del factory con productores iniciados y audio
+simulado activo, el máximo fue 6,05 ms, frente al límite cooperativo de 1 s.
+No es una medida física ni prueba la salida forzada de un kernel nativo.
+El [registro de aplicación](../research/2026-10-25-h2-application-voice-validation.json)
+conserva métricas sin redondear, alcance y limitaciones.
+
+Siguiente caso concreto: por lectura, el dispatcher sólo conoce
+`request.speech_handled` al terminar `arespond`. Hay que contrastar esa ventana
+con un error ya locutado cuyos buffers todavía estén drenando cuando vence el
+timeout exterior, y dar a un único propietario la autoridad para anunciarlo.
