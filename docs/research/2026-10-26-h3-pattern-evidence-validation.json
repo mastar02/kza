@@ -1,0 +1,280 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "568d1fd8b60457abc81dcc8ae863d9052cfd01bd",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 content-free event receipts and complete metadata pattern analysis; owned off-loop voice suggestion calls",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-pattern-evidence-final.xml",
+    "collected": 4683,
+    "passed": 4682,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 192.61,
+    "junit_time_s": 192.546,
+    "log": "/tmp/kza-h3-pattern-evidence-final.log",
+    "xml": "/tmp/kza-h3-pattern-evidence-final.xml",
+    "accepted": true,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "integrated_runtime_gc_acceptance": false
+  },
+  "new_cases": 30,
+  "new_case_names": [
+    "test_multiday_patterns_use_metadata_without_loading_or_retaining_raw_text",
+    "test_raw_scrubbing_keeps_receipts_but_expiry_and_restart_never_renew_them",
+    "test_conversation_marker_invalidates_receipts_before_event_physical_cleanup",
+    "test_fact_revisions_and_original_fact_deadlines_constrain_activity_receipts[delete]",
+    "test_fact_revisions_and_original_fact_deadlines_constrain_activity_receipts[expiry]",
+    "test_changed_or_missing_activity_never_resolves_a_stale_receipt[entity_id]",
+    "test_changed_or_missing_activity_never_resolves_a_stale_receipt[action]",
+    "test_changed_or_missing_activity_never_resolves_a_stale_receipt[timestamp]",
+    "test_changed_or_missing_activity_never_resolves_a_stale_receipt[expires_at]",
+    "test_changed_or_missing_activity_never_resolves_a_stale_receipt[sources]",
+    "test_changed_or_missing_activity_never_resolves_a_stale_receipt[deleted]",
+    "test_receipts_bind_the_actual_store_even_when_row_ids_and_metadata_match",
+    "test_persisted_receipt_protocol_rejects_unknown_values[mutation0]",
+    "test_persisted_receipt_protocol_rejects_unknown_values[mutation1]",
+    "test_persisted_receipt_protocol_rejects_unknown_values[mutation2]",
+    "test_persisted_receipt_protocol_rejects_unknown_values[mutation3]",
+    "test_persisted_receipt_protocol_rejects_unknown_values[mutation4]",
+    "test_persisted_receipt_protocol_rejects_unknown_values[mutation5]",
+    "test_persisted_receipt_protocol_rejects_unknown_values[mutation6]",
+    "test_persisted_receipt_protocol_rejects_unknown_values[mutation7]",
+    "test_legacy_rows_and_incomplete_windows_cannot_supply_pattern_confidence",
+    "test_weekday_patterns_keep_weekend_comparison_evidence",
+    "test_diagnostic_counters_never_become_automation_patterns",
+    "test_receipt_validation_checks_later_sql_batches_and_rejects_duplicates",
+    "test_sequence_confidence_counts_distinct_triggers_and_keeps_unmatched_denominator",
+    "test_sequence_overload_abstains_without_losing_valid_temporal_patterns",
+    "test_authority_is_rechecked_after_pattern_calculation[marker]",
+    "test_authority_is_rechecked_after_pattern_calculation[expiry]",
+    "test_cancelled_analysis_keeps_real_native_work_owned_until_close",
+    "test_voice_suggestion_calls_remain_serialized_after_moving_off_loop"
+  ],
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.2785960678011179,
+        "max": 1.0690090712159872
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05552615039050579,
+          "p95": 0.09434600360691547,
+          "max": 0.09434600360691547
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.975128971040249,
+          "p95": 11.226467788219452,
+          "max": 11.226467788219452
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 424,
+        "loop_lag_p95_ms": 0.3656840417534113,
+        "loop_lag_max_ms": 1.233705086633563,
+        "cancel_cleanup_max_ms": 2.6429949793964624,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2785,
+        "loop_lag_p95_ms": 0.9508210979402064,
+        "loop_lag_max_ms": 3.709813002496958,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.7381699979305267,
+        "p95": 6.210679886862636,
+        "max": 6.210679886862636,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_validation": {
+    "passed": 142,
+    "failed": 0,
+    "runtime_s": 5.85,
+    "log": "/tmp/kza-h3-pattern-evidence-focused.log",
+    "scope": "Activity evidence, event erasure/retention, router and slim pipeline compatibility"
+  },
+  "prior_validation_and_review": [
+    {
+      "log": "/tmp/kza-h3-pattern-evidence-first.log",
+      "passed": 25,
+      "failed": 1,
+      "cause": "The new fact revision test tried to confirm an automatic fact; only a live proposed fact can be confirmed",
+      "correction": "Exercise authenticated deletion/revision invalidation of the actual automatic fact and separately test its original 30-day deadline; no authority rules changed"
+    },
+    {
+      "log": "/tmp/kza-h3-pattern-evidence-second.log",
+      "passed": 80,
+      "failed": 0,
+      "runtime_s": 1.66
+    },
+    {
+      "check": "Targeted Bandit review",
+      "finding": "Generating only SQL placeholder characters still caused B608 to flag dynamic query text",
+      "correction": "Use a constant SQL query with a bound JSON array via SQLite json_each; no suppression or string interpolation of event IDs"
+    },
+    {
+      "log": "/tmp/kza-h3-pattern-evidence-ruff-broader.log",
+      "scope": "Initial broader check including unchanged scripts/",
+      "finding": "50 existing violations in unchanged legacy scripts outside the CI lint scope",
+      "resolution": "Record separately; the required CI scope from .github/workflows/ci.yml is src/ tests/ and passes without exceptions or changes to the lint rules"
+    }
+  ],
+  "evidence_contract": {
+    "receipt_fields": [
+      "target_id",
+      "event_id",
+      "revision",
+      "expires_at"
+    ],
+    "copies_private_paths_or_capture_ids": false,
+    "loads_raw_event_dtos_for_analysis": false,
+    "metadata_retention_days": "Existing persisted event deadline, configured as 90 by default; earliest semantic dependency deadline also bounds receipts",
+    "raw_expiry_hours": 48,
+    "raw_scrubbing_preserves_metadata_receipt": true,
+    "reads_or_restart_renew_deadlines": false,
+    "receipts_are_publication_or_write_authority": false,
+    "history_rows_limit": 10000,
+    "validation_rows_per_sql_batch": 128,
+    "sequence_comparisons_limit": 100000,
+    "sequence_patterns_limit": 50,
+    "truncated_history_can_support_confidence": false,
+    "repeated_targets_multiply_trigger_count": false,
+    "unmatched_triggers_in_same_window_are_dependencies": true,
+    "weekday_comparison_keeps_weekend_dependencies": true,
+    "revalidates_after_calculation": true
+  },
+  "native_ownership": {
+    "real_voice_consumer": "RequestRouter suggestion generation and responses use the actual EventLogger owned private worker",
+    "serialization": "Per RequestRouter reentrant lock inside native calls",
+    "cancellation_releases_actual_worker": false,
+    "logger_closes_before_actual_worker_completion": false,
+    "legacy_test_double_fallback": "Existing RequestRouter OwnedBlockingWork scope"
+  },
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000
+  },
+  "gates": {
+    "ruff": {
+      "command": "ruff check src/ tests/",
+      "passed": true,
+      "log": "/tmp/kza-h3-pattern-evidence-ruff.log"
+    },
+    "bandit": {
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-pattern-evidence-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-pattern-evidence-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-pattern-evidence-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "cases": [
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_promote_and_rollback_restore_runtime_and_sqlite",
+          "runtime_s": 3.166
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout",
+          "runtime_s": 6.478
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_bad_candidate_does_not_replace_active_slot",
+          "runtime_s": 1.805
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_extra_sources_or_redirected_state_cannot_be_activated",
+          "runtime_s": 1.734
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_refuses_overwrite_and_linked_state",
+          "runtime_s": 1.766
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_rejects_unsafe_archives[../escape-file]",
+          "runtime_s": 0.007
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_rejects_unsafe_archives[/escape-file]",
+          "runtime_s": 0.008
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_rejects_unsafe_archives[src/evil.py-file]",
+          "runtime_s": 0.007
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_rejects_unsafe_archives[src/link-link]",
+          "runtime_s": 0.01
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_rejects_unsafe_archives[src/main.pyc-duplicate]",
+          "runtime_s": 0.005
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_rejects_unsafe_archives[data/private-file]",
+          "runtime_s": 0.006
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_rejects_unsafe_archives[src//alias-file]",
+          "runtime_s": 0.005
+        },
+        {
+          "name": "tests.unit.tools.test_stage_runtime::test_refuses_manifest_checksum_or_python_mismatch",
+          "runtime_s": 0.008
+        }
+      ],
+      "new_exercise": "Import receipt DTO, read real policy metadata, round-trip a receipt, resolve it and reject it after a conversation marker outside the source checkout"
+    }
+  },
+  "remaining_scope": [
+    "Suggestion loading/persistence/presentation/response must enforce event lineage with atomic admission, independent expiry, historical targets and durable cleanup; existing legacy JSON reader remains to be replaced",
+    "SUGGESTIONS remains unconnected; no additional erasure participant is completed by this foundation",
+    "Six erasure participants remain, plus active producers, diagnostics, collectors, streams/frontend and voice review",
+    "Private legacy-copy migration, compatible restore, live index rebuild and authenticated broad erasure UI",
+    "H0/H1 actual Home Assistant effects, H2 physical audio, H4 integrated runtime/GC recovery, H5 local voice functions and H6 single final release/rollback",
+    "Earlier instrumented GC pauses up to 495.68 ms remain unresolved; this uninstrumented suite does not remeasure or accept integrated runtime/GC"
+  ],
+  "production_modified": false,
+  "new_dependencies": false,
+  "new_configuration_files": false
+}

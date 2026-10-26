@@ -450,7 +450,11 @@ el conteo repetido de disparos en secuencias y se abstiene ante historial
 incompleto; revalida fuentes y plazos después del cálculo. La generación y
 respuesta de sugerencias salen del loop con ownership nativo. Falta aplicar
 estos recibos a su almacenamiento, presentación, vencimiento y participante de
-borrado durable; este avance no cierra H3 ni habilita una release.
+borrado durable; este avance no cierra H3 ni habilita una release. La
+[validación de recibos](../research/2026-10-26-h3-pattern-evidence-validation.json)
+del commit `568d1fd` obtiene **4682 passed, 1 xfailed**, sin fallos, con 30 casos
+nuevos, los checks y el artefacto compilado aceptados. La aceptación integrada
+de runtime/GC y hardware continúa pendiente.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.

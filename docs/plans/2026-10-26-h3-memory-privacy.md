@@ -883,6 +883,18 @@ participantes restantes, la revisión de voces, la migración privada y la
 aceptación integrada de runtime/GC y hardware siguen abiertos. No se modifica
 producción ni se habilita un borrado global.
 
+La [validación de recibos de actividad](../research/2026-10-26-h3-pattern-evidence-validation.json)
+del commit `568d1fd` registra **4682 passed, 1 xfailed**, sin fallos, en 192,61 s.
+Incluye 30 casos nuevos, 142 pruebas dirigidas, Ruff en el alcance de CI, Bandit
+sin hallazgos medios/altos, 18 tests de frontend y smoke de dashboard. El artefacto
+compilado comprueba los recibos fuera del checkout en 6,48 s. El heartbeat tiene
+p95 de 0,28 ms y máximo de 1,07 ms; la cancelación de control llega a 0,09 ms y el
+cleanup a 11,23 ms, con límites intactos. La evidencia conserva el error inicial
+del fixture que intentaba confirmar un hecho automático, corregido para probar
+su borrado/revisión real y su vencimiento. También registra el reemplazo del SQL
+dinámico por parámetros y los 50 hallazgos previos de scripts legacy ajenos al
+alcance de lint de CI. No se vuelve a medir ni se resuelve la aceptación de GC.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
