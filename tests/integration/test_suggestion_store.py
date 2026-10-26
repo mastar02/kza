@@ -108,7 +108,7 @@ async def test_restart_reads_and_expanded_configuration_do_not_renew_proposals(
         assert await events.acall(engine.generate_suggestions) == []
         assert count(engine) == len(
             proposals
-        )  # Physical independent expiry is a later participant.
+        )  # This store-only graph intentionally has no periodic retention owner.
 
 
 async def test_valid_metadata_can_generate_after_raw_scrubbing_without_copying_raw_content(

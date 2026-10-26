@@ -1114,6 +1114,16 @@ pero la purga y el borrado explícito exigen revocaciones confirmadas. Ambos
 ensayos pasan con la corrección, junto con los demás casos de capturas y TTL.
 No se descarta ni se acepta como verde aquella primera ejecución completa.
 
+La [validación del vencimiento](../research/2026-10-26-h3-suggestion-retention-validation.json)
+del commit `cba30ec` registra **4782 passed, 1 xfailed**, sin fallos, en 204,35 s.
+Incluye 32 casos nuevos, 101 pruebas dirigidas después de la corrección de
+capturas, Ruff, Bandit sin hallazgos medios/altos, 18 tests de frontend y smoke
+del dashboard. El artefacto compilado pasa fuera del checkout en 6,63 s. El
+heartbeat obtiene p95 de 0,50 ms y máximo de 2,52 ms; la cancelación de control
+llega a 0,08 ms y el cleanup a 11,85 ms. Los límites y la configuración de GC
+permanecen intactos. La evidencia conserva la primera suite no aceptada y los
+dos ensayos que fallaban antes de corregir la causa.
+
 Este avance no cierra H3. Siguen pendientes los otros cinco participantes,
 consumidores alternos, revisión de voces, pausa/mute y migración real en copia.
 La suite sin instrumentación no resuelve la aceptación integrada de GC,
@@ -1123,8 +1133,8 @@ conservan su alcance. Producción permanece sin cambios.
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
-   streams y frontend; auditar otras rutas de persistencia y caché e integrar
-   sugerencias derivadas y consumidores alternos de prompts, incluido el
+   streams y frontend; auditar las demás rutas de persistencia, caché y
+   consumidores alternos de prompts, incluido el
    `RequestProcessor` antiguo no cableado.
 2. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos

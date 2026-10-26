@@ -1,0 +1,253 @@
+{
+  "checked_on": "2026-10-26",
+  "feature_commit": "a3b782bb1910dfb5f2dd69ae5f9d9e62b377744a",
+  "cleaned_capture_race_commit": "cba30ecb4ab15680c56cb1074e52fbcab42f5659",
+  "tested_commit": "cba30ecb4ab15680c56cb1074e52fbcab42f5659",
+  "tested_runtime_source_tree": "db6fcb127e0704c1a9b20053b9e4f6fb447edd4b",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 independent physical proposal TTL over registered current/historical sidecars, source-event retirement and actual native/voice lifetime observation; atomic capture row/clip locator retirement and committed-revocation cleanup",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "collected": 4783,
+    "passed": 4782,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 204.35,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-suggestion-retention-fixed.xml",
+    "log": "/tmp/kza-h3-suggestion-retention-fixed.log",
+    "xml": "/tmp/kza-h3-suggestion-retention-fixed.xml",
+    "accepted": true,
+    "integrated_runtime_gc_acceptance": false,
+    "junit_time_s": 204.268
+  },
+  "new_cases": 32,
+  "new_case_names": [
+    "test_revocation_between_expiry_selection_and_delete_cannot_lose_clip_locator",
+    "test_failed_pending_marker_hides_capture_but_does_not_destroy_clip_or_row",
+    "test_expiry_physically_removes_all_statuses_without_reads_or_erasure[pending]",
+    "test_expiry_physically_removes_all_statuses_without_reads_or_erasure[accepted]",
+    "test_expiry_physically_removes_all_statuses_without_reads_or_erasure[rejected]",
+    "test_expiry_physically_removes_all_statuses_without_reads_or_erasure[snoozed]",
+    "test_expiry_physically_removes_all_statuses_without_reads_or_erasure[implemented]",
+    "test_disabled_restart_cleans_historical_roots_with_original_deadlines",
+    "test_raw_expiry_preserves_metadata_proposals_and_does_not_extend_deadlines",
+    "test_retired_actual_event_removes_derived_proposal_before_own_expiry[deleted]",
+    "test_retired_actual_event_removes_derived_proposal_before_own_expiry[changed]",
+    "test_retired_actual_event_removes_derived_proposal_before_own_expiry[shortened]",
+    "test_unknown_event_source_is_preserved_until_own_expiry[missing_file]",
+    "test_unknown_event_source_is_preserved_until_own_expiry[missing_table]",
+    "test_unknown_event_source_is_preserved_until_own_expiry[malformed_sources]",
+    "test_large_lineage_is_checked_incrementally_and_late_retirement_is_seen",
+    "test_unknown_receipt_does_not_hide_later_committed_retirement",
+    "test_budget_exhausted_on_deleted_row_resumes_next_row_at_offset_zero",
+    "test_changed_row_between_batches_restarts_receipts_instead_of_skipping",
+    "test_expiry_rejects_late_native_generation_and_reports_actual_work",
+    "test_expiry_stops_scoped_voice_but_retains_noncooperative_tts_until_exit",
+    "test_shorter_policy_is_persisted_even_when_it_precedes_generation",
+    "test_shorter_policy_rejects_expired_candidates_before_model_call",
+    "test_unknown_rows_do_not_starve_later_expired_known_rows",
+    "test_runtime_sweep_prunes_idle_router_cache_at_original_expiry",
+    "test_default_executor_saturation_does_not_block_cached_root_expiry",
+    "test_registered_historical_event_target_is_used_without_logger",
+    "test_committed_fact_retirement_cleans_without_a_conversation_erasure",
+    "test_failed_pending_marker_does_not_authorize_irreversible_ttl_cleanup",
+    "test_blocked_registry_and_one_root_do_not_starve_another_known_root",
+    "test_failed_batch_exposes_fixed_error_and_retries_original_deadline",
+    "test_cancelled_batch_observer_and_close_keep_actual_native_work_and_lease"
+  ],
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 399,
+        "p95": 0.5048171151429415,
+        "max": 2.52385507337749
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05239993333816528,
+          "p95": 0.07722806185483932,
+          "max": 0.07722806185483932
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.890661971643567,
+          "p95": 11.852697934955359,
+          "max": 11.852697934955359
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 426,
+        "loop_lag_p95_ms": 0.6540031172335148,
+        "loop_lag_max_ms": 3.3942610025405884,
+        "cancel_cleanup_max_ms": 7.91224604472518,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2874,
+        "loop_lag_p95_ms": 0.9910849668085574,
+        "loop_lag_max_ms": 3.3391659427434206,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6449129432439804,
+        "p95": 5.578133976086974,
+        "max": 5.578133976086974,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_validation": [
+    {
+      "log": "/tmp/kza-h3-suggestion-retention-baseline.log",
+      "passed": 68,
+      "failed": 0,
+      "runtime_s": 5.72
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-retention-focused.log",
+      "passed": 144,
+      "failed": 0,
+      "runtime_s": 16.75,
+      "note": "Before final reader distinction between one malformed row and an unavailable database"
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-retention-new.log",
+      "passed": 30,
+      "failed": 0,
+      "runtime_s": 4.49,
+      "note": "Includes final receipt quarantine distinction"
+    },
+    {
+      "log": "/tmp/kza-h3-retention-races-fixed.log",
+      "passed": 101,
+      "failed": 0,
+      "runtime_s": 10.67,
+      "note": "After deterministic capture race reproduction and causal source correction"
+    }
+  ],
+  "first_full_suite": {
+    "collected": 4781,
+    "passed": 4779,
+    "failed": 1,
+    "xfailed": 1,
+    "runtime_s": 200.07,
+    "failed_tests": [
+      "tests.integration.test_capture_erasure::test_unlink_failure_stays_pending_through_restart_and_keeps_no_text"
+    ],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "tested_commit": "a3b782bb1910dfb5f2dd69ae5f9d9e62b377744a",
+    "log": "/tmp/kza-h3-suggestion-retention-final.log",
+    "xml": "/tmp/kza-h3-suggestion-retention-final.xml",
+    "accepted": false,
+    "junit_time_s": 199.998
+  },
+  "capture_race_reproduction": {
+    "log": "/tmp/kza-h3-capture-expiry-race-reproduction.log",
+    "failed_before_fix": 2,
+    "runtime_s": 0.95,
+    "cause": "Dynamic revocation changed between separate expiry SELECT and DELETE; another case showed pending failed revocation authorizing irreversible capture cleanup",
+    "correction": "DELETE RETURNING queues the exact removed clip locators before the same commit; irreversible capture expiry and explicit erasure require published committed revocations; pending fences continue denying reads",
+    "thresholds_changed": false
+  },
+  "implementation": {
+    "always_on_with_analytics_and_memory_disabled": true,
+    "historical_registered_proposal_and_event_stores": true,
+    "no_models_or_loggers_needed_for_cleanup": true,
+    "legacy_json_unchanged": true,
+    "rows_per_batch": 32,
+    "event_references_per_batch": 128,
+    "max_supported_event_references_per_proposal": 10000,
+    "native_parallel_roots": 2,
+    "registry_refresh_separate_from_cached_roots": true,
+    "max_poll_s": 30,
+    "max_retry_s": 60,
+    "unknown_entries_preserved_until_own_verifiable_expiry": true,
+    "missing_source_not_proof_of_retirement": true,
+    "row_quarantine_does_not_hide_later_known_retirement": true,
+    "raw_48h_scrub_does_not_retire_activity_metadata": true,
+    "shorter_own_deadlines_persist_before_consumers": true,
+    "expansion_does_not_restore_deadlines": true,
+    "pending_rollback_cannot_authorize_deletion": true,
+    "only_metadata_progress_survives_native_batches": true,
+    "late_native_generation_cannot_write_expired_proposals": true,
+    "actual_noncooperative_tts_remains_visible_until_exit": true,
+    "close_retains_native_work_and_privacy_writer_lease": true,
+    "forensic_media_erasure_claimed": false
+  },
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-h3-suggestion-retention-ruff.log"
+    },
+    "bandit": {
+      "medium": 0,
+      "high": 0,
+      "low_baseline": 30,
+      "log": "/tmp/kza-h3-suggestion-retention-bandit-fixed.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-suggestion-retention-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-suggestion-retention-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 6.628,
+      "exercise": "Real compiled source-free artifact outside checkout: source-guarded proposals, coordinated erasure receipts and zero physical rows; generate fresh proposals, stop logger, advance original deadlines, sweep retained roots and verify zero physical rows without CVO request"
+    }
+  },
+  "remaining_scope": [
+    "Five erasure participants remain: producers, diagnostics, collectors, streams and voices; broad erasure UI is not enabled",
+    "Active STT/audio/taps/distillation and alternate prompt consumers, diagnostic JSONL/Logstash, collectors, stream/frontend copies",
+    "Pause ambient, total mute with non-audio reactivation, automatic voiceprint/group 48h TTL and authenticated manual review/merge/split of speaker groups",
+    "Private real-copy quarantine migration of 870 legacy facts, compatible catalog/tombstone/runtime restore and live semantic index rebuild",
+    "H0/H1 live HA memberships and effects, H2 physical audio/barge-in, H4 dependency recovery/runtime/GC and large-history startup, H5 typed local execution/routines/timers/reminders, H6 complete integrated candidate and one final release/rollback",
+    "Earlier instrumented GC pauses up to 495.68 ms remain unresolved; these uninstrumented timing cases do not remeasure or accept integrated runtime/GC"
+  ],
+  "production_modified": false,
+  "new_dependencies": false,
+  "new_configuration_files": false,
+  "unchanged_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancel_ms": 100,
+    "cooperative_cleanup_ms": 1000,
+    "gc_disabled_frozen_or_forced": false
+  },
+  "development_fixture_corrections": [
+    "The initial fixture used a nonexistent journal requests method; switched to the actual due operation snapshot.",
+    "The large-lineage fixture initially spread observations over 270 days, outside the analyzer history window; use 300 real events across five days.",
+    "Router construction now injects the actual PrivacyServices via its supported constructor, and model probes use the actual engine.llm dependency."
+  ]
+}

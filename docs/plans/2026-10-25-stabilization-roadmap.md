@@ -491,6 +491,12 @@ persiste plazos menores y espera recursos nativos reales al cerrar. La
 validación dirigida incluye vencimiento sin lectores, reinicio, 300 recibos,
 fallos, fuentes bloqueadas y voz tardía. Siguen abiertos H3, la aceptación
 integrada de runtime/GC y hardware, y el resto de H0–H6.
+La [validación del vencimiento](../research/2026-10-26-h3-suggestion-retention-validation.json)
+del commit `cba30ec` registra **4782 passed, 1 xfailed**, sin fallos, con 32
+casos nuevos y el artefacto compilado aceptado. Incluye la corrección de una
+carrera previa de capturas que podía perder el localizador de un clip al
+revocar su conversación durante la purga; la primera suite fallida se conserva
+como evidencia y no se acepta como verde.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
