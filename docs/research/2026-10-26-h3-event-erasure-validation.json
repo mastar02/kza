@@ -1,0 +1,205 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "4c297b398d95c5de56d04f2ac1d3ee3031a5fe1b",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 registered policy-event conversation erasure, current/historical databases and native event writer lease ownership; no broad erase endpoint or production changes",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-event-erasure-final.xml",
+    "collected": 4583,
+    "passed": 4582,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 169.95,
+    "junit_time_s": 169.895,
+    "log": "/tmp/kza-h3-event-erasure-final.log",
+    "xml": "/tmp/kza-h3-event-erasure-final.xml",
+    "accepted": true,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ]
+  },
+  "new_connected_cases": 25,
+  "new_case_names": [
+    "test_real_event_erasure_removes_mixed_sources_and_keeps_unrelated_and_numeric_rows",
+    "test_indirect_event_fact_dependency_is_removed_after_source_conversation_erasure",
+    "test_disabled_analytics_cleans_registered_historical_database_after_restart",
+    "test_new_location_adds_target_to_prior_operation_and_preserves_unrelated_rows",
+    "test_writer_registers_actual_canonical_location_before_open_even_if_symlink_changes",
+    "test_absent_database_is_not_created_or_initialized_by_disabled_cleanup",
+    "test_legacy_only_database_is_not_migrated_or_assigned_sources",
+    "test_unknown_or_unattributed_event_sources_remain_pending_without_private_errors[not json]",
+    "test_unknown_or_unattributed_event_sources_remain_pending_without_private_errors[{}]",
+    "test_unknown_or_unattributed_event_sources_remain_pending_without_private_errors[[{}]]",
+    "test_unknown_or_unattributed_event_sources_remain_pending_without_private_errors[[]]",
+    "test_partial_event_batch_rolls_back_if_an_unknown_source_is_encountered",
+    "test_batches_scan_at_most_128_metadata_rows_and_cannot_skip_later_match",
+    "test_leased_restart_reopens_completed_receipt_for_restored_event_row",
+    "test_late_timed_out_writer_cannot_repopulate_after_event_cleanup",
+    "test_writer_native_drain_keeps_privacy_lease_after_close_observation_timeout",
+    "test_cancelled_cleanup_observer_retains_actual_sqlite_work_and_close_lease",
+    "test_failed_historical_database_does_not_prevent_independent_event_cleanup",
+    "test_unsupported_registered_event_version_stays_blocked",
+    "test_cancelled_driver_observer_keeps_native_batch_owned_until_real_close",
+    "test_event_commit_inside_admission_barrier_precedes_revocation_and_physical_receipt",
+    "test_saturated_default_executor_does_not_starve_event_writer_or_cleanup",
+    "test_repeated_ledger_initialization_does_not_reopen_live_event_claim",
+    "test_unrecognized_nonpositive_row_id_cannot_be_skipped_by_cursor[0]",
+    "test_unrecognized_nonpositive_row_id_cannot_be_skipped_by_cursor[-1]"
+  ],
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.21567917428910732,
+        "max": 1.0664721485227346
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.04940503276884556,
+          "p95": 0.06961589679121971,
+          "max": 0.06961589679121971
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.868470882996917,
+          "p95": 11.131891049444675,
+          "max": 11.131891049444675
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 426,
+        "loop_lag_p95_ms": 0.4900852218270302,
+        "loop_lag_max_ms": 1.03403115645051,
+        "cancel_cleanup_max_ms": 1.874798908829689,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2712,
+        "loop_lag_p95_ms": 0.9805000200867652,
+        "loop_lag_max_ms": 1.2731250654906034,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.47891796566545963,
+        "p95": 5.590297048911452,
+        "max": 5.590297048911452,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_validation": {
+    "passed": 132,
+    "failed": 0,
+    "runtime_s": 12.04,
+    "log": "/tmp/kza-h3-event-erasure-focused-final.log",
+    "scope": "Event erasure/privacy, coordinator, private authority, memory services, index maintenance and ASR event consumer"
+  },
+  "worktree_review_failure": {
+    "log": "/tmp/kza-h3-event-erasure-first.log",
+    "passed": 59,
+    "failed": 1,
+    "runtime_s": 5.31,
+    "test": "test_unsupported_registered_event_version_stays_blocked",
+    "cause": "The new test expected blocked on an individual step, while the journal represents unavailable adapters as pending with participant_unavailable and derives blocked on the aggregate operation",
+    "correction": "Assert pending plus the fixed unavailable code on the unsupported target, complete on the supported one, and blocked on the aggregate. Production state semantics and retry/timing budgets are unchanged"
+  },
+  "ownership": {
+    "writer_native_threads": 2,
+    "cleanup_native_threads": 2,
+    "writer_owned_capacity": 8,
+    "cleanup_owned_capacity": 8,
+    "metadata_rows_per_batch": 128,
+    "max_sources_per_event": 256,
+    "event_observation_ms": 100,
+    "event_close_observation_ms": 1000,
+    "writer_io": "A private two-thread pool replaces the runtime delegation of arbitrary event context providers into the privacy executor. The existing injected-worker interface is retained for explicit callers",
+    "backpressure_test": "Eight admitted requests remain owned, with two active native context providers and the remaining requests queued; a ninth request is rejected. The caller timeout and actual resource drain remain separately observed",
+    "lease": "The factory registers EventLogger.begin_close as a privacy borrower before initialization; producer admission closes synchronously and native operations/pool shutdown finish before the shared writer lease is released",
+    "cleanup": "Coordinator owns the claim/callback/result, the event driver retains actual SQLite work after observer cancellation, and receipt-only retries do not retain raw event data"
+  },
+  "proven": [
+    "main constructs event erasure with the shared coordinator independently of analytics enablement; actual event initialization registers the physical canonical destination before opening/migrating it",
+    "Current and historical registered databases receive independent versioned steps, including targets added after a prior erasure operation",
+    "Cleanup opens only existing databases in SQLite rw mode; absent targets remain absent and legacy-only databases are neither migrated nor assigned invented provenance",
+    "Batches inspect at most 128 IDs/source documents and a raw-presence boolean without copying phrases, names or contexts into Python; unrelated and numeric-only rows survive",
+    "Events with mixed sources or dependencies on a fact removed by the erased conversation are physically deleted, including a match after the first cursor batch",
+    "Malformed JSON, unknown sources, unattributed raw text, nonpositive row IDs, corrupt databases and unsupported versions cannot become successful cleanup receipts; an unknown source rolls back the batch",
+    "A failed historical target stays pending while an independent valid target is cleaned; snapshots expose fixed error codes without database paths or event content",
+    "An event already inside the source admission transaction commits before the tombstone and is then removed; a provider released after an observation timeout and completed erasure cannot repopulate revoked text",
+    "The source writer uses its canonical registered location after an alias changes; cleanup follows that actual location rather than the newly resolved alias",
+    "Leased startup reopens completed event receipts and resets old cursors to recheck restored rows. Ordinary initialize does not recover a live claim",
+    "Cancelled cleanup observers and 10 ms close-observation failures keep actual native work and the shared writer lease until drain; a timed-out event writer also retains the lease",
+    "Saturating the default executor does not prevent private event writes or physical event cleanup; general-pool shutdown work is observed only after native operations drain",
+    "The source-free CPython 3.13 runtime writes a synthetic policy event and verifies both the complete event journal step and zero physical event rows after conversation erasure; aggregate erasure still remains blocked on unimplemented participants"
+  ],
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000,
+    "event_observation": 100
+  },
+  "gates": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-h3-event-erasure-ruff.log"
+    },
+    "bandit": {
+      "command": "/home/yo/.local/bin/uvx --offline --from bandit==1.9.4 bandit -r src/ -ll -c pyproject.toml",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-event-erasure-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-event-erasure-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-event-erasure-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 6.042,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 remains incomplete: producers, contexts, diagnostics, collectors, streams, suggestions and voices are not registered erasure participants, so no broad authenticated erase endpoint or completion promise is exposed",
+    "The events receipt covers only the registered events_policy_v1 table. Legacy rows without sources remain quarantined outside active queries and unchanged; this receipt does not attribute or prove deletion of that legacy content",
+    "Standalone TTL maintenance already runs for an active EventLogger. Feature-independent event expiry/scrubbing across all historical databases, including analytics disabled, is still pending",
+    "Event-derived suggestions, collectors, streaming/frontend queues, diagnostics, STT/audio readers, tap and distillation scopes remain to be coordinated",
+    "Only registered destinations are known; reconcile the private real-data inventory and migration copy before release. No unregistered file locations or source ownership are invented",
+    "Rechecking a restored event database assumes the current fact authority and tombstones survived. Compatible catalog/data rollback and the real 870-fact legacy-copy migration remain pending",
+    "New/empty live-index rebuild, pause/mute, acoustic profile/group retention and authenticated calibrated voice review remain pending",
+    "The previous instrumented suite observed process GC pauses up to 495.68 ms outside explicit voice cases. This uninstrumented suite passing does not resolve or remeasure that issue; integrated runtime/GC acceptance remains open in H4/H6",
+    "H0/H1 actual HA effects, H2 physical audio, H4 recovery, H5 remaining voice functions and H6 hardware/migration/release/rollback acceptance remain open",
+    "No deployment, service restart, production-data mutation, GPU reassignment, dependency installation or new configuration file occurred"
+  ],
+  "prior_gc_evidence_reference": "docs/research/2026-10-26-h3-index-maintenance-validation.json"
+}

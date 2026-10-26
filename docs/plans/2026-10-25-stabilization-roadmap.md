@@ -343,6 +343,13 @@ no comparten el pool de la autoridad. Siguen pendientes siete participantes,
 las copias derivadas y la purga de TTL independiente de analytics en ubicaciones
 históricas; no se expone una confirmación global de borrado.
 
+La [validación del participante de eventos](../research/2026-10-26-h3-event-erasure-validation.json)
+del commit `4c297b3` registra **4582 passed, 1 xfailed**, sin fallos, en 169,95 s.
+Pasan 25 casos nuevos, 132 pruebas dirigidas, los checks y el ensayo compilado
+con borrado físico de SQLite y recibo de eventos completo. El heartbeat alcanza
+p95 de 0,22 ms y máximo de 1,07 ms, con los límites intactos. La validación de
+GC/latencia integrada continúa abierta; no se infiere de esta suite sin fallos.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke

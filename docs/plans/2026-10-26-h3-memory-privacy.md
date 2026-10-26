@@ -661,6 +661,17 @@ existía; todavía falta independizar también esa purga del feature y extenderl
 a todas las bases históricas. El borrado de conversación aquí implementado no
 sustituye ese trabajo ni autoriza una promesa global de borrado. No cierra H3.
 
+La [validación del participante de eventos](../research/2026-10-26-h3-event-erasure-validation.json)
+del commit `4c297b3` registra **4582 passed, 1 xfailed**, sin fallos, en 169,95 s.
+Incluye 25 casos conectados nuevos, 132 pruebas dirigidas, Ruff, Bandit sin
+hallazgos medios/altos, 18 tests de frontend, smoke y artefacto compilado. El
+ensayo compilado comprueba tanto el recibo terminado como cero filas físicas
+del evento borrado. El heartbeat obtiene p95 de 0,22 ms y máximo de 1,07 ms;
+la cancelación de control alcanza un máximo de 0,07 ms y el cleanup 11,13 ms,
+sin ampliar límites. La aceptación de GC/latencia integrada sigue pendiente:
+esta suite sin instrumentación de GC no vuelve a medir ni resuelve las pausas
+globales observadas en la validación anterior.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
