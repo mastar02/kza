@@ -55,12 +55,14 @@ operación HTTP que prometa borrar una conversación de todos los almacenes.
 
 ## Integración y revisión
 
-`build_memory_services` construye y registra el cierre del manager antes de
-inicializarlo, y mantiene un único worker de vencimiento y reconciliación.
+`build_privacy_services` inicializa siempre la autoridad y su lease, antes de
+la memoria opcional. `build_memory_services` registra su cierre antes de
+inicializar el índice y toma prestado ese mismo catálogo. La memoria mantiene
+su reconciliación; la autoridad mantiene vencimientos incluso con la memoria
+semántica apagada.
 Los workers nativos son acotados y siguen registrados si se cancela al llamador.
 El cierre informa recursos retenidos si no terminan dentro de su presupuesto;
-no presenta un thread todavía activo como terminado. Una lease de archivo impide
-dos escritores del mismo catálogo persistente.
+la lease y SQLite permanecen abiertos hasta terminar sus usuarios reales.
 
 Main, ambos routers y el distiller comparten este servicio. Las capturas nuevas
 conservan ID, tiempo y conversación desde su productor; wake textual conserva
@@ -276,6 +278,71 @@ del dashboard y artefacto compilado con recibos y borrado transitivo. El heartbe
 de la suite obtuvo p95 de 0,19 ms y máximo de 1,02 ms frente a 25/75 ms. No se
 publicó una release y H3 sigue abierto.
 
+
+## Autoridad independiente de la memoria semántica
+
+`main` construye `PrivacyServices` aunque `memory.enabled` sea falso. Conserva
+`memory.privacy_db_path` como configuración del archivo persistente; el factory
+rechaza un catálogo volátil. NLU, eventos, contextos, cola, ambos modos de voz y
+captura ambiental reciben el mismo catálogo. Apagar la memoria semántica no elimina las
+revocaciones. La API de revisión semántica sigue informando indisponibilidad
+cuando esa función está apagada, y no se inicializan sus preferencias ni índice.
+
+La autoridad dispone de dos threads de I/O propios y admite hasta ocho trabajos
+retenidos. Una búsqueda semántica bloqueada en el executor general no ocupa ese
+executor de privacidad. El test que satura el executor general conserva la
+revocación; no implica que SQLite pueda saltarse un writer o disco bloqueados.
+El manager opcional registra el cierre real de su trabajo nativo como usuario
+del catálogo. Aunque venza la observación de su cierre, la autoridad espera ese
+trabajo antes de cerrar SQLite, unir sus threads y liberar la lease. Un segundo
+writer sigue rechazado durante esa espera. La inicialización cancelada también
+conserva su cleanup registrado antes de empezar I/O.
+
+La proyección del catálogo admite lecturas sólo mientras conserva autoridad.
+Cerrar la autoridad invalida los recibos viejos. Eventos y snapshots distinguen
+indisponibilidad de revocación: una consulta o purga falla cuando no se puede
+consultar la autoridad, sin interpretar ese estado como un borrado realizado.
+Los archivos de contexto existentes se conservan durante esa indisponibilidad.
+
+`CaptureScopes` comparte la agrupación por origen/habitación entre privacidad
+y memoria. Una revocación conserva su fecha en el catálogo. La captura anterior
+a esa fecha no recibe un UUID de conversación nuevo; el límite se conserva al
+rotar al intercambio posterior. Después de reiniciar, una captura sin
+conversación que precede al arranque se rechaza: no se inventa un scope nuevo
+para un buffer anterior. Las capturas posteriores siguen funcionando; las
+fuentes ya identificadas conservan sus IDs y se validan contra el catálogo.
+No se usan estos scopes como identidad de una persona ni como permisos.
+
+El transcriber ambiental fija la procedencia antes de esperar al STT y comprueba
+su vigencia al volver. Si perdió la fuente, descarta el texto antes del tagger.
+El store configurado con autoridad exige esa conversación previa, impide
+reinserciones revocadas y conserva el menor vencimiento recibido. Sus consultas
+SQL filtran revocaciones; también se revalidan las filas después de esperar al
+cursor y el clip después de leer el archivo. La purga registra los FLAC para
+borrado durable antes de retirar sus filas; un unlink fallido se reintenta tras
+reinicio. El debug ambiental ya no copia transcripciones ni nombres de hablante.
+
+Este paso conecta las garantías de los componentes; todavía no expone un
+borrado global en el dashboard. Faltan el inventario de participantes, el journal
+común de operaciones y reintentos, la cancelación de lotes de destilación en
+curso y los demás productores. Si el índice semántico está deshabilitado, sus
+eliminaciones físicas siguen pendientes en el journal del índice; el futuro
+coordinador debe resolverlas sin depender de habilitar la memoria semántica. Los datos de producción
+y la colección legacy no se modificaron.
+
+
+La [validación de autoridad independiente](../research/2026-10-26-h3-privacy-authority-validation.json)
+del commit `74edec5` registra **4459 passed, 1 xfailed**, sin fallos, en 159,57 s.
+Los 25 casos nuevos incluyen memoria deshabilitada, conversación y control local
+vigentes en ambos modos, reinicio, pool general saturado, lease durante cierre
+retenido, STT tardío, cursores revocados, unlink durable y estado desconocido.
+La primera suite pasó en `3008701`; la revisión posterior reprodujo tres fallos
+sobre snapshots con autoridad cerrada y capturas anteriores al arranque. Se
+corrigieron antes del candidato final y los tres casos corren en su suite.
+Pasan Ruff, Bandit medio/alto, 18 tests Node, smoke y artefacto compilado con
+memoria opcional apagada. El heartbeat obtuvo p95 de 0,23 ms y máximo de 1,09 ms
+frente a 25/75 ms. No cierra H3 ni constituye una publicación en producción.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
@@ -284,8 +351,9 @@ publicó una release y H3 sigue abierto.
    `RequestProcessor` antiguo no cableado.
 2. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
-   frente a productores y guardados tardíos. La limpieza local del catálogo no
-   sustituye esa operación.
+   frente a productores y guardados tardíos. Incluir los lotes de destilación
+   en curso y la limpieza física del índice aunque la memoria esté apagada.
+   La limpieza local del catálogo no sustituye esa operación.
 3. Implementar pausa ambiental y mute total con reactivación independiente del
    audio; definir qué productores se detienen y qué buffers se descartan.
 4. Aplicar 48 horas a huellas y grupos acústicos no confirmados; conservar perfiles
@@ -293,4 +361,6 @@ publicó una release y H3 sigue abierto.
 5. Construir agrupación y revisión de voces, correcciones de unión/separación y
    abstención. Fijar métricas y corpus de calibración antes de evaluar el resultado.
 6. Probar migración en copia y completar aceptación de runtime, micrófono,
-   reproducción, HA y rollback durante H6. No se ha modificado producción.
+   reproducción, HA y rollback durante H6. La restauración debe conservar la
+   intención de borrado y evitar reintroducir datos eliminados. No se ha
+   modificado producción.

@@ -240,6 +240,23 @@ artefacto compilado. El heartbeat mantiene los límites de 25/75 ms: p95 de
 0,19 ms y máximo de 1,02 ms. Estas pruebas usan datos sintéticos; los 870 hechos
 legacy y producción permanecen sin cambios.
 
+La autoridad de privacidad ya se inicializa aunque la memoria semántica esté
+apagada. NLU, eventos, contexto, cola y captura comparten el catálogo; su pool
+de I/O y su lease sobreviven al trabajo nativo real de la memoria opcional.
+El transcriber fija fuentes antes del STT; el store ambiental excluye capturas
+y clips revocados y conserva el reintento durable del unlink. Los scopes
+rechazan capturas anteriores al borrado y buffers sin conversación anteriores
+al arranque. La autoridad indisponible produce fallo de lectura/purga, no una
+confirmación de borrado ni la retirada de snapshots desconocidos.
+
+La [validación de autoridad independiente](../research/2026-10-26-h3-privacy-authority-validation.json)
+del commit `74edec5` registra **4459 passed, 1 xfailed**, sin fallos, en 159,57 s.
+Incluye 25 casos nuevos, conserva conversación y control local con memoria
+apagada, y pasa checks y artefacto compilado. El heartbeat mantiene p95 de
+0,23 ms y máximo de 1,09 ms frente a 25/75 ms. Todavía falta el coordinador
+con journal y participantes, incluida la limpieza de índices con memoria
+apagada y los lotes de destilación en curso; no se expone un borrado global.
+
 La retención de huellas autorizada arriba todavía no está implementada. Siguen
 pendientes otras copias de texto y audio (otros logs, colectores,
 caches alternas, streams y frontend), sugerencias y consumidores alternos de

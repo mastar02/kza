@@ -1,0 +1,154 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "74edec57e946f7b9517091339897e85d5dd7bfe9",
+  "initial_implementation_commit": "30087017b44fa9bfab703aa8abc94a77a812b433",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 always-on privacy authority independent of semantic recall; shared writer ownership, isolated native privacy I/O, capture-time fences and ambient revocation with late-result suppression",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-privacy-owner-reviewed-final.xml",
+    "collected": 4460,
+    "passed": 4459,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 159.57,
+    "junit_time_s": 159.505,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "accepted": true,
+    "log": "/tmp/kza-h3-privacy-owner-reviewed-final.log",
+    "xml": "/tmp/kza-h3-privacy-owner-reviewed-final.xml"
+  },
+  "new_connected_cases": 25,
+  "focused_validation": {
+    "passed": 91,
+    "runtime_s": 6.25,
+    "log": "/tmp/kza-h3-privacy-owner-reviewed.log",
+    "scope": "Final authority cases plus context privacy, semantic services, prompt provenance, ambient builder and persister"
+  },
+  "earlier_broad_validation": {
+    "passed": 698,
+    "failed": 1,
+    "runtime_s": 16.37,
+    "log": "/tmp/kza-h3-privacy-owner-broad.log",
+    "cause": "An existing scope-rotation test reused the exact pre-revocation timestamp as a supposedly new capture",
+    "correction": "Assert that the old timestamp is rejected, then advance the capture clock before testing the new conversation scope"
+  },
+  "review_after_first_full_suite": {
+    "tested_commit": "30087017b44fa9bfab703aa8abc94a77a812b433",
+    "passed": 4456,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 159.8,
+    "log": "/tmp/kza-h3-privacy-owner-final.log",
+    "xml": "/tmp/kza-h3-privacy-owner-final.xml",
+    "new_counterexamples_failed": 3,
+    "counterexample_log": "/tmp/kza-h3-privacy-owner-review-repro.log",
+    "counterexamples": [
+      "A snapshot load returned empty when the authority was closed, conflating unknown state and absent data",
+      "A snapshot purge treated closed authority as source revocation and removed the existing file",
+      "An unbound preboot capture could receive a new conversation after a restart and bypass the old conversation tombstone"
+    ],
+    "correction": "Unavailable authority now raises during snapshot validation and preserves files; runtime capture scopes reject unbound captures older than their authority admission start. All three cases run in the final full suite."
+  },
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.22844411432743073,
+        "max": 1.0929270647466183
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05282089114189148,
+          "p95": 0.06008194759488106,
+          "max": 0.06008194759488106
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.867420118302107,
+          "p95": 11.256180005148053,
+          "max": 11.256180005148053
+        }
+      }
+    }
+  },
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000
+  },
+  "proven": [
+    "main initializes one persistent privacy authority before optional semantic memory and injects the same ledger into NLU, events, context persistence, orchestrator, request router and ambient capture",
+    "Disabling semantic memory keeps source revocation and expiry enforcement; a new-process regression rejects Chroma imports while the privacy-only factory initializes and closes correctly without loading preferences",
+    "The runtime factory rejects in-memory and unsupported URI paths so disabling recall cannot silently remove durable tombstones",
+    "Optional semantic memory borrows the actual ledger and capture scopes; closing it does not close the authority or release the shared writer lease",
+    "Privacy I/O has two dedicated executor threads and eight retained work slots; a saturated one-thread semantic/default executor does not starve privacy revocation",
+    "Native borrower completion is retained after close observation timeout; a competing writer remains denied until native work actually exits and the authority finishes cleanup",
+    "Cancelled initialization keeps its cleanup registration, actual native work, executor and writer ownership until completion",
+    "Raw source and semantic receipts fail closed after ledger shutdown; event and snapshot reads/purge distinguish unavailable authority from committed revocation and preserve unknown-state persistent data",
+    "Capture validation precedes scope mutation; revocation timestamp fences survive in-process rotation and unbound preboot captures cannot invent a fresh conversation after restart",
+    "Both voice modes reject revoked captures before processing while fresh conversation and explicitly authorized local climate control still function with semantic memory disabled",
+    "Ambient capture provenance is fixed before awaiting STT; a revoked or closing source is discarded before tagger invocation when STT returns",
+    "Authority-backed ambient stores require a preassigned conversation, reject late reinsertion and attachment, honor the earlier input deadline and revalidate text after async SQL reads and audio after file I/O",
+    "Revoked FLAC paths are durably queued before row removal; failed unlink remains pending across store/privacy restart and succeeds on retry",
+    "Ambient debug metadata no longer copies transcript previews or speaker names",
+    "The source-free CPython 3.13 runtime exercises the shared owner and a privacy-only disabled-memory graph outside the source checkout"
+  ],
+  "ownership": {
+    "privacy_file_setting": "memory.privacy_db_path",
+    "semantic_feature_setting": "memory.enabled",
+    "privacy_executor_threads": 2,
+    "privacy_owned_work_capacity": 8,
+    "semantic_native_workers": "Remain in the optional memory scope; the shared authority waits their actual closing task without sharing their executor",
+    "borrower_registration": "Weak bound-method registrations avoid retaining private caches after the semantic owner is unused",
+    "writer_order": "Lease acquisition precedes schema initialization/migration; lease release follows actual borrowers, privacy work and executor shutdown"
+  },
+  "gates": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true,
+      "log": "/tmp/kza-h3-privacy-owner-ruff.log"
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-privacy-owner-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-privacy-owner-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-privacy-owner-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "included_in_full_suite": true,
+      "test": "tests/unit/tools/test_stage_runtime.py::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 is incomplete: no global conversation-erase endpoint or completion promise is exposed; participant inventory, durable operation journal, retries and authenticated dashboard integration remain pending",
+    "Physical vector-index deletion must work independently of enabling recall; deleted facts are logically denied and their index-delete jobs remain durable pending that cleanup participant",
+    "Already selected distillation batches and other late producers still need cancellation/erasure coordination; the existing ledger rejects invalidated fact publication",
+    "Other diagnostic logs, collectors, stream/frontend copies, suggestions, alternate caches and the unwired legacy RequestProcessor still need audit and integration",
+    "Ambient pause, total mute with non-audio reactivation, acoustic fingerprint/group retention, manual voice review and calibrated evaluation remain pending",
+    "The real 870-record legacy-copy migration and compatible restore rehearsal remain pending; restore must preserve deletion intent and avoid reintroducing erased data",
+    "H0/H1 actual HA effects, H2 physical audio/capture/barge-in, H4 recovery, H5 remaining voice functions and H6 complete runtime/GC/hardware/release/rollback acceptance remain open",
+    "No deployment, service restart, GPU reassignment, new dependency or production-data modification occurred"
+  ]
+}
