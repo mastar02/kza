@@ -192,11 +192,31 @@ a activarse mientras esperaba. Los archivos nuevos viven separados de los JSON
 legacy, que no se importan ni se modifican. La carga, escritura y purga de esos
 snapshots tienen seguimiento de trabajo nativo fuera del loop.
 
+El registro SQL de eventos ahora conserva fuentes y deadlines por evento.
+Transcripciones, nombres copiados y contexto libre vencen con la captura,
+hasta 48 h; los metadatos de actividad y señales numéricas conservan su plazo
+configurado de analítica. Las consultas de historial, estadísticas y secuencias
+filtran vencimientos y revocaciones, y el worker retira el texto vencido.
+La tabla legacy permanece fuera de esas consultas y conserva sus filas.
+Ambos routers adjuntan la captura original incluso sin catálogo de memoria.
+El diagnóstico tiene espera acotada y seguimiento del trabajo nativo; la API
+autenticada consulta fuera del loop y responde con `Cache-Control: no-store`.
+
 La retención de huellas autorizada arriba todavía no está implementada. Siguen
-pendientes otras copias de texto y audio (eventos, colectores, colas y caches),
+pendientes otras copias de texto y audio (otros logs, colectores, colas,
+caches, streams y frontend),
 el borrado completo de conversación,
 pausa/mute, agrupación de voces, su vista autenticada y evaluación acústica, y la
 migración ensayada sobre copia de datos reales. Este avance no cierra H3.
+
+La [validación de eventos](../research/2026-10-26-h3-event-privacy-validation.json)
+del commit `4ef72bf` registra **4307 passed, 1 xfailed**, sin fallos, en
+156,43 s. Incluye 14 casos nuevos de eventos y dos de cierre de generación.
+La primera ejecución completa detectó una carrera: se notificaba éxito antes
+de liberar la petición actual. La corrección ordena la notificación después
+del cierre de generación y de esa liberación; conserva la cancelación inmediata
+con cleanup bajo seguimiento. Pasan Ruff, Bandit medio/alto, 18 tests de
+frontend, el smoke autenticado y el artefacto compilado con eventos y TTL.
 
 La [validación de contextos](../research/2026-10-26-h3-context-privacy-validation.json)
 del commit `2bc494f` registra **4291 passed, 1 xfailed**, sin fallos, en

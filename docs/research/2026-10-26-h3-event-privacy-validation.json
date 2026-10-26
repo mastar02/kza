@@ -1,0 +1,114 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "4ef72bf23e6663085a298f34a1d6c5d48da5b1d7",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 sourced SQL event text expiry, preserved numeric diagnostics, quarantined legacy event rows, revoked-event analytics filtering, bounded owned diagnostic I/O, authenticated API and terminal response settlement",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-events-final-2.xml",
+    "collected": 4308,
+    "passed": 4307,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 156.43,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "log": "/tmp/kza-h3-events-final-2.log"
+  },
+  "new_event_cases": 14,
+  "new_terminal_settlement_cases": 2,
+  "focused_validation": {
+    "passed": 396,
+    "runtime_s": 29.55,
+    "log": "/tmp/kza-h3-events-settlement.log",
+    "scope": "Actual async generation, event privacy, response deadlines, both voice producers and orchestrator unit tests"
+  },
+  "earlier_connected_validation": {
+    "passed": 1012,
+    "runtime_s": 69.76,
+    "log": "/tmp/kza-h3-events-broad.log",
+    "scope": "Event privacy, both memory/voice routes, response deadlines, dashboard, pipeline and habit generator; before the terminal-settlement fix and final two disabled-memory producer cases"
+  },
+  "regression_found_and_fixed": {
+    "earlier_commit": "8558ff11d2b1f68799b1b0e185b365809adc2db1",
+    "earlier_suite_passed": 4304,
+    "earlier_suite_failed": 1,
+    "earlier_suite_xfailed": 1,
+    "earlier_suite_runtime_s": 155.8,
+    "earlier_log": "/tmp/kza-h3-events-final.log",
+    "test": "tests/integration/test_async_conversation_generation.py::test_complete_response_and_context_without_blocking_capture",
+    "cause": "Success notification woke the dispatcher before monitor cleanup and release of the current request slot",
+    "fix": "Release the owned generation scope and expected request slot before success/failure notification; cancellation still acknowledges immediately while cleanup remains owned",
+    "deterministic_regression_cases": 2
+  },
+  "synthetic_async_heartbeat": {
+    "heartbeat_ms": {
+      "repetitions": 10,
+      "stall_ms": 200,
+      "interval_ms": 5,
+      "samples": 421,
+      "p95": 0.3764759749174118,
+      "max": 5.177838960662484
+    }
+  },
+  "proven": [
+    "Raw event transcript, copied name and arbitrary free-form context expire at the earliest actual source deadline, capped by source validation at 48 hours",
+    "Read-time SQL projection excludes expired text independently of the cleanup task; subsequent cleanup nulls raw fields and retains only explicitly allowed numeric diagnostic context",
+    "Numeric activity diagnostics retain their existing configured analytics lifetime, default 90 days; the persisted deadline cannot be renewed by reads, restart or a later configuration increase",
+    "Legacy events table rows remain unchanged and outside retrieval, distributions, sequences, statistics and cleanup of the active policy table",
+    "Unsourced writes cannot retain raw transcript, copied name or free-form context; activity identifiers and the diagnostic scalar channel are validated",
+    "Committed conversation revocation filters event analytics immediately before physical row cleanup and survives a fresh policy/logger instance",
+    "A native metric that outlives its observation budget cannot commit raw text after its source expires or is revoked",
+    "A native event commit ordered before a concurrent tombstone is no longer readable afterwards; a post-marker event writer is rejected",
+    "Actual diagnostic work remains bounded at eight operations after caller timeout, close reports retained work and subsequently waits for its actual exit",
+    "Runtime factory starts owned deadline-aware cleanup; its SQL event file is created with mode 0600 and SQLite connections close at the end of each operation",
+    "Both real voice routes preserve CommandEvent capture UUID and timestamp in event provenance, including when the memory catalogue is disabled; the orchestrated history uses that same capture source",
+    "Authenticated event APIs omit expired/revoked transcripts, perform actual event reads off-loop and apply Cache-Control no-store including authentication errors",
+    "Success and failure callbacks observe the released current-request slot and a closed generation stream/client; the two added regressions cover this ordering directly",
+    "The source-free CPython 3.13 runtime imports the actual event factory, stores a sourced event, excludes text at expiry and runs SQL cleanup"
+  ],
+  "gates": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true,
+      "scope": "src and tests"
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-events-bandit-final.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-events-node.log",
+      "unchanged_by_terminal_settlement_fix": true
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-events-dashboard.log",
+      "unchanged_by_terminal_settlement_fix": true
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "included_in_full_suite": true,
+      "test": "tests/unit/tools/test_stage_runtime.py::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 remains incomplete; there was no deployment, restart, HA action or migration/modification of real private legacy data",
+    "This covers logical SQL projection, raw-field cleanup and event deletion; it does not claim forensic erasure of database storage media",
+    "Other diagnostic logs/journals, training and capture collectors, queued/completed requests, NLU command history, query caches, streams and frontend copies still require source expiry/revocation integration",
+    "Static canonical TTS response cache is distinct from captured user content; router last-response state is currently initialized empty and no assignment producer was found in the inspected runtime code",
+    "Wide authenticated conversation erasure across captures, clips, facts, contexts, events and pending jobs is not yet exposed or coordinated durably",
+    "Legacy private-copy migration and compatible runtime/data rollback rehearsal remain pending; policy event queries never infer provenance or confirmation from old rows",
+    "Automatic suggestion provenance/retention still requires integration with H3/H5; diagnostic metadata is not automatically a confirmed memory",
+    "Ambient pause, total mute with non-audio reactivation, fingerprint/group expiry, manually confirmed voice profiles, grouping review and calibrated acoustic evaluation remain pending",
+    "The heartbeat evidence is a synthetic generation graph, not full runtime or physical capture/playback acceptance; H0 live effects, H2 hardware/latency and H4-H6 remain open"
+  ]
+}
