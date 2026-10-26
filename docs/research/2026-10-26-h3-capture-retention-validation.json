@@ -1,0 +1,105 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "e186430e56bcffa93debdc31c63b8c01fd07db87",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 first implementation: ambient capture read-time expiry, persisted deadlines and global IDs, deadline-driven purge, durable clip cleanup and owned cancelled archive writes",
+  "roadmap_reference": "docs/plans/2026-10-25-stabilization-roadmap.md",
+  "contract_reference": "docs/plans/2026-10-25-h0-baseline-contracts.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-capture-final.xml",
+    "collected": 4227,
+    "passed": 4226,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 145.41,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "log": "/tmp/kza-h3-capture-final.log"
+  },
+  "new_tests": {
+    "connected_capture_privacy_cases": 26
+  },
+  "focused_validation": {
+    "passed": 232,
+    "runtime_s": 3.7,
+    "scope": "Capture retention and ambient unit tests before the final four invalid-timestamp cases and compiled-smoke extension"
+  },
+  "historical_vad_failure": {
+    "old_test": "tests/unit/ambient/test_language_quality.py::test_drops_low_vad",
+    "replacement": "tests/unit/ambient/test_language_quality.py::test_language_flag_preserves_low_vad_spanish",
+    "connected_test": "tests/integration/test_capture_retention.py::test_language_flag_preserves_far_field_text_while_distillation_filters_vad",
+    "contract": "Preserve low-energy Spanish text as language evidence; the distillation reader applies its own VAD filter. Both preserve the raw capture TTL.",
+    "resolved": true
+  },
+  "proven": [
+    "Ambient text, distillation batches, language aggregates and clip bytes exclude expired captures without relying on the cleanup worker",
+    "The exact 48-hour boundary is expired, including after reopening the SQLite store",
+    "New UUID capture IDs survive restart and differ between databases even when SQLite row IDs coincide",
+    "New capture expiry is persisted; extending configuration later or a future capture timestamp cannot extend its original deadline",
+    "Invalid capture timestamps and invalid/over-48-hour retention settings are rejected",
+    "Legacy schema migration preserves existing metadata and leaves newly introduced capture IDs and expiry fields null rather than fabricating them",
+    "Removing expired rows and queuing their known clip paths happen in one owned SQLite transaction",
+    "An unlink failure leaves a durable retry entry that survives restart and ignores the misleading fresh mtime of a known expired clip",
+    "Cancellation during a transaction or native unlink cannot abandon its actual outcome or forget the deletion intent",
+    "A clip that expires during disk read is not returned",
+    "The configured archive boundary prevents reading or deleting an outside file; failed cleanup remains reported",
+    "Cancelled archive writes wait actual native completion and route late or partial bytes through the durable discard callback",
+    "The connected transcriber cannot recreate a purged source through a late archive pointer",
+    "Purge runs at startup, schedules the earliest persisted deadline and wakes for a newly earlier capture instead of waiting the full hourly audit interval",
+    "The factory wires archive discard to the store and the source-free artifact exercises real temporary SQLite retention and byte cleanup"
+  ],
+  "implementation": {
+    "capture_retention_max_hours": 48,
+    "clock": "Injected epoch clock; persisted expiry is the capture-start/insertion minimum plus the initial retention",
+    "cleanup_table": "pending_audio_deletions in the capture database",
+    "cleanup_batch_limit": 256,
+    "pending_retry_s": 60,
+    "periodic_audit_max_s": 3600,
+    "legacy_backfill": false,
+    "real_private_data_migrated": false
+  },
+  "checks": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium_high_findings": 0,
+      "sql_notes": "Six scoped B608 exclusions document constant predicates with bound parameters; no user input is interpolated"
+    },
+    "node": {
+      "passed": 12,
+      "failed": 0
+    },
+    "authenticated_dashboard_smoke": "passed",
+    "source_free_runtime_smoke": "passed in the final full suite",
+    "chromium": "Not repeated; no frontend changes"
+  },
+  "remaining_h3": [
+    "Stable conversation IDs and explicit source links from capture/command/event paths to derived facts and jobs",
+    "30-day automatic facts and authenticated permanent-memory proposal confirmation/rejection",
+    "Retention of all other raw-text and clip copies: event history, persisted contexts and training/wake collectors",
+    "Durable conversation deletion across SQLite/Chroma, cancellation of pending derivation jobs and reconciliation after interrupted deletion",
+    "Review and migration rehearsal on a consistent private copy of legacy memory without invented provenance or implicit bulk deletion",
+    "Visible ambient pause and total mute with a non-audio reactivation control",
+    "48-hour unconfirmed voice fingerprint/group expiry and manually confirmed profile retention until manual deletion",
+    "Unknown-speaker grouping, abstention, durable review edits and authenticated review UI",
+    "Predeclared acoustic grouping calibration/evaluation and physical runtime acceptance"
+  ],
+  "limits": [
+    "Evidence covers synthetic captures and temporary SQLite/FLAC only; private household databases and clips were not migrated or deleted",
+    "Read-time capture expiry does not imply expiry of independent event, context, training or long-term memory copies",
+    "Cleanup reports pending work when the filesystem refuses deletion; cancellation cannot forcibly kill blocked native filesystem calls",
+    "Unreferenced legacy audio still uses the existing age/name orphan sweep and requires copy/release review, including database recreation with reused numeric filenames",
+    "No new dashboard clip route or voice-group interface was enabled",
+    "The user-approved fingerprint/profile policy is recorded but not implemented by this capture change",
+    "Complete runtime privacy, H2 global GC and hardware acceptance remain unverified"
+  ],
+  "dependencies_changed": false,
+  "production_changed": false,
+  "h3_complete": false
+}

@@ -156,6 +156,29 @@ manual. Los clips y las transcripciones siguen venciendo a las 48 h. Nombrar
 un grupo no le concede permisos; una sugerencia automática no equivale a una
 confirmación manual. La implementación y la migración siguen pendientes.
 
+Primer avance de H3, 26 de octubre: el store de capturas aplica TTL al leer
+texto, lotes de destilación, estadísticas y clips, sin esperar la purga. Las
+capturas nuevas tienen UUID y vencimiento persistido; ampliar la configuración
+no renueva ese plazo. Las filas previas conservan sus metadatos, sin asignarles
+UUID ni confirmaciones inventadas. El borrado de clips tiene una cola durable
+de reintento, y el worker se programa para el próximo vencimiento, también al
+arrancar. La escritura de archivo cancelada conserva ownership hasta su salida
+real y descarta el resultado tardío. Son pruebas con SQLite/FLAC sintéticos;
+no se migraron ni borraron datos privados reales.
+
+La retención de huellas autorizada arriba todavía no está implementada. Siguen
+pendientes los IDs de conversación y el vínculo de hechos con sus capturas,
+TTL de hechos y demás copias de texto, confirmación de recuerdos, borrado de
+derivados con tombstones para jobs, pausa/mute, agrupación de voces y su vista
+autenticada. El cierre de la retención de capturas no cierra H3.
+
+La [validación de capturas](../research/2026-10-26-h3-capture-retention-validation.json)
+del commit `e186430` registra **4226 passed, 1 xfailed**, sin fallos, en
+145,41 s. Pasan los 26 casos nuevos, Ruff, Bandit medio/alto, los doce tests
+del frontend, el smoke autenticado y el artefacto compilado. El caso histórico
+de VAD queda resuelto con conservación de texto y filtrado de destilación
+probados por separado; el xfail documentado del extractor regex se conserva.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

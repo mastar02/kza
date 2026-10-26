@@ -35,7 +35,7 @@ No se marcan como xfail ni se cambian sus expectativas durante esta clasificaci�
 
 | Test (archivo indicado arriba) | Causa verificada en el código y el traceback | Clasificación y prueba responsable del cierre |
 |---|---|---|
-| `test_drops_low_vad` | `is_spanish_keepable` ignora VAD expresamente; `lang_ok` mide idioma. La energía se filtra en el distiller. | Contrato anterior. H3 debe probar conservación del texto y filtrado del consumidor por separado; no restaurar un descarte de texto por energía. |
+| `test_drops_low_vad` | `is_spanish_keepable` ignora VAD expresamente; `lang_ok` mide idioma. La energía se filtra en el distiller. | Contrato anterior. H3 lo reemplaza por conservación del texto de baja energía y prueba conectada del filtrado de VAD en el consumidor, sin restaurar descarte de texto por energía. Ver `tests/integration/test_capture_retention.py`. |
 | `test_no_token_configured_means_open_access` | `require_admin` delega en `require_dashboard_session`; sin token devuelve 503 y no crea el usuario. | Expectativa insegura obsoleta. H1 reemplaza el caso por rechazo y ausencia de efectos en todos los endpoints privados. |
 | `TestEarconOnFailure::test_successful_call_stays_silent` | El mock sólo hace async `call_service_ws`; el nuevo `await confirm_entity_state` recibe un `MagicMock` síncrono y genera el earcon de fallo. | Doble incompleto. H1 conserva la confirmación real; probar aceptación con estado confirmado, no confirmado y excepción. |
 | `test_dispatch_emits_ha_action_dispatched_after_event` | Mismo `MagicMock` síncrono: el evento se emite con `success=False` y el error de `await`. | Doble incompleto. H1 verifica que el recibo y el evento describan el mismo resultado confirmado o incierto. |
