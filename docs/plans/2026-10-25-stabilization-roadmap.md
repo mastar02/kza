@@ -498,6 +498,13 @@ carrera previa de capturas que podía perder el localizador de un clip al
 revocar su conversación durante la purga; la primera suite fallida se conserva
 como evidencia y no se acepta como verde.
 
+La [destilación vinculada a fuentes y trabajos reales](2026-10-26-h3-memory-privacy.md#avance-destilación-vinculada-a-fuentes-y-trabajos-reales)
+ahora interrumpe inferencias al invalidarse el lote, conserva guardados async y
+nativos hasta su salida real y mantiene la lease tras cancelar al observador.
+Corrige también una retención de resultados tardíos desde el traceback del
+monitor compartido. `PRODUCERS` sigue pendiente hasta cubrir STT, tagger,
+buffers y comandos y conectar sus scopes al journal; este avance no cierra H3.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

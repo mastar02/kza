@@ -62,38 +62,57 @@ class SourcesInvalidated(RuntimeError):
 
 async def run_private(operation: Coroutine, available: Callable[[], bool]) -> Any:
     """Cancel invalidated work and retain its cleanup through caller cancellation."""
-    if not available():
-        operation.close()
-        raise SourcesInvalidated("prompt_sources_invalidated")
-
-    async def watch():
-        while available():
-            await asyncio.sleep(.01)
-
-    task = asyncio.create_task(operation)
-    monitor = asyncio.create_task(watch())
+    task = monitor = closing = result = child = failure = None
     try:
-        await asyncio.wait({task, monitor}, return_when=asyncio.FIRST_COMPLETED)
         if not available():
+            operation.close()
             raise SourcesInvalidated("prompt_sources_invalidated")
-        result = await task
-    finally:
-        for child in (task, monitor):
-            if not child.done():
-                child.cancel()
 
-        async def settle():
-            await asyncio.gather(task, monitor, return_exceptions=True)
-        closing = asyncio.create_task(settle())
+        async def watch():
+            while available():
+                await asyncio.sleep(.01)
+
+        task = asyncio.create_task(operation)
+        monitor = asyncio.create_task(watch())
         cancelled = False
-        while not closing.done():
-            try:
-                await asyncio.shield(closing)
-            except asyncio.CancelledError:
-                cancelled = True
-        closing.result()
+        invalidated = False
+        try:
+            await asyncio.wait({task, monitor}, return_when=asyncio.FIRST_COMPLETED)
+            if not available():
+                invalidated = True
+            else:
+                result = await task
+        except SourcesInvalidated:
+            invalidated = True
+        except asyncio.CancelledError:
+            # Do not propagate asyncio.wait's traceback: its private futures
+            # set can retain a provider's later result after real cleanup.
+            cancelled = True
+        except Exception as error:
+            failure = error
+        finally:
+            for child in (task, monitor):
+                if not child.done():
+                    child.cancel()
+
+            async def settle():
+                await asyncio.gather(task, monitor, return_exceptions=True)
+            closing = asyncio.create_task(settle())
+            while not closing.done():
+                try:
+                    await asyncio.shield(closing)
+                except asyncio.CancelledError:
+                    cancelled = True
+            closing.result()
         if cancelled:
             raise asyncio.CancelledError
-    if not available():
-        raise SourcesInvalidated("prompt_sources_invalidated")
-    return result
+        if failure is not None:
+            raise failure
+        if invalidated or not available():
+            raise SourcesInvalidated("prompt_sources_invalidated")
+        return result
+    finally:
+        # A cancelled caller may retain this frame in its traceback. Ownership
+        # stays with the actual children until cleanup, never with that observer.
+        operation = available = task = monitor = closing = result = child = failure = None
+        watch = settle = None

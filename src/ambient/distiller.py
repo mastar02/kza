@@ -11,11 +11,14 @@ import asyncio
 import json
 import inspect
 import logging
+import math
 import re
 import time
 from typing import Awaitable, Callable
 
 from src.memory.fact_ledger import MemoryOrigin, MemorySource
+from src.memory.prompt_context import SourcesInvalidated, run_private
+from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -33,21 +36,30 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _parse_facts(raw: str) -> list[dict]:
+def _parse_facts(raw: str, *, strict: bool = False) -> list[dict]:
     """Parse robusto del JSON del LLM (tolera fences y basura alrededor)."""
     text = raw.strip()
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    matcher = re.fullmatch if strict else re.search
+    fence = matcher(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
     start, end = text.find("["), text.rfind("]")
     if start == -1 or end <= start:
+        if strict:
+            raise ValueError("invalid_distillation_response")
         return []
     try:
-        data = json.loads(text[start : end + 1])
+        data = json.loads(text if strict else text[start : end + 1])
     except json.JSONDecodeError:
+        if strict:
+            raise ValueError("invalid_distillation_response") from None
         return []
     if not isinstance(data, list):
+        if strict:
+            raise ValueError("invalid_distillation_response")
         return []
+    if strict and len(data) > 64:
+        raise ValueError("invalid_distillation_response")
     facts = []
     for item in data:
         if (
@@ -55,11 +67,17 @@ def _parse_facts(raw: str) -> list[dict]:
             and item.get("fact")
             and item.get("category") in _VALID_CATEGORIES
         ):
-            facts.append({
+            value = {
                 "fact": str(item["fact"]),
                 "category": item["category"],
                 "confidence": float(item.get("confidence", 0.7)),
-            })
+            }
+            if strict and (type(item["fact"]) is not str or len(value["fact"]) > 4096
+                           or not math.isfinite(value["confidence"]) or not 0 <= value["confidence"] <= 1):
+                raise ValueError("invalid_distillation_response")
+            facts.append(value)
+        elif strict:
+            raise ValueError("invalid_distillation_response")
     return facts
 
 
@@ -154,6 +172,9 @@ class Distiller:
         lang_detect_fn: Callable[[str], tuple[str, float]] | None = None,
         drop_language: str | None = None,
         drop_language_min_prob: float = 0.9,
+        *,
+        privacy=None,
+        close_timeout_s: float = 1,
     ):
         """
         Args:
@@ -180,6 +201,14 @@ class Distiller:
             drop_language_min_prob: solo dropea cuando la confianza del idioma
                 ≥ umbral — evita tirar 'en' dudoso (un "okay/yeah" suelto).
         """
+        if type(close_timeout_s) not in (int, float) or not math.isfinite(close_timeout_s) or close_timeout_s <= 0:
+            raise ValueError("invalid_distillation_close_timeout")
+        if privacy is not None:
+            privacy.require_available()
+            if store.source_policy is not privacy.ledger:
+                raise ValueError("distillation_authority_mismatch")
+        self._privacy = privacy
+        self._policy = getattr(store, "source_policy", None)
         self._store = store
         self._chat = chat_fn
         self._store_fact = store_fact_fn
@@ -192,72 +221,208 @@ class Distiller:
         self.drop_language = drop_language
         self.drop_language_min_prob = drop_language_min_prob
         self._running = False
+        self._stop_event = asyncio.Event()
+        self._closed = False
+        self._close_timeout_s = close_timeout_s
+        self._cycles: set[asyncio.Task] = set()
+        self._callbacks: set[asyncio.Task] = set()
+        self._native = OwnedBlockingWork(capacity=1, close_timeout_s=close_timeout_s)
+        self._closing = None
+        if privacy is not None:
+            privacy.add_borrower(self.begin_close)
 
     async def distill_once(self) -> int:
-        """Un ciclo de destilación. Devuelve cantidad de hechos guardados."""
-        rows = await self._store.undistilled_live(
-            limit=200, min_vad_prob=self.min_vad_prob, spanish_only=self.spanish_only,
-            require_provenance=True,
-        )
-        if len(rows) < self.min_batch:
-            return 0
-        # Truncar el lote por presupuesto de chars del prompt (7B local)
-        batch, total = [], 0
-        for r in rows:
-            total += len(r["text"]) + 40
-            if total > self.max_batch_chars:
-                break
-            batch.append(r)
-        if not batch:
-            # max_batch_chars patológicamente chico: ni una utterance entra.
-            # Sin guard se llamaría al LLM con prompt vacío (riesgo de hechos
-            # alucinados) y mark_distilled([]) — ciclo en vano cada interval.
-            logger.warning(
-                "Distiller: batch vacío tras truncado por chars — revisar "
-                f"max_batch_chars={self.max_batch_chars}"
-            )
-            return 0
-        self._log_language_shadow(batch)
-        kept, dropped = self._apply_language_gate(batch)
-        if not kept:
-            # Todo el batch era el idioma dropeado (TV) — marcar para no
-            # reprocesar y salir sin gastar un ciclo de LLM.
-            await self._store.mark_distilled([r["id"] for r in dropped])
-            return 0
-        lines = [
-            f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['t0']))}] "
-            f"({r['room_id']}, {r['speaker']}): {r['text']}"
-            for r in kept
-        ]
-        prompt = "Transcripciones ambientales:\n" + "\n".join(lines)
+        """Own one cycle and actual callbacks even if its observer is cancelled."""
+        if self._closed:
+            raise RuntimeError("distillation_closed")
+        if any(not t.done() for t in self.snapshot_operations()):
+            raise RuntimeError("distillation_capacity")
+        if self._privacy is not None:
+            self._privacy.require_available()
+        task = asyncio.create_task(self._extract())
+        self._cycles.add(task)
+        task.add_done_callback(self._cycle_finished)
         try:
-            raw = await self._chat(prompt)
-        except Exception as e:
-            logger.warning(f"Distiller: LLM local falló ({e}) — reintento próximo ciclo")
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        finally:
+            task = None
+
+    def _cycle_finished(self, task):
+        self._cycles.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    def _available(self, sources):
+        if self._closed:
+            return False
+        if self._privacy is not None:
+            return self._privacy.sources_available(sources)
+        return self._policy is None or self._policy.sources_available(sources)
+
+    async def _extract(self) -> int:
+        try:
+            return await self._extract_body()
+        except SourcesInvalidated:
             return 0
-        facts = _parse_facts(raw)
-        stored = 0
-        for f in facts:
+        except Exception as error:
+            logger.warning("Distillation deferred: %s", type(error).__name__)
+            return 0
+
+    async def _extract_body(self) -> int:
+        rows = batch = kept = dropped = lines = prompt = raw = facts = fact = r = callback = None
+        sources = ()
+        try:
+            rows = await self._store.undistilled_live(
+                limit=200, min_vad_prob=self.min_vad_prob, spanish_only=self.spanish_only,
+                require_provenance=True,
+            )
+            if len(rows) < self.min_batch:
+                return 0
+            # Truncar el lote por presupuesto de chars del prompt (7B local)
+            batch, total = [], 0
+            for r in rows:
+                total += len(r["text"]) + 40
+                if total > self.max_batch_chars:
+                    break
+                batch.append(r)
+            if not batch:
+                # max_batch_chars patológicamente chico: ni una utterance entra.
+                # Sin guard se llamaría al LLM con prompt vacío (riesgo de hechos
+                # alucinados) y mark_distilled([]) — ciclo en vano cada interval.
+                logger.warning(
+                    "Distiller: batch vacío tras truncado por chars — revisar "
+                    f"max_batch_chars={self.max_batch_chars}"
+                )
+                return 0
+            rows = r = None
+            sources = tuple(MemorySource(r["capture_id"], r["conversation_id"], r["t0"],
+                                        r["expires_at"], MemoryOrigin.AMBIENT) for r in batch)
+            if not self._available(sources):
+                return 0
+            self._log_language_shadow(batch)
+            kept, dropped = self._apply_language_gate(batch)
+            dropped_ids = [r["id"] for r in dropped]
+            if not kept:
+                # Todo el batch era el idioma dropeado (TV) — marcar para no
+                # reprocesar y salir sin gastar un ciclo de LLM.
+                await self._store.mark_distilled(dropped_ids)
+                return 0
+            sources = tuple(MemorySource(r["capture_id"], r["conversation_id"], r["t0"],
+                                        r["expires_at"], MemoryOrigin.AMBIENT) for r in kept)
+            kept_ids = [r["id"] for r in kept]
+            lines = [
+                f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['t0']))}] "
+                f"({r['room_id']}, {r['speaker']}): {r['text']}"
+                for r in kept
+            ]
+            prompt = "Transcripciones ambientales:\n" + "\n".join(lines)
+            batch = kept = dropped = lines = r = None
+            raw = await run_private(self._chat(prompt), lambda: self._available(sources))
+            prompt = None
+            if type(raw) is not str or len(raw) > 65536:
+                logger.warning("Distillation deferred: invalid response size or type")
+                return 0
+            facts = _parse_facts(raw, strict=True)
+            raw = None
+            stored = 0
+            for fact in facts:
+                if not self._available(sources):
+                    raise SourcesInvalidated("distillation_sources_invalidated")
+                callback = asyncio.create_task(self._save(fact, sources))
+                self._callbacks.add(callback)
+                callback.add_done_callback(self._callbacks.discard)
+                try:
+                    if await run_private(self._observe_save(callback), lambda: self._available(sources)):
+                        stored += 1
+                finally:
+                    callback = None
+            # Mark retained input only after all facts are durable. A partial
+            # failure retries with deterministic IDs, without renewing prior TTLs.
+            if not self._available(sources):
+                return 0
+            completed = kept_ids + dropped_ids if stored == len(facts) else dropped_ids
+            await self._store.mark_distilled(completed)
+            if stored:
+                logger.info("Distillation stored %d facts from %d captures", stored, len(kept_ids))
+            return stored
+        finally:
+            rows = batch = kept = dropped = lines = prompt = raw = facts = fact = r = callback = None
+            sources = ()
+
+    async def _observe_save(self, task):
+        try:
+            return await asyncio.shield(task)
+        finally:
+            task = None
+
+    def _save_native(self, fact, sources):
+        try:
+            if not self._available(sources):
+                return False
+            self._store_fact(fact["fact"], fact["category"], confidence=fact["confidence"],
+                             metadata={"origin": "ambient"}, sources=sources)
+            return True
+        except Exception as error:
+            logger.warning("Distillation storage deferred: %s", type(error).__name__)
+            return False
+
+    async def _save(self, fact, sources):
+        try:
+            if not self._available(sources):
+                return False
+            if inspect.iscoroutinefunction(self._store_fact):
+                await self._store_fact(fact["fact"], fact["category"], confidence=fact["confidence"],
+                                       metadata={"origin": "ambient"}, sources=sources)
+                return True
+            return await self._native.run(self._save_native, fact, sources)
+        except Exception as error:
+            logger.warning("Distillation storage deferred: %s", type(error).__name__)
+            return False
+        finally:
+            fact, sources = None, ()
+
+    def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
+        """Expose actual retained cycles, callbacks and native operations on-loop."""
+        return tuple(self._cycles | self._callbacks | self._native._tasks)
+
+    def resource_status(self) -> dict:
+        """Report bounded stages without content, IDs, sources or exceptions."""
+        return {"closed": self._closed, "cycles": len(self._cycles),
+                "store_callbacks": len(self._callbacks), "native_operations": self._native.status()["operations"],
+                "closing": self._closing is not None and not self._closing.done()}
+
+    def begin_close(self) -> asyncio.Task:
+        """Stop admission and retain actual provider/storage exit before lease release."""
+        self._closed = True
+        self.stop()
+        if self._closing is None:
+            for task in self._cycles:
+                task.cancel()
+            async def finish():
+                await asyncio.gather(*self._cycles, return_exceptions=True)
+                await asyncio.gather(*self._callbacks, return_exceptions=True)
+                await self._native.begin_close()
+            self._closing = asyncio.create_task(finish())
+        return self._closing
+
+    async def aclose(self) -> None:
+        """Bound observation while keeping actual cleanup registered after timeout."""
+        closing = self.begin_close()
+        cancelled = False
+        while not closing.done():
             try:
-                # to_thread: LongTermMemory.store_fact es sync (ChromaDB add
-                # con cómputo de embeddings) — no bloquear el event loop.
-                sources = tuple(MemorySource(r["capture_id"], r["conversation_id"], r["t0"],
-                                             r["expires_at"], MemoryOrigin.AMBIENT) for r in kept)
-                arguments = {"confidence": f["confidence"], "metadata": {"origin": "ambient"}, "sources": sources}
-                if inspect.iscoroutinefunction(self._store_fact):
-                    await self._store_fact(f["fact"], f["category"], **arguments)
-                else:
-                    await asyncio.to_thread(self._store_fact, f["fact"], f["category"], **arguments)
-                stored += 1
-            except Exception as e:
-                logger.warning(f"Distiller: store_fact falló: {e}")
-        # Mark retained input only after all facts are durable. A partial
-        # failure retries with deterministic IDs, without renewing prior TTLs.
-        completed = kept + dropped if stored == len(facts) else dropped
-        await self._store.mark_distilled([r["id"] for r in completed])
-        if stored:
-            logger.info(f"Distiller: {stored} hechos de {len(kept)} utterances")
-        return stored
+                async with asyncio.timeout(self._close_timeout_s):
+                    await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                cancelled = True
+            except TimeoutError as error:
+                raise WorkCloseTimeout("distillation_resources_still_running") from error
+        closing.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
     def _apply_language_gate(
         self, batch: list[dict]
@@ -300,9 +465,17 @@ class Distiller:
 
     async def run_forever(self) -> None:
         """Loop del job (lo lanza AmbientTranscriber.start)."""
+        if self._closed:
+            raise RuntimeError("distillation_closed")
         self._running = True
+        self._stop_event.clear()
         while self._running:
-            await asyncio.sleep(self.interval_hours * 3600)
+            try:
+                async with asyncio.timeout(self.interval_hours * 3600):
+                    await self._stop_event.wait()
+                break
+            except TimeoutError:
+                pass
             try:
                 await self.distill_once()
             except asyncio.CancelledError:
@@ -312,3 +485,4 @@ class Distiller:
 
     def stop(self) -> None:
         self._running = False
+        self._stop_event.set()

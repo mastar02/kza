@@ -1130,6 +1130,61 @@ La suite sin instrumentación no resuelve la aceptación integrada de GC,
 arranque, grandes historiales ni hardware; H0–H6 y la única release final
 conservan su alcance. Producción permanece sin cambios.
 
+## Avance: destilación vinculada a fuentes y trabajos reales
+
+La destilación ambiental valida las fuentes concretas antes de construir el
+prompt y las vuelve a comprobar durante la inferencia, cada guardado y el ack
+del lote. Una revocación o un plazo vencido detiene el modelo cooperativo;
+un proveedor que no coopera conserva su scope pendiente hasta salir. Un lote
+mixto pierde la derivación completa si se revoca alguna de sus fuentes usadas.
+Las filas ajenas o una transacción de revocación que termina en rollback pueden
+reintentarse sin marcar una extracción inexistente como completada.
+
+El ciclo libera filas, listas auxiliares y respuestas temporales al salir;
+antes de esperar al modelo conserva sólo el prompt seleccionado y su
+procedencia. No mantiene las otras filas leídas ni las descartadas por idioma.
+El parser distingue un array vacío válido de un error o JSON malformado: sólo
+el primero permite confirmar un lote sin hechos. Las respuestas se limitan a
+65536 caracteres, 64 hechos y 4096 caracteres por hecho, con confianza finita
+entre cero y uno. El helper tolerante anterior conserva su contrato para
+consumidores que no confirman trabajo durable.
+
+Cada instancia admite un único ciclo o guardado aún activo. Cancelar al
+observador no oculta el guardado: el scope conserva tanto callbacks async
+(incluida la delegación nativa de `LongTermMemory.astore_fact`) como adaptadores
+síncronos. Estos últimos verifican otra vez las fuentes antes de entrar al
+callback, también si esperaron en el pool general. El callback de producción
+conserva su guard de catálogo; el scope no sustituye la validación final del
+writer ni autoriza un callback externo a ignorar la procedencia recibida.
+
+El builder real vincula la destilación a `PrivacyServices` antes del primer
+trabajo. El cierre limita la observación, pero mantiene registrado el drain
+real y la lease hasta que terminan modelo y guardados. `AmbientPath.stop`
+conserva su cierre aunque se cancele al llamador y cierra el store después de
+la destilación real. Detener el job periódico despierta su espera de seis horas
+sin necesidad de iniciar otro ciclo.
+
+Se corrige además un enlace en `run_private`: el traceback de cancelar
+`asyncio.wait` conservaba su conjunto interno de futures y el resultado tardío
+del proveedor. El monitor termina la limpieza y propaga una cancelación nueva,
+liberando sus enlaces a operación, tasks, resultado y callback de autoridad.
+Mantiene la precedencia de cancelación durante una invalidación y frente a
+cancelaciones repetidas. Dos ensayos retienen al observador o a la excepción y
+comprueban la liberación del resultado con weakrefs, sin forzar ni desactivar GC.
+
+Los ensayos conectan capturas y catálogo reales, modelo tardío, guardados nativos
+y async con delegación real, fallo de commit, cuarentena de respuestas inválidas,
+pool general saturado, cierre cancelado y wiring del builder. La prueba del
+artefacto compilado construye el mismo builder, guarda un hecho con sus fuentes
+y revoca otro lote durante el modelo, sin iniciar micrófonos ni cargar modelos.
+
+El participante `PRODUCERS` sigue sin darse por completo: faltan el seguimiento
+real de STT, tagger, taps, segmentación y captura de comandos, y su conexión al
+journal. Este avance prepara el scope de destilación; no emite un recibo que
+prometa haber borrado todos los productores. Los otros cuatro participantes,
+voces, pausa/mute, migración y aceptación de runtime/GC y hardware siguen
+pendientes dentro del alcance completo H0–H6. Producción no cambia.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
@@ -1139,7 +1194,7 @@ conservan su alcance. Producción permanece sin cambios.
 2. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
    frente a productores y guardados tardíos. Conectar al journal los participantes
-   restantes y los lotes de destilación en curso; contrastar los destinos y clips
+   restantes y los scopes de destilación ya retenidos; contrastar los destinos y clips
    legacy indeterminados del inventario; completar la reconstrucción del índice
    vivo y la restauración compatible con autoridad vigente. Agregar selección y recibos en el
    dashboard autenticado después de cerrar esas garantías. La limpieza local

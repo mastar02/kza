@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
 from src.ambient.types import AmbientUtterance, RawSegment
@@ -356,9 +356,12 @@ class AmbientPath:
     transcriber: AmbientTranscriber
     store: object
     distiller: object | None
+    _closing: asyncio.Task | None = field(default=None, init=False, repr=False)
 
     async def start(self) -> None:
         """Arrancar: store → workers → job del distiller (si hay memoria)."""
+        if self._closing is not None:
+            raise RuntimeError("ambient_path_closed")
         await self.store.init()
         await self.transcriber.start()
         if self.distiller is not None:
@@ -369,10 +372,19 @@ class AmbientPath:
 
     async def stop(self) -> None:
         """Apagar en orden inverso; seguro de llamar sin start() previo."""
-        if self.distiller is not None:
-            self.distiller.stop()
-        await self.transcriber.stop()
-        await self.store.close()
+        await asyncio.shield(self.begin_close())
+
+    def begin_close(self) -> asyncio.Task:
+        """Retain actual distillation and store cleanup after observer cancellation."""
+        if self._closing is None:
+            distilling = self.distiller.begin_close() if self.distiller is not None else None
+            async def finish():
+                await self.transcriber.stop()
+                if distilling is not None:
+                    await distilling
+                await self.store.close()
+            self._closing = asyncio.create_task(finish())
+        return self._closing
 
 
 def _build_ambient_stt_engine(stt_cfg: dict, stt_base_cfg: dict):
@@ -573,6 +585,7 @@ def build_ambient_path(
             ),
             drop_language=dis_cfg.get("drop_language"),
             drop_language_min_prob=dis_cfg.get("drop_language_min_prob", 0.9),
+            privacy=privacy,
         )
 
     return AmbientPath(tap=tap, transcriber=transcriber, store=store, distiller=distiller)
