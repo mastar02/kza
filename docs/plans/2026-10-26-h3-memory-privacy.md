@@ -101,6 +101,9 @@ que volvió a activarse mientras esperaba. La carga y escritura de disco se
 ejecutan fuera del loop, sin mantener el lock del contexto durante I/O. Se
 registran los trabajos nativos incluso si se cancela al llamador; el cierre
 espera su salida real o comunica el vencimiento de su presupuesto.
+Un contexto ya cargado se consulta sin ocupar otro worker, incluso con las ocho
+operaciones nativas en curso. La reactivación se detecta mediante una revisión
+propia de actividad, sin depender de que cambie el reloj de pared.
 
 Esta integración no expone todavía un borrado amplio de conversación: faltan
 las capturas/clips y otras copias, sus productores y la coordinación durable
@@ -110,7 +113,8 @@ preferencias legacy en confirmaciones manuales.
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a eventos y colectores que aún conservan copias
-   de texto o audio, y auditar otras rutas de persistencia y caché.
+   de texto o audio, solicitudes de cola, últimas respuestas y otras rutas de
+   persistencia y caché.
 2. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
    frente a productores y guardados tardíos. La limpieza local del catálogo no

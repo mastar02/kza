@@ -1,0 +1,93 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "2bc494f085367ee2725a848b66efc9f79b797fa7",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 raw context and summary expiry, verified capture sources through the orchestrator, isolated policy-v2 snapshots, committed revocation reads and ordered file writes, cancellation ownership and active-session races",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-context-final-2.xml",
+    "collected": 4292,
+    "passed": 4291,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 151.86,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "log": "/tmp/kza-h3-context-final-2.log"
+  },
+  "new_connected_cases": 16,
+  "focused_validation": {
+    "passed": 37,
+    "runtime_s": 2.52,
+    "scope": "Final context privacy races plus compaction unit tests",
+    "log": "/tmp/kza-h3-context-final-races-2.log"
+  },
+  "earlier_full_revision": {
+    "commit": "4b6dfb4",
+    "passed": 4290,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 163.3,
+    "log": "/tmp/kza-h3-context-final.log"
+  },
+  "proven": [
+    "Both voice routes preserve the actual capture source; the orchestrated user and assistant turns use the same capture/conversation UUIDs and capture timestamp as short-term memory",
+    "Raw context projections exclude a capture at its original expiry boundary: text prompt, chat, recent entities, history and serialization",
+    "Compaction and recompaction retain all contributing sources; summary and entity hints expire at the earliest source deadline, without snapshot, access or rehydration renewal",
+    "Legacy context files remain unchanged outside policy_v2; a fresh last_seen field cannot make an unsourced summary usable",
+    "Late compaction cannot restore context after expiry, clearing, replacement or a committed conversation revocation",
+    "Final compaction preserves a context reactivated during its await, including when the wall clock repeats; activity and privacy use separate revisions",
+    "File commit under the source transaction precedes a concurrent tombstone; queued writes starting after a tombstone are rejected, and committed older files are no longer readable",
+    "A fresh FactLedger instance loads committed revocations; context maintenance purges the revoked policy snapshot",
+    "Known expired or revoked snapshots are purged at startup/maintenance; uncommitted temporary files left by failed atomic replacement and failed unlink are retried by cleanup",
+    "Snapshot files use mode 0600 and the new policy directory uses private creation permissions",
+    "Disk hydration releases the context lock, remains tracked after caller cancellation and does not block an unrelated in-memory context read",
+    "Standalone context workers remain owned after cancellation and close waits for their actual exit; the runtime uses the shared bounded memory worker scope",
+    "An already loaded context requires no new native slot even with all eight memory workers occupied",
+    "A committed conversation revocation also removes raw short-term text from prompts; the next direct capture starts a fresh interaction scope",
+    "The source-free compiled CPython 3.13 artifact exercises context snapshot save, read-time expiry, failed rehydration of expired text and actual file purge"
+  ],
+  "gates": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true,
+      "log": "/tmp/kza-h3-context-ruff-2.log"
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-context-bandit-2.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-context-node.log",
+      "unchanged_by_final_backend_revision": true
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-context-dashboard.log",
+      "unchanged_by_final_backend_revision": true
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "included_in_full_suite": true,
+      "test": "tests/unit/tools/test_stage_runtime.py::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 remains incomplete; no deployment, restart, HA action or migration of actual private data was performed",
+    "This is not yet a dashboard-authorized conversation erasure across raw captures, clips, facts, all context copies and pending jobs; there is no HTTP endpoint claiming that completed scope",
+    "Event logs, collectors, queued/completed request DTOs, last-response state, other caches and alternate persistence routes still need provenance and raw text/audio retention integration",
+    "Known policy snapshots use earliest-source expiry; legacy snapshots are not hydrated or modified, and actual legacy migration still needs a private-copy rehearsal with compatible data/runtime rollback",
+    "Tombstone reads use the initialized sole policy writer cache; file commits use its SQLite transaction. No support is claimed for independently mutating the private catalogue outside that writer",
+    "The embedded Chroma lifetime and full runtime cleanup/resource acceptance, including the older no-persister cleanup thread path, remain H4/H6 work",
+    "Ambient pause, total mute with non-audio reactivation, fingerprint/group expiry, manually confirmed voice profiles, grouping/review UI and calibrated acoustic evaluation remain pending",
+    "H0 live inventory/effects evidence and H2 hardware/full-runtime latency acceptance remain open, as do H4, H5 and H6"
+  ]
+}

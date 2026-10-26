@@ -182,10 +182,29 @@ Se implementan tombstones de conversación para impedir nuevas derivaciones en
 el catálogo, y una cola durable de reconciliación con Chroma. Esto todavía no
 constituye un borrado coordinado de conversación entre todos los almacenes.
 
+El avance de contextos extiende la procedencia y el vencimiento a los turnos del
+orquestador, los resúmenes y sus snapshots privados. El plazo de un resumen
+depende de sus capturas, aunque se compacte nuevamente o se rehidrate otra
+sesión. Fuentes vencidas o revocadas se excluyen de texto, chat, entidades y
+serialización. Se rechazan resultados de compacción tardíos y escrituras que
+llegan después del tombstone; un snapshot no elimina un contexto que volvió
+a activarse mientras esperaba. Los archivos nuevos viven separados de los JSON
+legacy, que no se importan ni se modifican. La carga, escritura y purga de esos
+snapshots tienen seguimiento de trabajo nativo fuera del loop.
+
 La retención de huellas autorizada arriba todavía no está implementada. Siguen
-pendientes las demás copias de texto y audio, el borrado completo de conversación,
+pendientes otras copias de texto y audio (eventos, colectores, colas y caches),
+el borrado completo de conversación,
 pausa/mute, agrupación de voces, su vista autenticada y evaluación acústica, y la
 migración ensayada sobre copia de datos reales. Este avance no cierra H3.
+
+La [validación de contextos](../research/2026-10-26-h3-context-privacy-validation.json)
+del commit `2bc494f` registra **4291 passed, 1 xfailed**, sin fallos, en
+151,86 s. Incluye 16 casos nuevos de vencimiento, resúmenes tardíos, escrituras
+ordenadas respecto del tombstone, cargas canceladas, reactivación de contexto
+y presión de los ocho workers. Pasan Ruff, Bandit medio/alto y el artefacto
+compilado con guardado, vencimiento y purga de snapshots. Los 18 tests del
+frontend y el smoke autenticado también pasan; no hubo cambios de frontend.
 
 La [validación de memoria](../research/2026-10-26-h3-memory-retention-validation.json)
 del commit `cfa949c` registra **4275 passed, 1 xfailed**, sin fallos, en
