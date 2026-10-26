@@ -354,7 +354,7 @@ revocadas de limpieza completa; la ausencia de un participante bloquea esa
 
 El manifiesto obligatorio incluye productores, capturas/clips, contextos,
 índice semántico, eventos, diagnósticos, colectores, streams, sugerencias y voces.
-Sólo está conectado el driver del índice. Los demás conservan recibos pendientes
+Ese avance conectó sólo el driver del índice. Los demás conservaban recibos pendientes
 hasta implementar la coordinación de sus productores y copias. El inventario
 encontró texto sin política común en logs estructurados, métricas JSONL y
 Logstash, el bus de eventos vivos y los JSON del colector de conversaciones.
@@ -410,6 +410,57 @@ posterior reprodujo la retención de una excepción original cuando fallaba su
 recibo. El candidato final incluye su corrección y tres regresiones para
 excepciones, resultados inválidos y campos extra. No cierra H3.
 
+## Avance: participante de capturas y archivos tardíos
+
+El runtime conecta también `CaptureEraser` al journal antes de construir el
+ambient path. Registra la base y el directorio de audio aunque ambient o keep_audio
+estén deshabilitados. Antes de arrancar productores, attach verifica la misma
+autoridad y store del archiver y registra sus ubicaciones efectivas. Los destinos
+anteriores siguen siendo obligatorios. Las rutas volátiles o URI no pueden
+sustituir la persistencia de las capturas gestionadas por esta política.
+
+Cada clip nuevo con autoridad usa `policy_v1/<capture_uuid>.flac`; dos bases con
+el mismo rowid no comparten archivo. Antes del encoder, el store guarda su ruta,
+conversación y vencimiento en `audio_write_intents`. Así se conserva el localizador
+si el proceso cae entre escribir y adjuntar el clip. El adjunto aceptado retira
+el intent; un adjunto cancelado o rechazado pasa por la cola durable de unlink.
+Los archivos y la base nueva son privados (0600); el directorio final nuevo es
+0700. No se renombraron ni modificaron clips reales existentes.
+
+El archiver limita a ocho sus escrituras nativas retenidas. Valida la fuente
+antes de reservar, después de reservar, al entrar al worker y al volver del
+encoder. El transcriber la comprueba nuevamente después de esperar al wake
+textual. Una captura revocada no inicia otro archivo ni publica un resultado
+tardío. El encoder que ya entró permanece registrado hasta su salida real,
+incluso si se cancela repetidamente al llamador.
+
+El participante espera los encoders de la conversación antes de retirar sus
+filas, scope y localizadores. La purga TTL conserva intents y pospone unlink
+mientras su encoder siga activo; por eso no pierde la ruta si corre antes que
+el borrado. Al retirar filas, el store registra primero los archivos pendientes
+en la misma transacción. Un unlink fallido deja la operación pendiente con su
+contador, incluso tras reiniciar. Los clips y texto de otra conversación se
+conservan. La lease de privacidad espera también los encoders vinculados cuando
+se agota el presupuesto de observación del cierre.
+
+La limpieza abre sólo bases existentes. Una base ausente no se recrea; si quedan
+FLACs sin base que permita atribuirlos, el destino sigue pendiente. Una base
+corrupta o un directorio ilegible tampoco equivalen a ausencia. El recorrido de
+audio no usa rglob como prueba de vacío, porque Python 3.13 puede ocultar errores
+de traversal. Las rutas de archivos se restringen a las raíces registradas para
+esa base: incluye un keep_audio.dir anterior, pero no una ruta arbitraria en
+una fila. Un localizador fuera de esas raíces queda pendiente, sin eliminar
+archivos ajenos. No se atribuyen conversaciones inventadas a clips legacy.
+
+Este paso conecta dos de los diez participantes, capturas e índice. No drena
+todavía STT, lectores de audio, buffers del tap ni lotes de destilación; los
+participantes de productores, voces y streams deben cubrir esas copias. Tampoco
+agrega un endpoint global ni declara completo el borrado de conversación. Resta
+mantener la purga de 48 h sobre todos los destinos registrados cuando ambient
+está apagado y sobre raíces anteriores sin un pedido de borrado; la purga actual
+del transcriber continúa dependiendo del ambient path activo. La migración y
+restauración de datos reales y el resto de H3 siguen pendientes.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,
@@ -419,7 +470,8 @@ excepciones, resultados inválidos y campos extra. No cierra H3.
 2. Coordinar el borrado autenticado de conversación entre capturas, clips,
    contexto corto, resúmenes, hechos e índices; conservar tombstones y reintentos
    frente a productores y guardados tardíos. Conectar al journal los participantes
-   restantes y los lotes de destilación en curso; ampliar la limpieza sin recall
+   restantes y los lotes de destilación en curso; mantener la purga de capturas
+   históricas aunque ambient esté apagado; ampliar la limpieza sin recall
    a vencimientos y borrados individuales. Agregar selección y recibos en el
    dashboard autenticado después de cerrar esas garantías. La limpieza local
    del catálogo y del índice no sustituye la operación completa.

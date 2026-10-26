@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from uuid import uuid4
 import aiosqlite
 
 from src.ambient.types import SOURCE_VALUES, AmbientUtterance
+from src.memory.fact_ledger import MemorySource
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,10 @@ CREATE TABLE IF NOT EXISTS pending_audio_deletions (
 );
 CREATE TABLE IF NOT EXISTS capture_conversations (
   id TEXT PRIMARY KEY, room_id TEXT NOT NULL, started_at REAL NOT NULL, last_seen_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audio_write_intents (
+  path TEXT PRIMARY KEY, utterance_id INTEGER NOT NULL,
+  conversation_id TEXT NOT NULL, expires_at REAL NOT NULL
 );
 """
 
@@ -111,6 +117,8 @@ class AmbientStore:
         *, clock: Callable[[], float] | None = None,
         conversation_idle_s: float = 120,
         source_policy=None,
+        audio_inflight: Callable[[str], bool] | None = None,
+        cleanup_audio_roots: tuple[str, ...] = (),
     ):
         """Inicializar el store.
 
@@ -127,10 +135,14 @@ class AmbientStore:
         if type(retention_hours) not in (int, float) or not math.isfinite(retention_hours) or not 0 < retention_hours <= 48:
             raise ValueError("Capture retention must be positive and at most 48 hours")
         self.db_path = db_path
+        if source_policy is not None and (not db_path or db_path == ':memory:' or str(db_path).startswith('file:')):
+            raise ValueError('capture_policy_requires_persistent_file')
         if type(conversation_idle_s) not in (int, float) or not math.isfinite(conversation_idle_s) or not 0 < conversation_idle_s <= 3600:
             raise ValueError("invalid_capture_conversation_idle")
         self.conversation_idle_s = conversation_idle_s
         self.source_policy = source_policy
+        self.audio_inflight = audio_inflight or (lambda _: False)
+        self._cleanup_audio_roots = tuple(Path(root) for root in cleanup_audio_roots)
         self.retention_hours = retention_hours
         self.audio_dir = Path(audio_dir) if audio_dir else None
         self._db: aiosqlite.Connection | None = None
@@ -140,13 +152,40 @@ class AmbientStore:
         self.expiry_changed = asyncio.Event()
         self._next_expiry: float | None = None
 
-    async def init(self) -> None:
+    async def init(self, *, existing_only: bool = False) -> bool:
         """Crear/abrir la DB y aplicar el schema."""
-        await asyncio.to_thread(Path(self.db_path).parent.mkdir, parents=True, exist_ok=True)
-        self._db = await aiosqlite.connect(self.db_path)
+        return await self._finish_owned(self._initialize(existing_only=existing_only))
+
+    async def _initialize(self, *, existing_only: bool) -> bool:
+        if self._db is not None:
+            return True
+        def prepare():
+            if self.db_path == ':memory:' and not existing_only:
+                return self.db_path
+            path = Path(self.db_path)
+            if existing_only:
+                try:
+                    path.stat()
+                except FileNotFoundError:
+                    return None
+                return path.resolve().as_uri() + '?mode=rw'
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                os.fchmod(descriptor, 0o600)
+            finally:
+                os.close(descriptor)
+            return self.db_path
+        location = await asyncio.to_thread(prepare)
+        if location is None:
+            return False
+        self._db = await aiosqlite.connect(location, uri=existing_only)
         self._db.row_factory = aiosqlite.Row
         await self._db.create_function("conversation_live", 1, self._conversation_live)
         await self._db.executescript(_SCHEMA)
+        cur = await self._db.execute('PRAGMA table_info(pending_audio_deletions)')
+        if 'conversation_id' not in {row['name'] for row in await cur.fetchall()}:
+            await self._db.execute('ALTER TABLE pending_audio_deletions ADD COLUMN conversation_id TEXT')
         cur = await self._db.execute("PRAGMA table_info(utterances)")
         existing = {row["name"] for row in await cur.fetchall()}
         for col, ddl in _MIGRATIONS.items():
@@ -156,6 +195,7 @@ class AmbientStore:
         await self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_utt_capture ON utterances(capture_id) WHERE capture_id IS NOT NULL")
         await self._db.commit()
         logger.info("AmbientStore listo (%s, TTL %.1fh)", self.db_path, self.retention_hours)
+        return True
 
     async def close(self) -> None:
         """Cerrar la conexión."""
@@ -283,6 +323,22 @@ class AmbientStore:
             return cur.lastrowid
         return await self._mutate(insert)
 
+    async def reserve_audio_path(self, utt_id: int, path: str, source: MemorySource) -> str | None:
+        """Persist the file locator before a policy-bound encoder may create it."""
+        if self.source_policy is None or not self.source_policy.sources_available((source,)):
+            return None
+        path = await asyncio.to_thread(lambda: str(self._audio_path(path).resolve()))
+        async def reserve():
+            cur = await self._db.execute('SELECT * FROM utterances WHERE id=:id AND '+_LIVE,
+                self._retention_parameters() | {'id': utt_id})  # nosec B608 -- Constant predicate, bound values.
+            row = await cur.fetchone()
+            if row is None or row['capture_id'] != source.capture_id or row['conversation_id'] != source.conversation_id or not self.source_policy.sources_available((source,)):
+                return None
+            await self._db.execute('INSERT OR IGNORE INTO audio_write_intents VALUES (?,?,?,?)',
+                (path, utt_id, source.conversation_id, min(row['expires_at'], source.expires_at)))
+            return path
+        return await self._mutate(reserve)
+
     async def set_audio_path(self, utt_id: int, path: str) -> bool:
         """Registrar la ruta del FLAC archivado para una utterance.
 
@@ -304,6 +360,7 @@ class AmbientStore:
             )
             if cur.rowcount == 0:
                 await self._queue_audio_deletion(path)
+            await self._db.execute('DELETE FROM audio_write_intents WHERE path=?', (path,))
             return cur.rowcount > 0
 
         attached = await self._mutate(attach)
@@ -495,10 +552,16 @@ class AmbientStore:
 
         async def expire():
             cur = await self._db.execute(
-                "SELECT audio_path FROM utterances WHERE (" + _EXPIRED + ") AND audio_path IS NOT NULL", parameters,  # nosec B608 -- Predicate is constant; all values use bound parameters.
+                "SELECT audio_path, conversation_id FROM utterances WHERE (" + _EXPIRED + ") AND audio_path IS NOT NULL", parameters,  # nosec B608 -- Predicate is constant; all values use bound parameters.
             )
             for row in await cur.fetchall():
-                await self._queue_audio_deletion(row["audio_path"])
+                await self._queue_audio_deletion(row["audio_path"], row['conversation_id'])
+            cur = await self._db.execute('''SELECT * FROM audio_write_intents WHERE expires_at<=:now
+                OR NOT conversation_live(conversation_id) OR utterance_id NOT IN (SELECT id FROM utterances)''', parameters)
+            for row in await cur.fetchall():
+                await self._queue_audio_deletion(row['path'], row['conversation_id'])
+                if not self.audio_inflight(row['path']):
+                    await self._db.execute('DELETE FROM audio_write_intents WHERE path=?', (row['path'],))
             cur = await self._db.execute("DELETE FROM utterances WHERE " + _EXPIRED, parameters)  # nosec B608 -- Predicate is constant; all values use bound parameters.
             await self._db.execute("DELETE FROM capture_conversations WHERE id NOT IN (SELECT conversation_id FROM utterances WHERE conversation_id IS NOT NULL)")
             return cur.rowcount
@@ -514,17 +577,43 @@ class AmbientStore:
             logger.info("AmbientStore expiry: rows=%d audio=%d orphans=%d", deleted, unlinked, orphans)
         return deleted
 
-    async def _queue_audio_deletion(self, path: str) -> None:
+    async def erase_conversation(self, conversation_id: str) -> dict:
+        """Retire revoked rows and durable locators after their encoders drain."""
+        if self.source_policy is None or not self.source_policy.authority_available:
+            raise RuntimeError('privacy_authority_unavailable')
+        if not self.source_policy.conversation_revoked(conversation_id):
+            raise PermissionError('capture_erasure_requires_revocation')
+        async def erase():
+            cur = await self._db.execute('SELECT audio_path AS path FROM utterances WHERE conversation_id=? AND audio_path IS NOT NULL UNION SELECT path FROM audio_write_intents WHERE conversation_id=?', (conversation_id, conversation_id))
+            paths = [row['path'] for row in await cur.fetchall()]
+            if any(self.audio_inflight(path) for path in paths):
+                raise RuntimeError('capture_encoders_still_running')
+            for path in paths:
+                await self._queue_audio_deletion(path, conversation_id)
+            await self._db.execute('DELETE FROM audio_write_intents WHERE conversation_id=?', (conversation_id,))
+            cur = await self._db.execute('DELETE FROM utterances WHERE conversation_id=?', (conversation_id,))
+            await self._db.execute('DELETE FROM capture_conversations WHERE id=?', (conversation_id,))
+            return cur.rowcount
+        deleted = await self._mutate(erase)
+        await self._retry_audio_deletions()
+        cur = await self._db.execute('SELECT COUNT(*) FROM pending_audio_deletions WHERE conversation_id=? OR conversation_id IS NULL', (conversation_id,))
+        return {'rows_deleted': deleted, 'pending': (await cur.fetchone())[0]}
+
+    async def _queue_audio_deletion(self, path: str, conversation_id: str | None = None) -> None:
         # Called only inside the same transaction that removes the reference.
         await self._db.execute(
-            "INSERT OR IGNORE INTO pending_audio_deletions(path, requested_at) VALUES (?, ?)",
-            (path, self._clock()),
+            "INSERT INTO pending_audio_deletions(path, requested_at, conversation_id) VALUES (?, ?, COALESCE(?, (SELECT conversation_id FROM audio_write_intents WHERE path=?))) "
+            "ON CONFLICT(path) DO UPDATE SET conversation_id=COALESCE(pending_audio_deletions.conversation_id, excluded.conversation_id)",
+            (path, self._clock(), conversation_id, path),
         )
         self.expiry_changed.set()
 
     async def discard_audio(self, path: str) -> None:
         """Durably discard an unaccepted or cancelled archive, including retries."""
-        await self._mutate(lambda: self._queue_audio_deletion(path))
+        async def discard():
+            await self._queue_audio_deletion(path)
+            await self._db.execute('DELETE FROM audio_write_intents WHERE path=?', (path,))
+        await self._mutate(discard)
         await self._retry_audio_deletions()
 
     async def audio_cleanup_status(self) -> dict:
@@ -540,7 +629,7 @@ class AmbientStore:
             cur = await self._db.execute(
                 "SELECT path FROM pending_audio_deletions ORDER BY attempts, requested_at, path LIMIT 256"
             )
-            paths = [row["path"] for row in await cur.fetchall()]
+            paths = [row["path"] for row in await cur.fetchall() if not self.audio_inflight(row['path'])]
             if not paths:
                 return 0
             outcomes = await asyncio.to_thread(self._unlink_outcomes, paths)
@@ -564,9 +653,9 @@ class AmbientStore:
     def _audio_path(self, path: str) -> Path:
         candidate = Path(path)
         if self.audio_dir is not None:
-            root = self.audio_dir.resolve()
             resolved = candidate.resolve()
-            if resolved == root or not resolved.is_relative_to(root) or candidate.suffix != ".flac":
+            roots = self._cleanup_audio_roots or (self.audio_dir,)
+            if not any(resolved != root.resolve() and resolved.is_relative_to(root.resolve()) for root in roots) or candidate.suffix != ".flac":
                 raise ValueError("audio_path_outside_archive")
         return candidate
 

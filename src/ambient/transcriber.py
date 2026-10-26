@@ -12,7 +12,6 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from src.ambient.types import AmbientUtterance, RawSegment
@@ -180,7 +179,7 @@ class AmbientTranscriber:
                 )
                 empty_id = await self._store.add(empty)
                 try:
-                    await self._archive_audio(room_id, empty_id, seg.audio)
+                    await self._archive_audio(room_id, empty_id, seg.audio, source=capture_source)
                 except Exception:
                     # No re-lanzar acá: el fallo es del puntero al audio, no
                     # de la utterance (ya persistida). Dejar que escale al
@@ -272,7 +271,7 @@ class AmbientTranscriber:
                     )
             if archiving:
                 try:
-                    await self._archive_audio(room_id, utt_id, seg.audio)
+                    await self._archive_audio(room_id, utt_id, seg.audio, source=capture_source)
                 except Exception:
                     # Igual que en la rama de texto vacío: no dejar que esto
                     # escale al except externo, que loguearía "segmento
@@ -287,7 +286,7 @@ class AmbientTranscriber:
             # un segmento malo no tira el worker — se pierde ese segmento
             logger.exception(f"AmbientTranscriber[{room_id}]: segmento descartado")
 
-    async def _archive_audio(self, room_id: str, utt_id: int, audio: np.ndarray) -> None:
+    async def _archive_audio(self, room_id: str, utt_id: int, audio: np.ndarray, *, source=None) -> None:
         """Guardar el audio del segmento y apuntar la fila al archivo.
 
         Si el UPDATE falla, borra el archivo antes de propagar: una fila con
@@ -304,13 +303,23 @@ class AmbientTranscriber:
             utt_id: rowid devuelto por store.add().
             audio: Audio multicanal del segmento.
         """
-        path = await self._archiver.write(room_id, utt_id, audio)
+        if source is not None and not self._privacy.sources_available((source,)):
+            return
+        options = {'source': source} if source is not None else {}
+        path = await self._archiver.write(room_id, utt_id, audio, **options)
         if not path:
             return
         try:
             await self._store.set_audio_path(utt_id, path)
-        except Exception:
-            await asyncio.to_thread(Path(path).unlink, missing_ok=True)
+        except BaseException:
+            # A cancelled/failed attach also retains the durable file locator.
+            discard = asyncio.create_task(self._archiver._discard(path))
+            while not discard.done():
+                try:
+                    await asyncio.shield(discard)
+                except asyncio.CancelledError:
+                    pass
+            discard.result()
             raise
 
     async def _purge_worker(self) -> None:
@@ -517,7 +526,10 @@ def build_ambient_path(
         enabled=bool(ka_cfg.get("enabled", False)),
         min_free_bytes=int(ka_cfg.get("min_free_mb", 1000)) * 1_000_000,
         discard_audio=store.discard_audio,
+        privacy=privacy,
+        store=store,
     )
+    store.audio_inflight = archiver.is_writing
 
     tap = MultiChannelTap()
     transcriber = AmbientTranscriber(

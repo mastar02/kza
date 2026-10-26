@@ -282,6 +282,16 @@ el borrado completo de conversación,
 pausa/mute, agrupación de voces, su vista autenticada y evaluación acústica, y la
 migración ensayada sobre copia de datos reales. Este avance no cierra H3.
 
+El participante de capturas ya espera encoders reales y elimina filas, scopes,
+clips y localizadores durables de la conversación revocada. Una reserva anterior
+al encoder permite encontrar archivos sin adjuntar tras un crash. Los clips
+nuevos usan UUID para evitar colisiones entre bases, y las raíces históricas
+registradas siguen incluidas. Los fallos de unlink, bases corruptas, directorios
+ilegibles y clips sin una base atribuible conservan el estado pendiente. Quedan
+ocho participantes sin conectar, el drenado de otros productores y lectores,
+la purga de todos los destinos aun con ambient apagado y el borrado global en
+el dashboard autenticado. No se modificaron datos reales ni producción.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke

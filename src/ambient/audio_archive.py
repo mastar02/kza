@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import numpy as np
+
+from src.memory.fact_ledger import MemorySource
 
 logger = logging.getLogger(__name__)
 
@@ -37,17 +40,26 @@ class AudioArchiver:
         sample_rate: int = 16000,
         min_free_bytes: int = 1_000_000_000,
         discard_audio: Callable[[str], Awaitable[None]] | None = None,
+        privacy=None,
+        store=None,
+        capacity: int = 8,
     ):
         self.base_dir = Path(base_dir)
         self.enabled = enabled
         self.sample_rate = sample_rate
         self.min_free_bytes = min_free_bytes
         self._discard_audio = discard_audio
+        if type(capacity) is not int or capacity < 1:
+            raise ValueError('invalid_archive_capacity')
+        self._privacy, self._store, self._capacity = privacy, store, capacity
+        self._writes: dict[asyncio.Task, tuple[MemorySource | None, str]] = {}
+        self._closed = False
+        self._closing: asyncio.Task | None = None
         self._last_disk_warn = 0.0
         self.stats = {"written": 0, "skipped_disk": 0, "failed": 0}
 
     async def write(
-        self, room_id: str, utt_id: int, audio: np.ndarray
+        self, room_id: str, utt_id: int, audio: np.ndarray, *, source: MemorySource | None = None,
     ) -> str | None:
         """Guardar el audio de una utterance.
 
@@ -63,17 +75,42 @@ class AudioArchiver:
             ambos se loguean (el rechazo por piso de disco como máximo una
             vez por hora); deshabilitado retorna None sin contar ni loguear.
         """
-        if not self.enabled:
+        if not self.enabled or self._closed:
+            return None
+        if self._privacy is not None and (source is None or not self._privacy.sources_available((source,))):
             return None
         try:
             mono = audio[:, 0] if audio.ndim == 2 else audio
             if mono.size == 0:
                 raise ValueError("audio vacío")
             path = self.base_dir / room_id / f"{utt_id}.flac"
+            if self._privacy is not None:
+                if self._store is None:
+                    raise RuntimeError('archive_requires_capture_store')
+                path = self.base_dir / 'policy_v1' / f'{source.capture_id}.flac'
+                reserved = await self._store.reserve_audio_path(utt_id, str(path), source)
+                if reserved is None:
+                    return None
+                path = Path(reserved)
+                # No await between revalidation, admission and native ownership.
+                if self._closed or not self._privacy.sources_available((source,)):
+                    return None
+            if len(self._writes) >= self._capacity:
+                raise RuntimeError('archive_capacity')
             # El chequeo de disco (stat/statvfs) va DENTRO del thread: en el
             # loop bloqueaba el voice path una vez por segmento (review
             # PR #14, 2026-08-06).
-            writing = asyncio.create_task(asyncio.to_thread(self._write_sync, path, mono))
+            def encode():
+                if self._privacy is not None and not self._privacy.sources_available((source,)):
+                    return None
+                return self._write_sync(path, mono)
+            writing = asyncio.create_task(asyncio.to_thread(encode))
+            self._writes[writing] = (source, str(path))
+            def completed(task):
+                self._writes.pop(task, None)
+                if not task.cancelled():
+                    task.exception()
+            writing.add_done_callback(completed)
             cancelled = False
             while not writing.done():
                 try:
@@ -83,7 +120,8 @@ class AudioArchiver:
                 except Exception:
                     break  # Retrieve the actual write outcome below.
             error = writing.exception()
-            if cancelled or error is not None:
+            revoked = self._privacy is not None and not self._privacy.sources_available((source,))
+            if cancelled or error is not None or revoked:
                 cleanup = asyncio.create_task(self._discard(str(path)))
                 while not cleanup.done():
                     try:
@@ -97,7 +135,9 @@ class AudioArchiver:
                         logger.warning("AudioArchiver cancelled-write cleanup failed: %s", type(cleanup.exception()).__name__)
                     raise asyncio.CancelledError
                 cleanup.result()
-                raise error
+                if error is not None:
+                    raise error
+                return None
             written = writing.result()
             if not written:
                 self.stats["skipped_disk"] += 1
@@ -107,9 +147,28 @@ class AudioArchiver:
         except Exception as e:
             self.stats["failed"] += 1
             logger.warning(
-                "AudioArchiver: no se pudo guardar %s/%d (%s)", room_id, utt_id, e
+                "AudioArchiver write failed: %s", type(e).__name__
             )
             return None
+
+    def is_writing(self, path: str) -> bool:
+        """Report actual encoders, without filesystem I/O or clip content."""
+        return any(saved_path == path and not task.done() for task, (_, saved_path) in self._writes.items())
+
+    async def drain_conversation(self, conversation_id: str) -> None:
+        """Wait actual pre-revocation encoders; observation cancellation is shielded."""
+        tasks = [task for task, (source, _) in self._writes.items()
+                 if source is not None and source.conversation_id == conversation_id]
+        await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+
+    def begin_close(self) -> asyncio.Task:
+        """Close native admission and retain its real drain for the privacy lease."""
+        self._closed = True
+        if self._closing is None:
+            async def finish():
+                await asyncio.gather(*(asyncio.shield(task) for task in list(self._writes)), return_exceptions=True)
+            self._closing = asyncio.create_task(finish())
+        return self._closing
 
     async def _discard(self, path: str) -> None:
         if self._discard_audio is not None:
@@ -128,8 +187,14 @@ class AudioArchiver:
 
         if not self._has_room():
             return False
-        path.parent.mkdir(parents=True, exist_ok=True)
-        sf.write(str(path), mono, self.sample_rate, format="FLAC")
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, 'wb', closefd=False) as output:
+                sf.write(output, mono, self.sample_rate, format="FLAC")
+        finally:
+            os.close(descriptor)
         return True
 
     def _has_room(self) -> bool:

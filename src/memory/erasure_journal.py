@@ -157,6 +157,14 @@ class ErasureJournal:
             row = db.execute("SELECT id FROM conversation_erasures WHERE conversation_id=?", (conversation_id,)).fetchone()
             return self._snapshot(db, row[0])
 
+    def targets(self, participant: ErasureParticipant) -> list[dict]:
+        """Read private registered locators for a cleanup driver's ownership checks."""
+        if not isinstance(participant, ErasureParticipant):
+            raise ValueError('invalid_erasure_participant')
+        with self.ledger._transaction() as db:
+            return [{'id': row['id'], 'version': row['version'], 'descriptor': json.loads(row['descriptor'])}
+                    for row in db.execute('SELECT * FROM erasure_targets WHERE participant=? ORDER BY id', (participant.value,))]
+
     def snapshot(self, operation_id: str) -> dict | None:
         """Read status without exposing storage descriptors, claims or raw content."""
         operation_id = str(UUID(operation_id))

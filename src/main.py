@@ -41,6 +41,7 @@ from src.pipeline.request_router import RequestRouter
 from src.memory.services import build_memory_services
 from src.memory.privacy_services import build_privacy_services
 from src.memory.index_erasure import build_erasure_services
+from src.ambient.erasure import build_capture_erasure
 from src.users.speaker_identifier import SpeakerIdentifier
 from src.users.user_manager import UserManager
 from src.users.voice_enrollment import VoiceEnrollment
@@ -561,8 +562,9 @@ async def _run_main(shutdown: AsyncExitStack):
     privacy_services = await build_privacy_services(config, shutdown=shutdown)
     memory_services = await build_memory_services(config, shutdown=shutdown, privacy=privacy_services)
     memory_manager = memory_services.manager if memory_services is not None else None
-    await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
+    erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
         memory=memory_manager.long_term if memory_manager is not None else None)
+    capture_erasure = await build_capture_erasure(config, privacy=privacy_services, owner=erasure_services)
 
     # LLM Command Router (Opción 2 NLU) — clasificador de comandos vía vLLM 7B.
     # Independiente del LLMRouter: este valida texto post-wake contra
@@ -1133,6 +1135,7 @@ async def _run_main(shutdown: AsyncExitStack):
                         privacy=privacy_services,
                     )
                     shutdown.push_async_callback(ambient_path.stop)
+                    await capture_erasure.attach(ambient_path)
                     multi_room_loop.attach_ambient(
                         tap=ambient_path.tap,
                         transcriber=ambient_path.transcriber,
