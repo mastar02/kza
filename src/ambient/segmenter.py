@@ -17,6 +17,7 @@ import numpy as np
 from src.ambient.types import RawSegment
 
 logger = logging.getLogger(__name__)
+_SILERO_LOAD_LOCK = threading.Lock()
 
 
 def make_silero_predictor() -> Callable[[np.ndarray], float]:
@@ -27,10 +28,13 @@ def make_silero_predictor() -> Callable[[np.ndarray], float]:
     """
     import torch  # torch PRIMERO (regla orden imports CUDA del proyecto)
 
-    model, _utils = torch.hub.load(
-        repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True,
-    )
-    model.eval()
+    # Native room factories can start concurrently. Torch Hub mutates one
+    # shared repository cache during first load; preserve serialized loading.
+    with _SILERO_LOAD_LOCK:
+        model, _utils = torch.hub.load(
+            repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True,
+        )
+        model.eval()
     model_lock = threading.Lock()
 
     def predict(chunk_mono: np.ndarray) -> float:
@@ -87,6 +91,24 @@ class UtteranceSegmenter:
         self._silence_ms = 0.0
         self._speech_ms = 0.0
         self._col_warned = False
+        self._state_since: float | None = None
+
+    @property
+    def oldest_timestamp(self) -> float | None:
+        """Timestamp of the oldest input that may still affect VAD state."""
+        return self._state_since
+
+    def reset(self) -> None:
+        """Discard speech, preroll and recurrent VAD state on its native owner."""
+        self._preroll.clear()
+        self._buf.clear()
+        self._probs.clear()
+        self._in_speech = False
+        self._silence_ms = self._speech_ms = 0.0
+        reset_fn = getattr(self._vad_predict, "reset", None)
+        if callable(reset_fn):
+            reset_fn()
+        self._state_since = None
 
     def _vad_column(self, chunk: np.ndarray) -> np.ndarray:
         col = self.vad_col
@@ -107,6 +129,8 @@ class UtteranceSegmenter:
     ) -> list[RawSegment]:
         """Procesar un chunk; devolver los segmentos cerrados (0 o 1)."""
         chunk_ms = (chunk.shape[0] / self.sample_rate) * 1000
+        if self._state_since is None:
+            self._state_since = ts
         prob = self._vad_predict(self._vad_column(chunk))
         is_speech = prob >= self.speech_threshold
         closed: list[RawSegment] = []
@@ -155,8 +179,11 @@ class UtteranceSegmenter:
         if callable(reset_fn):
             try:
                 reset_fn()
+                self._state_since = None
             except Exception as e:
-                logger.debug(f"Silero reset_states no-op: {e}")
+                logger.debug("Silero state reset deferred: %s", type(e).__name__)
+        else:
+            self._state_since = None
         if not buf or speech_ms < self.min_speech_ms:
             return None  # blip: menos voz que min_speech_ms → descartar
         t0 = buf[0][0]

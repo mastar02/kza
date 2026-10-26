@@ -13,12 +13,15 @@ import asyncio
 import numpy as np
 
 from src.stt.whisper_fast import STTResult
+from src.core.owned_work import OwnedBlockingWork
+from src.memory.producer_context import PRODUCER_CONTEXT
+from src.memory.prompt_context import SourcesInvalidated
 
 
 class AmbientSTT:
     """Transcribe la columna ASR de un RawSegment, sin bloquear el loop."""
 
-    def __init__(self, stt, asr_col: int = 1):
+    def __init__(self, stt, asr_col: int = 1, *, source_policy=None):
         """
         Args:
             stt: instancia FastWhisperSTT dedicada (cuda:0). DI por constructor.
@@ -26,6 +29,8 @@ class AmbientSTT:
         """
         self._stt = stt
         self.asr_col = asr_col
+        self._work = OwnedBlockingWork()
+        self._source_policy = source_policy
 
     def asr_mono(self, audio: np.ndarray) -> np.ndarray:
         """Extraer la columna ASR mono de un audio potencialmente multicanal.
@@ -53,5 +58,25 @@ class AmbientSTT:
 
     async def transcribe(self, audio: np.ndarray) -> STTResult:
         """Transcripción con confianza, en thread (CTranslate2 es sync)."""
-        mono = self._asr_mono(audio)
-        return await asyncio.to_thread(self._stt.transcribe_with_confidence, mono)
+        try:
+            return await self._work.run(self._invoke, audio)
+        finally:
+            audio = None
+
+    def _invoke(self, audio):
+        mono = None
+        try:
+            if self._work.status()["closed"] or self._source_policy is not None and not self._source_policy.sources_available(PRODUCER_CONTEXT.get().sources):
+                raise SourcesInvalidated("ambient_asr_sources_invalidated")
+            mono = self._asr_mono(audio)
+            return self._stt.transcribe_with_confidence(mono)
+        finally:
+            audio = mono = None
+
+    def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
+        """Expose actual ASR calls, including an engine's pinned native delegate."""
+        return tuple(self._work._tasks)
+
+    def begin_close(self) -> asyncio.Task:
+        """Reject new ASR and retain its actual native exit."""
+        return self._work.begin_close()

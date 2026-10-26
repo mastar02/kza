@@ -1196,6 +1196,69 @@ prometa haber borrado todos los productores. Los otros cuatro participantes,
 voces, pausa/mute, migración y aceptación de runtime/GC y hardware siguen
 pendientes dentro del alcance completo H0–H6. Producción no cambia.
 
+## Avance: productores ambientales con seguimiento nativo y retiro de buffers
+
+STT ambiental, lectura de perfiles, identificación de hablante, calidad y DoA
+ahora conservan las llamadas nativas reales después de cancelar al observador.
+El wrapper de Whisper espera también al worker dedicado del backend. El tagger
+devuelve sólo etiqueta y confianza desde el thread: no entrega el embedding
+transitorio como resultado de su task. La carga de perfiles sale del loop.
+
+El segmento tiene un scope finito con las fuentes asignadas antes de STT.
+`ProducerContext` transporta sólo sala y referencias de captura a las tasks y
+workers reales; no concede permisos. Cada etapa comprueba las fuentes en el
+handoff. Una llamada que esperó en el pool las vuelve a comprobar antes de
+entrar al modelo o leer perfiles. Los threads que ya entraron siguen visibles
+hasta salir, aunque el pipeline haya abortado y no vaya a persistir su resultado.
+Cancelar internamente el segmento al cerrar no cancela al llamador que sigue
+vivo; una cancelación real de ese llamador sí se propaga.
+
+La construcción de cada segmenter, VAD y reset corre en un propietario nativo
+serializado por sala. No comparte estado recurrente entre habitaciones. La
+carga inicial de Silero se serializa dentro del proceso, porque Torch Hub
+modifica una caché común al descargar o instalar el repositorio. Se conserva
+la asignación de CPU/GPU existente; estos ensayos no cargan modelos entrenados.
+
+El propietario conserva el lote y su handoff hasta entregar los segmentos o
+descartarlos. El preroll, la voz parcial, los segmentos listos y el estado
+recurrente tienen fechas observables para el retiro. La tarea de mantenimiento
+publica límites cada 50 ms y programa el reset nativo; no espera otra entrada
+de audio ni una lectura. Un thread bloqueado durante VAD, construcción o reset
+conserva su operación pendiente y la lease del catálogo.
+
+Los límites usan inicio de privacidad, 48 horas desde el input y el fence de la
+conversación activa de esa sala. No se aflojan por una publicación atrasada ni
+por atrasar el reloj después de observar el vencimiento. La captura automática
+no puede asignar una identidad nueva a audio ya retirado. Un fence pendiente
+puede descartar estos buffers transitorios, como las cachés privadas; los
+registros durables siguen exigiendo un commit para borrarse y un rollback no
+los elimina ni confirma un trabajo inexistente.
+
+El tap publica sólo metadatos de admisión al callback de PortAudio. Publicar un
+fence o cerrar desacopla la cola antigua: una llamada que ya tenía ese deque
+puede perder su chunk, pero no puede reinsertarlo en la cola vigente. El
+callback conserva su comportamiento sin locks bloqueantes ni consultas al
+catálogo. El cierre rechaza nuevas entradas y espera los trabajos reales antes
+de cerrar el store original y soltar la lease. El builder registra esos drains
+antes de arrancar; una cancelación del observador no los desregistra.
+
+Los ensayos conectan las clases reales de wrappers, segmenter, tap, catálogo y
+SQLite con endpoints nativos sintéticos. Incluyen las cinco etapas retenidas,
+el executor dedicado de Whisper, VAD y construcción bloqueados, reset tardío,
+expiración sin entrada, otra sala viva, rollback, saturación del pool, carreras
+del callback y weakrefs a audio y resultados después de cancelar, sin manipular
+GC. El artefacto compilado construye el builder real, alimenta el propietario
+de segmentación y comprueba una inferencia nativa pendiente tras revocar y
+después de agotar la observación de cierre.
+
+`PRODUCERS` sigue abierto: faltan los buffers y jobs del command path, wake VAD,
+STT/sombra y consumidores de aprendizaje, y conectar los scopes completos al
+journal. No se anuncia borrado global ni se habilita la UI de borrado amplio.
+Los otros participantes, revisión de voces, pausa/mute, migración y las
+aceptaciones físicas e integradas de H0–H6 siguen pendientes. La suite sintética
+no resuelve las pausas de GC previamente medidas ni la recuperación real de H4.
+Producción permanece sin cambios.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

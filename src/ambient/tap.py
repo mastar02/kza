@@ -12,6 +12,8 @@ from collections import deque
 
 import numpy as np
 
+from src.memory.sources import CaptureBoundary
+
 # ~100s de audio por room @ chunks de 80ms. A 6ch float32: ~12 MB/room.
 DEFAULT_MAXLEN_CHUNKS = 1250
 
@@ -22,13 +24,16 @@ _TapEntry = tuple[float, np.ndarray, bool]
 class MultiChannelTap:
     """Ring buffer por room de chunks multicanal (ts, chunk, tts_active)."""
 
-    def __init__(self, maxlen_chunks: int = DEFAULT_MAXLEN_CHUNKS):
+    def __init__(self, maxlen_chunks: int = DEFAULT_MAXLEN_CHUNKS, *, clock=None):
         self._maxlen = maxlen_chunks
         self._queues: dict[str, deque[_TapEntry]] = {}
+        self._boundaries: dict[str, CaptureBoundary] = {}
+        self._clock = clock or time.time
+        self._closed = False
 
     def register_room(self, room_id: str) -> None:
         """Registrar una room (idempotente)."""
-        if room_id not in self._queues:
+        if not self._closed and room_id not in self._queues:
             self._queues[room_id] = deque(maxlen=self._maxlen)
 
     def push(
@@ -45,10 +50,16 @@ class MultiChannelTap:
         reutiliza el buffer de ``indata`` al retornar del callback; sin copia
         propia el array encolado queda corrupto. Acá NO se copia de nuevo.
         """
+        if self._closed:
+            return
+        timestamp = ts if ts is not None else self._clock()
+        boundary = self._boundaries.get(room_id)
+        if boundary is not None and not boundary.allows(timestamp):
+            return
         q = self._queues.get(room_id)
         if q is None:
             return
-        q.append((ts if ts is not None else time.time(), chunk, tts_active))
+        q.append((timestamp, chunk, tts_active))
 
     def drain(self, room_id: str) -> list[tuple[float, np.ndarray, bool]]:
         """Vaciar y devolver los chunks pendientes de una room (orden FIFO)."""
@@ -61,3 +72,36 @@ class MultiChannelTap:
                 items.append(q.popleft())
             except IndexError:
                 return items
+
+    def publish_boundary(self, room_id: str, boundary: CaptureBoundary) -> int:
+        """Detach old queues and publish admission metadata without blocking push.
+
+        A callback already holding the old deque may lose its chunk. It cannot
+        append to the new queue or resurrect a retired one.
+        """
+        previous = self._boundaries.get(room_id)
+        if previous is not None:
+            boundary = previous.tighten(boundary)
+        if self._closed or previous == boundary:
+            return 0
+        self._boundaries[room_id] = boundary
+        queue = self._queues.get(room_id)
+        if queue is None:
+            return 0
+        items = list(queue)
+        retained = deque((item for item in items if boundary.allows(item[0])), maxlen=self._maxlen)
+        self._queues[room_id] = retained
+        queue.clear()
+        return len(items)-len(retained)
+
+    def close(self) -> None:
+        """Close admission and detach buffered audio, including late callbacks."""
+        self._closed = True
+        queues, self._queues = self._queues, {}
+        self._boundaries.clear()
+        for queue in queues.values():
+            queue.clear()
+
+    def buffered_count(self) -> int:
+        """Count retained chunks without projecting audio or private timestamps."""
+        return sum(map(len, self._queues.values()))

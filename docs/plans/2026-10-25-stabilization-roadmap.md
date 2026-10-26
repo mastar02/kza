@@ -510,6 +510,13 @@ casos nuevos, checks aceptados y el builder compilado ejercitado fuera del
 checkout. Conserva evidencia de la retención de traceback corregida, sin
 manipular GC ni ampliar límites; la aceptación integrada de H4/H6 sigue abierta.
 
+Los [productores ambientales](2026-10-26-h3-memory-privacy.md#avance-productores-ambientales-con-seguimiento-nativo-y-retiro-de-buffers)
+retienen STT, tagger, DoA y VAD reales tras cancelar; el retiro de preroll y
+colas funciona sin otra entrada. El callback conserva su operación sin locks
+bloqueantes y el cierre espera los jobs antes de soltar la lease. Quedan los
+productores del command path, wake/sombra y su conexión completa al journal,
+además de los otros pendientes de H3 y del alcance íntegro H0–H6.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

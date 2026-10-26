@@ -15,6 +15,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
 from src.ambient.types import AmbientUtterance, RawSegment
+from src.ambient.room_producer import RoomProducer
+from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.memory.producer_context import producer_context
+from src.memory.prompt_context import SourcesInvalidated, run_private
 
 if TYPE_CHECKING:
     import numpy as np
@@ -45,6 +49,7 @@ class AmbientTranscriber:
         | None = None,
         archiver: AudioArchiver | None = None,
         privacy=None,
+        close_timeout_s: float = 1,
     ):
         self._tap = tap
         self._segmenter_factory = segmenter_factory
@@ -64,6 +69,19 @@ class AmbientTranscriber:
         # descartan sin persistir.
         self._archiver = archiver
         self._privacy = privacy
+        if privacy is not None:
+            privacy.require_available()
+            if store.source_policy is not privacy.ledger:
+                raise ValueError("ambient_authority_mismatch")
+        self._native = OwnedBlockingWork(close_timeout_s=close_timeout_s)
+        self._close_timeout_s = close_timeout_s
+        self._closed = False
+        self._closing = None
+        self._segments = {}
+        self._room_states: dict[str, RoomProducer] = {}
+        self._prunes = {}
+        if privacy is not None:
+            privacy.add_borrower(self.begin_close)
 
         self._running = False
         self._tasks: list[asyncio.Task] = []
@@ -77,20 +95,109 @@ class AmbientTranscriber:
 
     async def start(self) -> None:
         """Lanzar un worker por room + el worker de purga."""
+        if self._closed:
+            raise RuntimeError("ambient_transcriber_closed")
+        if self._running:
+            return
         self._running = True
         for room_id in self._rooms:
+            self._room_states[room_id] = RoomProducer(room_id, self._segmenter_factory,
+                require_cleanup=self._privacy is not None,
+                boundary_fn=self._privacy.scopes.buffer_boundary if self._privacy is not None else None)
             self._tap.register_room(room_id)
-            self._tasks.append(asyncio.create_task(self._room_worker(room_id)))
-        self._tasks.append(asyncio.create_task(self._purge_worker()))
+            with producer_context(room_id):
+                self._tasks.append(asyncio.create_task(self._room_worker(room_id)))
+        with producer_context(None):
+            self._tasks.append(asyncio.create_task(self._purge_worker()))
+            self._tasks.append(asyncio.create_task(self._privacy_worker()))
         logger.info(f"AmbientTranscriber activo ({len(self._rooms)} rooms)")
 
     async def stop(self) -> None:
-        """Cancelar todos los workers y esperar su cierre (idempotente)."""
+        """Bound close observation while retaining actual native work and buffers."""
+        closing = self.begin_close()
+        cancelled = False
+        while not closing.done():
+            try:
+                async with asyncio.timeout(self._close_timeout_s):
+                    await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                cancelled = True
+            except TimeoutError as error:
+                raise WorkCloseTimeout("ambient_resources_still_running") from error
+        closing.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def begin_close(self) -> asyncio.Task:
+        """Close admission and retain actual VAD, ASR, speaker and delivery cleanup."""
+        self._closed = True
         self._running = False
-        for t in self._tasks:
-            t.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._tasks = []
+        if self._closing is None:
+            if self._tap is not None:
+                self._tap.close()
+            for task in (*self._tasks, *self._segments):
+                task.cancel()
+            drains = [room.begin_close() for room in self._room_states.values()]
+            drains.append(self._native.begin_close())
+            for adapter in (self._stt, self._tagger, self._archiver):
+                if callable(getattr(type(adapter), "begin_close", None)):
+                    drains.append(adapter.begin_close())
+            async def finish():
+                await asyncio.gather(*self._tasks, *self._segments, *self._prunes.values(), return_exceptions=True)
+                await asyncio.gather(*drains)
+                self._tasks.clear()
+                self._last_tv.clear()
+                self._prunes.clear()
+            self._closing = asyncio.create_task(finish())
+        return self._closing
+
+    def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
+        """Snapshot finite actual operations, excluding idle room/maintenance loops."""
+        tasks = set(self._segments) | set(self._native._tasks) | set(self._prunes.values())
+        for room in self._room_states.values():
+            tasks.update(room.snapshot_operations())
+        for adapter in (self._stt, self._tagger):
+            if callable(getattr(type(adapter), "snapshot_operations", None)):
+                tasks.update(adapter.snapshot_operations())
+        if self._closing is not None and not self._closing.done():
+            tasks.add(self._closing)
+        return tuple(tasks)
+
+    def resource_status(self) -> dict:
+        """Expose counts without projecting capture IDs, room names, text or audio."""
+        return {"closed": self._closed, "segments": len(self._segments),
+                "operations": sum(not task.done() for task in self.snapshot_operations()),
+                "tap_chunks": self._tap.buffered_count() if self._tap is not None else 0,
+                "rooms": [room.status() for room in self._room_states.values()],
+                "closing": self._closing is not None and not self._closing.done()}
+
+    def prune_private(self) -> None:
+        """Publish capture fences and schedule native reset without blocking capture."""
+        if self._closed or self._privacy is None:
+            return
+        for room_id in self._rooms:
+            boundary = self._privacy.scopes.buffer_boundary(room_id)
+            if self._tap is not None:
+                self._tap.publish_boundary(room_id, boundary)
+            state = self._room_states.get(room_id)
+            if state is None:
+                continue
+            state.publish_boundary(boundary)
+            previous = self._prunes.get(room_id)
+            if previous is not None and previous.done():
+                previous.result()
+                del self._prunes[room_id]
+            if state.needs_prune() and room_id not in self._prunes:
+                with producer_context(room_id):
+                    self._prunes[room_id] = asyncio.create_task(state.prune())
+
+    async def _privacy_worker(self) -> None:
+        while self._running:
+            try:
+                self.prune_private()
+            except Exception as error:
+                logger.warning("Ambient buffer retirement deferred: %s", type(error).__name__)
+            await asyncio.sleep(.05)
 
     def attach_textual_wake(self, detector: "TextualWakeDetector") -> None:
         """Inyectar el TextualWakeDetector post-init (orden de DI en main.py:
@@ -118,50 +225,92 @@ class AmbientTranscriber:
 
         Errores → log + backoff exponencial (1s→60s); jamás propaga.
         """
-        segmenter = self._segmenter_factory()
+        state = self._room_states[room_id]
         backoff = 1.0
+        items = seg = None
         while self._running:
             try:
+                self.prune_private()
                 items = self._tap.drain(room_id)
-                segments = []
-                for ts, chunk, tts_active in items:
-                    segments.extend(
-                        segmenter.feed(ts=ts, chunk=chunk, tts_active=tts_active)
-                    )
-                for seg in segments:
+                if items:
+                    await state.feed(items)
+                items = None
+                while state.ready:
+                    seg = state.ready.pop(0)
                     await self._handle_segment(room_id, seg)
+                    seg = None
                 backoff = 1.0
                 await asyncio.sleep(self.poll_interval_s)
             except asyncio.CancelledError:
                 return
-            except Exception:
-                logger.exception(
-                    f"AmbientTranscriber[{room_id}]: error (best-effort, "
-                    f"backoff {backoff:.0f}s)"
-                )
+            except Exception as error:
+                logger.warning("Ambient room processing deferred: %s", type(error).__name__)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60.0)
+            finally:
+                items = seg = None
 
     async def _handle_segment(self, room_id: str, seg: RawSegment) -> None:
-        """Procesar un segmento: STT + speaker + DoA → clasificar → persistir.
-
-        Best-effort: un segmento malo se loguea y se descarta sin matar el
-        worker de la room.
-        """
+        """Own one sourced pipeline even after its observer is cancelled."""
+        task = capture_source = None
         try:
-            provenance = {}
-            capture_source = None
+            if self._closed:
+                return
             if self._privacy is not None:
                 from uuid import uuid4
                 from src.memory.fact_ledger import MemoryOrigin
                 capture_source = self._privacy.source_for_capture(str(uuid4()), seg.t0, room_id, origin=MemoryOrigin.AMBIENT)
-                if not self._privacy.sources_available((capture_source,)):
-                    return
+            self._require_live(capture_source)
+            if len(self._segments) >= max(1, len(self._rooms)):
+                logger.debug("Ambient segment admission deferred: capacity")
+                return
+            sources = (capture_source,) if capture_source is not None else ()
+            with producer_context(room_id, sources):
+                task = asyncio.create_task(self._run_segment(room_id, seg, capture_source))
+            self._segments[task] = capture_source
+            def finished(done):
+                self._segments.pop(done, None)
+                if not done.cancelled():
+                    done.exception()
+            task.add_done_callback(finished)
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    task.cancel()
+                    raise
+        except (SourcesInvalidated, PermissionError):
+            pass
+        finally:
+            task = seg = capture_source = None
+
+    def _live(self, source) -> bool:
+        return not self._closed and (self._privacy is None or self._privacy.sources_available((source,)))
+
+    def _require_live(self, source) -> None:
+        if not self._live(source):
+            raise SourcesInvalidated("ambient_sources_invalidated")
+
+    async def _run_segment(self, room_id, seg, capture_source):
+        try:
+            await run_private(self._process_segment(room_id, seg, capture_source), lambda: self._live(capture_source))
+        except SourcesInvalidated:
+            pass
+        except Exception as error:
+            logger.warning("Ambient segment processing deferred: %s", type(error).__name__)
+        finally:
+            seg = capture_source = None
+
+    async def _process_segment(self, room_id, seg, capture_source):
+        stt_result = text = mono = doa = utt = empty = None
+        try:
+            provenance = {}
+            if capture_source is not None:
                 provenance = {"capture_id": capture_source.capture_id, "conversation_id": capture_source.conversation_id,
                               "expires_at": capture_source.expires_at}
+            self._require_live(capture_source)
             stt_result = await self._stt.transcribe(seg.audio)
-            if capture_source is not None and not self._privacy.sources_available((capture_source,)):
-                return
+            self._require_live(capture_source)
             text = stt_result.text.strip()
             archiving = self._archiver is not None and self._archiver.enabled
             if not text:
@@ -197,14 +346,18 @@ class AmbientTranscriber:
             lang = lang_prob = None
             lang_ok = None
             if self._quality_fn is not None:
-                lang, lang_prob, lang_ok = self._quality_fn(text, seg.vad_prob)
+                self._require_live(capture_source)
+                lang, lang_prob, lang_ok = await self._native.run(self._quality, text, seg.vad_prob, capture_source)
             # Tagger sobre ch0 (Conference): full-band, presente en TODOS los
             # firmwares (6ch/2ch/mono). Asimétrico a propósito con el STT
             # (ch1 ASR): los embeddings de hablante prefieren la señal con
             # post-proceso completo; el ASR prefiere el tap sin NS.
             mono = seg.audio[:, 0] if seg.audio.ndim == 2 else seg.audio
+            self._require_live(capture_source)
             speaker, sp_conf = await self._tagger.tag(mono)
-            doa = await asyncio.to_thread(self._doa.estimate, seg.audio)
+            self._require_live(capture_source)
+            doa = await self._native.run(self._direction, seg.audio, capture_source)
+            self._require_live(capture_source)
             azimuth = doa.azimuth if doa else None
             stability = doa.stability if doa else 0.0
             source = self._classifier.classify(
@@ -239,6 +392,7 @@ class AmbientTranscriber:
             # por delante de un dispatch de cara al usuario, ni un fallo del
             # UPDATE de audio_path puede tragarse un "nexa" real.
             if self._textual_wake is not None and seg.complete:
+                self._require_live(capture_source)
                 try:
                     # review PR #16: `seg.t0` es wall-clock (tap.py stampea
                     # time.time()); TextualWakeDetector compara en
@@ -264,11 +418,8 @@ class AmbientTranscriber:
                         utterance_started_ts=utterance_started_ts,
                         **provenance,
                     )
-                except Exception:
-                    logger.exception(
-                        f"[TextualWake] error al evaluar utterance en {room_id} "
-                        f"(best-effort, la utterance ya está persistida)"
-                    )
+                except Exception as error:
+                    logger.warning("Ambient textual wake deferred: %s", type(error).__name__)
             if archiving:
                 try:
                     await self._archive_audio(room_id, utt_id, seg.audio, source=capture_source)
@@ -282,9 +433,16 @@ class AmbientTranscriber:
                         f"audio (utterance {utt_id} ya persistida, sigue "
                         f"sin audio_path)"
                     )
-        except Exception:
-            # un segmento malo no tira el worker — se pierde ese segmento
-            logger.exception(f"AmbientTranscriber[{room_id}]: segmento descartado")
+        finally:
+            seg = capture_source = stt_result = text = mono = doa = utt = empty = None
+
+    def _quality(self, text, probability, source):
+        self._require_live(source)
+        return self._quality_fn(text, probability)
+
+    def _direction(self, audio, source):
+        self._require_live(source)
+        return self._doa.estimate(audio)
 
     async def _archive_audio(self, room_id: str, utt_id: int, audio: np.ndarray, *, source=None) -> None:
         """Guardar el audio del segmento y apuntar la fila al archivo.
@@ -379,7 +537,10 @@ class AmbientPath:
         if self._closing is None:
             distilling = self.distiller.begin_close() if self.distiller is not None else None
             async def finish():
-                await self.transcriber.stop()
+                if callable(getattr(type(self.transcriber), "begin_close", None)):
+                    await self.transcriber.begin_close()
+                else:
+                    await self.transcriber.stop()
                 if distilling is not None:
                     await distilling
                 await self.store.close()
@@ -447,7 +608,8 @@ def build_ambient_path(
 
     stt_cfg = ambient_cfg.get("stt", {}) or {}
     ambient_engine = _build_ambient_stt_engine(stt_cfg, stt_base_cfg)
-    ambient_stt = AmbientSTT(stt=ambient_engine, asr_col=ambient_cfg.get("asr_col", 1))
+    ambient_stt = AmbientSTT(stt=ambient_engine, asr_col=ambient_cfg.get("asr_col", 1),
+                             source_policy=privacy.ledger if privacy is not None else None)
 
     seg_cfg = ambient_cfg.get("segmenter", {}) or {}
 
@@ -492,6 +654,7 @@ def build_ambient_path(
         identifier=identifier,
         embeddings_loader=embeddings_loader,
         min_audio_s=sp_cfg.get("min_audio_s", 0.8),
+        source_policy=privacy.ledger if privacy is not None else None,
     )
 
     clf_cfg = ambient_cfg.get("classifier", {}) or {}
@@ -544,7 +707,7 @@ def build_ambient_path(
     )
     store.audio_inflight = archiver.is_writing
 
-    tap = MultiChannelTap()
+    tap = MultiChannelTap(clock=privacy.ledger.clock if privacy is not None else None)
     transcriber = AmbientTranscriber(
         tap=tap,
         segmenter_factory=segmenter_factory,
@@ -588,4 +751,7 @@ def build_ambient_path(
             privacy=privacy,
         )
 
-    return AmbientPath(tap=tap, transcriber=transcriber, store=store, distiller=distiller)
+    path = AmbientPath(tap=tap, transcriber=transcriber, store=store, distiller=distiller)
+    if privacy is not None:
+        privacy.add_borrower(path.begin_close)
+    return path

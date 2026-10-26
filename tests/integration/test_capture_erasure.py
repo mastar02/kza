@@ -393,11 +393,15 @@ async def test_textual_wake_finishing_after_erasure_cannot_create_a_new_clip(tmp
     async with graph(tmp_path) as g:
         ready, release = asyncio.Event(), asyncio.Event()
         async def wake(*args, memory_source=None, **kwargs):
-            receipt = await g.owner.request(memory_source.conversation_id, ACTOR)
-            await flush(g.owner)
+            try:
+                await g.owner.request(memory_source.conversation_id, ACTOR)
+                await flush(g.owner)
+            except asyncio.CancelledError:
+                # Deliberately noncooperative: exercise late wake completion
+                # after real erasure, even though the new source monitor cancels.
+                await flush(g.owner)
             ready.set()
             await release.wait()
-            return receipt
         stt = SimpleNamespace(transcribe=AsyncMock(return_value=SimpleNamespace(text='synthetic private text', avg_logprob=-.1, no_speech_prob=.01)),
                               asr_mono=lambda audio: audio)
         tr = AmbientTranscriber(None, None, stt, SimpleNamespace(tag=AsyncMock(return_value=('unknown', .0))),
@@ -407,6 +411,7 @@ async def test_textual_wake_finishing_after_erasure_cannot_create_a_new_clip(tmp
         pending = asyncio.create_task(tr._handle_segment('synthetic-room', RawSegment(g.clock.now, g.clock.now+1, AUDIO, vad_prob=.9)))
         try:
             await asyncio.wait_for(ready.wait(), 3)
+            assert not pending.done() and tr.resource_status()['segments'] == 1
         finally:
             release.set()
             await pending
