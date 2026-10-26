@@ -1001,11 +1001,11 @@ incluso los que tenían recibo completo, para detectar copias restauradas detrá
 del cursor. Una versión no soportada o un fallo nativo quedan visibles con
 códigos fijos, sin publicar rutas ni contenido privado.
 
-La prueba de runtime toma un cohort de operaciones del logger ya admitidas y
+La prueba de runtime toma un conjunto de operaciones del logger ya admitidas y
 flujos asíncronos de propuestas. Cancela esos flujos hijos y espera su salida
 real; el loop de voz que los llamó conserva su propia cancelación. El cierre del
 observador no oculta la generación nativa. Los jobs posteriores pasan por las
-barreras de fuentes vigentes y no retrasan el recibo del cohort anterior. Los
+barreras de fuentes vigentes y no retrasan el recibo del conjunto anterior. Los
 owners deben registrarse antes de tener trabajo o propuestas pendientes; se
 rechaza adoptar silenciosamente un owner que ya estaba activo sin registro.
 
@@ -1028,7 +1028,7 @@ que el resultado deja de estar alcanzable sin forzar ni desactivar GC.
 
 Los callbacks de disco usan dos threads propios y mantienen su ownership tras
 cancelación. Los reintentos de ack conservan el resultado ya terminado sin repetir
-la eliminación física. El runtime difiere un cohort pendiente sin bloquear los
+la eliminación física. El runtime difiere un conjunto pendiente sin bloquear los
 demás destinos; el pool general saturado tampoco impide limpiar el sidecar. La
 ruta deshabilitada no importa modelos ni el backend de audio.
 
@@ -1038,6 +1038,23 @@ El vencimiento al leer y las barreras de escritura de propuestas ya existen;
 el mantenimiento físico de sus TTL sin una solicitud de borrado sigue pendiente.
 Tampoco cierra la migración privada, la aceptación de GC y hardware ni H0–H6.
 No se modifica producción ni se publica una release.
+
+La [validación del participante de sugerencias](../research/2026-10-26-h3-suggestion-erasure-validation.json)
+del commit `ad2386f` registra **4750 passed, 1 xfailed**, sin fallos, en 207,43 s.
+Incluye 29 casos nuevos, 807 pruebas dirigidas y 68 comprobaciones finales del
+reader, Ruff, Bandit sin hallazgos medios/altos, 18 tests de frontend y smoke del
+dashboard. El artefacto compilado verifica recibos y cero filas físicas de
+propuestas borradas fuera del checkout en 6,83 s. El heartbeat obtiene p95 de
+0,17 ms y máximo de 1,06 ms; la cancelación de control llega a 0,07 ms y el
+cleanup a 11,00 ms, con límites intactos.
+
+La evidencia conserva el primer comando de tests corregido por una ruta
+inexistente y los dos fallos posteriores: un fixture instalaba demasiado tarde
+el fallo de ack, y el resultado nativo seguía enlazado desde el traceback del
+observador. El primero se corrige controlando el handoff antes de reconciliar;
+el segundo corrige el código de ownership, con inspección de referencias y un
+ensayo que no fuerza GC. La suite sin instrumentación no vuelve a medir ni
+resuelve las pausas de GC anteriores, ni sustituye la aceptación física de H6.
 
 ## Trabajo restante
 

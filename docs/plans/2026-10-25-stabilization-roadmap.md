@@ -477,6 +477,12 @@ copias restauradas al reiniciar. Corrige además un enlace de traceback que pod�
 retener el resultado de un worker después de cancelar al observador. Quedan cinco
 participantes y el mantenimiento físico independiente de TTL de propuestas; no
 hay un borrado global ni una release habilitada por este avance.
+La [validación del participante](../research/2026-10-26-h3-suggestion-erasure-validation.json)
+del commit `ad2386f` registra **4750 passed, 1 xfailed**, sin fallos, con 29 casos
+nuevos, los checks y el artefacto compilado aceptados. El ensayo incluye síntesis
+y abortado nativos pendientes, reintentos de ack y limpieza con el pool general
+saturado, sin ampliar límites. La aceptación integrada de runtime/GC y hardware
+continúa pendiente.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.

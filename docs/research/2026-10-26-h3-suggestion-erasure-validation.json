@@ -1,0 +1,276 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "ad2386f442a2e4efffa78cffda0b1daaf4921206",
+  "tested_runtime_source_tree": "9cf12a902f5f361ade4c246858889a0e7e667438",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 durable SUGGESTIONS erasure over registered policy sidecars and actual admitted native/voice scopes; cancelled observer frame result retention fix",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-suggestion-erasure-final.xml",
+    "collected": 4751,
+    "passed": 4750,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 207.43,
+    "junit_time_s": 207.364,
+    "log": "/tmp/kza-h3-suggestion-erasure-final.log",
+    "xml": "/tmp/kza-h3-suggestion-erasure-final.xml",
+    "accepted": true,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "integrated_runtime_gc_acceptance": false
+  },
+  "new_cases": 29,
+  "new_case_names": [
+    "test_physical_erasure_covers_all_statuses_and_mixed_sources_without_reading_messages",
+    "test_indirect_fact_revocation_removes_proposals_with_different_conversation_ids",
+    "test_disabled_analytics_cleans_historical_target_and_restored_completed_rows",
+    "test_unknown_first_row_does_not_starve_later_known_batches_or_claim_completion",
+    "test_nonpositive_row_id_remains_quarantined_without_starving_known_rows",
+    "test_late_native_generation_keeps_runtime_pending_after_observer_and_file_cleanup",
+    "test_native_jobs_admitted_after_barrier_do_not_delay_its_receipt",
+    "test_erasure_waits_for_real_noncooperative_tts_and_cancels_only_scoped_voice",
+    "test_pending_cache_is_pruned_without_a_new_voice_request",
+    "test_shutdown_keeps_actual_tts_and_writer_lease_after_flow_cancel",
+    "test_abort_worker_remains_visible_after_controller_and_synthesis_exit",
+    "test_new_voice_session_does_not_reuse_the_erased_delivery_scope",
+    "test_cancelled_cleanup_observer_keeps_sqlite_work_and_lease_owned",
+    "test_failed_acknowledgement_retries_only_receipt_not_physical_cleanup",
+    "test_failure_is_sanitized_and_survives_restart_until_actual_retry",
+    "test_redirected_sidecar_is_not_followed_or_falsely_acknowledged",
+    "test_unknown_cleanup_cursor_is_rejected_before_any_data_access[0]",
+    "test_unknown_cleanup_cursor_is_rejected_before_any_data_access[s1:0:0]",
+    "test_unknown_cleanup_cursor_is_rejected_before_any_data_access[s1:01:0]",
+    "test_unknown_cleanup_cursor_is_rejected_before_any_data_access[s1:1:-1]",
+    "test_unknown_cleanup_cursor_is_rejected_before_any_data_access[s1:1:01]",
+    "test_unknown_cleanup_cursor_is_rejected_before_any_data_access[s1:9223372036854775808:0]",
+    "test_unknown_cleanup_cursor_is_rejected_before_any_data_access[private/path]",
+    "test_unsupported_registered_version_remains_pending_without_opening_private_path",
+    "test_owner_registration_cannot_silently_adopt_already_running_untracked_work",
+    "test_pending_failed_marker_cannot_authorize_physical_proposal_removal",
+    "test_saturated_default_executor_cannot_starve_proposal_cleanup",
+    "test_completed_native_result_is_not_retained_by_a_pending_retry_barrier",
+    "test_disabled_suggestion_cleanup_imports_no_models_or_audio_backend"
+  ],
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.17329910770058632,
+        "max": 1.0582751128822565
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05077710375189781,
+          "p95": 0.06628991104662418,
+          "max": 0.06628991104662418
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.86034020408988,
+          "p95": 10.99791913293302,
+          "max": 10.99791913293302
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 427,
+        "loop_lag_p95_ms": 0.28131320141255856,
+        "loop_lag_max_ms": 1.7021242529153824,
+        "cancel_cleanup_max_ms": 1.8618018366396427,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2839,
+        "loop_lag_p95_ms": 0.9732950758188962,
+        "loop_lag_max_ms": 9.579574810340999,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6908401846885681,
+        "p95": 5.648992024362087,
+        "max": 5.648992024362087,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_validation": {
+    "passed": 807,
+    "failed": 0,
+    "runtime_s": 42.11,
+    "log": "/tmp/kza-h3-suggestion-erasure-focused-accepted.log",
+    "scope": "Proposal erasure/storage, pattern receipts, event/context erasure, coordinator, real voice responses/deadlines, all pipeline and memory units"
+  },
+  "final_reader_validation": {
+    "passed": 68,
+    "failed": 0,
+    "runtime_s": 5.91,
+    "log": "/tmp/kza-h3-suggestion-erasure-reader-final.log",
+    "additional_row_id_case": {
+      "passed": 1,
+      "runtime_s": 0.55,
+      "log": "/tmp/kza-h3-suggestion-erasure-rowid.log"
+    },
+    "reason": "Exclude a nonpositive policy row ID from inference while retaining it as erasure quarantine; the full suite includes the final assertion"
+  },
+  "prior_validation_and_review": [
+    {
+      "log": "/tmp/kza-h3-suggestion-erasure-baseline.log",
+      "collected": 0,
+      "cause": "Initial compatibility command named a nonexistent monolithic response-handler test file",
+      "correction": "Locate the actual routed/owned response and deadline tests and run them"
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-erasure-baseline-fixed.log",
+      "passed": 133,
+      "failed": 0,
+      "runtime_s": 25.82
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-erasure-first.log",
+      "passed": 9,
+      "failed": 0,
+      "runtime_s": 1.63
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-erasure-second.log",
+      "passed": 25,
+      "failed": 0,
+      "runtime_s": 3.03
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-erasure-focused.log",
+      "passed": 763,
+      "failed": 2,
+      "runtime_s": 25.13,
+      "findings": [
+        "The new acknowledgement failure fixture installed its fault after a cleanup cycle could already acknowledge the physical result",
+        "A cancelled observer traceback held the OwnedBlockingWork.run frame, whose task local retained the later native result after real completion"
+      ],
+      "corrections": [
+        "Install the acknowledgement fault before the first reconciliation so the actual receipt handoff is observed deterministically",
+        "Clear task/function/argument links on scope exit while the owner set retains actual native operations; also clear the scoped voice handoff locals"
+      ],
+      "reference_inspection": "Standalone weak-reference probe reproduced retained result -> Task -> run frame without collecting, disabling or freezing GC"
+    },
+    {
+      "log": "/tmp/kza-h3-suggestion-erasure-regressions.log",
+      "passed": 2,
+      "failed": 0,
+      "runtime_s": 0.74
+    },
+    {
+      "finding": "Cleanup cursor initially used JSON, which the existing ErasureResult cursor protocol rejects",
+      "correction": "Use a canonical versioned s1:row_id:unknown_count token within the existing journal grammar; retain unknowns and continue subsequent known batches"
+    },
+    {
+      "finding": "Always-on cleanup must not import pipeline/audio modules",
+      "correction": "Load the ResponseHandler type only when attaching an enabled router; a subprocess rejects optional model/audio imports while running disabled cleanup"
+    }
+  ],
+  "erasure_contract": {
+    "participant": "suggestions",
+    "version": 1,
+    "destinations": [
+      "Registered policy sidecars, including historical paths",
+      "Runtime automation_proposals ownership barrier"
+    ],
+    "registered_before_optional_producer_admission": true,
+    "active_native_owner_can_be_attached_without_prior_registration": false,
+    "works_with_analytics_disabled": true,
+    "legacy_json_read_or_modified": false,
+    "cleanup_loads_message_description_or_yaml": false,
+    "metadata_rows_per_transaction": 32,
+    "metadata_rows_materialized_simultaneously": 1,
+    "source_and_event_reference_limit": 10000,
+    "metadata_field_bytes_limit": 4194304,
+    "schema_and_existing_destination_validated_before_mutation": true,
+    "symlink_redirection_followed": false,
+    "unknown_rows_and_nonpositive_ids": "Preserved, excluded from inference and represented as pending count while positive known rows progress",
+    "semantic_dependency_revocations_included": true,
+    "committed_authority_required_for_irreversible_cleanup": true,
+    "pending_failed_marker_authorizes_removal": false,
+    "leased_restart_rechecks_completed_and_behind_cursor_restores": true,
+    "unsupported_versions_acknowledged": false,
+    "failed_acknowledgement_repeats_physical_cleanup": false
+  },
+  "runtime_ownership": {
+    "barrier": "Finite snapshot of actual admitted EventLogger tasks and child proposal flows; later guarded jobs cannot prolong this snapshot",
+    "parent_voice_loop_cancelled_by_erasure": false,
+    "child_observer_cancelled_means_native_complete": false,
+    "voice_tokens": "Monotonic content-free session IDs covering controllers, native workers and abort tasks",
+    "new_sessions_reuse_tokens": false,
+    "lease_released_before_captured_native_tts_or_abort_exit": false,
+    "completed_native_result_retained_until_journal_retry": false,
+    "gc_forced_or_disabled_to_prove_release": false,
+    "cleanup_workers": "Two dedicated native threads; cleanup completes while the general executor is verifiably still saturated",
+    "unknown_private_exception_details_exposed": false
+  },
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000
+  },
+  "gates": {
+    "ruff": {
+      "command": "ruff check src/ tests/ scripts/smart_automations.py",
+      "passed": true,
+      "log": "/tmp/kza-h3-suggestion-erasure-ruff.log"
+    },
+    "bandit": {
+      "command": "bandit -r src/ scripts/smart_automations.py -ll -c pyproject.toml",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-suggestion-erasure-bandit-final.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-suggestion-erasure-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-suggestion-erasure-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 6.832,
+      "exercise": "Construct disabled cleanup, create real policy proposals, accept a draft, request erasure through the real coordinator, verify SUGGESTIONS receipts complete and count zero physical rows outside the checkout"
+    }
+  },
+  "remaining_scope": [
+    "Independent physical proposal expiry with optional features stopped, including historical paths and source-event lifetime changes",
+    "Five erasure participants remain: producers, diagnostics, collectors, streams and voices; no broad erasure UI is enabled",
+    "Other active producers/buffers, diagnostic logs, collectors, stream/frontend copies and automatic voiceprint/group TTL plus manual voice review",
+    "Private real-copy legacy migration, compatible rollback/restore, live semantic index rebuild and authenticated broad erasure UI",
+    "H0/H1 live HA effect verification, H2 physical audio, H4 recovery/runtime/GC and large-history startup cost, H5 actual typed local routine execution, H6 one final release/rollback",
+    "Earlier instrumented GC pauses up to 495.68 ms remain unresolved; these uninstrumented timing cases do not remeasure or accept integrated runtime/GC"
+  ],
+  "production_modified": false,
+  "new_dependencies": false,
+  "new_configuration_files": false
+}
