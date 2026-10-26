@@ -35,6 +35,7 @@ import asyncio
 import re
 import time
 import unicodedata
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Callable
@@ -42,6 +43,8 @@ from typing import Callable
 from src.core.logging import get_logger
 from src.home_assistant.home_actions import HomeActionService
 from src.home_assistant.voice_actions import VoiceHomeActionExecutor
+from src.llm.generation_stream import GenerationStream
+from src.orchestrator.cancellation import CancellationReason
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
     Priority,
@@ -572,7 +575,9 @@ class RequestDispatcher:
         self.llm = llm
         self.tts = tts
         self.context_manager = context_manager or ContextManager()
-        self.queue = priority_queue or PriorityRequestQueue()
+        # An injected queue is initially empty/falsy, but is still the worker's
+        # queue. Replacing it strands every dispatcher request without a worker.
+        self.queue = priority_queue if priority_queue is not None else PriorityRequestQueue()
         self.streamer = buffered_streamer
         self.music = music_dispatcher
         self.vector_threshold = vector_threshold
@@ -1112,19 +1117,20 @@ class RequestDispatcher:
 
         # Crear evento para esperar respuesta
         response_event = asyncio.Event()
+        response_loop = asyncio.get_running_loop()
         result_holder = {"result": None}
 
         def on_complete(request: Request):
             result_holder["result"] = request.result
             try:
-                response_event.set()
+                response_loop.call_soon_threadsafe(response_event.set)
             except RuntimeError:
                 pass
 
         def on_cancel(request: Request):
             result_holder["result"] = "Cancelado"
             try:
-                response_event.set()
+                response_loop.call_soon_threadsafe(response_event.set)
             except RuntimeError:
                 pass
 
@@ -1134,7 +1140,7 @@ class RequestDispatcher:
             result_holder["failed"] = True
             result_holder["error"] = request.error
             try:
-                response_event.set()
+                response_loop.call_soon_threadsafe(response_event.set)
             except RuntimeError:
                 pass
 
@@ -1171,7 +1177,7 @@ class RequestDispatcher:
         try:
             await asyncio.wait_for(response_event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            request.cancel()
+            request.cancel(CancellationReason.TIMEOUT)
             return DispatchResult(
                 path=PathType.SLOW_LLM,
                 priority=priority,
@@ -1182,6 +1188,9 @@ class RequestDispatcher:
                 was_queued=True,
                 timings=timings
             )
+        except asyncio.CancelledError:
+            request.cancel(CancellationReason.USER_EXPLICIT)
+            raise
 
         timings["llm"] = request.processing_time * 1000 if request.processing_time else 0
 
@@ -1203,6 +1212,12 @@ class RequestDispatcher:
                 was_queued=True,
                 queue_position=position,
                 timings=timings
+            )
+
+        if request.is_cancelled:
+            return DispatchResult(
+                path=PathType.SLOW_LLM, priority=priority, success=False,
+                response="", intent="cancelled", was_queued=True, timings=timings,
             )
 
         response = result_holder["result"]
@@ -1700,6 +1715,7 @@ class MultiUserOrchestrator:
         self.llm = llm
         self.tts = tts
         self.speaker_id = speaker_identifier
+        self._generation = GenerationStream(llm)
         self.user_manager = user_manager
         self.music = music_dispatcher
 
@@ -1926,53 +1942,50 @@ class MultiUserOrchestrator:
                     logger.debug(f"Notificando a {queued['user_id']}: {message}")
 
     async def _process_llm_request(self, request: Request):
-        """Procesar peticion con el LLM"""
+        """Consume generation off the loop; cancel pending reads and late results."""
+        async def generate() -> str:
+            parts = []
+            async with aclosing(self._generation.astream(prompt)) as source:
+                async for chunk in source:
+                    parts.append(chunk.get("token", ""))
+            return "".join(parts)
+
+        async def watch_cancellation() -> None:
+            while not request.is_cancelled:
+                if self.queue.interrupt_for_priority(request.priority):
+                    request.cancel(CancellationReason.HIGHER_PRIORITY)
+                    return
+                await asyncio.sleep(0.01)
+
+        generation = monitor = None
         try:
+            if request.is_cancelled:
+                request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
+                return
             # Construir prompt con contexto
             prompt = self.context_manager.build_prompt(
                 request.user_id,
                 request.text
             )
 
-            # Generar respuesta
-            if hasattr(self.llm, 'generate_stream'):
-                # Streaming con verificacion de cancelacion
-                response_parts = []
-                for chunk in self.llm.generate_stream(prompt):
-                    if request.is_cancelled:
-                        logger.info(
-                            "Request cancelado",
-                            request_id=request.request_id,
-                            user_id=request.user_id
-                        )
-                        return
+            generation = asyncio.create_task(generate())
+            monitor = asyncio.create_task(watch_cancellation())
+            await asyncio.wait({generation, monitor}, return_when=asyncio.FIRST_COMPLETED)
+            if request.is_cancelled:
+                request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
+                return
+            response = await generation
+            if not response.strip():
+                raise RuntimeError("generation_empty")
 
-                    # Verificar interrupciones de mayor prioridad
-                    if self.queue.interrupt_for_priority(request.priority):
-                        request.cancel()
-                        logger.info(
-                            "Request interrumpido por mayor prioridad",
-                            request_id=request.request_id,
-                            user_id=request.user_id
-                        )
-                        return
+            # A cancelled/terminal request cannot be resurrected by a late result.
+            if request.complete(response):
+                self.context_manager.add_turn(request.user_id, "user", request.text)
+                self.context_manager.add_turn(request.user_id, "assistant", response)
 
-                    response_parts.append(chunk.get("token", ""))
-
-                response = "".join(response_parts)
-            else:
-                response = self.llm.generate(prompt)
-
-            # Agregar al contexto
-            self.context_manager.add_turn(
-                request.user_id, "user", request.text
-            )
-            self.context_manager.add_turn(
-                request.user_id, "assistant", response
-            )
-
-            # Completar
-            request.complete(response)
+        except asyncio.CancelledError:
+            request.cancel(CancellationReason.SYSTEM_SHUTDOWN)
+            raise
 
         except Exception as e:
             logger.error(
@@ -1984,6 +1997,13 @@ class MultiUserOrchestrator:
             request.fail(str(e))
 
         finally:
+            if request.is_cancelled:
+                request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
+            children = [task for task in (generation, monitor) if task is not None]
+            for task in children:
+                task.cancel()
+            if children:
+                await asyncio.gather(*children, return_exceptions=True)
             self.queue.clear_current()
 
     def get_stats(self) -> dict:

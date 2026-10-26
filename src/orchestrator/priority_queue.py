@@ -97,6 +97,7 @@ class Request:
     on_complete: Callable = field(compare=False, default=None, repr=False)
     on_cancel: Callable = field(compare=False, default=None, repr=False)
     on_fail: Callable = field(compare=False, default=None, repr=False)
+    _state_lock: threading.RLock = field(compare=False, default_factory=threading.RLock, repr=False)
 
     def __post_init__(self):
         if self.cancellation_token is None:
@@ -125,24 +126,32 @@ class Request:
 
     def cancel(self, reason: CancellationReason = CancellationReason.USER_NEW_REQUEST):
         """Cancelar esta peticion"""
-        self.cancellation_token.cancel(reason)
-        self.status = RequestStatus.CANCELLED
+        with self._state_lock:
+            if self.status not in {RequestStatus.PENDING, RequestStatus.PROCESSING}:
+                return
+            self.status = RequestStatus.CANCELLED
+            self.completed_at = time.time()
+            self.cancellation_token.cancel(reason)
         if self.on_cancel:
             try:
                 self.on_cancel(self)
             except Exception as e:
                 logger.error(f"Error en on_cancel callback: {e}")
 
-    def complete(self, result: Any):
+    def complete(self, result: Any) -> bool:
         """Marcar como completada"""
-        self.result = result
-        self.status = RequestStatus.COMPLETED
-        self.completed_at = time.time()
+        with self._state_lock:
+            if self.is_cancelled or self.status not in {RequestStatus.PENDING, RequestStatus.PROCESSING}:
+                return False
+            self.result = result
+            self.status = RequestStatus.COMPLETED
+            self.completed_at = time.time()
         if self.on_complete:
             try:
                 self.on_complete(self)
             except Exception as e:
                 logger.error(f"Error en on_complete callback: {e}")
+        return True
 
     def fail(self, error: str):
         """Marcar como fallida y NOTIFICAR al llamador.
@@ -154,9 +163,12 @@ class Request:
         reasoner. Ahora invocamos `on_fail` (o `on_complete` como fallback)
         para despertar al llamador de inmediato con un error accionable.
         """
-        self.error = error
-        self.status = RequestStatus.FAILED
-        self.completed_at = time.time()
+        with self._state_lock:
+            if self.is_cancelled or self.status not in {RequestStatus.PENDING, RequestStatus.PROCESSING}:
+                return
+            self.error = error
+            self.status = RequestStatus.FAILED
+            self.completed_at = time.time()
         cb = self.on_fail or self.on_complete
         if cb:
             try:
@@ -304,7 +316,7 @@ class PriorityRequestQueue:
             # Cancelar peticion anterior del mismo usuario
             if self.auto_cancel and user_id in self._user_requests:
                 old_request = self._user_requests[user_id]
-                if old_request.status == RequestStatus.PENDING:
+                if old_request.status in {RequestStatus.PENDING, RequestStatus.PROCESSING}:
                     old_request.cancel(CancellationReason.USER_NEW_REQUEST)
                     self._stats["total_cancelled"] += 1
                     logger.debug(f"Peticion anterior cancelada: {old_request.request_id}")

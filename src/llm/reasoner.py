@@ -5,16 +5,22 @@ Modelo grande para razonamiento profundo con soporte LoRA.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 import httpx
 
 from src.core.egress import EgressPolicy, ProcessingDestination
+
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -446,13 +452,10 @@ class LLMReasoner:
 
 
 class HttpReasoner:
-    """
-    Cliente HTTP al 72B (llama-cpp-python server bajo kza-72b.service, :8200).
-    Drop-in de LLMReasoner con la misma signature de __call__ — retorna dict
-    tipo `{"choices": [{"text": ...}], "usage": {...}}` para backward compat.
+    """Configured OpenAI-compatible HTTP gateway with explicit egress policy.
 
-    El service es "siempre caliente" (Q1=A). El consumo va por HTTP para
-    evitar doble-carga del modelo en el proceso de KZA.
+    ``astream`` owns native async streaming resources. Synchronous entry points
+    retain the legacy LLMReasoner dictionary contract for existing consumers.
     """
 
     def __init__(
@@ -643,15 +646,137 @@ class HttpReasoner:
         """
         return self(prompt, max_tokens=max_tokens, temperature=temperature)["choices"][0]["text"]
 
+    def _new_async_client(self, base_url: str) -> AsyncOpenAI:
+        """Build only transport/SDK objects; TLS setup runs outside the loop."""
+        self.policy.require_allowed(base_url)
+        from openai import AsyncOpenAI
+        key = _resolve_api_key(base_url, self.api_key_env)
+        return AsyncOpenAI(
+            base_url=base_url, api_key=key, timeout=self.timeout, max_retries=0,
+            http_client=httpx.AsyncClient(follow_redirects=False, verify=self.verify_ssl),
+        )
+
+    async def astream(
+        self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7,
+        *, max_chars: int = 65536,
+    ) -> AsyncIterator[dict]:
+        """Yield sanitized text deltas with native async I/O and owned resources.
+
+        The endpoint/model/style remain those configured for this request. A
+        terminal stop is required; truncation or premature EOF cannot become a
+        complete answer. Both stream and client close on cancellation, timeout,
+        failure. Consumers use contextlib.aclosing when stopping before EOF.
+        This method never retries a partial run.
+
+        Args:
+            prompt: Input already admitted by the caller's privacy policy.
+            max_tokens: Existing endpoint token budget, without changing model.
+            temperature: Sampling temperature.
+            max_chars: Maximum raw text retained, including hidden reasoning.
+
+        Yields:
+            Dictionaries containing token, accumulated text and chunk count.
+
+        Raises:
+            Exception: Denied egress, transport failure, idle timeout, incomplete
+                generation or invalid protocol; no held tail is flushed on error.
+        """
+        base_url, style, configured_model = self.base_url, self.api_style, self.model
+        self.policy.require_allowed(base_url)
+        if type(max_chars) is not int or max_chars <= 0:
+            raise ValueError("invalid_generation_limit")
+        if style not in {"chat", "completions"}:
+            raise ValueError("unsupported_api_style")
+        initializing = asyncio.create_task(asyncio.to_thread(self._new_async_client, base_url))
+        try:
+            client = await asyncio.shield(initializing)
+        except asyncio.CancelledError:
+            # Do not abandon a newly constructed async client in a worker.
+            async def discard_client() -> None:
+                client = await initializing
+                await client.close()
+
+            cleanup = asyncio.create_task(discard_client())
+            # A second cancellation must not abandon constructor-owned resources.
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+            cleanup.result()
+            raise
+        async with client:
+            self.policy.require_allowed(base_url)
+            model = self._resolved_model if (
+                self._resolved_base_url == base_url
+                and (configured_model is None or self._resolved_model == configured_model)
+            ) else None
+            if model is None:
+                models = await client.models.list()
+                ids = [item.id for item in models.data]
+                if configured_model is not None:
+                    if configured_model not in ids:
+                        raise RuntimeError("configured_model_unavailable")
+                    model = configured_model
+                elif ids:
+                    model = ids[0]
+                else:
+                    raise RuntimeError("endpoint_has_no_model")
+            # A consent change while discovering models still blocks the prompt.
+            self.policy.require_allowed(base_url)
+            if (self.base_url, self.api_style, self.model) != (base_url, style, configured_model):
+                raise RuntimeError("reasoner_configuration_changed")
+            options = {"model": model, "max_tokens": max_tokens, "temperature": temperature, "stream": True}
+            if style == "chat":
+                stream = await client.chat.completions.create(messages=[{"role": "user", "content": prompt}], **options)
+            else:
+                stream = await client.completions.create(prompt=prompt, **options)
+            raw = emitted = ""
+            count = received = 0
+            finish_reason = None
+            async with stream:
+                iterator = stream.__aiter__()
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(anext(iterator), self.idle_timeout_s) if self.idle_timeout_s else await anext(iterator)
+                    except StopAsyncIteration:
+                        break
+                    except TimeoutError as error:
+                        from src.llm.idle_watchdog import IdleTimeoutError
+                        raise IdleTimeoutError(self.idle_timeout_s, received) from error
+                    received += 1
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    if choice.finish_reason is not None:
+                        finish_reason = choice.finish_reason
+                    token = (choice.delta.content if style == "chat" else choice.text) or ""
+                    if type(token) is not str:
+                        raise ValueError("invalid_stream_text")
+                    if len(raw) + len(token) > max_chars:
+                        raise ValueError("generation_text_limit")
+                    raw += token
+                    answer = _strip_reasoning(raw)
+                    safe = answer[:-_THINK_HOLDBACK] if len(answer) > _THINK_HOLDBACK else ""
+                    if len(safe) > len(emitted):
+                        delta, emitted = safe[len(emitted):], safe
+                        count += 1
+                        yield {"token": delta, "text": emitted, "token_count": count}
+                    # Buffered SSE bodies must not starve other asyncio work.
+                    await asyncio.sleep(0)
+                if finish_reason != "stop":
+                    raise RuntimeError("generation_truncated" if finish_reason == "length" else "generation_incomplete")
+                final = _strip_reasoning(raw)
+                if len(final) > len(emitted):
+                    count += 1
+                    yield {"token": final[len(emitted):], "text": final, "token_count": count}
+
     def generate_stream(self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7, **_ignored):
         """Streaming sync token-por-token (drop-in de LLMReasoner.generate_stream).
 
-        Yields dicts {"token", "text", "token_count"} para compat con
-        _process_llm_request (lee chunk.get("token","")). El consumo es síncrono
-        igual que con el LLMReasoner local — el slow path tolera el bloqueo
-        (request encolado, usuario esperando). NOTA: para un endpoint cloud este
-        loop bloquea el event loop durante el stream (limitación heredada del
-        diseño del worker; refactor async es follow-up aparte).
+        Yields dicts {"token", "text", "token_count"} para consumidores legacy.
+        Requiere un worker fuera del event loop. El worker de conversación usa
+        ``astream`` para que una lectura de red no congele la captura.
 
         Args:
             prompt: Texto de entrada.
