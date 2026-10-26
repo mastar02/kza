@@ -251,6 +251,8 @@ class ResponseHandler:
         try:
             if session.cancelled.is_set():
                 return
+            if session.zone_id is not None and self.zone_manager is None:
+                raise AudioPlaybackError("output_zone_unavailable")
             cached = utterance.pcm
             if cached is None and self._response_cache is not None:
                 cached = self._response_cache.get(text)

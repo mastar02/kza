@@ -281,3 +281,11 @@ async def test_decimal_split_across_tokens_is_not_spoken_as_separate_sentences(m
     assert engine.calls == ['La medida es 22.5 grados.', 'Es correcto.']
     expected = np.concatenate([engine.audio(t) for t in engine.calls])
     np.testing.assert_array_equal(backend.heard()[:, 0], expected)
+
+
+async def test_explicit_zone_without_zone_manager_cannot_fall_back_to_default_device(monkeypatch):
+    owner, engine, backend, _, _ = graph(monkeypatch)
+    owner.zone_manager = None
+    result = await owner.aspeak('Texto', zone_id='zone_origin')
+    assert result.delivery is DeliveryState.FAILED and result.error == 'output_zone_unavailable'
+    assert engine.calls == [] and backend.outputs == []
