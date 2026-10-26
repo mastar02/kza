@@ -1947,7 +1947,9 @@ class MultiUserOrchestrator:
             parts = []
             async with aclosing(self._generation.astream(prompt)) as source:
                 async for chunk in source:
-                    parts.append(chunk.get("token", ""))
+                    token = chunk.get("token", "")
+                    if token:
+                        parts.append(token)
             return "".join(parts)
 
         async def watch_cancellation() -> None:
