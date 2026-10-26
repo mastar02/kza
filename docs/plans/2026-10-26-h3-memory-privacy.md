@@ -457,10 +457,10 @@ archivos ajenos. No se atribuyen conversaciones inventadas a clips legacy.
 Este paso conecta dos de los diez participantes, capturas e índice. No drena
 todavía STT, lectores de audio, buffers del tap ni lotes de destilación; los
 participantes de productores, voces y streams deben cubrir esas copias. Tampoco
-agrega un endpoint global ni declara completo el borrado de conversación. Resta
-mantener la purga de 48 h sobre todos los destinos registrados cuando ambient
-está apagado y sobre raíces anteriores sin un pedido de borrado; la purga actual
-del transcriber continúa dependiendo del ambient path activo. La migración y
+agrega un endpoint global ni declara completo el borrado de conversación. Esa
+versión aún no mantenía la purga de 48 h sobre todos los destinos registrados con
+ambient apagado y raíces anteriores sin un pedido de borrado; dependía del
+transcriber activo. El siguiente avance resuelve esa dependencia. La migración y
 restauración de datos reales y el resto de H3 siguen pendientes.
 
 La [validación del participante de capturas](../research/2026-10-26-h3-capture-erasure-validation.json)
@@ -532,6 +532,16 @@ STT, lectores, tap y destilación. La reconciliación de todos los vencimientos 
 borrados individuales del índice con recall apagado sigue pendiente, al igual
 que pausa/mute, voces, copias de diagnóstico y migración real. No cierra H3 y no
 modificó producción.
+
+La [validación del mantenimiento independiente](../research/2026-10-26-h3-capture-maintenance-validation.json)
+del commit `22ebc58` registra **4527 passed, 1 xfailed**, sin fallos, en 163,30 s.
+Los 20 casos nuevos cubren funciones apagadas, plazos anteriores, reinicio,
+ubicaciones históricas, referencias compartidas, fallos de disco, pool general
+saturado, cierre retenido y apertura concurrente del schema. Pasan 329 pruebas
+dirigidas, Ruff, Bandit medio/alto, 18 tests de frontend, smoke y artefacto
+compilado. El heartbeat mantiene p95 de 0,40 ms y máximo de 1,05 ms frente a
+25/75 ms. La evidencia conserva las primeras carreras y la corrección de la
+observación del cierre sin ampliar sus presupuestos. No cierra H3.
 
 ## Trabajo restante
 

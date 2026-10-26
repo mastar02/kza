@@ -1,0 +1,220 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "22ebc581e60a52f718d4381cf7a36f4fdad57136",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 registry-based capture TTL maintenance independent of ambient, keep_audio and semantic recall; isolated bounded native I/O, historical roots, shared-reference protection and actual close ownership",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-capture-maintenance-final.xml",
+    "collected": 4528,
+    "passed": 4527,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 163.3,
+    "junit_time_s": 163.247,
+    "log": "/tmp/kza-h3-capture-maintenance-final.log",
+    "xml": "/tmp/kza-h3-capture-maintenance-final.xml",
+    "accepted": true,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ]
+  },
+  "new_connected_cases": 20,
+  "new_case_names": [
+    "test_disabled_features_purge_expired_text_and_unattached_clip_at_startup",
+    "test_new_earlier_deadline_wakes_sleeping_maintenance_without_transcriber",
+    "test_deadlines_survive_restart_and_reads_do_not_renew_them",
+    "test_historical_roots_in_same_database_purge_without_erase_request",
+    "test_one_corrupt_target_does_not_prevent_other_registered_store_cleanup",
+    "test_unlink_failure_is_durable_and_retried_after_restart",
+    "test_shared_file_live_in_another_database_is_protected_until_its_deadline",
+    "test_unknown_shared_peer_prevents_unlink_without_exposing_private_errors",
+    "test_legacy_orphan_cleanup_is_durable_and_respects_shared_live_rowids",
+    "test_missing_store_is_not_created_and_unknown_orphan_is_not_assumed_expired",
+    "test_empty_disabled_store_does_not_create_database_or_archive",
+    "test_saturated_default_executor_does_not_starve_retention",
+    "test_blocked_unlink_keeps_lease_and_other_target_can_still_finish",
+    "test_late_harvest_does_not_push_an_already_due_sweep_into_the_future",
+    "test_concurrent_schema_initialization_is_atomic_across_store_connections",
+    "test_cancelled_scheduler_observer_does_not_cancel_actual_sweep",
+    "test_archive_close_waits_reservation_and_discard_not_only_native_encoder",
+    "test_unsupported_target_stays_visible_and_prevents_unknown_file_deletion",
+    "test_disabled_maintenance_honors_a_shorter_configured_limit",
+    "test_disabled_runtime_retention_never_imports_semantic_or_audio_models"
+  ],
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.3989331889897585,
+        "max": 1.0520871728658676
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.04947488196194172,
+          "p95": 0.08828495629131794,
+          "max": 0.08828495629131794
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.801061056554317,
+          "p95": 10.996648110449314,
+          "max": 10.996648110449314
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 425,
+        "loop_lag_p95_ms": 0.2863621339201927,
+        "loop_lag_max_ms": 1.0534501634538174,
+        "cancel_cleanup_max_ms": 1.7844978719949722,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2712,
+        "loop_lag_p95_ms": 0.9906740207225083,
+        "loop_lag_max_ms": 1.3670671079307795,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.49767596647143364,
+        "p95": 5.735638784244657,
+        "max": 5.735638784244657,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_validation": {
+    "passed": 329,
+    "runtime_s": 9.34,
+    "log": "/tmp/kza-h3-capture-maintenance-candidate.log",
+    "scope": "Capture maintenance, capture erasure/retention, all ambient unit cases, shared privacy authority and erasure coordinator"
+  },
+  "builder_and_final_maintenance_validation": {
+    "passed": 22,
+    "runtime_s": 2.29,
+    "log": "/tmp/kza-h3-capture-maintenance-builder.log"
+  },
+  "worktree_review_failures": [
+    {
+      "log": "/tmp/kza-h3-capture-maintenance-baseline.log",
+      "passed": 257,
+      "failed": 2,
+      "runtime_s": 5.84,
+      "cause": "Existing fixture teardown assumed real cleanup finished inside a deliberately tiny 10 ms observation budget, before new background I/O had drained",
+      "correction": "Keep the 10 ms observation budget and explicit timeout/lease assertions unchanged, and await actual retained close tasks before ExitStack closes fixture databases"
+    },
+    {
+      "log": "/tmp/kza-h3-capture-maintenance-first.log",
+      "passed": 33,
+      "failed": 3,
+      "runtime_s": 3.55,
+      "causes": [
+        "Concurrent active-store and maintenance connections could both attempt the same schema ALTER",
+        "The initial test helper returned while a follow-up sweep had just been scheduled after a clock/location change"
+      ],
+      "corrections": [
+        "Serialize schema and column inspection/ALTER in BEGIN IMMEDIATE with rollback and ready state after commit",
+        "Wait actual currently scheduled sweep scopes to quiesce; retain shielded work if the observer times out",
+        "Anchor due time to the receipt computation timestamp so late harvest never adds another delay"
+      ]
+    }
+  ],
+  "ownership": {
+    "max_active_database_sweeps": 2,
+    "dedicated_disk_executor_threads": 2,
+    "owned_disk_work_capacity": 8,
+    "max_whole_archive_calls": 8,
+    "legacy_orphan_batch_limit": 256,
+    "periodic_registry_poll_max_s": 30,
+    "retry_delay_max_s": 60,
+    "schema_ownership": "BEGIN IMMEDIATE serializes migrations across connections; failed initialization rolls back and does not publish ready state",
+    "close_order": "stop scheduling, actual archive reservation/encoding/discard calls, retained scheduler and sweeps, peer database closure, actual disk operations/executor, privacy ledger and writer lease"
+  },
+  "proven": [
+    "The capture factory starts independent maintenance before ambient producers and without enabling ambient, keep_audio or semantic recall",
+    "Expired SQLite text, conversation scopes and unattached FLAC locators are removed at startup and on new earlier deadlines without a running transcriber or an erasure request",
+    "Persisted per-row and intent deadlines survive reads and restarts; a shorter configured cap is honored without extending an earlier stored deadline",
+    "Known historical databases and roots remain included after location changes; active stores share registry roots, file guards and the owned disk scope",
+    "Two bounded database sweeps and a dedicated two-thread disk executor allow another independent target to finish while one unlink or database fails; saturating the default executor does not starve retention",
+    "Live or unverifiable references in registered databases sharing an archive root prevent unlink; checks read only metadata and never peer transcript/speaker content",
+    "Shared legacy numeric rowids protect files even before attachment; expired numeric legacy orphans are durably queued in batches with a strict scandir traversal",
+    "Missing databases/directories are not created, orphaned data without an attributable database remains unavailable, and corrupt or unsupported targets do not become false successful cleanup",
+    "Failed unlink survives restart with a durable pending count; status exposes only opaque target IDs, counters and fixed error codes",
+    "Cancelling scheduler observers leaves actual sweeps and native operations owned; a close timeout retains the writer lease until those operations actually finish",
+    "Archive ownership now spans reservation, native encode and discard rather than ending when only the encoder returns",
+    "Concurrent initialization of three store connections over five fresh databases completes with one copy of every migration column",
+    "A late scheduler harvest uses the original receipt timestamp; moving the test clock to expiry does not postpone the due sweep again",
+    "An independent Python process rejects imports of Torch, Chroma, sentence-transformers, faster-whisper and ONNX Runtime while disabled capture retention initializes, sweeps and closes successfully",
+    "The source-free CPython 3.13 smoke writes a real synthetic FLAC, advances the injected privacy clock, runs independent TTL cleanup with ambient/recall disabled, and verifies physical cleanup without a conversation tombstone"
+  ],
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000
+  },
+  "gates": {
+    "ruff": {
+      "version": "0.15.1",
+      "passed": true,
+      "log": "/tmp/kza-h3-capture-maintenance-ruff.log"
+    },
+    "bandit": {
+      "version": "1.9.4",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-capture-maintenance-final-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-capture-maintenance-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-capture-maintenance-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 5.923,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 remains incomplete: capture and semantic-index conversation-erasure drivers are connected, while producers, contexts, events, diagnostics, collectors, streams, suggestions and voices remain unregistered; no broad erasure endpoint or completion promise is exposed",
+    "The registry tracks known locations and must still be reconciled with the private real-data inventory; it cannot discover paths never registered",
+    "Unattributable files without databases, unknown file protocols, unsupported target versions and unavailable shared references remain pending for review; no source or capture date is invented",
+    "Legacy numeric-orphan cleanup retains the prior mtime rule; new UUID clips rely on durable pre-encoder intents. Unknown legacy data still needs the copy migration/inventory rehearsal before release",
+    "A non-cooperative native write, locked SQLite database or unavailable filesystem can delay physical cleanup; read-time expiry/revocation remains enforced and actual work stays owned rather than being reported erased",
+    "STT, audio readers, tap buffers and active distillation batches still require producer/reader erasure coordination",
+    "Independent physical index reconciliation of all TTL expiry and individual fact deletion while recall is disabled remains pending",
+    "Structured logs, JSONL/Logstash metrics, collectors, live events/frontend queues, suggestions and alternate prompt consumers still require source/retention policy",
+    "Ambient pause, total mute with non-audio reactivation, acoustic fingerprint/group retention, manual voice review and calibrated evaluation remain pending",
+    "The real 870-record legacy-copy migration and compatible restore rehearsal remain pending; restore must preserve tombstones and durable cleanup intent",
+    "H0/H1 real HA effects, H2 physical capture/audio/barge-in, H4 recovery, H5 remaining voice functions and H6 integrated runtime/GC/hardware/release/rollback acceptance remain open",
+    "No deployment, service restart, GPU reassignment, new dependency or production-data mutation occurred"
+  ]
+}

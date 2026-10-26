@@ -309,6 +309,12 @@ purga permanecen bajo la lease durante cierre. Quedan abiertos el inventario de
 archivos legacy indeterminados, los ocho participantes restantes y el resto de
 H3; no se expone un borrado global ni se modifica producción.
 
+La [validación de purga independiente](../research/2026-10-26-h3-capture-maintenance-validation.json)
+del commit `22ebc58` registra **4527 passed, 1 xfailed**, sin fallos, en 163,30 s,
+con 20 casos nuevos y los checks y artefacto compilado aceptados. El heartbeat
+obtuvo p95 de 0,40 ms y máximo de 1,05 ms frente a 25/75 ms. El ensayo compilado
+comprueba vencimiento físico sin un tombstone de conversación ni ambient activo.
+
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.
 Pasan los 18 casos nuevos, Ruff, Bandit medio/alto, 18 tests de frontend, smoke
