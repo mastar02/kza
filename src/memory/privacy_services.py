@@ -26,7 +26,7 @@ class PrivacyServices:
     def __init__(self, path: str, *, clock=None, automatic_days: float = 30,
                  close_timeout_s: float = 1):
         self.ledger = FactLedger(path, clock=clock, automatic_days=automatic_days)
-        self.scopes = CaptureScopes(self.ledger)
+        self.scopes = CaptureScopes(self.ledger, admission_started_at=self.ledger.clock())
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kza-privacy")
         self._work = OwnedBlockingWork(worker=self._offload, close_timeout_s=close_timeout_s)
         self._close_timeout_s = close_timeout_s

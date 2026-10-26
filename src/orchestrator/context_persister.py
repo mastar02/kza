@@ -46,9 +46,10 @@ class ContextPersister:
     Error contract:
     - save(): raises ValueError on unsafe user_id, propagates OSError on
       I/O failures (caller should log + continue, NOT crash).
-    - load(): returns None for any failure mode (missing file, unsafe
-      user_id, JSON decode error, version mismatch, OS error). Callers
-      treat None as "no prior context" and create fresh.
+    - load(): returns None for missing/invalid files, unsafe user IDs,
+      version mismatch and OS read errors. Callers can create fresh context.
+    - Unavailable privacy authority raises RuntimeError on validation. Existing
+      files remain intact; unknown authority never authorizes purge.
     - Corrupt JSON files are quarantined to <user_id>.json.corrupt-<ts>
       to prevent next snapshot from overwriting them.
     """
@@ -65,6 +66,8 @@ class ContextPersister:
         return tuple(MemorySource.from_dict(s) for s in payload.get("summary_sources", []))
 
     def _available(self, payload: dict) -> bool:
+        if self.source_policy is not None and not self.source_policy.authority_available:
+            raise RuntimeError("privacy_authority_unavailable")
         if not payload.get("compacted_summary"):
             return not payload.get("preserved_ids")
         sources = self._sources(payload)

@@ -496,3 +496,38 @@ async def test_disabling_semantic_recall_keeps_authorized_local_control(tmp_path
         result = await router.process_command(command_event(clock))
         assert result['success'] and len(ha.sends) == 1
         assert ha.sends[0] == ('climate', 'set_temperature', 'climate.test_ac', {'temperature': 22.0})
+
+
+@pytest.mark.parametrize('operation', ['load', 'purge_expired'])
+async def test_snapshot_unknown_authority_is_unavailable_and_preserves_the_existing_file(tmp_path, operation):
+    from src.orchestrator.context_persister import PERSISTED_VERSION
+    clock = Clock()
+    async with AsyncExitStack() as stack:
+        privacy = await build_privacy_services(configuration(tmp_path), shutdown=stack, clock=clock)
+        source = privacy.source_for_capture(str(uuid4()), clock.now, 'origin')
+        persister = ContextPersister(tmp_path/'contexts', source_policy=privacy.ledger, clock=clock)
+        payload = {'version': PERSISTED_VERSION, 'user_id': 'household', 'user_name': 'Household',
+                   'compacted_summary': 'Resumen privado.', 'preserved_ids': [], 'summary_sources': [source.to_dict()]}
+        await privacy.acall(persister.save_payload, payload)
+        path = persister.base_path/'household.json'
+        assert path.exists()
+        await privacy.aclose()
+        with pytest.raises(RuntimeError, match='authority_unavailable'):
+            await asyncio.to_thread(getattr(persister, operation), *(['household'] if operation == 'load' else []))
+        assert path.exists()
+
+
+async def test_unbound_preboot_capture_cannot_receive_a_fresh_conversation_after_restart(tmp_path):
+    clock = Clock()
+    config = configuration(tmp_path)
+    async with AsyncExitStack() as stack:
+        privacy = await build_privacy_services(config, shutdown=stack, clock=clock)
+        original = privacy.source_for_capture(str(uuid4()), clock.now, 'origin')
+        await privacy.acall(privacy.ledger.delete_conversation, original.conversation_id, ACTOR)
+    clock.now += 1
+    async with AsyncExitStack() as stack:
+        restored = await build_privacy_services(config, shutdown=stack, clock=clock)
+        with pytest.raises(PermissionError, match='precedes_privacy_start'):
+            restored.source_for_capture(original.capture_id, original.captured_at, 'origin')
+        fresh = restored.source_for_capture(str(uuid4()), clock.now, 'origin')
+        assert restored.sources_available((fresh,))

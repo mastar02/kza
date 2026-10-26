@@ -10,8 +10,9 @@ from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource
 class CaptureScopes:
     """Share room/origin scopes across all active capture producers."""
 
-    def __init__(self, ledger: FactLedger):
+    def __init__(self, ledger: FactLedger, *, admission_started_at: float | None = None):
         self.ledger = ledger
+        self._admission_started_at = admission_started_at
         self._scopes = {}
         self._revocation_fences = {}
         self._lock = threading.Lock()
@@ -23,6 +24,8 @@ class CaptureScopes:
         source = MemorySource(capture_id, conversation_id or str(uuid4()), captured_at,
             expires_at if expires_at is not None else min(captured_at, self.ledger.clock())+48*3600, origin)
         if conversation_id is None:
+            if self._admission_started_at is not None and captured_at < self._admission_started_at:
+                raise PermissionError("capture_precedes_privacy_start")
             key = (origin, room_id)
             with self._lock:
                 previous = self._scopes.get(key)
