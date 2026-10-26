@@ -656,10 +656,9 @@ writer como prestatario de la lease antes de inicializarlo. El cierre cierra
 admisión y conserva mantenimiento, llamadas nativas y pools hasta su salida real.
 
 Quedan siete participantes sin conectar y las copias derivadas de eventos en
-sugerencias, colectores y streams. El mantenimiento de TTL del logger activo ya
-existía; todavía falta independizar también esa purga del feature y extenderla
-a todas las bases históricas. El borrado de conversación aquí implementado no
-sustituye ese trabajo ni autoriza una promesa global de borrado. No cierra H3.
+sugerencias, colectores y streams. Este primer avance no independizaba la purga
+de TTL del logger activo; ese trabajo se describe en el avance siguiente.
+El borrado de conversación no autoriza una promesa global de borrado. No cierra H3.
 
 La [validación del participante de eventos](../research/2026-10-26-h3-event-erasure-validation.json)
 del commit `4c297b3` registra **4582 passed, 1 xfailed**, sin fallos, en 169,95 s.
@@ -719,6 +718,19 @@ la exclusión no depende de borrar físicamente la fila.
 No completa los otros siete participantes ni las copias derivadas, la migración,
 voces o el resto de H3. Las ubicaciones nunca registradas y los datos sin
 procedencia todavía requieren el inventario privado y el ensayo de migración.
+
+La [validación de retención de eventos](../research/2026-10-26-h3-event-retention-validation.json)
+del commit `d6dd9bc` registra **4607 passed, 1 xfailed**, sin fallos, en 176,39 s.
+Incluye 25 casos nuevos, 157 pruebas dirigidas, Ruff, Bandit sin hallazgos
+medios/altos, 18 tests de frontend, smoke y artefacto compilado. El ensayo
+compilado cierra el logger antes de avanzar a las 48 h y comprueba la purga de
+texto/contexto por el mantenimiento independiente, sin tombstone. La evidencia
+conserva la primera suite sin fallos y los huecos de lectura reproducidos que
+motivaron cinco casos adicionales y la corrección del candidato final.
+El heartbeat obtiene p95 de 0,21 ms y máximo de 1,73 ms; la cancelación de control
+alcanza un máximo de 0,15 ms y el cleanup 11,09 ms con los límites intactos.
+No se vuelve a medir ni se da por resuelta la pausa global de GC previa:
+la aceptación integrada de runtime/GC en H4/H6 sigue abierta.
 
 ## Trabajo restante
 

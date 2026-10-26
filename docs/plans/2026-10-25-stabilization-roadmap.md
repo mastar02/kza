@@ -339,9 +339,9 @@ Recorre bases actuales e históricas en lotes de 128 metadatos y conserva las
 filas ajenas y la cuarentena legacy. Las escrituras comparten la barrera de
 revocación, y su trabajo nativo mantiene la lease incluso al vencer la espera
 del cierre. Cada writer y adaptador usa dos threads propios; los providers ya
-no comparten el pool de la autoridad. Siguen pendientes siete participantes,
-las copias derivadas y la purga de TTL independiente de analytics en ubicaciones
-históricas; no se expone una confirmación global de borrado.
+no comparten el pool de la autoridad. Siguen pendientes siete participantes y
+las copias derivadas. La retención independiente se describe en el avance
+siguiente; no se expone una confirmación global de borrado.
 
 La [validación del participante de eventos](../research/2026-10-26-h3-event-erasure-validation.json)
 del commit `4c297b3` registra **4582 passed, 1 xfailed**, sin fallos, en 169,95 s.
@@ -358,6 +358,14 @@ logger. La limpieza física usa sólo revocaciones confirmadas: un commit fallid
 puede bloquear lecturas provisionalmente, pero no destruir eventos válidos.
 Siguen abiertos los siete participantes restantes, las otras copias, voces,
 migración y aceptación de runtime; no hay cambios en producción.
+
+La [validación de retención de eventos](../research/2026-10-26-h3-event-retention-validation.json)
+del commit `d6dd9bc` registra **4607 passed, 1 xfailed**, sin fallos, en 176,39 s,
+con 25 casos nuevos, 157 pruebas dirigidas, checks y artefacto compilado
+aceptados. La revisión corrigió además dos huecos reproducidos en la lectura de
+fuentes y fechas, con exclusión anterior a la purga física. El heartbeat obtiene
+p95 de 0,21 ms y máximo de 1,73 ms, sin ampliar límites. La aceptación integrada
+de runtime/GC y hardware continúa pendiente.
 
 La [validación de transitorios](../research/2026-10-26-h3-transient-privacy-validation.json)
 del commit `85f5d39` registra **4324 passed, 1 failed, 1 xfailed** en 154,91 s.

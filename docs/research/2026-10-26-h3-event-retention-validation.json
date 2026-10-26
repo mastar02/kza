@@ -1,0 +1,220 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "d6dd9bca45870f5b986e69a6251ed37b6084c5ec",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 bounded feature-independent event TTL over registered historical databases; source-authoritative raw projections and irreversible cleanup based on committed revocations",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-h3-event-retention-reviewed-final.xml",
+    "collected": 4608,
+    "passed": 4607,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 176.39,
+    "junit_time_s": 176.342,
+    "log": "/tmp/kza-h3-event-retention-reviewed-final.log",
+    "xml": "/tmp/kza-h3-event-retention-reviewed-final.xml",
+    "accepted": true,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "integrated_runtime_gc_acceptance": false
+  },
+  "new_connected_cases": 25,
+  "new_case_names": [
+    "test_raw_deadline_scrubs_all_text_but_keeps_numeric_metadata_without_erase_request",
+    "test_metadata_expiry_and_raw_dates_survive_restart_and_reads_do_not_renew",
+    "test_existing_earlier_raw_deadline_is_never_extended_by_source_deadline",
+    "test_disabled_factory_cleans_historical_bases_and_leaves_legacy_unchanged",
+    "test_new_earlier_write_wakes_sleeping_retention_at_actual_deadline",
+    "test_corrupt_and_unsupported_targets_remain_visible_while_valid_target_finishes",
+    "test_unknown_metadata_rolls_back_batch_and_stays_pending[sources_json-[{}]]",
+    "test_unknown_metadata_rolls_back_batch_and_stays_pending[expires_at-unknown]",
+    "test_unknown_metadata_rolls_back_batch_and_stays_pending[text_expires_at-None]",
+    "test_native_batches_limit_128_rows_and_keep_cursor_until_tail_is_scrubbed",
+    "test_late_harvest_uses_computation_time_instead_of_renewing_wait",
+    "test_pending_failed_fact_commit_denies_reads_but_does_not_destroy_valid_events",
+    "test_cancelled_observer_keeps_native_retention_work_and_privacy_lease",
+    "test_saturated_default_executor_does_not_starve_event_retention",
+    "test_blocked_historical_sqlite_does_not_hold_authority_or_other_native_sweep",
+    "test_failed_native_sweep_retains_expired_data_for_retry_after_restart",
+    "test_fact_dependency_expiry_removes_event_metadata_without_erase_operation",
+    "test_disabled_native_retention_never_imports_models",
+    "test_large_histories_yield_between_batches_to_other_registered_databases",
+    "test_runtime_factory_uses_bounded_retention_instead_of_a_second_logger_sweeper",
+    "test_unverified_source_shapes_cannot_enter_any_live_event_projection[{}]",
+    "test_unverified_source_shapes_cannot_enter_any_live_event_projection[[]]",
+    "test_unverified_source_shapes_cannot_enter_any_live_event_projection[[{}]]",
+    "test_source_expiry_hides_raw_text_even_when_persisted_deadline_is_later",
+    "test_unrecognized_metadata_deadline_is_excluded_before_any_purge"
+  ],
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.20858505740761757,
+        "max": 1.7326341476291418
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.054873060435056686,
+          "p95": 0.14702300541102886,
+          "max": 0.14702300541102886
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.836707893759012,
+          "p95": 11.090564075857401,
+          "max": 11.090564075857401
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 428,
+        "loop_lag_p95_ms": 0.30267704278230667,
+        "loop_lag_max_ms": 0.983342994004488,
+        "cancel_cleanup_max_ms": 1.6840719617903233,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2724,
+        "loop_lag_p95_ms": 0.9840029571205376,
+        "loop_lag_max_ms": 2.3887009639292955,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6670751608908176,
+        "p95": 5.6332198437303305,
+        "max": 5.6332198437303305,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_validation": {
+    "passed": 157,
+    "failed": 0,
+    "runtime_s": 17.13,
+    "log": "/tmp/kza-h3-event-retention-reviewed-focused.log",
+    "scope": "Event TTL/erasure/privacy, erasure coordinator, shared authority, memory services, index cleanup and ASR event consumer"
+  },
+  "prior_validation_and_review": {
+    "initial_source_commit": "b626e380c612ea42513350fa731dc15c158422ec",
+    "initial_full_suite": {
+      "passed": 4602,
+      "failed": 0,
+      "xfailed": 1,
+      "runtime_s": 174.68,
+      "junit_time_s": 174.625,
+      "log": "/tmp/kza-h3-event-retention-final.log",
+      "xml": "/tmp/kza-h3-event-retention-final.xml",
+      "accepted_as_final_candidate": false
+    },
+    "read_projection_probe": {
+      "log": "/tmp/kza-h3-event-retention-read-probe.log",
+      "fixture": "Isolated temporary SQLite and source ledger; no real private data or transcript printed",
+      "malformed_source_rows_visible_before_fix": 1,
+      "expired_source_raw_visible_with_later_stored_deadline_before_fix": true,
+      "cause": "An empty JSON object iterated as zero sources, and CASE selected raw data using only the stored text deadline",
+      "correction": "Reuse strict source parsing with raw-presence checks, reject unknown metadata dates, and require actual capture sources to remain current before selecting phrases, names or raw context",
+      "added_cases": 5,
+      "final_candidate_result": "All live analytics projections reject the unverified shapes and raw source expiry wins before physical purge, while the original rows remain present for review"
+    }
+  },
+  "ownership": {
+    "max_active_database_batches": 2,
+    "dedicated_retention_threads": 2,
+    "owned_native_capacity": 8,
+    "rows_per_transaction": 128,
+    "max_sources_per_event": 256,
+    "registry_and_revocation_poll_max_s": 30,
+    "failure_backoff_max_s": 60,
+    "scheduling": "Continue cursors with anchored checked_at deadlines and oldest-started tie breaking, yielding between batches to other due registered targets",
+    "restart": "SQLite rows and stored expiry dates are durable work intent; a new owner rescans from the beginning. An observed shorter configured metadata cap is persisted before expiry and cannot be renewed by a later config expansion",
+    "notifications": "The runtime factory injects a thread-safe post-commit writer notification; it starts independent retention and suppresses the duplicate whole-table logger maintenance. Standalone logger maintenance remains available",
+    "lease": "Stop scheduler observation, await the shielded handoff cycle and actual batches, drain the native pool, then release the shared privacy writer lease"
+  },
+  "proven": [
+    "The event erasure factory starts retention independently of analytics and semantic recall; it covers all registered historical policy databases without creating missing files, schemas or legacy attribution",
+    "Each SQLite transaction examines at most 128 IDs/source/deadline records and raw-presence booleans without returning transcript/name/context text to Python",
+    "Known raw deadlines scrub trigger phrases, names and raw contexts to pre-filtered numeric metrics while retaining valid numeric metadata; its own expiry deletes the whole policy event",
+    "Earlier stored raw dates and source capture deadlines are honored; lower metadata configuration caps are saved before expiry, and reading/restarting/config expansion cannot renew them",
+    "Actual raw source expiry also governs the SQL read projection before any physical purge, even if a stored text deadline is later; malformed/unattributed source shapes and invalid metadata dates cannot enter event retrieval, statistics, distributions or sequences",
+    "Fact-dependency expiry removes its event metadata without an erasure operation, and committed conversation/fact revocations are honored while pending commit fences only deny readers",
+    "A controlled failed fact commit leaves the source provisionally denied, executes both independent and standalone physical cleanup, then rolls back; the original valid event survives and source authority returns",
+    "Unknown provenance/deadlines roll back the batch and expose only fixed error codes; corrupt and unsupported historical targets do not become false successes or prevent valid independent cleanup",
+    "Native cleanup failure preserves expired data and its durable deadlines for retry after restart; no private exception or traceback is retained in the scheduler outcome/status",
+    "A locked historical SQLite database does not hold the authority transaction lock or block the other native sweep; saturating the default executor does not starve the dedicated pool",
+    "Three large histories receive admission before a continuation monopolizes the two slots; a 257-row history is scrubbed in batches of 128,128,1",
+    "A newly earlier accepted write wakes sleeping retention at its real deadline; late harvest uses the original receipt timestamp and cannot renew the wait",
+    "Cancelling an observer retains the actual sweep; a 10 ms close-observation timeout keeps the writer lease until native work exits",
+    "An independent Python process rejects Torch/Chroma/sentence-transformers/faster-whisper/ONNX imports while analytics/recall-disabled retention scrubs expired text successfully",
+    "The source-free CPython 3.13 smoke closes the event logger before moving the clock to 48 h, then verifies independent physical text/context scrubbing while retaining numeric metadata and requiring no conversation tombstone"
+  ],
+  "unchanged_latency_limits_ms": {
+    "heartbeat_p95": 25,
+    "heartbeat_max": 75,
+    "cancellation_control": 100,
+    "cooperative_cleanup": 1000,
+    "event_observation": 100
+  },
+  "gates": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-h3-event-retention-reviewed-ruff.log"
+    },
+    "bandit": {
+      "command": "/home/yo/.local/bin/uvx --offline --from bandit==1.9.4 bandit -r src/ -ll -c pyproject.toml",
+      "medium": 0,
+      "high": 0,
+      "baseline_low": 30,
+      "log": "/tmp/kza-h3-event-retention-reviewed-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-h3-event-retention-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-h3-event-retention-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 6.162,
+      "test": "tests.unit.tools.test_stage_runtime::test_compiled_main_and_frontend_outside_checkout"
+    }
+  },
+  "limits_and_remaining": [
+    "H3 is incomplete: producers, contexts, diagnostics, collectors, streams, suggestions and voices remain unregistered erasure participants; no broad erasure completion endpoint is exposed",
+    "Only registered locations and events_policy_v1 are covered. Unknown legacy locations/content are not attributed, migrated, or removed; private inventory reconciliation and real-copy migration remain pending",
+    "Unknown source metadata, unknown dates, unsupported versions and unavailable SQLite/filesystems may delay physical cleanup and require review; status cannot claim those targets complete",
+    "Derived suggestions, collectors, streaming/frontend queues, diagnostic logs and STT/audio/tap/distillation producer scopes still need complete source and erasure coordination",
+    "Preserving latest fact authority/tombstones in compatible catalog/data restoration remains mandatory. This maintenance does not make an old catalog rollback safe or complete the 870-record legacy-copy migration",
+    "New/empty live-index reconstruction, pause/mute, acoustic profile/group retention and calibrated authenticated voice review remain pending",
+    "The previous instrumented suite observed process GC pauses up to 495.68 ms outside voice cases. This uninstrumented suite does not remeasure or resolve them; integrated H4/H6 runtime/GC acceptance remains open",
+    "H0/H1 actual HA effects, H2 physical audio, H4 recovery, H5 remaining voice features and H6 integrated hardware/migration/release/rollback acceptance remain open",
+    "No production deployment, service restart, private production-data mutation, dependency installation, GPU reassignment or new configuration file occurred"
+  ],
+  "prior_gc_evidence_reference": "docs/research/2026-10-26-h3-index-maintenance-validation.json"
+}
