@@ -23,6 +23,9 @@ import json
 
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.analytics.event_storage import event_descriptor, event_sources
+from src.analytics.event_evidence import (
+    EventDependency, PatternHistory, event_target_id, project_pattern_event,
+)
 from src.memory.erasure_journal import ErasureParticipant
 from src.memory.fact_ledger import FactLedger, MemorySource, sources_current
 
@@ -443,6 +446,66 @@ class EventLogger:
         """Obtener historial de una entidad"""
         start_time = self._clock() - (days * 24 * 3600)
         return self.get_events(entity_id=entity_id, start_time=start_time)
+
+    def get_pattern_history(self, days: float = 30, *, limit: int = 10_000) -> PatternHistory:
+        """Read bounded metadata in one SQL observation, without loading raw text.
+
+        An incomplete history cannot support a confidence denominator. Callers
+        must abstain rather than treating a truncated sample as a full window.
+        This blocking primitive belongs in the logger's owned native scope.
+        """
+        if type(days) not in (int, float) or not math.isfinite(days) or days <= 0:
+            raise ValueError("invalid_pattern_history_window")
+        if type(limit) is not int or not 0 < limit <= 10_000:
+            raise ValueError("invalid_pattern_history_limit")
+        with self._connect() as db:
+            target = event_target_id(event_descriptor(self.db_path))
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                """SELECT id,timestamp,event_type,entity_id,action,user_id,sources_json,expires_at
+                FROM events WHERE timestamp>=? ORDER BY timestamp,id LIMIT ?""",
+                (self._clock() - days * 86400, limit + 1),
+            ).fetchall()
+            if len(rows) > limit:
+                return PatternHistory((), False)
+            return PatternHistory(tuple(project_pattern_event(row, target) for row in rows), True)
+
+    def pattern_evidence_current(self, evidence: tuple[EventDependency, ...]) -> bool:
+        """Resolve receipts against actual rows, original deadlines and revocations.
+
+        This is a read observation, not a write/presentation capability. A later
+        consumer must recheck its own admission rather than trust a cached bool.
+        Text maintenance cannot change a receipt; metadata or lineage changes do.
+        """
+        if (
+            type(evidence) is not tuple or not 0 < len(evidence) <= 10_000
+            or any(not isinstance(item, EventDependency) for item in evidence)
+        ):
+            return False
+        with self._connect() as db:
+            target = event_target_id(event_descriptor(self.db_path))
+            if any(item.target_id != target or self._clock() >= item.expires_at for item in evidence):
+                return False
+            expected = {item.event_id: item for item in evidence}
+            if len(expected) != len(evidence):
+                return False
+            db.row_factory = sqlite3.Row
+            # A read transaction keeps batches on the same database snapshot.
+            # Source authority remains live through the filtered policy view.
+            db.execute("BEGIN")
+            ids = tuple(expected)
+            for offset in range(0, len(ids), 128):
+                batch = ids[offset:offset + 128]
+                rows = db.execute(
+                    """SELECT id,timestamp,event_type,entity_id,action,user_id,sources_json,expires_at
+                    FROM events WHERE id IN (SELECT value FROM json_each(?))""",
+                    (json.dumps(batch),),
+                ).fetchall()
+                if len(rows) != len(batch):
+                    return False
+                if any(project_pattern_event(row, target).dependency != expected[row["id"]] for row in rows):
+                    return False
+            return all(self._clock() < item.expires_at for item in evidence)
     
     def get_hourly_distribution(
         self,

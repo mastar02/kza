@@ -847,6 +847,42 @@ la cancelación de control alcanza 0,09 ms y el cleanup 11,13 ms. La suite sin
 instrumentación de GC no vuelve a medir ni resuelve sus pausas previas: la
 aceptación integrada de runtime/GC y hardware sigue abierta.
 
+## Avance: procedencia verificable de patrones de actividad
+
+El analizador consume ahora una sola observación SQL acotada de metadatos,
+sin cargar frases, nombres ni contexto libre. Cada patrón conserva recibos de
+los eventos utilizados: destino opaco, ID de fila, huella de metadatos y fuentes,
+y vencimiento original. La resolución consulta las filas reales y la autoridad
+vigente; rechaza cambios, filas ausentes, revocaciones y recibos de otro destino.
+La limpieza del texto a las 48 h no invalida los metadatos aún vigentes. Los
+recibos conservan también el menor vencimiento de sus dependencias semánticas;
+leer, recalcular o reiniciar con otra retención no renueva las fechas anteriores.
+Estos recibos son referencias para revalidación, no permisos de publicación.
+
+Las proporciones usan una ventana común y completa. Una secuencia cuenta cada
+disparo una sola vez, aunque la acción siguiente se repita; su denominador
+incluye disparos sin coincidencia dentro de la misma ventana temporal. Los
+patrones semanales conservan ambos grupos usados en la comparación. El análisis
+se abstiene si supera 10.000 eventos, y la parte de secuencias si supera 100.000
+comparaciones; no transforma una muestra truncada en una confianza aparente.
+Los contadores de diagnóstico no se convierten en automatizaciones domésticas.
+Antes de devolver patrones se revalidan sus recibos, también si se borró una
+fuente o venció mientras se calculaban.
+
+El router ejecuta generación y respuestas de sugerencias fuera del loop,
+serializadas dentro de su instancia y bajo el ownership nativo del logger real.
+La cancelación del observador no libera ese trabajo ni permite que cierre el
+logger antes de terminar. El canal de aceptación devuelve el mensaje real del
+motor, sin anteponer una afirmación de automatización creada a una propuesta.
+
+Queda integrar estos recibos en la política de carga, persistencia, presentación,
+respuesta, vencimiento independiente y borrado durable de sugerencias, incluidos
+los destinos históricos y los resultados tardíos. El JSON legacy y su lector
+no se migran en este avance; no se consideran evidencia verificada. Los seis
+participantes restantes, la revisión de voces, la migración privada y la
+aceptación integrada de runtime/GC y hardware siguen abiertos. No se modifica
+producción ni se habilita un borrado global.
+
 ## Trabajo restante
 
 1. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

@@ -508,7 +508,7 @@ class TestCache:
 class TestSuggestionHandling:
     """Test automation suggestion response handling."""
 
-    def test_accept_suggestion(self):
+    async def test_accept_suggestion(self):
         """Accept suggestion when user says 'si'."""
         engine = MagicMock()
         engine.respond_to_suggestion.return_value = {"message": "configurada"}
@@ -517,38 +517,38 @@ class TestSuggestionHandling:
         router._pending_suggestion = MagicMock()
         router._pending_suggestion.id = "s1"
 
-        result = router._handle_suggestion_response("si")
+        result = await router._handle_suggestion_response("si")
         assert result["handled"] is True
-        assert "automatizacion creada" in result["response"]
+        assert result["response"] == "configurada"
         assert router._pending_suggestion is None
 
-    def test_reject_suggestion(self):
+    async def test_reject_suggestion(self):
         """Reject suggestion when user says 'no'."""
         engine = MagicMock()
         router = _build_router(suggestion_engine=engine)
         router._pending_suggestion = MagicMock()
         router._pending_suggestion.id = "s1"
 
-        result = router._handle_suggestion_response("no quiero")
+        result = await router._handle_suggestion_response("no quiero")
         assert result["handled"] is True
         assert "no creare" in result["response"]
         assert router._pending_suggestion is None
 
-    def test_snooze_suggestion(self):
+    async def test_snooze_suggestion(self):
         """Snooze suggestion when user says 'despues'."""
         engine = MagicMock()
         router = _build_router(suggestion_engine=engine)
         router._pending_suggestion = MagicMock()
         router._pending_suggestion.id = "s1"
 
-        result = router._handle_suggestion_response("despues")
+        result = await router._handle_suggestion_response("despues")
         assert result["handled"] is True
         assert "manana" in result["response"]
 
-    def test_no_pending_suggestion(self):
+    async def test_no_pending_suggestion(self):
         """No handling if no suggestion is pending."""
         router = _build_router()
-        result = router._handle_suggestion_response("si")
+        result = await router._handle_suggestion_response("si")
         assert result["handled"] is False
 
 

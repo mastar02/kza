@@ -444,6 +444,14 @@ del frontend, el smoke autenticado y el artefacto compilado. El caso histórico
 de VAD queda resuelto con conservación de texto y filtrado de destilación
 probados por separado; el xfail documentado del extractor regex se conserva.
 
+El análisis de patrones de actividad ya conserva recibos verificables de sus
+eventos y usa una ventana común de metadatos sin cargar texto privado. Corrige
+el conteo repetido de disparos en secuencias y se abstiene ante historial
+incompleto; revalida fuentes y plazos después del cálculo. La generación y
+respuesta de sugerencias salen del loop con ownership nativo. Falta aplicar
+estos recibos a su almacenamiento, presentación, vencimiento y participante de
+borrado durable; este avance no cierra H3 ni habilita una release.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

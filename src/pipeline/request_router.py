@@ -12,6 +12,7 @@ import asyncio
 import inspect
 from contextvars import ContextVar
 import logging
+import threading
 import time
 from dataclasses import asdict
 
@@ -339,6 +340,7 @@ class RequestRouter:
         self._cache_max_size = cache_max_size
         self._private_maintenance_task = None
         self._query_work = OwnedBlockingWork()
+        self._suggestion_lock = threading.RLock()
         self._closed = False
         self._pending_suggestion = None
         self._last_response = None
@@ -1167,7 +1169,7 @@ class RequestRouter:
 
         # 3. Check pending suggestion
         if self._pending_suggestion:
-            suggestion_result = self._handle_suggestion_response(text)
+            suggestion_result = await self._handle_suggestion_response(text)
             if suggestion_result["handled"]:
                 result["intent"] = "suggestion_response"
                 result["response"] = suggestion_result["response"]
@@ -1656,7 +1658,20 @@ class RequestRouter:
         ]
         return any(trigger in text.lower() for trigger in enrollment_triggers)
 
-    def _handle_suggestion_response(self, text: str) -> dict:
+    async def _call_suggestion(self, function, *args, **kwargs):
+        """Keep serialized analysis/file I/O in an owned native scope."""
+        from src.analytics.event_logger import EventLogger
+
+        def call():
+            with self._suggestion_lock:
+                return function(*args, **kwargs)
+
+        events = getattr(self.suggestion_engine, "event_logger", None)
+        if isinstance(events, EventLogger):
+            return await events.acall(call)
+        return await self._query_work.run(call)
+
+    async def _handle_suggestion_response(self, text: str) -> dict:
         """Handle user response to a pending automation suggestion."""
         if not self._pending_suggestion or not self.suggestion_engine:
             return {"handled": False}
@@ -1666,16 +1681,16 @@ class RequestRouter:
 
         for phrase in self.SUGGESTION_ACCEPT:
             if phrase in text_lower or text_lower == phrase:
-                result = self.suggestion_engine.respond_to_suggestion(suggestion_id, accept=True)
+                result = await self._call_suggestion(self.suggestion_engine.respond_to_suggestion, suggestion_id, accept=True)
                 self._pending_suggestion = None
                 return {
                     "handled": True,
-                    "response": "Perfecto, automatizacion creada. " + result.get("message", "")
+                    "response": result.get("message") or result.get("error") or "Registré tu respuesta.",
                 }
 
         for phrase in self.SUGGESTION_REJECT:
             if phrase in text_lower or text_lower == phrase:
-                self.suggestion_engine.respond_to_suggestion(suggestion_id, accept=False)
+                await self._call_suggestion(self.suggestion_engine.respond_to_suggestion, suggestion_id, accept=False)
                 self._pending_suggestion = None
                 return {
                     "handled": True,
@@ -1684,8 +1699,8 @@ class RequestRouter:
 
         for phrase in self.SUGGESTION_SNOOZE:
             if phrase in text_lower:
-                self.suggestion_engine.respond_to_suggestion(
-                    suggestion_id, accept=False, snooze_hours=24
+                await self._call_suggestion(
+                    self.suggestion_engine.respond_to_suggestion, suggestion_id, accept=False, snooze_hours=24
                 )
                 self._pending_suggestion = None
                 return {
@@ -1701,7 +1716,7 @@ class RequestRouter:
         if not self.suggestion_engine:
             return
 
-        suggestion = self.suggestion_engine.get_suggestion_to_present()
+        suggestion = await self._call_suggestion(self.suggestion_engine.get_suggestion_to_present)
         if suggestion:
             self._pending_suggestion = suggestion
             message = suggestion.message + " Responde si, no, o despues."

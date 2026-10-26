@@ -3,12 +3,15 @@ Pattern Analyzer Module
 Detecta patrones de uso para sugerir automatizaciones.
 """
 
+from collections import defaultdict
 import logging
+import re
 import statistics
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from .event_logger import EventLogger, Event
+from src.analytics.event_evidence import EventDependency, PatternEvent
+from src.analytics.event_logger import EventLogger
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,13 @@ class Pattern:
     user_id: str | None = None
     user_name: str | None = None
     
+    evidence: tuple[EventDependency, ...] = field(default=(), repr=False)
+
+    @property
+    def expires_at(self) -> float | None:
+        """Keep the earliest actual dependency deadline; reading never renews it."""
+        return min((item.expires_at for item in self.evidence), default=None)
+
     def to_dict(self) -> dict:
         return {
             "type": self.pattern_type.value,
@@ -61,7 +71,9 @@ class Pattern:
             "weekdays": self.weekdays,
             "trigger_entity": self.trigger_entity,
             "trigger_action": self.trigger_action,
-            "user_id": self.user_id
+            "user_id": self.user_id,
+            "event_dependencies": [item.to_dict() for item in self.evidence],
+            "expires_at": self.expires_at,
         }
 
 
@@ -81,6 +93,7 @@ class PatternAnalyzer:
     MIN_CONFIDENCE = 0.6          # Confianza minima
     TIME_TOLERANCE_MINUTES = 30   # Tolerancia para "misma hora"
     SEQUENCE_WINDOW_MINUTES = 10  # Ventana para secuencias
+    MAX_SEQUENCE_COMPARISONS = 100_000
     
     def __init__(self, event_logger: EventLogger):
         self.event_logger = event_logger
@@ -95,76 +108,58 @@ class PatternAnalyzer:
         Returns:
             Lista de patrones detectados ordenados por confianza
         """
-        patterns = []
-        
-        # Obtener entidades unicas
-        stats = self.event_logger.get_stats()
-        entities = [e["entity"] for e in stats.get("top_entities", [])]
-        
-        # Agregar mas entidades si hay pocas
-        if len(entities) < 10:
-            all_events = self.event_logger.get_events(limit=10000)
-            entities = list(set(e.entity_id for e in all_events))
-        
-        logger.info(f"Analizando patrones para {len(entities)} entidades...")
-        
-        # Analizar cada entidad
-        for entity_id in entities:
-            # Patrones temporales
-            time_patterns = self._analyze_time_patterns(entity_id, days)
-            patterns.extend(time_patterns)
-        
-        # Patrones de secuencia (global)
-        sequence_patterns = self._analyze_sequences(days)
-        patterns.extend(sequence_patterns)
-        
-        # Filtrar por confianza minima y ordenar
-        patterns = [p for p in patterns if p.confidence >= self.MIN_CONFIDENCE]
-        patterns.sort(key=lambda p: p.confidence, reverse=True)
-        
-        logger.info(f"Detectados {len(patterns)} patrones")
-        return patterns
-    
-    def _analyze_time_patterns(self, entity_id: str, days: int) -> list[Pattern]:
-        """Analizar patrones temporales para una entidad"""
-        patterns = []
-        
-        events = self.event_logger.get_entity_history(entity_id, days)
-        if len(events) < self.MIN_OCCURRENCES:
-            return patterns
-        
-        # Agrupar por accion
-        by_action = {}
+        history = self.event_logger.get_pattern_history(days)
+        if not history.complete:
+            logger.warning("Pattern analysis deferred: incomplete activity window")
+            return []
+        # Diagnostic counters cannot become home automation suggestions. Text,
+        # names and arbitrary event context are absent from this projection.
+        events = tuple(event for event in history.events if
+            re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", event.entity_id)
+            and re.fullmatch(r"[a-z_]+", event.action))
+        by_entity = defaultdict(list)
         for event in events:
-            if event.action not in by_action:
-                by_action[event.action] = []
+            by_entity[event.entity_id].append(event)
+        patterns = []
+        for entity_id, entity_events in by_entity.items():
+            patterns.extend(self._analyze_time_patterns(entity_id, entity_events))
+        patterns.extend(self._analyze_sequences(events))
+        patterns = [p for p in patterns if p.confidence >= self.MIN_CONFIDENCE]
+        # Analysis can be slow; a marker or expiry during calculation makes its
+        # result unusable even before physical cleanup removes the source row.
+        evidence = tuple(dict.fromkeys(d for p in patterns for d in p.evidence))
+        if patterns and not self.event_logger.pattern_evidence_current(evidence):
+            logger.info("Pattern analysis discarded: activity evidence unavailable")
+            return []
+        patterns.sort(key=lambda p: p.confidence, reverse=True)
+        logger.info("Detected %d sourced activity patterns", len(patterns))
+        return patterns
+
+    def _analyze_time_patterns(self, entity_id: str, events: list[PatternEvent]) -> list[Pattern]:
+        """Detect temporal patterns from one complete, shared metadata window."""
+        patterns = []
+        by_action = defaultdict(list)
+        for event in events:
             by_action[event.action].append(event)
-        
         for action, action_events in by_action.items():
             if len(action_events) < self.MIN_OCCURRENCES:
                 continue
-            
-            # Analizar patron diario
-            daily_pattern = self._detect_daily_pattern(entity_id, action, action_events)
-            if daily_pattern:
-                patterns.append(daily_pattern)
-            
-            # Analizar patron dias de semana vs fines de semana
-            weekday_pattern = self._detect_weekday_pattern(entity_id, action, action_events)
-            if weekday_pattern:
-                patterns.append(weekday_pattern)
-            
-            weekend_pattern = self._detect_weekend_pattern(entity_id, action, action_events)
-            if weekend_pattern:
-                patterns.append(weekend_pattern)
-        
+            # Weekday/weekend comparisons use negative as well as positive
+            # evidence. Keep both groups, not just the matching occurrences.
+            evidence = tuple(event.dependency for event in action_events)
+            for detector in (self._detect_daily_pattern, self._detect_weekday_pattern,
+                             self._detect_weekend_pattern):
+                pattern = detector(entity_id, action, action_events)
+                if pattern is not None:
+                    pattern.evidence = evidence
+                    patterns.append(pattern)
         return patterns
-    
+
     def _detect_daily_pattern(
         self,
         entity_id: str,
         action: str,
-        events: list[Event]
+        events: list[PatternEvent]
     ) -> Pattern | None:
         """Detectar si hay un patron de hora consistente"""
         if len(events) < self.MIN_OCCURRENCES:
@@ -220,7 +215,7 @@ class PatternAnalyzer:
         self,
         entity_id: str,
         action: str,
-        events: list[Event]
+        events: list[PatternEvent]
     ) -> Pattern | None:
         """Detectar patron solo en dias de semana"""
         weekday_events = [e for e in events if not e.is_weekend]
@@ -273,7 +268,7 @@ class PatternAnalyzer:
         self,
         entity_id: str,
         action: str,
-        events: list[Event]
+        events: list[PatternEvent]
     ) -> Pattern | None:
         """Detectar patron solo en fines de semana"""
         weekend_events = [e for e in events if e.is_weekend]
@@ -325,60 +320,62 @@ class PatternAnalyzer:
         
         return None
     
-    def _analyze_sequences(self, days: int) -> list[Pattern]:
-        """Detectar patrones de secuencia (A -> B)"""
+    def _analyze_sequences(self, events: tuple[PatternEvent, ...]) -> list[Pattern]:
+        """Count distinct triggers, using the same bounded observation as time patterns."""
+        by_trigger = defaultdict(list)
+        for event in events:
+            by_trigger[event.entity_id, event.action].append(event.dependency)
+        # Each trigger counts at most once for a target action, even if that
+        # action repeats in its window. All matching targets remain dependencies.
+        pairs = {}
+        comparisons = 0
+        for index, first in enumerate(events):
+            later = index + 1
+            while later < len(events):
+                second = events[later]
+                delay = second.timestamp - first.timestamp
+                if delay > self.SEQUENCE_WINDOW_MINUTES * 60:
+                    break
+                comparisons += 1
+                if comparisons > self.MAX_SEQUENCE_COMPARISONS:
+                    logger.warning("Sequence analysis deferred: activity window capacity")
+                    return []
+                if delay > 0 and first.entity_id != second.entity_id:
+                    key = (first.entity_id, first.action, second.entity_id, second.action)
+                    triggers, targets = pairs.setdefault(key, (set(), {}))
+                    triggers.add(first.dependency.event_id)
+                    targets[second.dependency.event_id] = second.dependency
+                later += 1
         patterns = []
-        
-        sequences = self.event_logger.get_sequences(
-            window_minutes=self.SEQUENCE_WINDOW_MINUTES,
-            min_occurrences=self.MIN_OCCURRENCES,
-            days=days
-        )
-        
-        for first_event, second_event, count in sequences:
-            # Parsear eventos
-            trigger_entity, trigger_action = first_event.rsplit(":", 1)
-            target_entity, target_action = second_event.rsplit(":", 1)
-            
-            # Ignorar si es la misma entidad
-            if trigger_entity == target_entity:
+        candidates = sorted(pairs.items(), key=lambda item: (-len(item[1][0]), item[0]))
+        for key, (triggers, targets) in candidates:
+            trigger_entity, trigger_action, target_entity, target_action = key
+            count = len(triggers)
+            if count < self.MIN_OCCURRENCES:
                 continue
-            
-            # Calcular confianza
-            # Obtener total de veces que ocurrio el trigger
-            trigger_events = self.event_logger.get_events(
-                entity_id=trigger_entity,
-                action=trigger_action,
-                limit=10000
-            )
-            
-            if len(trigger_events) == 0:
+            trigger_evidence = by_trigger[trigger_entity, trigger_action]
+            confidence = count / len(trigger_evidence)
+            if confidence < self.MIN_CONFIDENCE:
                 continue
-            
-            # Confianza = veces que ocurrio secuencia / veces que ocurrio trigger
-            confidence = count / len(trigger_events)
-            
-            if confidence >= self.MIN_CONFIDENCE:
-                description = (
+            patterns.append(Pattern(
+                pattern_type=PatternType.SEQUENCE,
+                entity_id=target_entity,
+                action=target_action,
+                confidence=round(confidence, 2),
+                occurrences=count,
+                description=(
                     f"Cuando se ejecuta {trigger_action} en {self._friendly_entity(trigger_entity)}, "
                     f"generalmente se ejecuta {target_action} en {self._friendly_entity(target_entity)}"
-                )
-                
-                pattern = Pattern(
-                    pattern_type=PatternType.SEQUENCE,
-                    entity_id=target_entity,
-                    action=target_action,
-                    confidence=round(confidence, 2),
-                    occurrences=count,
-                    description=description,
-                    trigger_entity=trigger_entity,
-                    trigger_action=trigger_action,
-                    delay_seconds=self.SEQUENCE_WINDOW_MINUTES * 60 / 2  # Estimado
-                )
-                patterns.append(pattern)
-        
+                ),
+                trigger_entity=trigger_entity,
+                trigger_action=trigger_action,
+                delay_seconds=self.SEQUENCE_WINDOW_MINUTES * 60 / 2,
+                evidence=tuple(dict.fromkeys((*trigger_evidence, *targets.values()))),
+            ))
+            if len(patterns) == 50:
+                break
         return patterns
-    
+
     def _format_time_description(
         self,
         entity_id: str,
