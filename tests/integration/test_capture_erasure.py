@@ -448,3 +448,24 @@ async def test_cancelled_attachment_discards_written_file_through_durable_cleanu
             await pending
         assert list(Path(g.store.audio_dir).rglob('*.flac')) == []
         assert counts(g.store.db_path)['audio_write_intents'] == 0
+
+
+async def test_encoder_respects_earlier_store_deadline_before_attachment(tmp_path, monkeypatch):
+    async with graph(tmp_path) as g:
+        g.store.retention_hours = 1/3600  # Earlier than the raw source's 48 h.
+        source, row = await capture(g)
+        entered, release = threading.Event(), threading.Event()
+        write = g.archive._write_sync
+        def blocked(path, mono):
+            entered.set()
+            release.wait(3)
+            return write(path, mono)
+        monkeypatch.setattr(g.archive, '_write_sync', blocked)
+        writing = asyncio.create_task(g.archive.write('synthetic-room', row, AUDIO, source=source))
+        try:
+            await until(entered.is_set)
+            g.clock.now += 2
+        finally:
+            release.set()
+        assert await writing is None
+        assert list(Path(g.store.audio_dir).rglob('*.flac')) == []

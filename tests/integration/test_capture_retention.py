@@ -225,10 +225,10 @@ async def test_cancelled_expiry_transaction_keeps_atomic_cleanup_intent(tmp_path
     entered, release = asyncio.Event(), asyncio.Event()
     queue = store._queue_audio_deletion
 
-    async def paused_queue(path):
+    async def paused_queue(path, conversation_id=None):
         entered.set()
         await release.wait()
-        await queue(path)
+        await queue(path, conversation_id)
 
     monkeypatch.setattr(store, '_queue_audio_deletion', paused_queue)
     purge = asyncio.create_task(store.purge_expired())

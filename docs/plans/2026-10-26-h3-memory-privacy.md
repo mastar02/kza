@@ -429,7 +429,9 @@ Los archivos y la base nueva son privados (0600); el directorio final nuevo es
 
 El archiver limita a ocho sus escrituras nativas retenidas. Valida la fuente
 antes de reservar, después de reservar, al entrar al worker y al volver del
-encoder. El transcriber la comprueba nuevamente después de esperar al wake
+encoder. La reserva devuelve el menor vencimiento efectivo del store y de la
+fuente: un encoder lento no usa el plazo mayor de 48 h cuando su fila vence
+antes. El transcriber la comprueba nuevamente después de esperar al wake
 textual. Una captura revocada no inicia otro archivo ni publica un resultado
 tardío. El encoder que ya entró permanece registrado hasta su salida real,
 incluso si se cancela repetidamente al llamador.

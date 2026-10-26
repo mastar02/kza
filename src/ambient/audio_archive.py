@@ -19,6 +19,7 @@ import os
 import shutil
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -91,7 +92,8 @@ class AudioArchiver:
                 reserved = await self._store.reserve_audio_path(utt_id, str(path), source)
                 if reserved is None:
                     return None
-                path = Path(reserved)
+                path = Path(reserved.path)
+                source = replace(source, expires_at=reserved.expires_at)
                 # No await between revalidation, admission and native ownership.
                 if self._closed or not self._privacy.sources_available((source,)):
                     return None

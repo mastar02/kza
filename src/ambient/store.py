@@ -100,6 +100,14 @@ _EXPIRED = "t0 <= :cutoff OR created_at <= :cutoff OR expires_at <= :now OR NOT 
 
 
 @dataclass(frozen=True)
+class AudioReservation:
+    """Durable encoder locator and the store's effective capture deadline."""
+
+    path: str
+    expires_at: float
+
+
+@dataclass(frozen=True)
 class _AudioDeletion:
     path: str
     removed: bool = False
@@ -323,20 +331,21 @@ class AmbientStore:
             return cur.lastrowid
         return await self._mutate(insert)
 
-    async def reserve_audio_path(self, utt_id: int, path: str, source: MemorySource) -> str | None:
+    async def reserve_audio_path(self, utt_id: int, path: str, source: MemorySource) -> AudioReservation | None:
         """Persist the file locator before a policy-bound encoder may create it."""
         if self.source_policy is None or not self.source_policy.sources_available((source,)):
             return None
         path = await asyncio.to_thread(lambda: str(self._audio_path(path).resolve()))
         async def reserve():
-            cur = await self._db.execute('SELECT * FROM utterances WHERE id=:id AND '+_LIVE,
-                self._retention_parameters() | {'id': utt_id})  # nosec B608 -- Constant predicate, bound values.
+            cur = await self._db.execute('SELECT * FROM utterances WHERE id=?', (utt_id,))
             row = await cur.fetchone()
-            if row is None or row['capture_id'] != source.capture_id or row['conversation_id'] != source.conversation_id or not self.source_policy.sources_available((source,)):
+            if row is None or not self._row_live(row) or row['capture_id'] != source.capture_id or row['conversation_id'] != source.conversation_id or not self.source_policy.sources_available((source,)):
                 return None
+            expires_at = min(source.expires_at, row['expires_at'] or source.expires_at,
+                             min(row['t0'], row['created_at'])+self.retention_hours*3600)
             await self._db.execute('INSERT OR IGNORE INTO audio_write_intents VALUES (?,?,?,?)',
-                (path, utt_id, source.conversation_id, min(row['expires_at'], source.expires_at)))
-            return path
+                (path, utt_id, source.conversation_id, expires_at))
+            return AudioReservation(path, expires_at)
         return await self._mutate(reserve)
 
     async def set_audio_path(self, utt_id: int, path: str) -> bool:
