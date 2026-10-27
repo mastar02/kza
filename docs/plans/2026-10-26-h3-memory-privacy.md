@@ -1978,6 +1978,27 @@ requieren su prueba de retiro por separado. Falta integrar esos contratos con
 captura, comandos y el driver de `PRODUCERS`: no se emiten recibos globales ni
 se habilita el borrado amplio en la UI. Producción permanece sin cambios.
 
+La [validación](../research/2026-10-27-h3-producer-scope-handoffs-validation.json)
+del commit `063b444` registra **5179 passed, 1 xfailed**, sin fallos, en 223,22 s,
+incluidos 19 casos nuevos y 120 pruebas dirigidas finales. Pasan Ruff, Bandit sin
+hallazgos medios/altos, 18 tests de frontend y el smoke del dashboard. Los tests
+incluyen una función SQLite bloqueada en el thread real, cancelación anterior
+a conocer las fuentes, afinidad de saves nativos, selección de fuentes por
+presupuesto/idioma, capacidad retenida y pérdida del owner sin falsa prueba de salida.
+
+El artefacto sin fuentes verifica 321 hashes y ejecuta la lectura SQLite retenida,
+el save nativo revocado y un handoff ambiental pausado después de salir del
+modelo. El array se libera al salir el handoff; el controller de larga duración
+no tiene locales de audio. El ejercicio dura 0,28 s, con datos y endpoints
+sintéticos. El primer verificador pasaba `metadata` al ledger y fallaba antes
+de su control de autoridad: su resultado se descarta como prueba del rechazo.
+El verificador corregido exige la llamada real y su `PermissionError` por fuente
+revocada; no modifica las fuentes de aplicación ni los límites de aceptación.
+
+El heartbeat registra p95 de 0,33 ms y máximo de 1,09 ms; cancelar el control
+tarda como máximo 0,08 ms y limpiar stream/cliente 10,96 ms. No se manipula GC
+ni se afirma aceptación integrada de GC/hardware o arranque completo de `main`.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

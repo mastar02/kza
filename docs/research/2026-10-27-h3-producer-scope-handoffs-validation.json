@@ -1,0 +1,231 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "063b444651280e70918ffe64666e92d545361d25",
+  "tested_runtime_source_tree": "39509e395581c885ec9b8e636414f0370eabcacd",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 producer preparation: metadata-only finite scope receipts through real ambient raw handoffs, sourced native children and unresolved distillation reads. Cancellation retains actual SQLite reads and native saves with their authority lease. This adds no global PRODUCERS receipt and does not prove idle buffers or the entire main/hardware graph.",
+  "new_integration_cases": [
+    "test_cancelled_unresolved_read_keeps_scope_and_lease_until_actual_exit[row-handoff]",
+    "test_cancelled_unresolved_read_keeps_scope_and_lease_until_actual_exit[sqlite-thread]",
+    "test_known_prompt_affinity_excludes_unrelated_and_retired_input_locals[all]",
+    "test_known_prompt_affinity_excludes_unrelated_and_retired_input_locals[budget]",
+    "test_known_prompt_affinity_excludes_unrelated_and_retired_input_locals[language]",
+    "test_native_save_keeps_exact_affinity_after_cycle_observer_exits[cancel]",
+    "test_native_save_keeps_exact_affinity_after_cycle_observer_exits[revoke]",
+    "test_read_exception_does_not_escape_with_raw_locals_or_diagnostics",
+    "test_short_batch_leaves_no_raw_read_or_unknown_scope",
+    "test_sourced_ambient_native_work_keeps_scope_after_observer_cancel[stt]",
+    "test_sourced_ambient_native_work_keeps_scope_after_observer_cancel[profiles]",
+    "test_sourced_ambient_native_work_keeps_scope_after_observer_cancel[speaker]",
+    "test_sourced_ambient_native_work_keeps_scope_after_observer_cancel[quality]",
+    "test_sourced_ambient_native_work_keeps_scope_after_observer_cancel[doa]",
+    "test_room_handoff_stays_finite_and_sourced_after_model_task_finishes",
+    "test_cancelled_unknown_vad_batch_keeps_scope_until_actual_arrays_retire",
+    "test_scope_capacity_is_owned_by_real_children_after_parent_exit",
+    "test_lost_scope_owner_cannot_be_reported_as_proof_of_native_exit",
+    "test_derived_scope_stays_busy_when_its_fact_source_is_revoked"
+  ],
+  "new_cases_total": 19,
+  "full_suite": {
+    "accepted": true,
+    "collected": 5180,
+    "passed": 5179,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "runtime_s": 223.22,
+    "junit_time_s": 223.14,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-producer-scopes-full.xml",
+    "log": "/tmp/kza-producer-scopes-full.log",
+    "xml": "/tmp/kza-producer-scopes-full.xml"
+  },
+  "focused_suites": [
+    {
+      "passed": 101,
+      "runtime_s": 5.59,
+      "log": "/tmp/kza-producer-scopes-initial.log",
+      "note": "Existing distillation/ambient/capture rotation cases before the new ownership cases and final failure sanitizer simplification."
+    },
+    {
+      "passed": 19,
+      "runtime_s": 1.4,
+      "log": "/tmp/kza-producer-scopes-new-fixed.log",
+      "note": "All new cases after correcting two verifier assumptions; the later source edit only clarifies the finite-work API docstring."
+    },
+    {
+      "passed": 120,
+      "runtime_s": 6.73,
+      "log": "/tmp/kza-producer-scopes-focused-final.log",
+      "note": "Final focused source before commit; full suite covers the exact committed source."
+    }
+  ],
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "includes_training_and_migration_clis": true,
+      "log": "/tmp/kza-producer-scopes-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "includes_training_and_migration_clis": true,
+      "log": "/tmp/kza-producer-scopes-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-producer-scopes-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-producer-scopes-dashboard.log"
+    }
+  },
+  "runtime_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.32750610262155533,
+        "max": 1.0884522926062346
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.0552439596503973,
+          "p95": 0.08060294203460217,
+          "max": 0.08060294203460217
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.881136171519756,
+          "p95": 10.962569853290915,
+          "max": 10.962569853290915
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 423,
+        "loop_lag_p95_ms": 0.397261930629611,
+        "loop_lag_max_ms": 1.1219042353332043,
+        "cancel_cleanup_max_ms": 0.7319720461964607,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2724,
+        "loop_lag_p95_ms": 0.9849550016224383,
+        "loop_lag_max_ms": 1.6296360455453396,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.7040700875222683,
+        "p95": 0.8357001934200525,
+        "max": 0.8357001934200525,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "063b444651280e70918ffe64666e92d545361d25",
+    "artifact": "/tmp/kza-producer-scopes-runtime-f49ug0vp/runtime.tar.gz",
+    "verified_hashes": 321,
+    "runtime_s": 0.2845780348870903,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "stdout": "{\"passed\": true, \"verified_hashes\": 321, \"source_free\": true, \"actual_sqlite_worker_read_retained_after_cancel\": true, \"unresolved_read_held_authority_lease\": true, \"native_save_affinity_survived_parent_exit\": true, \"known_unrelated_conversation_not_blocked\": true, \"revoked_native_save_did_not_create_fact\": true, \"actual_segmentation_and_ambient_stt\": true, \"finite_handoff_stayed_owned_after_model_exit\": true, \"raw_array_released_at_handoff_exit\": true, \"idle_room_controller_holds_no_raw_locals\": true, \"producers_journal_complete\": false, \"idle_tap_vad_retirement_proven_by_this_scope_api\": false, \"private_household_data_read_or_packaged\": false, \"production_changed\": false, \"full_main_or_hardware_acceptance\": false}\n",
+    "stderr": "Distillation storage deferred: PermissionError\n",
+    "passed": true,
+    "exercise": {
+      "passed": true,
+      "verified_hashes": 321,
+      "source_free": true,
+      "actual_sqlite_worker_read_retained_after_cancel": true,
+      "unresolved_read_held_authority_lease": true,
+      "native_save_affinity_survived_parent_exit": true,
+      "known_unrelated_conversation_not_blocked": true,
+      "revoked_native_save_did_not_create_fact": true,
+      "actual_segmentation_and_ambient_stt": true,
+      "finite_handoff_stayed_owned_after_model_exit": true,
+      "raw_array_released_at_handoff_exit": true,
+      "idle_room_controller_holds_no_raw_locals": true,
+      "producers_journal_complete": false,
+      "idle_tap_vad_retirement_proven_by_this_scope_api": false,
+      "private_household_data_read_or_packaged": false,
+      "production_changed": false,
+      "full_main_or_hardware_acceptance": false
+    }
+  },
+  "development_findings": {
+    "initial_new_cases": {
+      "accepted": false,
+      "passed": 14,
+      "failed": 2,
+      "runtime_s": 1.19,
+      "log": "/tmp/kza-producer-scopes-new.log",
+      "description": "Two verifier mistakes: observing outer cancellation is not proof that its owned cycle has already retired, and CPython 3.13 frame locals keys return a list for this proxy. Wait for the actual cycle retirement, keep the native save held, and convert the keys to a set. Application semantics were unchanged by these fixture corrections."
+    },
+    "first_compiled_verifier": {
+      "accepted": false,
+      "raw_returncode": 0,
+      "report": "/tmp/kza-producer-scopes-runtime-first-report.json",
+      "description": "The initial save adapter forwarded metadata to FactLedger.store, which does not accept that training callback keyword. The adapter failed before reaching authority. Its empty fact count therefore did not prove revocation enforcement, despite the verifier exiting zero.",
+      "correction": "Adapt the callback signature explicitly and require the actual ledger call to raise PermissionError(memory_source_expired_or_deleted), recorded by an event. Rebuild/retest the same application commit; no limit or application source was changed."
+    }
+  },
+  "runtime_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancellation_max_ms": 100,
+    "cleanup_ms": 1000,
+    "limits_widened": false,
+    "gc_forced_disabled_or_frozen": false,
+    "integrated_gc_hardware_acceptance": false
+  },
+  "preserved_boundaries": {
+    "real_household_data_read_or_modified": false,
+    "prior_private_quarantine_copy_modified": false,
+    "quarantined_unsourced_data_automatically_deleted": false,
+    "unknown_legacy_files_automatically_deleted": false,
+    "config_or_runtime_under_kza_changed": false,
+    "production_restarted": false,
+    "new_training_or_gpu_reassignment": false,
+    "global_erasure_claimed": false,
+    "full_main_or_hardware_acceptance": false,
+    "release_published": false,
+    "producers_journal_complete": false,
+    "idle_buffer_retirement_proven_by_new_scope_api": false
+  },
+  "remaining_scope": [
+    "PRODUCERS journal remains unconnected. Add complete source ownership for capture, commands, input callbacks and retained idle tap/VAD buffers, then integrate all runtime producer contracts with leased recovery and exact journal claims.",
+    "The new ambient conversation_busy API proves only finite work. Idle tap/VAD retirement remains a separate obligation; unresolved reads stay pending until actual completion or source resolution.",
+    "Remaining diagnostics, streams/frontend and VOICES journal participants, pause versus total mute, acoustic retention and authenticated grouping review remain open. Broad erasure remains unavailable in the UI.",
+    "Unknown legacy datasets/adapters and quarantine rows/backups remain preserved pending manual review/lifecycle; complete migrations, live-index rebuild and compatible rollback remain open.",
+    "Selected HA effects and kitchen switch mapping, physical audio, remaining H4 runtime/dependency acceptance, H5 voice functions and the one integrated H6 release remain open.",
+    "The earlier instrumented GC pause of 495.68 ms is not remeasured or accepted by this uninstrumented suite. The compiled smoke uses actual components with synthetic endpoint callbacks and no audio hardware or full main startup."
+  ]
+}

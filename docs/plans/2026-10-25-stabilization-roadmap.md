@@ -684,6 +684,16 @@ del commit `864c2ed` registra **5160 passed, 1 xfailed**, 23 casos nuevos,
 checks aceptados y artefacto sin fuentes con 320 hashes verificados. No completa
 `PRODUCERS`, H3 ni la aceptación de hardware o de la release.
 
+Los [handoffs ambientales y las lecturas de destilación](2026-10-26-h3-memory-privacy.md#avance-scopes-finitos-de-handoffs-ambientales-y-lecturas-de-destilación)
+ya tienen scopes de metadata que siguen a los hijos reales tras cancelar al
+padre. Las lecturas anteriores a conocer su procedencia permanecen retenidas,
+incluido el thread SQLite; el worker ambiental de larga duración deja de guardar
+arrays entre awaits. La [validación](../research/2026-10-27-h3-producer-scope-handoffs-validation.json)
+del commit `063b444` registra **5179 passed, 1 xfailed**, 19 casos nuevos,
+checks aceptados y artefacto sin fuentes con 321 hashes verificados. Falta cubrir
+los buffers en reposo y captura/comandos y conectar los contratos completos al
+driver de `PRODUCERS`. No se publica ni se acepta hardware con este paso.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una
