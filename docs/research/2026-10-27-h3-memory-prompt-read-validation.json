@@ -1,0 +1,170 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "60af1f3fe4cd1e4b5d60ef357f00255be3d5bf5c",
+  "tested_runtime_source_tree": "dfe4e06fb6d1f4a11ef9e3b9d71d15207f66e55a",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 owned prompt reads in an existing producer scope: retain unresolved read metadata until actual native completion; merge selected raw/fact provenance before future delivery; retire observer and transport argument references; sanitize native prompt read failures. Includes the legacy voice route. Independent queue-worker and post-router handoffs, generic native error sanitation and complete PRODUCERS/journal coverage remain open.",
+  "new_cases_total": 23,
+  "new_integration_cases": [
+    "test_cancelled_observer_releases_eventual_result_without_releasing_running_worker[acall]",
+    "test_cancelled_observer_releases_eventual_result_without_releasing_running_worker[astore_fact]",
+    "test_cancelled_observer_releases_eventual_result_without_releasing_running_worker[asearch_relevant]",
+    "test_cancelled_observer_releases_eventual_result_without_releasing_running_worker[areconcile]",
+    "test_completed_transport_and_cancelled_observer_do_not_retain_inputs[acall]",
+    "test_completed_transport_and_cancelled_observer_do_not_retain_inputs[astore_fact]",
+    "test_completed_transport_and_cancelled_observer_do_not_retain_inputs[asearch_relevant]",
+    "test_rejected_admission_tracebacks_release_inputs[closed-acall]",
+    "test_rejected_admission_tracebacks_release_inputs[closed-astore_fact]",
+    "test_rejected_admission_tracebacks_release_inputs[closed-asearch_relevant]",
+    "test_rejected_admission_tracebacks_release_inputs[closed-acall_prompt]",
+    "test_rejected_admission_tracebacks_release_inputs[capacity-acall]",
+    "test_rejected_admission_tracebacks_release_inputs[capacity-astore_fact]",
+    "test_rejected_admission_tracebacks_release_inputs[capacity-asearch_relevant]",
+    "test_rejected_admission_tracebacks_release_inputs[capacity-acall_prompt]",
+    "test_selected_sources_are_published_before_result_delivery[aprompt_context]",
+    "test_selected_sources_are_published_before_result_delivery[arecent_prompt_context]",
+    "test_selected_sources_are_published_before_result_delivery[aformat_context_for_prompt]",
+    "test_cancelled_unresolved_prompt_read_keeps_scope_capacity_until_actual_exit",
+    "test_native_prompt_failures_cannot_export_raw_arguments_or_tracebacks[raise]",
+    "test_native_prompt_failures_cannot_export_raw_arguments_or_tracebacks[invalid-result]",
+    "test_concurrent_native_selections_merge_dependencies_without_renewing_expiry",
+    "test_actual_legacy_voice_route_enriches_its_capture_receiver_scope"
+  ],
+  "full_suite": {
+    "accepted": true,
+    "collected": 5251,
+    "passed": 5250,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 220.187,
+    "summary": "========= 5250 passed, 1 xfailed, 29722 warnings in 220.26s (0:03:40) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ --junitxml=/tmp/kza-memory-affinity-accepted-full.xml -q",
+    "log": "/tmp/kza-memory-affinity-accepted-full.log",
+    "xml": "/tmp/kza-memory-affinity-accepted-full.xml"
+  },
+  "focused_suite": {
+    "passed": 140,
+    "failed": 0,
+    "runtime_s": 10.9,
+    "log": "/tmp/kza-memory-affinity-final-focused.log"
+  },
+  "static_and_frontend": {
+    "ruff": {
+      "passed": true,
+      "scope": "src/, tests/, scripts/smart_automations.py, scripts/train_assistant.py, scripts/stage_legacy_memory.py"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-memory-affinity-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-memory-affinity-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-memory-affinity-dashboard.log"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "60af1f3fe4cd1e4b5d60ef357f00255be3d5bf5c",
+    "artifact": "/tmp/kza-memory-affinity-runtime-nlku6i9s/runtime.tar.gz",
+    "verified_hashes": 321,
+    "runtime_s": 0.14058164600282907,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "hashes": 321,
+      "native_read_handoff": true,
+      "semantic_sources_published_before_delivery": true,
+      "expiry_not_renewed": true,
+      "unrelated_live_work_not_blocked": true,
+      "revoked_fact_origin_blocks_derived_result": true,
+      "cancelled_observer_result_retired": true,
+      "actual_native_read_retains_scope_capacity_and_writer_lease": true,
+      "native_prompt_failure_has_no_raw_traceback": true,
+      "real_privacy_sqlite_and_memory_owner": true,
+      "vector_backend_exercised": false,
+      "full_main_or_hardware_acceptance": false,
+      "producers_journal_complete": false
+    },
+    "report": "/tmp/kza-memory-affinity-runtime-report.json",
+    "smoke_script": "/tmp/kza-memory-affinity-runtime-smoke.py",
+    "smoke_script_sha256": "145125748229602446a411ade1185ec7bbc8e1a0e34af3c2c89b395bb9c2deae",
+    "build_script": "/tmp/kza-build-memory-affinity-runtime.py",
+    "build_script_sha256": "3a09bda3359c5878f263d8cd9dd1e39a14e47679eb24ab13d2e9caf1f64ea8eb",
+    "sources_packaged": false,
+    "private_household_data_packaged": false,
+    "notes": "Actual PrivacyServices, SQLite FactLedger and LongTermMemory owner. Synthetic prompt selectors; no vector backend, devices or complete main. Partial development smoke, not H6 release acceptance."
+  },
+  "development_findings": {
+    "cancelled_observer_retention": {
+      "accepted": false,
+      "baseline_commit": "47dd4f9",
+      "failed": 4,
+      "passed": 0,
+      "runtime_s": 0.73,
+      "log": "/tmp/kza-memory-worker-retirement-reproduction.log",
+      "description": "Keeping a cancelled observer error retained eventual native results through _run in acall, astore_fact, asearch_relevant and areconcile.",
+      "correction": "Clear observer task/function/argument links on every exit; actual _operations set and completion callback keep native work and close ownership."
+    },
+    "initial_full_suite": {
+      "accepted": false,
+      "tested_commit": "0d92e37515a4a80afb485fd75a1153561a52280f",
+      "failed": 3,
+      "passed": 5247,
+      "xfailed": 1,
+      "runtime_s": 230.04,
+      "log": "/tmp/kza-memory-affinity-initial-full.log",
+      "xml": "/tmp/kza-memory-affinity-initial-full.xml",
+      "description": "The deterministic close-fairness fixture intercepted a direct function identity. The owned worker now transports a mutable box, so the fixture never opened its controlled gate in result/error/cancel modes. The native-worker close case passed.",
+      "correction": "Recognize _invoke_memory and the boxed callable; execute the real wrapper after the same gate. Keep all deadlines, ready-queue crossing and actual native-worker case unchanged. Final focused set includes all four close modes."
+    },
+    "first_new_case_draft": {
+      "accepted": false,
+      "failed": 3,
+      "passed": 18,
+      "runtime_s": 1.67,
+      "log": "/tmp/kza-memory-affinity-new-tests.log",
+      "description": "Three delivery test fixtures attempted to construct a 40-day raw MemorySource. The 48-hour source validator correctly rejected them before the asserted action. This was a fixture error, not accepted product evidence.",
+      "correction": "Use a valid 48-hour current capture and advance the synthetic clock to 60 seconds before an existing semantic fact expires. The binding must shorten the capture to that actual deadline."
+    }
+  },
+  "preserved_boundaries": {
+    "native_memory_capacity": 8,
+    "source_scope_capacity_unchanged": true,
+    "gc_forced_disabled_or_frozen": false,
+    "runtime_limits_widened": false,
+    "integrated_gc_hardware_acceptance": false,
+    "real_household_data_read_or_modified": false,
+    "prior_private_quarantine_copy_modified": false,
+    "quarantined_unsourced_data_automatically_deleted": false,
+    "production_changed_or_restarted": false,
+    "new_dependencies_or_gpu_reassignment": false,
+    "global_erasure_claimed": false,
+    "release_published": false,
+    "producers_journal_complete": false,
+    "complete_semantic_result_affinity_proven": false
+  },
+  "remaining_scope": [
+    "Complete independent orchestrator queue-worker and result-future scope handoffs, post-router effect checks and other memory consumers. A prompt read without an existing producer scope still returns provenance but does not manufacture global producer ownership.",
+    "Retire idle input/tap/VAD/wake buffers and actual device callback lifetimes; connect the complete real producer contracts and leased recovery to PRODUCERS. Generic acall native exception sanitation remains outside the prompt-only outcome adapter.",
+    "Complete diagnostics/log/JSONL/Logstash/aiosqlite, STREAMS/frontend and VOICES participants, ambient pause versus total mute, acoustic retention and authenticated voice review/grouping/calibration.",
+    "Preserve the 870 unsourced legacy facts in quarantine pending manual review. Complete snapshot/backup lifecycle, other migration copies, live-index rebuild and rollback retaining tombstones.",
+    "Verify selected HA scenes/groups and kitchen switch mapping, physical audio, remaining H4 resource/dependency and instrumented GC acceptance, H5 voice routines/timers/reminders/alerts and one integrated H6 release.",
+    "The earlier 495.68 ms instrumented GC pause is neither remeasured nor accepted by this uninstrumented suite or synthetic compiled smoke."
+  ]
+}

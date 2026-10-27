@@ -2113,6 +2113,62 @@ tarda como máximo 0,08 ms y limpiar stream/cliente 10,90 ms. No se amplían los
 presupuestos ni se manipula GC. La aceptación integrada de GC/hardware de H4/H6
 y la publicación única siguen pendientes.
 
+## Lecturas de prompts y fuentes semánticas — 27 de octubre
+
+Una reproducción con las cuatro entradas asíncronas de `LongTermMemory`
+mostró que conservar la excepción del solicitante cancelado también conservaba
+el resultado que el worker entregaba después. El dueño nativo seguía cerrando
+correctamente; el enlace sobrante estaba en el frame del observador. Los frames
+de las entradas y del adaptador ahora retiran esos enlaces al salir. Los
+argumentos viajan en una caja que el worker vacía antes de devolver, de modo
+que mantener viva la tupla del transporte no retenga entradas ya retiradas.
+
+Las selecciones `aprompt_context`, `arecent_prompt_context` y el adaptador de
+texto `aformat_context_for_prompt` usan ahora un lector de prompts propio.
+Si existe un scope de productor al admitir la lectura, éste conserva una
+reserva de metadatos hasta el callback de finalización del trabajo real. Una
+lectura aún sin resolver mantiene pendiente la procedencia incluso después
+de cancelar su solicitante; no libera la capacidad del scope antes de tiempo.
+El límite de ocho operaciones nativas de memoria se conserva.
+
+Antes de publicar el DTO, el worker incorpora al scope las fuentes crudas y
+las dependencias semánticas efectivamente seleccionadas. Las selecciones
+concurrentes acumulan dependencias sin perder las anteriores ni renovar su
+vencimiento. Sólo se sincronizan estos metadatos; el registro no conserva
+prompts, tareas, resultados, funciones ni excepciones. Una procedencia que no
+se pueda vincular sigue siendo desconocida. Los errores de estos lectores de
+prompts regresan como un resultado fijo y se convierten en un error en el loop,
+sin exportar el traceback nativo con texto o argumentos. Esto no sanea las
+excepciones de cualquier función arbitraria enviada a `acall`.
+
+La prueba del recorrido de voz sin orquestador confirma que su receptor de
+captura incorpora las dependencias del contexto de memoria. Las pruebas de
+entrega comprueban los metadatos en el callback de finalización nativa, antes
+de que el consumidor reciba el texto. También se verifican rechazo por cierre
+o capacidad, retiro de entradas y resultados con tracebacks retenidos, y
+conservación del lease mientras una lectura cancelada sigue ejecutándose.
+
+La evidencia está en la [validación de lectores de memoria](../research/2026-10-27-h3-memory-prompt-read-validation.json).
+El commit de código es `0d92e37`; agrega 23 casos. La comprobación final en
+`60af1f3` pasa 140 pruebas dirigidas, incluidas las cuatro de cierre.
+La primera suite completa queda como no aceptada: la instrumentación del cierre
+buscaba la función directa y no abría su compuerta al recibir la nueva caja.
+El fixture ahora reconoce el transporte real y conserva tanto el cruce
+controlado de callbacks como sus límites de tiempo y el caso con worker nativo.
+La suite completa repetida pasa **5250 pruebas y 1 xfailed**, sin fallos,
+en 220,26 s. Pasan Ruff, Bandit sin hallazgos medios/altos, los 18 casos de
+frontend y el smoke del dashboard. El artefacto compilado de `60af1f3` verifica
+321 hashes y completa el ejercicio de lectores en 0,14 s.
+El smoke compilado usa el dueño real de memoria y SQLite de privacidad con
+contenido sintético, sin backend vectorial, dispositivos o `main` completo.
+No equivale a la aceptación integrada de H4/H6.
+
+La afinidad semántica completa sigue pendiente: faltan los traspasos del
+worker independiente de la cola, los demás consumidores y las comprobaciones
+de efectos posteriores a la devolución del router. También siguen abiertos
+los buffers en reposo, los callbacks de entrada y la conexión completa de
+`PRODUCERS` al journal. No se habilita el borrado global ni se publica una release.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
