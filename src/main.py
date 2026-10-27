@@ -50,6 +50,7 @@ from src.monitoring.latency_monitor import LatencyMonitor
 from src.analytics.services import build_event_logger
 from src.analytics.erasure import build_event_erasure
 from src.analytics.suggestion_erasure import build_suggestion_erasure
+from src.wakeword.clip_store import build_wake_clip_store
 from src.orchestrator.context_erasure import build_context_erasure
 from src.analytics.pattern_analyzer import PatternAnalyzer
 from src.analytics.suggestion_engine import SuggestionEngine
@@ -571,6 +572,7 @@ async def _run_main(shutdown: AsyncExitStack):
     event_erasure = await build_event_erasure(config, privacy=privacy_services, owner=erasure_services)
     suggestion_erasure = await build_suggestion_erasure(config, privacy=privacy_services, owner=erasure_services)
     context_erasure = await build_context_erasure(config, privacy=privacy_services, owner=erasure_services, memory=memory_manager)
+    wake_clip_store = await build_wake_clip_store(config, privacy=privacy_services, shutdown=shutdown)
 
     # LLM Command Router (Opción 2 NLU) — clasificador de comandos vía vLLM 7B.
     # Independiente del LLMRouter: este valida texto post-wake contra
@@ -1054,10 +1056,12 @@ async def _run_main(shutdown: AsyncExitStack):
             clip_cfg = early_cfg.get("capture_clips", {}) or {}
             if clip_cfg.get("enabled", False):
                 from src.wakeword.wake_clip_writer import WakeClipWriter
+                clip_target = await wake_clip_store._work.run(wake_clip_store.register,
+                    clip_cfg.get("dir", "data/wakeword_training/captured"))
                 wake_clip_writer = WakeClipWriter(
-                    directory=clip_cfg.get(
-                        "dir", "data/wakeword_training/captured"
-                    ),
+                    directory=clip_target.root,
+                    store=wake_clip_store,
+                    target=clip_target,
                     max_files=int(clip_cfg.get("max_files", 2000)),
                     max_rejected_files=int(clip_cfg.get("max_rejected_files", 4000)),
                     max_missed_files=int(clip_cfg.get("max_missed_files", 300)),

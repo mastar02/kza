@@ -1472,9 +1472,44 @@ Esto cubre ambos caminos de captura, pero siguen pendientes los consumidores
 de clips/aprendizaje, la integración completa de productores al journal y el
 ciclo físico del driver multiroom. No completa `PRODUCERS`, `STREAMS` ni H3.
 
+## Avance: clips de wake con fuentes y localizadores durables
+
+`WakeClipWriter` recibe ahora un store preparado con la autoridad común. Cada
+trabajo copia su onda, conserva las fuentes originales y el menor vencimiento,
+y rechaza entradas sin fuentes o revocadas. Los wakes aceptados/rechazados
+heredan el contexto del actor de captura; el wake textual transmite explícitamente
+la fuente ambiental al callback de clips missed, sin inventar otra captura.
+Los archivos nuevos usan UUID, sin sala ni score en el nombre, y permisos 0600.
+Sala, score, bucket y fuentes quedan en el catálogo privado y vencen con el clip.
+
+El catálogo guarda el intento antes de crear un `.part`. La codificación corre
+en el hilo retenido; el rename final y su recibo comparten la barrera de admisión
+del catálogo. Una revocación anterior impide publicar; una posterior encuentra
+el localizador. Se eliminan parte y WAV antes de soltarlo. Un unlink fallido
+conserva el intento para reintento y reinicio; los paths se recorren mediante
+descriptores sin seguir symlinks reemplazados. La rotación sólo alcanza clips
+gestionados y mantiene topes independientes por bucket. Los WAV legacy quedan
+fuera de esta política y no se borran ni se importan por proximidad de nombre.
+
+La retención se construye antes del writer y sigue activa con la captura de
+clips apagada. Examina hasta 128 filas por trabajo, conserva las raíces
+históricas registradas y despierta por cambios o por el plazo más cercano. La
+cola se purga cada 50 ms sin esperar a un encoder bloqueado. Un vencimiento
+observado de un trabajo queda invalidado aunque retroceda el reloj.
+Cerrar la captura o privacidad descarta la cola y espera al hilo real; un
+timeout del observador no libera la lease. El cierre del pool privado tampoco
+depende de un executor general saturado. Un diagnóstico bloqueado después de
+fallar no conserva la onda ni el traceback privado del trabajo terminado.
+
+Este avance registra destinos de collectors, pero no da de alta un driver que
+finja completar todo `COLLECTORS`. Faltan conversaciones, correcciones STT y
+otros datasets de aprendizaje, además del journal completo de productores.
+La limpieza física local de clips no constituye un recibo global de borrado.
+La validación completa y del artefacto se registra al terminarla.
+
 ## Trabajo restante
 
-1. Cubrir los consumidores de clips y aprendizaje y conectar
+1. Cubrir los demás consumidores de clips y aprendizaje y conectar
    todos los productores reales al journal. El procesador y ambient retenidos
    todavía no completan `PRODUCERS`.
 2. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

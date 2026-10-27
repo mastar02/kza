@@ -57,6 +57,7 @@ from collections.abc import Awaitable, Callable
 import numpy as np
 
 from src.pipeline.command_event import CapturedTranscript, CommandEvent, TranscriptSource
+from src.memory.producer_context import PRODUCER_CONTEXT, producer_context
 
 logger = logging.getLogger(__name__)
 
@@ -376,9 +377,11 @@ class TextualWakeDetector:
 
         if self._on_missed_fn is not None:
             try:
-                self._on_missed_fn(room_id, audio)
+                sources = (memory_source,) if memory_source is not None else PRODUCER_CONTEXT.get().sources
+                with producer_context(room_id, sources):
+                    self._on_missed_fn(room_id, audio)
             except Exception as e:
-                logger.warning(f"[TextualWake] on_missed_fn error room={room_id}: {e}")
+                logger.warning('Textual wake clip callback failed: %s', type(e).__name__)
 
         event = CommandEvent(
             audio=audio,

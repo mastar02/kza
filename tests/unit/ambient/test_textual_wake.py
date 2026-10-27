@@ -928,8 +928,8 @@ class TestDetectorOnMissedFn:
         # on_missed_fn falló (sin esto, un logger.warning borrado por error
         # se volvería silencioso de verdad y ningún test lo detectaría).
         assert any(
-            r.levelno == logging.WARNING and "[TextualWake]" in r.message
-            and "on_missed_fn error" in r.message
+            r.levelno == logging.WARNING and "Textual wake clip callback failed" in r.message
+            and "RuntimeError" in r.message and "disco lleno" not in r.message
             for r in caplog.records
         )
 

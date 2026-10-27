@@ -1,186 +1,246 @@
-"""
-WakeClipWriter — persiste el audio de cada wake aceptado para entrenamiento.
+"""Bounded wake clip collection with original source and actual native ownership."""
 
-Cada disparo del wake word guarda su clip (el preroll que sembró el buffer,
-~1s) como WAV 16kHz mono int16 en un directorio con rotación. El objetivo es
-construir el dataset de re-entrenamiento de nexa.onnx con datos REALES:
-- Falsos wakes (TV: "gracias por ver el video") → hard negatives con la
-  distribución exacta que engaña al modelo actual.
-- Wakes de comandos aceptados → positivos far-field en condición real.
-
-Etiquetado posterior: cruzar el timestamp del nombre de archivo con la
-transcripción del journal (CommandProcessor Text=...).
-
-Restricción de diseño: submit() se llama desde el AUDIO CALLBACK THREAD de
-sounddevice → jamás bloquea ni lanza (cola bounded + worker thread propio;
-si la cola está llena, el clip se descarta en silencio). Lección 2026-06-12:
-cualquier bloqueo en ese thread congela la captura de todo el pipeline.
-
-submit_missed() (spec 2026-07-25 Etapa A) NO corre en ese thread — lo llama
-el worker asyncio del ambient path (vía TextualWakeDetector.on_missed_fn),
-un contexto distinto. El contrato "nunca bloquea ni lanza" se mantiene
-igual (misma cola, mismo worker), pero no hay que asumir el mismo hilo.
-"""
-
+import asyncio
+from collections import deque
+from dataclasses import dataclass, field
+from enum import StrEnum
 import logging
-import queue
+import math
+import os
 import threading
-import time
+from uuid import uuid4
 import wave
-from enum import Enum
-from pathlib import Path
 
 import numpy as np
+
+from src.core.owned_work import WorkCloseTimeout
+from src.memory.fact_ledger import MemorySource
+from src.memory.producer_context import PRODUCER_CONTEXT
+from src.wakeword.clip_store import ClipTarget, WakeClipStore, clip_directory
 
 logger = logging.getLogger(__name__)
 
 
-class _Bucket(Enum):
-    """Subcarpeta de destino de un clip. Interno — la API pública sigue
-    siendo submit()/submit_missed(), no expone este enum.
+class ClipBucket(StrEnum):
+    """Independent policy datasets sharing the same source deadlines."""
 
-    ACCEPTED = "" (no None): `Path("x") / ""` da `Path("x")` sin rama
-    especial en `_write`, y evita que un futuro miembro con value=None se
-    alias-ee silenciosamente a ACCEPTED (comportamiento real de Enum,
-    verificado en review — un segundo `= None` no crea un miembro nuevo)."""
+    ACCEPTED = 'accepted'
+    REJECTED = 'rejected'
+    MISSED = 'missed'
 
-    ACCEPTED = ""          # dir raíz, comportamiento previo
-    REJECTED = "rejected"
-    MISSED = "missed"
+
+@dataclass(frozen=True)
+class ClipJob:
+    """An owned waveform with original, immutable source metadata."""
+
+    id: str
+    room_id: str
+    score: float
+    audio: np.ndarray
+    sources: tuple[MemorySource, ...]
+    bucket: ClipBucket
+    cancelled: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
 
 
 class WakeClipWriter:
-    """Escribe clips de wake a disco desde un worker thread, sin bloquear."""
+    """Copy bounded inputs and retain the real thread until files are finished.
 
-    def __init__(
-        self,
-        directory: str | Path,
-        sample_rate: int = 16000,
-        max_files: int = 2000,
-        max_rejected_files: int = 4000,
-        max_missed_files: int = 300,
-        queue_size: int = 8,
-    ):
-        self._dir = Path(directory)
-        self._dir.mkdir(parents=True, exist_ok=True)
-        self._sample_rate = sample_rate
-        self._max_files = max_files
-        # Los rechazados (TV STRICT/COOLDOWN + comandos far-field que el guard
-        # mató) son mucho más voluminosos → tope propio en rejected/, rota
-        # independiente para no purgar los aceptados (raros y valiosos).
-        self._max_rejected_files = max_rejected_files
-        # missed/ (spec 2026-07-25 Etapa A): el wake textual disparó y el
-        # acústico NO — falso negativo real, con el audio en la mano. Tope
-        # propio, simétrico a rejected/, para no purgarlo con el volumen de
-        # cualquiera de los otros dos buckets.
-        self._max_missed_files = max_missed_files
-        self._caps = {
-            _Bucket.ACCEPTED: self._max_files,
-            _Bucket.REJECTED: self._max_rejected_files,
-            _Bucket.MISSED: self._max_missed_files,
-        }
-        assert set(self._caps) == set(_Bucket), (
-            "falta un tope de rotación para algún _Bucket — "
-            "agregar un bucket exige agregar su cap acá"
-        )
-        self._queue: queue.Queue = queue.Queue(maxsize=queue_size)
+    Construction has no disk I/O. The store and canonical target are initialized
+    by the application before capture. An unsourced input is never collected.
+    """
+
+    def __init__(self, directory, sample_rate: int = 16000, max_files: int = 2000,
+                 max_rejected_files: int = 4000, max_missed_files: int = 300,
+                 queue_size: int = 8, *, store: WakeClipStore, target: ClipTarget,
+                 close_timeout_s: float = 1):
+        if str(directory) != target.root:
+            raise ValueError('wake_clip_target_mismatch')
+        if any(type(n) is not int or n <= 0 for n in
+               (sample_rate, max_files, max_rejected_files, max_missed_files, queue_size)):
+            raise ValueError('invalid_wake_clip_capacity')
+        if type(close_timeout_s) not in (int, float) or not math.isfinite(close_timeout_s) or close_timeout_s <= 0:
+            raise ValueError('invalid_wake_clip_close_timeout')
+        self._store, self._target = store, target
+        self._sample_rate, self._capacity = sample_rate, queue_size
+        self._caps = {ClipBucket.ACCEPTED: max_files, ClipBucket.REJECTED: max_rejected_files, ClipBucket.MISSED: max_missed_files}
+        self._queue = deque()
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._busy = None
         self._running = True
-        self._worker = threading.Thread(
-            target=self._run, daemon=True, name="wake-clip-writer"
-        )
+        self._closing = None
+        self._close_timeout_s = close_timeout_s
+        self._dropped = self._written = self._errors = 0
+        self._worker = threading.Thread(target=self._run, daemon=True, name='wake-clip-writer')
+        store.attach(self)
         self._worker.start()
 
-    def submit(self, room_id: str, score: float, audio, accepted: bool = True) -> bool:
-        """Encolar un clip para escritura. Nunca bloquea ni lanza.
+    def _live(self, sources) -> bool:
+        return self._running and not self._store._closed and self._store.privacy.sources_available(sources)
 
-        Args:
-            room_id: Habitación que disparó el wake.
-            score: Score del detector (va al nombre del archivo).
-            audio: Samples float32 en [-1, 1] (ndarray o lista).
-            accepted: True = wake aceptado (dir raíz, comportamiento previo);
-                False = wake rechazado por el guard → subcarpeta rejected/
-                (dataset de hard-negatives + positivos far-field que STRICT mató).
+    def _job_live(self, job) -> bool:
+        if not self._live(job.sources):
+            job.cancelled.set()
+        return not job.cancelled.is_set()
 
-        Returns:
-            True si se encoló; False si la cola estaba llena (clip descartado).
-        """
-        bucket = _Bucket.ACCEPTED if accepted else _Bucket.REJECTED
-        return self._enqueue(room_id, score, audio, bucket)
-
-    def submit_missed(self, room_id: str, score: float, audio) -> bool:
-        """Encolar un clip MISSED: el wake textual disparó, el acústico no.
-
-        Falso negativo real del wake acústico, con el audio en la mano
-        (spec 2026-07-25 Etapa A, oráculo = TextualWakeDetector). Nunca
-        bloquea ni lanza — mismo contrato que submit().
-
-        Args:
-            room_id: Habitación de origen.
-            score: Score acústico si se conoce, o un sentinel fuera de
-                [0, 1] (p. ej. -1.0) si el detector acústico nunca corrió
-                sobre esta ventana — el nombre del archivo no debe fingir
-                un score que no existe.
-            audio: Samples float32 en [-1, 1] (ndarray o lista).
-
-        Returns:
-            True si se encoló; False si la cola estaba llena (clip descartado).
-        """
-        return self._enqueue(room_id, score, audio, _Bucket.MISSED)
-
-    def _enqueue(self, room_id: str, score: float, audio, bucket: "_Bucket") -> bool:
+    def submit(self, room_id: str, score: float, audio, accepted: bool = True, *, sources=None) -> bool:
+        """Copy an accepted/rejected wake with its inherited acquisition lineage."""
         try:
-            clip = np.asarray(audio, dtype=np.float32)
-            self._queue.put_nowait(
-                (room_id, float(score), clip, time.time(), bucket)
-            )
-            return True
-        except queue.Full:
-            return False
-        except Exception as e:  # jamás romper el audio callback
-            logger.warning(f"[WakeClipWriter] submit failed: {e}")
-            return False
+            return self._enqueue(room_id, score, audio, ClipBucket.ACCEPTED if accepted else ClipBucket.REJECTED, sources)
+        finally:
+            audio = None
 
-    def stop(self, timeout: float = 2.0) -> None:
-        """Drenar la cola y terminar el worker. Idempotente."""
+    def submit_missed(self, room_id: str, score: float, audio, *, sources=None) -> bool:
+        """Copy a textual wake's original sources without minting a new capture."""
+        try:
+            return self._enqueue(room_id, score, audio, ClipBucket.MISSED, sources)
+        finally:
+            audio = None
+
+    def _enqueue(self, room_id, score, audio, bucket, sources):
+        clip = None
+        admitted = False
+        try:
+            sources = PRODUCER_CONTEXT.get().sources if sources is None else sources
+            if type(sources) is not tuple or not 1 <= len(sources) <= 64 or not self._live(sources):
+                return False
+            if type(room_id) is not str or len(room_id) > 200 or not -1 <= float(score) <= 1 or not math.isfinite(float(score)):
+                return False
+            if not 0 < len(audio) <= self._sample_rate * 30:
+                return False
+            clip = np.asarray(audio, dtype=np.float32).copy()
+            if clip.ndim != 1 or not self._live(sources) or not self._lock.acquire(blocking=False):
+                return False
+            try:
+                if not self._live(sources) or len(self._queue) >= self._capacity:
+                    return False
+                self._queue.append(ClipJob(str(uuid4()), room_id, float(score), clip, sources, bucket))
+                self._wake.set()
+                admitted = True
+                return True
+            finally:
+                self._lock.release()
+        except Exception:
+            # Submission may come from a device callback; logging is disk I/O.
+            self._errors += 1
+            return False
+        finally:
+            if not admitted:
+                self._dropped += 1
+            audio = clip = None
+
+    def prune(self) -> None:
+        """Drop expired/revoked queued waves without waiting for a blocked encoder."""
+        busy = self._busy
+        if busy is not None:
+            self._job_live(busy)
+        if self._lock.acquire(blocking=False):
+            try:
+                before = len(self._queue)
+                self._queue = deque(j for j in self._queue if self._job_live(j))
+                self._dropped += before - len(self._queue)
+            finally:
+                self._lock.release()
+
+    def _run(self):
+        job = None
+        try:
+            while self._running:
+                with self._lock:
+                    job = self._queue.popleft() if self._queue else None
+                    self._busy = job
+                if job is None:
+                    self._wake.wait(.05)
+                    self._wake.clear()
+                    continue
+                failure = None
+                try:
+                    if self._job_live(job):
+                        self._write(job)
+                    else:
+                        self._dropped += 1
+                except Exception as error:
+                    self._errors += 1
+                    failure = type(error).__name__
+                finally:
+                    job = self._busy = None
+                # Drop the exception/traceback and raw job before a diagnostic
+                # sink can block. Logging owns only a fixed message and type.
+                if failure is not None:
+                    logger.warning('Wake clip write deferred: %s', failure)
+        finally:
+            job = self._busy = None
+            self._queue.clear()
+
+    def _encode(self, job):
+        pcm = file = None
+        try:
+            pcm = (np.clip(job.audio, -1., 1.) * 32767.).astype(np.int16)
+            with clip_directory(self._target.root, create=True) as directory:
+                descriptor = os.open(job.id + '.part', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                     0o600, dir_fd=directory)
+                with os.fdopen(descriptor, 'wb') as file:
+                    with wave.open(file, 'wb') as wav:
+                        wav.setnchannels(1)
+                        wav.setsampwidth(2)
+                        wav.setframerate(self._sample_rate)
+                        wav.writeframes(pcm.tobytes())
+                    file.flush()
+                    os.fsync(file.fileno())
+        finally:
+            job = pcm = file = None
+
+    def _write(self, job):
+        published = False
+        try:
+            self._store.reserve(self._target, job)
+            if not self._job_live(job):
+                return
+            self._encode(job)
+            self._store.publish(self._target, job, lambda: self._job_live(job))
+            published = True
+            self._written += 1
+            self._store.rotate(self._target, job.bucket, self._caps[job.bucket])
+        finally:
+            if not published:
+                self._store.discard(self._target, job.id)
+            job = None
+
+    def is_writing(self, identifier: str) -> bool:
+        """Report only whether a locator still has a real native writer."""
+        busy = self._busy
+        return busy is not None and busy.id == identifier
+
+    def _retire(self):
         self._running = False
+        self._dropped += len(self._queue)
+        self._queue = deque()
+        self._wake.set()
+
+    def stop(self, timeout: float = 2.) -> None:
+        """Synchronous adapter for native callers; timeout never means thread exit."""
+        self._retire()
+        self._worker.join(timeout=timeout)
         if self._worker.is_alive():
-            self._worker.join(timeout=timeout)
+            raise WorkCloseTimeout('wake_clip_writer_still_running')
 
-    # ---- worker ----
+    def begin_close(self) -> asyncio.Task:
+        """Reject input, discard queued waves and retain the actual native join."""
+        self._retire()
+        if self._closing is None:
+            self._closing = asyncio.create_task(self._store._work.run(self._worker.join))
+        return self._closing
 
-    def _run(self) -> None:
-        while self._running or not self._queue.empty():
-            try:
-                item = self._queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            try:
-                self._write(*item)
-            except Exception as e:
-                logger.warning(f"[WakeClipWriter] write failed: {e}")
+    async def aclose(self) -> None:
+        """Bound observation while retaining the writer under the shared lease."""
+        try:
+            async with asyncio.timeout(self._close_timeout_s):
+                await asyncio.shield(self.begin_close())
+        except TimeoutError:
+            raise WorkCloseTimeout('wake_clip_writer_still_running') from None
 
-    def _write(
-        self, room_id: str, score: float, clip: np.ndarray, ts: float,
-        bucket: "_Bucket" = _Bucket.ACCEPTED,
-    ) -> None:
-        target = self._dir / bucket.value
-        target.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(ts))
-        millis = int((ts % 1) * 1000)
-        name = f"{stamp}-{millis:03d}_{room_id}_{score:.2f}.wav"
-        pcm = (np.clip(clip, -1.0, 1.0) * 32767.0).astype(np.int16)
-        with wave.open(str(target / name), "wb") as f:
-            f.setnchannels(1)
-            f.setsampwidth(2)
-            f.setframerate(self._sample_rate)
-            f.writeframes(pcm.tobytes())
-        self._rotate(target, self._caps[bucket])
-
-    def _rotate(self, target: Path, cap: int) -> None:
-        files = sorted(target.glob("*.wav"))
-        excess = len(files) - cap
-        for path in files[:max(0, excess)]:
-            try:
-                path.unlink()
-            except OSError:
-                pass
+    def resource_status(self) -> dict:
+        """Report capacity and ownership without sources, rooms, handles or paths."""
+        return {'closed': not self._running, 'queued': len(self._queue), 'capacity': self._capacity,
+                'native_running': self._worker.is_alive(), 'busy': self._busy is not None,
+                'written': self._written, 'dropped': self._dropped, 'errors': self._errors}

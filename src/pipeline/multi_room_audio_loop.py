@@ -24,6 +24,7 @@ import sounddevice as sd
 
 from src.pipeline.ambient_guard import AmbientGuard, GuardState, classify_outcome
 from src.pipeline.command_event import CapturedTranscript, CommandEvent, TranscriptSource
+from src.wakeword.wake_clip_writer import WakeClipWriter
 from src.pipeline.capture_room import CaptureRoom
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.memory.producer_context import model_admission, producer_context
@@ -555,6 +556,8 @@ class MultiRoomAudioLoop:
                 task.cancel()
             drains = [room.begin_close() for room in self._capture_rooms.values()]
             drains.append(self._capture_native.begin_close())
+            if isinstance(self._wake_clip_writer, WakeClipWriter):
+                drains.append(self._wake_clip_writer.begin_close())
             async def finish():
                 await asyncio.gather(*controllers, *drains, return_exceptions=True)
             self._closing = asyncio.create_task(finish())
@@ -1423,7 +1426,7 @@ class MultiRoomAudioLoop:
                 await asyncio.to_thread(ctrl.stop)
             except Exception:
                 pass
-        if self._wake_clip_writer is not None:
+        if self._wake_clip_writer is not None and not isinstance(self._wake_clip_writer, WakeClipWriter):
             try:
                 # stop() drena la cola y hace thread.join — síncrono.
                 await asyncio.to_thread(self._wake_clip_writer.stop)

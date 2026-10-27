@@ -1,174 +1,125 @@
-"""
-Tests for WakeClipWriter — persistencia de clips de audio de cada wake
-disparado, para construir el dataset de re-entrenamiento de nexa.onnx
-(hard negatives de TV + positivos far-field reales).
+"""WAV format, independent bucket rotation and bounded sourced collection."""
 
-Restricción de diseño: submit() corre en el audio callback thread →
-JAMÁS bloquea ni lanza; el I/O vive en un worker thread propio.
-"""
-import time
+import asyncio
+from pathlib import Path
+import threading
+from uuid import UUID
 import wave
 
 import numpy as np
 import pytest
 
-from src.wakeword.wake_clip_writer import WakeClipWriter
+from src.memory.producer_context import producer_context
+from tests.mocks.wake_clips import graph, until
+
+pytestmark = pytest.mark.asyncio
 
 
-def _wait_for(predicate, timeout=2.0):
-    """Espera activa corta para el worker thread (tests solamente)."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.02)
-    return predicate()
+async def test_writes_valid_wav_with_opaque_name_and_original_lineage(tmp_path):
+    async with graph(tmp_path) as g:
+        source = g.source()
+        audio = np.sin(np.linspace(0, 440*2*np.pi, 16000)).astype(np.float32)*.5
+        with producer_context('synthetic-room', (source,)):
+            assert g.writer.submit('synthetic-room', .61, audio)
+        await g.idle()
+        path, = g.files()
+        assert str(UUID(path.stem)) == path.stem
+        assert 'synthetic-room' not in path.name
+        with wave.open(str(path), 'rb') as wav:
+            assert (wav.getnchannels(), wav.getframerate(), wav.getsampwidth(), wav.getnframes()) == (1,16000,2,16000)
+        row, = await g.rows()
+        assert row['room_id'] == 'synthetic-room' and row['score'] == .61
+        assert row['captured_at'] == source.captured_at and row['expires_at'] == source.expires_at
+        assert path.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.fixture
-def writer(tmp_path):
-    w = WakeClipWriter(tmp_path / "captured", sample_rate=16000, max_files=5)
-    yield w
-    w.stop()
+async def test_clips_audio_out_of_range(tmp_path):
+    async with graph(tmp_path) as g:
+        assert g.writer.submit('synthetic-room', .9, np.full(1600, 1.7, dtype=np.float32), sources=(g.source(),))
+        await g.idle()
+        with wave.open(str(g.files()[0]), 'rb') as wav:
+            assert np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16).max() == 32767
 
 
-class TestWriteClip:
-    def test_writes_valid_wav(self, writer, tmp_path):
-        audio = np.sin(np.linspace(0, 440 * 2 * np.pi, 16000)).astype(np.float32) * 0.5
-        assert writer.submit("escritorio", 0.61, audio) is True
-        out_dir = tmp_path / "captured"
-        assert _wait_for(lambda: len(list(out_dir.glob("*.wav"))) == 1)
-        path = next(out_dir.glob("*.wav"))
-        # Nombre: timestamp_room_score.wav
-        assert "_escritorio_" in path.name
-        assert "_0.61.wav" in path.name
-        with wave.open(str(path), "rb") as f:
-            assert f.getnchannels() == 1
-            assert f.getframerate() == 16000
-            assert f.getsampwidth() == 2  # int16
-            frames = f.getnframes()
-        assert frames == 16000
-
-    def test_clips_audio_out_of_range(self, writer, tmp_path):
-        # Audio fuera de [-1, 1] no debe overflow-ear el int16.
-        audio = np.full(1600, 1.7, dtype=np.float32)
-        writer.submit("living", 0.9, audio)
-        out_dir = tmp_path / "captured"
-        assert _wait_for(lambda: len(list(out_dir.glob("*.wav"))) == 1)
-        with wave.open(str(next(out_dir.glob("*.wav"))), "rb") as f:
-            data = np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16)
-        assert data.max() == 32767  # clippeado, no wrapped a negativo
-
-    def test_accepts_plain_list(self, writer, tmp_path):
-        # rs.audio_buffer es una lista de floats, no ndarray.
-        writer.submit("escritorio", 0.5, [0.0] * 1600)
-        assert _wait_for(
-            lambda: len(list((tmp_path / "captured").glob("*.wav"))) == 1
-        )
+async def test_accepts_plain_list(tmp_path):
+    async with graph(tmp_path) as g:
+        assert g.writer.submit('synthetic-room', .5, [0.]*1600, sources=(g.source(),))
+        await g.idle()
+        assert len(g.files()) == 1
 
 
-class TestRotation:
-    def test_max_files_enforced_oldest_deleted(self, writer, tmp_path):
-        out_dir = tmp_path / "captured"
-        audio = np.zeros(160, dtype=np.float32)
-        for i in range(8):  # max_files=5; queue_size=8 default → nunca se llena
-            # submit() descarta en silencio si la cola está llena (nunca
-            # bloquea: corre en el audio callback thread). Si esto da False,
-            # el test debe fallar en vez de seguir con un clip perdido.
-            assert writer.submit("escritorio", 0.40 + i / 100, audio) is True
-        # Drenar la cola y esperar a que el worker termine (join real) en vez
-        # de una barrera de espera basada en contar archivos: esa barrera no
-        # garantiza que la rotación de TODOS los clips ya haya corrido.
-        writer.stop(timeout=10.0)
-        # Los que quedan son los más nuevos (scores 0.43..0.47)
-        names = sorted(p.name for p in out_dir.glob("*.wav"))
-        assert len(names) == 5
-        assert all(f"_0.4{d}.wav" in n for n, d in zip(names, range(3, 8)))
+async def test_rotation_keeps_newest_managed_clips_and_legacy_unchanged(tmp_path):
+    async with graph(tmp_path, max_files=5) as g:
+        legacy = Path(g.target.root)/'synthetic-legacy.wav'
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_bytes(b'synthetic legacy')
+        for i in range(8):
+            assert g.writer.submit('synthetic-room', .4+i/100, np.zeros(160), sources=(g.source(),))
+            await g.idle()
+        assert len(g.files()) == 5
+        assert [r['score'] for r in await g.rows()] == pytest.approx([.43,.44,.45,.46,.47])
+        assert legacy.read_bytes() == b'synthetic legacy'
 
 
-class TestRejectedClips:
-    def test_rejected_clip_goes_to_subdir(self, writer, tmp_path):
-        # Los wakes que el guard RECHAZA (STRICT/COOLDOWN) se guardan en
-        # rejected/ aparte: los 0.40-0.45 son comandos far-field reales que
-        # STRICT mata (positivos hoy perdidos) + hard-negatives de TV.
-        writer.submit("escritorio", 0.43, np.zeros(1600, dtype=np.float32),
-                      accepted=False)
-        rej = tmp_path / "captured" / "rejected"
-        assert _wait_for(lambda: rej.is_dir() and len(list(rej.glob("*.wav"))) == 1)
-        # no contamina el dir de aceptados (raíz)
-        assert list((tmp_path / "captured").glob("*.wav")) == []
+@pytest.mark.parametrize('bucket', ['accepted', 'rejected', 'missed'])
+async def test_bucket_and_missing_score_are_metadata_not_file_identity(tmp_path, bucket):
+    async with graph(tmp_path) as g:
+        if bucket == 'missed':
+            assert g.writer.submit_missed('synthetic-room', -1., np.zeros(1600), sources=(g.source(),))
+        else:
+            assert g.writer.submit('synthetic-room', .43, np.zeros(1600), accepted=bucket=='accepted', sources=(g.source(),))
+        await g.idle()
+        row, = await g.rows()
+        assert row['bucket'] == bucket
+        assert row['score'] == (-1. if bucket == 'missed' else .43)
+        assert len(g.files()) == 1
 
-    def test_accepted_default_stays_in_root(self, writer, tmp_path):
-        # accepted=True (default) preserva el comportamiento previo: dir raíz.
-        writer.submit("escritorio", 0.61, np.zeros(1600, dtype=np.float32))
-        out = tmp_path / "captured"
-        assert _wait_for(lambda: len(list(out.glob("*.wav"))) == 1)
-        rej = out / "rejected"
-        assert not rej.exists() or list(rej.glob("*.wav")) == []
 
-    def test_rejected_rotation_independent(self, tmp_path):
-        # rejected/ rota con su propio tope (max_rejected_files), sin tocar los
-        # aceptados (que son raros y valiosos — no deben purgarse por el flujo
-        # de rechazos, mucho más voluminoso).
-        w = WakeClipWriter(tmp_path / "captured", max_files=5, max_rejected_files=3)
+@pytest.mark.parametrize('bucket', ['rejected', 'missed'])
+async def test_rotation_is_independent_by_bucket(tmp_path, bucket):
+    async with graph(tmp_path, max_files=5, max_rejected_files=3, max_missed_files=3) as g:
+        assert g.writer.submit('synthetic-room', .8, np.zeros(160), sources=(g.source(),))
+        await g.idle()
+        for i in range(6):
+            if bucket == 'missed':
+                assert g.writer.submit_missed('synthetic-room', -1., np.zeros(160), sources=(g.source(),))
+            else:
+                assert g.writer.submit('synthetic-room', .4+i/100, np.zeros(160), accepted=False, sources=(g.source(),))
+            await g.idle()
+        rows = await g.rows()
+        assert sum(r['bucket'] == bucket for r in rows) == 3
+        assert sum(r['bucket'] == 'accepted' for r in rows) == 1
+
+
+async def test_stop_is_idempotent_and_rejects_later_input(tmp_path):
+    async with graph(tmp_path) as g:
+        await g.writer.aclose()
+        await g.writer.aclose()
+        assert not g.writer.resource_status()['native_running']
+        assert not g.writer.submit('synthetic-room', .5, np.zeros(160), sources=(g.source(),))
+
+
+async def test_full_queue_never_blocks_and_does_not_alias_caller_waveform(tmp_path, monkeypatch):
+    async with graph(tmp_path, queue_size=1) as g:
+        entered, release = threading.Event(), threading.Event()
+        encode = g.writer._encode
+        def blocked(job):
+            entered.set()
+            assert release.wait(3)
+            encode(job)
+        monkeypatch.setattr(g.writer, '_encode', blocked)
         try:
-            for i in range(6):
-                w.submit("escritorio", 0.40 + i / 100,
-                         np.zeros(160, dtype=np.float32), accepted=False)
-                time.sleep(0.01)  # timestamps distintos → rotación determinística
-            rej = tmp_path / "captured" / "rejected"
-            assert _wait_for(lambda: len(list(rej.glob("*.wav"))) == 3, timeout=3.0)
+            original = np.ones(160, dtype=np.float32)*.5
+            assert g.writer.submit('synthetic-room', .5, original, sources=(g.source(),))
+            await until(entered.is_set)
+            original[:] = 0
+            assert g.writer.submit('synthetic-room', .6, np.zeros(160), sources=(g.source(),))
+            assert not g.writer.submit('synthetic-room', .7, np.zeros(160), sources=(g.source(),))
+            assert g.writer.resource_status()['queued'] == 1
+            assert await asyncio.wait_for(asyncio.sleep(0, result=True), .1)
         finally:
-            w.stop()
-
-
-class TestMissedClips:
-    def test_missed_clip_goes_to_subdir(self, writer, tmp_path):
-        # El wake textual disparó pero el acústico NO — falso negativo real,
-        # con el audio en la mano (spec 2026-07-25 Etapa A). Bucket propio,
-        # simétrico a rejected/, para no mezclarse con positivos ni negativos.
-        writer.submit_missed("escritorio", -1.0, np.zeros(1600, dtype=np.float32))
-        missed = tmp_path / "captured" / "missed"
-        assert _wait_for(lambda: missed.is_dir() and len(list(missed.glob("*.wav"))) == 1)
-        # no contamina ni el dir de aceptados ni rejected/
-        assert list((tmp_path / "captured").glob("*.wav")) == []
-        assert not (tmp_path / "captured" / "rejected").exists()
-        # el sentinel -1.0 debe quedar visible en el nombre — un score real
-        # (0.00-1.00) ahí sería mentir sobre una medición que no existe.
-        assert "_-1.00.wav" in next(missed.glob("*.wav")).name
-
-    def test_missed_rotation_independent(self, tmp_path):
-        # missed/ rota con su propio tope (max_missed_files), sin tocar
-        # accepted/rejected — mismo patrón que TestRejectedClips.
-        w = WakeClipWriter(tmp_path / "captured", max_files=5,
-                            max_rejected_files=5, max_missed_files=3)
-        try:
-            for i in range(6):
-                w.submit_missed("escritorio", -1.0, np.zeros(160, dtype=np.float32))
-                time.sleep(0.01)  # timestamps distintos → rotación determinística
-            missed = tmp_path / "captured" / "missed"
-            assert _wait_for(lambda: len(list(missed.glob("*.wav"))) == 3, timeout=3.0)
-        finally:
-            w.stop()
-
-
-class TestNeverBlocks:
-    def test_submit_returns_false_when_queue_full(self, tmp_path):
-        w = WakeClipWriter(tmp_path / "c", queue_size=1)
-        try:
-            # Saturar: con cola de 1, el segundo/tercer submit inmediato puede
-            # caer con el worker ocupado — debe devolver False, jamás lanzar.
-            results = [
-                w.submit("r", 0.5, np.zeros(160000, dtype=np.float32))
-                for _ in range(50)
-            ]
-            assert False in results or True  # no lanzó — eso es lo que importa
-        finally:
-            w.stop()
-
-    def test_stop_is_idempotent_and_joins(self, tmp_path):
-        w = WakeClipWriter(tmp_path / "c")
-        w.submit("r", 0.5, np.zeros(160, dtype=np.float32))
-        w.stop()
-        w.stop()  # segunda llamada no lanza
-        assert not w._worker.is_alive()
+            release.set()
+            await g.idle()
+        row = (await g.rows())[0]
+        with wave.open(str(Path(g.target.root)/'policy_v1'/f"{row['id']}.wav"), 'rb') as wav:
+            assert np.frombuffer(wav.readframes(160), dtype=np.int16).max() > 16000
