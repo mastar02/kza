@@ -8,7 +8,7 @@ import threading
 from unittest.mock import patch
 
 from src.core.owned_work import WorkCloseTimeout
-from src.memory.long_term import LongTermMemory
+from src.memory.long_term import LongTermMemory, _invoke_memory
 from src.memory.privacy_services import PrivacyServices
 
 
@@ -58,10 +58,10 @@ async def exercise(mode: str, root: Path) -> dict:
                 return 'synthetic result'
 
             async def controlled(function, *args, **kwargs):
-                if function is operation:
+                if function is _invoke_memory and args[0].function is operation:
                     entered.set()
                     await gate
-                    return operation()
+                    return function(*args, **kwargs)
                 return await original(function, *args, **kwargs)
 
             with patch('asyncio.to_thread', controlled):
