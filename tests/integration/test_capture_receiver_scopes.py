@@ -312,3 +312,99 @@ async def test_revoked_result_does_not_stop_receiver_from_accepting_fresh_captur
         g.feed()
         await until(lambda: bool(received))
         assert received[0] != old[0] and old[0] not in received
+
+
+@pytest.mark.parametrize('transport', ['single', 'multi'])
+async def test_revoked_noncooperative_command_cannot_invoke_post_callback(tmp_path, monkeypatch, transport):
+    async with graph(tmp_path, monkeypatch, transport) as (g, room):
+        install_poll(room, monkeypatch)
+        entered, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        old, posted = [], []
+        async def command(event):
+            old.append(event.conversation_id)
+            entered.set()
+            try:
+                await asyncio.shield(release.wait())
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+            return {'text': 'synthetic private late result', 'success': True}
+        async def post(*args):
+            posted.append(True)
+        g.loop.on_command(command)
+        g.loop.on_post_command(post)
+        g.feed()
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            await g.privacy.acall(g.privacy.ledger.delete_conversation, old[0], ACTOR)
+            await asyncio.wait_for(cancelled.wait(), 3)
+        finally:
+            release.set()
+        dispatches = g.loop._dispatches if transport == 'single' else g.loop._dispatch_tasks
+        await until(lambda: not dispatches)
+        assert posted == []
+
+
+@pytest.mark.parametrize('failure', ['callback', 'revoked'])
+async def test_completed_transport_arguments_cannot_keep_rejected_raw_input(tmp_path, monkeypatch, failure):
+    async with multi_graph(tmp_path, controllers=False) as g:
+        room = g.loop._capture_rooms['synthetic-a']
+        source = g.privacy.source_for_capture(str(uuid4()), g.clock(), 'synthetic-auxiliary')
+        worker = room._work._worker
+        retired_arguments = []
+        async def retained_transport(function, *args, **kwargs):
+            result = await worker(function, *args, **kwargs)
+            retired_arguments.append(args)
+            return result
+        monkeypatch.setattr(room._work, '_worker', retained_transport)
+        def failed(value):
+            raise ValueError('synthetic private callback failure', value)
+        if failure == 'revoked':
+            await g.privacy.acall(g.privacy.ledger.delete_conversation, source.conversation_id, ACTOR)
+        audio = np.ones(1600, dtype=np.float32)
+        reference = ref(audio)
+        operation = asyncio.create_task(room.call(failed, audio, sources=(source,)))
+        del audio
+        with pytest.raises(RuntimeError) as retained:
+            await operation
+        assert retired_arguments and retained.value.__context__ is None
+        assert reference() is None
+        assert not room.snapshot_operations()
+
+
+async def test_cancel_before_auxiliary_admission_clears_box_without_touching_running_work(tmp_path):
+    import threading
+    async with multi_graph(tmp_path, controllers=False) as g:
+        room = g.loop._capture_rooms['synthetic-a']
+        first_source = g.privacy.source_for_capture(str(uuid4()), g.clock(), 'first')
+        other_source = g.privacy.source_for_capture(str(uuid4()), g.clock(), 'other')
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+        def hold():
+            entered.set()
+            assert release.wait(3)
+        first = asyncio.create_task(room.call(hold, sources=(first_source,)))
+        waiting = None
+        try:
+            await until(entered.is_set)
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+            await until(lambda: not room._controllers)
+            audio = np.ones(1600, dtype=np.float32)
+            reference = ref(audio)
+            waiting = asyncio.create_task(room.call(lambda value: calls.append(value), audio, sources=(other_source,)))
+            del audio
+            await until(lambda: len(room._controllers) == 1)
+            # It owns the lock, but the previous native call has not exited.
+            assert room._lock.locked() and room.conversation_busy(other_source.conversation_id)
+            waiting.cancel()
+            with pytest.raises(asyncio.CancelledError) as retained:
+                await waiting
+            await until(lambda: not room._controllers)
+            assert retained.value is not None and reference() is None and not calls
+            assert room.conversation_busy(first_source.conversation_id)
+            assert not room.conversation_busy(other_source.conversation_id)
+        finally:
+            release.set()
+            await until(lambda: not room.snapshot_operations())
+            await asyncio.gather(*(task for task in (first, waiting) if task is not None), return_exceptions=True)

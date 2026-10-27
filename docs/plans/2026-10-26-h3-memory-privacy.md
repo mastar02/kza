@@ -2073,6 +2073,19 @@ resetear una época conocida se marcaba como entrada desconocida y bloqueaba
 consultas ajenas. La reproducción en ambos transports falló: ahora el reset
 conserva su época; sólo adquirir paquetes nuevos introduce procedencia pendiente.
 
+La revisión posterior reprodujo un postprocesado tardío en multiroom: un callback
+que ignoraba la cancelación podía volver con éxito después de revocar su fuente.
+Se comprueba la procedencia al entrar y al volver del callback, antes de usar o
+reenviar el resultado; entrada única ya comprobaba esa segunda frontera.
+
+Una prueba existente detectó también una retención intermitente de argumentos.
+Aunque el worker devolvía un DTO, el transporte podía conservar su tupla después
+de completarse la función. Una reproducción determinista mantuvo viva esa tupla
+y confirmó ambos fallos, por excepción y por fuente revocada. Los argumentos
+auxiliares ahora viajan en una caja mutable que el worker vacía antes de devolver
+el resultado. Si la llamada no llegó a admitirse, el controlador retira esa caja;
+no modifica los argumentos de otra llamada que ya está ejecutándose.
+
 Esto cubre los handoffs de captura cruda y sus transcripciones. Siguen pendientes
 los buffers en reposo, callbacks de entrada, afinidad de resultados enriquecidos
 con memoria y el driver completo de `PRODUCERS`. No equivale a borrado global,

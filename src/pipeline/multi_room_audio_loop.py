@@ -27,7 +27,7 @@ from src.pipeline.command_event import CapturedTranscript, CommandEvent, Transcr
 from src.wakeword.wake_clip_writer import WakeClipWriter
 from src.pipeline.capture_room import CaptureRoom
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
-from src.memory.producer_context import model_admission, producer_context
+from src.memory.producer_context import PRODUCER_CONTEXT, model_admission, producer_context
 from src.memory.producer_scopes import ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated, run_private
 from src.wakeword.detector import WakeWordDetector
@@ -1922,11 +1922,14 @@ class MultiRoomAudioLoop:
         # gane la carrera de dedup desde el primer instante del dispatch.
         self._last_command_dispatch_ts[event.room_id] = time.monotonic()
         try:
+            self._require_dispatch_sources()
             if self._on_command_callback:
                 result = await self._on_command_callback(event)
             else:
                 logger.warning("No on_command callback registered")
                 result = {}
+
+            self._require_dispatch_sources()
 
             # Refrescar el ts tras el callback: ancla también la ventana de
             # dedup al momento de FINALIZACIÓN de comandos largos, no solo
@@ -1976,10 +1979,16 @@ class MultiRoomAudioLoop:
 
             if self._on_post_command_callback:
                 await self._on_post_command_callback(result, event)
+        except SourcesInvalidated:
+            pass
         except Exception as error:
             logger.error('Command dispatch failed: %s', type(error).__name__)
         finally:
             event = result = None
+
+    def _require_dispatch_sources(self):
+        if self._closed or self._privacy is not None and not self._privacy.sources_available(PRODUCER_CONTEXT.get().sources):
+            raise SourcesInvalidated('dispatch_sources_invalidated')
 
     async def _tracked_barge_in(self, rs: RoomStream, source) -> None:
         task = asyncio.current_task()

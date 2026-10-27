@@ -61,6 +61,22 @@ class _AuxiliaryResult:
     error: _AuxiliaryError | None = None
 
 
+@dataclass
+class _AuxiliaryCall:
+    """Mutable input indirection; transport tuples retain only the emptied box."""
+
+    function: Callable | None
+    args: tuple
+    sources: tuple[MemorySource, ...] | None
+    admitted: bool = False
+
+    def admit(self) -> None:
+        self.admitted = True
+
+    def clear(self) -> None:
+        self.function, self.args = None, ()
+
+
 class CaptureRoom:
     """Serialize wake, capture, snapshots and reset without blocking PortAudio.
 
@@ -152,7 +168,7 @@ class CaptureRoom:
         finally:
             self._source = self._oldest = self._last_packet = None
 
-    async def _call_locked(self, function, *args, sources=None):
+    async def _call_locked(self, function, *args, sources=None, on_admit=None):
         task = None
         try:
             if self._pending is not None:
@@ -162,6 +178,8 @@ class CaptureRoom:
             with producer_context(self.room_id, lineage):
                 task = asyncio.create_task(self._work.run(function, *args))
             self._pending = task
+            if on_admit is not None:
+                on_admit()
 
             def finished(done):
                 if self._pending is done:
@@ -171,7 +189,7 @@ class CaptureRoom:
             task.add_done_callback(finished)
             return await asyncio.shield(task)
         finally:
-            function = args = task = None
+            function = args = task = on_admit = None
 
     async def call(self, function: Callable, *args, sources: tuple[MemorySource, ...] | None = None) -> object:
         """Run finite state work; explicit lineage describes retained auxiliary inputs."""
@@ -203,30 +221,34 @@ class CaptureRoom:
         return task
 
     async def _call_owned(self, function, args, sources):
-        outcome = None
+        outcome = job = None
         try:
             async with self._lock:
                 if self._closed:
                     raise SourcesInvalidated('capture_closed')
-                outcome = await self._call_locked(self._invoke_auxiliary, function, args, sources,
-                                                  sources=sources or ())
+                job = _AuxiliaryCall(function, args, sources)
+                function = args = None
+                outcome = await self._call_locked(self._invoke_auxiliary, job,
+                                                  sources=sources or (), on_admit=job.admit)
                 if outcome.error is _AuxiliaryError.INVALIDATED:
                     raise SourcesInvalidated(outcome.error.value)
                 if outcome.error is not None:
                     raise RuntimeError(outcome.error.value)
                 return outcome.value
         finally:
-            function = args = outcome = None
+            if job is not None and not job.admitted:
+                job.clear()
+            function = args = outcome = job = None
 
-    def _invoke_auxiliary(self, function, args, sources):
+    def _invoke_auxiliary(self, job):
         # No exception crosses the executor: its transport frames also own
         # argument tuples even after the callback's raw locals are cleared.
         result = None
         try:
-            if self._closed or sources and self._privacy is not None and not self._privacy.sources_available(sources):
+            if self._closed or job.sources and self._privacy is not None and not self._privacy.sources_available(job.sources):
                 raise SourcesInvalidated('capture_auxiliary_invalidated')
-            result = function(*args)
-            if self._closed or sources and self._privacy is not None and not self._privacy.sources_available(sources):
+            result = job.function(*job.args)
+            if self._closed or job.sources and self._privacy is not None and not self._privacy.sources_available(job.sources):
                 raise SourcesInvalidated('capture_auxiliary_invalidated')
             return _AuxiliaryResult(result)
         except SourcesInvalidated:
@@ -234,7 +256,8 @@ class CaptureRoom:
         except Exception:
             return _AuxiliaryResult(error=_AuxiliaryError.FAILED)
         finally:
-            function = args = result = None
+            job.clear()
+            job = result = None
 
     def _advance(self, packets):
         event = None
