@@ -5,7 +5,7 @@ Registra todos los eventos de domotica para analisis de patrones.
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from contextvars import copy_context
+from contextvars import Context,copy_context
 from functools import partial
 import math
 import os
@@ -21,7 +21,7 @@ from enum import StrEnum
 from pathlib import Path
 import json
 
-from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.core.owned_work import ClosePhase,OwnedBlockingWork,WorkCloseTimeout,observe_native
 from src.analytics.event_storage import event_descriptor, event_sources
 from src.analytics.event_evidence import (
     EventDependency, PatternHistory, PatternInputs, event_target_id, project_pattern_event,
@@ -144,6 +144,7 @@ class EventLogger:
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='event-writer') if io_worker is None else None
         self._work = OwnedBlockingWork(worker=io_worker or self._offload)
         self._closing: asyncio.Task | None = None
+        self._close_phase = ClosePhase.IDLE
         self._maintenance: asyncio.Task | None = None
         self._maintenance_loop = None
         self._changed = asyncio.Event()
@@ -747,7 +748,7 @@ class EventLogger:
 
     async def _offload(self, function, *args, **kwargs):
         return await asyncio.get_running_loop().run_in_executor(self._executor,
-            copy_context().run, partial(function, *args, **kwargs))
+            copy_context().run, partial(observe_native,function, *args, **kwargs))
 
     async def alog(self, *args, **kwargs) -> Event:
         """Bound the caller's wait; a slow write retains native ownership."""
@@ -782,7 +783,7 @@ class EventLogger:
 
     def resource_status(self) -> dict:
         """Expose retained native work even after caller timeout/cancellation."""
-        return self._work.status()
+        return self._work.status() | {'close_phase':self._close_phase.value,'io':self._work.diagnostics()}
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """On-loop ownership snapshot; cancellation cannot hide native workers."""
@@ -795,12 +796,21 @@ class EventLogger:
             if self._maintenance is not None:
                 self._maintenance.cancel()
             async def finish():
+                self._close_phase = ClosePhase.MAINTENANCE
                 if self._maintenance is not None:
                     await asyncio.gather(self._maintenance, return_exceptions=True)
+                self._close_phase = ClosePhase.DRAIN
                 await drain
                 if self._executor is not None:
-                    await asyncio.to_thread(self._executor.shutdown, wait=True)
-            self._closing = asyncio.create_task(finish())
+                    self._close_phase = ClosePhase.EXECUTOR
+                    # Admission and submitted work have drained. Signal this
+                    # private pool and retain its actual thread exit without
+                    # borrowing a potentially saturated general executor.
+                    self._executor.shutdown(wait=False)
+                    while any(thread.is_alive() for thread in tuple(self._executor._threads)):
+                        await asyncio.sleep(.005)
+                self._close_phase = ClosePhase.COMPLETE
+            self._closing = asyncio.create_task(finish(),context=Context())
         return self._closing
 
     async def aclose(self) -> None:
@@ -809,5 +819,6 @@ class EventLogger:
         try:
             async with asyncio.timeout(1):
                 await asyncio.shield(closing)
-        except TimeoutError as error:
-            raise WorkCloseTimeout('event_resources_still_running') from error
+        except TimeoutError:
+            raise WorkCloseTimeout('event_resources_still_running',phase=self._close_phase,
+                diagnostics=self.resource_status()) from None

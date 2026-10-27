@@ -35,7 +35,8 @@ async def dispatch(owner, source):
         'origin', Priority.LOW, None, 2, memory_sources=(source,))
 
 
-async def test_independent_queue_worker_publishes_fact_sources_to_receiver_before_response(tmp_path, monkeypatch):
+@pytest.mark.parametrize('retained_close',[False,True])
+async def test_independent_queue_worker_publishes_fact_sources_to_receiver_before_response(tmp_path, monkeypatch, retained_close):
     hold = asyncio.Event()
     async with owner_graph(tmp_path, monkeypatch, parts=[event(''), hold, event('Respuesta completa.'), event(finish='stop')]) as (owner, _, memory, clock, endpoint, _, _, _):
         origin, fact = await stored(memory, clock)
@@ -43,6 +44,14 @@ async def test_independent_queue_worker_publishes_fact_sources_to_receiver_befor
         receiver = Receiver()
         scopes = ProducerScopes(receiver.snapshot)
         ready, finish = asyncio.Event(), asyncio.Event()
+        closing, release_close = asyncio.Event(), asyncio.Event()
+        original_close = endpoint.body.aclose
+        async def close():
+            closing.set()
+            if retained_close:
+                await release_close.wait()
+            await original_close()
+        monkeypatch.setattr(endpoint.body,'aclose',close)
         receipts = []
 
         async def consume():
@@ -62,8 +71,17 @@ async def test_independent_queue_worker_publishes_fact_sources_to_receiver_befor
             assert not scopes.busy(str(uuid4()), memory.ledger)
             await memory.acall(memory.ledger.delete_conversation, origin.conversation_id, REVIEWER)
             assert scopes.busy(origin.conversation_id, memory.ledger)
-            assert owner.conversation_busy(origin.conversation_id)
+            await asyncio.wait_for(closing.wait(),2)
+            if retained_close:
+                assert owner.conversation_busy(origin.conversation_id)
+                assert not endpoint.body.closed
+            else:
+                await until(lambda: owner.resource_status()['source_scopes']['scopes']==0)
+                assert not owner.conversation_busy(origin.conversation_id)
+                assert endpoint.body.closed
+            release_close.set()
             hold.set()
+            release_close.set()
             await asyncio.wait_for(ready.wait(), 2)
         finally:
             hold.set()
