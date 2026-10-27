@@ -59,6 +59,16 @@ class CaptureScopes:
         self._ingress = {}
         self._ingress_authority = object()
         self._lock = threading.Lock()
+        ledger.add_revocation_observer(self._retire_conversations)
+
+    def _retire_conversations(self, conversations):
+        # Called on the authority worker, never on an input callback. Retire
+        # before swapping: a racing reader may lose input, never regain consent.
+        with self._lock:
+            for key, ingress in self._ingress.items():
+                if ingress.current.conversation_id in conversations:
+                    ingress.current.retired = True
+                    ingress.current = self._new_epoch(key)
 
     def _new_epoch(self, key):
         return CaptureEpoch(key[1], key[0], self.ledger.clock()+48*3600, authority=self._ingress_authority)

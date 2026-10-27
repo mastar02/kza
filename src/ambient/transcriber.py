@@ -74,7 +74,8 @@ class AmbientTranscriber:
             privacy.require_available()
             if store.source_policy is not privacy.ledger:
                 raise ValueError("ambient_authority_mismatch")
-            tap.bind_ingress(privacy.scopes, rooms)
+            if tap is not None:
+                tap.bind_ingress(privacy.scopes, rooms)
         self._native = OwnedBlockingWork(close_timeout_s=close_timeout_s)
         self._close_timeout_s = close_timeout_s
         self._closed = False

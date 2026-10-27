@@ -335,3 +335,63 @@ async def test_ambient_native_waiter_keeps_its_admission_after_tap_drain(tmp_pat
                     await consuming
             assert not calls
             assert not state.status()['state_retained']
+
+
+@pytest.mark.parametrize('transport', ['single', 'multi'])
+@pytest.mark.parametrize('outcome', ['commit', 'rollback'])
+async def test_revocation_retires_old_admission_before_commit_and_admits_fresh_input(tmp_path, monkeypatch, transport, outcome):
+    async with graph(tmp_path, monkeypatch, transport) as (g, room):
+        invoke(g, transport, np.ones(1280, dtype=np.float32))
+        await room.step()
+        source = room.source
+        audio = HeldInput('clock')
+        commit_entered, commit_release = threading.Event(), threading.Event()
+        connection = g.privacy.ledger._db
+
+        class HeldCommit:
+            def __getattr__(self, name):
+                return getattr(connection, name)
+
+            def commit(self):
+                commit_entered.set()
+                assert commit_release.wait(3)
+                if outcome == 'rollback':
+                    raise OSError('synthetic_commit_failure')
+                connection.commit()
+
+        def delayed_clock():
+            audio.wait('clock')
+            return g.clock.now
+
+        monkeypatch.setattr(g.loop, '_clock' if transport == 'single' else '_microphone_wall_clock', delayed_clock)
+        g.privacy.ledger._db = HeldCommit()
+        pushing = asyncio.create_task(asyncio.to_thread(invoke, g, transport, audio))
+        deleting = None
+        try:
+            await until(audio.entered.is_set)
+            deleting = asyncio.create_task(g.privacy.acall(
+                g.privacy.ledger.delete_conversation, source.conversation_id, ACTOR))
+            await until(commit_entered.is_set)
+            assert g.privacy.ledger.conversation_revoked(source.conversation_id)
+            g.clock.now += 1
+            audio.release.set()
+            await pushing
+            invoke(g, transport, np.full(1280, .25, dtype=np.float32))
+            await room.step()
+            wake = g.wake if transport == 'single' else g.wakes['synthetic-a']
+            assert len(wake.history) == 1 and np.allclose(wake.history[0], .25)
+            assert room.source.conversation_id != source.conversation_id
+        finally:
+            audio.release.set()
+            commit_release.set()
+            await pushing
+            try:
+                if deleting is not None:
+                    if outcome == 'rollback':
+                        with pytest.raises(OSError, match='synthetic_commit_failure'):
+                            await deleting
+                    else:
+                        await deleting
+            finally:
+                g.privacy.ledger._db = connection
+        assert g.privacy.sources_available((source,)) == (outcome == 'rollback')

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from uuid import UUID
+from weakref import WeakMethod
 
 from src.memory.erasure_journal import ERASURE_SCHEMA, ErasureJournal
 from src.memory.index_deletions import INDEX_DELETION_SCHEMA, IndexDeletionQueue
@@ -213,8 +214,23 @@ class FactLedger:
         self._pending_fact_ids: frozenset[str] = frozenset()
         self._pending_conversations: frozenset[str] = frozenset()
         self._authority_version = 0
+        self._revocation_observers: list[WeakMethod] = []
         self.erasures = ErasureJournal(self)
         self.index_deletions = IndexDeletionQueue(self)
+
+    def add_revocation_observer(self, callback: Callable[[frozenset[str]], None]) -> None:
+        """Register weak metadata publication before revocation commit releases the GIL."""
+        with self._lock:
+            self._revocation_observers = [ref for ref in self._revocation_observers if ref() is not None]
+            self._revocation_observers.append(WeakMethod(callback))
+
+    def _publish_revocation_admission(self):
+        if not self._pending_conversations:
+            return
+        for reference in tuple(self._revocation_observers):
+            callback = reference()
+            if callback is not None:
+                callback(self._pending_conversations)
 
     def initialize(self) -> None:
         """Create the private ledger without importing legacy documents."""
@@ -381,6 +397,7 @@ class FactLedger:
                         if self._fact_receipts.get(key) != receipts.get(key))
                     self._pending_conversations = deleted - self._deleted_conversations
                     self._pending_deleted_times = {key: deleted_times[key] for key in self._pending_conversations}
+                    self._publish_revocation_admission()
                 self._db.commit()
                 if changed:
                     self._fact_receipts = receipts
