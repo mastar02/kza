@@ -1,0 +1,168 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "937016d85e1223d746593e4a6c10572aaf767d26",
+  "tested_runtime_source_tree": "a5781c12f26d493d494525cf4e5a3538fbef826e",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 finite independent queue cycles and request scopes, metadata relay to admitted response receivers before prompt future delivery, derived source guards in both capture transports, and retirement of local selected DTOs on generation failures. Does not complete PRODUCERS/journal, idle input buffers, legacy native producers, all diagnostics/provider buffers or the integrated release.",
+  "new_cases_total": 13,
+  "new_integration_cases": [
+    "test_independent_queue_worker_publishes_fact_sources_to_receiver_before_response",
+    "test_unresolved_native_read_keeps_worker_and_receiver_scopes_after_queue_cycle_exits[cancel]",
+    "test_unresolved_native_read_keeps_worker_and_receiver_scopes_after_queue_cycle_exits[revoke]",
+    "test_idle_permanent_queue_controller_retains_no_completed_request",
+    "test_real_voice_result_cannot_postprocess_after_fact_revocation[False-single]",
+    "test_real_voice_result_cannot_postprocess_after_fact_revocation[False-multi]",
+    "test_real_voice_result_cannot_postprocess_after_fact_revocation[True-single]",
+    "test_real_voice_result_cannot_postprocess_after_fact_revocation[True-multi]",
+    "test_native_context_handoff_enriches_receiver_before_worker_resumes",
+    "test_scope_admission_failure_is_terminal_and_does_not_hang_the_waiter",
+    "test_queue_rejects_a_receiver_that_is_not_metadata",
+    "test_failed_generation_retires_selected_context_without_waiting_for_gc[provider]",
+    "test_failed_generation_retires_selected_context_without_waiting_for_gc[incomplete]"
+  ],
+  "full_suite": {
+    "accepted": true,
+    "collected": 5264,
+    "passed": 5263,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 221.484,
+    "summary": "========= 5263 passed, 1 xfailed, 29882 warnings in 221.56s (0:03:41) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-queue-affinity-accepted-full.xml",
+    "log": "/tmp/kza-queue-affinity-accepted-full.log",
+    "xml": "/tmp/kza-queue-affinity-accepted-full.xml"
+  },
+  "focused_suites": [
+    {
+      "passed": 498,
+      "failed": 0,
+      "runtime_s": 18.41,
+      "log": "/tmp/kza-queue-affinity-final-focused.log"
+    },
+    {
+      "passed": 526,
+      "failed": 0,
+      "runtime_s": 21.79,
+      "log": "/tmp/kza-queue-affinity-accepted-focused.log"
+    }
+  ],
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "scope": "src/, tests/, scripts/smart_automations.py, scripts/train_assistant.py, scripts/stage_legacy_memory.py"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-queue-affinity-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-queue-affinity-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-queue-affinity-dashboard.log"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "937016d85e1223d746593e4a6c10572aaf767d26",
+    "artifact": "/tmp/kza-queue-affinity-runtime-j_jl_g_7/runtime.tar.gz",
+    "verified_hashes": 321,
+    "runtime_s": 0.8139226029161364,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "hashes": 321,
+      "real_sqlite_chroma_memory_queue_generation": true,
+      "synthetic_embeddings_and_async_provider": true,
+      "receiver_semantic_lineage_before_response": true,
+      "revoked_fact_origin_blocks_worker_and_receiver": true,
+      "idle_controller_has_no_request_local": true,
+      "provider_failure_retires_prompt_dto_without_gc": true,
+      "native_read_keeps_both_scopes_and_writer_lease_after_cancel": true,
+      "final_scopes": 0,
+      "writer_lease_released": true,
+      "full_main_hardware_or_producers_journal_acceptance": false
+    },
+    "report": "/tmp/kza-queue-affinity-runtime-report.json",
+    "smoke_script": "/tmp/kza-queue-affinity-runtime-smoke.py",
+    "smoke_script_sha256": "ae23d6e5c8251ed20f906fe7495c533636fb22036df93d9acb1dcbcec070d76d",
+    "build_script": "/tmp/kza-build-queue-affinity-runtime.py",
+    "build_script_sha256": "34e25cc5a840324ada3a673397780e65225d7b7b2b413a3ea270a25cf71ec135",
+    "sources_packaged": false,
+    "household_data_packaged": false,
+    "notes": "Actual SQLite, Chroma and MemoryManager/LongTermMemory, finite queue and GenerationStream. Synthetic local embeddings and async provider. No physical input/output, full main or complete journal acceptance."
+  },
+  "development_findings": {
+    "initial_full_suite": {
+      "accepted": false,
+      "tested_commit": "93d5e352cafe4b05dc3031bf2897d297d332e3ba",
+      "passed": 5262,
+      "failed": 1,
+      "xfailed": 1,
+      "runtime_s": 222.45,
+      "log": "/tmp/kza-queue-affinity-initial-full.log",
+      "xml": "/tmp/kza-queue-affinity-initial-full.xml",
+      "description": "The pre-existing index maintenance test observed the current target physically empty before its separately committed finish receipt; pending_index_cleanup was still 2 rather than 1.",
+      "correction": "Wait for the current target-specific durable pending count to reach zero, then assert that the historical target is still physically blocked and that aggregate pending cleanup is one. Retain the original historical gate and three-second bounds; no application change."
+    },
+    "generation_failure_dto_retention": {
+      "accepted": false,
+      "failed": 2,
+      "passed": 0,
+      "deselected": 11,
+      "runtime_s": 1.14,
+      "log": "/tmp/kza-queue-affinity-failure-retirement-reproduction.log",
+      "description": "Provider and truncated-response errors kept selected memory PromptContext DTOs reachable after the finite request scope finished, through failed generation task tracebacks.",
+      "correction": "Clear selected DTOs, prompt/partial parts and child task/closure/snapshot links on every finite coroutine exit. Re-emit external cancellation outside the handler after child cleanup. No forced GC."
+    },
+    "expanded_draft_zone_fixture": {
+      "accepted": false,
+      "failed": 1,
+      "passed": 495,
+      "runtime_s": 21.35,
+      "log": "/tmp/kza-queue-affinity-expanded-focused.log",
+      "description": "The legacy multiroom voice fixture selected synthetic-a, which was absent from its response ZoneManager. Audio delivery correctly failed before the intended callback assertion.",
+      "correction": "Add that synthetic zone to the real test ZoneManager; preserve voice delivery and the actual guard boundary. No production/config change or deadline widening."
+    }
+  },
+  "bounds": {
+    "native_memory_capacity": 8,
+    "new_orchestrator_scope_capacity": 16,
+    "existing_capture_capacities_or_runtime_limits_widened": false,
+    "gc_forced_disabled_or_frozen": false,
+    "integrated_gc_hardware_acceptance": false
+  },
+  "preserved_boundaries": {
+    "real_household_data_read_or_modified": false,
+    "private_quarantine_copy_modified": false,
+    "legacy_unsourced_facts_automatically_deleted": false,
+    "production_changed_or_restarted": false,
+    "new_dependencies_or_gpu_reassignment": false,
+    "full_main_or_hardware_acceptance": false,
+    "producers_journal_complete": false,
+    "global_erasure_claimed": false,
+    "release_published": false
+  },
+  "remaining_scope": [
+    "Integrate every real producer and actual input callback/idle buffer lifetime into PRODUCERS with exact journal ownership, leased recovery and complete close ordering. Orchestrator source scopes alone are not a global erasure receipt.",
+    "Audit remaining consumers, legacy synchronous generation/native work and other provider/diagnostic buffers. Clearing local coroutine DTOs does not prove all third-party raw text or arbitrary exception retirement.",
+    "Complete diagnostics/JSONL/Logstash/aiosqlite, STREAMS/frontend and VOICES participants, ambient pause versus total mute, acoustic retention and authenticated voice grouping/review/calibration.",
+    "Keep 870 unsourced facts quarantined for manual review; complete snapshot/backup lifecycle, remaining migration copies, live-index rebuild and rollback preserving tombstones.",
+    "Verify selected HA effects/kitchen switch mapping, physical audio, H4 dependency/resource and instrumented GC acceptance, H5 routines/timers/reminders/local alerts and one H6 integrated release.",
+    "The earlier 495.68 ms instrumented GC pause is not remeasured or accepted by this uninstrumented suite or synthetic compiled smoke."
+  ]
+}

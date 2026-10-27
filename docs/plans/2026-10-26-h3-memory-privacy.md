@@ -2169,6 +2169,63 @@ de efectos posteriores a la devolución del router. También siguen abiertos
 los buffers en reposo, los callbacks de entrada y la conexión completa de
 `PRODUCERS` al journal. No se habilita el borrado global ni se publica una release.
 
+## Cola independiente y entrega de resultados derivados — 27 de octubre
+
+El worker de orquestación ahora procesa cada ciclo en una tarea finita y cada
+petición en un scope propio. El controlador permanente conserva sólo la tarea
+del ciclo, sin una última petición en sus variables locales. Esperar en una
+cola vacía no introduce procedencia desconocida. El dueño expone las tareas
+reales y el estado de sus scopes, incluido el de lecturas nativas que siguen
+ejecutándose después de cancelar la generación.
+
+Al encolar desde un productor, se transmite únicamente su receptor de
+metadatos. El scope nuevo incorpora fuentes seleccionadas tanto a su propio
+registro como a ese receptor. Las reservas de lectores se conservan en ambos
+hasta el callback de finalización nativa. Así, el contexto semántico queda
+vinculado antes de que el worker reciba el DTO o despierte al solicitante,
+incluido el contexto histórico seleccionado antes de lanzar la generación.
+El receptor no concede autoridad ni conserva texto, funciones, resultados o
+tareas. Un receptor de otro tipo se rechaza al construir la petición.
+
+El despacho de entrada única y multiroom comprueba ahora las fuentes del scope
+actual para vigilar la respuesta y permitir su postprocesado. Revocar un hecho
+de memoria invalida la respuesta aunque la captura actual siga autorizada.
+Los cuatro recorridos reales de prueba —ambas entradas, con y sin
+orquestador— impiden el postprocesado de una respuesta cuyo callback ignoró
+la cancelación. El solicitante lee el resultado de la petición después de
+validarla; se retira la copia adicional del texto en el holder del callback.
+
+Dos reproducciones adicionales mostraron que las generaciones fallidas
+conservaban el DTO de memoria en sus tracebacks, tanto por error del proveedor
+como por respuesta truncada. Las funciones finitas retiran ahora sus DTOs,
+prompts, partes, snapshots, tareas y closures al salir. La cancelación externa
+se vuelve a emitir fuera del handler después de limpiar los hijos, sin
+exportar el conjunto privado de tareas de `asyncio.wait`. No se fuerza GC.
+Una denegación de capacidad termina la petición y libera la cola, sin dejar
+al solicitante esperando un timeout engañoso. El límite de operaciones nativas
+de memoria sigue siendo ocho; el nuevo registro admite dieciséis scopes.
+
+La [evidencia de la cola](../research/2026-10-27-h3-queue-receiver-lineage-validation.json)
+corresponde al commit `93d5e35`, con 13 casos nuevos y 498 pruebas dirigidas.
+La comprobación de `937016d` agrega los casos de mantenimiento de índices y
+pasa 526 pruebas dirigidas. La primera suite completa queda como no aceptada:
+una prueba previa observó el borrado físico antes de confirmar su recibo.
+Ahora espera el recibo durable del destino actual y comprueba después que
+el histórico siga bloqueado, sin ampliar la compuerta ni los plazos existentes.
+La suite completa repetida pasa **5263 pruebas y 1 xfailed**, sin fallos,
+en 221,56 s. Pasan Ruff, Bandit sin hallazgos medios/altos, los 18 casos de
+frontend y el smoke del dashboard.
+El ejercicio compilado verifica 321 hashes y usa SQLite, Chroma, el gestor de
+memoria y el orquestador reales con embeddings y proveedor asíncrono
+sintéticos. Dura 0,81 s sobre `937016d`; no arranca `main` completo ni dispositivos.
+
+Siguen pendientes los demás consumidores, los buffers de entrada en reposo,
+los callbacks del dispositivo, los productores síncronos legacy y la conexión
+completa al journal `PRODUCERS`. La limpieza de variables locales no demuestra
+el retiro de todos los buffers de proveedores o de diagnósticos. Esto todavía
+no habilita el borrado global, no acepta GC/hardware de H4/H6 y no publica
+una release.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
