@@ -2030,6 +2030,27 @@ en reposo, los handoffs de los loops que reciben los resultados, callbacks de
 entrada y la integración completa con el driver de `PRODUCERS`. No se habilita
 el borrado amplio ni se cambia producción.
 
+La [validación](../research/2026-10-27-h3-command-capture-scopes-validation.json)
+del commit `67e589e` registra **5203 passed, 1 xfailed**, sin fallos, en 219,31 s,
+incluidos 24 casos nuevos y 155 pruebas dirigidas finales. Pasan Ruff, Bandit
+sin hallazgos medios/altos, 18 tests de frontend y el smoke del dashboard.
+Se conservan las reproducciones de los tres fallos del draft y del intento
+insuficiente de crear la excepción dentro del worker. Dos errores de fixtures
+se distinguen de esos fallos alcanzados: una inserción antes de cerrar un
+`try/finally` y un wake sintético que no disparaba el VAD que se esperaba probar.
+
+El artefacto sin fuentes verifica 321 hashes y ejercita la afinidad tras cancelar
+el comando, el controlador directo de emoción con lease retenido, una entrada
+auxiliar revocada que nunca entra y excepciones observadas que no mantienen
+argumentos crudos. La saturación sintética reduce sólo su capacidad de metadata
+a uno para forzar el rechazo antes del worker. El ejercicio dura 0,49 s; no
+cambia la configuración instalada ni los límites de aceptación.
+
+El heartbeat registra p95 de 0,29 ms y máximo de 1,07 ms; cancelar el control
+tarda como máximo 0,10 ms y limpiar stream/cliente 10,95 ms. Los presupuestos
+no cambian y no se manipula GC. Continúan pendientes el arranque completo de
+`main`, la aceptación integrada de GC/hardware y los demás hitos de H0–H6.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

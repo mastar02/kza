@@ -694,6 +694,17 @@ checks aceptados y artefacto sin fuentes con 321 hashes verificados. Falta cubri
 los buffers en reposo y captura/comandos y conectar los contratos completos al
 driver de `PRODUCERS`. No se publica ni se acepta hardware con este paso.
 
+La [afinidad de comandos y controladores de captura](2026-10-26-h3-memory-privacy.md#avance-afinidad-finita-de-comandos-y-controladores-de-captura)
+ya incluye argumentos que esperan el lock, sombras, emoción directa y llamadas
+nativas tras cancelar al observador. Las llamadas auxiliares conservan las
+fuentes del llamador y no devuelven resultados revocados; sus errores tipados
+evitan transportar tracebacks con argumentos crudos. La
+[validación](../research/2026-10-27-h3-command-capture-scopes-validation.json)
+del commit `67e589e` registra **5203 passed, 1 xfailed**, 24 casos nuevos,
+checks aceptados y artefacto sin fuentes con 321 hashes verificados. Faltan los
+handoffs de los loops receptores, buffers en reposo, callbacks de entrada y el
+driver completo de `PRODUCERS`. Producción sigue intacta.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

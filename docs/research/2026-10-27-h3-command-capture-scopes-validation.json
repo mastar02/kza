@@ -1,0 +1,255 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "67e589e902cef3e029bd2d4b3b150b7afe0e1863",
+  "tested_runtime_source_tree": "857fc2787e4d28263e035a9176a5cfaec69b1bb8",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 finite command/capture producer affinity. Track command/shadow/direct-emotion controllers and actual native work. Own capture calls/steps before the lock, preserve caller lineage, guard auxiliary callbacks at entry/return, and return typed native outcomes so executor error tracebacks cannot retain raw arguments. This does not complete idle buffers, parent loop handoffs, input callbacks or PRODUCERS journal.",
+  "new_integration_cases": [
+    "test_queued_auxiliary_input_keeps_caller_lineage_and_cannot_enter_after_revocation",
+    "test_command_native_scope_survives_controller_exit_without_blocking_other_sources[cancel-primary]",
+    "test_command_native_scope_survives_controller_exit_without_blocking_other_sources[cancel-shadow]",
+    "test_command_native_scope_survives_controller_exit_without_blocking_other_sources[cancel-profiles]",
+    "test_command_native_scope_survives_controller_exit_without_blocking_other_sources[cancel-speaker]",
+    "test_command_native_scope_survives_controller_exit_without_blocking_other_sources[cancel-emotion]",
+    "test_command_native_scope_survives_controller_exit_without_blocking_other_sources[revoke-primary]",
+    "test_command_native_scope_survives_controller_exit_without_blocking_other_sources[revoke-shadow]",
+    "test_command_native_scope_survives_controller_exit_without_blocking_other_sources[revoke-profiles]",
+    "test_command_native_scope_survives_controller_exit_without_blocking_other_sources[revoke-speaker]",
+    "test_command_native_scope_survives_controller_exit_without_blocking_other_sources[revoke-emotion]",
+    "test_direct_emotion_controller_and_native_result_remain_owned[cancel]",
+    "test_direct_emotion_controller_and_native_result_remain_owned[close]",
+    "test_command_scope_capacity_error_cannot_keep_unadmitted_audio[command]",
+    "test_command_scope_capacity_error_cannot_keep_unadmitted_audio[emotion]",
+    "test_busy_query_prunes_idle_identification_and_emotion_after_revocation",
+    "test_capture_native_scope_keeps_exact_affinity_after_controller_cancel[wake]",
+    "test_capture_native_scope_keeps_exact_affinity_after_controller_cancel[vad]",
+    "test_capture_native_scope_keeps_exact_affinity_after_controller_cancel[reset]",
+    "test_unknown_auxiliary_raw_input_stays_pending_until_native_exit",
+    "test_revocation_during_auxiliary_callback_rejects_its_late_result",
+    "test_capture_controller_capacity_closes_rejected_inputs_and_cancels_waiters",
+    "test_auxiliary_failure_cannot_escape_with_original_raw_traceback",
+    "test_scope_capacity_rejection_drops_unadmitted_raw_arguments"
+  ],
+  "new_cases_total": 24,
+  "full_suite": {
+    "accepted": true,
+    "collected": 5204,
+    "passed": 5203,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "runtime_s": 219.31,
+    "junit_time_s": 219.232,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-command-capture-scopes-full.xml",
+    "log": "/tmp/kza-command-capture-scopes-full.log",
+    "xml": "/tmp/kza-command-capture-scopes-full.xml"
+  },
+  "focused_suites": [
+    {
+      "passed": 131,
+      "runtime_s": 12.9,
+      "log": "/tmp/kza-command-capture-scopes-initial.log",
+      "note": "Existing cases before the auxiliary entry/return guard, typed outcomes and final exception/admission cleanup."
+    },
+    {
+      "passed": 3,
+      "runtime_s": 0.56,
+      "log": "/tmp/kza-command-capture-scopes-transport-fixed.log",
+      "note": "The three actual draft regressions pass after moving native errors into typed outcomes."
+    },
+    {
+      "passed": 155,
+      "runtime_s": 10.14,
+      "log": "/tmp/kza-command-capture-scopes-focused.log",
+      "note": "Final source before commit: 24 new cases plus existing command/capture/single-input/scope-rotation and command confidence/shadow tests. The full suite runs the exact committed source."
+    }
+  ],
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "includes_training_and_migration_clis": true,
+      "log": "/tmp/kza-command-capture-scopes-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "includes_training_and_migration_clis": true,
+      "log": "/tmp/kza-command-capture-scopes-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-command-capture-scopes-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-command-capture-scopes-dashboard.log"
+    }
+  },
+  "runtime_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.29081222601234913,
+        "max": 1.071861246600747
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.0517179723829031,
+          "p95": 0.09991205297410488,
+          "max": 0.09991205297410488
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.839947033673525,
+          "p95": 10.947800939902663,
+          "max": 10.947800939902663
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 425,
+        "loop_lag_p95_ms": 0.5227040965110064,
+        "loop_lag_max_ms": 1.0668421164155006,
+        "cancel_cleanup_max_ms": 1.7247251234948635,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2714,
+        "loop_lag_p95_ms": 0.9882828500121831,
+        "loop_lag_max_ms": 1.618100916966796,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6313009653240442,
+        "p95": 0.9832561481744051,
+        "max": 0.9832561481744051,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "67e589e902cef3e029bd2d4b3b150b7afe0e1863",
+    "artifact": "/tmp/kza-command-capture-scopes-runtime-9dzskozg/runtime.tar.gz",
+    "verified_hashes": 321,
+    "runtime_s": 0.48504284489899874,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "stdout": "{\"passed\": true, \"verified_hashes\": 321, \"source_free\": true, \"command_native_affinity_survived_parent_cancel\": true, \"known_unrelated_conversation_not_blocked\": true, \"direct_emotion_controller_retained_native_worker_and_lease\": true, \"late_raw_model_result_released\": true, \"queued_auxiliary_preserved_caller_sources\": true, \"revoked_auxiliary_never_entered\": true, \"retained_errors_do_not_keep_raw_arguments\": true, \"native_error_transport_used_fixed_outcome\": true, \"unadmitted_scope_rejection_released_arguments\": true, \"fixture_metadata_capacity_lowered_to_one\": true, \"production_configuration_changed\": false, \"producers_journal_complete\": false, \"idle_buffers_and_parent_loop_handoffs_proven\": false, \"private_household_data_read_or_packaged\": false, \"production_changed\": false, \"full_main_or_hardware_acceptance\": false}\n",
+    "stderr": "",
+    "passed": true,
+    "exercise": {
+      "passed": true,
+      "verified_hashes": 321,
+      "source_free": true,
+      "command_native_affinity_survived_parent_cancel": true,
+      "known_unrelated_conversation_not_blocked": true,
+      "direct_emotion_controller_retained_native_worker_and_lease": true,
+      "late_raw_model_result_released": true,
+      "queued_auxiliary_preserved_caller_sources": true,
+      "revoked_auxiliary_never_entered": true,
+      "retained_errors_do_not_keep_raw_arguments": true,
+      "native_error_transport_used_fixed_outcome": true,
+      "unadmitted_scope_rejection_released_arguments": true,
+      "fixture_metadata_capacity_lowered_to_one": true,
+      "production_configuration_changed": false,
+      "producers_journal_complete": false,
+      "idle_buffers_and_parent_loop_handoffs_proven": false,
+      "private_household_data_read_or_packaged": false,
+      "production_changed": false,
+      "full_main_or_hardware_acceptance": false
+    }
+  },
+  "development_findings": {
+    "initial_draft_reproduction": {
+      "accepted": false,
+      "passed": 0,
+      "failed": 3,
+      "runtime_s": 0.58,
+      "log": "/tmp/kza-command-capture-scopes-reproduction.log",
+      "description": "A queued auxiliary callback entered after its caller source was revoked. A retained callback exception kept a weakly observed raw input. The newly introduced scope-capacity rejection also kept unadmitted raw input through its public frame.",
+      "correction": "Freeze explicit/caller lineage at admission; guard before and after the native callback; clear raw arguments even if scope admission fails."
+    },
+    "native_raise_attempt": {
+      "accepted": false,
+      "passed": 1,
+      "failed": 2,
+      "runtime_s": 0.57,
+      "log": "/tmp/kza-command-capture-scopes-fixed.log",
+      "description": "Raising a fresh fixed exception outside the native handler still transported executor frames containing the raw callback arguments. The revoked callback no longer entered, but held exception tracebacks still retained both raw inputs.",
+      "correction": "Return a typed result/fixed error enum from the native wrapper. Raise the public error on-loop after disposing transport results and raw arguments; do not transport the callback exception."
+    },
+    "fixture_collection_error": {
+      "accepted": false,
+      "log": "/tmp/kza-command-capture-scopes-expanded.log",
+      "description": "An expanded test block was inserted before the preceding try/finally had ended. Move its existing finalizer back into its original test; application code was unchanged."
+    },
+    "vad_fixture_error": {
+      "accepted": false,
+      "passed": 22,
+      "failed": 1,
+      "runtime_s": 4.34,
+      "log": "/tmp/kza-command-capture-scopes-expanded-fixed.log",
+      "description": "The synthetic wake endpoint did not fire, so the tested callback never requested VAD. Make that wake fire for the VAD case; do not widen the 3-second wait or change application behavior."
+    }
+  },
+  "runtime_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancellation_max_ms": 100,
+    "cleanup_ms": 1000,
+    "limits_widened": false,
+    "gc_forced_disabled_or_frozen": false,
+    "integrated_gc_hardware_acceptance": false
+  },
+  "preserved_boundaries": {
+    "real_household_data_read_or_modified": false,
+    "prior_private_quarantine_copy_modified": false,
+    "quarantined_unsourced_data_automatically_deleted": false,
+    "unknown_legacy_files_automatically_deleted": false,
+    "config_or_runtime_under_kza_changed": false,
+    "production_restarted": false,
+    "new_training_or_gpu_reassignment": false,
+    "global_erasure_claimed": false,
+    "full_main_or_hardware_acceptance": false,
+    "release_published": false,
+    "producers_journal_complete": false,
+    "idle_buffer_retirement_proven_by_new_scope_api": false,
+    "parent_loop_handoffs_proven": false
+  },
+  "remaining_scope": [
+    "PRODUCERS journal remains unconnected. Complete source handoffs in parent single-input/multiroom consumers and early parsing/dispatch, actual input callbacks and idle tap/VAD/wake/command buffers, then integrate exact journal claims and leased recovery.",
+    "These conversation_busy APIs cover finite work and prune current command associations. They do not prove idle buffer retirement or ownership of result copies held by a parent loop after a CaptureRoom method returns.",
+    "Remaining diagnostics, streams/frontend and VOICES journal participants, pause versus total mute, acoustic retention and authenticated grouping review remain open. Broad erasure remains unavailable in the UI.",
+    "Unknown legacy datasets/adapters and quarantine rows/backups remain preserved pending manual review/lifecycle; complete migrations, live-index rebuild and compatible rollback remain open.",
+    "Selected HA effects and kitchen switch mapping, physical audio, remaining H4 runtime/dependency acceptance, H5 voice functions and the one integrated H6 release remain open.",
+    "The earlier instrumented GC pause of 495.68 ms is not remeasured or accepted by this uninstrumented suite. The compiled smoke uses actual components with synthetic CPU endpoints and no hardware or full main startup."
+  ]
+}
