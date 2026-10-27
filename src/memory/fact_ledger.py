@@ -309,6 +309,14 @@ class FactLedger:
         return self._authority_available and all(d.fact_id not in self._pending_fact_ids and self._fact_receipts.get(d.fact_id) == d
                    and (d.expires_at is None or now < d.expires_at) for d in dependencies)
 
+    def dependencies_committed_unavailable(self, dependencies: tuple[FactDependency, ...]) -> bool:
+        """Read retired dependency authority, excluding reversible pending fences."""
+        if not self._authority_available:
+            raise RuntimeError('privacy_authority_unavailable')
+        receipts, now = self._fact_receipts, self.clock()
+        return any(receipts.get(d.fact_id) != d or d.expires_at is not None and now >= d.expires_at
+                   for d in dependencies)
+
     def _read_fact_receipts(self, db) -> dict[str, FactDependency]:
         receipts = {}
         for fact_id, revision, expiry in db.execute(

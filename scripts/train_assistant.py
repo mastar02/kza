@@ -135,7 +135,9 @@ async def _training_data(args):
             print(f"Marcados: {stats['marked_for_training']}")
             print("Los archivos legacy permanecen en cuarentena.")
         else:
-            output_dir = getattr(args, 'output_dir', None) or str(Path(args.output or './data/training_data.jsonl').parent)
+            output_dir = getattr(args, 'output_dir', None)
+            if not output_dir:
+                output_dir = str(Path(args.output).parent) if args.output else config.get('training', {}).get('exports_dir', './data/conversation_exports')
             exported = await collector.export_for_training(output_dir, args.format or 'alpaca',
                 only_marked=not args.include_all, limit=getattr(args,'limit',32),
                 after_sequence=getattr(args,'after_sequence',0))

@@ -135,24 +135,34 @@ class ErasureJournal:
             # A restored event database may contain rows behind an old cursor
             # or completed receipt. Only leased startup may reopen that proof.
             db.execute("""UPDATE erasure_steps SET state='pending',claim_token=NULL,cursor=NULL,
-                next_attempt_at=0,last_error=? WHERE participant IN ('events','contexts','suggestions')""", (ErasureError.RESTARTED.value,))
+                next_attempt_at=0,last_error=? WHERE participant IN ('events','contexts','suggestions','collectors')""", (ErasureError.RESTARTED.value,))
             return db.execute("UPDATE erasure_steps SET state=?, claim_token=NULL, next_attempt_at=0, last_error=? WHERE state=?",
                 (ErasureState.PENDING.value, ErasureError.RESTARTED.value, ErasureState.RUNNING.value)).rowcount
 
     def register_target(self, participant: ErasureParticipant, version: int, descriptor: dict) -> str:
         """Persist every historical storage location and reopen existing cleanup jobs."""
         if not isinstance(participant, ErasureParticipant) or type(version) is not int or version < 1 or type(descriptor) is not dict:
+            raise ValueError('invalid_erasure_target')
+        if len(json.dumps(descriptor, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()) > 8192:
+            raise ValueError('erasure_target_limit')
+        with self.ledger._transaction() as db:
+            return self._register_target(db, participant, version, descriptor)
+
+    def _register_target(self, db, participant: ErasureParticipant, version: int, descriptor: dict) -> str:
+        """Share an existing authority transaction with a new data/location commit."""
+        if db is not self.ledger._db or not db.in_transaction:
+            raise ValueError('erasure_target_requires_authority_transaction')
+        if not isinstance(participant, ErasureParticipant) or type(version) is not int or version < 1 or type(descriptor) is not dict:
             raise ValueError("invalid_erasure_target")
         encoded = json.dumps(descriptor, sort_keys=True, separators=(",", ":"), allow_nan=False)
         if len(encoded.encode()) > 8192:
             raise ValueError("erasure_target_limit")
         key = hashlib.sha256(json.dumps([participant.value, version, encoded]).encode()).hexdigest()
-        with self.ledger._transaction() as db:
-            db.execute("INSERT OR IGNORE INTO erasure_targets VALUES (?,?,?,?)", (key, participant.value, version, encoded))
-            if participant is ErasureParticipant.SEMANTIC_INDEX:
-                self.ledger.index_deletions.register_target(db, key)
-            for row in list(db.execute("SELECT id FROM conversation_erasures")):
-                self._ensure_steps(db, row[0])
+        db.execute("INSERT OR IGNORE INTO erasure_targets VALUES (?,?,?,?)", (key, participant.value, version, encoded))
+        if participant is ErasureParticipant.SEMANTIC_INDEX:
+            self.ledger.index_deletions.register_target(db, key)
+        for row in list(db.execute("SELECT id FROM conversation_erasures")):
+            self._ensure_steps(db, row[0])
         return key
 
     def request(self, conversation_id: str, actor) -> dict:

@@ -133,12 +133,13 @@ class STTCorrectionCollector:
 
     def _invoke(self, function, args):
         failure = None
-        try:
-            return function(*args)
-        except Exception as error:
-            failure = type(error).__name__
-        finally:
-            function = args = None
+        with self._store.reading_session():
+            try:
+                return function(*args)
+            except Exception as error:
+                failure = type(error).__name__
+            finally:
+                function = args = None
         self._errors += 1
         logger.warning('STT correction operation failed: %s', failure)
         raise RuntimeError('stt_correction_operation_failed')
@@ -223,10 +224,10 @@ class STTCorrectionCollector:
                     self._store.discard(self._target, identifier)
             except Exception as error:
                 failure = type(error).__name__
-            self._active.pop(identifier, None)
-            self._jobs.pop(identifier, None)
             job.state = CorrectionState.FINISHED
             job.clear()
+            self._active.pop(identifier, None)
+            self._jobs.pop(identifier, None)
             job = None
         if failure is not None:
             self._errors += 1
@@ -236,6 +237,13 @@ class STTCorrectionCollector:
     def is_writing(self, identifier: str) -> bool:
         """Keep the file locator while its actual write can still create a WAV."""
         return identifier in self._active
+
+    def has_conversation_work(self, target_id: str, conversation_id: str) -> bool:
+        """Keep queued and running corrections visible until their raw data clears."""
+        return target_id == self._target.id and any(
+            source.conversation_id == conversation_id
+            or source.fact_dependencies and self._store.ledger.dependencies_committed_unavailable(source.fact_dependencies)
+            for job in tuple(self._jobs.values()) for source in job.sources)
 
     def retire_record(self, identifier: str) -> None:
         """Invalidate existing views when managed files are physically retired."""
@@ -277,34 +285,64 @@ class STTCorrectionCollector:
         views = []
         count = 0
         with self._store.ledger._transaction() as db:
-            rows = db.execute('''SELECT a.*,c.original_text,c.corrected_text,c.user_id,c.sample_rate,c.used
-                FROM wake_clips_v1 a JOIN stt_corrections_v1 c ON c.id=a.id
+            rows = db.execute("""SELECT a.* FROM wake_clips_v1 a
+                JOIN stt_corrections_v1 c ON c.id=a.id
                 WHERE a.target_id=? AND a.published=1 AND c.used=0 AND a.expires_at>?
-                ORDER BY a.sequence LIMIT ?''', (self._target.id, self._store.ledger.clock(), limit))
-            for row in rows:
-                sources = clip_sources(row['sources_json'])
-                if not 0 < row['expires_at'] <= min(s.expires_at for s in sources) or str(UUID(row['id'])) != row['id']:
-                    raise ValueError('invalid_stt_correction_metadata')
-                if not self._live(sources) or self.is_writing(row['id']):
+                ORDER BY a.sequence LIMIT ?""", (self._target.id, self._store.ledger.clock(), limit)).fetchall()
+        for row in rows:
+            sources = clip_sources(row['sources_json'])
+            if not 0 < row['expires_at'] <= min(s.expires_at for s in sources) or str(UUID(row['id'])) != row['id']:
+                raise ValueError('invalid_stt_correction_metadata')
+            if not self._live(sources) or self.is_writing(row['id']):
+                continue
+            with self._store.reading(self._target, sources) as admitted:
+                if not admitted:
                     continue
+                payload = view = None
                 try:
-                    with clip_directory(self._target.root) as directory:
-                        if not stat.S_ISREG(os.stat(row['id']+'.wav', dir_fd=directory, follow_symlinks=False).st_mode):
+                    try:
+                        with clip_directory(self._target.root) as directory:
+                            if not stat.S_ISREG(os.stat(row['id']+'.wav', dir_fd=directory, follow_symlinks=False).st_mode):
+                                continue
+                    except FileNotFoundError:
+                        continue
+                    with self._store.ledger._transaction() as db:
+                        current = db.execute("""SELECT a.expires_at FROM wake_clips_v1 a
+                            JOIN stt_corrections_v1 c ON c.id=a.id
+                            WHERE a.id=? AND a.target_id=? AND a.published=1 AND c.used=0""",
+                            (row['id'], self._target.id)).fetchone()
+                        if current is None or current['expires_at'] <= self._store.ledger.clock() or not self._live(sources):
                             continue
-                except FileNotFoundError:
-                    continue
-                count += 1
-                if not count_only:
-                    self._store.note_deadline(row['id'], row['expires_at'])
+                        if count_only:
+                            count += 1
+                            continue
+                        payload = db.execute('SELECT original_text,corrected_text,user_id FROM stt_corrections_v1 WHERE id=?', (row['id'],)).fetchone()
+                        if payload is None:
+                            continue
+                        self._store.note_deadline(row['id'], current['expires_at'])
+                    # Raw I/O and DTO construction do not hold the authority's
+                    # transaction. The scoped lease retains their actual exit.
                     view = STTCorrection(str(self.data_dir/'policy_v1'/(row['id']+'.wav')),
-                        row['original_text'], row['corrected_text'], datetime.fromtimestamp(row['captured_at'], timezone.utc).isoformat(),
-                        row['user_id'], row['score'], False, row['id'], sources, row['expires_at'], ref(self))
-                    with self._views_lock:
-                        if len(self._views) >= 256:
+                        payload['original_text'], payload['corrected_text'], datetime.fromtimestamp(row['captured_at'], timezone.utc).isoformat(),
+                        payload['user_id'], row['score'], False, row['id'], sources, row['expires_at'], ref(self))
+                    with self._store.ledger._transaction() as db:
+                        current = db.execute("""SELECT a.expires_at FROM wake_clips_v1 a
+                            JOIN stt_corrections_v1 c ON c.id=a.id
+                            WHERE a.id=? AND a.target_id=? AND a.published=1 AND c.used=0""",
+                            (row['id'], self._target.id)).fetchone()
+                        if current is None or current['expires_at'] <= self._store.ledger.clock() or not self._live(sources):
                             view.clear()
-                            raise RuntimeError('stt_correction_view_capacity')
-                        self._views.add(view)
-                    views.append(view)
+                            continue
+                        view.expires_at = min(view.expires_at, current['expires_at'])
+                        with self._views_lock:
+                            if len(self._views) >= 256:
+                                view.clear()
+                                raise RuntimeError('stt_correction_view_capacity')
+                            self._views.add(view)
+                        views.append(view)
+                        count += 1
+                finally:
+                    payload = view = None
         return count if count_only else views
 
     async def get_training_pairs(self, *, limit: int = 128) -> list[STTCorrection]:

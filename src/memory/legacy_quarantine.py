@@ -19,6 +19,7 @@ from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from src.core.owned_work import OwnedBlockingWork
+from src.memory.erasure_journal import ErasureParticipant
 from src.memory.privacy_services import PrivacyServices
 
 
@@ -301,6 +302,8 @@ def _import(ledger, root: Path, manifest: dict) -> QuarantineCopyReceipt:
             raise ValueError('legacy_quarantine_count_changed')
         if _hash(root/'legacy.sqlite3') != manifest['snapshot_sha256']:
             raise ValueError('legacy_snapshot_changed')
+        ledger.erasures._register_target(db, ErasureParticipant.COLLECTORS, 1,
+            {'kind':'legacy_quarantine','root':str(root.resolve()),'batch_id':manifest['batch_id']})
     return QuarantineCopyReceipt(manifest['batch_id'], manifest['snapshot_records'], count, count,
         manifest['snapshot_records']-count, count, manifest['source_unchanged'], replayed)
 

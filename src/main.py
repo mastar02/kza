@@ -573,7 +573,7 @@ async def _run_main(shutdown: AsyncExitStack):
     event_erasure = await build_event_erasure(config, privacy=privacy_services, owner=erasure_services)
     suggestion_erasure = await build_suggestion_erasure(config, privacy=privacy_services, owner=erasure_services)
     context_erasure = await build_context_erasure(config, privacy=privacy_services, owner=erasure_services, memory=memory_manager)
-    wake_clip_store = await build_wake_clip_store(config, privacy=privacy_services, shutdown=shutdown)
+    wake_clip_store = await build_wake_clip_store(config, privacy=privacy_services, shutdown=shutdown, owner=erasure_services)
     stt_correction_collector = await build_stt_correction_collector(config, store=wake_clip_store)
     conversation_collector = await build_conversation_collector(config, store=wake_clip_store)
 

@@ -242,12 +242,13 @@ class ConversationCollector:
 
     def _invoke(self, function, args):
         failure = None
-        try:
-            return function(*args)
-        except Exception as error:
-            failure = type(error).__name__
-        finally:
-            function = args = None
+        with self._store.reading_session():
+            try:
+                return function(*args)
+            except Exception as error:
+                failure = type(error).__name__
+            finally:
+                function = args = None
         self._errors += 1
         logger.warning('Conversation operation failed: %s', failure)
         raise RuntimeError('conversation_operation_failed')
@@ -364,14 +365,14 @@ class ConversationCollector:
         if not rows:
             return False
         row = rows[0]
-        payload = self._load(row)
-        if payload is None:
-            return False
-        correction = job.data.get('correction')
         job.parents = ((row['id'],row['expires_at']),)
         job.sources = merge_sources(clip_sources(row['sources_json']),job.sources)
         job.deadline = min(row['expires_at'],*(s.expires_at for s in job.sources))
         self._store.note_deadline(job.id,job.deadline)
+        payload = self._load(row)
+        if payload is None:
+            return False
+        correction = job.data.get('correction')
         job.group_id = row['group_id']
         job.input_sources = clip_sources(row['input_sources_json'])
         job.room_id = row['room_id']
@@ -512,10 +513,10 @@ class ConversationCollector:
                     self._store.discard(job.target,identifier)
             except Exception as error:
                 failure = type(error).__name__
-            self._jobs.pop(identifier,None)
-            self._active.discard(identifier)
             job.state = RecordState.FINISHED
             job.clear()
+            self._jobs.pop(identifier,None)
+            self._active.discard(identifier)
             job = None
         if failure is not None:
             self._errors += 1
@@ -563,23 +564,32 @@ class ConversationCollector:
                 raise RuntimeError('conversation_view_capacity')
         views = []
         for row in self._metadata(group=group,limit=limit):
-            data = self._load(row)
-            if data is None:
-                continue
-            with self._store.ledger._transaction() as db:
-                current = db.execute('SELECT published,expires_at FROM wake_clips_v1 WHERE id=?', (row['id'],)).fetchone()
-                if current is None or not current['published'] or current['expires_at']<=self._store.ledger.clock() or not self._meta_live(row):
+            with self._store.reading(self._target, clip_sources(row['sources_json'])) as admitted:
+                if not admitted:
                     continue
-                scope = ViewScope(row['id'],clip_sources(row['sources_json']),row['expires_at'],ref(self))
-                self._store.note_deadline(scope.id,scope.expires_at)
-                view = ConversationTurn(clip_sources(row['input_sources_json'])[0].captured_at,**data,
-                                        quality=ResponseQuality(row['quality']),_scope=scope)
-                with self._views_lock:
-                    if len(self._views)>=256:
-                        view.clear()
-                        raise RuntimeError('conversation_view_capacity')
-                    self._views.add(view)
-                views.append(view)
+                data = None
+                try:
+                    data = self._load(row)
+                    if data is None:
+                        continue
+                    with self._store.ledger._transaction() as db:
+                        current = db.execute('SELECT published,expires_at FROM wake_clips_v1 WHERE id=?', (row['id'],)).fetchone()
+                        if current is None or not current['published'] or current['expires_at']<=self._store.ledger.clock() or not self._meta_live(row):
+                            continue
+                        scope = ViewScope(row['id'],clip_sources(row['sources_json']),row['expires_at'],ref(self))
+                        self._store.note_deadline(scope.id,scope.expires_at)
+                        view = ConversationTurn(clip_sources(row['input_sources_json'])[0].captured_at,**data,
+                                                quality=ResponseQuality(row['quality']),_scope=scope)
+                        with self._views_lock:
+                            if len(self._views)>=256:
+                                view.clear()
+                                raise RuntimeError('conversation_view_capacity')
+                            self._views.add(view)
+                        views.append(view)
+                finally:
+                    if data is not None:
+                        data.clear()
+                    data = None
         return views
 
     async def get_turns(self, *, limit: int = 128, conversation_id: str | None = None) -> list[ConversationTurn]:
@@ -636,6 +646,13 @@ class ConversationCollector:
 
     def is_writing(self, identifier: str) -> bool:
         return identifier in self._active
+
+    def has_conversation_work(self, target_id: str, conversation_id: str) -> bool:
+        """Include exports/feedback with their original sources before raw reads."""
+        return any(job.target.id == target_id and any(source.conversation_id == conversation_id
+                   or source.fact_dependencies and self._store.ledger.dependencies_committed_unavailable(source.fact_dependencies)
+                   for source in job.sources)
+                   for job in tuple(self._jobs.values()))
 
     def retire_record(self, identifier: str) -> None:
         """Invalidate turn/export views and providers depending on retired records."""

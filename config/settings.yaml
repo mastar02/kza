@@ -808,6 +808,7 @@ analytics:
 training:
   # Conversation collector for LoRA training
   conversations_dir: "./data/conversations"
+  exports_dir: "./data/conversation_exports"
   auto_save_interval: 10  # Guardar cada N turnos
   max_conversations_in_memory: 100
 

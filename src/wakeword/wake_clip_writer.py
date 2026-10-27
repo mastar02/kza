@@ -216,6 +216,20 @@ class WakeClipWriter:
         busy = self._busy
         return busy is not None and busy.id == identifier
 
+    def has_conversation_work(self, target_id: str, conversation_id: str) -> bool:
+        """Include unreserved queued audio and the actual native encoder."""
+        if target_id != self._target.id:
+            return False
+        if not self._lock.acquire(blocking=False):
+            return True
+        try:
+            jobs = (*self._queue, *((self._busy,) if self._busy is not None else ()))
+            return any(source.conversation_id == conversation_id
+                or source.fact_dependencies and self._store.ledger.dependencies_committed_unavailable(source.fact_dependencies)
+                for job in jobs for source in job.sources)
+        finally:
+            self._lock.release()
+
     def _retire(self):
         self._running = False
         self._dropped += len(self._queue)

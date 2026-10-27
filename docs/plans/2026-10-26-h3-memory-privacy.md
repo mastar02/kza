@@ -1852,9 +1852,41 @@ revisión manual, el corte real, las demás migraciones y el borrado global de
 snapshots/cuarentenas y otros colectores. El catálogo ensayado continúa privado
 y separado de la versión instalada.
 
+### Avance: journal de archivos y scopes nativos de colectores
+
+`main` conecta ahora el driver de `COLLECTORS` a la autoridad y al coordinador
+existentes. Recorre por páginas los destinos registrados de wake, correcciones
+STT, conversaciones y exports; borra los archivos antes de retirar sus locators.
+El I/O físico no mantiene abierta la transacción de autoridad: otra conversación
+puede revocarse aunque un `unlink` esté bloqueado. Un fallo conserva el locator
+para reintentar. Los exports usan un directorio propio configurado en
+`training.exports_dir`.
+
+Un recibo espera la salida real de lectores y escritores de esa conversación,
+incluidos jobs todavía sin archivo reservado, feedback con sus fuentes originales
+y derivados de hechos retirados. Cancelar al observador no libera esa propiedad
+ni el lease. Los lectores registran su afinidad antes de adquirir texto y la
+conservan hasta retirar los locales y excepciones nativos. Los recibos y el estado
+de recursos exponen sólo contadores y errores fijos.
+
+Cada arranque con lease reabre las comprobaciones de colectores, incluso para
+recibos antiguos completos; un cursor restaurado no oculta datos anteriores.
+Los directorios históricos siguen registrados aunque cambie la configuración.
+Se auditan con descriptores, sin seguir enlaces; archivos huérfanos, legacy o
+desconocidos se conservan pendientes. Se admiten raíces compartidas entre
+colectores registrados y cada destino mantiene su propio recibo.
+
+El ensayo de cuarentena registra su destino en la misma transacción de importación.
+Los catálogos anteriores sin locator quedan pendientes hasta una reanudación
+explícita y verificada. Las filas sin procedencia y su snapshot no se borran
+automáticamente: el recibo sigue pendiente mientras cualquiera exista. Este
+driver no completa los demás participantes ni habilita todavía el borrado global
+en la UI. No se modifica la copia privada real ni producción.
+
 ## Trabajo restante
 
-1. Cubrir los demás datasets y consumidores de clips/aprendizaje y conectar
+1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
+   cubrir los demás consumidores de clips/aprendizaje y conectar
    todos los productores reales al journal. El procesador y ambient retenidos
    todavía no completan `PRODUCERS`.
 2. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

@@ -3,8 +3,8 @@
 import asyncio
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
-from contextvars import copy_context
-from dataclasses import dataclass
+from contextvars import ContextVar, copy_context
+from dataclasses import dataclass, field
 from functools import partial
 from enum import StrEnum
 import json
@@ -13,12 +13,12 @@ import math
 import os
 from pathlib import Path
 import threading
-from uuid import UUID
+from uuid import UUID, uuid4
 from weakref import WeakSet
 
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.memory.erasure_journal import ErasureParticipant
-from src.memory.fact_ledger import MemorySource
+from src.memory.fact_ledger import FactDependency, MemorySource
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,18 @@ class ClipTarget:
         return {CollectorKind.CONVERSATIONS: '.json', CollectorKind.CONVERSATION_EXPORTS: '.jsonl'}.get(self.kind, '.wav')
 
 
+@dataclass
+class CollectorRead:
+    """Metadata-only ownership of a native reader until its raw locals retire."""
+
+    token: str = field(default_factory=lambda: str(uuid4()))
+    conversations: dict[str, set[str]] = field(default_factory=dict)
+    dependencies: dict[str, set[FactDependency]] = field(default_factory=dict)
+
+
+_READ_SESSION = ContextVar('collector_read_session', default=None)
+
+
 @contextmanager
 def clip_directory(root: str, *, create: bool = False):
     """Open a private directory using descriptors; never follow a replaced link."""
@@ -94,9 +106,8 @@ def clip_sources(encoded: str) -> tuple[MemorySource, ...]:
 class WakeClipStore:
     """Own collector file locators and native lifetimes independently of capture.
 
-    This registers collector targets but leaves COLLECTORS without a cleanup
-    driver: conversations and other training copies are still open.
-    Local clip cleanup must never masquerade as global collector completion.
+    Local retention remains independent of the optional journal driver. Unknown
+    legacy data or missing participants cannot become global cleanup receipts.
     """
 
     def __init__(self, privacy, *, close_timeout_s: float = 1):
@@ -111,6 +122,8 @@ class WakeClipStore:
         self._receipt_lock = threading.Lock()
         self._read_deadlines: dict[str, float] = {}
         self._writers = WeakSet()
+        self._reads_lock = threading.Lock()
+        self._reads: dict[str, CollectorRead] = {}
         self._closed = False
         self._closing = self._maintenance = None
         self._scheduled = None
@@ -163,6 +176,55 @@ class WakeClipStore:
         if self._closed or writer._store is not self:
             raise RuntimeError('wake_clip_store_unavailable')
         self._writers.add(writer)
+
+    @contextmanager
+    def reading_session(self):
+        """Retain affinities through native return and raw exception disposal."""
+        session = CollectorRead()
+        token = _READ_SESSION.set((self, session))
+        try:
+            yield
+        finally:
+            with self._reads_lock:
+                self._reads.pop(session.token, None)
+            _READ_SESSION.reset(token)
+
+    @contextmanager
+    def reading(self, target: ClipTarget, sources: tuple[MemorySource, ...]):
+        """Retain a source scope before native code can acquire raw data."""
+        if type(sources) is not tuple or not 1 <= len(sources) <= 64 or not all(isinstance(s, MemorySource) for s in sources):
+            raise ValueError('collector_read_sources_required')
+        current = _READ_SESSION.get()
+        session = current[1] if current is not None and current[0] is self else CollectorRead()
+        standalone = current is None or current[0] is not self
+        admitted = False
+        with self._reads_lock:
+            if not self._closed and self.privacy.sources_available(sources):
+                if session.token not in self._reads and len(self._reads) >= 64:
+                    raise RuntimeError('collector_reader_capacity')
+                session.conversations.setdefault(target.id, set()).update(s.conversation_id for s in sources)
+                session.dependencies.setdefault(target.id, set()).update(d for s in sources for d in s.fact_dependencies)
+                self._reads[session.token] = session
+                admitted = True
+        try:
+            yield admitted
+        finally:
+            if standalone:
+                with self._reads_lock:
+                    self._reads.pop(session.token, None)
+
+    def conversation_busy(self, target_id: str, conversation_id: str) -> bool:
+        """Count real raw readers/jobs, including work without a file intent yet."""
+        with self._reads_lock:
+            if any(conversation_id in read.conversations.get(target_id, ())
+                   or read.dependencies.get(target_id) and self.ledger.dependencies_committed_unavailable(tuple(read.dependencies[target_id]))
+                   for read in self._reads.values()):
+                return True
+        for writer in tuple(self._writers):
+            owned = getattr(writer, 'has_conversation_work', None)
+            if owned is None or owned(target_id, conversation_id):
+                return True
+        return False
 
     def _registered(self, target: ClipTarget) -> bool:
         return any(t['id'] == target.id and t['version'] == 1 and t['descriptor'] == {'kind': target.kind.value, 'root': target.root}
@@ -380,10 +442,11 @@ class WakeClipStore:
         """Expose counts only, without paths, rooms, source IDs or raw data."""
         return {**self._status, 'scope': 'managed_collector_files_only', 'legacy_policy': 'quarantined',
                 'closed': self._closed, 'writers': len(self._writers),
+                'native_readers': len(self._reads),
                 'operations': self._work.status()['operations']}
 
 
-async def build_wake_clip_store(config: dict, *, privacy, shutdown) -> WakeClipStore:
+async def build_wake_clip_store(config: dict, *, privacy, shutdown, owner=None) -> WakeClipStore:
     """Construct retention before the optional writer and register its close early."""
     store = WakeClipStore(privacy)
     shutdown.push_async_callback(store.aclose)
@@ -393,5 +456,9 @@ async def build_wake_clip_store(config: dict, *, privacy, shutdown) -> WakeClipS
     corrections = config.get('training', {}).get('stt_corrections', {}) or {}
     await store._work.run(store.register, corrections.get('data_dir', 'data/stt_corrections'), CollectorKind.STT_CORRECTIONS)
     await store._work.run(store.register, config.get('training', {}).get('conversations_dir', 'data/conversations'), CollectorKind.CONVERSATIONS)
+    await store._work.run(store.register, config.get('training', {}).get('exports_dir', 'data/conversation_exports'), CollectorKind.CONVERSATION_EXPORTS)
+    if owner is not None:
+        from src.training.collector_erasure import build_collector_erasure
+        await build_collector_erasure(config, store=store, owner=owner, shutdown=shutdown)
     store.start()
     return store
