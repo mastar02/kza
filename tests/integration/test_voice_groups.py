@@ -340,3 +340,83 @@ async def test_pending_only_revocation_hides_groups_but_does_not_destroy_manual_
         finally:
             privacy.ledger._pending_conversations = prior
         assert await rows(voices)==before
+
+
+async def test_partial_group_lineage_cannot_become_complete_when_its_missing_parent_member_is_erased(tmp_path):
+    async with graph(tmp_path) as (_,owner,voices,clock):
+        first,one = await sample(voices,clock)
+        second,_ = await sample(voices,clock)
+        group = (await rows(voices))[one]['group_id']
+        def partial():
+            with voices.privacy.ledger._transaction() as db:
+                db.execute('UPDATE voice_groups SET sources_json=?',(json.dumps([first.to_dict()]),))
+        await voices.acall(partial)
+        await owner.request(second.conversation_id,MemoryReviewer('synthetic-admin'))
+        await flush(owner)
+        assert await voices.acall(voices.ledger.pending,second.conversation_id)>0
+        assert await rows(voices)=={}
+        _,extra = await sample(voices,clock)
+        visible = await rows(voices)
+        assert set(visible)=={extra} and visible[extra]['group_id']!=group
+        assert await voices.acall(voices.ledger.pending,second.conversation_id)>0
+        clock.now=first.expires_at
+        assert await voices.acall(voices.ledger.pending,second.conversation_id)>0
+        await voices.acall(voices.ledger.prune)
+        assert await voices.acall(voices.ledger.pending,second.conversation_id)==0
+
+
+async def test_partial_correction_request_lineage_remains_unknown_after_its_missing_parent_is_erased(tmp_path):
+    async with graph(tmp_path) as (_,owner,voices,clock):
+        first,one = await sample(voices,clock)
+        second,_ = await sample(voices,clock)
+        request = str(uuid4())
+        before = await rows(voices)
+        revisions = {before[one]['group_id']:before[one]['group_revision']}
+        await edit(voices,(one,),'split',request=request,revisions=revisions)
+        def partial():
+            with voices.privacy.ledger._transaction() as db:
+                db.execute('UPDATE voice_group_requests SET sources_json=?',(json.dumps([first.to_dict()]),))
+        await voices.acall(partial)
+        with pytest.raises(LookupError):
+            await edit(voices,(one,),'split',request=request,revisions=revisions)
+        await owner.request(second.conversation_id,MemoryReviewer('synthetic-admin'))
+        await flush(owner)
+        assert await voices.acall(voices.ledger.pending,second.conversation_id)>0
+        clock.now=first.expires_at
+        await voices.acall(voices.ledger.prune)
+        assert await voices.acall(voices.ledger.pending,second.conversation_id)==0
+
+
+async def test_missing_group_proofs_are_never_reconstructed_by_idle_cleanup_or_new_observations(tmp_path):
+    async with graph(tmp_path) as (_,_,voices,clock):
+        await sample(voices,clock)
+        def partial():
+            with voices.privacy.ledger._transaction() as db:
+                db.execute('DELETE FROM voice_group_lineage')
+        await voices.acall(partial)
+        await voices.acall(voices.ledger.prune)
+        assert await rows(voices)=={}
+        assert await voices.acall(voices.ledger.pending,str(uuid4()))>0
+        _,new = await sample(voices,clock)
+        assert set(await rows(voices))=={new}
+        assert await voices.acall(voices.ledger.pending,str(uuid4()))>0
+
+
+async def test_credential_rotation_during_proof_write_rolls_back_the_final_group_commit(tmp_path):
+    async with graph(tmp_path) as (_,_,voices,clock):
+        ids = [(await sample(voices,clock))[1] for _ in range(2)]
+        before = await rows(voices)
+        current = [True]
+        def trace(sql):
+            if sql.startswith('INSERT INTO voice_group_request_lineage'):
+                current[0] = False
+        def tracing(callback):
+            with voices.privacy.ledger._transaction() as db:
+                db.set_trace_callback(callback)
+        await voices.acall(tracing,trace)
+        try:
+            with pytest.raises(PermissionError):
+                await edit(voices,(ids[0],),'split',actor=VoiceReviewer('synthetic-admin',lambda:current[0]))
+        finally:
+            await voices.acall(tracing,None)
+        assert await rows(voices)==before

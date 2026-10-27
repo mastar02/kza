@@ -37,6 +37,40 @@ class VoiceGroups:
     def _changed(self):
         self.ledger._voice_group_revision+=1
 
+    @staticmethod
+    def _source_digest(sources):
+        canonical = sorted(json.dumps(source.to_dict(),sort_keys=True,separators=(',',':')) for source in set(sources))
+        return hashlib.sha256(json.dumps(canonical,separators=(',',':')).encode()).hexdigest()
+
+    @staticmethod
+    def _member_digest(identities):
+        return hashlib.sha256(json.dumps(sorted(identities),separators=(',',':')).encode()).hexdigest()
+
+    def _seal(self, db, identity):
+        # Only a writer that has already verified its parents may commit a new
+        # proof. Startup/read/cleanup never reconstruct a lost proof as truth.
+        group = db.execute('SELECT sources_json FROM voice_groups WHERE id=?',(identity,)).fetchone()
+        members = [row[0] for row in db.execute('SELECT fingerprint_id FROM voice_group_members WHERE group_id=?',(identity,))]
+        db.execute('INSERT OR REPLACE INTO voice_group_lineage VALUES (?,?,?)',
+            (identity,self._source_digest(self.voices._sources(group['sources_json'])),self._member_digest(members)))
+
+    def _request_complete(self, db, row):
+        proof = db.execute('SELECT source_digest FROM voice_group_request_lineage WHERE actor=? AND request_id=?',
+            (row['actor'],row['request_id'])).fetchone()
+        try:
+            return proof is not None and proof[0]==self._source_digest(self.voices._sources(row['sources_json']))
+        except (ValueError,KeyError,TypeError):
+            return False
+
+    def _proof_complete(self, db, row):
+        proof = db.execute('SELECT source_digest,member_digest FROM voice_group_lineage WHERE group_id=?',(row['id'],)).fetchone()
+        try:
+            members = [member[0] for member in db.execute('SELECT fingerprint_id FROM voice_group_members WHERE group_id=?',(row['id'],))]
+            return (proof is not None and proof['source_digest']==self._source_digest(self.voices._sources(row['sources_json']))
+                and proof['member_digest']==self._member_digest(members))
+        except (ValueError,KeyError,TypeError):
+            return False
+
     def _create(self, db, identities, sources, state, reason, *, score=None):
         sources = tuple(set(sources))
         if len(sources)>256 or sum(len(source.fact_dependencies) for source in sources)>256:
@@ -50,6 +84,7 @@ class VoiceGroups:
         db.execute('INSERT INTO voice_groups VALUES (?,?,?,?,?,?,?,?)',
             (identity,1,state,reason,score,self.ledger.clock(),min(source.expires_at for source in sources),encoded))
         db.executemany('INSERT INTO voice_group_members VALUES (?,?)',[(item,identity) for item in identities])
+        self._seal(db,identity)
         self._changed()
         return identity
 
@@ -88,6 +123,8 @@ class VoiceGroups:
                     or row['model_key']!=model_key or row['dimensions']!=dimensions
                     or row['duration_s']<MIN_GROUP_DURATION for row in members):
                 continue
+            if self.metadata(db,members[0]['id']) is None:
+                continue
             combined = set(sources) | set(self.voices._sources(group['sources_json']))
             if len(combined)>256 or sum(len(source.fact_dependencies) for source in combined)>256:
                 continue
@@ -107,6 +144,7 @@ class VoiceGroups:
             expires_at=?,sources_json=? WHERE id=?''',
             (min(score,group['similarity']) if group['similarity'] is not None else score,
              min(source.expires_at for source in combined),encoded,group['id']))
+        self._seal(db,group['id'])
         self._changed()
         return group['id']
 
@@ -121,7 +159,10 @@ class VoiceGroups:
         size = db.execute('SELECT COUNT(*) FROM voice_group_members WHERE group_id=?',(row['id'],)).fetchone()[0]
         members = self._members(db,row['id'])
         sources = self.voices._sources(row['sources_json'])
-        if (not 1<=size<=32 or len(members)!=size or row['state'] not in ('suggested','manual','unknown')
+        proof = db.execute('SELECT source_digest,member_digest FROM voice_group_lineage WHERE group_id=?',(row['id'],)).fetchone()
+        if (proof is None or proof['source_digest']!=self._source_digest(sources)
+                or proof['member_digest']!=self._member_digest(member['id'] for member in members)
+                or not 1<=size<=32 or len(members)!=size or row['state'] not in ('suggested','manual','unknown')
                 or len({(member['model_key'],member['dimensions']) for member in members})!=1
                 or any(not self.voices._live(member) or not set(self.voices._sources(member['sources_json']))<=set(sources)
                     for member in members)):
@@ -157,7 +198,7 @@ class VoiceGroups:
             if prior is not None:
                 if prior['digest']!=digest:
                     raise ValueError('voice_group_request_conflict')
-                if not self._live(prior):
+                if not self._request_complete(db,prior) or not self._live(prior):
                     raise LookupError('voice_group_unavailable')
                 return True
             if db.execute('SELECT COUNT(*) FROM voice_group_requests').fetchone()[0]>=4096:
@@ -221,9 +262,17 @@ class VoiceGroups:
             actor.require_current()
             if not self.ledger.sources_available(sources) or not self.ledger._sources_live(db,sources):
                 raise LookupError('voice_group_unavailable')
+            for key in groups:
+                if db.execute('SELECT 1 FROM voice_groups WHERE id=?',(key,)).fetchone():
+                    self._seal(db,key)
             db.execute('INSERT INTO voice_group_requests VALUES (?,?,?,?,?)',
                 (actor.subject,request_id,digest,min(source.expires_at for source in sources),
                  json.dumps([source.to_dict() for source in sources],sort_keys=True)))
+            db.execute('INSERT INTO voice_group_request_lineage VALUES (?,?,?)',
+                (actor.subject,request_id,self._source_digest(sources)))
+            actor.require_current()
+            if not self.ledger.sources_available(sources):
+                raise LookupError('voice_group_unavailable')
             return True
 
     def prune(self, db: sqlite3.Connection) -> None:
@@ -231,7 +280,7 @@ class VoiceGroups:
         self.initialize(db)
         for row in db.execute('SELECT * FROM voice_groups').fetchall():
             sources = self.voices._sources(row['sources_json'])
-            if self.ledger.clock()<row['expires_at'] and not self.ledger.sources_committed_unavailable(sources):
+            if self.ledger.clock()<min(row['expires_at'],*(source.expires_at for source in sources)) and not self.ledger.sources_committed_unavailable(sources):
                 continue
             survivors = self._members(db,row['id'])
             db.execute('DELETE FROM voice_groups WHERE id=?',(row['id'],))
@@ -240,5 +289,6 @@ class VoiceGroups:
                 if self.voices._live(member):
                     self._create(db,(member['id'],),self.voices._sources(member['sources_json']),'unknown','prior_group_expired')
         for row in db.execute('SELECT * FROM voice_group_requests').fetchall():
-            if self.ledger.clock()>=row['expires_at'] or self.ledger.sources_committed_unavailable(self.voices._sources(row['sources_json'])):
+            sources = self.voices._sources(row['sources_json'])
+            if self.ledger.clock()>=min(row['expires_at'],*(source.expires_at for source in sources)) or self.ledger.sources_committed_unavailable(sources):
                 db.execute('DELETE FROM voice_group_requests WHERE actor=? AND request_id=?',(row['actor'],row['request_id']))

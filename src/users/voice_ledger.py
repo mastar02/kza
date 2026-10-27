@@ -413,11 +413,16 @@ class VoiceLedger:
                 LEFT JOIN voice_fingerprints v ON v.id=m.fingerprint_id WHERE g.id IS NULL OR v.id IS NULL''').fetchone()[0]
             pending+=db.execute('''SELECT COUNT(*) FROM voice_fingerprints v LEFT JOIN voice_group_members m
                 ON v.id=m.fingerprint_id WHERE m.fingerprint_id IS NULL''').fetchone()[0]
+            pending+=db.execute('''SELECT COUNT(*) FROM voice_group_lineage p LEFT JOIN voice_groups g
+                ON g.id=p.group_id WHERE g.id IS NULL''').fetchone()[0]
+            pending+=db.execute('''SELECT COUNT(*) FROM voice_group_request_lineage p LEFT JOIN voice_group_requests r
+                ON r.actor=p.actor AND r.request_id=p.request_id WHERE r.request_id IS NULL''').fetchone()[0]
+            pending+=sum(not self.groups._request_complete(db,row) for row in db.execute('SELECT * FROM voice_group_requests'))
             for group in db.execute('''SELECT g.*,(SELECT m.fingerprint_id FROM voice_group_members m
                     WHERE m.group_id=g.id LIMIT 1) AS fingerprint_id FROM voice_groups g'''):
                 # Valid revocation/expiry has known lineage; incomplete live
                 # groups remain unknown without scanning all members per row.
-                if self._live(group) and (group['fingerprint_id'] is None
-                        or self.groups.metadata(db,group['fingerprint_id']) is None):
+                if not self.groups._proof_complete(db,group) or (self._live(group) and (group['fingerprint_id'] is None
+                        or self.groups.metadata(db,group['fingerprint_id']) is None)):
                     pending+=1
             return pending

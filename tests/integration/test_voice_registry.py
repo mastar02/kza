@@ -443,7 +443,8 @@ async def test_restored_voice_rows_reopen_receipts_and_cannot_override_current_t
             with privacy.ledger._transaction() as db:
                 return {table:[tuple(row) for row in db.execute('SELECT * FROM '+table)] for table in (
                     'voice_fingerprints','voice_fingerprint_sources','voice_profiles','voice_profile_sources',
-                    'voice_groups','voice_group_members','voice_group_requests')}
+                    'voice_groups','voice_group_members','voice_group_requests',
+                    'voice_group_lineage','voice_group_request_lineage')}
         backup = await privacy.acall(archived)
         operation = await owner.request(sources[0].conversation_id,MemoryReviewer('synthetic-admin'))
         await flush(owner)

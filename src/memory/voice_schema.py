@@ -46,4 +46,13 @@ CREATE TABLE IF NOT EXISTS voice_group_requests (
  expires_at REAL NOT NULL, sources_json TEXT NOT NULL, PRIMARY KEY(actor,request_id)
 );
 CREATE TABLE IF NOT EXISTS voice_group_schema (version INTEGER PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS voice_group_lineage (
+ group_id TEXT PRIMARY KEY REFERENCES voice_groups(id) ON DELETE CASCADE,
+ source_digest TEXT NOT NULL, member_digest TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS voice_group_request_lineage (
+ actor TEXT NOT NULL, request_id TEXT NOT NULL, source_digest TEXT NOT NULL,
+ PRIMARY KEY(actor,request_id),
+ FOREIGN KEY(actor,request_id) REFERENCES voice_group_requests(actor,request_id) ON DELETE CASCADE
+);
 '''
