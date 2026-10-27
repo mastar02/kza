@@ -307,6 +307,10 @@ class AmbientTranscriber:
             if self._privacy is not None:
                 from uuid import uuid4
                 from src.memory.fact_ledger import MemoryOrigin, MemorySource
+                if seg.input_epoch is not None and not self._privacy.scopes.epoch_available(
+                    seg.input_epoch, room_id, origin=MemoryOrigin.AMBIENT
+                ):
+                    raise PermissionError('ambient_segment_admission_retired')
                 input_source = seg.input_source
                 if input_source is not None and (not isinstance(input_source, MemorySource)
                     or input_source.origin is not MemoryOrigin.AMBIENT or seg.t0 < input_source.captured_at

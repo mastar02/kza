@@ -14,6 +14,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from src.memory.fact_ledger import MemorySource
+    from src.memory.sources import CaptureEpoch
 
 # Valores cerrados de `source`. 'self' = capturado mientras nuestro TTS
 # hablaba (no se destila a memoria — el asistente no se cita a sí mismo).
@@ -38,6 +39,7 @@ class RawSegment:
     # A duration limit may close storage, but cannot finalize a voice command.
     complete: bool = True
     input_source: MemorySource | None = field(default=None, repr=False)
+    input_epoch: CaptureEpoch | None = field(default=None, repr=False)
 
     @property
     def duration_s(self) -> float:

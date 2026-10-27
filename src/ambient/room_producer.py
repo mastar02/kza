@@ -83,6 +83,7 @@ class RoomProducer:
         boundary = self._boundary
         self.ready[:] = [
             segment for segment in self.ready if boundary.allows(segment.t0)
+            and self._admitted(segment.input_epoch)
         ]
 
     def needs_prune(self) -> bool:
@@ -176,6 +177,7 @@ class RoomProducer:
                     timestamp if self._oldest is None else min(timestamp, self._oldest)
                 )
                 input_source = self._source
+                input_epoch = self._epoch
                 produced = self._segmenter.feed(
                     ts=timestamp, chunk=chunk, tts_active=tts_active
                 )
@@ -185,6 +187,7 @@ class RoomProducer:
                     break
                 for segment in produced:
                     segment.input_source = input_source
+                    segment.input_epoch = input_epoch
                 self._oldest = getattr(
                     self._segmenter, "oldest_timestamp", self._oldest
                 )
@@ -283,6 +286,7 @@ class RoomProducer:
                 segment
                 for segment in produced
                 if self._boundary.allows(segment.t0) and not self._closed
+                and self._admitted(segment.input_epoch)
             )
         finally:
             items = produced = None

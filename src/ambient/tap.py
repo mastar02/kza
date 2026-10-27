@@ -11,7 +11,7 @@ import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from weakref import WeakSet
+from weakref import WeakMethod, WeakSet
 
 import numpy as np
 
@@ -50,6 +50,8 @@ class MultiChannelTap:
         self._pushes = InputCallbacks()
         self._closing = None
         self._capture_ingress = {}
+        self._published_epochs = {}
+        self._epoch_check = None
 
     def bind_ingress(self, scopes, room_ids: list[str]) -> None:
         """Install stable control-owned references before exposing microphone input."""
@@ -60,6 +62,7 @@ class MultiChannelTap:
             if previous is not None and previous.current.authority is not ingress.current.authority:
                 raise ValueError('ambient_ingress_authority_mismatch')
             self._capture_ingress[room_id] = ingress
+        self._epoch_check = WeakMethod(scopes.epoch_available)
 
     def input_epoch(self, room_id: str) -> CaptureEpoch | None:
         """Read admission metadata without clocks, locks or authority queries."""
@@ -127,6 +130,8 @@ class MultiChannelTap:
             current = self.input_boundary(room_id)
             if (boundary is not None and boundary != current) or not current.allows(timestamp):
                 return
+            if room_id in self._capture_ingress and (epoch is not self.input_epoch(room_id) or epoch.retired):
+                return
             q.append(TapPacket(timestamp, chunk, tts_active, epoch))
         finally:
             chunk = q = None
@@ -159,17 +164,29 @@ class MultiChannelTap:
         previous = self._boundaries.get(room_id)
         if previous is not None:
             boundary = previous.tighten(boundary)
-        if self._closed or previous == boundary:
+        if self._closed:
             return 0
+        epoch = self.input_epoch(room_id)
+        changed = previous != boundary or epoch is not self._published_epochs.get(room_id)
         self._boundaries[room_id] = boundary
+        self._published_epochs[room_id] = epoch
         queue = self._queues.get(room_id)
         if queue is None:
             return 0
         items = list(queue)
-        retained = deque((item for item in items if boundary.allows(item.timestamp)), maxlen=self._maxlen)
-        self._queues[room_id] = retained
-        queue.clear()
+        retained = deque((item for item in items if boundary.allows(item.timestamp)
+                          and self._packet_available(room_id, item)), maxlen=self._maxlen)
+        if changed or len(retained) != len(items):
+            self._queues[room_id] = retained
+            queue.clear()
         return len(items)-len(retained)
+
+    def _packet_available(self, room_id, item):
+        if room_id not in self._capture_ingress:
+            return True
+        from src.memory.fact_ledger import MemoryOrigin
+        check = self._epoch_check() if self._epoch_check is not None else None
+        return check is not None and check(item.epoch, room_id, origin=MemoryOrigin.AMBIENT)
 
     def close(self) -> None:
         """Close admission and detach buffered audio, including late callbacks."""

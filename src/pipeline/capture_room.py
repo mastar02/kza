@@ -95,6 +95,7 @@ class CaptureRoom:
         self._process, self._poll, self._clear = process, poll, clear
         self._privacy = privacy
         self._ingress = privacy.scopes.ingress(room_id, origin=MemoryOrigin.VOICE) if privacy is not None else None
+        self._published_epoch = self.input_epoch
         self._listening = listening
         self._queue = deque(maxlen=32)
         self._boundary = CaptureBoundary(None, float('-inf'))
@@ -136,6 +137,8 @@ class CaptureRoom:
         epoch = self.input_epoch if epoch is _UNSTAMPED else epoch
         try:
             if not self._closed and not self._failed and (admitted is None or admitted == current) and current.allows(timestamp):
+                if self._privacy is not None and (epoch is not self.input_epoch or epoch.retired):
+                    return
                 queue.append(CapturePacket(timestamp, audio.copy(), frames, epoch))
         except Exception:
             self._input_drops += 1
@@ -153,10 +156,15 @@ class CaptureRoom:
         boundary = self._privacy.scopes.buffer_boundary(self.room_id, origin=MemoryOrigin.VOICE)
         with self._boundary_lock:
             boundary = self._boundary.tighten(boundary)
-            if boundary != self._boundary:
-                self._boundary = boundary
-                queue = self._queue
-                self._queue = deque((p for p in tuple(queue) if self._boundary.allows(p.timestamp)), maxlen=32)
+            epoch = self.input_epoch
+            changed = boundary != self._boundary or epoch is not self._published_epoch
+            self._boundary, self._published_epoch = boundary, epoch
+            queue = self._queue
+            packets = tuple(queue)
+            retained = deque((packet for packet in packets
+                              if boundary.allows(packet.timestamp) and self._packet_available(packet)), maxlen=32)
+            if changed or len(retained) != len(packets):
+                self._queue = retained
                 # An in-flight copy may hold an empty old deque. It must never
                 # publish into the current queue after the stricter fence.
                 queue.clear()
