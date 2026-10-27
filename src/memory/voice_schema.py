@@ -32,4 +32,18 @@ CREATE TABLE IF NOT EXISTS voice_review_requests (
  actor TEXT NOT NULL, request_id TEXT NOT NULL, digest TEXT NOT NULL,
  profile_id TEXT NOT NULL, PRIMARY KEY(actor,request_id)
 );
+CREATE TABLE IF NOT EXISTS voice_groups (
+ id TEXT PRIMARY KEY, revision INTEGER NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL,
+ similarity REAL, created_at REAL NOT NULL, expires_at REAL NOT NULL, sources_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS voice_group_members (
+ fingerprint_id TEXT PRIMARY KEY REFERENCES voice_fingerprints(id) ON DELETE CASCADE,
+ group_id TEXT NOT NULL REFERENCES voice_groups(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS voice_group_members_group ON voice_group_members(group_id);
+CREATE TABLE IF NOT EXISTS voice_group_requests (
+ actor TEXT NOT NULL, request_id TEXT NOT NULL, digest TEXT NOT NULL,
+ expires_at REAL NOT NULL, sources_json TEXT NOT NULL, PRIMARY KEY(actor,request_id)
+);
+CREATE TABLE IF NOT EXISTS voice_group_schema (version INTEGER PRIMARY KEY);
 '''

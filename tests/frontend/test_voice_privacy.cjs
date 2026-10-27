@@ -106,3 +106,38 @@ test('replacing audio waits for native retirement before fetching another body',
   media.emptied();await flush();assert.equal(f.requests.length,2);
   await f.response();await f.body();await f.channel.settled();f.channel.dispose();
 });
+
+function groupedCapture() {
+  return {id:'vf_'+'b'.repeat(64),observed_at:2000000000,expires_at:2000000060,duration_s:3,created_at:2000000000,
+    review_available:true,suggested_profile:null,similarity:null,group_id:A,group_revision:2,group_size:3,
+    group_state:'suggested',group_reason:'pairwise_similarity',group_similarity:.95,group_expires_at:2000000010};
+}
+test('group metadata is detached and expires at its earliest contributor without renewing raw samples',async()=>{
+  const f=fixture('captures'),input=groupedCapture();
+  assert(f.store.receive([{...input,private_name:'Not a group field'}],{mono:0,wall:2000000000000}));
+  const cached=f.store.snapshot()[0];assert.equal(cached.group_id,A);assert.equal(cached.group_revision,2);
+  assert.equal(cached.private_name,undefined);assert(Object.isFrozen(cached));
+  f.advance(10000);f.store.check();assert.deepEqual(f.store.snapshot(),[]);
+});
+for(const [field,value] of [['group_id','unknown'],['group_revision',0],['group_size',33],['group_state','verified_identity'],
+  ['group_reason','verified'],['group_similarity',2],['group_expires_at',Infinity]]) {
+  test('invalid group metadata is rejected before caching: '+field,async()=>{
+    const f=fixture('captures');assert.equal(f.store.receive([{...groupedCapture(),[field]:value}],{mono:0,wall:2000000000000}),false);
+    assert.deepEqual(f.store.snapshot(),[]);
+  });
+}
+test('manual corrections carry only selected IDs and their current group revisions',async()=>{
+  const {createVoiceState}=require('../../src/dashboard/frontend/obs/src/voice-privacy.js');
+  const {createVoiceController}=require('../../src/dashboard/frontend/obs/src/voice-channel.js');
+  const state=createVoiceState({monotonic:()=>0,wall:()=>2000000000000,schedule:()=>1,cancel:()=>{}}),requests=[];
+  const controller=createVoiceController({state,hasView:()=>false,emitAck:()=>true,
+    fetch:async(path,options)=>{
+      if(options.method){requests.push(JSON.parse(options.body));return{status:200,ok:true,arrayBuffer:async()=>new ArrayBuffer(0)};}
+      return{status:200,ok:true,json:async()=>({connection_id:A,channel:'voices:profiles',snapshot:null})};
+    }});
+  controller.open(A);const row=groupedCapture();state.captures.receive([row],{mono:0,wall:2000000000000});
+  assert(await controller.correctGroups([row.id],'split',B));
+  assert.deepEqual(requests,[{fingerprint_ids:[row.id],expected_revisions:{[A]:2},action:'split',request_id:B}]);
+  assert.equal(await controller.correctGroups([row.id],'unknown',C),false);assert.equal(requests.length,1);
+  controller.dispose();
+});

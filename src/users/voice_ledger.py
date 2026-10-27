@@ -14,8 +14,9 @@ import numpy as np
 from src.dashboard.auth import DashboardPrincipal
 from src.memory.fact_ledger import MemorySource
 from src.users.voice_capture import VoiceCaptureReview
+from src.users.voice_groups import VoiceGroups
 from src.users.voice_projection import VoiceProjection
-from src.dashboard.live_retention_types import RevisionStamp
+from src.dashboard.live_retention_types import RevisionSet,RevisionStamp
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class VoiceLedger:
 
     def __init__(self, ledger):
         self.ledger = ledger
+        self.groups = VoiceGroups(self)
 
     @property
     def projection_revision(self) -> int:
@@ -99,6 +101,7 @@ class VoiceLedger:
         raw,dimensions = vector_bytes(embedding)
         try:
             with self.ledger._transaction() as db:
+                self.groups.initialize(db)
                 if not self.ledger._sources_live(db,sources):
                     return None
                 if db.execute('SELECT 1 FROM voice_fingerprints WHERE id=?',(identity,)).fetchone():
@@ -122,6 +125,10 @@ class VoiceLedger:
                 if review is not None:
                     db.execute('INSERT INTO voice_capture_reviews VALUES (?,?,?,?,?,?)',
                         (identity,review.audio_wav,review.transcript,review.room_id,review.duration_s,review.clip_duration_s))
+                self.groups.add(db,identity,model_key,dimensions,raw,duration_s,sources)
+                grouped = self.groups.metadata(db,identity)
+                if grouped is None or not self.ledger._sources_live(db,grouped[1]):
+                    raise LookupError('voice_capture_unavailable')
                 return identity
         finally:
             embedding = raw = review = None
@@ -135,15 +142,21 @@ class VoiceLedger:
             profiles = {row['id']:row for row in db.execute('SELECT id,name,revision,sources_json,confirmed_at,confirmed_by,deleted_at FROM voice_profiles WHERE deleted_at IS NULL')
                 if self._live(row,confirmed=True)}
             captures = []
-            page = db.execute('''SELECT v.*,EXISTS(SELECT 1 FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id) AS review_available
+            group_cache = {}
+            page = db.execute('''SELECT v.id,v.model_key,v.created_at,v.expires_at,v.duration_s,v.sources_json,
+                v.suggested_profile,v.suggested_revision,v.similarity,
+                EXISTS(SELECT 1 FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id) AS review_available
                 FROM voice_fingerprints v WHERE v.id>? ORDER BY v.id LIMIT 101''',(cursor or '',)).fetchall()
             for row in page[:100]:
                 if not self._live(row):
                     continue
+                group = self.groups.metadata(db,row['id'],cache=group_cache)
+                if group is None:
+                    continue
                 suggestion = profiles.get(row['suggested_profile'])
                 if suggestion is not None and suggestion['revision']!=row['suggested_revision']:
                     suggestion = None
-                captures.append({'id':row['id'],'group_id':row['id'],'created_at':row['created_at'],
+                captures.append({'id':row['id'],**group[0],'created_at':row['created_at'],
                     'expires_at':row['expires_at'],'duration_s':row['duration_s'],'model_key':row['model_key'],
                     'capture_ids':[source.capture_id for source in self._sources(row['sources_json'])],
                     'review_available':bool(row['review_available']),
@@ -251,6 +264,7 @@ class VoiceLedger:
                         RevisionStamp(ref(self),self.projection_revision))
                 else:
                     rows,sources,extra,associated = [],set(),set(),set()
+                    group_cache = {}
                     next_cursor = snapshot['next_cursor']
                     for index,item in enumerate(snapshot['fingerprints']):
                         if index==50:
@@ -265,6 +279,11 @@ class VoiceLedger:
                                 related = self._sources(parent['sources_json'])
                             else:
                                 item = dict(item,suggested_profile=None,similarity=None,association='unknown')
+                        group = self.groups.metadata(db,item['id'],cache=group_cache)
+                        if (group is None or group[0]['group_id']!=item['group_id']
+                                or group[0]['group_revision']!=item['group_revision']):
+                            raise LookupError('voice_group_changed')
+                        original = tuple(set(original) | set(group[1]))
                         candidate = sources | extra | set(original) | set(related)
                         if len(candidate)>256 or sum(len(source.fact_dependencies) for source in candidate)>256:
                             if rows:
@@ -285,7 +304,8 @@ class VoiceLedger:
                     expiry = min([*[source.expires_at for source in sources],*[dep.expires_at for source in extra
                         for dep in source.fact_dependencies if dep.expires_at is not None]],default=observed)
                     result = VoiceProjection(rows,tuple(sources),observed,expiry,'voices:captures',next_cursor,
-                        revision=RevisionStamp(ref(self),self.projection_revision) if associated else None,
+                        revision=RevisionSet((RevisionStamp(ref(self.groups),self.groups.projection_revision),
+                            *([RevisionStamp(ref(self),self.projection_revision)] if associated else []))),
                         associated_profiles=tuple(sorted(associated)),activity_sources=tuple(extra))
                 actor.require_current()
                 return result
@@ -364,6 +384,7 @@ class VoiceLedger:
     def prune(self) -> None:
         """Physically remove expired captures and committed-invalid profiles."""
         with self.ledger._transaction() as db:
+            self.groups.prune(db)
             for row in db.execute('SELECT id,sources_json,expires_at FROM voice_fingerprints').fetchall():
                 sources = self._sources(row['sources_json'])
                 if self.ledger.clock()>=row['expires_at'] or self.ledger.sources_committed_unavailable(sources):
@@ -377,7 +398,8 @@ class VoiceLedger:
         with self.ledger._transaction() as db:
             pending = 0
             for query in ('SELECT sources_json FROM voice_fingerprints',
-                    'SELECT sources_json FROM voice_profiles WHERE embedding IS NOT NULL'):
+                    'SELECT sources_json FROM voice_profiles WHERE embedding IS NOT NULL',
+                    'SELECT sources_json FROM voice_groups', 'SELECT sources_json FROM voice_group_requests'):
                 for row in db.execute(query):
                     try:
                         sources = self._sources(row['sources_json'])
@@ -387,4 +409,15 @@ class VoiceLedger:
             # A damaged partial restore cannot certify unindexed or orphaned PCM.
             pending+=db.execute('''SELECT COUNT(*) FROM voice_capture_reviews r LEFT JOIN voice_fingerprints v
                 ON v.id=r.fingerprint_id WHERE v.id IS NULL''').fetchone()[0]
+            pending+=db.execute('''SELECT COUNT(*) FROM voice_group_members m LEFT JOIN voice_groups g ON g.id=m.group_id
+                LEFT JOIN voice_fingerprints v ON v.id=m.fingerprint_id WHERE g.id IS NULL OR v.id IS NULL''').fetchone()[0]
+            pending+=db.execute('''SELECT COUNT(*) FROM voice_fingerprints v LEFT JOIN voice_group_members m
+                ON v.id=m.fingerprint_id WHERE m.fingerprint_id IS NULL''').fetchone()[0]
+            for group in db.execute('''SELECT g.*,(SELECT m.fingerprint_id FROM voice_group_members m
+                    WHERE m.group_id=g.id LIMIT 1) AS fingerprint_id FROM voice_groups g'''):
+                # Valid revocation/expiry has known lineage; incomplete live
+                # groups remain unknown without scanning all members per row.
+                if self._live(group) and (group['fingerprint_id'] is None
+                        or self.groups.metadata(db,group['fingerprint_id']) is None):
+                    pending+=1
             return pending

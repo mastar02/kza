@@ -66,6 +66,12 @@
       hasNext:kind => !!pages[kind],
       confirm(identities,name,requestId) { return mutate('/api/voices/profiles',
         { fingerprint_ids:identities, name, request_id:requestId },'POST'); },
+      correctGroups(identities,action,requestId) {
+        const rows = state.captures.snapshot().filter(row => identities.includes(row.id));
+        if (!identities.length || rows.length!==identities.length || new Set(identities).size!==identities.length) return Promise.resolve(false);
+        return mutate('/api/voices/groups/corrections',{fingerprint_ids:identities,
+          expected_revisions:Object.fromEntries(rows.map(row => [row.group_id,row.group_revision])),action,request_id:requestId},'POST');
+      },
       deleteProfile(identity,revision) { return mutate('/api/voices/profiles/'+identity,{expected_revision:revision},'DELETE'); },
       dispose() { closed = true; leave(); for (const channel of Object.values(channels)) channel.dispose(); },
     };

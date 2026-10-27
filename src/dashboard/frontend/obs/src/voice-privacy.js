@@ -70,9 +70,18 @@
         if (!Number.isFinite(value.duration_s) || value.duration_s<.8 || value.duration_s>30
             || !Number.isFinite(value.created_at) || typeof value.review_available !== 'boolean'
             || value.suggested_profile !== null && !ID.test(value.suggested_profile)
-            || value.similarity !== null && (!Number.isFinite(value.similarity) || Math.abs(value.similarity)>1)) throw Error('invalid capture metadata');
+            || value.similarity !== null && (!Number.isFinite(value.similarity) || Math.abs(value.similarity)>1)
+            || !ID.test(value.group_id) || !Number.isInteger(value.group_revision) || value.group_revision<1
+            || !Number.isInteger(value.group_size) || value.group_size<1 || value.group_size>32
+            || !['suggested','manual','unknown'].includes(value.group_state)
+            || !['new_voice','pairwise_similarity','short_audio','ambiguous','manual','manual_unknown','unreviewed','prior_group_expired'].includes(value.group_reason)
+            || !Number.isFinite(value.group_expires_at) || value.group_expires_at<=value.observed_at
+            || value.group_expires_at-value.observed_at>172800
+            || value.group_similarity!==null && (!Number.isFinite(value.group_similarity) || Math.abs(value.group_similarity)>1)) throw Error('invalid capture metadata');
         return { id:value.id, duration_s:value.duration_s, created_at:value.created_at, review_available:value.review_available,
-          suggested_profile:value.suggested_profile, similarity:value.similarity };
+          suggested_profile:value.suggested_profile, similarity:value.similarity, group_id:value.group_id,
+          group_revision:value.group_revision, group_size:value.group_size, group_state:value.group_state,
+          group_reason:value.group_reason, group_similarity:value.group_similarity, group_expires_at:value.group_expires_at };
       }
       if (kind !== 'review' || typeof value.transcript !== 'string' || value.transcript.length>8192
           || value.room_id !== null && (typeof value.room_id !== 'string' || value.room_id.length>128)
@@ -103,10 +112,12 @@
             if (!value || !Number.isFinite(value.observed_at) || !Number.isFinite(value.expires_at)
                 || !Number.isFinite(value.expires_at*1000) || value.expires_at<=value.observed_at
                 || value.expires_at-value.observed_at>(kind==='profiles'?300:172800) || ids.has(value.id)) throw Error('invalid voice deadline');
-            const budget = (value.expires_at-value.observed_at)*1000-elapsed;
-            if (budget<=0 || value.expires_at*1000<=wall()) continue;
+            const deadline = kind==='captures' ? Math.min(value.expires_at,value.group_expires_at) : value.expires_at;
+            if (!Number.isFinite(deadline)) throw Error('invalid voice group deadline');
+            const budget = (deadline-value.observed_at)*1000-elapsed;
+            if (budget<=0 || deadline*1000<=wall()) continue;
             const row = copy(value); ids.add(row.id);
-            next.push({ row:Object.freeze(row), mono:monotonic()+budget, wall:Math.min(value.expires_at*1000,wall()+budget) });
+            next.push({ row:Object.freeze(row), mono:monotonic()+budget, wall:Math.min(deadline*1000,wall()+budget) });
           }
           clear(); entries = next; status = 'real'; prune(); arm(); notify(); return true;
         } catch { release(next); clear(); status = 'unavailable'; notify(); return false; }

@@ -18,6 +18,17 @@ class RevisionStamp:
 
 
 @dataclass(frozen=True)
+class RevisionSet:
+    """Combine independent content-free producer revision fences."""
+
+    stamps: tuple[RevisionStamp,...]
+
+    def current(self) -> bool:
+        """Every producer must still authorize the delivered metadata."""
+        return all(stamp.current() for stamp in self.stamps)
+
+
+@dataclass(frozen=True)
 class SnapshotMetadata:
     """A delivered REST batch retains only its token and source lineage."""
 
@@ -26,7 +37,7 @@ class SnapshotMetadata:
     expires_at: float | None = None
     channel: str = 'conversations'
     activity: bool = False
-    revision: RevisionStamp | None = None
+    revision: RevisionStamp | RevisionSet | None = None
     activity_sources: tuple = ()
 
     def available(self, policy, now: float) -> bool:

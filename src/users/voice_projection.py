@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass,field
 
-from src.dashboard.live_retention_types import RevisionStamp
+from src.dashboard.live_retention_types import RevisionSet,RevisionStamp
 
 
 @dataclass(repr=False)
@@ -16,6 +16,6 @@ class VoiceProjection:
     channel: str
     next_cursor: str | None = None
     profile_refs: tuple = ()
-    revision: RevisionStamp | None = None
+    revision: RevisionStamp | RevisionSet | None = None
     associated_profiles: tuple = ()
     activity_sources: tuple = ()

@@ -24,6 +24,16 @@ class DeleteVoiceBody(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class CorrectVoiceGroupsBody(BaseModel):
+    """Exact group revisions make a human merge/split atomic and retryable."""
+
+    model_config = ConfigDict(extra='forbid',strict=True)
+    fingerprint_ids: list[str] = Field(min_length=1,max_length=32)
+    expected_revisions: dict[str,int] = Field(min_length=1,max_length=32)
+    action: str = Field(pattern=r'^(merge|split|unknown)$')
+    request_id: str = Field(pattern=r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+
+
 def register_voice_routes(app, *, voices=None) -> None:
     """Register source-retained, authenticated voice metadata and review actions."""
     router = APIRouter(prefix='/api/voices')
@@ -63,6 +73,10 @@ def register_voice_routes(app, *, voices=None) -> None:
     async def confirm(body: ConfirmVoiceBody,actor: VoiceReviewer = Depends(reviewer)):
         profile = await call(service().ledger.confirm,tuple(body.fingerprint_ids),body.name,body.request_id,actor)
         return {'profile_id':profile['id'],'revision':profile['revision']}
+    @router.post('/groups/corrections')
+    async def correct_groups(body: CorrectVoiceGroupsBody,actor: VoiceReviewer = Depends(reviewer)):
+        return {'updated':await call(service().ledger.groups.correct,tuple(body.fingerprint_ids),
+            body.expected_revisions,body.action,body.request_id,actor)}
     @router.get('/captures/{fingerprint_id}/review')
     async def review(request: Request,fingerprint_id: str,actor: VoiceReviewer = Depends(reviewer)):
         return response(request,'review',fingerprint_id,actor)

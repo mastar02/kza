@@ -61,7 +61,8 @@ class VoiceResponse(Response):
                     or projection.associated_profiles and self.kind!='captures'):
                 raise ValueError('invalid_voice_associations')
             if self.kind=='captures' and (any(type(row) is not dict or set(row)!={'id','group_id','created_at','expires_at','duration_s',
-                    'model_key','capture_ids','review_available','suggested_profile','similarity','association'} for row in projection.rows)
+                    'model_key','capture_ids','review_available','suggested_profile','similarity','association',
+                    'group_revision','group_state','group_reason','group_size','group_similarity','group_expires_at'} for row in projection.rows)
                     or {row['suggested_profile'] for row in projection.rows if row['suggested_profile']}!={identity for identity,_ in projection.associated_profiles}):
                 raise ValueError('invalid_association_metadata')
             operation.rows,projection.rows = projection.rows,[]

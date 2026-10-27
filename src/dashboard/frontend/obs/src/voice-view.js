@@ -37,6 +37,8 @@
       for (const id of selected) if (!rows.some(row => row.id===id)) selected.delete(id);
       captures.replaceChildren(node('h2','Muestras de voz'));
       captures.append(node('p','Audio y transcripción vencen con la captura original, como máximo a las 48 horas.','mute'));
+      captures.append(node('p','Los grupos sugieren una misma voz. La similitud no verifica identidad. Las correcciones manuales conservan el vencimiento de sus fuentes.','mute'));
+      captures.append(node('p','Estas correcciones organizan las muestras; los perfiles guardados se revisan por separado.','mute'));
       if (!rows.length) captures.append(node('p',message(state.captures,'No hay muestras vigentes disponibles.')));
       const count = node('p'), input = doc.createElement('input');
       input.type = 'text'; input.maxLength = 64; input.setAttribute('aria-label','Nombre del perfil'); input.autocomplete = 'off';
@@ -46,10 +48,42 @@
         const sending = controller.confirm(ids,name,requestId); name = null;
         if (!await sending && active) captures.append(node('p','No se pudo confirmar. Las muestras pueden haber vencido; actualizá antes de reintentar.'));
       });
-      function update() { count.textContent = `${selected.size} muestras seleccionadas · elegí entre 3 y 32 de la misma voz.`; confirm.disabled = selected.size<3 || !input.value.trim(); }
+      function correction(action) {
+        const sending = controller.correctGroups([...selected],action,crypto.randomUUID());
+        for (const control of [merge,split,unknown]) control.disabled = true;
+        sending.then(accepted => {
+          if (!accepted && active) captures.append(node('p','No se pudo corregir el grupo. Actualizá para revisar sus muestras y reintentar.'));
+        });
+      }
+      const merge = button('Unir grupos seleccionados',() => correction('merge'));
+      const split = button('Separar muestras seleccionadas',() => correction('split'));
+      const unknown = button('Dejar como desconocido',() => correction('unknown'));
+      function update() {
+        const chosen = rows.filter(row => selected.has(row.id)), groups = new Map(chosen.map(row => [row.group_id,row]));
+        count.textContent = `${selected.size} muestras seleccionadas · elegí entre 3 y 32 de la misma voz para confirmar un perfil.`;
+        confirm.disabled = selected.size<3 || !input.value.trim();
+        merge.disabled = groups.size<2 || [...groups.values()].reduce((total,row) => total+row.group_size,0)>32;
+        split.disabled = !selected.size || groups.size!==1 || selected.size>=[...groups.values()][0].group_size;
+        unknown.disabled = !selected.size;
+      }
       input.addEventListener('input',update);
       const table = node('table','','k'), body = doc.createElement('tbody');
+      const groups = new Map();
       for (const row of rows) {
+        if (!groups.has(row.group_id)) groups.set(row.group_id,[]);
+        groups.get(row.group_id).push(row);
+      }
+      for (const [groupId,members] of groups) {
+        const group = members[0], title = doc.createElement('tr'), cell = doc.createElement('td');
+        title.dataset.voiceGroupId = groupId; cell.colSpan = 5;
+        const label = {suggested:'Grupo sugerido',manual:'Agrupación manual',unknown:'Desconocido'}[group.group_state];
+        const reasons = {short_audio:'Audio corto',ambiguous:'Similitud ambigua',manual_unknown:'Separado manualmente',unreviewed:'Sin revisión',prior_group_expired:'Venció el grupo anterior'};
+        cell.append(node('strong',`${label} · ${groupId}`),node('p',`${members.length} de ${group.group_size} muestras en esta página${group.group_similarity===null?'':` · similitud mínima ${group.group_similarity.toFixed(2)}`}${reasons[group.group_reason]?` · ${reasons[group.group_reason]}`:''}`,'mute'),
+          button('Seleccionar grupo visible',() => {
+            for (const member of members) if (member.review_available && selected.size<32) selected.add(member.id);
+            drawCaptures();
+          })); title.append(cell); body.append(title);
+        for (const row of members) {
         const id = row.id, tr = doc.createElement('tr'), choice = doc.createElement('input');
         tr.dataset.captureId = id;
         choice.type = 'checkbox'; choice.checked = selected.has(id); choice.disabled = !row.review_available;
@@ -61,8 +95,11 @@
         const action = doc.createElement('td'); action.append(listen); tr.append(action);
         tr.append(node('td',row.suggested_profile ? `Sugerencia · similitud ${row.similarity.toFixed(2)}` : 'Sin asociación revisada'));
         body.append(tr);
+        }
       }
-      table.append(body); captures.append(table,count,input,confirm); update();
+      table.append(body); captures.append(table,count,
+        node('p','Unir incluye todas las muestras de los grupos elegidos, aunque algunas estén en otra página. Separar forma otro grupo con las muestras seleccionadas; dejar como desconocido las separa individualmente.','mute'),
+        merge,split,unknown,input,confirm); update();
       if (controller.hasNext('captures')) captures.append(button('Más muestras',() => controller.next('captures')));
       state.captures.committed(state.captures.deliveryToken());
     }

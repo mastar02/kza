@@ -12,6 +12,7 @@ import tempfile
 import time
 
 import aiohttp
+import numpy as np
 import uvicorn
 from websockets.asyncio.client import connect
 
@@ -49,7 +50,7 @@ async def main(*,browser_binary='chromium'):
             voices.register_encoder(encoder)
             async def sample(text,ttl=60):
                 source = memory_source(now=clock.now,ttl=ttl)
-                assert voices.observe(encoder,AUDIO,(source,),transcript=text,room_id='Synthetic listening room')
+                assert voices.observe(encoder,np.tile(AUDIO,3),(source,),transcript=text,room_id='Synthetic listening room')
                 await idle(voices)
                 rows = (await voices.acall(voices.ledger.snapshot))['fingerprints']
                 identity = next(row['id'] for row in rows if source.capture_id in row['capture_ids'])
@@ -107,6 +108,7 @@ async def main(*,browser_binary='chromium'):
                             raise
                         await page.evaluate("[...document.querySelectorAll('.nav-item')].find(item=>item.textContent.includes('Voces')).click()")
                         await page.wait_for("document.querySelectorAll('[data-capture-id]').length===4")
+                        assert await page.evaluate("document.querySelectorAll('[data-voice-group-id]').length===1")
                         assert not await page.evaluate("document.querySelector('#view-users').textContent.includes('Embedding space')")
                         await page.evaluate('''(() => {
                           window.__voicePlayers=[]; window.__voiceEmptyCallbacks=[]; window.__holdVoiceEmpty=false;
@@ -129,6 +131,18 @@ async def main(*,browser_binary='chromium'):
                         await page.wait_for("document.querySelector('[aria-label=\"Perfiles confirmados\"]').textContent.includes('Synthetic browser profile')")
                         profiles = (await voices.acall(voices.ledger.snapshot))['profiles']
                         assert len(profiles)==1
+                        await page.wait_for("document.querySelectorAll('[data-capture-id]').length===4 && window.__kzaVoiceState.captures.status()==='real'")
+                        async def correct(identities,button,group_count):
+                            await page.evaluate('''(() => { for(const id of %s) document.querySelector(`[data-capture-id="${id}"] input`).click();
+                              [...document.querySelectorAll('button')].find(item=>item.textContent===%s).click(); })()'''%(json.dumps(identities),json.dumps(button)))
+                            await page.wait_for("document.querySelectorAll('[data-voice-group-id]').length==="+str(group_count)+" && window.__kzaVoiceState.captures.status()==='real'")
+                        await correct([identities[0]],'Separar muestras seleccionadas',2)
+                        await correct(identities[:2],'Unir grupos seleccionados',1)
+                        await correct([identities[2]],'Dejar como desconocido',2)
+                        corrected = {row['id']:row for row in (await voices.acall(voices.ledger.snapshot))['fingerprints']}
+                        assert corrected[identities[2]]['group_reason']=='manual_unknown'
+                        assert corrected[identities[0]]['group_state']=='manual'
+                        assert await page.evaluate("document.body.textContent.includes('Synthetic browser profile')")
                         async def listen(identity,text):
                             try:
                                 await page.wait_for('!!document.querySelector('+json.dumps('[data-capture-id="'+identity+'"] button')+')')
@@ -200,6 +214,8 @@ async def main(*,browser_binary='chromium'):
                         assert page.errors==[]
                         print(json.dumps({'passed':True,'actual_chromium_http_v3_ws_react_and_native_audio':True,
                             'manual_profile_confirmation_and_revision_delete':True,'review_uses_real_transcript_and_room':True,
+                            'suggested_group_then_ui_split_merge_and_explicit_unknown':True,
+                            'raw_group_corrections_leave_permanent_profile_names_unchanged':True,
                             'permanent_profile_survives_raw_expiry':True,'raw_retirement_waits_for_actual_emptied_callback':True,
                             'urls_cache_dom_and_player_source_retired':True,'idle_expiry_with_frozen_server_clock':True,
                             'navigation_and_session_loss_stop_audio_and_clear_text':True,'external_bootstrap_assets_blocked':True,

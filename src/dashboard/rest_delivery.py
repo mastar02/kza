@@ -17,7 +17,7 @@ from starlette.types import ASGIApp,Receive,Scope,Send
 
 from src.analytics.event_logger import EventLogger
 from src.dashboard.conversation_projection import ConversationProjection
-from src.dashboard.live_retention_types import RevisionStamp,SnapshotMetadata
+from src.dashboard.live_retention_types import RevisionSet,RevisionStamp,SnapshotMetadata
 from src.memory.fact_ledger import MemorySource
 
 if TYPE_CHECKING:
@@ -41,7 +41,7 @@ class RestOperation:
     guard: object | None = field(default=None,repr=False)
     channel: str = 'conversations'
     profile_refs: tuple = ()
-    revision: RevisionStamp | None = None
+    revision: RevisionStamp | RevisionSet | None = None
     associated_profiles: tuple = ()
     activity_sources: tuple = ()
 
