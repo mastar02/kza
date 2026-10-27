@@ -232,27 +232,40 @@ async function hydrateMocks({ signal }) {
 }
 
 function mountWsLiveBridge() {
+  let retired = false, retry = null, socket = null;
   const live = window.KzaLivePrivacy.createLiveState({
-    onChange: frame => window.dispatchEvent(new CustomEvent('kza:live', { detail: frame })),
+    emitAck: message => {
+      if (!socket || socket.readyState !== 1) return false;
+      socket.send(JSON.stringify(message));
+      return true;
+    },
+    onChange: eventId => {
+      window.dispatchEvent(new CustomEvent('kza:live', { detail:{ event_id:eventId } }));
+      if (!document.querySelector('[data-live-ticker]')) live.committed(null);
+    },
   });
   window.__kzaLiveState = live;
   const checkExpiry = () => live.expire();
   window.addEventListener('focus', checkExpiry);
   document.addEventListener('visibilitychange', checkExpiry);
-  let retired = false, retry = null, socket = null;
   function connect() {
     if (retired) return;
     try {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/ws/live`);
     socket = ws;
+    ws.onopen = () => {
+      if (!retired && socket === ws) ws.send(JSON.stringify({ type:'live_hello', version:1, client_id:window.KzaLivePrivacy.pageId() }));
+    };
     ws.onmessage = (ev) => {
+      if (socket !== ws || retired) return;
       try {
         const frame = JSON.parse(ev.data);
         live.receive(frame);
       } catch {}
     };
     ws.onclose = async (event) => {
+      if (socket !== ws) return;
       live.clear();
       if (retired) return;
       let needsLogin = event.code === 1008;
@@ -271,10 +284,11 @@ function mountWsLiveBridge() {
   }
   connect();
   return () => {
-    retired = true; clearTimeout(retry); socket?.close();
+    retired = true; clearTimeout(retry);
     window.removeEventListener('focus', checkExpiry);
     document.removeEventListener('visibilitychange', checkExpiry);
     live.dispose();
+    queueMicrotask(() => socket?.close());
     if (window.__kzaLiveState === live) window.__kzaLiveState = null;
     if (window.__kzaLiveWs === socket) window.__kzaLiveWs = null;
   };

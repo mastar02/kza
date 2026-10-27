@@ -476,7 +476,7 @@ def register_observability_routes(
                 await ws.close(code=1000 if available() else 1008)
             try:
                 await ws.accept()
-                await event_bus.stream(sub_id, send, close, ws.receive, available)
+                await event_bus.browser_stream(sub_id, send, close, ws.receive, available)
             except WebSocketDisconnect:
                 pass
             except Exception:

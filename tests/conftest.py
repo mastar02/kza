@@ -494,6 +494,7 @@ async def live_graph():
     import time
     from types import SimpleNamespace
     from src.dashboard.live_event_bus import LiveEvent, LiveEventBus
+    from src.dashboard.live_receipts import LiveReceiptStore
     from src.memory.fact_ledger import FactLedger
     from tests.mocks.memory_sources import memory_source
     owners = []
@@ -501,7 +502,7 @@ async def live_graph():
     def bus(*args, **kwargs):
         policy = FactLedger(':memory:')
         policy.initialize()
-        instance = LiveEventBus(*args, source_policy=policy, **kwargs)
+        instance = LiveEventBus(*args, source_policy=policy, receipts=LiveReceiptStore(policy), **kwargs)
         owners.append((instance, policy))
         return instance
     def event(*args, **kwargs):

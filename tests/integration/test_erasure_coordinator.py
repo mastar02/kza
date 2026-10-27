@@ -632,3 +632,33 @@ async def test_failed_ack_retains_only_sanitized_outcome_instead_of_original_dri
             assert 'private transcript' not in repr(retained.result())
         finally:
             monkeypatch.setattr(privacy.ledger.erasures, 'finish', finish)
+
+
+async def test_owned_cleanup_tasks_cannot_retain_arbitrary_request_context(tmp_path):
+    from weakref import ref
+    from src.core.logging import LogContext, get_context
+    class Payload:
+        pass
+    async with graph(tmp_path) as (privacy,owner,_,_):
+        entered,release=asyncio.Event(),asyncio.Event()
+        seen=[]
+        async def held(step):
+            seen.append(get_context())
+            entered.set()
+            await release.wait()
+            return ErasureResult(True,pending_count=0)
+        await target(privacy,Participant.STREAMS)
+        owner.register(Participant.STREAMS,held,versions=frozenset({1}))
+        await owner.request(memory_source().conversation_id,ACTOR)
+        payload=Payload()
+        reference=ref(payload)
+        try:
+            with LogContext(private=payload):
+                await owner.reconcile()
+            payload=None
+            await until(entered.is_set)
+            assert seen==[{}]
+            assert reference() is None
+        finally:
+            release.set()
+            await flush(owner)

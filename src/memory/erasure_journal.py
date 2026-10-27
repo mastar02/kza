@@ -135,7 +135,7 @@ class ErasureJournal:
             # A restored event database may contain rows behind an old cursor
             # or completed receipt. Only leased startup may reopen that proof.
             db.execute("""UPDATE erasure_steps SET state='pending',claim_token=NULL,cursor=NULL,
-                next_attempt_at=0,last_error=? WHERE participant IN ('events','contexts','suggestions','collectors','diagnostics')""", (ErasureError.RESTARTED.value,))
+                next_attempt_at=0,last_error=? WHERE participant IN ('events','contexts','suggestions','collectors','diagnostics','streams')""", (ErasureError.RESTARTED.value,))
             return db.execute("UPDATE erasure_steps SET state=?, claim_token=NULL, next_attempt_at=0, last_error=? WHERE state=?",
                 (ErasureState.PENDING.value, ErasureError.RESTARTED.value, ErasureState.RUNNING.value)).rowcount
 

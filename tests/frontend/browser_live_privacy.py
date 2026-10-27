@@ -16,6 +16,7 @@ from websockets.asyncio.client import connect
 from src.dashboard.api import DashboardAPI
 from src.dashboard import system_monitor
 from src.dashboard.live_event_bus import LiveEvent, LiveEventBus, LiveEventType
+from src.dashboard.live_receipts import LiveReceiptStore
 from src.memory.fact_ledger import MemoryReviewer
 from src.memory.privacy_services import PrivacyServices
 from tests.frontend.browser_typed_controls import Page
@@ -31,7 +32,8 @@ async def main():
         directory = Path(work)
         privacy = PrivacyServices(str(directory/'privacy.db'))
         await privacy.acall(privacy.initialize)
-        bus = LiveEventBus(source_policy=privacy.ledger, clock=privacy.ledger.clock)
+        receipts = LiveReceiptStore(privacy.ledger)
+        bus = LiveEventBus(source_policy=privacy.ledger, clock=privacy.ledger.clock, receipts=receipts)
         privacy.add_borrower(bus.begin_close)
         bus.start()
         dashboard = DashboardAPI(event_bus=bus)
@@ -79,11 +81,27 @@ async def main():
                         return source
                     private = 'Synthetic private browser turn'
                     source = await show(private)
+                    assert await receipts.pending(source.conversation_id) == 1
+                    await page.evaluate('window.__liveCommit = window.__kzaLiveState.committed; window.__kzaLiveState.committed = () => {};')
                     await privacy.acall(privacy.ledger.delete_conversation,source.conversation_id,MemoryReviewer('synthetic-admin'))
                     await page.wait_for('!document.body.textContent.includes('+json.dumps(private)+')')
                     assert await page.evaluate('window.__kzaLiveState.snapshot() === null')
+                    await asyncio.sleep(.05)
+                    assert await receipts.pending(source.conversation_id) == 1
+                    await page.evaluate('window.__kzaLiveState.committed = window.__liveCommit; delete window.__liveCommit; window.__kzaLiveState.committed(null);')
+                    async with asyncio.timeout(3):
+                        while await receipts.pending(source.conversation_id):
+                            await asyncio.sleep(.01)
                     await show('Synthetic expiring browser turn',ttl=1)
                     await page.wait_for("!document.body.textContent.includes('Synthetic expiring browser turn')")
+                    leaving = await show('Synthetic leaving turn')
+                    await page.evaluate("window.dispatchEvent(new Event('pagehide'))")
+                    await page.wait_for("!document.body.textContent.includes('Synthetic leaving turn')")
+                    async with asyncio.timeout(3):
+                        while await receipts.pending(leaving.conversation_id):
+                            await asyncio.sleep(.01)
+                    await page.command('Page.navigate',{'url':f'http://127.0.0.1:{port}/obs/'})
+                    await page.wait_for("document.querySelector('#view-live') && window.__kzaLiveWs?.readyState === 1")
                     await show('Synthetic disconnect turn')
                     await page.evaluate('window.__kzaLiveWs.close()')
                     await page.wait_for("!document.body.textContent.includes('Synthetic disconnect turn')")
@@ -97,7 +115,10 @@ async def main():
                         'rendered_conversation_retirement':True,'rendered_idle_expiry':True,
                         'disconnect_clears_ticker':True,'lost_session_clears_private_dom':True,
                         'javascript_exceptions':len(page.errors),'synthetic_sources_and_service_adapters':True,
-                        'browser_erasure_ack_or_global_streams_acceptance':False}))
+                        'browser_ack_after_dom_and_cache_clear':True,
+                        'browser_ack_waits_for_explicit_dom_commit':True,
+                        'pagehide_handler_clears_and_acknowledges_owned_view':True,
+                        'global_streams_acceptance':False}))
         finally:
             if browser is not None:
                 browser.terminate()

@@ -11,6 +11,7 @@ from uuid import uuid4
 from weakref import WeakSet, finalize, ref
 
 from src.core.owned_work import WorkCloseTimeout
+from src.dashboard.live_browser import LiveBrowserSession
 from src.memory.fact_ledger import FactDependency, MemorySource
 
 
@@ -114,17 +115,19 @@ class LiveSubscriber:
     active: RetainedLiveEvent | None = field(default=None, repr=False)
     closed: bool = False
     guard: object | None = field(default=None, repr=False)
+    browser: LiveBrowserSession | None = field(default=None, repr=False)
 
 
 class LiveRetention:
     """Own bounded queues and socket sends after an observer stops waiting."""
 
-    def __init__(self, queues, policy, *, clock=None, capacity=256, max_subscribers=16, close_timeout_s=1):
+    def __init__(self, queues, policy, *, clock=None, capacity=256, max_subscribers=16, close_timeout_s=1, receipts=None):
         if type(capacity) is not int or not 1 <= capacity <= 4096:
             raise ValueError('invalid_live_queue_capacity')
         if type(max_subscribers) is not int or not 1 <= max_subscribers <= 64:
             raise ValueError('invalid_live_subscriber_capacity')
         self.queues, self.policy = queues, policy
+        self.receipts = receipts
         self.clock = clock or time.time
         self.max_subscribers = max_subscribers
         self._record_capacity = max_subscribers*(capacity+1)
@@ -215,6 +218,8 @@ class LiveRetention:
             if record is not None and record._data is not None and not record.available():
                 record.retire()
         for state in tuple(self._states.values()):
+            if state.browser is not None and state.browser.timed_out():
+                state.closed = True
             if state.guard is not None:
                 try:
                     allowed = state.guard() is True
@@ -246,9 +251,16 @@ class LiveRetention:
             while not state.closed:
                 message = await receiver()
                 disconnected = type(message) is not dict or message.get('type') == 'websocket.disconnect'
-                message = None
                 if disconnected:
                     return
+                if state.guard is not None and state.guard() is not True:
+                    return
+                if state.browser is not None:
+                    handling = state.browser.handle(message)
+                    message = None
+                    await handling
+                    handling = None
+                message = None
         except (Exception, asyncio.CancelledError):
             pass
         finally:
@@ -263,11 +275,23 @@ class LiveRetention:
         try:
             while not state.closed:
                 state.wake.clear()
+                if state.browser is not None:
+                    reset = state.browser.reset_frame()
+                    if reset is not None:
+                        await self._send(sender,reset)
+                        reset = None
+                        continue
+                    if not state.browser.ready:
+                        await state.wake.wait()
+                        continue
                 if state.retired:
                     tokens = sorted(state.retired)
                     # Remove only the selected controls: revocation may add new
                     # metadata while the actual socket callback is suspended.
-                    await self._send(sender, {'type':'retire', 'payload':{'event_ids':tokens}, 'ts':''})
+                    control = (state.browser.retirement_frame(tokens) if state.browser is not None else
+                        {'type':'retire','payload':{'event_ids':tokens},'ts':''})
+                    await self._send(sender,control)
+                    control = None
                     state.retired.difference_update(tokens)
                     if state.last is not None and state.last.event_id in tokens:
                         state.last = None
@@ -278,7 +302,17 @@ class LiveRetention:
                 record = state.queue.get_nowait()
                 state.queue.task_done()
                 state.active = record
+                ticket = None
+                if state.browser is not None:
+                    ticket = await state.browser.before_frame(record)
+                    if ticket is None or state.closed:
+                        frame = record = state.active = None
+                        continue
                 frame = record.to_frame()
+                if frame is None and ticket is not None:
+                    state.retired.add(record.event_id)
+                if frame is not None and ticket is not None:
+                    frame['receipt'] = ticket.to_dict()
                 if frame is not None:
                     await self._send(sender, frame)
                     state.last = LastLiveFrame(record.event_id, record.sources)
@@ -293,6 +327,8 @@ class LiveRetention:
             if watching is not None:
                 watching.cancel()
                 await asyncio.gather(watching, return_exceptions=True)
+            if state.browser is not None:
+                state.browser.seal()
             if close is not None:
                 self._active += 1
                 try:
@@ -301,14 +337,23 @@ class LiveRetention:
                     pass
                 finally:
                     self._active -= 1
+            if state.browser is not None:
+                try:
+                    await state.browser.finish()
+                except (Exception,asyncio.CancelledError):
+                    pass
             sender = close = receiver = watching = None
 
-    async def stream(self, sub_id, sender, close=None, receiver=None, guard=None):
+    async def stream(self, sub_id, sender, close=None, receiver=None, guard=None, *, browser=False):
         """Shield actual socket ownership; observer cancellation does not stop it."""
         if self._closed or sub_id not in self._states or sub_id in self._senders:
             raise RuntimeError('live_subscriber_unavailable')
         state = self._states[sub_id]
         state.guard = guard
+        if browser:
+            if self.receipts is None or receiver is None:
+                raise RuntimeError('live_browser_receipts_unavailable')
+            state.browser = LiveBrowserSession(self.receipts,state.wake)
         task = asyncio.create_task(self._dispatch(state, sender, close, receiver), context=Context())
         self._senders[sub_id] = task
         def finished(done):
@@ -358,6 +403,12 @@ class LiveRetention:
                     pass
         self._maintenance = asyncio.create_task(maintain(), context=Context())
 
+    def pending_conversation(self, conversation_id: str) -> int:
+        """Count actual raw send callbacks, independently of durable client ACKs."""
+        self.prune()
+        return sum(state.active is not None and any(source.conversation_id == conversation_id
+            for source in state.active.sources) for state in self._states.values())
+
     def status(self) -> dict:
         """Expose counts without private payloads, paths, identities or sources."""
         return {'closed':self._closed, 'active_sends':self._active, 'rejected':self.rejected,
@@ -383,6 +434,8 @@ class LiveRetention:
                 self.queues.clear()
                 self._scan.clear()
                 self._by_conversation.clear()
+                if self.receipts is not None:
+                    await self.receipts.begin_close()
             self._closing = asyncio.create_task(finish(), context=Context())
         return self._closing
 

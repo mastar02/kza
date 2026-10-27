@@ -22,6 +22,7 @@ from uuid import UUID
 from weakref import WeakMethod
 
 from src.memory.erasure_journal import ERASURE_SCHEMA, ErasureJournal
+from src.dashboard.live_receipts import LIVE_RECEIPT_SCHEMA
 from src.memory.index_deletions import INDEX_DELETION_SCHEMA, IndexDeletionQueue
 
 
@@ -245,7 +246,7 @@ class FactLedger:
             self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
             self._db.row_factory = sqlite3.Row
             self._db.execute("PRAGMA foreign_keys=ON")
-            self._db.executescript(_SCHEMA + ERASURE_SCHEMA + INDEX_DELETION_SCHEMA)
+            self._db.executescript(_SCHEMA + ERASURE_SCHEMA + INDEX_DELETION_SCHEMA + LIVE_RECEIPT_SCHEMA)
             if "dependencies" not in {r[1] for r in self._db.execute("PRAGMA table_info(fact_sources)")}:
                 try:
                     self._db.execute("BEGIN IMMEDIATE")

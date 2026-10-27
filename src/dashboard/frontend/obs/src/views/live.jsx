@@ -100,35 +100,51 @@ function PipelineWidget() {
   );
 }
 
-function useLiveStream() {
-  const [last, setLast] = React.useState(null);
-  React.useEffect(() => {
-    const onLive = (ev) => setLast(ev.detail);
-    window.addEventListener('kza:live', onLive);
-    return () => window.removeEventListener('kza:live', onLive);
+function LiveTicker() {
+  const container = React.useRef(null);
+  React.useLayoutEffect(() => {
+    const root = container.current;
+    function render() {
+      const store = window.__kzaLiveState;
+      const frame = store?.snapshot();
+      root.replaceChildren();
+      root.hidden = !frame;
+      if (frame) {
+        const row = document.createElement('div');
+        row.className = 'card-b';
+        Object.assign(row.style, { display:'flex', gap:'14px', alignItems:'center' });
+        const add = (text, className) => {
+          const span = document.createElement('span');
+          span.className = className;
+          span.textContent = text;
+          row.append(span);
+        };
+        const p = frame.payload;
+        add(frame.type.toUpperCase(), 'pill accent');
+        add(frame.ts, 'mono mute');
+        if (p.zone) add(`zone=${p.zone}`, 'mono');
+        if (p.user) add(`user=${p.user}`, 'mono');
+        if (p.stt) add(`"${p.stt}"`, 'dim');
+        if (typeof p.latency_ms === 'number') add(`${p.latency_ms}ms`, 'mono');
+        root.append(row);
+      }
+      // React owns only this empty container, never private props or state.
+      // ACK emission is deferred until this render stack has also returned.
+      store?.committed(frame?.event_id || null);
+    }
+    render();
+    window.addEventListener('kza:live', render);
+    return () => {
+      window.removeEventListener('kza:live', render);
+      root.replaceChildren();
+      window.__kzaLiveState?.committed(null);
+    };
   }, []);
-  return last;
-}
-
-function LiveTicker({ frame }) {
-  if (!frame) return null;
-  const p = frame.payload || {};
-  return (
-    <div className="card" style={{ marginBottom: 12, borderColor: 'var(--accent-line)', background: 'var(--accent-soft)' }}>
-      <div className="card-b" style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-        <span className="pill accent">{frame.type.toUpperCase()}</span>
-        <span className="mono mute">{frame.ts}</span>
-        {p.zone && <span className="mono">zone={p.zone}</span>}
-        {p.user && <span className="mono">user={p.user}</span>}
-        {p.stt && <span className="dim" style={{ flex: 1 }}>"{p.stt}"</span>}
-        {typeof p.latency_ms === 'number' && <span className="mono">{p.latency_ms}ms</span>}
-      </div>
-    </div>
-  );
+  return <div ref={container} data-live-ticker className="card" hidden
+    style={{ marginBottom:12, borderColor:'var(--accent-line)', background:'var(--accent-soft)' }} />;
 }
 
 function LiveView() {
-  const liveFrame = useLiveStream();
   return (
     <div className="view" data-active id="view-live">
       <PageHead
@@ -138,7 +154,7 @@ function LiveView() {
         actions={<button className="btn"><span className="mono">⏸</span> pausar stream</button>}
       />
 
-      <LiveTicker frame={liveFrame} />
+      <LiveTicker />
 
       {/* Top metrics row */}
       <div className="grid grid-4" style={{ marginBottom: 16 }}>

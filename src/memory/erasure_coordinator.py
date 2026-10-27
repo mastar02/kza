@@ -1,6 +1,7 @@
 """Retained cleanup ownership over the durable, versioned erasure journal."""
 
 import asyncio
+from contextvars import Context
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import logging
@@ -131,7 +132,7 @@ class ErasureCoordinator:
                     return CleanupOutcome(None, ErasureError.FAILED)
                 except Exception:
                     return CleanupOutcome(None, ErasureError.FAILED)
-            task = asyncio.create_task(cleanup())
+            task = asyncio.create_task(cleanup(),context=Context())
             task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
             self._active[(step.operation_id, step.participant, step.target_id)] = ActiveCleanup(step, task)
         await self._harvest()
@@ -141,7 +142,7 @@ class ErasureCoordinator:
         if self._closed:
             raise RuntimeError("erasure_closed")
         if self._cycle is None or self._cycle.done():
-            self._cycle = asyncio.create_task(self._reconcile())
+            self._cycle = asyncio.create_task(self._reconcile(),context=Context())
             self._cycle.add_done_callback(lambda done: None if done.cancelled() else done.exception())
         await asyncio.shield(self._cycle)
 
@@ -166,7 +167,7 @@ class ErasureCoordinator:
                         await self._wake.wait()
                 except TimeoutError:
                     pass
-        self._maintenance = asyncio.create_task(maintain())
+        self._maintenance = asyncio.create_task(maintain(),context=Context())
 
     def resource_status(self) -> dict:
         """Describe retained work without private content or storage locations."""
@@ -193,7 +194,7 @@ class ErasureCoordinator:
                     logger.warning("Erasure receipts deferred until restart: %s", type(error).__name__)
                 await asyncio.gather(*(close() for close in self._resources))
                 self._active.clear()
-            self._closing = asyncio.create_task(finish())
+            self._closing = asyncio.create_task(finish(),context=Context())
         return self._closing
 
     async def aclose(self) -> None:

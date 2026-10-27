@@ -5,7 +5,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.dashboard.live_event_bus import LiveEventBus, LiveEventType
+from uuid import uuid4
 from src.dashboard.observability import register_observability_routes
+
+
+def handshake(ws):
+    ws.send_json({'type':'live_hello','version':1,'client_id':str(uuid4())})
+    reset=ws.receive_json()
+    assert reset['type']=='live_reset'
+    ws.send_json({'type':'live_reset_ack',**reset['payload']})
 
 
 def _build_app(bus: LiveEventBus | None):
@@ -56,6 +64,7 @@ def test_ws_publish_round_trip(dashboard_auth, live_graph):
 
     client = TestClient(app, headers=dashboard_auth)
     with client.websocket_connect("/ws/live") as ws:
+        handshake(ws)
         client.post("/test/publish")
         frame = ws.receive_json()
         assert {key:frame[key] for key in ("type","payload","ts")} == {
@@ -76,7 +85,9 @@ def test_ws_two_subscribers_each_receive_frame(dashboard_auth, live_graph):
 
     client = TestClient(app, headers=dashboard_auth)
     with client.websocket_connect("/ws/live") as ws1:
+        handshake(ws1)
         with client.websocket_connect("/ws/live") as ws2:
+            handshake(ws2)
             client.post("/test/publish")
             f1 = ws1.receive_json()
             f2 = ws2.receive_json()

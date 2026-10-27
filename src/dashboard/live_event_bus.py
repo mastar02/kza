@@ -76,7 +76,7 @@ class LiveEventBus:
         self,
         queue_size: int = 256,
         overflow_policy: OverflowPolicy | str = OverflowPolicy.DROP_OLDEST,
-        *, source_policy=None, clock=None, max_subscribers=16, close_timeout_s=1,
+        *, source_policy=None, clock=None, max_subscribers=16, close_timeout_s=1, receipts=None,
     ):
         try:
             self._overflow_policy = OverflowPolicy(overflow_policy)
@@ -93,7 +93,7 @@ class LiveEventBus:
         self._rejected = 0
         if source_policy is not None:
             self._retention = LiveRetention(self._subscribers, source_policy, clock=clock,
-                capacity=queue_size, max_subscribers=max_subscribers, close_timeout_s=close_timeout_s)
+                capacity=queue_size, max_subscribers=max_subscribers, close_timeout_s=close_timeout_s, receipts=receipts)
 
     async def publish(self, event: LiveEvent) -> None:
         """Llamado por el voice_pipeline. Nunca espera lock ni I/O.
@@ -176,6 +176,18 @@ class LiveEventBus:
             return await self._retention.stream(sub_id, sender, close, receiver, guard)
         if close is not None:
             await close()
+
+    async def browser_stream(self, sub_id, sender, close=None, receiver=None, guard=None):
+        """Require the durable browser protocol on the network-facing live route."""
+        if self._retention is None:
+            if close is not None:
+                await close()
+            return
+        return await self._retention.stream(sub_id,sender,close,receiver,guard,browser=True)
+
+    def pending_conversation(self, conversation_id: str) -> int:
+        """Read local callback ownership for the STREAMS cleanup driver."""
+        return self._retention.pending_conversation(conversation_id) if self._retention is not None else 0
 
     def resource_status(self) -> dict:
         """Read content-free ownership counts."""

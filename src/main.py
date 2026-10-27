@@ -76,7 +76,7 @@ from src.reminders.reminder_store import ReminderStore
 from src.reminders.reminder_manager import ReminderManager
 from src.dashboard.api import DashboardAPI
 from src.dashboard.home_api import build_home_services, build_microphone_rooms
-from src.dashboard.live_event_bus import LiveEventBus
+from src.dashboard.live_erasure import build_live_services
 from src.monitoring.health_aggregator import HealthAggregator
 from src.nlu.command_gate import CommandAcceptanceGate
 
@@ -1616,15 +1616,8 @@ async def _run_main(shutdown: AsyncExitStack):
         config, ha_client=ha_client, home_actions=home_action_service, shutdown=shutdown,
     )
 
-    live_event_bus = LiveEventBus(
-        queue_size=dashboard_config.get("live_event_queue_size", 256),
-        overflow_policy=dashboard_config.get("live_event_overflow_policy", "drop_oldest"),
-        source_policy=privacy_services.ledger, clock=privacy_services.ledger.clock,
-    )
-
-    privacy_services.add_borrower(live_event_bus.begin_close)
-    shutdown.push_async_callback(live_event_bus.aclose)
-    live_event_bus.start()
+    live_event_bus = await build_live_services(config,privacy=privacy_services,
+        owner=erasure_services,shutdown=shutdown)
 
     if dashboard_config.get("enabled", True):
         health_aggregator = HealthAggregator(

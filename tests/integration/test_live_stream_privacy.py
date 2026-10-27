@@ -26,7 +26,8 @@ async def graph(tmp_path):
         privacy = PrivacyServices(str(tmp_path/'privacy.db'), clock=clock, close_timeout_s=.03)
         stack.push_async_callback(privacy.aclose)
         await privacy.acall(privacy.initialize)
-        bus = LiveEventBus(queue_size=2, source_policy=privacy.ledger, clock=clock, close_timeout_s=.03)
+        from src.dashboard.live_receipts import LiveReceiptStore
+        bus = LiveEventBus(queue_size=2, receipts=LiveReceiptStore(privacy.ledger), source_policy=privacy.ledger, clock=clock, close_timeout_s=.03)
         privacy.add_borrower(bus.begin_close)
         stack.push_async_callback(bus.aclose)
         bus.start()
@@ -163,6 +164,12 @@ async def asgi_socket(bus, authorization):
     try:
         async with asyncio.timeout(3):
             assert (await outgoing.get())['type'] == 'websocket.accept'
+            import json
+            from uuid import uuid4
+            await incoming.put({'type':'websocket.receive','text':json.dumps({'type':'live_hello','version':1,'client_id':str(uuid4())})})
+            reset = json.loads((await outgoing.get())['text'])
+            assert reset['type']=='live_reset'
+            await incoming.put({'type':'websocket.receive','text':json.dumps({'type':'live_reset_ack',**reset['payload']})})
         yield incoming, outgoing
     finally:
         await incoming.put({'type':'websocket.disconnect','code':1000})
@@ -399,3 +406,19 @@ async def test_live_overflow_and_failed_publication_logs_omit_private_context(tm
         for target, level in zip(targets,levels):
             target.removeHandler(handler)
             target.setLevel(level)
+
+
+async def test_revoked_session_cannot_mutate_receipts_before_idle_guard_tick(tmp_path,dashboard_auth,monkeypatch):
+    import json
+    async with graph(tmp_path) as (_,bus,clock):
+        source=memory_source(now=clock.now)
+        async with asgi_socket(bus,dashboard_auth['Authorization']) as (incoming,outgoing):
+            await bus.publish(event(source))
+            async with asyncio.timeout(3):
+                frame=json.loads((await outgoing.get())['text'])
+            monkeypatch.setenv('KZA_DASHBOARD_TOKEN','synthetic-ack-revocation')
+            await incoming.put({'type':'websocket.receive','text':json.dumps({'type':'live_ack','receipts':[frame['receipt']]})})
+            async with asyncio.timeout(3):
+                closed=await outgoing.get()
+            assert closed['type']=='websocket.close' and closed['code']==1008
+        assert await bus._retention.receipts.pending(source.conversation_id)==1
