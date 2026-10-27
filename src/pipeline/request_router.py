@@ -1886,6 +1886,7 @@ class RequestRouter:
                     entity_id=None, service=None,
                     used_wake_text=bool(meta.get("used_wake_text")),
                     early_dispatch=bool(meta.get("early_dispatch")),
+                    sources=self._active_sources(),
                 )
             except Exception:
                 Context().run(logger.warning, "Diagnostic request metric deferred")

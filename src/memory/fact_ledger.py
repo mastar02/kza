@@ -290,6 +290,12 @@ class FactLedger:
         """Read only published deletion authority for irreversible cleanup."""
         return self._authority_available and conversation_id in self._deleted_conversations
 
+    def committed_revoked_conversations(self) -> frozenset[str]:
+        """Return the immutable committed snapshot for indexed metadata cleanup."""
+        if not self._authority_available:
+            raise RuntimeError('privacy_authority_unavailable')
+        return self._deleted_conversations
+
     def activity_sources_available(self, sources: tuple[MemorySource, ...]) -> bool:
         """Check metadata revocations, separately from raw capture lifetimes.
 

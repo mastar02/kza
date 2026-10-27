@@ -49,6 +49,7 @@ from src.users.emotion_detector import EmotionDetector
 from src.monitoring.latency_monitor import LatencyMonitor
 from src.analytics.services import build_event_logger
 from src.analytics.erasure import build_event_erasure
+from src.obs.diagnostic_erasure import build_diagnostic_services
 from src.analytics.suggestion_erasure import build_suggestion_erasure
 from src.wakeword.clip_store import build_wake_clip_store
 from src.orchestrator.context_erasure import build_context_erasure
@@ -326,25 +327,6 @@ async def _run_main(shutdown: AsyncExitStack):
     logger.info(f"Cargando configuración: {config_path}")
     config = load_config(config_path)
 
-    # Observability — emite JSONL a archivo para Logstash → ES
-    obs_cfg = config.get("observability", {})
-    metrics_emitter = None
-    if obs_cfg.get("enabled", True):
-        from src.obs.metrics_emitter import MetricsEmitter
-        metrics_emitter = MetricsEmitter(
-            path=obs_cfg.get("metrics_path", "/home/kza/logs/kza-metrics.jsonl"),
-            rotate_bytes=obs_cfg.get("rotate_bytes", 100 * 1024 * 1024),
-            logstash_host=obs_cfg.get("logstash_host"),
-            logstash_port=obs_cfg.get("logstash_port", 5515),
-            retention_days=config.get('analytics', {}).get('retention_days', 90),
-        )
-        shutdown.push_async_callback(metrics_emitter.aclose)
-        try:
-            await metrics_emitter.start()
-        except Exception:
-            logger.warning('Diagnostic retention unavailable; numeric metrics will retry')
-        logger.info(f"MetricsEmitter habilitado → {metrics_emitter.path}")
-
     # Verificar Home Assistant
     ha_config = config.get("home_assistant", {})
     ha_url = ha_config.get("url")
@@ -575,6 +557,8 @@ async def _run_main(shutdown: AsyncExitStack):
     memory_manager = memory_services.manager if memory_services is not None else None
     erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
         memory=memory_manager.long_term if memory_manager is not None else None)
+    diagnostic_services = await build_diagnostic_services(config, privacy=privacy_services, owner=erasure_services)
+    metrics_emitter = diagnostic_services.emitter
     capture_erasure = await build_capture_erasure(config, privacy=privacy_services, owner=erasure_services)
     event_erasure = await build_event_erasure(config, privacy=privacy_services, owner=erasure_services)
     suggestion_erasure = await build_suggestion_erasure(config, privacy=privacy_services, owner=erasure_services)

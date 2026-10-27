@@ -15,6 +15,7 @@ from typing import Any
 
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.obs.diagnostic_store import DiagnosticRecord, DiagnosticStore
+from src.memory.producer_context import PRODUCER_CONTEXT
 
 logger = logging.getLogger(__name__)
 _ROTATE_BYTES_DEFAULT = 100 * 1024 * 1024
@@ -119,7 +120,7 @@ class MetricsEmitter:
                  rotate_bytes: int = _ROTATE_BYTES_DEFAULT, service_name: str = 'kza-voice',
                  logstash_host: str | None = None, logstash_port: int = 5515,
                  *, capacity: int = 8, close_timeout_s: float = 1,
-                 retention_days: float = 90, clock=None):
+                 retention_days: float = 90, clock=None, policy=None):
         if type(capacity) is not int or not 1 <= capacity <= 64:
             raise ValueError('invalid_metric_capacity')
         self.legacy_path = Path(path)
@@ -134,12 +135,13 @@ class MetricsEmitter:
         self._work = OwnedBlockingWork(capacity=capacity, close_timeout_s=close_timeout_s)
         self._clock = clock or time.time
         self._store = DiagnosticStore(self.path, clock=self._clock,
-            retention_days=retention_days, rotate_bytes=rotate_bytes, project=project_diagnostic)
+            retention_days=retention_days, rotate_bytes=rotate_bytes, project=project_diagnostic, policy=policy)
         self._retention_work = OwnedBlockingWork(capacity=1, close_timeout_s=close_timeout_s)
         self._maintenance = None
         self._sweep = None
         self._wake = asyncio.Event()
         self._free = deque(range(capacity))
+        self._records: dict[int, DiagnosticRecord] = {}
         self._tasks: set[asyncio.Task] = set()
         self._closed = False
         self._closing = None
@@ -149,7 +151,7 @@ class MetricsEmitter:
         except RuntimeError:
             self._loop = None
 
-    def _enqueue(self, doc):
+    def _enqueue(self, doc, sources=None):
         safe = project_diagnostic(doc)
         doc = None
         if safe is None:
@@ -165,12 +167,19 @@ class MetricsEmitter:
             self._free.append(slot)
             return
         try:
-            record = self._store.record(safe)
+            sources = PRODUCER_CONTEXT.get().sources if sources is None else sources
+            record = self._store.record(safe, sources)
+            if record is None:
+                self._dropped += 1
+                self._free.append(slot)
+                return
+            self._records[slot] = record
             # A normal thread-safe post captures arbitrary ContextVars as well.
             # This channel deliberately inherits no caller payload or identity.
             self._loop.call_soon_threadsafe(self._start, slot, record, context=Context())
         except Exception:
             self._dropped += 1
+            self._records.pop(slot, None)
             self._free.append(slot)
 
     def _start(self, slot, doc):
@@ -182,12 +191,14 @@ class MetricsEmitter:
         except Exception:
             operation.close()
             self._failed += 1
+            self._records.pop(slot, None)
             self._free.append(slot)
             return
         self._tasks.add(task)
 
         def finished(done):
             self._tasks.discard(done)
+            self._records.pop(slot, None)
             self._free.append(slot)
             if done.cancelled() or done.exception() is not None or done.result() is not None:
                 self._failed += 1
@@ -216,13 +227,13 @@ class MetricsEmitter:
             self._sock.settimeout(1.)
         return self._sock
 
-    def _send_tcp(self, line: str, expires_at: float) -> None:
+    def _send_tcp(self, line: str, expires_at: float, sources=()) -> None:
         with self._sock_lock:
             try:
-                if expires_at <= self._clock():
+                if expires_at <= self._clock() or not self._store.available(sources):
                     return
                 connection = self._get_sock()
-                if connection is not None and expires_at > self._clock():
+                if connection is not None and expires_at > self._clock() and self._store.available(sources):
                     connection.sendall((line+'\n').encode('utf-8'))
             except OSError:
                 if self._sock is not None:
@@ -240,7 +251,28 @@ class MetricsEmitter:
             return
         published = self._store.append(record)
         if published is not None and self.logstash_host:
-            self._send_tcp(published.line, published.expires_at)
+            self._send_tcp(published.line, published.expires_at, record.sources)
+
+    def pending_conversation(self, conversation_id: str) -> int:
+        """Include unknown reserved posts and matching actual write/TCP workers."""
+        records = tuple(self._records.values())
+        unknown = max(0, self._capacity-len(self._free)-len(records))
+        return unknown + sum(any(source.conversation_id == conversation_id for source in record.sources)
+            for record in records)
+
+    def _invoke_erasure(self, conversation_id):
+        try:
+            return self._store.erase(conversation_id)
+        except (Exception, asyncio.CancelledError) as error:
+            return _failure(error)
+
+    async def aerase(self, conversation_id: str) -> int:
+        """Wait for actual projection repair; report posts and unverified rows."""
+        await self.aprune()
+        outcome = await self._retention_work.run(self._invoke_erasure, conversation_id)
+        if isinstance(outcome, DiagnosticFailure):
+            raise RuntimeError(outcome.value)
+        return outcome + self.pending_conversation(conversation_id)
 
     async def aprune(self) -> None:
         """Reconcile durable deadlines and both local files without another event."""
@@ -287,7 +319,7 @@ class MetricsEmitter:
                      intent: str | None, path: str | None, success: bool,
                      timings: dict[str, float], audio_duration_ms: float | None = None,
                      entity_id: str | None = None, service: str | None = None,
-                     used_wake_text: bool = False, early_dispatch: bool = False) -> None:
+                     used_wake_text: bool = False, early_dispatch: bool = False, sources=None) -> None:
         """Keep timings and closed diagnostic codes; discard private arguments."""
         del user_id, zone_id, text, entity_id, service
         doc = None
@@ -296,16 +328,16 @@ class MetricsEmitter:
                 'path': path, 'success': success, 'audio_duration_ms': audio_duration_ms,
                 'used_wake_text': used_wake_text, 'early_dispatch': early_dispatch}
             doc.update({name+'_ms': value for name, value in diagnostic_timings(timings).items()})
-            self._enqueue(doc)
+            self._enqueue(doc, sources)
         finally:
-            intent = path = timings = doc = None
+            intent = path = timings = doc = sources = None
             success = audio_duration_ms = used_wake_text = early_dispatch = None
 
     def emit_wake(self, *, room_id: str, matched: bool, wake_word: str | None,
                   matched_via: str, text: str | None, audio_duration_ms: float,
                   wake_stt_ms: float, fuzzy_ratio: float | None = None,
                   rejection_reason: str | None = None, no_speech_prob: float | None = None,
-                  avg_logprob: float | None = None, tv_mode: bool = False) -> None:
+                  avg_logprob: float | None = None, tv_mode: bool = False, sources=None) -> None:
         """Keep detection counters and scores without transcripts or identities."""
         del room_id, wake_word, text
         try:
@@ -313,18 +345,18 @@ class MetricsEmitter:
                 'matched_via': matched_via, 'audio_duration_ms': audio_duration_ms,
                 'rejection_reason': rejection_reason,
                 'wake_stt_ms': wake_stt_ms, 'fuzzy_ratio': fuzzy_ratio,
-                'no_speech_prob': no_speech_prob, 'avg_logprob': avg_logprob, 'tv_mode': tv_mode})
+                'no_speech_prob': no_speech_prob, 'avg_logprob': avg_logprob, 'tv_mode': tv_mode}, sources)
         finally:
-            matched_via = rejection_reason = None
+            matched_via = rejection_reason = sources = None
             matched = audio_duration_ms = wake_stt_ms = fuzzy_ratio = no_speech_prob = avg_logprob = tv_mode = None
 
-    def emit_error(self, *, module: str, error_msg: str, context: dict[str, Any] | None = None) -> None:
+    def emit_error(self, *, module: str, error_msg: str, context: dict[str, Any] | None = None, sources=None) -> None:
         """Emit an error count and a closed stage code without arbitrary errors."""
         del error_msg, context
         try:
-            self._enqueue({'event_type': DiagnosticKind.ERROR.value, 'module': module})
+            self._enqueue({'event_type': DiagnosticKind.ERROR.value, 'module': module}, sources)
         finally:
-            module = None
+            module = sources = None
 
     async def flush(self) -> None:
         """Wait for admitted posts without sealing admission or cancelling I/O."""

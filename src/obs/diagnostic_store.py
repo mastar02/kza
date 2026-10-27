@@ -14,6 +14,8 @@ import tempfile
 import threading
 from uuid import UUID, uuid4, uuid5, NAMESPACE_URL
 
+from src.memory.fact_ledger import FactDependency, MemorySource
+
 
 @dataclass(frozen=True)
 class DiagnosticRecord:
@@ -23,6 +25,7 @@ class DiagnosticRecord:
     recorded_at: float
     expires_at: float
     payload: dict = field(repr=False)
+    sources: tuple[MemorySource, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True)
@@ -36,7 +39,7 @@ class DiagnosticPublication:
 class DiagnosticStore:
     """Own one catalog and two bounded file projections under a writer lease."""
 
-    def __init__(self, path: Path, *, clock, retention_days: float, rotate_bytes: int, project):
+    def __init__(self, path: Path, *, clock, retention_days: float, rotate_bytes: int, project, policy=None):
         if type(retention_days) not in (int, float) or retention_days <= 0:
             raise ValueError('invalid_diagnostic_retention')
         try:
@@ -50,6 +53,7 @@ class DiagnosticStore:
         self.path, self.clock, self.seconds = path, clock, seconds
         self.catalog = path.with_suffix(path.suffix+'.sqlite3')
         self._project, self._rotate_bytes = project, rotate_bytes
+        self.policy = policy
         self._lock = threading.RLock()
         self._lease = None
         self._initialized = False
@@ -62,13 +66,25 @@ class DiagnosticStore:
             raise ValueError('invalid_diagnostic_clock')
         return float(now)
 
-    def record(self, payload: dict) -> DiagnosticRecord | None:
+    def record(self, payload: dict, sources: tuple[MemorySource, ...] = ()) -> DiagnosticRecord | None:
         """Stamp the deadline before a post, executor or native writer can wait."""
         safe = self._project(payload)
         if safe is None:
             return None
+        if (type(sources) is not tuple or len(sources) > 256
+                or any(type(source) is not MemorySource or any(type(dep) is not FactDependency
+                    for dep in source.fact_dependencies) for source in sources)):
+            raise ValueError('invalid_diagnostic_sources')
+        if sources and (self.policy is None or not self.policy.sources_available(sources)):
+            return None
+        if self.policy is not None and safe['event_type'] in {'request', 'wake'} and not sources:
+            return None
         now = self._now()
-        return DiagnosticRecord(str(uuid4()), now, now+self.seconds, safe)
+        return DiagnosticRecord(str(uuid4()), now, now+self.seconds, safe, sources)
+
+    def available(self, sources: tuple[MemorySource, ...]) -> bool:
+        """Check metadata authority without extending raw capture retention."""
+        return not sources or self.policy is not None and self.policy.activity_sources_available(sources)
 
     def status(self) -> dict:
         """Read cached counts without disk, private paths or payloads."""
@@ -109,6 +125,7 @@ class DiagnosticStore:
     def _connection(self):
         db = sqlite3.connect(self.catalog)
         db.execute('PRAGMA secure_delete=ON')
+        db.execute('PRAGMA foreign_keys=ON')
         return db
 
     @staticmethod
@@ -120,7 +137,13 @@ class DiagnosticStore:
         db.execute('INSERT OR REPLACE INTO state VALUES (?,?)', (name, value))
 
     def _line(self, identifier, born, expiry, payload):
-        doc = dict(payload)
+        safe = self._project(payload)
+        if (safe is None or safe != payload or type(payload.get('diagnostic_schema')) is not int
+                or type(identifier) is not str or str(UUID(identifier)) != identifier
+                or any(type(value) not in (int, float) or not math.isfinite(value) for value in (born, expiry))
+                or expiry <= born):
+            raise ValueError('unverified_diagnostic_catalog_row')
+        doc = dict(safe)
         doc.update({'record_id': identifier, 'recorded_at': born, 'expires_at': expiry,
             '@timestamp': datetime.fromtimestamp(born, timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
             'service': 'kza-voice'})
@@ -188,10 +211,10 @@ class DiagnosticStore:
             return
         application = db.execute('PRAGMA application_id').fetchone()[0]
         version = db.execute('PRAGMA user_version').fetchone()[0]
-        if application == 0 and not db.execute("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchone():
+        if application == 0 and version == 0 and not db.execute("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchone():
             db.execute('PRAGMA application_id=1264206897')
             db.execute('PRAGMA user_version=1')
-        elif application != 1264206897 or version != 1:
+        elif application != 1264206897 or version not in (1, 2):
             raise RuntimeError('unsupported_diagnostic_catalog')
         db.executescript('''
             CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
@@ -201,7 +224,16 @@ class DiagnosticStore:
             CREATE INDEX IF NOT EXISTS diagnostic_expiry ON metrics(expires);
             CREATE TABLE IF NOT EXISTS quarantines(source TEXT PRIMARY KEY,destination TEXT NOT NULL,moved INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS staged(name TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS lineage(record_id TEXT NOT NULL REFERENCES metrics(id) ON DELETE CASCADE,
+                conversation_id TEXT NOT NULL, PRIMARY KEY(record_id,conversation_id));
+            CREATE INDEX IF NOT EXISTS diagnostic_conversation ON lineage(conversation_id);
         ''')
+        db.execute('PRAGMA user_version=2')
+        if db.execute('PRAGMA foreign_key_check').fetchone():
+            raise ValueError('invalid_diagnostic_lineage')
+        for (conversation,) in db.execute('SELECT DISTINCT conversation_id FROM lineage'):
+            if type(conversation) is not str or str(UUID(conversation)) != conversation:
+                raise ValueError('invalid_diagnostic_lineage')
         # A recorded quarantine intent survives an interrupted rename.
         for source, destination in db.execute('SELECT source,destination FROM quarantines WHERE moved=0').fetchall():
             if source not in {self.path.name, self.path.name+'.1'} or Path(destination).name != destination:
@@ -244,6 +276,11 @@ class DiagnosticStore:
         self._cleanup_staged(db)
         if db.execute('DELETE FROM metrics WHERE expires<=?', (self._now(),)).rowcount:
             self._set(db, 'dirty', 1)
+        if self.policy is not None:
+            for conversation in self.policy.committed_revoked_conversations():
+                if db.execute('DELETE FROM metrics WHERE id IN (SELECT record_id FROM lineage WHERE conversation_id=?)',
+                        (conversation,)).rowcount:
+                    self._set(db, 'dirty', 1)
         db.commit()
 
     def _publish(self, db):
@@ -277,8 +314,11 @@ class DiagnosticStore:
 
     def _snapshot(self, db):
         count, next_at = db.execute('SELECT COUNT(*),MIN(expires) FROM metrics').fetchone()
+        quarantines = {row[0] for row in db.execute('SELECT destination FROM quarantines')}
+        for source in (self.path.name, self.path.name+'.1'):
+            quarantines.update(path.name for path in self.path.parent.glob(source+'.quarantine-*'))
         self._status = {'ready': not self._meta(db, 'dirty'), 'rows': count, 'next_at': next_at,
-            'quarantines': db.execute('SELECT COUNT(*) FROM quarantines').fetchone()[0]}
+            'quarantines': len(quarantines)}
 
     def prune(self) -> None:
         """Persist tighter deadlines before repairing either file projection."""
@@ -301,7 +341,7 @@ class DiagnosticStore:
                 self._expire(db)
                 self._publish(db)
                 expiry = min(record.expires_at, record.recorded_at+self.seconds)
-                if expiry <= self._now() or record.recorded_at > self._now():
+                if expiry <= self._now() or record.recorded_at > self._now() or not self.available(record.sources):
                     self._snapshot(db)
                     return None
                 if db.execute('SELECT 1 FROM metrics WHERE id=?', (record.identifier,)).fetchone():
@@ -311,7 +351,7 @@ class DiagnosticStore:
                 if body != record.payload:
                     raise ValueError('unverified_diagnostic_payload')
                 line = self._line(record.identifier, record.recorded_at, expiry, body)
-                if expiry <= self._now():
+                if expiry <= self._now() or not self.available(record.sources):
                     self._snapshot(db)
                     return None
                 rotate = self._meta(db, 'active_bytes') >= self._rotate_bytes
@@ -320,6 +360,8 @@ class DiagnosticStore:
                     db.execute('UPDATE metrics SET partition=1 WHERE partition=0')
                 inserted = db.execute('INSERT OR IGNORE INTO metrics VALUES (?,?,?,?,0,?)',
                     (record.identifier, record.recorded_at, expiry, json.dumps(body), len(line.encode())+1)).rowcount
+                db.executemany('INSERT OR IGNORE INTO lineage VALUES (?,?)',
+                    [(record.identifier, source.conversation_id) for source in record.sources])
                 self._set(db, 'dirty', 1)
                 db.commit()
                 if rotate:
@@ -335,7 +377,24 @@ class DiagnosticStore:
                 self._expire(db)
                 self._publish(db)
                 self._snapshot(db)
-                return DiagnosticPublication(line, expiry) if inserted and expiry > self._now() else None
+                return DiagnosticPublication(line, expiry) if inserted and expiry > self._now() and self.available(record.sources) else None
+
+    def erase(self, conversation_id: str) -> int:
+        """Repair physical projections before counting unverifiable legacy rows."""
+        conversation_id = str(UUID(conversation_id))
+        with self._lock:
+            if self.policy is None or not self.policy.conversation_committed_revoked(conversation_id):
+                raise RuntimeError('diagnostic_erasure_requires_committed_authority')
+            self._status = {**self._status, 'ready': False}
+            self._acquire()
+            with closing(self._connection()) as db:
+                self._initialize(db)
+                self._expire(db)
+                self._publish(db)
+                self._snapshot(db)
+                # Missing lineage cannot be reclassified as unrelated activity.
+                return db.execute('SELECT COUNT(*) FROM metrics WHERE NOT EXISTS '
+                    '(SELECT 1 FROM lineage WHERE record_id=metrics.id)').fetchone()[0] + self._status['quarantines']
 
     def close(self) -> None:
         """Release only after the emitter drains both write and retention owners."""
