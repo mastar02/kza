@@ -753,6 +753,16 @@ previa de seis fallos como no aceptada. La calidad de audio al rotar marcas,
 los buffers de drivers/SDK, los demás productores y el contrato global del
 journal siguen pendientes, junto con el resto de H3–H6. Producción no cambia.
 
+La [poda en reposo](../research/2026-10-27-h3-idle-ingress-retirement-validation.json)
+ya retira paquetes y segmentos con marcas revocadas, vencidas o rotadas aunque
+su fecha aparente seguir vigente. Cambiar de marca desacopla la cola incluso
+con la misma fecha de corte; las copias aún en curso siguen pendientes hasta
+salir. El segmento conserva la marca causal después del reset nativo y se
+comprueba antes de STT. La validación de `c0f984e` registra **5359 passed,
+1 xfailed**, 21 casos nuevos, 511 pruebas dirigidas, checks y artefacto con 322
+hashes. La otra sala conserva su cola válida. No se completa el contrato global
+del journal, los SDK, las voces, la aceptación física ni el resto del roadmap.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

@@ -1,0 +1,176 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "c0f984e72a2c13218f04e58e4ee40fef3cf8b48e",
+  "tested_runtime_source_tree": "b20e166d0fe86bc289cab7f492dd32e3ee801f84",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 idle command/tap queue retirement by admission epoch as well as dates, queue detachment when only the epoch changes, and causal epoch propagation to ready raw segments and the native-to-STT handoff. Complete producer/journal, SDK, acoustic and release acceptance remain open.",
+  "new_cases_total": 21,
+  "new_integration_cases": [
+    "test_idle_command_prune_removes_retired_admission_with_future_frame_date[revoke-single]",
+    "test_idle_command_prune_removes_retired_admission_with_future_frame_date[revoke-multi]",
+    "test_idle_command_prune_removes_retired_admission_with_future_frame_date[expire-single]",
+    "test_idle_command_prune_removes_retired_admission_with_future_frame_date[expire-multi]",
+    "test_idle_command_prune_removes_retired_admission_with_future_frame_date[rotate-single]",
+    "test_idle_command_prune_removes_retired_admission_with_future_frame_date[rotate-multi]",
+    "test_idle_ambient_prune_removes_retired_admission_without_starting_workers[revoke]",
+    "test_idle_ambient_prune_removes_retired_admission_without_starting_workers[expire]",
+    "test_idle_ambient_prune_removes_retired_admission_without_starting_workers[rotate]",
+    "test_idle_ready_segment_retires_its_causal_epoch_even_with_a_future_start[revoke]",
+    "test_idle_ready_segment_retires_its_causal_epoch_even_with_a_future_start[expire]",
+    "test_idle_ready_segment_retires_its_causal_epoch_even_with_a_future_start[rotate]",
+    "test_retired_causal_epoch_cannot_reach_stt_after_native_reset[ready]",
+    "test_retired_causal_epoch_cannot_reach_stt_after_native_reset[native-return]",
+    "test_idle_multiroom_prune_keeps_the_other_rooms_valid_queue",
+    "test_command_prune_detaches_on_epoch_change_with_identical_date_fence[queued-single]",
+    "test_command_prune_detaches_on_epoch_change_with_identical_date_fence[queued-multi]",
+    "test_command_prune_detaches_on_epoch_change_with_identical_date_fence[copy-single]",
+    "test_command_prune_detaches_on_epoch_change_with_identical_date_fence[copy-multi]",
+    "test_ambient_prune_detaches_on_epoch_change_with_identical_date_fence[queued]",
+    "test_ambient_prune_detaches_on_epoch_change_with_identical_date_fence[append]"
+  ],
+  "red_reproductions": [
+    {
+      "log": "/tmp/kza-idle-ingress-red.log",
+      "failed": 10,
+      "passed": 0,
+      "finding": "Future-dated retired admissions remained in command and tap queues after idle pruning, including a multiroom bystander-preservation case."
+    },
+    {
+      "log": "/tmp/kza-idle-ingress-ready-red.log",
+      "failed": 3,
+      "passed": 16,
+      "finding": "After queue cleanup was fixed, three additional cases found completed VAD audio retained in ready segments after causal admission revocation, expiry or rotation."
+    }
+  ],
+  "rejected_full_suite": {
+    "accepted": false,
+    "tested_commit": "7ed091e82959f34c4e3c68983dc8daacd3cf44a7",
+    "tested_runtime_source_tree": "b20e166d0fe86bc289cab7f492dd32e3ee801f84",
+    "passed": 5358,
+    "failed": 1,
+    "xfailed": 1,
+    "runtime_s": 234.13,
+    "log": "/tmp/kza-idle-ingress-rejected-full.log",
+    "xml": "/tmp/kza-idle-ingress-rejected-full.xml",
+    "failed_tests": [
+      "tests.integration.test_memory_worker_retirement::test_selected_sources_are_published_before_result_delivery[arecent_prompt_context]"
+    ],
+    "finding": "A prompt-read test attached its observation callback to the first global memory task. That set can also contain maintenance; the observed scope still had its read pending.",
+    "correction": "The test now observes the native prompt task associated with its exact metadata scope. An independently owned competing operation must finish without publishing the read receipt. No application code, budgets or deadlines changed for this correction."
+  },
+  "full_suite": {
+    "accepted": true,
+    "collected": 5360,
+    "passed": 5359,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 231.941,
+    "summary": "========= 5359 passed, 1 xfailed, 31538 warnings in 232.02s (0:03:52) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-idle-ingress-accepted-full.xml",
+    "log": "/tmp/kza-idle-ingress-accepted-full.log",
+    "xml": "/tmp/kza-idle-ingress-accepted-full.xml"
+  },
+  "focused_suite": {
+    "passed": 511,
+    "failed": 0,
+    "runtime_s": 18.97,
+    "summary": "===================== 511 passed, 4682 warnings in 18.97s ======================",
+    "log": "/tmp/kza-idle-ingress-corrected-focused.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-idle-ingress-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-idle-ingress-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-idle-ingress-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-idle-ingress-dashboard.log"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "c0f984e72a2c13218f04e58e4ee40fef3cf8b48e",
+    "artifact": "/tmp/kza-idle-ingress-runtime-woj9duxd/runtime.tar.gz",
+    "verified_hashes": 322,
+    "runtime_s": 0.5379602678585798,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "hashes": 322,
+      "voice": [
+        {
+          "transport": "single",
+          "future_dated_retired_queue_removed_while_idle": true,
+          "fresh_input_recovers_without_restart": true
+        },
+        {
+          "transport": "multi",
+          "future_dated_retired_queue_removed_while_idle": true,
+          "fresh_input_recovers_without_restart": true
+        }
+      ],
+      "ambient": [
+        {
+          "stage": "tap",
+          "retired_audio_released_without_new_inference_or_capture": true,
+          "identical_numeric_boundary_is_not_a_completion_proof": true,
+          "ready_segment_keeps_causal_epoch_after_native_reset": false
+        },
+        {
+          "stage": "ready",
+          "retired_audio_released_without_new_inference_or_capture": true,
+          "identical_numeric_boundary_is_not_a_completion_proof": false,
+          "ready_segment_keeps_causal_epoch_after_native_reset": true
+        }
+      ],
+      "real_capture_rooms_tap_native_actor_segmenter_store_and_privacy_sqlite": true,
+      "synthetic_input_driver_wake_echo_clock_and_vad": true,
+      "gc_forced_disabled_or_frozen": false,
+      "full_main_hardware_or_journal_acceptance": false
+    }
+  },
+  "verified_behaviors": {
+    "retired_command_and_tap_queues_release_audio_without_further_capture_or_inference": true,
+    "revoked_expired_or_rotated_epochs_rejected_despite_future_frame_dates": true,
+    "epoch_change_detaches_queues_even_with_identical_numeric_boundary": true,
+    "inflight_copy_and_append_remain_pending_until_actual_exit": true,
+    "valid_other_room_queue_survives_targeted_prune": true,
+    "ready_segments_keep_causal_epoch_after_native_reset": true,
+    "ready_audio_released_on_causal_epoch_retirement": true,
+    "retired_epoch_rejected_at_native_return_and_before_stt": true,
+    "live_source_alone_does_not_override_retired_raw_audio_epoch": true,
+    "prompt_read_test_observes_selected_scope_task_amid_real_competing_work": true,
+    "callback_uses_cached_identity_and_retired_flag_without_authority_queries": true
+  },
+  "limits": {
+    "full_producers_journal_contract_complete": false,
+    "all_derived_provenance_and_backend_or_sdk_lifetimes_proven": false,
+    "physical_adc_timestamps_and_wake_quality_accepted": false,
+    "ambient_pause_and_total_mute_product_flow_complete": false,
+    "instrumented_gc_measurement_replaced_or_accepted": false,
+    "production_modified": false,
+    "gc_forced_disabled_or_frozen": false,
+    "deadlines_or_existing_capacities_widened": false,
+    "overall_h3_or_roadmap_complete": false
+  }
+}

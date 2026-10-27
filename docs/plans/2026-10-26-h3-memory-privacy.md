@@ -2420,6 +2420,50 @@ contienen metadatos y no sustituyen la procedencia completa de los derivados,
 los timestamps del driver ni la auditoría de buffers de los SDK. El contrato
 global de `PRODUCERS`, H3–H6 y la release siguen abiertos.
 
+## Poda en reposo por marca causal, además de la fecha — 27 de octubre
+
+La reproducción encontró que una fecha posterior al corte mantenía paquetes
+revocados en las colas de comandos y del tap después de `prune_private`.
+El consumidor nativo los rechazaba al reanudarse, pero la poda en reposo no
+retiraba su audio. Sucedía al revocar, vencer o rotar su marca de admisión.
+
+La publicación de barreras filtra ahora los paquetes por fecha y por admisión
+verificada. Conserva la marca publicada y desacopla la cola si cambia, incluso
+cuando la barrera numérica sigue siendo idéntica. Un callback detenido en la
+copia o un `push` detenido en el append no pueden publicar en la cola nueva.
+El ingreso compara también la referencia y el estado retirado de la marca,
+sin consultar autoridad ni ejecutar modelos en el callback. El verificador
+del tap es débil y sólo se consulta desde la poda de control.
+
+Otros tres casos encontraron audio terminado en `RoomProducer.ready` cuya
+fecha parecía vigente, aunque ya no lo estuviera su entrada causal. El
+segmento conserva ahora `input_epoch` junto con `input_source`, incluso después
+del reset del segmentador. La publicación de barreras y el recibo de la salida
+nativa filtran esa marca, y el transcriptor la comprueba antes de STT. La
+revocación, el vencimiento y la rotación retiran así los segmentos en espera
+sin necesitar otra captura ni inferencia. Las pruebas incluyen un retorno
+nativo detenido y una fuente aún viva cuyo audio tiene la marca retirada.
+
+La [validación de poda en reposo](../research/2026-10-27-h3-idle-ingress-retirement-validation.json)
+de `c0f984e` registra **5359 passed, 1 xfailed**, sin fallos, en 232,02 s,
+21 casos nuevos y 511 pruebas dirigidas. La suite anterior queda no aceptada:
+una prueba de memoria observaba la primera tarea de un conjunto que también
+contiene mantenimiento. Ahora observa la lectura de su scope y verifica que
+terminar una operación competidora no publica ese recibo. Esta corrección no
+cambia el código de aplicación, los plazos ni las capacidades. Pasan Ruff,
+Bandit sin hallazgos medios/altos, los 18 casos de frontend y el smoke del
+dashboard. El artefacto sin fuentes verifica 322 hashes y completa el ejercicio
+en 0,54 s con captura, tap, segmentador, actores y SQLite reales, usando driver,
+wake, echo, reloj y VAD sintéticos. La medición instrumentada de GC sigue sin
+aceptarse; esta suite no la sustituye.
+
+La poda conserva la cola válida de otra sala. Las copias y los appends que aún
+no retornaron siguen pendientes hasta soltar realmente sus argumentos; liberar
+la cola no se interpreta como finalización de esos callbacks. No se fuerza GC,
+no se amplían capacidades o plazos y no se modifica producción. La coordinación
+global del journal, los buffers de drivers/SDK, las voces, la aceptación física
+y el resto del roadmap permanecen abiertos.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
