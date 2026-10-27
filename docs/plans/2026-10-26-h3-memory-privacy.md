@@ -2623,6 +2623,68 @@ La repetición completa obtuvo p95 de pausa de 0,99 ms y máximo de 1,14 ms en e
 grafo hijo aislado; no demuestra estabilidad del runtime integrado ni explica
 el ensayo fallido anterior.
 
+## Colas, entrega WebSocket y ticker de Live — 2026-10-27
+
+El bus de Live exige la autoridad de privacidad para admitir frames, incluso
+si el productor declara fuentes: sin autoridad descarta la propuesta. `main`
+inyecta el catálogo común y registra cierre y mantenimiento antes de iniciar
+productores. El `VoicePipeline` adjunta las fuentes activas del router, incluidos
+los derivados seleccionados. El bus valida esas fuentes antes y después de
+indexar la proyección, para cubrir una revocación nativa entre ambas etapas.
+No inventa procedencia usando la fecha de publicación ni una etiqueta de voz.
+
+La proyección del bus copia campos escalares conocidos y queda desacoplada del
+diccionario del productor. Cada frame recibe un ID opaco y el menor vencimiento
+de sus fuentes originales; el wire no contiene los IDs de conversación o
+captura. El texto agregado admitido se limita a 32 KiB UTF-8. Hay como máximo
+16 suscriptores por defecto, colas acotadas y una reserva global de registros
+proporcional a esas colas; los límites no convierten la saturación en espera del
+pipeline. Las pruebas unitarias anteriores usan ahora una autoridad real en
+memoria y fuentes explícitas, sin conservar un bypass para frames privados.
+
+Un índice débil permite retirar los registros de la conversación desde el
+observer previo al commit; no conserva el payload después de liberar el último
+registro. El barrido en reposo comprueba los vencimientos y revisa los demás
+cambios de fuentes en lotes de 32. Tanto `payload` como `to_frame` vuelven a
+comprobar autoridad, incluso después de sacar el registro de la cola. Un frame
+ya retirado no recupera su payload tras un rollback del marcador. Esta retirada
+transitoria no autoriza borrados persistentes ni completa los productores
+anteriores al bus.
+
+Cada conexión tiene un único sender retenido. La cancelación o timeout de su
+observador no libera el frame serializado ni el lease de privacidad mientras
+continúa el callback real de envío o cierre. El monitor de desconexión retira
+también conexiones en reposo, sin esperar otro frame. La sesión se comprueba al
+enviar y durante el mantenimiento: rotar la credencial cierra el socket con
+1008. Los avisos propios de saturación, suscripción y fallo de publicación usan
+un contexto vacío, sin errores arbitrarios ni campos privados del llamador.
+
+El servidor recuerda sólo el token y las fuentes del último frame entregado,
+sin copiar su texto. Al retirarlo envía un control `retire` con el token. El
+bridge de la UI mantiene un único frame, elimina los vencidos sin esperar otro
+mensaje y limpia su estado al perder conexión o sesión. El ticker recibe ese
+cambio y retira el texto del DOM. Recibir otra vez el token actual no alarga su
+plazo. Las pruebas con Chromium verifican retiro por conversación, vencimiento
+en reposo, desconexión y pérdida de sesión sobre HTTP, WebSocket y React reales,
+con fuentes y adapters de servicios sintéticos.
+
+La [evidencia de Live](../research/2026-10-27-h3-live-stream-validation.json)
+corresponde al commit `40080e0`: **5424 passed, 1 xfailed**, sin fallos, en
+232,23 s; 20 casos nuevos y 403 pruebas dirigidas. Pasan Ruff, Bandit sin
+hallazgos medios/altos, los 23 casos de frontend, el smoke del dashboard y
+Chromium sin excepciones JavaScript. El artefacto verifica 326 hashes y ejecuta
+WebSocket real fuera del checkout de fuentes en 0,64 s. Conserva el ensayo
+inicial que reveló contexto privado en los logs y la suite parcial detenida
+para corregirlo. No manipula GC ni amplía los presupuestos existentes; tampoco
+explica el pico previo de 92,90 ms ni sustituye la aceptación integrada.
+
+El control enviado todavía no es un ACK de borrado del navegador. Faltan ese
+protocolo y sus recibos durables, otras rutas WebSocket y los caches REST de las
+otras vistas. Un callback ASGI terminado tampoco prueba que se hayan retirado
+todos los buffers de transporte o copias remotas. `STREAMS` sigue sin un driver
+que certifique borrado global; H3, la aceptación de recursos/GC y hardware, y la
+release siguen abiertos. Producción permanece sin cambios.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

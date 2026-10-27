@@ -1,0 +1,204 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "40080e0b8f0fcfc37884cbe59f23ec262c65be11",
+  "tested_runtime_source_tree": "5048fc085f8d5b816912888bfb0694f985022d75",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 live proposal admission under source authority, original-source deadlines, retirable detached bounded projections, actual ASGI/WebSocket send and close ownership, idle session rotation/disconnect, and rendered Live ticker cleanup. Browser erasure ACK/durable receipts, other WS/REST caches and complete STREAMS remain open.",
+  "new_cases_total": 20,
+  "new_integration_cases": [
+    "test_unsourced_or_revoked_private_frames_never_enter_policy_queue",
+    "test_frame_is_detached_from_producer_and_has_original_source_deadline",
+    "test_idle_source_expiry_retires_queued_and_already_dequeued_records",
+    "test_conversation_retirement_keeps_other_room_and_never_relabels_old_record",
+    "test_blocked_socket_send_is_owned_through_observer_cancellation_and_close_timeout",
+    "test_delivered_last_frame_gets_retirement_control_without_more_events",
+    "test_actual_pipeline_passes_active_derived_sources_to_live_bus",
+    "test_real_authenticated_asgi_route_serializes_deadline_and_retires_then_disconnects",
+    "test_session_rotation_is_rechecked_before_actual_asgi_send",
+    "test_idle_disconnect_releases_subscriber_without_another_publication",
+    "test_policy_bus_caps_subscribers_without_blocking_publish",
+    "test_opaque_objects_and_callback_context_never_enter_live_record_or_sender",
+    "test_many_valid_strings_cannot_exceed_total_live_payload_budget",
+    "test_idle_authenticated_socket_is_closed_when_session_rotates",
+    "test_actual_socket_close_callback_is_retained_after_payload_has_drained",
+    "test_pending_failed_commit_retires_transient_frame_without_resurrecting_it",
+    "test_conversation_index_releases_metadata_when_queue_record_is_released",
+    "test_missing_authority_fails_closed_even_with_claimed_source",
+    "test_revocation_between_projection_and_indexing_cannot_admit_old_payload",
+    "test_live_overflow_and_failed_publication_logs_omit_private_context"
+  ],
+  "initial_red": {
+    "failed": 7,
+    "passed": 0,
+    "runtime_s": 0.74,
+    "log": "/tmp/kza-live-stream-red.log",
+    "finding": "The bus lacked source authority, deadline retirement and actual scoped socket ownership."
+  },
+  "nonaccepted_focused_run": {
+    "log": "/tmp/kza-live-stream-focused.log",
+    "failed": 4,
+    "passed": 16,
+    "runtime_s": 1.05,
+    "finding": "Idle maintenance slept beyond the short close observer deadline. Close now wakes maintenance immediately; the existing timeout was not enlarged."
+  },
+  "nonaccepted_partial_full_suite": {
+    "tested_commit": "17ca55484a14dc16ce138590e4427092b9ee3b49",
+    "log": "/tmp/kza-live-stream-accepted-full.log",
+    "xml": "/tmp/kza-live-stream-accepted-full.xml",
+    "collected": 5424,
+    "observed_junit_counts": {
+      "tests": 2900,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "completed_passed": 2900,
+    "runtime_s": 177.36,
+    "terminal_exit_code": 2,
+    "accepted": false,
+    "reason": "Stopped the verified live pytest process with SIGINT after a separate probe found private caller context copied into overflow/publication logs. This is partial execution, not a complete successful suite or an independent test failure."
+  },
+  "log_context_probe": {
+    "red_log": "/tmp/kza-live-stream-log-context-red.log",
+    "red_private_context_in_logs": true,
+    "green_log": "/tmp/kza-live-stream-log-context-green.log",
+    "green_private_context_in_logs": false,
+    "fix": "Subscriber attach/drop/detach and failed publication messages run in an empty Context; arbitrary exception text is omitted.",
+    "regression_case": "test_live_overflow_and_failed_publication_logs_omit_private_context"
+  },
+  "full_suite": {
+    "accepted": true,
+    "collected": 5425,
+    "passed": 5424,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 232.146,
+    "summary": "========= 5424 passed, 1 xfailed, 31652 warnings in 232.23s (0:03:52) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-live-stream-final-accepted-full.xml",
+    "log": "/tmp/kza-live-stream-final-accepted-full.log",
+    "xml": "/tmp/kza-live-stream-final-accepted-full.xml",
+    "isolated_voice_metrics": {
+      "repetitions": 10,
+      "sentences_per_run": 100,
+      "samples_per_run": 2400000,
+      "provider_wait_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 2720,
+      "loop_lag_p95_ms": 0.98496594466269,
+      "loop_lag_max_ms": 1.7402699496597052,
+      "exact_pcm_runs": 10
+    }
+  },
+  "focused_suite": {
+    "passed": 403,
+    "failed": 0,
+    "runtime_s": 29.18,
+    "summary": "===================== 403 passed, 2098 warnings in 29.18s ======================",
+    "log": "/tmp/kza-live-stream-final-sanitized-focused.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-live-stream-final-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-live-stream-final-bandit.log"
+    },
+    "frontend": {
+      "passed": 23,
+      "new_cases": 5,
+      "failed": 0,
+      "log": "/tmp/kza-live-stream-final-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "mocked_services": true,
+      "log": "/tmp/kza-live-stream-final-dashboard.log"
+    },
+    "chromium": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "rendered_conversation_retirement": true,
+      "rendered_idle_expiry": true,
+      "disconnect_clears_ticker": true,
+      "lost_session_clears_private_dom": true,
+      "javascript_exceptions": 0,
+      "synthetic_sources_and_service_adapters": true,
+      "browser_erasure_ack_or_global_streams_acceptance": false,
+      "log": "/tmp/kza-live-stream-accepted-browser.log",
+      "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m tests.frontend.browser_live_privacy"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "40080e0b8f0fcfc37884cbe59f23ec262c65be11",
+    "artifact": "/tmp/kza-live-stream-runtime-zaj0akog/runtime.tar.gz",
+    "verified_hashes": 326,
+    "runtime_s": 0.6400207851547748,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 326,
+      "actual_uvicorn_aiohttp_websocket_and_serialization": true,
+      "private_lineage_not_in_frames": true,
+      "conversation_and_idle_expiry_retirement_controls": true,
+      "idle_session_rotation_closes_1008": true,
+      "idle_disconnect_releases_subscriber": true,
+      "missing_authority_drops_claimed_private_sources": true,
+      "cancelled_observer_and_close_timeout_retain_send_and_privacy_lease": true,
+      "frontend_asset_in_compiled_manifest": true,
+      "synthetic_clock_transport_gate_and_sources": true,
+      "browser_ack_global_streams_or_full_main_hardware_acceptance": false
+    }
+  },
+  "verified_behaviors": {
+    "missing_authority_rejects_even_claimed_sources": true,
+    "pipeline_publishes_active_derived_sources_without_inventing_dates": true,
+    "source_checked_before_and_after_indexing_covers_native_revocation_gap": true,
+    "private_conversation_and_capture_ids_not_serialized_into_live_metadata": true,
+    "known_scalar_payload_is_detached_and_aggregate_text_capped_at_32768_utf8_bytes": true,
+    "default_subscriber_cap_16_with_bounded_queues_and_record_pool": true,
+    "weak_conversation_index_does_not_keep_released_payload_or_metadata": true,
+    "idle_expiry_and_revocation_retire_queued_and_already_dequeued_records": true,
+    "pending_failed_commit_does_not_resurrect_retired_transient_record": true,
+    "last_delivered_metadata_contains_no_payload_and_drives_retirement_control": true,
+    "source_and_authority_rechecked_at_payload_read_and_serialization": true,
+    "actual_socket_send_and_close_callbacks_remain_owned_after_observer_exit": true,
+    "idle_disconnect_releases_subscriber_without_another_publication": true,
+    "idle_auth_rotation_closes_socket_1008": true,
+    "actual_authenticated_asgi_route_checks_credentials_before_send": true,
+    "caller_context_opaque_values_and_arbitrary_error_text_omitted_from_this_channel_logs": true,
+    "frontend_current_token_duplicate_cannot_extend_existing_deadline": true,
+    "real_chromium_dom_retires_on_revocation_expiry_disconnect_and_session_loss": true
+  },
+  "limits": {
+    "protocol": "Retirement controls are best-effort ordered messages, not browser ACKs. No STREAMS driver or global erasure receipt is registered.",
+    "transport": "Actual ASGI send/close completion is retained. This does not prove retirement of all lower transport buffers or remote copies.",
+    "maintenance": "50 ms idle sweep; non-conversation source changes are checked in batches of 32 plus immediate serialization/read checks. Scheduling and physical retirement require a running process and completed I/O.",
+    "frontend_scope": "Only the live ticker/bridge is covered. Other WebSockets, REST snapshot caches, frozen/offline browsers and durable client receipts remain open.",
+    "full_streams_participant_complete": false,
+    "browser_ack_and_durable_client_receipts": false,
+    "global_conversation_erasure_complete_or_ui_enabled": false,
+    "all_other_diagnostic_logs_audited": false,
+    "full_producers_or_voices_complete": false,
+    "full_main_audio_sdk_or_hardware_acceptance": false,
+    "full_h4_capacity_and_gc_or_latency_acceptance": false,
+    "previous_92_90_ms_loop_spike_or_495_68_ms_gc_pause_explained_or_fixed": false,
+    "production_modified": false,
+    "gc_forced_disabled_or_frozen": false,
+    "existing_deadlines_or_capacities_widened_for_tests": false,
+    "overall_h3_or_roadmap_complete": false
+  }
+}

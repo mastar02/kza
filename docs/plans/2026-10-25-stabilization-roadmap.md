@@ -804,6 +804,18 @@ límite de 75 ms. Las mediciones posteriores pasaron sin cambiar código ni
 límites, pero no explican ese pico. La latencia integrada de H4/H6 sigue abierta;
 este paso no completa `DIAGNOSTICS` ni H3.
 
+El [canal Live](../research/2026-10-27-h3-live-stream-validation.json) ya exige
+fuentes y autoridad, copia una proyección acotada y retira registros en reposo.
+Conserva la entrega y cierre reales del WebSocket después de cancelar o agotar
+la espera del observador. La sesión se revalida también en conexiones quietas;
+la UI limpia el ticker por revocación, vencimiento, desconexión o pérdida de
+sesión. Chromium verifica esos cambios sobre el DOM real. La evidencia de
+`40080e0` registra **5424 passed, 1 xfailed**, 20 casos nuevos, 403 pruebas
+dirigidas, 23 casos de frontend, checks y artefacto de 326 hashes. Conserva la
+fuga de contexto en logs detectada y corregida durante la validación y su suite
+parcial detenida. Quedan el ACK y recibo durable del navegador, otros WebSockets y
+caches de otras vistas; `STREAMS`, H3 y la aceptación integrada siguen abiertos.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una
