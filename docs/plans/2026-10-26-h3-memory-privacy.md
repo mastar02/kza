@@ -3274,6 +3274,117 @@ resuelto el inventario de productores, SDK, caches, voces legacy o hardware.
 Pausa ambiental, mute total, calibración y el resto de H3–H6 siguen abiertos.
 Producción permanece sin cambios.
 
+
+## Grupos sugeridos y correcciones persistentes — 27 de octubre
+
+El registro asigna un UUID estable a los grupos nuevos. El candidato automático
+compara con todos los miembros: exige al menos dos segundos, coseno mínimo
+0,88 y diferencia de 0,08 frente al segundo grupo. No fusiona grupos existentes
+por cadenas de vecinos y no combina descriptores o dimensiones de encoder
+distintos. Audio corto o semejanza ambigua queda como desconocido. Los límites
+son 32 miembros por grupo y las mismas 256 fuentes/dependencias por operación.
+No usa texto ni habitación para inferir hablante, ni cambia modelo o GPU. El
+campo `automatic_grouping_accepted` continúa falso: falta demostrar precisión,
+cobertura y abstención con el corpus real.
+
+El [protocolo de evaluación](2026-10-27-h3-voice-grouping-evaluation.md) quedó
+commiteado en `ee549dd` antes de la implementación publicada. Separa sesiones
+entre calibración y evaluación, fija condiciones adversas, diez órdenes de
+entrada y criterios de uniones, separaciones y cobertura antes de medir.
+Los vectores sintéticos sólo comprueban la mecánica; no sustituyen muestras
+reales consentidas ni prueban detección de TV, eco o superposición.
+
+La pantalla muestra grupos, cantidades totales y visibles en la página, estado
+sugerido/manual/desconocido, similitud y motivos de abstención. Permite elegir
+las muestras visibles, unir todos los miembros de los grupos seleccionados,
+separar un subconjunto o dejar cada muestra como desconocida. Informa que la
+unión incluye miembros de otras páginas. La revisión de perfiles permanentes
+sigue separada: organizar estas muestras no modifica por sí solo sus nombres
+o centroides guardados, ni concede permisos.
+
+Las correcciones requieren actor autenticado actual, revisión exacta de cada
+grupo y un ID de solicitud. Un reintento devuelve el resultado sin repetir ni
+deshacer cambios posteriores; otro cuerpo con el mismo ID se rechaza. La unión
+conserva uno de los IDs existentes, y separar conserva el ID del remanente.
+Los grupos corregidos quedan fuera de la asignación automática, también tras
+reiniciar. No existe una bolsa común para todo `unknown`: cada abstención
+mantiene su propia muestra o el subconjunto revisado explícitamente.
+
+Un grupo conserva la unión completa de sus fuentes originales, incluidas las
+que justificaron una corrección. Su plazo es el más corto de ellas y nunca se
+renueva por una observación, lectura o corrección. Al expirar o borrarse una
+fuente se elimina la relación derivada. Las capturas independientes vigentes
+conservan su propio audio/plazo y quedan como desconocidas; no se vuelven a
+unir automáticamente por haber perdido una corrección. Las solicitudes de
+corrección también se purgan por TTL o borrado. Hay un máximo de 4.096 grupos
+y 4.096 solicitudes, con el límite existente de 4.096 huellas y sin aumentar
+las reservas del registro o del transporte.
+
+La página de capturas incluye la procedencia de todos los miembros del grupo,
+aunque sólo muestre una parte. El recibo durable cubre esa unión; el frontend
+retira la relación al plazo mínimo del grupo, además del de la muestra. Una
+edición invalida el cuerpo de capturas aún retenido por el framework. Los sellos
+de grupo y perfil son independientes: una corrección de muestras no retira los
+nombres permanentes. Las lecturas de metadatos no cargan embeddings, y reutilizan
+la validación de cada grupo dentro de la misma transacción.
+
+La migración inicial asigna grupos desconocidos a las huellas previas, sin
+inventar evidencia acústica ni cambiar sus plazos. Sólo se hace una vez. Una
+restauración posterior con membresía ausente o con fuentes incompletas no se
+reinterpreta como un alta nueva: oculta el grupo y mantiene pendientes los
+recibos. El ensayo de restauración completa incluye las nuevas tablas; las
+pruebas específicas de restauración parcial conservan ese bloqueo. Una
+revocación todavía pendiente oculta las relaciones, pero no destruye las
+correcciones si el commit termina fallando.
+
+Una prueba adversa contra el primer artefacto detectó un caso que la suite
+verde no cubría: una restauración podía perder una fuente del grupo y, después
+de borrar su miembro, aparentar que la procedencia restante estaba completa.
+Ahora cada grupo conserva hashes separados del conjunto de fuentes y de los
+miembros, y cada solicitud conserva una prueba de sus fuentes. Las lecturas,
+el cleanup y las observaciones nuevas nunca reconstruyen pruebas ausentes.
+Un hash faltante o diferente mantiene la copia pendiente, incluso tras borrar
+el miembro que revelaba el problema; una observación posterior no puede
+volver a certificarla como válida. El vencimiento sí permite retirar físicamente esa
+relación y resolver su recibo. El actor y las fuentes se revalidan después de
+la última escritura de pruebas, antes del commit. Tres casos fallaron antes
+de corregir la procedencia y esa revocación tardía; se conserva también la
+primera suite verde, que no se acepta como evidencia suficiente del arreglo.
+
+La [validación de grupos](../research/2026-10-27-h3-voice-groups-validation.json)
+registra suites, Chromium con UI/audio reales y el artefacto compilado de la
+misma revisión. No cierra la evaluación acústica, la propagación de identidad
+verificada, el inventario global de voces/streams/productores, pausa/mute,
+los datasets legacy ni la aceptación física y de recursos de H3–H6.
+La revisión final `c2ac30d` pasó **5.595 pruebas con 1 xfail conocido en
+383,62 s**, con 26 casos de grupos y cuatro comprobaciones nuevas de la ruta
+privada. Pasaron los 77 casos de frontend, Ruff, Bandit sin hallazgos medios o
+altos y el smoke del dashboard. Las 93 pruebas enfocadas con las pruebas de
+procedencia y los 26 casos finales de grupos también pasaron. El capturador de
+fase nativa no observó timeouts inesperados; no explica los fallos históricos
+de escritura, GC o recursos de H4.
+
+El artefacto final verificó 351 hashes y completó el ensayo de HTTP/WebSocket
+real en 1,89 s. La misma reproducción compilada que antes perdía procedencia
+permanece ahora pendiente hasta retirar los datos. Chromium pasó las acciones
+de unir, separar y dejar como desconocido, reproducción y retiro nativos,
+caducidad, navegación y pérdida de sesión, tanto contra fuente como contra
+bytecode; también pasó la regresión de conversaciones. Completa las dos
+comprobaciones de navegador que el avance anterior dejó pendientes por fallos
+de arranque. No se modificó el sandbox ni los servicios del sistema.
+
+Un primer ensayo del navegador compilado encontró al localizador sintético
+consultando el registro mientras el refresco de la UI aún usaba sus dos
+reservas. El fixture `4f4b5a2` espera ahora el refresco completo y la salida
+real de modelo/I/O dentro del presupuesto original de tres segundos. No cambia
+la capacidad, los plazos ni los reintentos del runtime; la corrida anterior
+permanece en la evidencia. El código de aplicación no cambió durante la suite.
+La primera suite verde de 5.591 pruebas y el artefacto anterior se conservan
+como no aceptados: las reproducciones adversas posteriores demostraron que no
+bastaban para probar la garantía de procedencia.
+
+Producción permanece sin cambios.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
@@ -3294,13 +3405,14 @@ Producción permanece sin cambios.
    del catálogo y del índice no sustituye la operación completa.
 4. Implementar pausa ambiental y mute total con reactivación independiente del
    audio; definir qué productores se detienen y qué buffers se descartan.
-5. Extender el registro de voces a la agrupación y a los consumidores restantes;
+5. Extender el registro de voces a los consumidores restantes;
    completar el inventario y migración de vectores legacy. El backend nuevo ya
    aplica el vencimiento original a huellas y conserva perfiles revisados hasta
    borrado; esto no cubre todavía todas las copias de voz.
-6. Construir la agrupación de voces, correcciones de unión/separación y
-   abstención; ampliar la aceptación a las demás copias y consumidores. Fijar
-   métricas y corpus de calibración antes de evaluar el resultado.
+6. Evaluar el candidato de agrupación y sus abstenciones con el corpus real
+   y las métricas preregistradas; mejorar señales de calidad donde haga falta.
+   Ampliar la aceptación a las demás copias y consumidores y completar la
+   revisión de las asociaciones de perfiles permanentes.
 7. Completar las demás migraciones en copia y la aceptación de runtime, micrófono,
    reproducción, HA y rollback durante H6. La restauración debe conservar la
    intención de borrado y evitar reintroducir datos eliminados. No se ha

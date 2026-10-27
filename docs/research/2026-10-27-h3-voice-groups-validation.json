@@ -1,0 +1,374 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "c2ac30d7a92e9dd4924b45d60beef7573ffd5585",
+  "tested_runtime_source_tree": "3930178ddd81e74e0bcd6cc45237630bcab15cef",
+  "tested_scripts_source_tree": "b08e19ac09711a9d58c6c794af52fe47bcd6999e",
+  "tested_frontend_tree": "6cea5347d1b98ec508cd6ce4b3126e0b5411d2d6",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "previous_goal_turn_classification": "progress",
+  "scope": "Source-bound candidate voice groups, complete-link incremental suggestions, persistent exact-revision merge/split/unknown edits, group-aware page receipt lineage and native voice-review UI; acoustic acceptance remains open.",
+  "new_group_cases_total": 26,
+  "new_private_route_cases": 4,
+  "new_collected_python_cases_net": 30,
+  "new_frontend_cases": 9,
+  "new_group_cases": [
+    "tests.integration.test_voice_groups::test_similar_eligible_captures_share_a_stable_suggested_group_and_earliest_deadline",
+    "tests.integration.test_voice_groups::test_complete_link_does_not_merge_a_chain_of_near_neighbors",
+    "tests.integration.test_voice_groups::test_ambiguous_capture_abstains_instead_of_choosing_by_id_or_room",
+    "tests.integration.test_voice_groups::test_incompatible_or_short_audio_cannot_join_a_candidate_group[other0]",
+    "tests.integration.test_voice_groups::test_incompatible_or_short_audio_cannot_join_a_candidate_group[other1]",
+    "tests.integration.test_voice_groups::test_incompatible_or_short_audio_cannot_join_a_candidate_group[other2]",
+    "tests.integration.test_voice_groups::test_merge_expands_all_selected_groups_and_locks_the_result_against_automatic_changes",
+    "tests.integration.test_voice_groups::test_split_preserves_remainder_id_and_manual_unknown_survives_restart",
+    "tests.integration.test_voice_groups::test_unknown_separates_each_selected_capture_without_naming_or_deleting_audio",
+    "tests.integration.test_voice_groups::test_corrections_are_idempotent_and_reject_stale_revisions_or_conflicting_retries",
+    "tests.integration.test_voice_groups::test_group_expiry_never_renews_raw_samples_and_survivors_do_not_rejoin_automatically",
+    "tests.integration.test_voice_groups::test_partial_page_group_receipt_includes_members_not_visible_on_that_page",
+    "tests.integration.test_voice_groups::test_group_edit_retires_buffered_capture_metadata_but_not_permanent_profile_names",
+    "tests.integration.test_voice_groups::test_erasure_removes_group_links_and_correction_requests_without_losing_independent_raw_samples",
+    "tests.integration.test_voice_groups::test_native_correction_rechecks_current_actor_and_rolls_back_all_membership_changes",
+    "tests.integration.test_voice_groups::test_initial_upgrade_preserves_deadlines_and_never_invents_suggested_groups",
+    "tests.integration.test_voice_groups::test_partial_restore_cannot_silently_recreate_missing_membership_or_drop_group_parent_sources",
+    "tests.integration.test_voice_groups::test_grouping_expiry_during_native_comparison_cannot_commit_a_capture",
+    "tests.integration.test_voice_groups::test_http_corrections_require_auth_exact_revisions_and_reject_permission_or_ttl_fields",
+    "tests.integration.test_voice_groups::test_full_group_cannot_grow_or_merge_past_review_capacity",
+    "tests.integration.test_voice_groups::test_manual_merge_never_discards_sources_to_fit_a_group",
+    "tests.integration.test_voice_groups::test_pending_only_revocation_hides_groups_but_does_not_destroy_manual_corrections",
+    "tests.integration.test_voice_groups::test_partial_group_lineage_cannot_become_complete_when_its_missing_parent_member_is_erased",
+    "tests.integration.test_voice_groups::test_partial_correction_request_lineage_remains_unknown_after_its_missing_parent_is_erased",
+    "tests.integration.test_voice_groups::test_missing_group_proofs_are_never_reconstructed_by_idle_cleanup_or_new_observations",
+    "tests.integration.test_voice_groups::test_credential_rotation_during_proof_write_rolls_back_the_final_group_commit"
+  ],
+  "evaluation_preregistration": {
+    "commit": "ee549dde217265e201a41571a72389fd85de1217",
+    "path": "docs/plans/2026-10-27-h3-voice-grouping-evaluation.md",
+    "sha256": "5fd3e719b33c977fee9122378487cf0957ff008dd8c6e223ea51915b8bd8de63",
+    "published_before_implementation_commit": true,
+    "real_consent_annotated_corpus_evaluated": false,
+    "acoustic_precision_coverage_or_adverse_condition_acceptance": false,
+    "minimum_cosine": 0.88,
+    "minimum_margin": 0.08,
+    "minimum_duration_s": 2,
+    "complete_link_against_every_member": true,
+    "automatic_merge_of_existing_groups": false,
+    "text_or_room_used_as_identity_features": false
+  },
+  "contracts": {
+    "group_ids_stable_during_automatic_extension_and_restart": true,
+    "merge_retains_one_existing_group_id_and_includes_off_page_members": true,
+    "split_preserves_remainder_group_id_and_selected_subset_gets_new_id": true,
+    "unknown_never_one_global_bucket": true,
+    "manual_groups_excluded_from_automatic_assignments": true,
+    "maximum_members": 32,
+    "maximum_sources_and_dependencies_each": 256,
+    "maximum_group_records": 4096,
+    "maximum_correction_requests": 4096,
+    "existing_fingerprint_capacity_unchanged": 4096,
+    "new_group_and_request_deadlines_equal_earliest_original_source": true,
+    "group_extension_reads_corrections_or_retries_renew_raw_deadlines": false,
+    "expired_group_survivors_keep_own_raw_deadlines_and_return_as_unknown": true,
+    "correction_source_union_covers_all_reviewed_parent_groups": true,
+    "exact_group_revisions_and_current_actor_required": true,
+    "idempotent_requests_never_reapply_or_undo_later_edits": true,
+    "correction_does_not_modify_permanent_profile_names_vectors_or_permissions": true,
+    "partial_page_receipts_include_all_group_member_sources": true,
+    "group_and_profile_revision_fences_independent_and_shared_across_wrappers": true,
+    "buffered_stale_group_body_redacted_before_actual_outer_send": true,
+    "metadata_reads_do_not_load_embeddings": true,
+    "group_validation_reused_within_one_authority_transaction": true,
+    "one_time_legacy_capture_backfill_unknown_without_invented_similarity": true,
+    "partial_restore_missing_membership_not_repaired_by_inventing_new_groups": true,
+    "incomplete_live_group_parent_sources_keep_erasure_pending": true,
+    "pending_only_revocation_can_rollback_without_destruction": true,
+    "native_comparison_output_rechecks_all_group_sources_before_commit": true,
+    "source_and_member_digests_survive_parent_member_removal": true,
+    "requests_have_independent_source_digest_proof": true,
+    "new_observation_cannot_reseal_a_group_with_incomplete_prior_proof": true,
+    "unknown_expired_copies_stay_pending_until_physically_purged": true,
+    "actor_and_sources_rechecked_after_last_proof_write": true,
+    "registry_observation_capacity_unchanged": 6,
+    "registry_io_capacity_unchanged": 2,
+    "rest_scope_capacity_unchanged": 8,
+    "new_configuration_dependency_model_or_gpu_assignment": false
+  },
+  "nonaccepted_focused_checks": [
+    {
+      "log": "/tmp/kza-voice-groups-initial.log",
+      "passed": 64,
+      "failed": 3,
+      "runtime_s": 9.38,
+      "causes": [
+        "Existing complete-restore fixture omitted new group/membership tables, correctly leaving partial restored membership unresolved.",
+        "Two old assertions counted exactly one retained object; groups now add real derived copies."
+      ],
+      "corrections": [
+        "Complete-restore fixture now includes all new group tables; separate partial-restore regression keeps the pending guarantee.",
+        "Presence assertions require nonzero pending copies rather than a fixed internal resource count."
+      ]
+    },
+    {
+      "log": "/tmp/kza-voice-groups-focused.log",
+      "passed": 397,
+      "failed": 1,
+      "runtime_s": 45.43,
+      "cause": "New pending-revocation fixture tried to mutate the immutable published frozenset with add().",
+      "correction": "Publish a replacement immutable snapshot and restore the prior snapshot on rollback; application unchanged for this correction."
+    }
+  ],
+  "validation": {
+    "full_suite": {
+      "collected": 5596,
+      "passed": 5595,
+      "failed": 0,
+      "xfailed": 1,
+      "runtime_s": 383.62,
+      "log": "/tmp/kza-voice-groups-accepted-full.log",
+      "xml": "/tmp/kza-voice-groups-accepted-full.xml",
+      "failures": [],
+      "numeric_native_timeout_capture": {
+        "terminal_exit_code": 0,
+        "captured": 0,
+        "events": []
+      },
+      "application_edited_while_suite_running": false,
+      "uncollected_browser_harness_phase_fix_only_during_suite": true,
+      "accepted": true
+    },
+    "focused_before_persistent_lineage_proof": {
+      "passed": 398,
+      "runtime_s": 50.21,
+      "log": "/tmp/kza-voice-groups-accepted-focused.log"
+    },
+    "proof_focused": {
+      "passed": 93,
+      "runtime_s": 27.44,
+      "log": "/tmp/kza-voice-groups-final-proof-cases.log",
+      "before_last_pending_count_refinement": true
+    },
+    "group_cases": {
+      "passed": 26,
+      "runtime_s": 3.41,
+      "log": "/tmp/kza-voice-groups-final-lineage-green.log"
+    },
+    "frontend": {
+      "passed": 77,
+      "failed": 0,
+      "runtime_ms": 97.932952,
+      "log": "/tmp/kza-voice-groups-final-frontend.log"
+    },
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-voice-groups-accepted-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-voice-groups-accepted-bandit.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "mocked_services": true,
+      "log": "/tmp/kza-voice-groups-accepted-dashboard-smoke.log"
+    },
+    "chromium_voice_review": {
+      "checks": {
+        "passed": true,
+        "actual_chromium_http_v3_ws_react_and_native_audio": true,
+        "manual_profile_confirmation_and_revision_delete": true,
+        "review_uses_real_transcript_and_room": true,
+        "suggested_group_then_ui_split_merge_and_explicit_unknown": true,
+        "raw_group_corrections_leave_permanent_profile_names_unchanged": true,
+        "permanent_profile_survives_raw_expiry": true,
+        "raw_retirement_waits_for_actual_emptied_callback": true,
+        "urls_cache_dom_and_player_source_retired": true,
+        "idle_expiry_with_frozen_server_clock": true,
+        "navigation_and_session_loss_stop_audio_and_clear_text": true,
+        "external_bootstrap_assets_blocked": true,
+        "javascript_exceptions": 0,
+        "synthetic_encoder_and_sources": true,
+        "browser_binary": "chromium",
+        "grouping_calibration_all_browser_copies_or_hardware_acceptance": false
+      },
+      "log": "/tmp/kza-voice-groups-accepted-browser.log"
+    },
+    "chromium_conversations": {
+      "checks": {
+        "passed": true,
+        "actual_chromium_http_ws_and_react": true,
+        "rendered_conversation_retirement": true,
+        "rendered_idle_expiry": true,
+        "disconnect_clears_ticker": true,
+        "lost_session_clears_private_dom": true,
+        "javascript_exceptions": 0,
+        "synthetic_sources_and_service_adapters": true,
+        "browser_ack_after_dom_and_cache_clear": true,
+        "browser_ack_waits_for_explicit_dom_commit": true,
+        "pagehide_handler_clears_and_acknowledges_owned_view": true,
+        "rest_conversation_original_deadline_clears_cache_dom_and_voice_filter": true,
+        "rest_conversation_payload_excluded_from_global_mock_cache": true,
+        "session_loss_clears_unmounted_rest_conversation_cache": true,
+        "rest_revocation_clears_before_original_expiry": true,
+        "rest_ack_waits_for_explicit_dom_commit": true,
+        "external_bootstrap_assets_blocked": true,
+        "global_streams_acceptance": false
+      },
+      "log": "/tmp/kza-voice-groups-accepted-browser-conversations.log"
+    },
+    "compiled_chromium_voice_review": {
+      "checks": {
+        "passed": true,
+        "actual_chromium_http_v3_ws_react_and_native_audio": true,
+        "manual_profile_confirmation_and_revision_delete": true,
+        "review_uses_real_transcript_and_room": true,
+        "suggested_group_then_ui_split_merge_and_explicit_unknown": true,
+        "raw_group_corrections_leave_permanent_profile_names_unchanged": true,
+        "permanent_profile_survives_raw_expiry": true,
+        "raw_retirement_waits_for_actual_emptied_callback": true,
+        "urls_cache_dom_and_player_source_retired": true,
+        "idle_expiry_with_frozen_server_clock": true,
+        "navigation_and_session_loss_stop_audio_and_clear_text": true,
+        "external_bootstrap_assets_blocked": true,
+        "javascript_exceptions": 0,
+        "synthetic_encoder_and_sources": true,
+        "browser_binary": "chromium",
+        "grouping_calibration_all_browser_copies_or_hardware_acceptance": false
+      },
+      "log": "/tmp/kza-voice-groups-accepted-compiled-browser-recheck.log",
+      "wrapper": "/tmp/kza-voice-groups-compiled-browser.py",
+      "wrapper_sha256": "20e9c32cb94f3e044036950de094f871b33c641cdfd3281618807e9efd03c534",
+      "application_import_root_asserted_sourcefree": true,
+      "external_test_harness_only": true
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "c2ac30d7a92e9dd4924b45d60beef7573ffd5585",
+    "artifact": "/tmp/kza-voice-groups-runtime-e4tgkof4/runtime.tar.gz",
+    "verified_hashes": 351,
+    "runtime_s": 1.8931849440559745,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 351,
+      "real_http_authenticated_review_and_revision_delete": true,
+      "background_cpu_synthetic_encoder": true,
+      "event_private_pool_closes_while_general_executor_remains_saturated": true,
+      "event_cleanup_releases_caller_context_and_observes_real_thread_exit": true,
+      "authenticated_wav_matches_owned_pcm_and_actual_metadata": true,
+      "preview_bounded_six_seconds_full_segment_transcript_scope_explicit": true,
+      "permanent_profile_does_not_extend_review_audio_or_text": true,
+      "source_expiry_physically_cascades_review_rows_and_denies_http_read": true,
+      "capture_deadline_and_permanent_manual_profile_survive_restart": true,
+      "suggestions_only_never_accounts_or_permissions": true,
+      "old_upload_rejected_before_decode": true,
+      "local_voice_receipt_waits_for_actual_model_exit": true,
+      "legacy_original_untouched_private_accounts_sidecar": true,
+      "unresolved_voice_inventory_blocks_global_erasure": true,
+      "protocol_three_real_http_websocket_handshake_and_separate_channels": true,
+      "permanent_profile_metadata_has_bounded_page_lease_after_raw_expiry": true,
+      "profile_mutation_never_echoes_private_name": true,
+      "actual_ws_exact_ack_retires_local_stream_v4_without_global_false_completion": true,
+      "raw_groups_actual_http_merge_split_and_unknown_with_exact_revisions": true,
+      "automatic_complete_link_group_addition_uses_existing_encoder": true,
+      "group_edits_do_not_change_the_permanent_profile": true,
+      "voice_frontend_assets_packaged": true,
+      "real_models_gpu_full_main_hardware_or_frontend_voice_review": false
+    },
+    "check_script": "/tmp/kza-voice-groups-runtime-smoke.py",
+    "check_script_sha256": "0eedc530952648b1358aba1232bf4ad4dc61317ae0ad2a2d7ff5c44a9c19e9c3",
+    "archive_sha256": "5718e0b725f84e78ef3413200ee6d76b196ac234f08d7180d71da254ab252309"
+  },
+  "nonaccepted_compiled_browser_fixture": {
+    "log": "/tmp/kza-voice-groups-accepted-compiled-browser.log",
+    "application_commit": "c2ac30d7a92e9dd4924b45d60beef7573ffd5585",
+    "cause": "The synthetic sample locator queried the voice pool while the profile-delete refresh still had capture I/O active; the diagnostic read hit the existing two-operation limit.",
+    "correction": "Wait for the complete UI refresh and actual model/I/O settlement in the synthetic sampler using its original three-second budget. No runtime capacity, retry, or deadline change."
+  },
+  "prior_browser_pending_checks_resolved": {
+    "previous_evidence": "docs/research/2026-10-27-h3-voice-review-ui-validation.json",
+    "conversations_and_compiled_voice_browser_now_passed": true,
+    "historical_snap_startup_failures_explained_or_removed_from_record": false,
+    "browser_sandbox_or_system_services_changed": false
+  },
+  "limits": {
+    "real_world_grouping_accuracy_calibrated_or_accepted": false,
+    "known_tv_echo_overlap_automatically_detected": false,
+    "all_permanent_profile_association_corrections_complete": false,
+    "manual_voice_similarity_confers_identity_authority_or_permissions": false,
+    "managed_runtime_voice_identity_propagation_complete": false,
+    "all_models_sdk_pipeline_legacy_dataset_and_browser_copies_resolved": false,
+    "global_voices_streams_or_producers_erasure_complete": false,
+    "global_conversation_erasure_ui_enabled": false,
+    "ambient_pause_total_mute_and_independent_reactivation_complete": false,
+    "full_main_real_models_gpu_audio_ha_gateway_sdk_or_hardware_acceptance": false,
+    "full_h4_capacity_gc_and_latency_acceptance": false,
+    "all_historical_timeouts_causally_explained": false,
+    "earlier_loop_92_90_ms_or_gc_495_68_ms_spikes_explained": false,
+    "existing_deadlines_capacities_or_retries_increased_for_green_tests": false,
+    "gc_forced_disabled_or_frozen": false,
+    "production_modified": false,
+    "h3_h4_or_overall_roadmap_complete": false
+  },
+  "pre_proof_full_suite": {
+    "tested_commit": "45c279d334f687456bd693646ea7a161f0c826f9",
+    "accepted": false,
+    "collected": 5592,
+    "passed": 5591,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 406.57,
+    "log": "/tmp/kza-voice-groups-full.log",
+    "xml": "/tmp/kza-voice-groups-full.xml",
+    "numeric_native_timeout_capture": {
+      "terminal_exit_code": 0,
+      "captured": 0,
+      "events": []
+    },
+    "reason_not_accepted": "Subsequent adversarial compiled reproduction demonstrated lost group lineage could appear complete after erasing its missing parent member; a green suite alone did not cover that requirement."
+  },
+  "causal_proof_regressions": [
+    {
+      "log": "/tmp/kza-voice-groups-restore-red.log",
+      "failed": 1,
+      "compiled_runtime_commit": "45c279d334f687456bd693646ea7a161f0c826f9",
+      "script": "/tmp/kza-voice-groups-restore-red.py",
+      "script_sha256": "74c702c253183c12ef147982a12eec3a0778c63203fea582b384f2a61ed75d9d",
+      "cause": "A lost source in group JSON could become undetectable after its fingerprint member was erased.",
+      "compiled_green_log": "/tmp/kza-voice-groups-restore-compiled-green.log",
+      "compiled_green_exit_code": 0
+    },
+    {
+      "log": "/tmp/kza-voice-groups-lineage-red.log",
+      "failed": 2,
+      "cause": "Missing group sources could lose the only structural mismatch after parent erasure, and a correction request with missing sources still authorized its cached success.",
+      "correction": "Persist source/member digests and independent request source proof. Readers/cleanup/new observations never rebuild missing proof."
+    },
+    {
+      "log": "/tmp/kza-voice-groups-proof-credential-red.log",
+      "failed": 1,
+      "intermediate_proof_implementation": true,
+      "cause": "Credential rotation during the final proof SQL insert could occur after the previous actor check.",
+      "correction": "Revalidate current actor and source availability after the last proof write; transaction rolls back."
+    }
+  ],
+  "pre_proof_compiled_runtime": {
+    "git_commit": "45c279d334f687456bd693646ea7a161f0c826f9",
+    "artifact": "/tmp/kza-voice-groups-runtime-k_efwhxp/runtime.tar.gz",
+    "verified_hashes": 351,
+    "runtime_s": 1.9345217300578952,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "accepted": false
+  },
+  "initial_group_commit": "45c279d334f687456bd693646ea7a161f0c826f9",
+  "persistent_proof_commit": "c2ac30d7a92e9dd4924b45d60beef7573ffd5585",
+  "browser_harness_commit": "4f4b5a25b7b464770fcfe51bb23c6ba163f7b14c",
+  "browser_harness_sha256": "5bdf7c5438b0c14ad890f54362a0ff480f89fc83885f6173eb5aaa40c0d1fc2b"
+}

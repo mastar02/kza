@@ -173,8 +173,9 @@ manual. Los clips y las transcripciones siguen venciendo a las 48 h. Nombrar
 un grupo no le concede permisos; una sugerencia automática no equivale a una
 confirmación manual. El backend nuevo de huellas y perfiles revisados aplica
 esa retención. La interfaz permite revisar muestras, confirmar perfiles y
-borrarlos por revisión; agrupación, unión/separación, calibración y migración
-siguen pendientes. La validación en navegador se documenta abajo.
+borrarlos por revisión. Ya hay un candidato de grupos sugeridos y correcciones
+de unión/separación; la evaluación acústica y la migración siguen pendientes.
+La validación en navegador se documenta abajo.
 
 El avance del 27 de octubre agrega observación de voz en segundo plano y una
 API de confirmación y borrado autenticados. Conserva el vencimiento original de
@@ -210,8 +211,24 @@ y retiro nativo reales, sin excepciones JS. Conserva también los intentos
 anteriores fallidos al iniciar el navegador. La revisión `d749ed8` pasó 5.565
 pruebas con un xfail conocido, 68 de frontend y 350 hashes del artefacto. Las
 repeticiones adicionales del navegador de conversaciones y del artefacto no
-llegaron a abrir la página por el arranque intermitente de Snap; quedan
-pendientes. No cierra la agrupación, H3/H4 ni H6.
+llegaron a abrir la página por el arranque intermitente de Snap. La validación
+posterior de grupos completa esas comprobaciones. No cierra H3/H4 ni H6.
+
+El avance de [grupos sugeridos y correcciones](../research/2026-10-27-h3-voice-groups-validation.json)
+agrega IDs estables, unión de grupos completos, separación de muestras y
+abstención manual, con revisiones exactas e idempotencia. Las correcciones
+sobreviven al reinicio y no reciben nuevas asignaciones automáticas. La
+procedencia de un grupo incluye todos sus miembros, incluso fuera de la página;
+vencer o borrar una fuente retira esa relación sin prolongar las muestras
+independientes. Los nombres de perfiles permanentes conservan su revisión
+separada. El protocolo de [evaluación acústica](2026-10-27-h3-voice-grouping-evaluation.md)
+fija corpus y métricas antes de medir con voces reales. Las sugerencias usan el
+encoder existente; los tests sintéticos y de UI no aceptan su precisión. La
+revisión `c2ac30d` pasó 5.595 pruebas con un xfail conocido, 77 de frontend y
+351 hashes del artefacto. Chromium pasó contra fuente y bytecode, incluida la
+regresión de conversaciones. La evidencia conserva la primera suite verde y
+el artefacto anterior como no aceptados, por una pérdida de procedencia que
+las pruebas adversas detectaron después. No cierra H3 ni autoriza la release.
 
 Primer avance de H3, 26 de octubre: el store de capturas aplica TTL al leer
 texto, lotes de destilación, estadísticas y clips, sin esperar la purga. Las
@@ -915,12 +932,11 @@ una puntuación de similitud no se presenta como probabilidad calibrada de ident
 
 Reutilizar `SpeakerTagger`, `SpeakerIdentifier` y `AmbientStore` donde alcance.
 Hoy el tagger compara con perfiles registrados y devuelve `unknown` cuando no
-hay perfiles: no existe todavía el agrupador de hablantes desconocidos. La
-vista actual permite seleccionar muestras y confirmar perfiles manualmente;
-faltan las correcciones de unión/separación y la evaluación acústica. Evaluar
-agrupación con capturas representativas antes de elegir o cambiar modelos.
-Procesar en background sin cambiar la asignación de
-GPUs ni bloquear el camino de comandos.
+hay perfiles. El registro nuevo agrega un candidato de agrupación de voces
+desconocidas. La vista permite seleccionar muestras, confirmar perfiles y
+corregir uniones/separaciones. Evaluar ese candidato con capturas
+representativas antes de elegir o cambiar modelos. Procesar en background
+sin cambiar la asignación de GPUs ni bloquear el camino de comandos.
 
 **Salida:** los vencimientos se aplican también al consultar y después de un
 reinicio. Borrar una conversación alcanza sus derivados y evita que un job
