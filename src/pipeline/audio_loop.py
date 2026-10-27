@@ -137,11 +137,21 @@ class AudioLoop:
         holder = object()
         self._holder = holder
         def callback(indata, frames, time_info, status):
-            if self._closed or self._holder is not holder:
-                return
-            timestamp = self._clock() - frames / self.sample_rate
-            if not self._closed and self._holder is holder:
-                self._room.push(timestamp, indata, frames)
+            ticket = self._room.callbacks.enter(self._room.input_boundary)
+            try:
+                if ticket is None or not self._room.callbacks.accepting or self._closed or self._holder is not holder:
+                    return
+                timestamp = self._clock() - frames / self.sample_rate
+                self._room.callbacks.stamp(ticket, timestamp, self._room.source)
+                if not self._closed and self._holder is holder:
+                    self._room.push(timestamp, indata, frames, boundary=ticket.boundary)
+            except Exception:
+                self._room.callbacks.failed()
+            finally:
+                indata = None
+                if ticket is not None:
+                    self._room.callbacks.leave(ticket)
+                ticket = None
         return callback
 
     def _retire_input(self):
@@ -400,10 +410,21 @@ class AudioLoop:
         return tuple(tasks)
 
     def conversation_busy(self, conversation_id: str) -> bool:
-        """Check finite receivers and children; idle buffers need separate proof."""
+        """Include finite work, actual input callbacks and local idle buffers."""
         if self._privacy is None:
             raise RuntimeError('privacy_authority_unavailable')
-        return self._scopes.busy(conversation_id, self._privacy.ledger) or self._room.conversation_busy(conversation_id)
+        if self._scopes.busy(conversation_id, self._privacy.ledger) or self._room.conversation_busy(conversation_id):
+            return True
+        sources = self._ambient_sources()
+        return bool((self._ambient_frames or self._ambient_ready) and not sources) or any(
+            source.conversation_id == conversation_id
+            or self._privacy.ledger.dependencies_committed_unavailable(source.fact_dependencies) for source in sources)
+
+    async def prune_private(self) -> None:
+        """Sweep invalid capture and ambient buffers without waiting for input."""
+        await self._room.prune_private()
+        if not self._closed:
+            await self._room.call(self._prune_ambient, sources=())
 
     def resource_status(self) -> dict:
         """Report bounded ownership without capture identifiers or audio."""

@@ -563,11 +563,15 @@ class MultiRoomAudioLoop:
         return tuple(tasks)
 
     def conversation_busy(self, conversation_id: str) -> bool:
-        """Check finite receivers and child work; idle buffers need separate proof."""
+        """Include finite work, actual input callbacks and room idle buffers."""
         if self._privacy is None:
             raise RuntimeError('privacy_authority_unavailable')
         return self._scopes.busy(conversation_id, self._privacy.ledger) or any(
             room.conversation_busy(conversation_id) for room in self._capture_rooms.values())
+
+    async def prune_private(self) -> None:
+        """Retire invalid room buffers without waiting for another input frame."""
+        await asyncio.gather(*(room.prune_private() for room in self._capture_rooms.values()))
 
     def capture_status(self) -> dict:
         """Report counts and admission without transcripts or capture identifiers."""
@@ -1473,59 +1477,85 @@ class MultiRoomAudioLoop:
         if holder is None:
             holder = self._microphone_captures.setdefault(rs.room_id, _CaptureHolder(CaptureObservation()))
 
+        room = self._capture_rooms[rs.room_id]
+
         def audio_callback(indata, frames, time_info, status):
-            if self._microphone_captures.get(rs.room_id) is not holder:
-                return
-            nonzero = bool(indata.any())
-            if self._microphone_captures.get(rs.room_id) is not holder:
-                return
-            now_mono = self._microphone_monotonic()
-            now_wall = self._microphone_wall_clock()
-            observation = holder.observation
-            holder.observation = replace(
-                observation, frames_received=observation.frames_received + frames,
-                last_callback_at=now_wall, last_callback_monotonic=now_mono,
-                last_nonzero_at=now_wall if nonzero else observation.last_nonzero_at,
-                nonzero_seen=observation.nonzero_seen or nonzero,
-            )
-            # Watchdog heartbeat: marca que el stream entregó AUDIO. Primera
-            # línea, nunca lanza — si esto deja de actualizarse, el mic murió
-            # y _stream_watchdog dispara recovery.
-            #
-            # `indata.any()` y no un refresh incondicional (2026-07-29): un
-            # XVF3800 con el endpoint isócrono degradado enumera, deja abrir el
-            # stream y hace que PortAudio siga invocando este callback — pero
-            # con buffers de CEROS. Marcando cada invocación, el watchdog veía
-            # un stream sano y el sistema quedó sordo ~7 min sin una alerta,
-            # con el servicio en `active`. Misma lección que "arecord exit 0 ≠
-            # audio": contar muestras no-cero, no llamadas.
-            #
-            # El criterio es no-cero, NO un umbral de RMS: el silencio real de
-            # un mic vivo trae un piso de ruido diminuto pero distinto de cero,
-            # y no debe confundirse con un mic muerto.
-            if nonzero:
-                rs.last_frame_ts = time.monotonic()
+            ticket = room.callbacks.enter(room.input_boundary)
+            ambient = None
+            try:
+                if ticket is None or not room.callbacks.accepting or self._closed or self._microphone_captures.get(rs.room_id) is not holder:
+                    return
+                # Sample acquisition time before any array method can stall.
+                now_wall = self._microphone_wall_clock()
+                timestamp = now_wall - frames / self.sample_rate
+                room.callbacks.stamp(ticket, timestamp, room.source)
+                if self._closed:
+                    return
+                if self._microphone_captures.get(rs.room_id) is not holder:
+                    return
+                nonzero = bool(indata.any())
+                if self._microphone_captures.get(rs.room_id) is not holder:
+                    return
+                now_mono = self._microphone_monotonic()
+                observation = holder.observation
+                holder.observation = replace(
+                    observation, frames_received=observation.frames_received + frames,
+                    last_callback_at=now_wall, last_callback_monotonic=now_mono,
+                    last_nonzero_at=now_wall if nonzero else observation.last_nonzero_at,
+                    nonzero_seen=observation.nonzero_seen or nonzero,
+                )
+                # Watchdog heartbeat: marca que el stream entregó AUDIO. Primera
+                # línea, nunca lanza — si esto deja de actualizarse, el mic murió
+                # y _stream_watchdog dispara recovery.
+                #
+                # `indata.any()` y no un refresh incondicional (2026-07-29): un
+                # XVF3800 con el endpoint isócrono degradado enumera, deja abrir el
+                # stream y hace que PortAudio siga invocando este callback — pero
+                # con buffers de CEROS. Marcando cada invocación, el watchdog veía
+                # un stream sano y el sistema quedó sordo ~7 min sin una alerta,
+                # con el servicio en `active`. Misma lección que "arecord exit 0 ≠
+                # audio": contar muestras no-cero, no llamadas.
+                #
+                # El criterio es no-cero, NO un umbral de RMS: el silencio real de
+                # un mic vivo trae un piso de ruido diminuto pero distinto de cero,
+                # y no debe confundirse con un mic muerto.
+                if nonzero:
+                    rs.last_frame_ts = time.monotonic()
 
-            # Tee al ambient path (spec 2026-06-06): SIEMPRE primero — el
-            # ambient quiere todo el audio, incluso lo que el barge-in o el
-            # echo suppressor descartan para el command path. O(1). El
-            # try/except hace el fail-open EXPLÍCITO: una excepción acá
-            # abortaría el stream de audio del command path (thread C).
-            if self._ambient_tap is not None:
-                try:
-                    tts_now = (
-                        self._response_handler is not None
-                        and self._response_handler.is_speaking
-                    )
-                    self._ambient_tap.push(
-                        rs.room_id, indata.copy(), tts_active=tts_now
-                    )
-                except Exception:
-                    pass  # perder un chunk ambiental es aceptable; el stream no
+                if not room.accepts(timestamp, boundary=ticket.boundary):
+                    return
 
-            if self._microphone_captures.get(rs.room_id) is holder:
-                self._capture_rooms[rs.room_id].push(
-                    now_wall - frames / self.sample_rate, indata, frames)
+                # Tee al ambient path (spec 2026-06-06): SIEMPRE primero — el
+                # ambient quiere todo el audio, incluso lo que el barge-in o el
+                # echo suppressor descartan para el command path. O(1). El
+                # try/except hace el fail-open EXPLÍCITO: una excepción acá
+                # abortaría el stream de audio del command path (thread C).
+                if self._ambient_tap is not None:
+                    try:
+                        tts_now = (
+                            self._response_handler is not None
+                            and self._response_handler.is_speaking
+                        )
+                        ambient = indata.copy()
+                        if self._closed or self._microphone_captures.get(rs.room_id) is not holder or not room.accepts(timestamp, boundary=ticket.boundary):
+                            return
+                        self._ambient_tap.push(
+                            rs.room_id, ambient, ts=timestamp, tts_active=tts_now
+                        )
+                        ambient = None
+                    except Exception:
+                        pass  # perder un chunk ambiental es aceptable; el stream no
+
+                if self._microphone_captures.get(rs.room_id) is holder:
+                    self._capture_rooms[rs.room_id].push(
+                        timestamp, indata, frames, boundary=ticket.boundary)
+            except Exception:
+                room.callbacks.failed()
+            finally:
+                indata = ambient = None
+                if ticket is not None:
+                    room.callbacks.leave(ticket)
+                ticket = None
 
         return audio_callback
 

@@ -505,13 +505,16 @@ async def test_old_callback_with_delayed_clock_cannot_enter_closed_input(tmp_pat
         pushing = asyncio.create_task(asyncio.to_thread(g.feed))
         try:
             await until(entered.is_set)
-            # Retire without waiting on the deliberately blocked clock callback.
+            # Retire immediately, but do not report close while the admitted
+            # callback still owns its input behind the blocked clock.
             g.loop._clock = clock
-            await g.loop.stop()
+            with pytest.raises(WorkCloseTimeout):
+                await g.loop.stop()
             g.clock.now += 1
         finally:
             release.set()
             await pushing
+            await g.loop.begin_close()
         assert g.loop._room.resource_status()['queued'] == 0
         assert g.gates['wake'].calls == 0
 

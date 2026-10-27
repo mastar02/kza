@@ -107,14 +107,13 @@ class AudioManager:
 
     def close_wake_word(self) -> None:
         """Release a permanently stopped wake backend after its actual worker exit."""
-        model, self._wake_model = self._wake_model, None
+        model = self._wake_model
         if model is not None:
-            try:
-                model.reset()
-            finally:
-                delete = getattr(model, 'delete', None)
-                if callable(delete):
-                    delete()
+            model.reset()
+            delete = getattr(model, 'delete', None)
+            if callable(delete):
+                delete()
+            self._wake_model = None
 
     def detect_source_zone(self, audio: np.ndarray = None) -> str | None:
         """
