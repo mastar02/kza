@@ -753,7 +753,10 @@ class LoRATrainer:
         self.output_dir = Path(output_dir)
         self.device = device
 
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+    @property
+    def training_blocked(self) -> bool:
+        """No private dataset/model session has passed release acceptance yet."""
+        return True
 
     def train(
         self,
@@ -782,7 +785,10 @@ class LoRATrainer:
         Returns:
             Información del entrenamiento
         """
-        if Path(training_data_path).resolve().parent.name == 'policy_v1':
+        # A copied export loses its canonical path, but not its privacy policy.
+        # No backend is admitted until datasets and models can obey the same
+        # source lifetime. Keep the legacy implementation below for that review.
+        if self.training_blocked:
             raise RuntimeError('private_training_session_unavailable')
         try:
             from transformers import (
@@ -890,6 +896,8 @@ class LoRATrainer:
 
     def list_adapters(self) -> list[dict]:
         """Listar adapters entrenados"""
+        if self.training_blocked:
+            raise RuntimeError('private_training_session_unavailable')
         adapters = []
 
         for adapter_dir in self.output_dir.iterdir():

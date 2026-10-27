@@ -164,60 +164,10 @@ def cmd_training_data(args):
 
 
 def cmd_lora(args):
-    """Entrenar modelo con LoRA"""
-    from src.training.conversation_collector import DEFAULT_BASE_MODEL, LoRATrainer
-
-    try:
-        trainer = LoRATrainer(
-            base_model=args.base_model or DEFAULT_BASE_MODEL,
-            revision=args.revision,
-            output_dir=args.output_dir or "./models/lora_adapters"
-        )
-    except ValueError as e:
-        print(f"\n❌ {e}")
-        return 1
-
-    if args.action == "train":
-        if not args.data:
-            print("Uso: --action train --data ./data/training_data.jsonl")
-            return 1
-
-        print("\n🧠 Iniciando entrenamiento LoRA")
-        print(f"   Modelo base: {trainer.base_model}")
-        print(f"   Datos: {args.data}")
-        print(f"   Épocas: {args.epochs}")
-        print()
-
-        result = trainer.train(
-            training_data_path=args.data,
-            adapter_name=args.name or "custom_adapter",
-            epochs=args.epochs or 3,
-            batch_size=args.batch_size or 4,
-            learning_rate=args.lr or 2e-4
-        )
-
-        if result["success"]:
-            print("\n✅ Entrenamiento completado")
-            print(f"   Adapter: {result['adapter_path']}")
-            print(f"   Parámetros entrenables: {result['trainable_params']:,}")
-        else:
-            print(f"\n❌ Error: {result.get('error', 'Unknown')}")
-            return 1
-
-    elif args.action == "list":
-        adapters = trainer.list_adapters()
-        if not adapters:
-            print("\n📋 No hay adapters entrenados")
-        else:
-            print(f"\n📋 Adapters LoRA ({len(adapters)})")
-            print("=" * 50)
-            for adapter in adapters:
-                print(f"\n  🔹 {adapter['name']}")
-                print(f"     Path: {adapter['path']}")
-                print(f"     LoRA r: {adapter['lora_r']}")
-                print(f"     LoRA alpha: {adapter['lora_alpha']}")
-
-    return 0
+    """Refuse untracked datasets and adapters before constructing a trainer."""
+    print("LoRA no está disponible: falta una sesión que respete la vigencia y "
+          "el borrado de las fuentes (private_training_session_unavailable).", file=sys.stderr)
+    return 1
 
 
 def main():
@@ -245,8 +195,8 @@ Ejemplos:
   # Exportar datos para entrenamiento
   python train_assistant.py training --action export --format alpaca
 
-  # Entrenar con LoRA
-  python train_assistant.py lora --action train --data ./data/training_data.jsonl
+  # Consultar disponibilidad del entrenamiento nocturno
+  python -m src.training.nightly_trainer --status
         """
     )
 
@@ -279,7 +229,7 @@ Ejemplos:
                              help="Incluir respuestas no marcadas")
 
     # LoRA
-    lora_parser = subparsers.add_parser("lora", help="Entrenamiento LoRA")
+    lora_parser = subparsers.add_parser("lora", help="LoRA (no disponible hasta validar sesiones privadas)")
     lora_parser.add_argument("--action", required=True, choices=["train", "list"])
     lora_parser.add_argument("--data", help="Ruta a datos de entrenamiento")
     lora_parser.add_argument("--name", help="Nombre del adapter")

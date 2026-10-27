@@ -1384,41 +1384,33 @@ if __name__ == "__main__":
 # CLI
 # =============================================================================
 
-async def main():
-    """CLI para testing"""
+async def main(argv: list[str] | None = None) -> int:
+    """Report unavailable private training without opening legacy data."""
     import argparse
 
     parser = argparse.ArgumentParser(description="KZA Nightly Trainer")
-    parser.add_argument("--run", action="store_true", help="Ejecutar entrenamiento ahora")
-    parser.add_argument("--status", action="store_true", help="Mostrar estado")
-    parser.add_argument("--collect", action="store_true", help="Solo recolectar datos")
-    parser.add_argument("--gpus", type=str, default="0,1,2,3", help="GPUs a usar")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--run", action="store_true", help="Solicitar entrenamiento (no disponible)")
+    action.add_argument("--status", action="store_true", help="Estado de disponibilidad de este CLI")
+    action.add_argument("--collect", action="store_true", help="Solicitar dataset (no disponible)")
+    parser.add_argument("--gpus", help="Opción histórica; no habilita entrenamiento ni asigna GPUs")
+    args = parser.parse_args(argv)
+    if not (args.run or args.status or args.collect):
+        parser.print_help()
+        return 0
 
-    args = parser.parse_args()
-
-    config = NightlyConfig(
-        gpus=[int(g) for g in args.gpus.split(",")]
-    )
-
-    trainer = NightlyTrainer(config)
-
-    if args.status:
-        import json
-        print(json.dumps(trainer.get_status(), indent=2))
-
-    elif args.collect:
-        examples, stats = trainer.collect_daily_data()
-        print(f"Recolectados {len(examples)} ejemplos")
-        print(json.dumps(stats, indent=2, default=str))
-
-    elif args.run:
-        session = await trainer.run_training()
-        print(f"Sesión: {session.id}")
-        print(f"Estado: {session.status.value}")
-        if session.adapter_path:
-            print(f"Adapter: {session.adapter_path}")
+    status = {
+        "status": TrainingStatus.BLOCKED.value,
+        "training_available": False,
+        "blocked_reason": "private_training_session_unavailable",
+        "runtime_status_checked": False,
+        "message": "El entrenamiento y la recopilación nocturna no están disponibles; "
+                   "falta una sesión que respete la vigencia y el borrado de sus fuentes.",
+    }
+    print(json.dumps(status, ensure_ascii=False), file=sys.stdout if args.status else sys.stderr)
+    return 0 if args.status else 1
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

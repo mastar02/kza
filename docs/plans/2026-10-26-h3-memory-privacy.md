@@ -1721,6 +1721,33 @@ control llega a 0,07 ms y el cleanup a 10,86 ms, con los límites anteriores.
 No se manipuló GC. Las pausas instrumentadas previas y la aceptación física e
 integrada de H4/H6 continúan pendientes.
 
+## Avance: CLI nocturno y entrada directa de LoRA
+
+Una reproducción sobre `8a6864d` confirma dos accesos alternos: el CLI nocturno
+construía un entrenador sin autoridad y exponía historial y paths de adapters;
+el filtro de LoRA por directorio rechazaba el export canónico, pero una copia
+del mismo JSONL alcanzaba la importación del backend. La reproducción usa sólo
+datos sintéticos e intercepta esa importación antes de cargar modelos.
+
+El CLI nocturno ya no construye un entrenador para ninguna de sus acciones.
+`--status` devuelve disponibilidad bloqueada y aclara que no consultó el runtime;
+`--collect` y `--run` devuelven un motivo fijo y exit code 1. La opción histórica
+de GPUs no asigna recursos. La ayuda y los errores de selección tampoco abren
+archivos. El CLI de LoRA rechaza entrenamiento y listado antes de construir un
+trainer o copiar argumentos privados a la salida.
+
+La entrada directa de `LoRATrainer` también queda bloqueada para cualquier path,
+incluidos copias, symlinks y hardlinks de exports reales. El constructor es
+inocuo respecto del filesystem y el listado no abre adapters sin una sesión
+admitida. Se conserva la implementación antigua para revisión; no se agrega un
+flag para habilitarla, entrenamiento nuevo ni una reasignación de GPUs. El CLI
+de estadísticas y exports temporales del catálogo sigue disponible.
+
+Esto cierra los bypasses identificados de esos accesos, no la retención física
+de datasets y adapters históricos ni el resto de `COLLECTORS`. La suite final
+y el artefacto compilado de este cambio siguen pendientes de validar. Producción
+y configuración instalada permanecen sin cambios.
+
 ## Trabajo restante
 
 1. Cubrir los demás datasets y consumidores de clips/aprendizaje y conectar
