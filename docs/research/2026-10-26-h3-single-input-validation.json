@@ -1,0 +1,269 @@
+{
+  "checked_on": "2026-10-26",
+  "feature_commit": "c221935716a5e059b02e1f490be117a8ebb67365",
+  "fixture_commit": "03c2f0856cb9780dfa4e3d4215d345ea8d85594e",
+  "tested_commit": "03c2f0856cb9780dfa4e3d4215d345ea8d85594e",
+  "tested_runtime_source_tree": "d0402621c0dde75ee37482c69b378ff642ef27c9",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 actual alternate single-input capture, native driver lifetime, original source and acquisition time, bounded independent dispatch and ambient windows, optional actual audio classifier/features and sync/async notification ownership. Synthetic native endpoints with real graph, SQLite authority, router and processor; no hardware or trained models.",
+  "new_single_input_cases": [
+    "test_actual_driver_callback_only_queues_and_wake_runs_off_loop",
+    "test_revoking_actual_capture_prevents_late_event_and_post_callback[wake]",
+    "test_revoking_actual_capture_prevents_late_event_and_post_callback[endpoint]",
+    "test_single_input_native_exit_retains_shared_lease_after_close_timeout[wake]",
+    "test_single_input_native_exit_retains_shared_lease_after_close_timeout[endpoint]",
+    "test_single_input_native_exit_retains_shared_lease_after_close_timeout[reset]",
+    "test_single_input_native_exit_retains_shared_lease_after_close_timeout[stop]",
+    "test_single_input_native_exit_retains_shared_lease_after_close_timeout[close]",
+    "test_cancelled_native_open_cannot_leak_a_late_driver_handle[constructor]",
+    "test_cancelled_native_open_cannot_leak_a_late_driver_handle[start]",
+    "test_wake_warmup_cancel_keeps_manager_reset_after_actual_load",
+    "test_close_failure_retries_the_same_owned_handle_without_reopening",
+    "test_completed_capture_preserves_original_source_and_endpoint_finality",
+    "test_partial_ambient_window_expires_while_capture_epoch_is_idle",
+    "test_actual_event_classifier_and_sync_notification_are_owned_off_loop[model]",
+    "test_actual_event_classifier_and_sync_notification_are_owned_off_loop[callback]",
+    "test_revoked_classifier_cannot_notify_after_native_result_arrives",
+    "test_queued_frames_keep_acquisition_time_for_endpointing",
+    "test_long_command_callback_does_not_stop_single_device_capture",
+    "test_revocation_during_command_prevents_post_processing",
+    "test_noncooperative_analysis_callback_keeps_lease_until_real_cleanup",
+    "test_mixed_ambient_window_uses_oldest_dependency_without_renewal",
+    "test_ambient_frames_from_a_long_gap_are_never_spliced",
+    "test_cancelled_capture_traceback_does_not_keep_retired_audio",
+    "test_old_callback_with_delayed_clock_cannot_enter_closed_input",
+    "test_event_model_warmup_retains_lease_and_drops_late_loaded_model",
+    "test_privacy_bound_event_detector_rejects_unsourced_audio",
+    "test_real_feature_fallback_is_off_loop_and_notifies_with_original_sources",
+    "test_event_callback_may_request_its_own_retained_detector_close",
+    "test_event_callback_may_signal_loop_close_without_waiting_on_itself",
+    "test_notification_keeps_ownership_without_retaining_unneeded_waveform",
+    "test_retirement_hook_failure_cannot_skip_real_driver_release"
+  ],
+  "new_seed_case": [
+    "test_erasure_seed_waits_for_actual_writer_beyond_caller_observation_deadline"
+  ],
+  "new_cases_total": 33,
+  "full_suite": {
+    "collected": 4942,
+    "passed": 4941,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 204.05,
+    "junit_time_s": 203.985,
+    "log": "/tmp/kza-single-input-accepted.log",
+    "xml": "/tmp/kza-single-input-accepted.xml",
+    "accepted": true,
+    "integrated_runtime_gc_acceptance": false,
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-single-input-accepted.xml"
+  },
+  "full_suite_initial_unaccepted": {
+    "collected": 4941,
+    "passed": 4938,
+    "failed": 2,
+    "xfailed": 1,
+    "skipped": 0,
+    "failed_tests": [
+      "tests.integration.test_event_erasure::test_leased_restart_reopens_completed_receipt_for_restored_event_row",
+      "tests.integration.test_event_erasure::test_unrecognized_nonpositive_row_id_cannot_be_skipped_by_cursor[0]"
+    ],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 222.03,
+    "junit_time_s": 221.971,
+    "log": "/tmp/kza-single-input-full.log",
+    "xml": "/tmp/kza-single-input-full.xml",
+    "accepted": false,
+    "tested_commit": "c221935716a5e059b02e1f490be117a8ebb67365",
+    "reason": "Two event-erasure cases exhausted the 100 ms caller observation deadline while seeding rows, before requesting erasure. The native writer retained ownership and committed its row. Erasure setup now awaits actual owned seed writes, without altering production deadlines or the tests of bounded writers. A gated regression exercises the default 100 ms timeout, retained native write, a separately owned seed beyond that deadline, and subsequent physical erasure of both rows. No GC cause is attributed without instrumentation."
+  },
+  "latency_properties": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 401,
+        "p95": 0.23658620193600655,
+        "max": 1.040975097566843
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.04833284765481949,
+          "p95": 0.056585995480418205,
+          "max": 0.056585995480418205
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.825665900483727,
+          "p95": 11.128444923087955,
+          "max": 11.128444923087955
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 423,
+        "loop_lag_p95_ms": 0.2428560983389616,
+        "loop_lag_max_ms": 1.6533930320292711,
+        "cancel_cleanup_max_ms": 2.2833100520074368,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2728,
+        "loop_lag_p95_ms": 0.9793419204652308,
+        "loop_lag_max_ms": 2.4552891310304403,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.7604830898344517,
+        "p95": 5.907242884859443,
+        "max": 5.907242884859443,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_checks": [
+    {
+      "log": "/tmp/kza-single-input-final-focused.log",
+      "passed": 676,
+      "failed": 0,
+      "runtime_s": 17.97
+    },
+    {
+      "log": "/tmp/kza-single-input-event-fixed-focused.log",
+      "passed": 702,
+      "failed": 0,
+      "runtime_s": 19.61
+    }
+  ],
+  "initial_fixture_findings": [
+    {
+      "log": "/tmp/kza-single-input-baseline.log",
+      "passed": 61,
+      "failed": 3,
+      "correction": "Old fake stream fed frames only in synchronous context-manager enter; use actual native start and await owned stop. Error assertions now verify type and absence of private exception payload."
+    },
+    {
+      "logs": [
+        "/tmp/kza-single-input-regressions.log",
+        "/tmp/kza-single-input-new.log"
+      ],
+      "correction": "A fake endpoint assumed every frame existed before the first poll and used overlapping acquisition timestamps. Feed ordered original frame times, accept partial polls, and check final command semantics. Actual timer now derives from acquisition rather than delayed native processing; production VAD and time budgets unchanged."
+    }
+  ],
+  "implementation": {
+    "single_input_reuses_native_capture_room": true,
+    "callback_only_bounded_copy_and_original_acquisition_time": true,
+    "native_wake_load_detect_reset_and_endpoint_off_loop": true,
+    "source_guards_before_and_after_actual_inference": true,
+    "original_capture_ids_and_deadline_at_router_and_processor": true,
+    "idle_partial_ambient_expiry_without_new_frames": true,
+    "mixed_ambient_windows_keep_all_sources_and_oldest_deadline": true,
+    "input_gap_does_not_splice_ambient_waveforms": true,
+    "pending_commands_capacity": 8,
+    "pending_ambient_capacity": 2,
+    "slow_consumer_does_not_block_capture": true,
+    "bounded_drop_counts_without_private_content": true,
+    "native_driver_constructor_start_stop_close_retained": true,
+    "late_driver_handle_kept_after_cancelled_open_observer": true,
+    "driver_close_retries_same_handle_without_reopening": true,
+    "retirement_hook_failure_cannot_skip_driver_release": true,
+    "real_optional_detector_model_load_features_and_sync_callbacks_off_loop": true,
+    "detector_event_carries_original_sources": true,
+    "model_waveform_released_before_notification_finishes": true,
+    "noncooperative_async_callback_keeps_actual_owner": true,
+    "revocation_prevents_post_command_or_security_handoff": true,
+    "callback_self_stop_does_not_wait_for_itself": true,
+    "shared_privacy_writer_lease_until_actual_driver_model_callback_exit": true,
+    "main_registers_close_before_warmup": true,
+    "error_payloads_not_logged_by_new_native_wrappers": true,
+    "event_erasure_setup_awaits_actual_seed_without_changing_bounded_write_contract": true,
+    "event_caller_observation_timeout_s_unchanged": 0.1,
+    "producer_journal_participant_marked_complete": false,
+    "new_dependencies": false,
+    "new_configuration_files": false,
+    "gpu_assignment_changed": false
+  },
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-single-input-ruff-accepted.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 30,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-single-input-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-single-input-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-single-input-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 2.335,
+      "git_commit": "03c2f0856cb9780dfa4e3d4215d345ea8d85594e",
+      "artifact": "/tmp/kza-single-input-runtime-ln1ih68h/runtime.tar.gz",
+      "log": "/tmp/kza-single-input-runtime-report.json",
+      "exercise": {
+        "passed": true,
+        "git_commit": "03c2f0856cb9780dfa4e3d4215d345ea8d85594e",
+        "source_free": true,
+        "files_verified": 316,
+        "actual_single_input_run_native_driver_wake_endpoint_router_processor": true,
+        "original_capture_ids_and_deadline": true,
+        "mixed_ambient_sources": true,
+        "waveform_released_before_notification_exit": true,
+        "revocation_prevents_late_security_callback": true,
+        "actual_native_callback_and_driver_close_retain_writer_lease": true
+      }
+    }
+  },
+  "unchanged_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancel_ms": 100,
+    "cooperative_cleanup_ms": 1000,
+    "gc_forced_disabled_or_frozen": false
+  },
+  "gc_manipulated": false,
+  "prior_integrated_gc_and_hardware_limitations_resolved": false,
+  "remaining_scope": [
+    "PRODUCERS remains open: clip and learning consumers, full producer/distillation journal integration, and physical multiroom stream lifecycle must be covered before broad erasure completion. Both capture paths now retain actual native capture/model work and original sources; this does not complete the journal participant.",
+    "DIAGNOSTICS, COLLECTORS, STREAMS and VOICES remain; diagnostic/SQL/JSONL/Logstash, collector/stream/frontend copies and alternate prompt consumers require their own source/TTL/erasure coverage",
+    "Pause ambient and total mute with non-audio reactivation; 48h automatic voiceprint/group expiry and authenticated calibrated voice grouping/review/merge/split, confirmed profiles until deletion",
+    "Private real-copy quarantine migration of 870 legacy facts, compatible catalog/tombstone/runtime restore, live semantic index rebuild and authenticated broad erasure UI after guarantees",
+    "H0/H1 live HA memberships/effects, H2 physical audio/barge-in, H4 recovery and large-history/runtime/GC acceptance, H5 real typed local execution/routines/timers/reminders, H6 fully integrated candidate and one final release/rollback",
+    "Previously instrumented GC pauses up to 495.68ms remain unresolved; this uninstrumented suite does not remeasure or accept integrated runtime/GC."
+  ],
+  "production_modified": false
+}

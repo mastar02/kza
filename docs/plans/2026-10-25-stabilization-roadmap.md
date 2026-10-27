@@ -546,9 +546,24 @@ si avanzó el reloj. La [validación de captura](../research/2026-10-26-h3-captu
 del commit `71c0588` registra **4908 passed, 1 xfailed**, 28 casos nuevos, 814
 pruebas dirigidas y checks/artefacto compilado aceptados. Conserva la reproducción
 del callback retirado y del helper que cancelaba un cleanup ajeno, y sus
-correcciones. Quedan el camino alternativo `AudioLoop`/`AudioManager`, consumidores
-de clips y aprendizaje, journal completo, los demás participantes, voces y el
-resto de H0–H6. No habilita borrado global ni cierra aceptación física o runtime/GC.
+correcciones. Quedan consumidores de clips y aprendizaje, journal completo,
+los demás participantes, voces y el resto de H0–H6. No habilita borrado global
+ni cierra aceptación física o runtime/GC.
+
+El camino alternativo `AudioLoop`/`AudioManager` comparte ahora el actor de
+captura y la autoridad de privacidad. El driver conserva apertura y cierre
+nativos reales, incluso si el observador cancela o el cierre requiere reintentos.
+Comandos y análisis ambiental avanzan con admisión acotada sin detener la captura;
+las ventanas mezcladas conservan todas sus fuentes y el vencimiento más antiguo.
+El detector opcional retiene carga, inferencia y callbacks reales y libera la
+onda antes de notificar. La [validación de entrada única](../research/2026-10-26-h3-single-input-validation.json)
+del commit `03c2f08` registra **4941 passed, 1 xfailed**, 33 casos nuevos,
+702 pruebas dirigidas, checks y artefacto sin fuentes aceptados. Conserva dos
+timeouts de preparación de eventos de la primera suite y la regresión que
+comprueba escritura real y borrado sin cambiar el límite de 100 ms del
+observador. Esto cubre ambos caminos de captura, con los alcances pendientes
+anteriores; todavía no completa `PRODUCERS` ni `STREAMS`. Las pausas de GC y la
+aceptación física e integrada siguen pendientes.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.

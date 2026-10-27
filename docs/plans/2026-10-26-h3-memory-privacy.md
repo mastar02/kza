@@ -1444,9 +1444,30 @@ no cooperativos conservan su propietario hasta terminar y no permiten una
 entrega posterior desde fuentes revocadas. Un callback puede solicitar su propio
 cierre sin esperarse a sí mismo.
 
-La validación dirigida registra 676 pruebas pasadas, incluidos 32 casos nuevos
+La validación dirigida registra 702 pruebas pasadas, incluidos 32 casos nuevos
 con driver, manager, detector y catálogo reales y fronteras nativas sintéticas.
-La validación completa y del artefacto se registra por separado al finalizarla.
+La primera suite completa encontró dos timeouts al preparar filas para pruebas
+de borrado de eventos, antes de pedir el borrado. Ese montaje esperaba al
+observador de 100 ms como si garantizara la escritura física. Ahora espera la
+escritura real en su propietario; las pruebas del observador acotado siguen
+usando la misma API y el mismo límite. Un caso adicional con compuertas comprueba
+el timeout original, la escritura tardía retenida, la preparación independiente
+del plazo del observador y el borrado físico de ambas filas. La evidencia
+conserva la suite rechazada; no atribuye estos timeouts a GC sin instrumentación.
+La [validación de entrada única](../research/2026-10-26-h3-single-input-validation.json)
+del commit `03c2f08` registra **4941 passed, 1 xfailed**, sin fallos, en 204,05 s.
+Incluye los 32 casos de captura y la regresión de preparación de eventos;
+Ruff, Bandit sin hallazgos medios/altos, 18 tests de frontend y smoke del
+dashboard pasan. El artefacto sin fuentes verifica 316 hashes y ejecuta
+`AudioLoop.run`, driver, wake, endpoint, router, procesador y detector opcional
+con fronteras sintéticas, fuera del checkout, en 2,34 s. Comprueba fuentes
+originales y mezcladas, liberación de la onda antes de notificar y lease retenida
+hasta que terminan callback y cierre del driver.
+
+El heartbeat alcanza p95 de 0,24 ms y máximo de 1,04 ms; la cancelación de
+control llega a 0,06 ms y el cleanup a 11,13 ms. No se ampliaron presupuestos ni
+se manipuló GC. Estas pruebas no vuelven a medir ni resuelven las pausas globales
+observadas antes, ni sustituyen la aceptación física e integrada de H4/H6.
 Esto cubre ambos caminos de captura, pero siguen pendientes los consumidores
 de clips/aprendizaje, la integración completa de productores al journal y el
 ciclo físico del driver multiroom. No completa `PRODUCERS`, `STREAMS` ni H3.
