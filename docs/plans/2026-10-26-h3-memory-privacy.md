@@ -2051,6 +2051,33 @@ tarda como máximo 0,10 ms y limpiar stream/cliente 10,95 ms. Los presupuestos
 no cambian y no se manipula GC. Continúan pendientes el arranque completo de
 `main`, la aceptación integrada de GC/hardware y los demás hitos de H0–H6.
 
+### Avance: recibos de entrega a los loops receptores
+
+`CaptureRoom.step` acepta un recibo de metadata del receptor y lo vincula a las
+fuentes antes de ejecutar el worker o devolver audio. `ProducerScopes.operation`
+entrega ese recibo para un handoff exclusivo; vincularlo no renueva TTL, no
+crea una operación ni concede autoridad. El receptor ya conoce la conversación
+durante el intervalo entre la salida del kernel y la reanudación de su await.
+
+Los loops de entrada única y multiroom hacen cada iteración en una tarea finita.
+El controlador permanente conserva sólo la referencia a esa tarea, sin locales
+de evento, audio o listas de batches entre awaits. Dispatch, análisis ambiental,
+STT temprano y barge-in registran su afinidad; los hijos nativos reales conservan
+el recibo tras cancelar al padre. La consulta combina esos recibos con el trabajo
+finito de cada `CaptureRoom`. Los contadores no publican IDs, fechas o contenido.
+
+Una invalidación transitoria del handoff permite procesar una captura posterior
+válida, sin terminar el controlador sano. El cierre sigue esperando los
+receptores y callbacks no cooperativos antes de soltar el lease. En el draft,
+resetear una época conocida se marcaba como entrada desconocida y bloqueaba
+consultas ajenas. La reproducción en ambos transports falló: ahora el reset
+conserva su época; sólo adquirir paquetes nuevos introduce procedencia pendiente.
+
+Esto cubre los handoffs de captura cruda y sus transcripciones. Siguen pendientes
+los buffers en reposo, callbacks de entrada, afinidad de resultados enriquecidos
+con memoria y el driver completo de `PRODUCERS`. No equivale a borrado global,
+aceptación de hardware o publicación de una release.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

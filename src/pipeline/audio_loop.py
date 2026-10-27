@@ -18,6 +18,7 @@ from src.conversation import FollowUpMode
 from src.core.owned_work import WorkCloseTimeout
 from src.memory.fact_ledger import MemoryOrigin, MemorySource
 from src.memory.producer_context import producer_context
+from src.memory.producer_scopes import ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated, merge_sources, run_private
 from src.pipeline.audio_manager import AudioManager
 from src.pipeline.capture_room import CaptureRoom
@@ -73,6 +74,8 @@ class AudioLoop:
         self._operations: set[asyncio.Task] = set()
         self._dispatches: set[asyncio.Task] = set()
         self._analyses: set[asyncio.Task] = set()
+        self._batches: set[asyncio.Task] = set()
+        self._scopes = ProducerScopes(self.snapshot_operations, capacity=32)
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
         self._on_post_command_callback: Callable[[dict, np.ndarray], Awaitable[None]] | None = None
         self._room = CaptureRoom('', process=self._process_audio, poll=self._poll,
@@ -287,31 +290,18 @@ class AudioLoop:
             batch = None
 
     async def _consume(self):
-        event = step = batches = batch = None
+        batch = None
         try:
             while self._running and not self._closed:
-                step = self._track(asyncio.create_task(self._room.step()), self._operations)
-                event = await step
-                if event is not None and len(self._dispatches) < 8:
-                    sources = ()
-                    if self._privacy is not None:
-                        sources = (MemorySource(event.capture_id, event.conversation_id,
-                            event.captured_at, event.source_expires_at, MemoryOrigin.VOICE),)
-                    with producer_context('', sources):
-                        self._track(asyncio.create_task(self._dispatch(event, sources)), self._dispatches)
-                elif event is not None:
-                    self._dispatch_drops += 1
-                event = step = None
-                if self.ambient_detector is not None:
-                    sources = self._ambient_sources()
-                    batches = await self._room.call(self._take_ambient, sources=sources)
-                    for batch in batches:
-                        if len(self._analyses) < 2 and self._live(batch.sources):
-                            with producer_context('', batch.sources):
-                                self._track(asyncio.create_task(self._analyze(batch)), self._analyses)
-                        else:
-                            self._analysis_drops += 1
-                    batches = batch = None
+                batch = self._track(asyncio.create_task(self._consume_once()), self._batches)
+                try:
+                    await batch
+                except SourcesInvalidated:
+                    status = self._room.resource_status()
+                    if status['closed'] or status['reset_failed']:
+                        raise
+                finally:
+                    batch = None
                 await asyncio.sleep(.05)
         except SourcesInvalidated:
             pass
@@ -319,7 +309,37 @@ class AudioLoop:
             logger.error('Audio capture controller stopped: %s', type(error).__name__)
             self.begin_close()
         finally:
-            event = step = batches = batch = None
+            batch = None
+
+    async def _consume_once(self):
+        event = step = batches = batch = None
+        with self._scopes.operation(()) as handoff:
+            try:
+                step = self._track(asyncio.create_task(self._room.step(handoff=handoff)), self._operations)
+                event = await step
+                if event is not None and len(self._dispatches) < 8:
+                    sources = ()
+                    if self._privacy is not None:
+                        sources = (MemorySource(event.capture_id, event.conversation_id,
+                            event.captured_at, event.source_expires_at, MemoryOrigin.VOICE),)
+                    with self._scopes.operation(sources), producer_context('', sources):
+                        self._track(asyncio.create_task(self._dispatch(event, sources)), self._dispatches)
+                elif event is not None:
+                    self._dispatch_drops += 1
+                event = step = None
+                if self.ambient_detector is not None:
+                    sources = self._ambient_sources()
+                    self._scopes.replace_sources(sources)
+                    batches = await self._room.call(self._take_ambient, sources=sources)
+                    for batch in batches:
+                        if len(self._analyses) < 2 and self._live(batch.sources):
+                            with self._scopes.operation(batch.sources), producer_context('', batch.sources):
+                                self._track(asyncio.create_task(self._analyze(batch)), self._analyses)
+                        else:
+                            self._analysis_drops += 1
+                    batches = batch = None
+            finally:
+                event = step = batches = batch = None
 
     async def run(self) -> None:
         """Capture independently of response latency, retaining native resources."""
@@ -340,7 +360,7 @@ class AudioLoop:
         self._running = False
         if self._closing is None:
             exempt = _CALLBACK_OWNER.get()
-            controllers = self._operations | self._dispatches | self._analyses
+            controllers = self._operations | self._dispatches | self._analyses | self._batches
             if self._controller is not None:
                 controllers.add(self._controller)
             for task in controllers:
@@ -369,14 +389,21 @@ class AudioLoop:
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Expose finite capture, analysis, callbacks and actual driver operations."""
-        tasks = self._operations | self._dispatches | self._analyses | set(self._room.snapshot_operations()) | set(self._input.snapshot_operations())
+        tasks = self._operations | self._dispatches | self._analyses | self._batches | set(self._room.snapshot_operations()) | set(self._input.snapshot_operations())
         if isinstance(self.ambient_detector, AudioEventDetector):
             tasks |= set(self.ambient_detector.snapshot_operations())
         return tuple(tasks)
 
+    def conversation_busy(self, conversation_id: str) -> bool:
+        """Check finite receivers and children; idle buffers need separate proof."""
+        if self._privacy is None:
+            raise RuntimeError('privacy_authority_unavailable')
+        return self._scopes.busy(conversation_id, self._privacy.ledger) or self._room.conversation_busy(conversation_id)
+
     def resource_status(self) -> dict:
         """Report bounded ownership without capture identifiers or audio."""
         return {'closed': self._closed, 'operations': len(self.snapshot_operations()),
+                'batches': len(self._batches), 'source_scopes': self._scopes.resource_status(),
                 'capture': self._room.resource_status(), 'input': self._input.resource_status(),
                 'ambient_samples': self._ambient_samples, 'ambient_ready': len(self._ambient_ready),
                 'dispatch_drops': self._dispatch_drops, 'analysis_drops': self._analysis_drops}

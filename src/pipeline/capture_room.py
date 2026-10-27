@@ -18,7 +18,7 @@ import numpy as np
 from src.core.owned_work import OwnedBlockingWork
 from src.memory.fact_ledger import MemoryOrigin, MemorySource
 from src.memory.producer_context import PRODUCER_CONTEXT, producer_context
-from src.memory.producer_scopes import ProducerScopes
+from src.memory.producer_scopes import ProducerScope, ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated
 from src.memory.sources import CaptureBoundary
 
@@ -271,33 +271,46 @@ class CaptureRoom:
             _CAPTURE_CHECK.reset(token)
             packets = event = packet = None
 
-    async def step(self) -> CommandEvent | None:
-        """Consume bounded input and retire idle state even without fresh frames."""
+    async def step(self, *, handoff: ProducerScope | None = None) -> CommandEvent | None:
+        """Consume input, binding an exclusive receiver before raw result delivery."""
+        if handoff is not None and not isinstance(handoff, ProducerScope):
+            raise ValueError('invalid_capture_handoff')
         if self._closed:
+            if handoff is not None:
+                handoff.bind(())
             return None
         task = None
         with self._scopes.operation(()):
             try:
-                task = self._start_controller(self._step_owned())
+                task = self._start_controller(self._step_owned(handoff))
                 return await task
             finally:
                 task = None
 
-    async def _step_owned(self):
+    def _bind_step(self, sources, handoff):
+        self._scopes.replace_sources(sources)
+        if handoff is not None:
+            handoff.bind(sources)
+
+    async def _step_owned(self, handoff):
         packets = event = None
         try:
             async with self._lock:
                 if self._closed or self._failed:
+                    self._bind_step((), handoff)
                     return None
                 if self._pending is not None:
                     await asyncio.gather(asyncio.shield(self._pending), return_exceptions=True)
-                self._scopes.replace_sources(None)
+                self._bind_step((self._source,) if self._source is not None else (), handoff)
                 self.publish_boundary()
                 if self._oldest is not None and not self.available():
                     await self._call_locked(self._reset)
                 queue = self._queue
                 packets = []
                 while queue and len(packets) < 8:
+                    # An idle reset owns its known epoch. Only acquiring new
+                    # raw packets introduces input whose lineage is unresolved.
+                    self._bind_step(None, handoff)
                     packet = queue.popleft()
                     if self._boundary.allows(packet.timestamp):
                         packets.append(packet)
@@ -306,8 +319,10 @@ class CaptureRoom:
                 if self._source is not None and self._privacy is not None and not self._listening() and self._privacy.ledger.clock() - self._source.captured_at > 3600:
                     await self._call_locked(self._reset)
                 if not packets and self._oldest is None and not self._listening():
+                    self._bind_step((), handoff)
                     return None
                 if self._failed:
+                    self._bind_step((), handoff)
                     return None
                 if packets and self._oldest is None:
                     self._oldest = min(packet.timestamp for packet in packets)
@@ -317,8 +332,9 @@ class CaptureRoom:
                                 str(uuid4()), self._oldest, self.room_id, origin=MemoryOrigin.VOICE)
                         except (PermissionError, ValueError, RuntimeError):
                             self._oldest = None
+                            self._bind_step((), handoff)
                             return None
-                self._scopes.replace_sources((self._source,) if self._source is not None else None)
+                self._bind_step((self._source,) if self._source is not None else None, handoff)
                 event = await self._call_locked(self._advance, packets)
                 return event
         finally:

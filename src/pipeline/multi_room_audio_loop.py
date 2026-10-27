@@ -28,6 +28,7 @@ from src.wakeword.wake_clip_writer import WakeClipWriter
 from src.pipeline.capture_room import CaptureRoom
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.memory.producer_context import model_admission, producer_context
+from src.memory.producer_scopes import ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated, run_private
 from src.wakeword.detector import WakeWordDetector
 from src.wakeword.whisper_wake import _text_likely_truncated
@@ -278,9 +279,11 @@ class MultiRoomAudioLoop:
         self._close_timeout_s = close_timeout_s
         self._capture_controllers = {}
         self._capture_tasks = set()
+        self._capture_batches = set()
         self._dispatch_tasks = set()
         self._early_tasks = set()
         self._capture_native = OwnedBlockingWork(capacity=8)
+        self._scopes = ProducerScopes(self.snapshot_operations, capacity=min(256, max(64, len(room_streams)*4+24)))
         self.native_model_locks = {id(stt): Lock()} if stt is not None else {}
 
         # Endpointing adaptativo (S5): usa la señal del parser streaming
@@ -498,52 +501,78 @@ class MultiRoomAudioLoop:
     def _start_dispatch(self, event: CommandEvent) -> None:
         from src.memory.fact_ledger import MemoryOrigin, MemorySource
         source = None
-        if self._privacy is not None:
-            source = MemorySource(event.capture_id, event.conversation_id, event.captured_at,
-                                  event.source_expires_at, MemoryOrigin.VOICE)
-        if not self._source_live(source):
-            return
-        if len(self._dispatch_tasks) >= 8:
-            logger.warning('Command dispatch capacity reached')
-            return
-        with producer_context(event.room_id, (source,) if source is not None else ()):
-            self._track_capture(asyncio.create_task(run_private(
-                self._dispatch_command(event), lambda: self._source_live(source))), self._dispatch_tasks)
+        try:
+            if self._privacy is not None:
+                source = MemorySource(event.capture_id, event.conversation_id, event.captured_at,
+                                      event.source_expires_at, MemoryOrigin.VOICE)
+            if not self._source_live(source):
+                return
+            if len(self._dispatch_tasks) >= 8:
+                logger.warning('Command dispatch capacity reached')
+                return
+            sources = (source,) if source is not None else ()
+            with self._scopes.operation(sources), producer_context(event.room_id, sources):
+                self._track_capture(asyncio.create_task(run_private(
+                    self._dispatch_command(event), lambda: self._source_live(source))), self._dispatch_tasks)
+        finally:
+            event = None
 
     async def _consume_room(self, rs: RoomStream) -> None:
         room = self._capture_rooms[rs.room_id]
-        event = step = None
+        batch = None
         try:
             while self._running and not self._closed:
-                step = self._track_capture(asyncio.create_task(room.step()), self._capture_tasks)
+                batch = self._track_capture(asyncio.create_task(self._consume_once(rs)), self._capture_batches)
                 try:
-                    event = await step
-                    if event is not None:
-                        self._start_dispatch(event)
-                    elif rs.listening and self.early_dispatch_enabled and self._stt is not None and rs.early_task is None:
-                        source = room.source
-                        with producer_context(rs.room_id, (source,) if source is not None else ()):
-                            rs.early_task = self._track_capture(asyncio.create_task(run_private(
-                                self._early_parse_worker(rs), lambda source=source: self._source_live(source))), self._early_tasks)
+                    await batch
+                except SourcesInvalidated:
+                    if room.resource_status()['closed'] or room.resource_status()['reset_failed']:
+                        raise
                 finally:
-                    event = step = None
+                    batch = None
                 await asyncio.sleep(.05)
         except Exception as error:
             logger.error('Command capture controller stopped: %s', type(error).__name__)
             room.begin_close()
         finally:
-            event = step = None
+            batch = None
+
+    async def _consume_once(self, rs):
+        event = step = None
+        room = self._capture_rooms[rs.room_id]
+        with self._scopes.operation(()) as handoff:
+            try:
+                step = self._track_capture(asyncio.create_task(room.step(handoff=handoff)), self._capture_tasks)
+                event = await step
+                if event is not None:
+                    self._start_dispatch(event)
+                elif rs.listening and self.early_dispatch_enabled and self._stt is not None and rs.early_task is None:
+                    source = room.source
+                    sources = (source,) if source is not None else ()
+                    with self._scopes.operation(sources), producer_context(rs.room_id, sources):
+                        rs.early_task = self._track_capture(asyncio.create_task(run_private(
+                            self._early_parse_worker(rs), lambda source=source: self._source_live(source))), self._early_tasks)
+            finally:
+                event = step = None
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Expose finite capture, early STT and dispatch owners without idle loops."""
-        tasks = self._capture_tasks | self._early_tasks | self._dispatch_tasks | self._capture_native._tasks
+        tasks = self._capture_tasks | self._capture_batches | self._early_tasks | self._dispatch_tasks | self._capture_native._tasks
         for room in self._capture_rooms.values():
             tasks |= set(room.snapshot_operations())
         return tuple(tasks)
 
+    def conversation_busy(self, conversation_id: str) -> bool:
+        """Check finite receivers and child work; idle buffers need separate proof."""
+        if self._privacy is None:
+            raise RuntimeError('privacy_authority_unavailable')
+        return self._scopes.busy(conversation_id, self._privacy.ledger) or any(
+            room.conversation_busy(conversation_id) for room in self._capture_rooms.values())
+
     def capture_status(self) -> dict:
         """Report counts and admission without transcripts or capture identifiers."""
         return {'closed': self._closed, 'operations': len(self.snapshot_operations()),
+                'batches': len(self._capture_batches), 'source_scopes': self._scopes.resource_status(),
                 'rooms': [room.resource_status() for room in self._capture_rooms.values()]}
 
     def begin_close(self) -> asyncio.Task:
@@ -551,7 +580,7 @@ class MultiRoomAudioLoop:
         self._closed = True
         self._running = False
         if self._closing is None:
-            controllers = set(self._capture_controllers.values()) | self._capture_tasks | self._early_tasks | self._dispatch_tasks
+            controllers = set(self._capture_controllers.values()) | self._capture_tasks | self._capture_batches | self._early_tasks | self._dispatch_tasks
             for task in controllers:
                 task.cancel()
             drains = [room.begin_close() for room in self._capture_rooms.values()]
@@ -1956,11 +1985,13 @@ class MultiRoomAudioLoop:
         task = asyncio.current_task()
         self._capture_tasks.add(task)
         try:
-            await run_private(self._trigger_barge_in(rs), lambda: self._source_live(source))
+            with self._scopes.operation((source,) if source is not None else ()):
+                await run_private(self._trigger_barge_in(rs), lambda: self._source_live(source))
         except SourcesInvalidated:
             pass
         finally:
             self._capture_tasks.discard(task)
+            rs = None
 
     def _begin_barge_capture(self, rs: RoomStream) -> None:
         self._capture_rooms[rs.room_id].require_live()

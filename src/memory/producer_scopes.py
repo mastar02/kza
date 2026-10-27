@@ -11,6 +11,12 @@ from weakref import WeakMethod
 from src.memory.fact_ledger import FactLedger, MemorySource
 
 
+def _validate_sources(sources):
+    if sources is not None and (type(sources) is not tuple or len(sources) > 256
+                                or not all(isinstance(source, MemorySource) for source in sources)):
+        raise ValueError('invalid_producer_scope_sources')
+
+
 @dataclass(eq=False)
 class ProducerScope:
     """No raw values, owner objects, task results or exception references."""
@@ -18,6 +24,15 @@ class ProducerScope:
     token: str = field(default_factory=lambda: str(uuid4()))
     sources: tuple[MemorySource, ...] | None = None
     active: bool = True
+
+    def bind(self, sources: tuple[MemorySource, ...] | None) -> None:
+        """Publish metadata to an exclusive receiver before returning raw data.
+
+        The caller must retire any earlier raw locals before refining this
+        receipt. Binding cannot extend ownership, retention or authority.
+        """
+        _validate_sources(sources)
+        self.sources = sources
 
 
 _CURRENT_SCOPE = ContextVar('owned_producer_scope', default=None)
@@ -53,12 +68,10 @@ class ProducerScopes:
 
     @staticmethod
     def _validate(sources):
-        if sources is not None and (type(sources) is not tuple or len(sources) > 256
-                                    or not all(isinstance(source, MemorySource) for source in sources)):
-            raise ValueError('invalid_producer_scope_sources')
+        _validate_sources(sources)
 
     @contextmanager
-    def operation(self, sources: tuple[MemorySource, ...] | None = None) -> Iterator[None]:
+    def operation(self, sources: tuple[MemorySource, ...] | None = None) -> Iterator[ProducerScope]:
         """Reserve affinity before raw acquisition; None means not known yet."""
         self._validate(sources)
         self._reap()
@@ -68,7 +81,7 @@ class ProducerScopes:
         self._scopes[scope.token] = scope
         token = _CURRENT_SCOPE.set(scope)
         try:
-            yield
+            yield scope
         finally:
             scope.active = False
             _CURRENT_SCOPE.reset(token)
