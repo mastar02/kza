@@ -1,0 +1,184 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "5bd8da9bfd3c93cdf8285570184858bd6e8fc54c",
+  "tested_runtime_source_tree": "011001b6269a940f2b468b89a61ae5cdfc6fb737",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 authority/room/origin admission epochs sampled before callback clocks, arrays and slot reservation, carried through command queues, ambient tap and native waiters. The ledger retires metadata before revocation commit so fresh callbacks receive a new epoch; native validation prevents revoked, expired or retired admission from becoming a new conversation before inference, without waiting for numeric control-fence publication. Full derived provenance, SDK/physical-driver behavior and producer/journal acceptance remain open.",
+  "new_cases_total": 25,
+  "new_integration_cases": [
+    "test_sourced_ambient_actor_requires_an_admission_validator",
+    "test_voice_input_admitted_before_revocation_cannot_use_a_later_clock[single]",
+    "test_voice_input_admitted_before_revocation_cannot_use_a_later_clock[multi]",
+    "test_ambient_old_callback_cannot_relabel_audio_before_fence_publication",
+    "test_direct_tap_push_keeps_admission_before_its_pool_or_clock_wait[clock]",
+    "test_direct_tap_push_keeps_admission_before_its_pool_or_clock_wait[reservation]",
+    "test_callback_stamps_epochs_without_authority_queries_or_native_work[single]",
+    "test_callback_stamps_epochs_without_authority_queries_or_native_work[multi]",
+    "test_unstamped_callback_is_bound_when_another_input_creates_the_first_source[single]",
+    "test_unstamped_callback_is_bound_when_another_input_creates_the_first_source[multi]",
+    "test_queued_future_dated_input_cannot_bypass_its_revoked_admission[single]",
+    "test_queued_future_dated_input_cannot_bypass_its_revoked_admission[multi]",
+    "test_callback_from_a_retired_scope_does_not_join_the_new_conversation[single]",
+    "test_callback_from_a_retired_scope_does_not_join_the_new_conversation[multi]",
+    "test_unknown_input_admission_expires_even_if_delayed_clock_returns_a_fresh_date[single]",
+    "test_unknown_input_admission_expires_even_if_delayed_clock_returns_a_fresh_date[multi]",
+    "test_capture_rejects_admission_from_another_namespace_before_native_work[authority]",
+    "test_capture_rejects_admission_from_another_namespace_before_native_work[room]",
+    "test_capture_rejects_admission_from_another_namespace_before_native_work[origin]",
+    "test_capture_rejects_admission_from_another_namespace_before_native_work[missing]",
+    "test_ambient_native_waiter_keeps_its_admission_after_tap_drain",
+    "test_revocation_retires_old_admission_before_commit_and_admits_fresh_input[commit-single]",
+    "test_revocation_retires_old_admission_before_commit_and_admits_fresh_input[commit-multi]",
+    "test_revocation_retires_old_admission_before_commit_and_admits_fresh_input[rollback-single]",
+    "test_revocation_retires_old_admission_before_commit_and_admits_fresh_input[rollback-multi]"
+  ],
+  "reproduction": {
+    "initial_log": "/tmp/kza-capture-epochs-red.log",
+    "initial_failed": 3,
+    "initial_passed": 0,
+    "findings": [
+      "Single-input and multiroom callbacks admitted before deletion could receive a later clock value and acquire a new conversation before inference.",
+      "An ambient callback could take the same path while the control publisher was delayed; numeric fences allowed the newly dated input."
+    ],
+    "intermediate_focused_not_accepted": {
+      "log": "/tmp/kza-capture-epochs-final-new.log",
+      "failed": 1,
+      "passed": 19,
+      "reason": "An assertion block was temporarily moved to the next test during editing and raised NameError. Restoring it to its original test fixed this rejected run; accepted focused/full results cover the corrected file."
+    }
+  },
+  "rejected_full_suite_before_fixes": {
+    "accepted": false,
+    "tested_commit": "692f33c9e38f0891a9e989967cc7173b18fac995",
+    "passed": 5328,
+    "failed": 6,
+    "xfailed": 1,
+    "runtime_s": 235.87,
+    "log": "/tmp/kza-capture-epochs-rejected-full.log",
+    "xml": "/tmp/kza-capture-epochs-rejected-full.xml",
+    "failed_tests": [
+      "tests.integration.test_capture_erasure::test_textual_wake_finishing_after_erasure_cannot_create_a_new_clip",
+      "tests.integration.test_capture_erasure::test_cancelled_attachment_discards_written_file_through_durable_cleanup",
+      "tests.integration.test_capture_receiver_scopes::test_revoked_result_does_not_stop_receiver_from_accepting_fresh_capture[single]",
+      "tests.integration.test_capture_receiver_scopes::test_revoked_result_does_not_stop_receiver_from_accepting_fresh_capture[multi]",
+      "tests.integration.test_privacy_authority::test_ambient_capture_is_bound_before_stt_and_late_text_does_not_reappear[revoke]",
+      "tests.integration.test_privacy_authority::test_ambient_capture_is_bound_before_stt_and_late_text_does_not_reappear[close]"
+    ],
+    "findings": [
+      "Four direct-segment transcriber routes used tap=None and failed at construction.",
+      "Two receiver tests showed the first fresh callback could still acquire the retired reference before the audio controller published its boundary."
+    ],
+    "fixes": [
+      "Bind ingress only when a tap exists; the existing provenance guards still apply to direct raw segments.",
+      "The authority publishes weak metadata retirement before SQLite commit; callbacks already admitted keep the old mark and fresh callbacks get a new mark.",
+      "Four additional actual callback/SQLite tests hold commit to verify fresh admission and old-input rejection across commit and rollback."
+    ]
+  },
+  "full_suite": {
+    "accepted": true,
+    "collected": 5339,
+    "passed": 5338,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 229.137,
+    "summary": "========= 5338 passed, 1 xfailed, 31167 warnings in 229.22s (0:03:49) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-capture-epochs-accepted-full.xml",
+    "log": "/tmp/kza-capture-epochs-accepted-full.log",
+    "xml": "/tmp/kza-capture-epochs-accepted-full.xml"
+  },
+  "focused_suite": {
+    "passed": 601,
+    "failed": 0,
+    "runtime_s": 26.4,
+    "summary": "===================== 601 passed, 9662 warnings in 26.40s ======================",
+    "log": "/tmp/kza-capture-epochs-final-corrected-focused.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-capture-epochs-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-capture-epochs-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-capture-epochs-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-capture-epochs-dashboard.log"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "5bd8da9bfd3c93cdf8285570184858bd6e8fc54c",
+    "artifact": "/tmp/kza-capture-epochs-runtime-walhkvyv/runtime.tar.gz",
+    "verified_hashes": 322,
+    "runtime_s": 0.5049993810243905,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "hashes": 322,
+      "voice": [
+        {
+          "transport": "single",
+          "old_admission_rejected_after_clock_returns_new_date": true,
+          "fresh_admission_recovers_without_restart": true
+        },
+        {
+          "transport": "multi",
+          "old_admission_rejected_after_clock_returns_new_date": true,
+          "fresh_admission_recovers_without_restart": true
+        }
+      ],
+      "ambient": {
+        "old_ambient_callback_rejected_without_control_fence_publication": true,
+        "independent_voice_conversation_survives": true,
+        "fresh_ambient_admission_recovers": true
+      },
+      "real_capture_input_owners_tap_room_actor_store_and_privacy_sqlite": true,
+      "synthetic_input_driver_wake_echo_clock_and_vad": true,
+      "gc_forced_disabled_or_frozen": false,
+      "full_main_hardware_or_journal_acceptance": false
+    }
+  },
+  "limits": {
+    "unknown_ambient_ingress_and_queued_audio_remain_conservatively_busy": true,
+    "known_voice_source_does_not_establish_ambient_lineage": true,
+    "ambient_native_rejection_requires_published_control_fence": false,
+    "callback_epoch_admission_covers_ledger_revocation_before_numeric_fence_publication": true,
+    "real_voice_and_ambient_ingress_packets_carry_epoch": true,
+    "complete_causal_source_for_all_derived_outputs_proven": false,
+    "retiring_epoch_can_discard_admitted_packets_and_require_fresh_input": true,
+    "first_source_binds_preexisting_inflight_epoch": true,
+    "ledger_retires_epoch_before_commit_releases_authority_thread": true,
+    "fresh_input_can_enter_while_revocation_commit_is_held": true,
+    "rollback_does_not_restore_discarded_transient_input": true,
+    "unknown_admission_does_not_renew_its_48h_deadline": true,
+    "authority_room_origin_and_missing_epoch_rejected": true,
+    "legacy_manual_room_fixture_now_uses_real_owned_tap_transport": true,
+    "physical_adc_timestamps_and_wake_quality_accepted": false,
+    "full_producers_journal_contract_complete": false,
+    "physical_microphone_or_external_sdk_buffers_accepted": false,
+    "ambient_pause_and_total_mute_product_flow_complete": false,
+    "instrumented_gc_measurement_replaced_or_accepted": false,
+    "production_modified": false,
+    "gc_forced_disabled_or_frozen": false,
+    "deadlines_or_existing_capacities_widened": false,
+    "overall_h3_or_roadmap_complete": false
+  }
+}

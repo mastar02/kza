@@ -2361,6 +2361,65 @@ procedencia verificable por paquete a través de todas las colas y probar los
 buffers retenidos por drivers y SDK. Este paso no completa el contrato global
 de `PRODUCERS`, la pausa/mute de producto ni la aceptación física de audio.
 
+## Admisión anterior al reloj y transporte por las colas — 27 de octubre
+
+La reproducción siguiente confirmó una brecha anterior a la publicación de
+barreras: un callback de entrada única, multiroom o ambient podía empezar antes
+del borrado, quedar detenido en el reloj y recibir luego una fecha posterior.
+La fecha pasaba el fence numérico y el consumidor asignaba otro ID de
+conversación al audio anterior. Los tres casos ejecutaban inferencia.
+
+`CaptureScopes` mantiene ahora una referencia de admisión por autoridad,
+habitación y origen. El callback toma su marca antes del reloj, los arrays y
+la reserva que pueda quedar detenida; las colas de comandos y el tap conservan
+esa misma marca hasta el consumidor nativo. Si otra entrada crea la primera
+fuente mientras un callback sigue esperando, ambas conservan la misma marca
+y quedan vinculadas a esa conversación. No se consulta autoridad ni se
+ejecutan modelos en el thread de entrada.
+
+El ledger retira esas marcas al publicar la revocación pendiente, antes de que
+el commit SQLite libere el GIL. Sus observadores débiles solo publican metadatos
+en el worker de autoridad. Así la primera captura posterior recibe una marca
+nueva aunque el controlador de audio todavía no haya publicado su fence. Si
+el commit falla, la autoridad persistente se vuelve a leer tras rollback; el
+audio transitorio retirado no se restaura. Las pruebas con el commit detenido
+verifican la admisión fresca y la ausencia del audio viejo tanto al confirmar
+como al hacer rollback, sin autorizar el borrado de datos persistentes por una
+revocación solo pendiente.
+
+El consumidor comprueba la marca antes de inferir y después de las etapas que
+pueden esperar. Rechaza una conversación revocada aunque todavía no se haya
+publicado el fence local, además de marcas retiradas, vencidas, ausentes o de
+otra autoridad, habitación u origen. La admisión sin fuente también vence a
+las 48 horas; recibir una fecha nueva no renueva su vigencia. Una entrada nueva
+puede continuar con otra marca y conversación sin reiniciar el pipeline.
+
+El actor ambiental con `source_fn` exige un verificador de admisión. El grafo
+real pasa paquetes propios del tap, incluidos los que esperan el lock nativo;
+las pruebas previas del actor con procedencia usan ahora ese mismo transporte.
+La API histórica de `drain()` conserva sus tuplas para consumidores sin
+autoridad; el transcriptor usa `drain_owned()` y verifica sus marcas.
+
+La [validación de admisión y colas](../research/2026-10-27-h3-capture-ingress-epochs-validation.json)
+de `5bd8da9` registra **5338 passed, 1 xfailed**, sin fallos, en 229,22 s,
+25 casos nuevos y 601 pruebas dirigidas. Conserva como no aceptada la suite
+de `692f33c`: cuatro rutas sin tap fallaban al construir el transcriptor y dos
+receptores perdían la primera captura fresca. Las correcciones mantienen las
+rutas directas y retiran la marca desde el ledger antes del commit. Pasan
+Ruff, Bandit sin hallazgos medios/altos, los 18 casos de frontend y el smoke
+del dashboard. El artefacto sin fuentes verifica 322 hashes y completa el
+ejercicio con entradas, tap, actor nativo, store y SQLite reales en 0,50 s,
+usando driver, wake, echo, reloj y VAD sintéticos. No se fuerza GC, no se
+amplían presupuestos y no se sustituye la medición de pausas aún no aceptada.
+
+Una rotación retira la marca anterior, incluso si aún hay paquetes en espera.
+Si la propia alta de fuente provoca la rotación, esos paquetes se descartan y
+se espera una entrada fresca. Este comportamiento requiere medir el efecto
+en wake y calidad de captura antes de aceptar el audio físico. Las marcas
+contienen metadatos y no sustituyen la procedencia completa de los derivados,
+los timestamps del driver ni la auditoría de buffers de los SDK. El contrato
+global de `PRODUCERS`, H3–H6 y la release siguen abiertos.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

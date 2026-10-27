@@ -742,6 +742,17 @@ Faltan el intervalo entre revocación y publicación, la procedencia por paquete
 en las demás colas y el contrato completo de `PRODUCERS`. Esto no completa
 la pausa/mute de producto, las pruebas físicas ni el resto del roadmap.
 
+Las [marcas de admisión](../research/2026-10-27-h3-capture-ingress-epochs-validation.json)
+ya viajan desde antes del reloj del callback hasta las colas y los consumidores
+nativos. El ledger las retira antes del commit de revocación, de modo que un
+audio anterior no adquiere otra conversación por recibir una fecha posterior;
+una entrada fresca puede continuar incluso con el commit pendiente. La
+validación de `5bd8da9` registra **5338 passed, 1 xfailed**, 25 casos nuevos,
+601 pruebas dirigidas, checks y artefacto con 322 hashes. Conserva la suite
+previa de seis fallos como no aceptada. La calidad de audio al rotar marcas,
+los buffers de drivers/SDK, los demás productores y el contrato global del
+journal siguen pendientes, junto con el resto de H3–H6. Producción no cambia.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una
