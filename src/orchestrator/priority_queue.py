@@ -36,6 +36,7 @@ from typing import Any, Callable
 
 from src.core.logging import get_logger
 from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource, sources_authorized
+from src.memory.producer_scopes import ProducerScope
 from src.orchestrator.cancellation import (
     CancellationToken,
     CancellationReason
@@ -85,6 +86,7 @@ class Request:
     text: str = field(compare=False, default="")
     intent: str = field(compare=False, default=None)
     memory_sources: tuple[MemorySource, ...] | None = field(compare=False, default=None)
+    producer_receiver: ProducerScope | None = field(compare=False, default=None, repr=False)
     _source_policy: FactLedger | None = field(compare=False, default=None, repr=False)
     _clock: Callable = field(compare=False, default=time.time, repr=False)
     _scrubbed: bool = field(compare=False, default=False, repr=False)
@@ -110,6 +112,8 @@ class Request:
     _state_lock: threading.RLock = field(compare=False, default_factory=threading.RLock, repr=False)
 
     def __post_init__(self):
+        if self.producer_receiver is not None and not isinstance(self.producer_receiver, ProducerScope):
+            raise ValueError('invalid_request_producer_receiver')
         if self.memory_sources is None:
             self.memory_sources = (MemorySource(str(uuid.uuid4()), str(uuid.uuid4()), self.timestamp,
                 self.timestamp+48*3600, MemoryOrigin.INTERACTION),)
@@ -324,6 +328,7 @@ class PriorityRequestQueue:
         on_cancel: Callable = None,
         on_fail: Callable = None,
         memory_sources: tuple[MemorySource, ...] | None = None,
+        producer_receiver: ProducerScope | None = None,
     ) -> Request:
         """
         Agregar peticion a la cola.
@@ -353,6 +358,7 @@ class PriorityRequestQueue:
             on_cancel=on_cancel,
             on_fail=on_fail,
             memory_sources=memory_sources,
+            producer_receiver=producer_receiver,
         )
 
         self.prune_private()

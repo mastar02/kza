@@ -48,6 +48,7 @@ from src.home_assistant.home_actions import HomeActionService
 from src.home_assistant.voice_actions import VoiceHomeActionExecutor
 from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.memory.fact_ledger import MemorySource
+from src.memory.producer_scopes import ProducerScopes, current_producer_scope
 from src.orchestrator.cancellation import CancellationReason
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
@@ -1142,17 +1143,15 @@ class RequestDispatcher:
         # Crear evento para esperar respuesta
         response_event = asyncio.Event()
         response_loop = asyncio.get_running_loop()
-        result_holder = {"result": None}
+        result_holder = {}
 
         def on_complete(request: Request):
-            result_holder["result"] = request.result
             try:
                 response_loop.call_soon_threadsafe(response_event.set)
             except RuntimeError:
                 pass
 
         def on_cancel(request: Request):
-            result_holder["result"] = "Cancelado"
             try:
                 response_loop.call_soon_threadsafe(response_event.set)
             except RuntimeError:
@@ -1180,6 +1179,7 @@ class RequestDispatcher:
             on_cancel=on_cancel,
             on_fail=on_fail,
             memory_sources=memory_sources,
+            producer_receiver=current_producer_scope(),
         )
         request.response_deadline = response_loop.time() + timeout
         timings["queue"] = (time.perf_counter() - t0) * 1000
@@ -1260,7 +1260,7 @@ class RequestDispatcher:
                 memory_sources=request.memory_sources,
             )
 
-        response = result_holder["result"]
+        response = request.result
 
         return DispatchResult(
             path=PathType.SLOW_LLM,
@@ -1764,6 +1764,9 @@ class MultiUserOrchestrator:
         if privacy is not None and memory_manager is not None and memory_manager.long_term.ledger is not privacy.ledger:
             raise ValueError("privacy_authority_mismatch")
         source_policy = privacy.ledger if privacy is not None else (memory_manager.long_term.ledger if memory_manager is not None else None)
+        self._source_policy = source_policy
+        self._request_tasks: set[asyncio.Task] = set()
+        self._scopes = ProducerScopes(self.snapshot_operations, capacity=16)
         self.speaker_id = speaker_identifier
         self._generation = GenerationStream(llm)
         self.response_handler = response_handler
@@ -1972,24 +1975,65 @@ class MultiUserOrchestrator:
         return None, None
 
     async def _process_queue(self):
-        """Procesar peticiones de la cola"""
-        while self._running:
-            try:
-                self.queue.prune_private()
-                request = await self.queue.dequeue_async(timeout=1.0)
-                if request is None:
-                    continue
+        """Poll with finite tasks; the permanent controller retains no request."""
+        cycle = None
+        try:
+            while self._running:
+                try:
+                    self.queue.prune_private()
+                    cycle = self._track_request(asyncio.create_task(self._queue_once()))
+                    await cycle
+                except asyncio.CancelledError:
+                    break
+                except Exception as error:
+                    logger.error("Queue processing failed: %s", type(error).__name__)
+                finally:
+                    cycle = None
+        finally:
+            cycle = None
 
-                # Notificar a otros usuarios en espera
-                await self._notify_waiting_users(request)
+    def _track_request(self, task):
+        self._request_tasks.add(task)
+        def finished(done):
+            self._request_tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished)
+        return task
 
-                # Procesar con LLM
+    def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
+        """Expose actual finite queue/generation work, including done handoffs."""
+        return tuple(self._request_tasks)
+
+    def conversation_busy(self, conversation_id: str) -> bool:
+        """Keep unresolved memory reads and selected dependencies pending."""
+        if self._source_policy is None:
+            raise RuntimeError('orchestrator_privacy_unavailable')
+        return self._scopes.busy(conversation_id, self._source_policy)
+
+    def resource_status(self) -> dict:
+        """Report bounded queue work without prompts, identities or receipts."""
+        return {'running': self._running, 'operations': len(self._request_tasks),
+                'source_scopes': self._scopes.resource_status()}
+
+    async def _queue_once(self):
+        request = None
+        try:
+            request = await self.queue.dequeue_async(timeout=1.0)
+            if request is not None:
                 await self._process_llm_request(request)
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error("Error en proceso de cola", data={"error": str(e)})
+        except asyncio.CancelledError:
+            if request is not None:
+                request.cancel(CancellationReason.SYSTEM_SHUTDOWN)
+            raise
+        except Exception:
+            if request is not None:
+                request.fail('request_processing_failed')
+            raise
+        finally:
+            if request is not None:
+                self.queue.clear_current(expected=request)
+            request = None
 
     async def _notify_waiting_users(self, current_request: Request):
         """Notificar a usuarios en espera que deben esperar"""
@@ -2005,124 +2049,152 @@ class MultiUserOrchestrator:
                     logger.debug(f"Notificando a {queued['user_id']}: {message}")
 
     async def _process_llm_request(self, request: Request):
-        """Consume generation off the loop; cancel pending reads and late results."""
-        snapshot = None
-
-        def available() -> bool:
-            if snapshot is not None and not self.context_manager.prompt_available(request.user_id, snapshot):
-                request.prune_private(force=True)
-                return False
-            return not request.prune_private()
-
-        async def generate() -> str:
-            effective_prompt = snapshot.prompt.text
-            if self.memory_manager is not None:
-                memory_context = await self.memory_manager.aprompt_context(request.text)
-                request.memory_sources = memory_context.bind_sources(request.memory_sources)
-                if not available():
-                    return ""
-                if memory_context.text:
-                    effective_prompt = memory_context.text + "\n\n" + effective_prompt
-            guarded = GuardedGeneration(self._generation, available)
-            if self.response_handler is not None:
-                def owned():
-                    request.speech_handled = True
-
-                delivered = await self.response_handler.arespond(
-                    effective_prompt, zone_id=request.zone_id, generation=guarded,
-                    deadline=request.response_deadline, on_owned=owned,
-                )
-                if request.prune_private():
-                    return ""
-                request.speech_handled = delivered.speech_handled
-                request.error_response = delivered.text
-                request.timeout_stage = delivered.timeout_stage
-                request.voice_delivery = delivered.delivery
-                if delivered.delivery is DeliveryState.CANCELLED:
-                    request.cancel(CancellationReason.USER_EXPLICIT)
-                    return ""
-                if not delivered.success:
-                    raise RuntimeError(delivered.error or "response_delivery_failed")
-                return delivered.text
-            parts = []
-            async with aclosing(guarded.astream(effective_prompt)) as source:
-                async for chunk in source:
-                    token = chunk.get("token", "")
-                    if token:
-                        parts.append(token)
-            return "".join(parts)
-
-        async def watch_cancellation() -> None:
-            while not request.is_cancelled:
-                available()
-                if self.queue.interrupt_for_priority(request.priority):
-                    request.cancel(CancellationReason.HIGHER_PRIORITY)
-                    return
-                await asyncio.sleep(0.01)
-
-        generation = monitor = None
-        response = failure = None
         try:
-            request.prune_private()
-            if request.is_cancelled:
-                request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
-                return
-            # Construir prompt con contexto
-            snapshot = self.context_manager.build_prompt_context(request.user_id, request.text)
-            request.memory_sources = snapshot.prompt.bind_sources(request.memory_sources)
-            if not available():
-                return
-
-            generation = asyncio.create_task(generate())
-            monitor = asyncio.create_task(watch_cancellation())
-            await asyncio.wait({generation, monitor}, return_when=asyncio.FIRST_COMPLETED)
-            if request.is_cancelled:
-                request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
-                return
-            response = await generation
-            if not available():
-                return
-            if not response.strip():
-                raise RuntimeError("generation_empty")
-
-        except asyncio.CancelledError:
-            if request.cancellation_token.reason is CancellationReason.PRIVACY:
-                return
-            request.cancel(CancellationReason.SYSTEM_SHUTDOWN)
-            raise
-
-        except Exception as e:
-            logger.error(
-                "Error procesando request",
-                request_id=request.request_id,
-                user_id=request.user_id,
-                data={"error": str(e)}
-            )
-            failure = str(e)
-
+            with self._scopes.operation(request.memory_sources, receiver=request.producer_receiver) as scope:
+                await self._notify_waiting_users(request)
+                await self._generate_request(request, scope)
         finally:
-            if request.is_cancelled:
-                request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
-            children = [task for task in (generation, monitor) if task is not None]
-            for task in children:
-                task.cancel()
-            if children:
-                await asyncio.gather(*children, return_exceptions=True)
-            self.queue.clear_current(expected=request)
+            request = None
 
-        # Success/failure observers must see a released queue slot and closed
-        # generation scope. Cancellation still acknowledges immediately while
-        # its actual cleanup remains owned above.
-        if failure is not None:
-            request.fail(failure)
-        elif response is not None and request.complete(response):
+    async def _generate_request(self, request: Request, scope):
+        """Consume generation off the loop; cancel pending reads and late results."""
+        try:
+            snapshot = None
+
+            def available() -> bool:
+                if request is None:
+                    return False
+                if snapshot is not None and not self.context_manager.prompt_available(request.user_id, snapshot):
+                    request.prune_private(force=True)
+                    return False
+                return not request.prune_private()
+
+            async def generate() -> str:
+                try:
+                    effective_prompt = snapshot.prompt.text
+                    if self.memory_manager is not None:
+                        memory_context = await self.memory_manager.aprompt_context(request.text)
+                        request.memory_sources = memory_context.bind_sources(request.memory_sources)
+                        if not available():
+                            return ""
+                        if memory_context.text:
+                            effective_prompt = memory_context.text + "\n\n" + effective_prompt
+                    guarded = GuardedGeneration(self._generation, available)
+                    if self.response_handler is not None:
+                        def owned():
+                            request.speech_handled = True
+
+                        delivered = await self.response_handler.arespond(
+                            effective_prompt, zone_id=request.zone_id, generation=guarded,
+                            deadline=request.response_deadline, on_owned=owned,
+                        )
+                        if request.prune_private():
+                            return ""
+                        request.speech_handled = delivered.speech_handled
+                        request.error_response = delivered.text
+                        request.timeout_stage = delivered.timeout_stage
+                        request.voice_delivery = delivered.delivery
+                        if delivered.delivery is DeliveryState.CANCELLED:
+                            request.cancel(CancellationReason.USER_EXPLICIT)
+                            return ""
+                        if not delivered.success:
+                            raise RuntimeError(delivered.error or "response_delivery_failed")
+                        return delivered.text
+                    parts = []
+                    async with aclosing(guarded.astream(effective_prompt)) as source:
+                        async for chunk in source:
+                            token = chunk.get("token", "")
+                            if token:
+                                parts.append(token)
+                    return "".join(parts)
+                finally:
+                    # Provider exceptions can retain this coroutine's traceback.
+                    # Retire selected DTOs and partial responses before its owner
+                    # releases the finished task and its source receipt.
+                    effective_prompt = memory_context = guarded = delivered = None
+                    parts = chunk = token = source = owned = None
+
+            async def watch_cancellation() -> None:
+                while not request.is_cancelled:
+                    available()
+                    if self.queue.interrupt_for_priority(request.priority):
+                        request.cancel(CancellationReason.HIGHER_PRIORITY)
+                        return
+                    await asyncio.sleep(0.01)
+
+            generation = monitor = None
+            response = failure = None
+            cancelled = False
             try:
-                if request.memory_sources is None:
-                    request.memory_sources = self.context_manager.interaction_sources(request.timestamp)
-                self.context_manager.add_turn(request.user_id, "user", request.text, sources=request.memory_sources)
-                self.context_manager.add_turn(request.user_id, "assistant", response, sources=request.memory_sources)
-            except Exception as error:
-                logger.warning("Completed response context skipped: %s", type(error).__name__)
+                request.prune_private()
+                if request.is_cancelled:
+                    request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
+                    return
+                # Construir prompt con contexto
+                snapshot = self.context_manager.build_prompt_context(request.user_id, request.text)
+                request.memory_sources = snapshot.prompt.bind_sources(request.memory_sources)
+                scope.include_prompt(snapshot.prompt)
+                if not available():
+                    return
+
+                generation = self._track_request(asyncio.create_task(generate()))
+                monitor = self._track_request(asyncio.create_task(watch_cancellation()))
+                await asyncio.wait({generation, monitor}, return_when=asyncio.FIRST_COMPLETED)
+                if request.is_cancelled:
+                    request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
+                    return
+                response = await generation
+                if not available():
+                    return
+                if not response.strip():
+                    raise RuntimeError("generation_empty")
+
+            except asyncio.CancelledError:
+                if request.cancellation_token.reason is CancellationReason.PRIVACY:
+                    return
+                request.cancel(CancellationReason.SYSTEM_SHUTDOWN)
+                cancelled = True
+
+            except Exception as e:
+                logger.error(
+                    "Error procesando request",
+                    request_id=request.request_id,
+                    user_id=request.user_id,
+                    data={"error": str(e)}
+                )
+                failure = str(e)
+
+            finally:
+                if request.is_cancelled:
+                    request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
+                children = [task for task in (generation, monitor) if task is not None]
+                for task in children:
+                    task.cancel()
+                if children:
+                    await asyncio.gather(*children, return_exceptions=True)
+                self.queue.clear_current(expected=request)
+
+            if cancelled:
+                # Do not export asyncio.wait's private task set in a retained
+                # cancellation traceback after the actual children have settled.
+                raise asyncio.CancelledError
+
+            # Success/failure observers must see a released queue slot and closed
+            # generation scope. Cancellation still acknowledges immediately while
+            # its actual cleanup remains owned above.
+            if failure is not None:
+                request.fail(failure)
+            elif response is not None and request.complete(response):
+                try:
+                    if request.memory_sources is None:
+                        request.memory_sources = self.context_manager.interaction_sources(request.timestamp)
+                    self.context_manager.add_turn(request.user_id, "user", request.text, sources=request.memory_sources)
+                    self.context_manager.add_turn(request.user_id, "assistant", response, sources=request.memory_sources)
+                except Exception as error:
+                    logger.warning("Completed response context skipped: %s", type(error).__name__)
+        finally:
+            request = snapshot = generation = monitor = response = failure = None
+            children = task = scope = available = generate = watch_cancellation = None
 
     def get_stats(self) -> dict:
         """Obtener estadisticas completas"""

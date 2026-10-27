@@ -28,7 +28,7 @@ from src.wakeword.wake_clip_writer import WakeClipWriter
 from src.pipeline.capture_room import CaptureRoom
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.memory.producer_context import PRODUCER_CONTEXT, model_admission, producer_context
-from src.memory.producer_scopes import ProducerScopes
+from src.memory.producer_scopes import ProducerScopes, current_producer_scope
 from src.memory.prompt_context import SourcesInvalidated, run_private
 from src.wakeword.detector import WakeWordDetector
 from src.wakeword.whisper_wake import _text_likely_truncated
@@ -513,7 +513,7 @@ class MultiRoomAudioLoop:
             sources = (source,) if source is not None else ()
             with self._scopes.operation(sources), producer_context(event.room_id, sources):
                 self._track_capture(asyncio.create_task(run_private(
-                    self._dispatch_command(event), lambda: self._source_live(source))), self._dispatch_tasks)
+                    self._dispatch_command(event), self._dispatch_live)), self._dispatch_tasks)
         finally:
             event = None
 
@@ -1987,8 +1987,13 @@ class MultiRoomAudioLoop:
             event = result = None
 
     def _require_dispatch_sources(self):
-        if self._closed or self._privacy is not None and not self._privacy.sources_available(PRODUCER_CONTEXT.get().sources):
+        if not self._dispatch_live():
             raise SourcesInvalidated('dispatch_sources_invalidated')
+
+    def _dispatch_live(self):
+        receipt = current_producer_scope()
+        sources = receipt.snapshot()[0] if receipt is not None else PRODUCER_CONTEXT.get().sources
+        return not self._closed and (self._privacy is None or self._privacy.sources_available(sources))
 
     async def _tracked_barge_in(self, rs: RoomStream, source) -> None:
         task = asyncio.current_task()

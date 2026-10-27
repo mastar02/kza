@@ -18,7 +18,7 @@ from src.conversation import FollowUpMode
 from src.core.owned_work import WorkCloseTimeout
 from src.memory.fact_ledger import MemoryOrigin, MemorySource
 from src.memory.producer_context import producer_context
-from src.memory.producer_scopes import ProducerScopes
+from src.memory.producer_scopes import ProducerScopes, current_producer_scope
 from src.memory.prompt_context import SourcesInvalidated, merge_sources, run_private
 from src.pipeline.audio_manager import AudioManager
 from src.pipeline.capture_room import CaptureRoom
@@ -249,14 +249,14 @@ class AudioLoop:
     async def _invoke_callbacks(self, event, sources):
         result = None
         try:
-            if not self._live(sources):
+            if not self._dispatch_live(sources):
                 raise SourcesInvalidated('audio_sources_invalidated')
             if self._on_command_callback is not None:
                 result = await self._on_command_callback(event)
             else:
                 result = {}
             if self._on_post_command_callback is not None:
-                if not self._live(sources):
+                if not self._dispatch_live(sources):
                     raise SourcesInvalidated('audio_sources_invalidated')
                 await self._on_post_command_callback(result, event.audio)
         finally:
@@ -265,7 +265,7 @@ class AudioLoop:
     async def _dispatch(self, event, sources):
         token = _CALLBACK_OWNER.set(asyncio.current_task())
         try:
-            await run_private(self._invoke_callbacks(event, sources), lambda: self._live(sources))
+            await run_private(self._invoke_callbacks(event, sources), lambda: self._dispatch_live(sources))
         except SourcesInvalidated:
             pass
         except Exception as error:
@@ -273,6 +273,11 @@ class AudioLoop:
         finally:
             _CALLBACK_OWNER.reset(token)
             event = None
+
+    def _dispatch_live(self, sources):
+        receipt = current_producer_scope()
+        selected = receipt.snapshot()[0] if receipt is not None else sources
+        return self._live(selected)
 
     async def _analyze(self, batch):
         token = _CALLBACK_OWNER.set(asyncio.current_task())

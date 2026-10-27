@@ -28,6 +28,7 @@ class ProducerScope:
     active: bool = True
     _reads: int = field(default=0, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _receiver: 'ProducerScope | None' = field(default=None, init=False, repr=False)
 
     def bind(self, sources: tuple[MemorySource, ...] | None) -> None:
         """Publish metadata to an exclusive receiver before returning raw data.
@@ -43,6 +44,8 @@ class ProducerScope:
         """Retain unresolved affinity until an admitted memory worker exits."""
         with self._lock:
             self._reads += 1
+        if self._receiver is not None:
+            self._receiver.begin_read()
 
     def finish_read(self) -> None:
         """Release only from the actual memory task's completion callback."""
@@ -50,21 +53,24 @@ class ProducerScope:
             if self._reads <= 0:
                 raise RuntimeError('producer_read_not_owned')
             self._reads -= 1
+        if self._receiver is not None:
+            self._receiver.finish_read()
 
     def include_prompt(self, prompt: PromptContext) -> None:
         """Merge selected provenance before a worker publishes its raw result."""
         with self._lock:
-            if self.sources is None:
-                return
-            try:
-                sources = prompt.bind_sources(self.sources)
-                _validate_sources(sources)
-            except (ValueError, PermissionError):
-                # Unbindable metadata cannot prove unrelated work. The consumer
-                # still validates its own prompt; no authority is granted here.
-                self.sources = None
-            else:
-                self.sources = sources
+            if self.sources is not None:
+                try:
+                    sources = prompt.bind_sources(self.sources)
+                    _validate_sources(sources)
+                except (ValueError, PermissionError):
+                    # Unbindable metadata cannot prove unrelated work. The consumer
+                    # still validates its own prompt; no authority is granted here.
+                    self.sources = None
+                else:
+                    self.sources = sources
+        if self._receiver is not None:
+            self._receiver.include_prompt(prompt)
 
     def snapshot(self) -> tuple[tuple[MemorySource, ...] | None, int]:
         """Read metadata atomically while native selectors may enrich it."""
@@ -113,13 +119,20 @@ class ProducerScopes:
         _validate_sources(sources)
 
     @contextmanager
-    def operation(self, sources: tuple[MemorySource, ...] | None = None) -> Iterator[ProducerScope]:
+    def operation(self, sources: tuple[MemorySource, ...] | None = None, *,
+                  receiver: ProducerScope | None = None) -> Iterator[ProducerScope]:
         """Reserve affinity before raw acquisition; None means not known yet."""
         self._validate(sources)
+        if receiver is not None and not isinstance(receiver, ProducerScope):
+            raise ValueError('invalid_producer_scope_receiver')
         self._reap()
         if len(self._scopes) >= self._capacity:
             raise RuntimeError('producer_scope_capacity')
         scope = ProducerScope(sources=sources)
+        # A new receipt can point only to a pre-existing metadata receiver.
+        # Source publication/read reservations flow toward that receiver;
+        # no task, callable, result or owner crosses this handoff.
+        scope._receiver = receiver
         self._scopes[scope.token] = scope
         token = _CURRENT_SCOPE.set(scope)
         try:
