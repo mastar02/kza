@@ -1,0 +1,143 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "a47385dc31a3217d93482f869738e77e531891b6",
+  "tested_runtime_source_tree": "35d964020bcdeabd2581234f2d977bee58da07e3",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 ambient recurrent VAD ownership through failed reset, native input transport retirement and causal handoff of buffer provenance/deadlines to raw segments and stored transcriptions. Complete producer/journal coordination, shared cross-origin ingress, other backend/SDK lifetimes and integrated hardware/release acceptance remain open.",
+  "new_cases_total": 16,
+  "new_integration_cases": [
+    "test_failed_idle_reset_keeps_segmenter_and_privacy_lease_until_actual_retry[expiry]",
+    "test_failed_idle_reset_keeps_segmenter_and_privacy_lease_until_actual_retry[revoke]",
+    "test_idle_recurrent_input_has_early_provenance_and_clears_without_new_audio[expire]",
+    "test_idle_recurrent_input_has_early_provenance_and_clears_without_new_audio[revoke]",
+    "test_idle_recurrent_input_has_early_provenance_and_clears_without_new_audio[close]",
+    "test_utterance_close_reset_failure_is_not_hidden_or_followed_by_more_inference",
+    "test_completed_executor_transport_does_not_retain_feed_inputs",
+    "test_cancelled_queued_native_call_keeps_inputs_until_admitted_work_actually_exits",
+    "test_unexpected_native_prune_error_does_not_export_private_traceback",
+    "test_recurrent_context_keeps_original_conversation_and_deadline_across_idle_gap[before-handoff]",
+    "test_recurrent_context_keeps_original_conversation_and_deadline_across_idle_gap[after-persist]",
+    "test_handoff_rejects_conflicting_or_expired_buffer_provenance_before_inference[origin]",
+    "test_handoff_rejects_conflicting_or_expired_buffer_provenance_before_inference[start]",
+    "test_handoff_rejects_conflicting_or_expired_buffer_provenance_before_inference[expired]",
+    "test_cancelled_native_reset_observer_cannot_release_privacy_authority",
+    "test_close_retains_authority_when_native_reset_transport_is_unavailable"
+  ],
+  "full_suite": {
+    "accepted": true,
+    "collected": 5301,
+    "passed": 5300,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 229.008,
+    "summary": "========= 5300 passed, 1 xfailed, 30623 warnings in 229.09s (0:03:49) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-ambient-reset-accepted-full.xml",
+    "log": "/tmp/kza-ambient-reset-accepted-full.log",
+    "xml": "/tmp/kza-ambient-reset-accepted-full.xml"
+  },
+  "focused_suite": {
+    "passed": 288,
+    "failed": 0,
+    "runtime_s": 7.17,
+    "log": "/tmp/kza-ambient-reset-final-focused.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "scope": "src/, tests/, scripts/smart_automations.py, scripts/train_assistant.py, scripts/stage_legacy_memory.py"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-ambient-reset-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-ambient-reset-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-ambient-reset-dashboard.log"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "a47385dc31a3217d93482f869738e77e531891b6",
+    "artifact": "/tmp/kza-ambient-reset-runtime-8m9t2dl6/runtime.tar.gz",
+    "verified_hashes": 322,
+    "runtime_s": 0.34784478694200516,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "hashes": 322,
+      "real_ambient_factory_store_pipeline_and_privacy_sqlite": true,
+      "synthetic_vad_asr_speaker_quality_and_doa": true,
+      "failed_reset_retains_shared_recurrent_data_and_writer_lease": true,
+      "early_buffer_sources_and_unrelated_idle_scope_check": true,
+      "segment_handoff_keeps_conversation_and_original_deadline": true,
+      "revoked_origin_hides_derived_transcription": true,
+      "queued_native_cancel_keeps_inputs_and_authority_until_actual_exit": true,
+      "gc_forced_disabled_or_frozen": false,
+      "full_main_hardware_or_producers_journal_acceptance": false
+    },
+    "report": "/tmp/kza-ambient-reset-runtime-report.json",
+    "smoke_script": "/tmp/kza-ambient-reset-runtime-smoke.py",
+    "smoke_script_sha256": "794200334042496aa08ea0fe48679d3baec98c243ed82ea6f2822fc3d6e60d4b",
+    "build_script": "/tmp/kza-build-ambient-reset-runtime.py",
+    "build_script_sha256": "a3554ec44aca1840778b3f55c2f4ccf2d3a7554824701e9d0c6d36cb61da0e6e",
+    "sources_packaged": false,
+    "private_household_data_packaged": false,
+    "notes": "Actual AmbientPath/Transcriber factory, RoomProducer, UtteranceSegmenter, SQLite AmbientStore/PrivacyServices and STT/tagger adapters. Synthetic VAD, ASR, speaker profiles, quality and DoA. Recurrent reset/authority checked through the started path; lineage and queued-read phases invoke actual finite owners directly. No full main or physical device acceptance."
+  },
+  "development_findings": {
+    "shared_recurrent_state_reset": {
+      "accepted": false,
+      "baseline_commit": "8d5c19e",
+      "failed": 2,
+      "passed": 0,
+      "runtime_s": 0.29,
+      "log": "/tmp/kza-ambient-reset-shared-state-reproduction.log",
+      "description": "Expiry and conversation revocation dropped the segmenter reference and oldest-input metadata after native reset failed, even though an externally retained backend still owned the recurrent input copy.",
+      "correction": "Retain segmenter/source metadata and reset-pending state until actual cleanup; reject further inference, preserve authority while closing and retry the native reset."
+    }
+  },
+  "bounds": {
+    "native_work_per_room": 1,
+    "feed_batches_per_room": 1,
+    "reset_close_backoff_initial_s": 0.05,
+    "reset_close_backoff_max_s": 1.0,
+    "existing_capacities_or_runtime_limits_widened": false,
+    "gc_forced_disabled_or_frozen": false,
+    "integrated_gc_hardware_acceptance": false
+  },
+  "preserved_boundaries": {
+    "real_household_data_read_or_modified": false,
+    "private_quarantine_copy_modified": false,
+    "legacy_unsourced_facts_automatically_deleted": false,
+    "production_changed_or_restarted": false,
+    "new_dependencies_or_gpu_reassignment": false,
+    "full_main_or_hardware_acceptance": false,
+    "producers_journal_complete": false,
+    "global_erasure_claimed": false,
+    "release_published": false
+  },
+  "remaining_scope": [
+    "Connect every actual producer/reader and source fence to exact PRODUCERS claims, leased recovery and dependency close ordering. Resolve shared ingress across voice/ambient origins and actual multiroom stream/driver ownership before accepting global erasure.",
+    "Audit remaining legacy synchronous generation, shared backends, provider/SDK buffers and diagnostic error records. These local VAD/transport checks do not prove retirement of arbitrary SDK-held values or every raw traceback.",
+    "Complete diagnostics/JSONL/Logstash/aiosqlite, STREAMS/frontend and VOICES participants, ambient pause versus total mute, acoustic retention and authenticated voice grouping/review/calibration.",
+    "Keep 870 unsourced facts quarantined for manual review; complete snapshot/backup lifecycle, remaining migration copies, live-index rebuild and rollback preserving tombstones.",
+    "Verify selected HA effects/kitchen switch mapping, physical audio, H4 dependency/resource and instrumented GC acceptance, H5 routines/timers/reminders/local alerts and one H6 integrated release.",
+    "The earlier 495.68 ms instrumented GC pause is not remeasured or accepted by this uninstrumented suite or synthetic compiled smoke."
+  ]
+}

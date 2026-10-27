@@ -2276,6 +2276,51 @@ al journal `PRODUCERS`. La limpieza local no habilita aún el borrado global.
 Siguen pendientes los demás participantes y voces de H3, la aceptación de
 GC/hardware de H4/H6 y la publicación única. Producción no se modifica.
 
+## Estado recurrente ambiental y traspaso de procedencia — 27 de octubre
+
+Una reproducción con un backend de VAD compartido mostró que `RoomProducer`
+soltaba el segmentador y la fecha de entrada aunque fallara su reset. El dueño
+conserva ahora ambos hasta completar la limpieza. El fallo queda visible como
+estado pendiente, impide alimentar de nuevo al backend y conserva el lease
+durante el cierre. Los reintentos se serializan con backoff de 50 ms a 1 s;
+también se conserva el cierre si el transporte nativo está indisponible.
+
+`UtteranceSegmenter` expone si quedó pendiente limpiar su estado recurrente,
+incluido un fallo al cerrar una utterance. En ese caso el actor no entrega el
+segmento ni ejecuta otra inferencia hasta resolver el reset. La ocupación del
+transcriptor incluye los buffers de VAD en reposo y estos fallos, sin bloquear
+por un estado conocido y vigente que corresponde a otra conversación.
+
+El actor asigna procedencia al buffer antes de la inferencia. El segmento
+conserva esa entrada en `input_source` antes de que el reset retire el estado
+nativo. La transcripción reutiliza su conversación y limita el vencimiento al
+de esa entrada; conserva un ID propio de captura y la fecha real del segmento.
+Así se mantiene la relación causal con el estado recurrente incluso tras un
+intervalo sin voz. Revocar esa entrada antes del handoff impide inferir;
+revocarla después oculta el texto derivado. Un origen incompatible, fechas
+inconsistentes o una entrada vencida se rechazan antes de STT.
+
+Los argumentos nativos viajan en una caja que se vacía antes de publicar el
+resultado. Conservar la tupla del transporte o la excepción de un observador
+cancelado no conserva esos argumentos después de la finalización real.
+Los errores inesperados del adaptador regresan como un resultado fijo, sin
+exportar el traceback del worker. Esto no demuestra el retiro de todos los
+buffers o registros de error que pueda conservar un SDK externo.
+
+La [validación ambiental](../research/2026-10-27-h3-ambient-reset-retirement-validation.json)
+de `a47385d` registra **5300 passed, 1 xfailed**, sin fallos, en 229,09 s,
+con 16 casos nuevos y 288 pruebas dirigidas. Pasan Ruff, Bandit sin hallazgos
+medios/altos, los 18 casos de frontend y el smoke del dashboard. El artefacto
+sin fuentes verifica 322 hashes y completa el ejercicio en 0,35 s con actores,
+segmentador, pipeline y SQLite reales, usando VAD, ASR, perfiles y DoA
+sintéticos. No se fuerza GC ni se amplían los presupuestos existentes.
+
+Quedan la coordinación completa de productores y sus barreras —incluido el
+ingreso compartido entre orígenes—, el ciclo de vida de streams multiroom,
+los demás consumidores/backends y los participantes pendientes del journal.
+El borrado global, las voces, el resto de H3–H6 y la aceptación física e
+integrada siguen abiertos. Producción permanece intacta.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

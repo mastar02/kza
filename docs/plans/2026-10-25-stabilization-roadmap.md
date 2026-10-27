@@ -723,8 +723,13 @@ conservan ahora sus invocaciones reales, barreras y estado en reposo hasta
 retirarlos. Un reset fallido conserva procedencia y autoridad para reintentar.
 La validación de `2f77ead` registra **5284 passed, 1 xfailed**, 21 casos nuevos,
 183 pruebas dirigidas, checks y un artefacto sin fuentes con 322 hashes.
-Quedan los demás productores y sus fallos de reset, buffers de backends/SDK
-y el driver completo de `PRODUCERS`, además del resto de H3–H6.
+El [estado recurrente ambiental](../research/2026-10-27-h3-ambient-reset-retirement-validation.json)
+también conserva el segmentador, la procedencia y el lease ante fallos de
+reset. Los segmentos trasladan esa procedencia a la transcripción sin renovar
+su vencimiento. La validación de `a47385d` registra **5300 passed, 1 xfailed**,
+16 casos nuevos, 288 pruebas dirigidas, checks y artefacto con 322 hashes.
+Quedan la coordinación entre orígenes, los demás productores, los buffers de
+backends/SDK y el driver completo de `PRODUCERS`, además del resto de H3–H6.
 Producción permanece intacta; la aceptación física e integrada sigue pendiente.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
