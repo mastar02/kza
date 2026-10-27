@@ -1578,7 +1578,28 @@ el unlink; al retirarlo se elimina también el texto vinculado. Los archivos
 legacy quedan en cuarentena y los desconocidos no autorizan una lectura.
 Faltan las conversaciones y otros datasets, productores y journal completo;
 `COLLECTORS` continúa sin un driver que finja borrado global. La validación
-completa y del artefacto se registra al terminarla.
+de [correcciones STT](../research/2026-10-26-h3-stt-corrections-validation.json)
+del commit `042ebbb` registra **4998 passed, 1 xfailed**, sin fallos, en 208,90 s.
+Incluye 27 casos nuevos y los siete casos originales de formato, validación,
+conteo, lectura y marcado adaptados a la autoridad. Pasan 358 pruebas dirigidas,
+Ruff, Bandit sin hallazgos medios/altos, 18 tests de frontend y smoke del
+dashboard. La evidencia conserva el borrador verde rechazado, las tres
+reproducciones de plazos acortados y el bloqueo de la purga detrás del pool,
+con sus correcciones. No se ampliaron presupuestos para aceptarlas.
+
+El artefacto sin fuentes verifica 317 hashes y ejecuta captura multiroom,
+endpoint, router, procesador y el factory del colector sobre audio y modelos
+sintéticos. Guarda una corrección con fuentes originales y de interacción,
+bloquea la exportación antigua, acorta su plazo desde otro colector y comprueba
+que la vista vence mientras sus fuentes originales siguen vivas. Con otra
+codificación retenida verifica localizador y plazo durable, revoca el feedback,
+conserva la lease durante el timeout y, al liberar el encoder, retira parte,
+WAV y texto en cascada. Termina fuera del checkout en 2,74 s.
+
+El heartbeat llega a p95 de 0,17 ms y máximo de 1,01 ms; la cancelación de
+control alcanza 0,06 ms y el cleanup 10,93 ms. Esta suite no vuelve a medir las
+pausas globales de GC observadas antes ni cierra la aceptación física e
+integrada de H4/H6. Producción y los datos privados reales siguen sin cambios.
 
 ## Trabajo restante
 

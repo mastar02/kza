@@ -576,6 +576,26 @@ checks y artefacto sin fuentes aceptados. Siguen pendientes los demás
 colectores y datasets de aprendizaje, journal completo, pausa/mute, voces,
 migración y el resto de H0–H6; no se anuncia borrado global.
 
+Las correcciones STT comparten ahora los localizadores y la autoridad con los
+clips. Audio original y feedback deben aportar fuentes; WAV y texto vencen con
+el plazo más antiguo. Las vistas ya entregadas se revocan, y una cola vencida
+se purga aunque el barrido físico y los encoders sigan ocupados. El plazo
+durable acortado se comprueba antes y después de publicar y se propaga entre
+colectores del mismo destino. `main` construye el colector configurado;
+el entrenador Whisper antiguo queda bloqueado para esos datos privados antes
+de escribir datasets o lanzar procesos. Esto no agrega un productor de
+correcciones ni entrenamiento nuevo. Siguen pendientes conversaciones, otros
+datasets y consumidores, journal completo y el resto de H0–H6.
+
+La [validación de correcciones STT](../research/2026-10-26-h3-stt-corrections-validation.json)
+del commit `042ebbb` registra **4998 passed, 1 xfailed**, 27 casos nuevos,
+358 pruebas dirigidas y checks/artefacto sin fuentes aceptados. Una primera
+suite verde no cubrió plazos acortados durante encoder/rename ni una vista
+retenida por otro colector: la evidencia la rechaza y conserva las tres
+reproducciones y la corrección compartida. No se ampliaron límites ni se
+manipuló GC. Las pausas globales observadas antes y la aceptación física e
+integrada siguen pendientes; tampoco se anuncia borrado global.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

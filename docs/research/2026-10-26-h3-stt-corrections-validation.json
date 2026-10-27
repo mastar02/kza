@@ -1,0 +1,323 @@
+{
+  "checked_on": "2026-10-26",
+  "feature_commit": "8b1f3790f7542192c27068e568a2bb2143610074",
+  "deadline_fix_commit": "042ebbbc2505d297307f7c866c61a291ef70d5b4",
+  "tested_commit": "042ebbbc2505d297307f7c866c61a291ef70d5b4",
+  "tested_runtime_source_tree": "535fdeb7cf229faacd89a203d6986d302b09cdc5",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 sourced STT correction audio and text, durable shared file intents and cascading private metadata, original-plus-feedback lineage, native queued/write/read ownership, independent buffer expiry during pool starvation and managed revocable read views. Configured construction and legacy private-training handoff denial. Synthetic audio/sources/models, no production intervention.",
+  "new_integration_cases": [
+    "test_both_original_and_feedback_sources_are_required",
+    "test_feedback_deadline_is_not_reset_when_persisting_a_correction",
+    "test_deleting_either_conversation_clears_wav_text_and_existing_view[original]",
+    "test_deleting_either_conversation_clears_wav_text_and_existing_view[feedback]",
+    "test_reads_enforce_deadline_without_maintenance_or_another_capture",
+    "test_background_expiry_clears_unused_views_and_cascades_metadata",
+    "test_native_write_survives_cancelled_observer_and_retains_authority_lease",
+    "test_expired_executor_queue_releases_audio_before_blocked_encoders_exit",
+    "test_copy_is_independent_of_the_callers_audio_buffer",
+    "test_revocation_after_encoding_before_publish_cannot_refill_erased_text",
+    "test_failed_unlink_keeps_text_locator_for_retry_and_blocks_reads",
+    "test_legacy_json_and_wav_are_quarantined_from_reads_and_cleanup",
+    "test_used_mark_never_extends_deadline_or_accepts_foreign_paths",
+    "test_shortened_retention_also_shortens_previously_returned_views",
+    "test_rotating_a_managed_file_invalidates_a_view_even_with_live_sources",
+    "test_disabled_feature_restart_still_retires_old_root_and_cascades_text",
+    "test_native_read_error_is_sanitized_and_does_not_log_private_payload",
+    "test_held_views_are_scrubbed_on_collector_close",
+    "test_real_private_collector_cannot_enter_legacy_untracked_training_export",
+    "test_cancelled_reader_keeps_native_ownership_then_releases_raw_views",
+    "test_blocked_diagnostic_after_failure_does_not_retain_job_payload",
+    "test_incomplete_wav_keeps_text_intent_until_physical_cleanup_can_retry",
+    "test_outstanding_read_views_have_bounded_admission",
+    "test_retired_views_release_read_capacity_for_fresh_captures",
+    "test_shortened_durable_deadline_fences_a_still_running_encoder",
+    "test_shortened_deadline_is_rechecked_after_actual_native_rename",
+    "test_peer_shortening_fences_already_held_views_before_file_sweep"
+  ],
+  "new_integration_case_count": 27,
+  "updated_unit_cases": [
+    "test_add_correction",
+    "test_add_correction_too_long",
+    "test_add_correction_empty_text",
+    "test_count_empty",
+    "test_count_correct",
+    "test_get_training_pairs",
+    "test_mark_used"
+  ],
+  "prior_unit_case_count": 7,
+  "unit_contract_migration": "Preserve valid WAV, maximum duration and nonempty correction validation, available unused counts, typed pairs and used marking. Read/write APIs become async and require initialized authority/target plus original and feedback sources. Replace unsourced metadata.json persistence with opaque WAV and source-bound private SQL metadata; use real native PCM encoding rather than the previous mocked WAV writer. Marking used never extends raw expiry.",
+  "full_suite": {
+    "collected": 4999,
+    "passed": 4998,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 208.9,
+    "junit_time_s": 208.823,
+    "log": "/tmp/kza-stt-corrections-accepted.log",
+    "xml": "/tmp/kza-stt-corrections-accepted.xml",
+    "accepted": true,
+    "integrated_runtime_gc_acceptance": false,
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-stt-corrections-accepted.xml"
+  },
+  "draft_full_suite_unaccepted": {
+    "collected": 4996,
+    "passed": 4995,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 205.76,
+    "junit_time_s": 205.681,
+    "log": "/tmp/kza-stt-corrections-full.log",
+    "xml": "/tmp/kza-stt-corrections-full.xml",
+    "accepted": false,
+    "tested_commit": "8b1f3790f7542192c27068e568a2bb2143610074",
+    "reason": "The initial complete suite passed, but separately gated cases showed the native publisher could accept a shortened durable deadline that expired during encode or rename. A further working-tree reproduction showed a peer collector could leave a previously returned view on its older deadline. The corrected candidate rechecks the exact durable locator before and after native rename/fsync and uses shared monotone read fences published before deadline commit."
+  },
+  "latency_properties": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.17169700004160404,
+        "max": 1.010962063446641
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05194894038140774,
+          "p95": 0.06211479194462299,
+          "max": 0.06211479194462299
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.841235052794218,
+          "p95": 10.928428964689374,
+          "max": 10.928428964689374
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 429,
+        "loop_lag_p95_ms": 0.2855779603123665,
+        "loop_lag_max_ms": 0.9851790964603424,
+        "cancel_cleanup_max_ms": 2.551523968577385,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2715,
+        "loop_lag_p95_ms": 0.9987390413880347,
+        "loop_lag_max_ms": 1.3536008819937706,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6822729483246803,
+        "p95": 5.813592113554478,
+        "max": 5.813592113554478,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_checks": [
+    {
+      "log": "/tmp/kza-stt-corrections-first.log",
+      "passed": 78,
+      "failed": 0,
+      "runtime_s": 19.32
+    },
+    {
+      "log": "/tmp/kza-stt-corrections-queue-fixed.log",
+      "passed": 97,
+      "failed": 0,
+      "runtime_s": 20.48
+    },
+    {
+      "log": "/tmp/kza-stt-corrections-final-focused.log",
+      "passed": 354,
+      "failed": 0,
+      "runtime_s": 27.98
+    },
+    {
+      "log": "/tmp/kza-stt-corrections-final-new.log",
+      "passed": 61,
+      "failed": 0,
+      "runtime_s": 4.24
+    },
+    {
+      "log": "/tmp/kza-stt-corrections-receipts-fixed-focused.log",
+      "passed": 358,
+      "failed": 0,
+      "runtime_s": 27.55
+    }
+  ],
+  "controlled_findings": [
+    {
+      "log": "/tmp/kza-stt-shortened-deadline-reproduction.log",
+      "failed": 1,
+      "correction": "A shortened catalog deadline expired while encode was blocked, but source expiry alone still admitted the final WAV. Query the exact durable locator deadline before publication."
+    },
+    {
+      "log": "/tmp/kza-stt-shortened-after-rename-reproduction.log",
+      "failed": 1,
+      "correction": "The shortened deadline also expired during a real gated native rename. Recheck the durable deadline after rename/fsync, retaining the locator and deleting part/final/metadata if publication can no longer commit."
+    },
+    {
+      "log": "/tmp/kza-stt-peer-view-deadline-reproduction.log",
+      "failed": 1,
+      "phase": "Uncommitted draft after the initial durable publish guard, before shared read fences",
+      "correction": "A peer on the same canonical target shortened a record while the original owner still exposed its copied view. Publish monotone shared read deadlines before the SQLite deadline commit, propagate shorter queued/native job and view receipts across owners, persist a queued deadline on eventual reservation, and invalidate retired file views."
+    },
+    {
+      "log": "/tmp/kza-stt-corrections-expanded.log",
+      "passed": 96,
+      "failed": 1,
+      "correction": "The first queue test advanced TTL as soon as two native jobs were admitted, before both had entered the encoder gate; source guards rejected them, so native-active count became zero. Require two actual encoder entries and a physically queued sweep before advancing time."
+    },
+    {
+      "log": "/tmp/kza-stt-queue-block-reproduction.log",
+      "passed": 1,
+      "accepted_as_starvation_proof": false,
+      "reason": "Both encoders were gated but TTL advanced before the independent controller had queued a physical sweep. A passing case without that boundary did not exercise the suspected starvation."
+    },
+    {
+      "log": "/tmp/kza-stt-queue-physical-wait-reproduction.log",
+      "failed": 1,
+      "correction": "Once a real sweep was queued behind both gated encoders, the old controller awaited it and retained six expired queued waves. Separate the physical-sweep observer from the 50 ms in-memory prune controller. The corrected case keeps both native encoders blocked while asserting queued waves/text are released, latches invalidation across clock rollback, then releases actual native work and checks no late files or text."
+    }
+  ],
+  "implementation": {
+    "original_and_feedback_capture_sources_required": true,
+    "feedback_context_may_supply_only_feedback_sources": true,
+    "source_ids_and_minimum_original_deadline_preserved": true,
+    "durable_locator_deadline_checked_before_and_after_rename_fsync": true,
+    "shared_read_fences_only_tighten_and_publish_before_deadline_commit": true,
+    "peer_shortening_fences_pending_jobs_and_already_held_views": true,
+    "native_work_capacity": 8,
+    "max_audio_s": 30,
+    "max_text_chars_each": 4096,
+    "copied_waveform_before_actual_native_handoff": true,
+    "queued_payload_clear_independent_of_blocked_pool_or_encoders": true,
+    "observed_expiry_latched_against_clock_rollback": true,
+    "opaque_uuid_wav_file_mode_0600": true,
+    "original_corrected_text_and_user_id_in_source_bound_catalog": true,
+    "metadata_fk_cascade_after_physical_locator_retirement": true,
+    "durable_intent_before_part_and_guarded_final_rename_reused": true,
+    "failed_cleanup_keeps_pending_locator_and_text_for_retry": true,
+    "descriptor_walk_without_following_replaced_symlinks_reused": true,
+    "legacy_json_and_wavs_not_imported_or_deleted": true,
+    "raw_field_read_guards_and_independent_snapshot_scrub": true,
+    "retained_view_capacity": 256,
+    "read_limit_default": 128,
+    "retired_views_release_admission_even_if_caller_holds_dto": true,
+    "managed_file_rotation_invalidates_held_views": true,
+    "used_marking_requires_actual_owner_record_receipts_not_paths": true,
+    "mark_used_does_not_renew_ttl": true,
+    "manual_retention_can_only_shorten_to_at_most_48_hours": true,
+    "native_write_and_read_survive_observer_cancel": true,
+    "authority_lease_until_actual_native_exit": true,
+    "raw_payload_and_error_trace_released_before_blocked_diagnostic": true,
+    "native_error_payloads_sanitized": true,
+    "disabled_feature_restart_retires_historical_registered_stt_root": true,
+    "main_constructs_configured_collector_with_shared_store": true,
+    "legacy_training_blocks_private_collector_before_reads_exports_or_subprocess": true,
+    "nightly_private_step_reports_blocked_without_calling_async_count_synchronously": true,
+    "new_correction_input_producer_enabled": false,
+    "new_private_training_session_enabled": false,
+    "collector_journal_driver_marked_complete": false,
+    "producer_journal_participant_marked_complete": false,
+    "new_dependencies": false,
+    "new_configuration_files": false,
+    "gpu_assignment_changed": false
+  },
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-stt-corrections-ruff-accepted.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 27,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-stt-corrections-bandit-accepted.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-stt-corrections-frontend-accepted.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-stt-corrections-dashboard-accepted.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 2.736,
+      "git_commit": "042ebbbc2505d297307f7c866c61a291ef70d5b4",
+      "artifact": "/tmp/kza-stt-corrections-runtime-9bb2vor5/runtime.tar.gz",
+      "log": "/tmp/kza-stt-corrections-runtime-report.json",
+      "exercise": {
+        "passed": true,
+        "git_commit": "042ebbbc2505d297307f7c866c61a291ef70d5b4",
+        "source_free": true,
+        "files_verified": 317,
+        "actual_multiroom_capture_endpoint_router_processor_source": true,
+        "actual_configured_stt_correction_collector": true,
+        "original_and_interaction_feedback_sources_and_minimum_deadline": true,
+        "held_view_shortened_across_owners_while_original_sources_live": true,
+        "durable_shortened_deadline_kept_during_actual_encode": true,
+        "held_view_revoked_before_physical_cleanup": true,
+        "legacy_untracked_training_export_blocked_before_dataset_or_process": true,
+        "pending_file_locator_retained_during_actual_encode": true,
+        "late_wav_and_text_cannot_publish_after_feedback_revocation": true,
+        "actual_native_exit_before_writer_lease_release": true,
+        "physical_part_wav_and_cascaded_text_removed": true
+      }
+    }
+  },
+  "unchanged_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancel_ms": 100,
+    "cooperative_cleanup_ms": 1000,
+    "gc_forced_disabled_or_frozen": false
+  },
+  "gc_manipulated": false,
+  "prior_integrated_gc_and_hardware_limitations_resolved": false,
+  "remaining_scope": [
+    "PRODUCERS and COLLECTORS remain open: conversations, other learning datasets and consumers, full producer/distillation journal integration and private legacy review. Wake/STT file targets are durably registered and managed raw records have TTL; no collector driver claims global completion before all other paths are covered. No new correction-input producer or private training session is enabled.",
+    "DIAGNOSTICS, COLLECTORS, STREAMS and VOICES remain; diagnostic/SQL/JSONL/Logstash, collector/stream/frontend copies and alternate prompt consumers require their own source/TTL/erasure coverage",
+    "Pause ambient and total mute with non-audio reactivation; 48h automatic voiceprint/group expiry and authenticated calibrated voice grouping/review/merge/split, confirmed profiles until deletion",
+    "Private real-copy quarantine migration of 870 legacy facts, compatible catalog/tombstone/runtime restore, live semantic index rebuild and authenticated broad erasure UI after guarantees",
+    "H0/H1 live HA memberships/effects, H2 physical audio/barge-in, H4 recovery and large-history/runtime/GC acceptance, H5 real typed local execution/routines/timers/reminders, H6 fully integrated candidate and one final release/rollback",
+    "Previously instrumented GC pauses up to 495.68ms remain unresolved; this uninstrumented suite does not remeasure or accept integrated runtime/GC."
+  ],
+  "production_modified": false
+}
