@@ -133,7 +133,7 @@ class ErasureCoordinator:
                 except Exception:
                     return CleanupOutcome(None, ErasureError.FAILED)
             task = asyncio.create_task(cleanup(),context=Context())
-            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception(),context=Context())
             self._active[(step.operation_id, step.participant, step.target_id)] = ActiveCleanup(step, task)
         await self._harvest()
 
@@ -143,7 +143,7 @@ class ErasureCoordinator:
             raise RuntimeError("erasure_closed")
         if self._cycle is None or self._cycle.done():
             self._cycle = asyncio.create_task(self._reconcile(),context=Context())
-            self._cycle.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            self._cycle.add_done_callback(lambda done: None if done.cancelled() else done.exception(),context=Context())
         await asyncio.shield(self._cycle)
 
     def start(self) -> None:

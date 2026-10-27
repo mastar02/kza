@@ -662,3 +662,43 @@ async def test_owned_cleanup_tasks_cannot_retain_arbitrary_request_context(tmp_p
         finally:
             release.set()
             await flush(owner)
+
+
+async def test_cancelled_cycle_observer_does_not_leave_private_context_in_done_callback(tmp_path,monkeypatch):
+    from contextvars import Context
+    from weakref import ref
+    from src.core.logging import LogContext
+    async with graph(tmp_path) as (privacy,owner,_,_):
+        await target(privacy)
+        async def clean(step):
+            return ErasureResult(True)
+        owner.register(Participant.CONTEXTS,clean,versions=frozenset({1}))
+        await owner.request(memory_source().conversation_id,ACTOR)
+        entered,release=threading.Event(),threading.Event()
+        claim=owner.journal.claim
+        def held(row):
+            entered.set()
+            assert release.wait(3)
+            return claim(row)
+        monkeypatch.setattr(owner.journal,'claim',held)
+        class Payload:
+            pass
+        holder=[Payload()]
+        reference=ref(holder[0])
+        async def observe():
+            with LogContext(private=holder.pop()):
+                await owner.reconcile()
+        observer=asyncio.create_task(observe(),context=Context())
+        try:
+            await until(entered.is_set)
+            observer.cancel()
+            try:
+                await observer
+            except asyncio.CancelledError:
+                pass
+            observer=None
+            assert reference() is None
+        finally:
+            release.set()
+            await owner._cycle
+            await flush(owner)
