@@ -1363,6 +1363,11 @@ estado anterior; un frame previo al epoch no se renombra como entrada nueva.
 El callback usa deques desacoplables con hasta 32 frames; el propietario consume
 lotes de hasta ocho cada 50 ms. La publicación del fence precede al cambio de
 cola. Un callback antiguo puede perder su frame, pero no repoblar la cola actual.
+El retiro de un stream publica también un fence local antes de desacoplar su
+cola; el callback vuelve a comprobar que conserva el holder vigente. Esto
+impide que una llamada pausada reaparezca como entrada nueva al avanzar el
+reloj. Los publicadores de control serializan sus límites, sin locks en
+PortAudio, para que una observación atrasada no afloje ese fence.
 El mantenimiento retira estado incluso sin nuevos frames. Los trabajos nativos
 y resets siguen visibles después de cancelar al observador y retienen la misma
 autoridad de privacidad hasta salir. El handle de Porcupine se elimina, porque

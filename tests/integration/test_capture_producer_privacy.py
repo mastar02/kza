@@ -484,3 +484,90 @@ async def test_one_failed_native_warmup_does_not_disable_other_room(tmp_path, ca
         assert g.gates['synthetic-b']['wake'].calls == 1
         assert g.loop._capture_rooms['synthetic-a'].resource_status()['queued'] == 0
         assert 'Synthetic private loading failure' not in caplog.text
+
+
+async def test_retiring_microphone_cannot_publish_an_inflight_old_callback(tmp_path):
+    async with graph(tmp_path, controllers=False) as g:
+        entered, release = threading.Event(), threading.Event()
+        room = g.loop._capture_rooms['synthetic-a']
+        class Delayed:
+            def any(self):
+                return True
+            def copy(self):
+                entered.set()
+                assert release.wait(3)
+                return np.ones((1280, 1), dtype=np.float32)
+        pushing = asyncio.create_task(asyncio.to_thread(
+            g.callbacks['synthetic-a'], Delayed(), 1280, None, None))
+        try:
+            await until(entered.is_set)
+            g.loop._retire_microphone_capture('synthetic-a')
+        finally:
+            release.set()
+            await pushing
+        assert room.resource_status()['queued'] == 0
+
+
+async def test_retired_callback_cannot_rename_old_input_with_a_later_clock(tmp_path):
+    async with graph(tmp_path, controllers=False) as g:
+        entered, release = threading.Event(), threading.Event()
+        previous = g.loop._microphone_monotonic
+        def delayed_clock():
+            entered.set()
+            assert release.wait(3)
+            return previous()
+        g.loop._microphone_monotonic = delayed_clock
+        pushing = asyncio.create_task(asyncio.to_thread(g.feed))
+        try:
+            await until(entered.is_set)
+            g.loop._retire_microphone_capture('synthetic-a')
+            g.clock.now += 1
+        finally:
+            release.set()
+            await pushing
+            g.loop._microphone_monotonic = previous
+        assert g.loop._capture_rooms['synthetic-a'].resource_status()['queued'] == 0
+
+
+async def test_retiring_driver_invalidates_actual_native_wake_before_fresh_stream(tmp_path):
+    async with graph(tmp_path, blocked='wake') as g:
+        g.feed()
+        await until(g.gates['synthetic-a']['wake'].entered.is_set)
+        previous = g.source()
+        g.loop._retire_microphone_capture('synthetic-a')
+        g.gates['synthetic-a']['wake'].release.set()
+        await until(lambda: g.source() is None and not g.wakes['synthetic-a'].history)
+        assert not g.events
+        assert g.privacy.sources_available((previous,))  # Driver retirement is not a durable deletion.
+        g.clock.now += .16
+        stream = g.loop.room_streams['synthetic-a']
+        g.callbacks['synthetic-a'] = g.loop._make_audio_callback(stream)
+        g.feed()
+        await until(lambda: g.gates['synthetic-a']['wake'].calls == 2)
+        assert g.source().capture_id != previous.capture_id
+        assert g.source().captured_at > previous.captured_at
+
+
+async def test_delayed_boundary_publisher_cannot_loosen_retired_stream_fence(tmp_path):
+    async with graph(tmp_path, controllers=False) as g:
+        room = g.loop._capture_rooms['synthetic-a']
+        entered, release = threading.Event(), threading.Event()
+        original = g.privacy.scopes.buffer_boundary
+        def delayed(*args, **kwargs):
+            candidate = original(*args, **kwargs)
+            entered.set()
+            assert release.wait(3)
+            return candidate
+        g.privacy.scopes.buffer_boundary = delayed
+        publishing = asyncio.create_task(asyncio.to_thread(room.publish_boundary))
+        try:
+            await until(entered.is_set)
+            room.retire_stream(g.clock())
+        finally:
+            release.set()
+            await publishing
+            g.privacy.scopes.buffer_boundary = original
+        room.push(g.clock() - .01, np.ones((1280, 1), dtype=np.float32), 1280)
+        assert room.resource_status()['queued'] == 0
+        room.push(g.clock() + .01, np.ones((1280, 1), dtype=np.float32), 1280)
+        assert room.resource_status()['queued'] == 1

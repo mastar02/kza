@@ -1078,6 +1078,9 @@ class MultiRoomAudioLoop:
 
     def _retire_microphone_capture(self, room_id: str) -> None:
         self._invalidate_direction(room_id)
+        room = self._capture_rooms.get(room_id)
+        if room is not None:
+            room.retire_stream(self._microphone_wall_clock())
         holder = self._microphone_captures.get(room_id)
         if holder is not None:
             # Swap holders rather than mutate the callback-owned one. Even an
@@ -1488,8 +1491,9 @@ class MultiRoomAudioLoop:
                 except Exception:
                     pass  # perder un chunk ambiental es aceptable; el stream no
 
-            self._capture_rooms[rs.room_id].push(
-                now_wall - frames / self.sample_rate, indata, frames)
+            if self._microphone_captures.get(rs.room_id) is holder:
+                self._capture_rooms[rs.room_id].push(
+                    now_wall - frames / self.sample_rate, indata, frames)
 
         return audio_callback
 

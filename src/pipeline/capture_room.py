@@ -10,6 +10,7 @@ from contextvars import ContextVar
 import logging
 from uuid import uuid4
 from typing import TYPE_CHECKING
+from threading import Lock
 
 import numpy as np
 
@@ -70,6 +71,7 @@ class CaptureRoom:
         self._last_packet = None
         self._failed = False
         self._input_drops = 0
+        self._boundary_lock = Lock()  # Only control publishers acquire it; never PortAudio.
 
     @property
     def source(self) -> MemorySource | None:
@@ -93,16 +95,23 @@ class CaptureRoom:
         if self._privacy is None:
             return
         boundary = self._privacy.scopes.buffer_boundary(self.room_id, origin=MemoryOrigin.VOICE)
-        self._boundary = self._boundary.tighten(boundary)
-        queue = self._queue
-        if any(not self._boundary.allows(p.timestamp) for p in tuple(queue)):
-            self._queue = deque((p for p in tuple(queue) if self._boundary.allows(p.timestamp)), maxlen=32)
+        with self._boundary_lock:
+            self._boundary = self._boundary.tighten(boundary)
+            queue = self._queue
+            if any(not self._boundary.allows(p.timestamp) for p in tuple(queue)):
+                self._queue = deque((p for p in tuple(queue) if self._boundary.allows(p.timestamp)), maxlen=32)
+
+    def retire_stream(self, timestamp: float) -> None:
+        """Fence a retired driver's frames and detach its old queue before replacement."""
+        with self._boundary_lock:
+            self._boundary = self._boundary.tighten(CaptureBoundary(None, timestamp))
+            self._queue = deque(maxlen=32)
 
     def _current_boundary(self) -> CaptureBoundary:
         boundary = self._boundary
         if self._privacy is not None:
             boundary = boundary.tighten(self._privacy.scopes.buffer_boundary(self.room_id, origin=MemoryOrigin.VOICE))
-        return boundary
+        return self._boundary.tighten(boundary)
 
     def available(self) -> bool:
         return not self._closed and not self._failed and (self._privacy is None or self._source is not None and
