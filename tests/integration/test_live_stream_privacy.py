@@ -362,3 +362,40 @@ async def test_revocation_between_projection_and_indexing_cannot_admit_old_paylo
         monkeypatch.setattr(module,'project_live_payload',project_during_revocation)
         await bus.publish(event(source))
         assert queue.empty() and bus.resource_status()['rejected'] == 1
+
+
+async def test_live_overflow_and_failed_publication_logs_omit_private_context(tmp_path, monkeypatch):
+    import logging
+    from src.core.logging import LogContext, LogConfig, LogFormat, StructuredFormatter
+    import src.pipeline.voice_pipeline as module
+    from tests.unit.pipeline.test_voice_pipeline_event_publish import _make_pipeline
+    messages = []
+    class Capture(logging.Handler):
+        def emit(self, record):
+            messages.append(StructuredFormatter(LogConfig(format=LogFormat.JSON)).format(record))
+    class FailedBus:
+        async def publish(self, admitted):
+            raise RuntimeError(PRIVATE)
+    handler = Capture()
+    targets = [logging.getLogger('src.dashboard.live_event_bus'), logging.getLogger('src.pipeline.voice_pipeline')]
+    levels = [target.level for target in targets]
+    for target in targets:
+        target.addHandler(handler)
+        target.setLevel(logging.DEBUG)
+    monkeypatch.setattr(module,'_PUBLISH_FAILURE_LOGGED',False)
+    try:
+        async with graph(tmp_path) as (_, bus, clock):
+            with LogContext(private=PRIVATE):
+                await bus.subscribe()
+                for _ in range(3):
+                    await bus.publish(event(memory_source(now=clock.now)))
+                pipeline = _make_pipeline(event_bus=FailedBus())
+                await pipeline._publish_turn_event(None,{'text':PRIVATE})
+                await bus.unsubscribe(0)
+            assert messages and PRIVATE not in '\n'.join(messages)
+            assert any('dropped' in message for message in messages)
+            assert any('Live publication deferred' in message for message in messages)
+    finally:
+        for target, level in zip(targets,levels):
+            target.removeHandler(handler)
+            target.setLevel(level)

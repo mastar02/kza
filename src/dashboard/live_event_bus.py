@@ -6,15 +6,20 @@ publica `LiveEvent`s sin saber si alguien escucha; el dashboard se subscribe y r
 cada evento por WebSocket a los clientes conectados.
 
 Frame contract (consumido por src/dashboard/frontend/obs/src/app.jsx):
-    {"type": "turn"|"alert"|"wake"|"tts"|"cooldown", "payload": {...}, "ts": "HH:MM:SS"}
+    {"type": "turn"|"alert"|"wake"|"tts"|"cooldown", "payload": {...}, "ts": "HH:MM:SS",
+     "event_id": UUID, "expires_at": Unix seconds}
+    Retirement controls use type="retire" with payload={"event_ids": [UUID]}.
 """
 
 import asyncio
+from contextvars import Context
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Awaitable, Callable
+
+from src.dashboard.live_retention import LiveRetention, RetainedLiveEvent
 
 from src.memory.fact_ledger import MemorySource
 
@@ -44,7 +49,7 @@ class OverflowPolicy(StrEnum):
 
 @dataclass(frozen=True)
 class LiveEvent:
-    """Frame inmutable: se broadcastea a N subscribers, mutación corrompería a otros."""
+    """Propuesta del productor; el bus valida y crea su propia proyección."""
 
     type: LiveEventType
     payload: dict = field(default_factory=dict)
@@ -56,7 +61,7 @@ class LiveEvent:
         return {"type": self.type.value, "payload": self.payload, "ts": self.ts}
 
 
-Subscriber = Callable[[LiveEvent], Awaitable[None]]
+Subscriber = Callable[[RetainedLiveEvent], Awaitable[None]]
 
 
 class LiveEventBus:
@@ -81,13 +86,12 @@ class LiveEventBus:
                 f"overflow_policy={overflow_policy!r} inválido. Válidos: {valid}"
             ) from e
         self._queue_size = queue_size
-        self._subscribers: dict[int, asyncio.Queue[LiveEvent]] = {}
+        self._subscribers: dict[int, asyncio.Queue[RetainedLiveEvent]] = {}
         self._dropped: dict[int, int] = {}
         self._next_id = 0
         self._retention = None
         self._rejected = 0
         if source_policy is not None:
-            from src.dashboard.live_retention import LiveRetention
             self._retention = LiveRetention(self._subscribers, source_policy, clock=clock,
                 capacity=queue_size, max_subscribers=max_subscribers, close_timeout_s=close_timeout_s)
 
@@ -114,7 +118,7 @@ class LiveEventBus:
                 self._retention.notify(sub_id)
 
     def _dispatch_to_subscriber(
-        self, sub_id: int, queue: asyncio.Queue[LiveEvent], event: LiveEvent
+        self, sub_id: int, queue: asyncio.Queue[RetainedLiveEvent], event: RetainedLiveEvent
     ) -> None:
         try:
             queue.put_nowait(event)
@@ -134,19 +138,17 @@ class LiveEventBus:
         n = self._dropped.get(sub_id, 0) + 1
         self._dropped[sub_id] = n
         if n == 1 or n % 100 == 0:
-            logger.warning(
-                f"[LiveEventBus] subscriber {sub_id} dropped {n} events "
-                f"(policy={self._overflow_policy.value})"
-            )
+            Context().run(logger.warning, 'Live subscriber %s dropped %s events (policy=%s)',
+                sub_id, n, self._overflow_policy.value)
 
-    async def subscribe(self) -> tuple[int, asyncio.Queue[LiveEvent]]:
+    async def subscribe(self) -> tuple[int, asyncio.Queue[RetainedLiveEvent]]:
         sub_id = self._next_id
         self._next_id += 1
-        queue: asyncio.Queue[LiveEvent] = asyncio.Queue(maxsize=self._queue_size)
+        queue: asyncio.Queue[RetainedLiveEvent] = asyncio.Queue(maxsize=self._queue_size)
         if self._retention is not None:
             self._retention.attach(sub_id, queue)
         self._subscribers[sub_id] = queue
-        logger.debug(f"[LiveEventBus] subscriber {sub_id} attached")
+        Context().run(logger.debug, 'Live subscriber %s attached', sub_id)
         return sub_id, queue
 
     async def unsubscribe(self, sub_id: int) -> None:
@@ -154,7 +156,7 @@ class LiveEventBus:
             await self._retention.detach(sub_id)
         self._subscribers.pop(sub_id, None)
         self._dropped.pop(sub_id, None)
-        logger.debug(f"[LiveEventBus] subscriber {sub_id} detached")
+        Context().run(logger.debug, 'Live subscriber %s detached', sub_id)
 
     @property
     def subscriber_count(self) -> int:

@@ -11,6 +11,7 @@ Components:
 """
 
 import asyncio
+from contextvars import Context
 import logging
 
 import numpy as np
@@ -200,7 +201,6 @@ class VoicePipeline:
                 "path": result.get("path", "fast"),
             }
             sources = ()
-            from src.pipeline.request_router import RequestRouter
             if isinstance(self.request_router, RequestRouter):
                 sources = self.request_router._active_sources()
             elif hasattr(self.request_router, '_active_sources'):
@@ -210,9 +210,7 @@ class VoicePipeline:
         except (RuntimeError, AttributeError, TypeError, asyncio.QueueFull):
             if not _PUBLISH_FAILURE_LOGGED:
                 _PUBLISH_FAILURE_LOGGED = True
-                logger.warning(
-                    "Live publication deferred"
-                )
+                Context().run(logger.warning, 'Live publication deferred')
 
     async def test_from_text(self, text: str) -> dict:
         """
