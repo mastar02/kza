@@ -896,6 +896,19 @@ nombre nunca otorga permisos ni cambia por sí sola qué se considera voz viva.
 
 ### H4 Recuperar dependencias y mostrar el estado local
 
+La [observación de cierres nativos y arranque local](../research/2026-10-27-runtime-close-offline-validation.json)
+ya distingue fases y esperas sin retener datos privados. Se corrigió una
+adquisición de lock desde el loop al repetir el cierre de la autoridad, y
+tareas de cierre que conservaban contexto del solicitante. El dashboard sirve
+sus bibliotecas ya fijadas desde el propio artefacto, con hashes y licencias,
+y tiene una comprobación de navegador con el CDN bloqueado. Los timeouts
+históricos conservan su evidencia: estos cambios no prueban por sí solos su
+causa ni completan la aceptación de H4.
+La revisión `da88855` pasó 5.474 pruebas con 1 xfail, 49 de frontend y Chromium
+con assets externos bloqueados. El artefacto verificó 340 hashes. Los cuatro
+timeouts previos no reaparecieron en esta suite; la aceptación integrada de
+recursos, GC, dependencias y hardware sigue pendiente.
+
 **Entregables:** reconexión a HA y gateway, estados de disponibilidad por
 subsistema, watchdog de audio integrado y cierre ordenado de tareas y recursos.
 El dashboard muestra pérdida de captura y degradación; no se agrega un canal

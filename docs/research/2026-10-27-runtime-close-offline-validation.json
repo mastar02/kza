@@ -1,0 +1,233 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "da88855b1104840f139a4262511c4950f68604fc",
+  "tested_runtime_source_tree": "058c9aeaf4d615217b37ffd09c35d410033d0c78",
+  "tested_scripts_source_tree": "b08e19ac09711a9d58c6c794af52fe47bcd6999e",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "runtime_fix_commit": "22c6ae6d8ea17e019736568e46f925fe3cee29bc",
+  "dashboard_fix_commit": "da88855b1104840f139a4262511c4950f68604fc",
+  "scope": "Bounded content-free native work timing and close phase snapshots; off-loop reentrant privacy cleanup; empty cleanup contexts; local exact pinned dashboard bootstrap with licenses; settled REST source metadata and an actual browser check with external bootstrap assets blocked.",
+  "new_backend_cases_total": 17,
+  "new_backend_cases": [
+    "tests.integration.test_native_close_diagnostics::test_privacy_timeout_records_actual_cleanup_phase_and_live_lease[ledger]",
+    "tests.integration.test_native_close_diagnostics::test_privacy_timeout_records_actual_cleanup_phase_and_live_lease[executor]",
+    "tests.integration.test_native_close_diagnostics::test_metric_timeout_distinguishes_actual_socket_and_store_close[socket]",
+    "tests.integration.test_native_close_diagnostics::test_metric_timeout_distinguishes_actual_socket_and_store_close[store]",
+    "tests.integration.test_native_close_diagnostics::test_metric_start_timeout_reports_the_actual_retention_worker",
+    "tests.integration.test_native_close_diagnostics::test_close_admission_does_not_wait_on_a_native_initializer_lock",
+    "tests.integration.test_native_close_diagnostics::test_completed_privacy_close_does_not_keep_arbitrary_caller_context",
+    "tests.unit.core.test_owned_work_diagnostics::test_native_deadline_reports_running_callback_without_releasing_capacity",
+    "tests.unit.core.test_owned_work_diagnostics::test_worker_admission_keeps_function_identity_arguments_and_context",
+    "tests.unit.core.test_owned_work_diagnostics::test_after_native_wait_is_distinct_from_running_or_completed_work",
+    "tests.unit.core.test_owned_work_diagnostics::test_history_is_bounded_detached_and_cannot_keep_arguments_alive",
+    "tests.unit.core.test_owned_work_diagnostics::test_uninstrumented_async_worker_is_reported_without_claiming_native_execution",
+    "tests.unit.core.test_owned_work_diagnostics::test_completed_cleanup_task_cannot_keep_arbitrary_caller_context",
+    "tests.unit.dashboard.test_local_vendor_assets::test_local_bundle_matches_original_sri_and_retains_its_license[react]",
+    "tests.unit.dashboard.test_local_vendor_assets::test_local_bundle_matches_original_sri_and_retains_its_license[react-dom]",
+    "tests.unit.dashboard.test_local_vendor_assets::test_local_bundle_matches_original_sri_and_retains_its_license[@babel/standalone]",
+    "tests.unit.dashboard.test_local_vendor_assets::test_bootstrap_has_no_external_script_stylesheet_or_font_requests"
+  ],
+  "new_frontend_cases": 2,
+  "ownership_rules_unchanged": {
+    "original_close_and_start_budgets_preserved": true,
+    "actual_native_completion_still_required_before_capacity_or_lease_release": true,
+    "custom_worker_function_identity_arguments_and_processing_context_preserved": true,
+    "no_retry_or_capacity_increase": true,
+    "native_history_limited_to_owner_capacity": true
+  },
+  "direct_red_green_evidence": {
+    "native_close_lock": {
+      "red_log": "/tmp/kza-native-progress-new-cases.log",
+      "red_failed_cases": 2,
+      "red_passed_cases": 8,
+      "red_runtime_s": 6.9,
+      "finding": "Reentering PrivacyServices.begin_close on the loop waited for the threading RLock held by actual ledger.close or executor.shutdown. That prevented the on-loop release callback, so the synthetic native gate expired at its original three seconds.",
+      "fix": "The loop-owned close admission returns its retained task without acquiring the native lock. Late borrower admission rejects before that lock; native resource close still acquires it after the actual worker drain.",
+      "green_log": "/tmp/kza-native-progress-new-cases-green.log",
+      "green_passed": 10,
+      "green_runtime_s": 0.87
+    },
+    "completed_cleanup_context": {
+      "red_log": "/tmp/kza-native-progress-context-red.log",
+      "red_failed": 2,
+      "red_runtime_s": 0.71,
+      "finding": "Completed OwnedBlockingWork and PrivacyServices cleanup tasks retained an arbitrary caller LogContext object while the owner remained alive.",
+      "fix": "Cleanup tasks, callbacks, borrower cleanup invocation and privacy maintenance use empty Context instances. Normal operation context propagation remains intact."
+    },
+    "external_bootstrap": {
+      "red_log": "/tmp/kza-native-progress-offline-red.log",
+      "failed_with_same_wait_helper": true,
+      "observed_page": {
+        "react": "undefined",
+        "babel": "undefined",
+        "app": "object",
+        "ready": "complete",
+        "live": false
+      },
+      "fix": "Serve the exact previously SRI-pinned React, ReactDOM and Babel bytes locally, preserve license notices in the compiled artifact, and use existing CSS font fallbacks.",
+      "library_versions_or_sri_changed": false,
+      "new_runtime_dependency": false,
+      "asset_inventory": "docs/research/2026-10-27-dashboard-vendor.json"
+    }
+  },
+  "nonaccepted_browser_fixture": {
+    "log": "/tmp/kza-native-progress-final-browser.log",
+    "diagnostic_log": "/tmp/kza-native-progress-rest-expiry-diagnostic.log",
+    "finding": "With faster local bootstrap, fixture data was inserted while the departed page still decoded its bootstrap read. The remaining ticket belonged to that departed page and its connection no longer existed.",
+    "matched_departed_disconnected_tickets": 1,
+    "fix": "Publish fixed source state only when the actual decode promise settles. The fixture waits for that actual prior read before injecting the next page data. It does not delete a pending ticket, ignore its count, lengthen ACK/startup budgets or infer retirement from a closed page."
+  },
+  "full_suite": {
+    "accepted": true,
+    "collected": 5475,
+    "passed": 5474,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "summary": "========= 5474 passed, 1 xfailed, 31815 warnings in 251.04s (0:04:11) ==========",
+    "junit_time_s": 250.953,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "isolated_voice_metrics": {
+      "repetitions": 10,
+      "sentences_per_run": 100,
+      "samples_per_run": 2400000,
+      "provider_wait_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 2715,
+      "loop_lag_p95_ms": 0.9824069030582904,
+      "loop_lag_max_ms": 1.321833934634924,
+      "exact_pcm_runs": 10
+    },
+    "log": "/tmp/kza-native-progress-full.log",
+    "xml": "/tmp/kza-native-progress-full.xml",
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/tmp /home/kza/kza/.venv/bin/python -m pytest tests/ -q -p kza_native_failure_capture --junitxml=/tmp/kza-native-progress-full.xml",
+    "diagnostic_plugin": {
+      "path": "/tmp/kza_native_failure_capture.py",
+      "sha256": "196c9deabe3accca62d973d614e9d40b9f3106a6cce7f77b7e99d286815f28c8",
+      "role": "Observe fixed phase/timing metadata on an uncaught WorkCloseTimeout; no changes to tests, deadlines, execution or retry behavior.",
+      "capture_path": "/tmp/kza-native-progress-timeout-capture.json",
+      "result": {
+        "terminal_exit_code": 0,
+        "captured": 0,
+        "events": []
+      }
+    }
+  },
+  "focused_suite": {
+    "passed": 168,
+    "runtime_s": 20.27,
+    "log": "/tmp/kza-native-progress-final-focused.log",
+    "late_borrower_prelock_guard_followed_this_run": true
+  },
+  "final_native_cases": {
+    "passed": 13,
+    "runtime_s": 0.95,
+    "log": "/tmp/kza-native-progress-final-cases.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-native-progress-accepted-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-native-progress-bandit.log"
+    },
+    "frontend": {
+      "passed": 49,
+      "failed": 0,
+      "log": "/tmp/kza-native-progress-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "mocked_services": true,
+      "log": "/tmp/kza-native-progress-dashboard.log"
+    },
+    "chromium": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "rendered_conversation_retirement": true,
+      "rendered_idle_expiry": true,
+      "disconnect_clears_ticker": true,
+      "lost_session_clears_private_dom": true,
+      "javascript_exceptions": 0,
+      "synthetic_sources_and_service_adapters": true,
+      "browser_ack_after_dom_and_cache_clear": true,
+      "browser_ack_waits_for_explicit_dom_commit": true,
+      "pagehide_handler_clears_and_acknowledges_owned_view": true,
+      "rest_conversation_original_deadline_clears_cache_dom_and_voice_filter": true,
+      "rest_conversation_payload_excluded_from_global_mock_cache": true,
+      "session_loss_clears_unmounted_rest_conversation_cache": true,
+      "rest_revocation_clears_before_original_expiry": true,
+      "rest_ack_waits_for_explicit_dom_commit": true,
+      "external_bootstrap_assets_blocked": true,
+      "global_streams_acceptance": false,
+      "log": "/tmp/kza-native-progress-settled-browser.log",
+      "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m tests.frontend.browser_live_privacy --offline-assets"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "da88855b1104840f139a4262511c4950f68604fc",
+    "artifact": "/tmp/kza-native-progress-runtime-fju7c6sg/runtime.tar.gz",
+    "verified_hashes": 340,
+    "runtime_s": 0.9302823708858341,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 340,
+      "actual_uvicorn_aiohttp_version_two_ws_and_rest": true,
+      "rest_read_requires_confirmed_connection": true,
+      "source_deadline_and_ticket_precede_private_body": true,
+      "wrong_nonce_cannot_retire": true,
+      "rest_revocation_control_contains_exact_batch_token": true,
+      "local_v3_journal_waits_for_browser_ack": true,
+      "disconnect_does_not_retire_and_same_page_reset_covers_exact_old_tickets": true,
+      "exact_compiled_conversation_channel_asset_served": true,
+      "actual_dom_retirement_in_separate_chromium_check": true,
+      "actual_buffered_callback_and_native_read_ownership_in_integration_checks": true,
+      "synthetic_clock_sources_and_service_adapters": true,
+      "unresolved_stream_inventory_still_blocks_global_completion": true,
+      "native_callback_timeout_phase_and_lease_proved": true,
+      "reentrant_privacy_begin_close_stays_off_loop": true,
+      "cleanup_context_not_retained": true,
+      "local_bootstrap_sri_and_licenses_in_artifact": true,
+      "global_streams_full_main_or_hardware_acceptance": false
+    }
+  },
+  "historical_failures": {
+    "source": "docs/research/2026-10-27-h3-rest-receipts-validation.json",
+    "prior_full_passed": 5453,
+    "prior_full_failed": 4,
+    "prior_full_xfailed": 1,
+    "prior_full_runtime_s": 512.51,
+    "prior_four_native_timeouts_repeated_in_current_full_suite": false,
+    "causal_attribution_of_all_prior_timeouts_to_this_lock_fix_proved": false,
+    "causal_attribution_of_prior_unobserved_browser_startup_failure_to_cdn_proved": false,
+    "direct_native_lock_context_and_blocked_cdn_regressions_proved_and_fixed": true
+  },
+  "limits": {
+    "native_callback_time_includes_blocking_locks_or_io_not_just_cpu": true,
+    "after_native_wait_does_not_claim_event_loop_stall_for_an_arbitrary_adapter": true,
+    "unsupported_custom_workers_do_not_fabricate_native_timings": true,
+    "work_phase_complete_is_not_semantic_success_or_an_erasure_receipt": true,
+    "global_streams_producers_diagnostics_or_voices_complete": false,
+    "unknown_or_permanently_departed_pages_resolved": false,
+    "global_conversation_erasure_ui_enabled": false,
+    "full_main_ha_gateway_sdk_audio_hardware_or_signal_acceptance": false,
+    "full_h4_capacity_gc_and_latency_acceptance": false,
+    "earlier_92_90_ms_loop_spike_and_495_68_ms_gc_pause_explained_or_fixed": false,
+    "production_modified": false,
+    "gc_forced_disabled_or_frozen": false,
+    "existing_deadlines_capacities_or_retries_enlarged_for_green_tests": false,
+    "overall_h3_h4_or_roadmap_complete": false
+  }
+}

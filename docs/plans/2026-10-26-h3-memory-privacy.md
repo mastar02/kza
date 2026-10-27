@@ -2909,6 +2909,81 @@ obligaciones de una página perdida no se borran por expiración ni por cerrar e
 proceso. La UI global de borrado sigue deshabilitada, y H3, H4/H6 y la aceptación
 de hardware permanecen abiertos. Producción sigue sin cambios.
 
+## Cierres observables y arranque local del dashboard — 2026-10-27
+
+El seguimiento de los cuatro timeouts anteriores agregó observación acotada al
+trabajo retenido. Cada propietario registra admisión, despacho, comienzo y fin
+del callback nativo, y retorno del worker. Los snapshots distinguen cola,
+espera del worker, ejecución nativa y espera posterior al callback; no atribuyen
+una espera de un adaptador asíncrono a ejecución nativa si éste no la observa.
+El historial tiene como máximo la capacidad del propietario y guarda sólo
+fases y duraciones monotónicas. No conserva funciones, argumentos, contextos,
+rutas ni resultados privados. Los workers inyectados siguen recibiendo la misma
+función, argumentos y contexto de procesamiento. La fase `complete` sólo indica
+que terminó la ejecución; no sustituye el resultado semántico ni un recibo de
+borrado.
+
+`PrivacyServices` y `MetricsEmitter` exponen además la fase real de cierre y el
+trabajo nativo de limpieza. Un `WorkCloseTimeout` conserva esa observación sin
+cambiar su código de error, liberar la operación ni ampliar su plazo. La
+observación diferencia drenado, mantenimiento, retención, socket, catálogo,
+ledger y executor; la autoridad y su lease siguen retenidos hasta el final real.
+
+Los nuevos casos reprodujeron un bloqueo concreto: `PrivacyServices.begin_close`
+volvía a adquirir desde el loop el lock que mantenía el cierre nativo. Al
+repetir la llamada durante SQLite close o executor shutdown, el propio loop
+impedía ejecutar el callback que liberaba la prueba. Ahora devuelve la tarea
+retenida sin esperar ese lock; la admisión tardía de borrowers también rechaza
+antes de intentar adquirirlo. Un cierre solicitado durante la inicialización
+espera al worker real sin bloquear el loop ni adelantar la liberación del lease.
+Otra regresión verificó que tareas de cierre ya terminadas podían conservar el
+contexto libre del solicitante. Esas tareas, los cierres de borrowers y el
+mantenimiento de la autoridad parten ahora de contextos vacíos; el contexto
+necesario para procesar una operación normal se conserva.
+
+La investigación del arranque encontró una dependencia reproducible del CDN:
+con sus URLs bloqueadas, React y Babel quedaban sin definir y Live no abría
+dentro del mismo plazo del helper. El dashboard sirve ahora copias locales de
+las **mismas versiones y bytes** de React, ReactDOM y Babel que ya tenía fijados.
+Se verificaron sus SRI originales antes de incorporarlas; los avisos de licencia
+se incluyen también en el artefacto compilado. Se usan los fallbacks de fuentes
+CSS existentes en lugar de pedir fuentes externas. El [inventario de assets](../research/2026-10-27-dashboard-vendor.json)
+conserva procedencia y hashes; construir y arrancar no descarga bibliotecas.
+
+El arranque local más rápido expuso además una carrera del fixture de navegador:
+éste introducía un nuevo turno cuando la página anterior todavía decodificaba
+su consulta de bootstrap. La consulta podía producir otro recibo que quedaba
+pendiente al navegar; los metadatos confirmaron que pertenecía a la página
+anterior ya desconectada. No se borró ese recibo para hacer pasar el ensayo.
+El canal publica ahora estado de consulta mediante metadatos y sólo marca la
+fuente como real al terminar su decodificación. El fixture espera esa lectura
+efectiva antes de introducir datos para la página siguiente. El plazo del ACK
+y el de arranque permanecen iguales; una página perdida sigue bloqueando su
+obligación si no confirma.
+
+La [validación de cierres y arranque local](../research/2026-10-27-runtime-close-offline-validation.json)
+corresponde a `da88855`, con la corrección de runtime de `22c6ae6`. La suite
+completa terminó con **5.474 passed y 1 xfailed en 251,04 s**, incluidos 17 casos
+nuevos. Pasaron 168 pruebas focalizadas, los 13 casos finales de cierres nativos,
+49 de frontend (2 nuevas), Ruff, Bandit sin hallazgos medios o altos y el smoke
+del dashboard. El capturador de fallos no observó timeouts no previstos en esa
+suite. Chromium pasó con los assets externos bloqueados y sin excepciones JS;
+el artefacto verificó 340 hashes y terminó su ensayo en 0,93 s.
+
+La evidencia conserva las pruebas rojas del lock y de retención de contexto, el arranque
+fallido con assets externos bloqueados y la carrera del fixture. El ensayo
+posterior de Chromium bloquea esas mismas URLs y comprueba arranque, retiro de
+DOM y recibos con el helper original. El artefacto verifica también los hashes,
+SRI y licencias, y reproduce el cierre retenido, su fase, el lease y la llamada
+de cierre repetida sin fuentes Python.
+
+El lock reproducido y la dependencia del CDN son defectos corregidos con
+evidencia directa. No se los presenta como causa demostrada de los cuatro
+timeouts históricos o del arranque anterior sin captura diagnóstica. Las
+observaciones nuevas permiten contrastar una recurrencia sin ensanchar límites
+ni forzar, congelar o deshabilitar GC. H3, la aceptación completa de H4, hardware
+y H6 siguen abiertos; producción permanece sin cambios.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
