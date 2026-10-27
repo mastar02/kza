@@ -3006,8 +3006,9 @@ de la operación nativa antes de confirmar, incluidas las solicitudes en cola.
 
 `/api/voices` ofrece metadatos paginados; sus rutas de perfiles permiten confirmar
 y borrar con revisión exacta. Requieren `voices:review`, concedido al administrador
-autenticado del dashboard. No devuelven vectores, clips ni transcripciones, ni
-aceptan cuentas, permisos o un TTL editable. La carga anterior de WAV para
+autenticado del dashboard. La consulta general no devuelve vectores, clips ni transcripciones, ni
+acepta cuentas, permisos o un TTL editable. El endpoint dedicado de muestras
+descrito más adelante habilita la escucha durante la vigencia de la captura. La carga anterior de WAV para
 enrolar cuentas se rechaza antes de decodificar; el diálogo de enrolamiento por
 voz tampoco crea cuentas en el grafo nuevo. La interfaz visual de revisión aún
 no está construida: estas rutas son la base de backend para completarla.
@@ -3071,6 +3072,113 @@ el retiro de metadatos de revisión en todas las copias HTTP/frontend. La pausa
 ambiental, mute total, inventario legacy, aceptación de recursos/GC y hardware,
 el resto de H3–H6 y la única release siguen pendientes. Producción permanece
 sin cambios.
+
+## Muestras locales para revisar voces — 27 de octubre
+
+Las observaciones nuevas conservan ahora una muestra de escucha de los primeros
+seis segundos como máximo, en WAV PCM16 mono a 16 kHz, junto con la transcripción
+del segmento y su habitación cuando el productor las conoce. Cada muestra
+ocupa como máximo 192.044 bytes; el texto se limita a 8.192 caracteres. La
+respuesta distingue la duración completa, la del fragmento y si el audio está
+recortado: la transcripción pertenece al segmento, no necesariamente sólo a los
+segundos reproducibles. Son datos de revisión, no una confirmación humana de
+la transcripción ni una evaluación de calidad acústica.
+
+El registro guarda la muestra y la huella en la misma transacción del catálogo
+privado. Una relación con borrado en cascada conserva el vencimiento y la
+revocación de la captura original. Leer, repetir la observación o confirmar un
+perfil no prolonga la retención de audio o texto. Un reintento tampoco sustituye
+una muestra previa por otra frase o habitación. Las huellas anteriores que no
+incluyen material de revisión siguen sin él; la actualización de esquema no
+inventa audio ni procedencia.
+
+El trabajo nativo ya retenido codifica la muestra fuera del loop y conserva la
+misma copia de PCM que recibió el modelo. Revalida fuentes después de codificar
+y antes de escribir. Los límites siguen siendo seis observaciones y dos
+operaciones de I/O; no se agrega otra cola ni dependencia. `CommandProcessor`
+publica una sola observación después de obtener su texto final, sin esperar al
+modelo de voces. El transcriber ambiental pasa la frase, habitación y captura
+reales, usando el canal de SpeakerID; la entrada del orquestador también conserva
+los metadatos disponibles. El archivo ambiental de campaña conserva su ajuste
+`ambient.keep_audio`: las muestras acotadas del registro pertenecen a la revisión
+de voces acordada para H3.
+
+La consulta general de huellas agrega sólo `review_available`, sin cargar los
+WAV ni transcripciones. El endpoint autenticado
+`/api/voices/captures/{fingerprint_id}/review` devuelve una muestra vigente,
+texto y metadatos con `no-store`, sin vectores. La validación y codificación de
+la respuesta liberan primero la transacción SQLite: una lectura lenta no
+bloquea la escritura del tombstone. Se comprueban de nuevo fuente y credenciales
+antes del retorno nativo; una captura vencida, revocada o una credencial rotada
+durante esa lectura no puede devolver el contenido. Mientras el callback real
+retenga la muestra, el recibo local de voces sigue pendiente aunque las filas
+ya se hayan purgado.
+
+La reconstrucción de pendientes consulta la procedencia de las filas reales,
+no sólo sus índices auxiliares. Un índice omitido por una restauración parcial
+no oculta un vector; una muestra huérfana mantiene pendiente cualquier borrado
+local hasta resolver su origen. Las lecturas rechazan WAV inválidos y contenido
+fuera de los límites, sin convertir datos restaurados desconocidos en material
+revisable.
+
+Este avance prepara el material para la pantalla de revisión. Falta conectar
+sus lectores HTTP y el frontend al protocolo durable de retiro, incluida la
+salida real de decodificación y reproducción del navegador. Las copias de una
+respuesta ya entregada todavía no están cubiertas por el recibo local del
+catálogo; `STREAMS` y el inventario de voces mantienen sus destinos pendientes.
+La vista visual, agrupación, unión/separación, calibración, pausa/mute y el resto
+de H3–H6 siguen abiertos. Producción permanece sin cambios.
+
+## Cierre de eventos y fases reales de la cola — 27 de octubre
+
+La primera suite completa del avance de muestras terminó con tres fallos:
+un vencimiento de la observación de escritura de eventos a los 100 ms,
+un timeout de cierre de eventos y una aserción de afinidad de la cola después
+de revocar un hecho. Los tres pasaron aislados. La evidencia conserva esa
+corrida no aceptada y sus trazas; no se atribuye el primer timeout a una causa
+que todavía no se observó con diagnóstico suficiente.
+
+Dos ensayos nuevos reprodujeron defectos concretos del cierre de eventos:
+esperaba el executor general para cerrar su pool privado, y la tarea de cierre
+retenida copiaba un contexto arbitrario del llamador. El cierre ahora sella y
+drena las escrituras, señala el apagado del pool sin un join en el loop y espera
+la salida efectiva de sus threads mediante observación asíncrona. La tarea de
+limpieza usa un contexto vacío. No necesita capacidad adicional ni alargar
+los plazos existentes. El timeout de cierre informa su fase y las esperas
+nativas acotadas; el procesamiento ordinario conserva su contexto.
+
+La prueba de procedencia de la cola usaba un stream cuyo cierre cooperativo
+podía terminar antes de exigir que el orquestador siguiera ocupado. Ahora
+comprueba dos estados explícitos: mientras el callback HTTP de cierre está
+retenido exige afinidad ocupada, y una vez terminado exige que se retire.
+En ambos casos el receptor conserva sus fuentes hasta que sale su consumidor.
+El cambio del fixture no modifica la cola de runtime ni amplía los plazos.
+
+El ensayo de cierre con una escritura nativa retenida conserva el pool real
+y muestra la fase `drain` hasta soltar la compuerta. La prueba del executor
+saturado exige completar el cierre antes de liberarlo. Estos resultados
+comprueban defectos y fases reproducibles; no demuestran una explicación de
+todos los timeouts anteriores ni completan la aceptación de capacidad, GC o
+latencia de H4/H6.
+
+La [validación de muestras y cierre de eventos](../research/2026-10-27-h3-voice-capture-review-validation.json)
+corresponde a `2adaca2`, con las muestras implementadas en `ed6eda7`. La suite
+completa terminó con **5.546 passed y 1 xfailed en 323,41 s**. Agrega 22 casos de
+muestras, 3 de cierre, 4 de autenticación y dos fases explícitas en lugar del
+caso de cola anterior: un incremento neto de 30 pruebas. Pasaron 896 pruebas
+focalizadas, los 49 casos de frontend, Ruff, Bandit sin hallazgos medios o altos,
+smoke y Chromium con los assets externos bloqueados y sin excepciones JS.
+El capturador no observó timeouts inesperados en la suite aceptada. La corrida
+anterior de tres fallos permanece registrada; no se considera explicada por
+completo por estas correcciones.
+
+El artefacto compilado verificó 345 hashes y ejecutó su ensayo en 1,13 s. Por
+HTTP real comprobó que el WAV coincide con el PCM retenido, la muestra de seis
+segundos de un segmento más largo, el plazo original y la purga de audio/texto
+aunque sobreviva el perfil confirmado. También cerró el pool de eventos con el
+executor general todavía retenido, comprobando la salida real de sus threads
+y la liberación del contexto del solicitante. Usó modelos sintéticos en CPU;
+no probó la pantalla de voces, modelos reales, `main` completo ni hardware.
 
 ## Trabajo restante
 

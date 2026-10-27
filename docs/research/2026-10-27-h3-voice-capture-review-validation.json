@@ -1,0 +1,287 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "2adaca23b77a73de0092ae0d1675dce9b30892b1",
+  "tested_runtime_source_tree": "dc3eaa316a8aaad013e9dcbc35e50aa1619b969a",
+  "tested_scripts_source_tree": "b08e19ac09711a9d58c6c794af52fe47bcd6999e",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "Short source-bound local listening WAVs with original capture expiry, bounded source transcript and room, authenticated read with current authority revalidation, source-safe partial restore counts, event pool close isolation and content-free progress diagnostics.",
+  "new_voice_capture_cases_total": 22,
+  "new_voice_capture_cases": [
+    "tests.integration.test_voice_capture_review::test_real_background_review_preserves_source_text_room_and_bounded_listening_wav",
+    "tests.integration.test_voice_capture_review::test_preview_uses_the_owned_audio_copy_even_when_original_is_reused",
+    "tests.integration.test_voice_capture_review::test_retries_cannot_replace_preview_text_or_renew_original_deadline",
+    "tests.integration.test_voice_capture_review::test_confirming_a_profile_does_not_permanently_retain_its_listening_samples",
+    "tests.integration.test_voice_capture_review::test_source_conversation_erasure_cascades_wave_and_transcript_in_same_transaction",
+    "tests.integration.test_voice_capture_review::test_pending_only_revocation_hides_preview_without_destroying_it_on_rollback",
+    "tests.integration.test_voice_capture_review::test_expiry_during_wave_encoding_cannot_commit_raw_audio_or_text",
+    "tests.integration.test_voice_capture_review::test_command_processor_pairs_preview_with_final_transcript_and_actual_producer_room[False]",
+    "tests.integration.test_voice_capture_review::test_command_processor_pairs_preview_with_final_transcript_and_actual_producer_room[True]",
+    "tests.integration.test_voice_capture_review::test_ambient_tagger_preserves_review_metadata_without_creating_an_identity",
+    "tests.integration.test_voice_capture_review::test_real_ambient_transcriber_pairs_stored_capture_id_text_and_room_with_speaker_channel",
+    "tests.integration.test_voice_capture_review::test_existing_fingerprints_do_not_gain_invented_review_material_after_schema_upgrade",
+    "tests.integration.test_voice_capture_review::test_authenticated_capture_endpoint_applies_original_expiry_and_never_exposes_vectors",
+    "tests.integration.test_voice_capture_review::test_native_preview_encoding_rechecks_current_authority_without_holding_sqlite[expiry]",
+    "tests.integration.test_voice_capture_review::test_native_preview_encoding_rechecks_current_authority_without_holding_sqlite[credential]",
+    "tests.integration.test_voice_capture_review::test_native_preview_encoding_rechecks_current_authority_without_holding_sqlite[revocation]",
+    "tests.integration.test_voice_capture_review::test_restored_invalid_review_payloads_cannot_cross_the_api_boundary[audio]",
+    "tests.integration.test_voice_capture_review::test_restored_invalid_review_payloads_cannot_cross_the_api_boundary[oversize_audio]",
+    "tests.integration.test_voice_capture_review::test_restored_invalid_review_payloads_cannot_cross_the_api_boundary[text]",
+    "tests.integration.test_voice_capture_review::test_restored_invalid_review_payloads_cannot_cross_the_api_boundary[room]",
+    "tests.integration.test_voice_capture_review::test_missing_restored_source_index_cannot_hide_a_real_vector_from_pending_counts",
+    "tests.integration.test_voice_capture_review::test_orphaned_restored_wave_blocks_every_local_voice_receipt"
+  ],
+  "new_event_close_cases_total": 3,
+  "new_event_close_cases": [
+    "tests.integration.test_event_close_diagnostics::test_event_close_does_not_borrow_a_saturated_general_executor",
+    "tests.integration.test_event_close_diagnostics::test_completed_event_cleanup_task_cannot_keep_arbitrary_caller_context",
+    "tests.integration.test_event_close_diagnostics::test_event_close_timeout_reports_real_native_write_and_retains_private_pool"
+  ],
+  "new_private_route_cases": 4,
+  "queue_fixture_cases_replaced": [
+    "tests.integration.test_queue_producer_scopes::test_independent_queue_worker_publishes_fact_sources_to_receiver_before_response"
+  ],
+  "queue_fixture_phase_cases": [
+    "tests.integration.test_queue_producer_scopes::test_independent_queue_worker_publishes_fact_sources_to_receiver_before_response[False]",
+    "tests.integration.test_queue_producer_scopes::test_independent_queue_worker_publishes_fact_sources_to_receiver_before_response[True]"
+  ],
+  "new_collected_cases_net": 30,
+  "listening_sample_contract": {
+    "max_preview_s": 6,
+    "encoding": "WAV PCM16 mono 16000 Hz",
+    "max_audio_bytes": 192044,
+    "max_transcript_characters": 8192,
+    "transcript_scope": "full_segment",
+    "full_and_preview_durations_and_truncation_explicit": true,
+    "capture_review_and_fingerprint_committed_in_same_authority_transaction": true,
+    "capture_source_expiry_max_hours": 48,
+    "confirming_profile_renews_audio_or_text": false,
+    "retry_can_replace_existing_preview_text_or_room": false,
+    "existing_fingerprints_gain_invented_or_legacy_review_samples": false,
+    "delete_and_expiry_cascade_review_rows": true,
+    "preview_validation_and_response_encoding_hold_authority_sqlite_transaction": false,
+    "authority_and_dashboard_credential_rechecked_after_native_read": true,
+    "unknown_or_corrupt_restored_review_payloads_served": false,
+    "orphaned_review_audio_counts_pending_for_every_conversation": true,
+    "missing_auxiliary_source_index_can_hide_real_vector": false,
+    "native_model_and_review_read_ownership_required_for_local_receipt": true,
+    "ambient_campaign_keep_audio_setting_modified": false,
+    "background_observation_reservations": 6,
+    "registry_io_reservations": 2,
+    "new_dependency_configuration_file_or_gpu_assignment": false
+  },
+  "nonaccepted_full_suite": {
+    "accepted": false,
+    "log": "/tmp/kza-voice-captures-full.log",
+    "xml": "/tmp/kza-voice-captures-full.xml",
+    "uncommitted_voice_capture_changes_before_event_close_and_queue_fixture_fixes": true,
+    "passed": 5539,
+    "failed": 3,
+    "xfailed": 1,
+    "runtime_s": 369.05,
+    "failures": [
+      {
+        "case": "tests.integration.test_event_retention::test_pending_failed_fact_commit_denies_reads_but_does_not_destroy_valid_events",
+        "message": "TimeoutError",
+        "trace": "src/analytics/event_logger.py:755: in alog\n    return await self.acall(self.log, *args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nsrc/analytics/event_logger.py:746: in acall\n    return await self._work.run(function, *args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nsrc/core/owned_work.py:129: in run\n    return await asyncio.shield(task)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\nE   asyncio.exceptions.CancelledError\n\nThe above exception was the direct cause of the following exception:\ntests/integration/test_event_retention.py:333: in test_pending_failed_fact_commit_denies_reads_but_does_not_destroy_valid_events\n    await events.alog(\"light.synthetic\", \"turn_on\", sources=(derived,))\nsrc/analytics/event_logger.py:754: in alog\n    async with asyncio.timeout(self.observation_timeout_s):\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n/usr/lib/python3.13/asyncio/timeouts.py:116: in __aexit__\n    raise TimeoutError from exc_val\nE   TimeoutError"
+      },
+      {
+        "case": "tests.integration.test_event_retention::test_saturated_default_executor_does_not_starve_event_retention",
+        "message": "src.core.owned_work.WorkCloseTimeout: event_resources_still_running",
+        "trace": "src/analytics/event_logger.py:811: in aclose\n    await asyncio.shield(closing)\nE   asyncio.exceptions.CancelledError\n\nThe above exception was the direct cause of the following exception:\nsrc/analytics/event_logger.py:810: in aclose\n    async with asyncio.timeout(1):\n               ^^^^^^^^^^^^^^^^^^\n/usr/lib/python3.13/asyncio/timeouts.py:116: in __aexit__\n    raise TimeoutError from exc_val\nE   TimeoutError\n\nThe above exception was the direct cause of the following exception:\ntests/integration/test_event_retention.py:435: in test_saturated_default_executor_does_not_starve_event_retention\n    async with graph(tmp_path) as (_, retention, events, clock):\n               ^^^^^^^^^^^^^^^\n/usr/lib/python3.13/contextlib.py:235: in __aexit__\n    await self.gen.athrow(value)\ntests/integration/test_event_retention.py:31: in graph\n    async with AsyncExitStack() as stack:\n               ^^^^^^^^^^^^^^^^\n/usr/lib/python3.13/contextlib.py:768: in __aexit__\n    raise exc\n/usr/lib/python3.13/contextlib.py:751: in __aexit__\n    cb_suppress = await cb(*exc_details)\n                  ^^^^^^^^^^^^^^^^^^^^^^\n/usr/lib/python3.13/contextlib.py:651: in _exit_wrapper\n    await callback(*args, **kwds)\nsrc/analytics/event_logger.py:813: in aclose\n    raise WorkCloseTimeout('event_resources_still_running') from error\nE   src.core.owned_work.WorkCloseTimeout: event_resources_still_running"
+      },
+      {
+        "case": "tests.integration.test_queue_producer_scopes::test_independent_queue_worker_publishes_fact_sources_to_receiver_before_response",
+        "message": "AssertionError: assert False\n +  where False = conversation_busy('e683450d-601c-434e-9bd3-f168ee6d9f39')\n +    where conversation_busy = <src.orchestrator.dispatcher.MultiUserOrchestrator object at 0x7125b01d6850>.conversation_busy\n +    and   'e683450d-601c-434e-9bd3-f168ee6d9f39' = MemorySource(capture_id='2abeb93c-e6d6-4bd4-a08c-3864c24c6356', conversation_id='e683450d-601c-434e-9bd3-f168ee6d9f39', captured_at=2000000000.0, expires_at=2000172800.0, origin=<MemoryOrigin.VOICE: 'voice'>, fact_dependencies=()).conversation_id",
+        "trace": "tests/integration/test_queue_producer_scopes.py:65: in test_independent_queue_worker_publishes_fact_sources_to_receiver_before_response\n    assert owner.conversation_busy(origin.conversation_id)\nE   AssertionError: assert False\nE    +  where False = conversation_busy('e683450d-601c-434e-9bd3-f168ee6d9f39')\nE    +    where conversation_busy = <src.orchestrator.dispatcher.MultiUserOrchestrator object at 0x7125b01d6850>.conversation_busy\nE    +    and   'e683450d-601c-434e-9bd3-f168ee6d9f39' = MemorySource(capture_id='2abeb93c-e6d6-4bd4-a08c-3864c24c6356', conversation_id='e683450d-601c-434e-9bd3-f168ee6d9f39', captured_at=2000000000.0, expires_at=2000172800.0, origin=<MemoryOrigin.VOICE: 'voice'>, fact_dependencies=()).conversation_id"
+      }
+    ],
+    "native_capture": {
+      "terminal_exit_code": 1,
+      "captured": 1,
+      "events": [
+        {
+          "case": "tests/integration/test_event_retention.py::test_saturated_default_executor_does_not_starve_event_retention",
+          "when": "call",
+          "phase": "unknown",
+          "diagnostics": null
+        }
+      ]
+    },
+    "isolated_repeat": {
+      "passed": 3,
+      "runtime_s": 2.15,
+      "log": "/tmp/kza-voice-captures-three-failures-isolated.log"
+    },
+    "first_event_write_observation_timeout_cause_demonstrated": false,
+    "causal_attribution_of_historical_timeout_to_new_voice_code_demonstrated": false
+  },
+  "direct_red_green_evidence": {
+    "event_executor_and_cleanup_context": {
+      "red_log": "/tmp/kza-voice-captures-event-close-red.log",
+      "red_failed": 2,
+      "red_runtime_s": 1.73,
+      "finding": "Actual event cleanup used the saturated general executor to shut down its private pool, and its retained completed cleanup task copied arbitrary caller context.",
+      "fix": "After draining admitted writes, signal private executor shutdown without a join on-loop, observe actual thread exit asynchronously, and create the retained cleanup task in an empty Context. No new worker capacity or enlarged budget.",
+      "green_log": "/tmp/kza-voice-captures-event-close-green.log",
+      "green_passed": 16,
+      "green_runtime_s": 2.83
+    },
+    "queue_fixture_order": {
+      "finding": "The old assertion required queue affinity after revocation even though its cooperative SSE callback could already have closed. The receiver independently still retained its scope.",
+      "fix": "Exercise both explicit phases: hold the actual HTTP close to require busy, or await its real close and require not busy; keep receiver affinity until consumer exit. Existing wait budgets stay unchanged.",
+      "runtime_queue_code_modified_for_this_fixture": false
+    },
+    "event_diagnostics": {
+      "native_callback_timings_and_close_phase_added": true,
+      "normal_processing_context_preserved": true,
+      "private_paths_payloads_or_function_names_in_diagnostics": false,
+      "original_write_observation_timeout_s": 0.1,
+      "original_close_observation_timeout_s": 1,
+      "general_executor_saturation_blocks_private_event_close": false
+    }
+  },
+  "full_suite": {
+    "accepted": true,
+    "collected": 5547,
+    "passed": 5546,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "summary": "========= 5546 passed, 1 xfailed, 31715 warnings in 323.41s (0:05:23) ==========",
+    "junit_time_s": 323.329,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "isolated_voice_metrics": {
+      "repetitions": 10,
+      "sentences_per_run": 100,
+      "samples_per_run": 2400000,
+      "provider_wait_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 2744,
+      "loop_lag_p95_ms": 0.9818108566105365,
+      "loop_lag_max_ms": 2.9101661685854197,
+      "exact_pcm_runs": 10
+    },
+    "log": "/tmp/kza-voice-captures-accepted-full.log",
+    "xml": "/tmp/kza-voice-captures-accepted-full.xml",
+    "native_and_event_timeout_capture": {
+      "terminal_exit_code": 0,
+      "captured": 0,
+      "events": []
+    },
+    "diagnostic_plugin": {
+      "path": "/tmp/kza_voice_capture_accepted_capture.py",
+      "sha256": "f07a475f007bc2118c9dcfb8485251a1c121a9c6918c2e966820ef92ad2ab45a",
+      "changes_execution_deadlines_or_retries": false
+    },
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/tmp:/home/yo/projects/kza /home/kza/kza/.venv/bin/python -m pytest tests/ -q -p kza_voice_capture_accepted_capture --junitxml=/tmp/kza-voice-captures-accepted-full.xml"
+  },
+  "focused_suite": {
+    "passed": 896,
+    "runtime_s": 58.97,
+    "log": "/tmp/kza-voice-captures-accepted-focused.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-voice-captures-accepted-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-voice-captures-accepted-bandit.log"
+    },
+    "frontend": {
+      "passed": 49,
+      "failed": 0,
+      "log": "/tmp/kza-voice-captures-frontend.log",
+      "frontend_tree_unchanged_after_this_check": true
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "mocked_services": true,
+      "log": "/tmp/kza-voice-captures-accepted-dashboard-smoke.log"
+    },
+    "chromium": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "rendered_conversation_retirement": true,
+      "rendered_idle_expiry": true,
+      "disconnect_clears_ticker": true,
+      "lost_session_clears_private_dom": true,
+      "javascript_exceptions": 0,
+      "synthetic_sources_and_service_adapters": true,
+      "browser_ack_after_dom_and_cache_clear": true,
+      "browser_ack_waits_for_explicit_dom_commit": true,
+      "pagehide_handler_clears_and_acknowledges_owned_view": true,
+      "rest_conversation_original_deadline_clears_cache_dom_and_voice_filter": true,
+      "rest_conversation_payload_excluded_from_global_mock_cache": true,
+      "session_loss_clears_unmounted_rest_conversation_cache": true,
+      "rest_revocation_clears_before_original_expiry": true,
+      "rest_ack_waits_for_explicit_dom_commit": true,
+      "external_bootstrap_assets_blocked": true,
+      "global_streams_acceptance": false,
+      "log": "/tmp/kza-voice-captures-accepted-browser.log",
+      "covers_voice_review_ui": false
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "2adaca23b77a73de0092ae0d1675dce9b30892b1",
+    "artifact": "/tmp/kza-voice-captures-runtime-oz29yvd9/runtime.tar.gz",
+    "verified_hashes": 345,
+    "runtime_s": 1.1293356670066714,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 345,
+      "real_http_authenticated_review_and_revision_delete": true,
+      "background_cpu_synthetic_encoder": true,
+      "event_private_pool_closes_while_general_executor_remains_saturated": true,
+      "event_cleanup_releases_caller_context_and_observes_real_thread_exit": true,
+      "authenticated_wav_matches_owned_pcm_and_actual_metadata": true,
+      "preview_bounded_six_seconds_full_segment_transcript_scope_explicit": true,
+      "permanent_profile_does_not_extend_review_audio_or_text": true,
+      "source_expiry_physically_cascades_review_rows_and_denies_http_read": true,
+      "capture_deadline_and_permanent_manual_profile_survive_restart": true,
+      "suggestions_only_never_accounts_or_permissions": true,
+      "old_upload_rejected_before_decode": true,
+      "local_voice_receipt_waits_for_actual_model_exit": true,
+      "legacy_original_untouched_private_accounts_sidecar": true,
+      "unresolved_voice_inventory_blocks_global_erasure": true,
+      "real_models_gpu_full_main_hardware_or_frontend_voice_review": false
+    },
+    "check_script": "/tmp/kza-voice-captures-runtime-smoke.py",
+    "check_script_sha256": "e7599d2b133b7200075b4358db7a23df750621020f5f8d1caf5d026cee25293d",
+    "archive_sha256": "72d29f37913cc74907cb002d96e7b750067a1ae53a02ccc83c20f76367d07067"
+  },
+  "limits": {
+    "voice_review_visual_frontend_and_native_browser_audio_retirement_complete": false,
+    "listening_review_http_copies_have_durable_page_retirement_receipts": false,
+    "all_model_sdk_pipeline_or_legacy_audio_copies_resolved": false,
+    "grouping_merge_split_abstention_and_acoustic_calibration_complete": false,
+    "transcript_is_verified_human_ground_truth": false,
+    "voice_similarity_grants_identity_authority_or_permissions": false,
+    "managed_runtime_voice_identity_propagation_complete": false,
+    "global_voices_streams_or_producers_erasure_complete": false,
+    "global_conversation_erasure_ui_enabled": false,
+    "ambient_pause_total_mute_and_independent_reactivation_complete": false,
+    "full_main_real_models_gpu_audio_ha_gateway_sdk_or_hardware_acceptance": false,
+    "full_h4_capacity_gc_and_latency_acceptance": false,
+    "all_first_full_suite_timeouts_causally_explained": false,
+    "earlier_92_90_ms_loop_spike_and_495_68_ms_gc_pause_explained_or_fixed": false,
+    "gc_forced_disabled_or_frozen": false,
+    "existing_deadlines_total_capacity_or_retries_enlarged_for_green_tests": false,
+    "production_modified": false,
+    "overall_h3_h4_or_roadmap_complete": false
+  },
+  "voice_capture_commit": "ed6eda747f00c547da9ce4072c91db0a6b797ccb",
+  "event_close_commit": "2adaca23b77a73de0092ae0d1675dce9b30892b1",
+  "tested_frontend_tree": "03db7f5319243c2274e1126e900d355b652038e3"
+}

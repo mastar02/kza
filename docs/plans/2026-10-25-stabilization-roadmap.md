@@ -185,6 +185,15 @@ pasó con 5.516 pruebas y un xfail conocido; el artefacto de `ad66e2b` verificó
 344 hashes y la API real con encoder sintético. No cierra H3 ni habilita la
 release.
 
+El avance posterior agrega [muestras locales de revisión](../research/2026-10-27-h3-voice-capture-review-validation.json):
+hasta seis segundos por huella, con transcripción del segmento, habitación y
+vencimiento original, incluso si el perfil confirmado se conserva. La API
+autenticada las lee sin vectores y revalida autoridad; siguen pendientes la
+pantalla y sus recibos durables de retiro. La revisión `2adaca2` pasó 5.546
+pruebas con un xfail conocido y verificó 345 hashes del artefacto. La evidencia
+conserva tres fallos de la corrida inicial y la causa aún no demostrada de un
+timeout de escritura. No cierra H3 ni la aceptación de H4/H6.
+
 Primer avance de H3, 26 de octubre: el store de capturas aplica TTL al leer
 texto, lotes de destilación, estadísticas y clips, sin esperar la purga. Las
 capturas nuevas tienen UUID y vencimiento persistido; ampliar la configuración
@@ -920,6 +929,14 @@ La revisión `da88855` pasó 5.474 pruebas con 1 xfail, 49 de frontend y Chromiu
 con assets externos bloqueados. El artefacto verificó 340 hashes. Los cuatro
 timeouts previos no reaparecieron en esta suite; la aceptación integrada de
 recursos, GC, dependencias y hardware sigue pendiente.
+
+El [cierre del logger de eventos](../research/2026-10-27-h3-voice-capture-review-validation.json)
+ya observa la salida real de su pool privado sin depender del executor general
+y sin copiar contexto del llamador. Sus fases y tiempos nativos son acotados y
+sin contenido. Dos casos rojos reprodujeron ambas condiciones; la suite final
+pasó 5.546 pruebas con un xfail. Los plazos permanecen iguales. Esto no demuestra
+la causa de todos los timeouts observados ni resuelve la aceptación de GC,
+capacidad o latencia.
 
 **Entregables:** reconexión a HA y gateway, estados de disponibilidad por
 subsistema, watchdog de audio integrado y cierre ordenado de tareas y recursos.
