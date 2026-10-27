@@ -1555,6 +1555,15 @@ libera admisión al vencer. Marcar una corrección como usada compara recibos
 reales, no paths aportados por el caller, y no renueva la fecha. La retención
 manual sólo puede acortarla a 48 horas o menos.
 
+Un acortamiento se propaga a las vistas y trabajos del mismo destino antes
+de su commit. Los fences compartidos sólo se ajustan a plazos menores; un
+lector de otra instancia no puede conservar el plazo anterior. El publish
+consulta además su localizador durable y vuelve a comprobar el plazo real
+después del rename/fsync, aunque la fuente original todavía siga vigente.
+Las pruebas con encoder y rename bloqueados reprodujeron publicaciones tardías
+que una primera suite verde no había cubierto; ese borrador se conserva como
+no aceptado. La corrección también cubre la vista ya entregada a otro colector.
+
 `main` construye el colector configurado con ese mismo store. No se agrega un
 nuevo productor de correcciones ni una sesión de entrenamiento. El consumidor
 Whisper antiguo escribe datasets sin procedencia y no puede retirar capturas

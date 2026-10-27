@@ -54,7 +54,7 @@ class STTCorrection:
         """Check authority without disk or renewing the capture deadline."""
         owner = self._owner() if self._owner is not None else None
         return bool(owner is not None and not self._retired.is_set() and owner._live(self.sources)
-                    and owner._store.ledger.clock() < self.expires_at)
+                    and owner._store.ledger.clock() < min(self.expires_at, owner._store.deadline_for(self.id, self.expires_at)))
 
     def clear(self) -> None:
         """Retire all copied raw fields while retaining only source metadata."""
@@ -94,7 +94,11 @@ class CorrectionJob:
     bucket: str = 'stt_correction'
     cancelled: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
     state: CorrectionState = CorrectionState.QUEUED
+    deadline: float = 0.
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def __post_init__(self):
+        self.deadline = min(source.expires_at for source in self.sources)
 
     def clear(self) -> None:
         """Release queued or completed data; a running native call keeps its inputs."""
@@ -149,7 +153,7 @@ class STTCorrectionCollector:
         return not self._closed and not self._store._closed and self._store.privacy.sources_available(sources)
 
     def _job_live(self, job):
-        if not self._live(job.sources):
+        if self._store.ledger.clock() >= min(job.deadline, self._store.deadline_for(job.id, job.deadline)) or not self._live(job.sources):
             job.cancelled.set()
         return not job.cancelled.is_set()
 
@@ -291,6 +295,7 @@ class STTCorrectionCollector:
                     continue
                 count += 1
                 if not count_only:
+                    self._store.note_deadline(row['id'], row['expires_at'])
                     view = STTCorrection(str(self.data_dir/'policy_v1'/(row['id']+'.wav')),
                         row['original_text'], row['corrected_text'], datetime.fromtimestamp(row['captured_at'], timezone.utc).isoformat(),
                         row['user_id'], row['score'], False, row['id'], sources, row['expires_at'], ref(self))
@@ -338,6 +343,15 @@ class STTCorrectionCollector:
         finally:
             corrections = receipts = None
 
+    def _tighten_receipts(self, seconds):
+        with self._views_lock:
+            for view in tuple(self._views):
+                view.expires_at = min(view.expires_at, min(s.captured_at for s in view.sources)+seconds)
+                self._store.note_deadline(view.id, view.expires_at)
+        for job in tuple(self._jobs.values()):
+            job.deadline = min(job.deadline, min(s.captured_at for s in job.sources)+seconds)
+            self._store.note_deadline(job.id, job.deadline)
+
     async def cleanup_old(self, days: float = 2) -> None:
         """Shorten raw deadlines if requested; never extend the 48-hour policy."""
         if type(days) not in (int, float) or not math.isfinite(days) or not 0 < days <= 2:
@@ -345,9 +359,11 @@ class STTCorrectionCollector:
         def shorten():
             with self._store.ledger._transaction() as db:
                 db.execute('UPDATE wake_clips_v1 SET expires_at=MIN(expires_at,captured_at+?) WHERE target_id=?', (days*86400, self._target.id))
-            with self._views_lock:
-                for view in tuple(self._views):
-                    view.expires_at = min(view.expires_at, min(s.captured_at for s in view.sources)+days*86400)
+                for row in db.execute('SELECT id,expires_at FROM wake_clips_v1 WHERE target_id=?', (self._target.id,)):
+                    self._store.note_deadline(row['id'], row['expires_at'])
+                for owner in tuple(self._store._writers):
+                    if isinstance(owner, STTCorrectionCollector) and owner._target.id == self._target.id:
+                        owner._tighten_receipts(days*86400)
             self._store.changed()
         await self._native(shorten)
         await self._store.reconcile()

@@ -101,6 +101,8 @@ class WakeClipStore:
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='wake-clip-storage')
         self._work = OwnedBlockingWork(worker=self._offload, capacity=4)
         self._files = threading.RLock()
+        self._receipt_lock = threading.Lock()
+        self._read_deadlines: dict[str, float] = {}
         self._writers = WeakSet()
         self._closed = False
         self._closing = self._maintenance = None
@@ -155,30 +157,49 @@ class WakeClipStore:
         """Publish a metadata-only wakeup from a native writer."""
         self._changes += 1
 
+    def note_deadline(self, identifier: str, deadline: float) -> None:
+        """Publish only tighter read fences before a durable deadline can commit."""
+        if type(deadline) not in (int, float) or not math.isfinite(deadline) or deadline < 0:
+            raise ValueError('invalid_collector_read_deadline')
+        with self._receipt_lock:
+            self._read_deadlines[identifier] = min(self._read_deadlines.get(identifier, deadline), deadline)
+
+    def deadline_for(self, identifier: str, fallback: float) -> float:
+        """Read a shared metadata fence without disk, locks or renewal."""
+        return self._read_deadlines.get(identifier, fallback)
+
     def reserve(self, target: ClipTarget, job) -> None:
         """Commit an exact file intent before opening either part or final WAV."""
         if self._closed or not self._registered(target):
             raise RuntimeError('wake_clip_store_unavailable')
         with self.ledger._transaction() as db:
-            if not self.ledger._sources_live(db, job.sources):
+            deadline = min(s.expires_at for s in job.sources)
+            deadline = min(deadline, self.deadline_for(job.id, deadline))
+            if deadline <= self.ledger.clock() or not self.ledger._sources_live(db, job.sources):
                 raise PermissionError('wake_clip_sources_invalidated')
             db.execute('''INSERT INTO wake_clips_v1
                 (id,target_id,bucket,room_id,score,sources_json,captured_at,expires_at)
                 VALUES (?,?,?,?,?,?,?,?)''', (job.id, target.id, job.bucket, job.room_id, job.score,
                 json.dumps([s.to_dict() for s in job.sources], separators=(',', ':')),
-                min(s.captured_at for s in job.sources), min(s.expires_at for s in job.sources)))
+                min(s.captured_at for s in job.sources), deadline))
 
         self.changed()
 
     def publish(self, target: ClipTarget, job, live) -> None:
         """Atomically admit final rename before a tombstone can commit."""
         with self._files, self.ledger._transaction() as db:
-            if not live() or not self.ledger._sources_live(db, job.sources):
+            row = db.execute('SELECT sources_json,expires_at,published FROM wake_clips_v1 WHERE id=? AND target_id=?',
+                             (job.id, target.id)).fetchone()
+            if (row is None or row['published'] or clip_sources(row['sources_json']) != job.sources
+                or type(row['expires_at']) not in (int, float)
+                or not 0 < row['expires_at'] <= min(s.expires_at for s in job.sources)
+                or self.ledger.clock() >= row['expires_at']
+                or not live() or not self.ledger._sources_live(db, job.sources)):
                 raise PermissionError('wake_clip_sources_invalidated')
             with clip_directory(target.root) as directory:
                 os.replace(job.id + '.part', job.id + '.wav', src_dir_fd=directory, dst_dir_fd=directory)
                 os.fsync(directory)
-            if not live() or not self.ledger._sources_live(db, job.sources):
+            if self.ledger.clock() >= row['expires_at'] or not live() or not self.ledger._sources_live(db, job.sources):
                 raise PermissionError('wake_clip_sources_invalidated')
             db.execute('UPDATE wake_clips_v1 SET published=1 WHERE id=? AND target_id=?', (job.id, target.id))
 
@@ -195,10 +216,13 @@ class WakeClipStore:
                 os.fsync(directory)
         except FileNotFoundError:
             pass
+        self.note_deadline(identifier, 0.)
         for writer in tuple(self._writers):
             retire = getattr(writer, 'retire_record', None)
             if retire is not None:
                 retire(identifier)
+        with self._receipt_lock:
+            self._read_deadlines.pop(identifier, None)
 
     def discard(self, target: ClipTarget, identifier: str) -> None:
         """Remove files before releasing their restart-safe locator."""

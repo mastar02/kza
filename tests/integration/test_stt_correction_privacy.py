@@ -449,3 +449,65 @@ async def test_retired_views_release_read_capacity_for_fresh_captures(tmp_path):
         assert fresh.available and fresh.corrected_text == 'synthetic corrected'
         assert all(view.corrected_text == '' for view in retained)
         assert g.collector.resource_status()['read_views'] == 1
+
+
+async def test_shortened_durable_deadline_fences_a_still_running_encoder(tmp_path, monkeypatch):
+    async with graph(tmp_path) as g:
+        peer = await build_stt_correction_collector({'training': {'stt_corrections': {
+            'enabled': True, 'data_dir': str(g.collector.data_dir)}}}, store=g.store)
+        entered, release = block_encoder(g, monkeypatch)
+        adding = asyncio.create_task(g.add())
+        try:
+            await until(entered.is_set)
+            await peer.cleanup_old(days=1/86400)
+            row, = await g.rows()
+            assert row['expires_at'] == g.clock.now + 1
+            g.clock.now += 1
+        finally:
+            release.set()
+            identifier = await adding
+        assert identifier is None
+        assert not files(g) and not await g.rows()
+
+
+async def test_shortened_deadline_is_rechecked_after_actual_native_rename(tmp_path, monkeypatch):
+    import src.wakeword.clip_store as module
+    async with graph(tmp_path) as g:
+        peer = await build_stt_correction_collector({'training': {'stt_corrections': {
+            'enabled': True, 'data_dir': str(g.collector.data_dir)}}}, store=g.store)
+        encoding, release_encode = block_encoder(g, monkeypatch)
+        renaming, release_rename = threading.Event(), threading.Event()
+        rename = module.os.replace
+        def blocked(*args, **kwargs):
+            renaming.set()
+            assert release_rename.wait(5)
+            return rename(*args, **kwargs)
+        monkeypatch.setattr(module.os, 'replace', blocked)
+        adding = asyncio.create_task(g.add())
+        try:
+            await until(encoding.is_set)
+            await peer.cleanup_old(days=1/86400)
+            release_encode.set()
+            await until(renaming.is_set)
+            g.clock.now += 1
+        finally:
+            release_encode.set()
+            release_rename.set()
+            identifier = await adding
+        assert identifier is None
+        assert not files(g) and not await g.rows()
+
+
+async def test_peer_shortening_fences_already_held_views_before_file_sweep(tmp_path):
+    async with graph(tmp_path) as g:
+        assert await g.add()
+        view, = await g.collector.get_training_pairs()
+        peer = await build_stt_correction_collector({'training': {'stt_corrections': {
+            'enabled': True, 'data_dir': str(g.collector.data_dir)}}}, store=g.store)
+        await peer.cleanup_old(days=1/86400)
+        assert files(g)
+        g.clock.now += 1
+        assert not view.available
+        assert view.corrected_text == view.original_text == ''
+        await g.store.reconcile()
+        assert not files(g) and not await g.rows()
