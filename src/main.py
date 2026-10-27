@@ -62,6 +62,7 @@ from src.conversation.follow_up_mode import FollowUpMode
 from src.orchestrator import MultiUserOrchestrator
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
 from src.training.conversation_collector import ConversationCollector
+from src.training.stt_correction_collector import build_stt_correction_collector
 from src.training.habit_dataset_generator import HabitDatasetGenerator
 from src.training.nightly_trainer import NightlyTrainer, NightlyConfig
 from src.rooms.room_context import RoomContextManager, RoomConfig
@@ -573,6 +574,7 @@ async def _run_main(shutdown: AsyncExitStack):
     suggestion_erasure = await build_suggestion_erasure(config, privacy=privacy_services, owner=erasure_services)
     context_erasure = await build_context_erasure(config, privacy=privacy_services, owner=erasure_services, memory=memory_manager)
     wake_clip_store = await build_wake_clip_store(config, privacy=privacy_services, shutdown=shutdown)
+    stt_correction_collector = await build_stt_correction_collector(config, store=wake_clip_store)
 
     # LLM Command Router (Opción 2 NLU) — clasificador de comandos vía vLLM 7B.
     # Independiente del LLMRouter: este valida texto post-wake contra
@@ -1719,6 +1721,7 @@ async def _run_main(shutdown: AsyncExitStack):
             config=nightly_cfg,
             alert_callback=_nightly_alert_callback,
             habit_generator=habit_generator,
+            stt_correction_collector=stt_correction_collector,
         )
         nightly_trainer.start_scheduler()
         logger.info("Nightly trainer scheduled")

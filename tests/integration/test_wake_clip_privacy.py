@@ -338,7 +338,7 @@ async def test_local_wake_cleanup_does_not_claim_all_collectors_erased(tmp_path)
         assert not g.files() and not await g.rows()
         assert value['state'] == 'blocked'
         assert all(r['state'] != 'complete' for r in value['steps'] if r['participant'] == 'collectors')
-        assert g.store.resource_status()['scope'] == 'managed_wake_clips_only'
+        assert g.store.resource_status()['scope'] == 'managed_collector_files_only'
 
 
 async def test_encode_errors_do_not_retain_audio_or_copy_payload_to_logs(tmp_path, monkeypatch, caplog):

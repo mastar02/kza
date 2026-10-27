@@ -42,6 +42,26 @@ class ClipJob:
     cancelled: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
 
 
+def encode_wav(target: ClipTarget, identifier: str, audio: np.ndarray, sample_rate: int) -> None:
+    """Encode owned PCM to a registered private part file, entirely off loop."""
+    pcm = file = None
+    try:
+        pcm = (np.clip(audio, -1., 1.) * 32767.).astype(np.int16)
+        with clip_directory(target.root, create=True) as directory:
+            descriptor = os.open(identifier + '.part', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o600, dir_fd=directory)
+            with os.fdopen(descriptor, 'wb') as file:
+                with wave.open(file, 'wb') as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(sample_rate)
+                    wav.writeframes(pcm.tobytes())
+                file.flush()
+                os.fsync(file.fileno())
+    finally:
+        audio = pcm = file = None
+
+
 class WakeClipWriter:
     """Copy bounded inputs and retain the real thread until files are finished.
 
@@ -173,22 +193,7 @@ class WakeClipWriter:
             self._queue.clear()
 
     def _encode(self, job):
-        pcm = file = None
-        try:
-            pcm = (np.clip(job.audio, -1., 1.) * 32767.).astype(np.int16)
-            with clip_directory(self._target.root, create=True) as directory:
-                descriptor = os.open(job.id + '.part', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                                     0o600, dir_fd=directory)
-                with os.fdopen(descriptor, 'wb') as file:
-                    with wave.open(file, 'wb') as wav:
-                        wav.setnchannels(1)
-                        wav.setsampwidth(2)
-                        wav.setframerate(self._sample_rate)
-                        wav.writeframes(pcm.tobytes())
-                    file.flush()
-                    os.fsync(file.fileno())
-        finally:
-            job = pcm = file = None
+        encode_wav(self._target, job.id, job.audio, self._sample_rate)
 
     def _write(self, job):
         published = False

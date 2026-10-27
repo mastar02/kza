@@ -23,6 +23,13 @@ from src.memory.fact_ledger import MemorySource
 logger = logging.getLogger(__name__)
 
 
+class CollectorKind(StrEnum):
+    """File datasets sharing durable locators and raw-source retention."""
+
+    WAKE_CLIPS = 'wake_clips'
+    STT_CORRECTIONS = 'stt_corrections'
+
+
 class ClipRetentionState(StrEnum):
     """Local managed-file maintenance, never a global erasure receipt."""
 
@@ -44,6 +51,7 @@ class ClipTarget:
 
     id: str
     root: str
+    kind: CollectorKind = CollectorKind.WAKE_CLIPS
 
 
 @contextmanager
@@ -77,10 +85,10 @@ def clip_sources(encoded: str) -> tuple[MemorySource, ...]:
 
 
 class WakeClipStore:
-    """Own locators, actual file cleanup and writer lifetimes independently of capture.
+    """Own collector file locators and native lifetimes independently of capture.
 
     This registers collector targets but leaves COLLECTORS without a cleanup
-    driver: conversations, corrections and other training copies are still open.
+    driver: conversations and other training copies are still open.
     Local clip cleanup must never masquerade as global collector completion.
     """
 
@@ -96,6 +104,7 @@ class WakeClipStore:
         self._writers = WeakSet()
         self._closed = False
         self._closing = self._maintenance = None
+        self._scheduled = None
         self._close_timeout_s = close_timeout_s
         self._next = 0.
         self._authority_version = -1
@@ -116,16 +125,21 @@ class WakeClipStore:
         with self.ledger._transaction() as db:
             db.execute(_SCHEMA)
             db.execute('CREATE INDEX IF NOT EXISTS wake_clip_expiry ON wake_clips_v1(expires_at)')
+            db.execute('''CREATE TABLE IF NOT EXISTS stt_corrections_v1 (
+                id TEXT PRIMARY KEY REFERENCES wake_clips_v1(id) ON DELETE CASCADE,
+                original_text TEXT NOT NULL, corrected_text TEXT NOT NULL,
+                user_id TEXT, sample_rate INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0)''')
 
-    def register(self, directory) -> ClipTarget:
+    def register(self, directory, kind: CollectorKind = CollectorKind.WAKE_CLIPS) -> ClipTarget:
         """Persist a canonical locator even when the corresponding feature is off."""
         if self._closed:
             raise RuntimeError('wake_clip_store_closed')
         self.privacy.require_available()
+        kind = CollectorKind(kind)
         root = str(Path(directory).resolve())
         key = self.ledger.erasures.register_target(ErasureParticipant.COLLECTORS, 1,
-                                                 {'kind': 'wake_clips', 'root': root})
-        return ClipTarget(key, root)
+                                                 {'kind': kind.value, 'root': root})
+        return ClipTarget(key, root, kind)
 
     def attach(self, writer) -> None:
         """Keep an actual native writer under this shared privacy lease."""
@@ -134,7 +148,7 @@ class WakeClipStore:
         self._writers.add(writer)
 
     def _registered(self, target: ClipTarget) -> bool:
-        return any(t['id'] == target.id and t['version'] == 1 and t['descriptor'] == {'kind': 'wake_clips', 'root': target.root}
+        return any(t['id'] == target.id and t['version'] == 1 and t['descriptor'] == {'kind': target.kind.value, 'root': target.root}
                    for t in self.ledger.erasures.targets(ErasureParticipant.COLLECTORS))
 
     def changed(self) -> None:
@@ -181,6 +195,10 @@ class WakeClipStore:
                 os.fsync(directory)
         except FileNotFoundError:
             pass
+        for writer in tuple(self._writers):
+            retire = getattr(writer, 'retire_record', None)
+            if retire is not None:
+                retire(identifier)
 
     def discard(self, target: ClipTarget, identifier: str) -> None:
         """Remove files before releasing their restart-safe locator."""
@@ -212,8 +230,8 @@ class WakeClipStore:
             self._cycle_deadline = now + 60
             self._cycle_pending = 0
         targets = self.ledger.erasures.targets(ErasureParticipant.COLLECTORS)
-        roots = {t['id']: ClipTarget(t['id'], t['descriptor']['root']) for t in targets
-                 if t['version'] == 1 and set(t['descriptor']) == {'kind', 'root'} and t['descriptor']['kind'] == 'wake_clips'}
+        roots = {t['id']: ClipTarget(t['id'], t['descriptor']['root'], CollectorKind(t['descriptor']['kind'])) for t in targets
+                 if t['version'] == 1 and set(t['descriptor']) == {'kind', 'root'} and t['descriptor']['kind'] in set(CollectorKind)}
         with self._files, self.ledger._transaction() as db:
             if db.execute('SELECT 1 FROM wake_clips_v1 WHERE sequence<=0 LIMIT 1').fetchone():
                 raise ValueError('unrecognized_wake_clip_sequence')
@@ -265,7 +283,11 @@ class WakeClipStore:
                     for writer in tuple(self._writers):
                         writer.prune()
                     if self.ledger.clock() >= self._next or self._authority_version != self.ledger._authority_version or self._seen_changes != self._changes:
-                        await self.reconcile()
+                        if self._scheduled is None or self._scheduled.done():
+                            # A busy native pool must not stop the independent
+                            # in-memory TTL fences for queued waves/read views.
+                            self._scheduled = asyncio.create_task(self.reconcile())
+                            self._scheduled.add_done_callback(lambda done: None if done.cancelled() else done.exception())
                     await asyncio.sleep(.05)
             self._maintenance = asyncio.create_task(maintain())
 
@@ -278,6 +300,9 @@ class WakeClipStore:
                 if self._maintenance is not None:
                     self._maintenance.cancel()
                     await asyncio.gather(self._maintenance, return_exceptions=True)
+                if self._scheduled is not None:
+                    self._scheduled.cancel()
+                    await asyncio.gather(self._scheduled, return_exceptions=True)
                 await asyncio.gather(*writers)
                 if self._sweep is not None:
                     await asyncio.gather(self._sweep, return_exceptions=True)
@@ -301,7 +326,7 @@ class WakeClipStore:
 
     def resource_status(self) -> dict:
         """Expose counts only, without paths, rooms, source IDs or raw data."""
-        return {**self._status, 'scope': 'managed_wake_clips_only', 'legacy_policy': 'quarantined',
+        return {**self._status, 'scope': 'managed_collector_files_only', 'legacy_policy': 'quarantined',
                 'closed': self._closed, 'writers': len(self._writers),
                 'operations': self._work.status()['operations']}
 
@@ -313,5 +338,7 @@ async def build_wake_clip_store(config: dict, *, privacy, shutdown) -> WakeClipS
     await store._work.run(store.initialize)
     clips = config.get('rooms', {}).get('wake_word', {}).get('capture_clips', {}) or {}
     await store._work.run(store.register, clips.get('dir', 'data/wakeword_training/captured'))
+    corrections = config.get('training', {}).get('stt_corrections', {}) or {}
+    await store._work.run(store.register, corrections.get('data_dir', 'data/stt_corrections'), CollectorKind.STT_CORRECTIONS)
     store.start()
     return store

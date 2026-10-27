@@ -1527,6 +1527,50 @@ control alcanza 0,08 ms y el cleanup 11,17 ms. Los presupuestos siguen intactos.
 Esta suite no vuelve a medir las pausas globales de GC anteriores ni cierra la
 aceptación física e integrada de H4/H6. No se tocaron producción ni datos reales.
 
+## Avance: correcciones STT con audio y texto bajo la misma fuente
+
+`STTCorrectionCollector` comparte ahora el propietario de archivos y la autoridad
+de privacidad con los clips de wake. Exige fuentes para el audio/transcripción
+original y para el feedback; el contexto de la interacción puede aportar las
+segundas, pero nunca se inventan las primeras. El registro conserva ambas
+procedencias y el vencimiento más antiguo. El WAV usa UUID y permisos 0600;
+el texto original, la corrección y el identificador del usuario permanecen en
+el catálogo, vinculados al localizador por una FK con borrado en cascada.
+No se generan nuevos `metadata.json` ni se leen los legacy para entrenar.
+
+La admisión nativa está acotada a ocho operaciones. Las ondas se copian antes
+del handoff; si vencen en la cola del executor se retiran aunque los dos
+encoders sigan bloqueados. Un barrido físico pendiente ya no detiene esa purga:
+su observador se ejecuta aparte del controlador de buffers. El vencimiento se
+mantiene invalidado tras un retroceso del reloj. Cancelar al solicitante o
+agotar su espera de cierre conserva el trabajo real y la lease hasta terminar;
+un error de escritura no copia texto privado a logs ni conserva su payload
+mientras un diagnóstico está bloqueado.
+
+Las lecturas devuelven vistas revocables acotadas. Cada campo raw comprueba
+fuentes y plazo al acceder; la purga independiente también lo retira sin una
+lectura posterior. El cierre, el borrado del archivo y la rotación invalidan
+las vistas ya entregadas. El límite de 256 vistas retiene sólo las activas y
+libera admisión al vencer. Marcar una corrección como usada compara recibos
+reales, no paths aportados por el caller, y no renueva la fecha. La retención
+manual sólo puede acortarla a 48 horas o menos.
+
+`main` construye el colector configurado con ese mismo store. No se agrega un
+nuevo productor de correcciones ni una sesión de entrenamiento. El consumidor
+Whisper antiguo escribe datasets sin procedencia y no puede retirar capturas
+de un adapter: se bloquea para el colector privado antes de consultar datos,
+escribir JSONL, generar scripts o lanzar un proceso. El estado de ese paso
+queda bloqueado; las pruebas de los adaptadores sintéticos anteriores siguen
+separadas. Esto no desarrolla LoRA nuevo ni valida sus recursos para H6.
+
+La retención registra raíces STT actuales e históricas aunque la función esté
+deshabilitada. Una codificación incompleta mantiene parte y localizador hasta
+el unlink; al retirarlo se elimina también el texto vinculado. Los archivos
+legacy quedan en cuarentena y los desconocidos no autorizan una lectura.
+Faltan las conversaciones y otros datasets, productores y journal completo;
+`COLLECTORS` continúa sin un driver que finja borrado global. La validación
+completa y del artefacto se registra al terminarla.
+
 ## Trabajo restante
 
 1. Cubrir los demás consumidores de clips y aprendizaje y conectar

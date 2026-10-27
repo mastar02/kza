@@ -60,6 +60,8 @@ from typing import Callable
 from enum import StrEnum
 import threading
 
+from src.training.stt_correction_collector import STTCorrectionCollector
+
 logger = logging.getLogger(__name__)
 
 
@@ -645,11 +647,15 @@ class NightlyTrainer:
             whisper_threshold = 100
             if (
                 self.stt_collector
+                and not isinstance(self.stt_collector, STTCorrectionCollector)
                 and self.stt_collector.get_corrections_count() >= whisper_threshold
             ):
                 logger.info("Sufficient STT corrections, running Whisper fine-tune...")
                 whisper_stats = await self._run_whisper_finetune()
                 self.current_session.training_stats["whisper_stats"] = whisper_stats
+            elif isinstance(self.stt_collector, STTCorrectionCollector):
+                self.current_session.training_stats["whisper_stats"] = {
+                    "status": "blocked", "reason": "private_training_session_unavailable"}
 
             # 4. Finalizar
             self.current_session.status = TrainingStatus.COMPLETED
@@ -729,6 +735,12 @@ class NightlyTrainer:
         """
         if self.stt_collector is None:
             return {}
+
+        if isinstance(self.stt_collector, STTCorrectionCollector):
+            # The legacy trainer writes untracked datasets and cannot unlearn
+            # expired captures from an adapter. No private training is enabled
+            # until its dataset/session lifetime and release resources are verified.
+            raise RuntimeError('private_stt_training_session_unavailable')
 
         corrections = self.stt_collector.get_training_pairs()
         if not corrections:
