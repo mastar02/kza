@@ -254,6 +254,10 @@ async def test_authenticated_dashboard_cannot_serve_expired_or_revoked_event_tex
             assert denied.status_code == 401 and denied.headers['cache-control'] == 'no-store'
             live = await client.get('/api/conversations', headers=dashboard_auth)
             assert live.headers['x-kza-source'] == 'real' and 'Texto privado de prueba.' in live.text
+            [projected] = live.json()
+            assert projected['expires_at'] == source.expires_at
+            assert projected['observed_at'] == clock.now
+            assert projected['success'] is None  # No execution receipt was recorded.
             clock.now += 60
             expired = await client.get('/api/conversations', headers=dashboard_auth)
             assert expired.json() == [] and expired.headers['cache-control'] == 'no-store'

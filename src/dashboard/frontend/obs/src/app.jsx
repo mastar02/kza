@@ -181,6 +181,7 @@ const ENDPOINT_MAP = [
 window.__kzaSources = Object.fromEntries(ENDPOINT_MAP.map(([key]) => [key, 'mock/sin verificar']));
 
 const initialMocks = JSON.parse(JSON.stringify(window.MOCKS));
+window.__kzaConversationState = window.KzaConversationPrivacy.createConversationState();
 
 function replaceData(key, data) {
   const target = window.MOCKS[key];
@@ -193,6 +194,7 @@ function replaceData(key, data) {
 
 function clearPrivateData() {
   window.__kzaLiveState?.clear();
+  window.__kzaConversationState.clear();
   for (const [key, data] of Object.entries(initialMocks)) replaceData(key, JSON.parse(JSON.stringify(data)));
   window.__kzaSources = Object.fromEntries(ENDPOINT_MAP.map(([key]) => [key, 'mock/sin verificar']));
 }
@@ -200,6 +202,7 @@ function clearPrivateData() {
 async function hydrateMocks({ signal }) {
   await Promise.all(ENDPOINT_MAP.map(async ([key, path]) => {
     try {
+      const started = { mono: performance.now(), wall: Date.now() };
       const r = await fetch(API_BASE + path, { credentials: 'same-origin', signal });
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
@@ -222,7 +225,8 @@ async function hydrateMocks({ signal }) {
       // el script, capturando la referencia. Reasignar `window.MOCKS[key] = data`
       // dejaría la referencia vieja apuntando al mock. Mutamos el array/objeto
       // existente para que la referencia capturada vea los datos nuevos.
-      replaceData(key, data);
+      if (key === 'CONVERSATIONS') window.__kzaConversationState.receive(data, started);
+      else replaceData(key, data);
     } catch (e) {
       if (signal.aborted || e instanceof window.KzaDashboardSession.SessionRequired) throw e;
       window.__kzaSources[key] = 'degradada';

@@ -17,6 +17,7 @@ from src.dashboard.api import DashboardAPI
 from src.dashboard import system_monitor
 from src.dashboard.live_event_bus import LiveEvent, LiveEventBus, LiveEventType
 from src.dashboard.live_receipts import LiveReceiptStore
+from src.analytics.event_logger import EventLogger
 from src.memory.fact_ledger import MemoryReviewer
 from src.memory.privacy_services import PrivacyServices
 from tests.frontend.browser_typed_controls import Page
@@ -36,7 +37,9 @@ async def main():
         bus = LiveEventBus(source_policy=privacy.ledger, clock=privacy.ledger.clock, receipts=receipts)
         privacy.add_borrower(bus.begin_close)
         bus.start()
-        dashboard = DashboardAPI(event_bus=bus)
+        events = EventLogger(str(directory/'events.db'), source_policy=privacy.ledger)
+        await events.acall(events.initialize)
+        dashboard = DashboardAPI(event_bus=bus, event_logger=events, observability_use_mocks=False)
         # Keep mocked UI service adapters independent of host hardware probing.
         original_gpu, original_services = system_monitor.gpu_snapshot, system_monitor.services_snapshot
         system_monitor.gpu_snapshot, system_monitor.services_snapshot = lambda:None, lambda:None
@@ -106,10 +109,30 @@ async def main():
                     await page.evaluate('window.__kzaLiveWs.close()')
                     await page.wait_for("!document.body.textContent.includes('Synthetic disconnect turn')")
                     await page.wait_for('window.__kzaLiveWs?.readyState === 1')
+                    rest_text = 'Synthetic expiring REST conversation'
+                    rest_source = memory_source(now=time.time(), ttl=5)
+                    await events.alog('light.synthetic', 'turn_on', trigger_phrase=rest_text,
+                        user_name='Synthetic REST voice', sources=(rest_source,))
+                    await page.command('Page.navigate',{'url':f'http://127.0.0.1:{port}/obs/'})
+                    await page.wait_for("document.querySelector('#view-live') && window.__kzaLiveWs?.readyState === 1")
+                    assert await page.evaluate('!JSON.stringify(window.MOCKS.CONVERSATIONS).includes('+json.dumps(rest_text)+')')
+                    await page.evaluate("[...document.querySelectorAll('.nav-item')].find(node => node.textContent.includes('Conversaciones')).click()")
+                    await page.wait_for('document.body.textContent.includes('+json.dumps(rest_text)+')')
+                    await page.evaluate("const filter = document.querySelector('[aria-label=\"Todas las voces\"]'); filter.value = 'Synthetic REST voice'; filter.dispatchEvent(new Event('change'))")
+                    await page.wait_for('!document.body.textContent.includes('+json.dumps(rest_text)+')')
+                    assert await page.evaluate("window.__kzaConversationState.snapshot().length === 0 && !document.body.textContent.includes('Synthetic REST voice')")
+                    # A fresh request after the source boundary cannot re-admit it.
+                    assert time.time() >= rest_source.expires_at
+                    await events.alog('light.synthetic', 'turn_on', trigger_phrase='Synthetic session REST conversation',
+                        sources=(memory_source(now=time.time(), ttl=60),))
+                    await page.command('Page.navigate',{'url':f'http://127.0.0.1:{port}/obs/'})
+                    await page.wait_for("!!document.querySelector('#view-live') && window.__kzaLiveWs?.readyState === 1")
+                    assert await page.evaluate("window.__kzaConversationState.snapshot().some(row => row.stt === 'Synthetic session REST conversation')")
                     await show('Synthetic session turn')
                     await page.command('Network.clearBrowserCookies')
                     await page.evaluate('window.__kzaLiveWs.close()')
                     await page.wait_for("!document.querySelector('#view-live') && !document.body.textContent.includes('Synthetic session turn')")
+                    assert await page.evaluate('window.__kzaConversationState.snapshot().length === 0')
                     assert not page.errors, page.errors
                     print(json.dumps({'passed':True,'actual_chromium_http_ws_and_react':True,
                         'rendered_conversation_retirement':True,'rendered_idle_expiry':True,
@@ -118,6 +141,9 @@ async def main():
                         'browser_ack_after_dom_and_cache_clear':True,
                         'browser_ack_waits_for_explicit_dom_commit':True,
                         'pagehide_handler_clears_and_acknowledges_owned_view':True,
+                        'rest_conversation_original_deadline_clears_cache_dom_and_voice_filter':True,
+                        'rest_conversation_payload_excluded_from_global_mock_cache':True,
+                        'session_loss_clears_unmounted_rest_conversation_cache':True,
                         'global_streams_acceptance':False}))
         finally:
             if browser is not None:
@@ -126,6 +152,7 @@ async def main():
             server.should_exit = True
             await serving
             await bus.aclose()
+            await events.aclose()
             await privacy.aclose()
             system_monitor.gpu_snapshot, system_monitor.services_snapshot = original_gpu, original_services
 

@@ -28,6 +28,7 @@ from src.analytics.event_logger import EventLogger
 from src.dashboard import observability_mocks as mocks
 from src.dashboard import system_monitor
 from src.dashboard.auth import COOKIE_NAME, auth_configured, check_token, require_dashboard_session
+from src.dashboard.conversation_projection import ConversationProjection
 from src.core.owned_work import WorkCloseTimeout
 from src.dashboard.live_event_bus import LiveEventBus
 
@@ -151,10 +152,11 @@ def _conversations_adapter(
     """
     try:
         events = event_logger.get_events(limit=limit * 3)
-    except Exception as e:
-        logger.warning(f"event_logger.get_events failed: {e}")
+    except Exception as error:
+        logger.warning("Conversation observation unavailable: %s", type(error).__name__)
         return None
     out = []
+    observed_at = event_logger._clock() if isinstance(event_logger, EventLogger) else time.time()
     for ev in events:
         if not ev.trigger_phrase:
             continue  # automaciones/sensores no son charlas
@@ -167,21 +169,10 @@ def _conversations_adapter(
             continue
         if path and ev_path != path:
             continue
-        domain = ev.entity_id.split(".", 1)[0] if "." in ev.entity_id else "—"
-        out.append({
-            "id": f"turn_{int(ev.timestamp * 1000)}",
-            "ts": ev.datetime.strftime("%H:%M:%S"),
-            "user": ev.user_name or ev.user_id or "—",
-            "zone": ev_zone or "—",
-            "path": ev_path,
-            "stt": ev.trigger_phrase,
-            "intent": f"{domain}.{ev.action}",
-            "target": ev.entity_id,
-            "args": {k: v for k, v in ctx.items() if k not in ("zone", "room_id", "path", "latency_ms", "tts")},
-            "tts": ctx.get("tts", ""),
-            "latency_ms": ctx.get("latency_ms", 0),
-            "success": ctx.get("success", True),
-        })
+        projected = ConversationProjection(ev, observed_at).to_dict()
+        if projected is None:
+            continue
+        out.append(projected)
         if len(out) >= limit:
             break
     return out
