@@ -18,6 +18,7 @@ from src.ambient.types import AmbientUtterance, RawSegment
 from src.ambient.room_producer import RoomProducer
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.memory.producer_context import producer_context
+from src.memory.producer_scopes import ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated, run_private
 
 if TYPE_CHECKING:
@@ -78,8 +79,10 @@ class AmbientTranscriber:
         self._closed = False
         self._closing = None
         self._segments = {}
+        self._batches: set[asyncio.Task] = set()
         self._room_states: dict[str, RoomProducer] = {}
         self._prunes = {}
+        self._scopes = ProducerScopes(self.snapshot_operations, capacity=min(256, max(8, len(rooms)*4)))
         if privacy is not None:
             privacy.add_borrower(self.begin_close)
 
@@ -135,7 +138,7 @@ class AmbientTranscriber:
         if self._closing is None:
             if self._tap is not None:
                 self._tap.close()
-            for task in (*self._tasks, *self._segments):
+            for task in (*self._tasks, *self._segments, *self._batches):
                 task.cancel()
             drains = [room.begin_close() for room in self._room_states.values()]
             drains.append(self._native.begin_close())
@@ -143,7 +146,7 @@ class AmbientTranscriber:
                 if callable(getattr(type(adapter), "begin_close", None)):
                     drains.append(adapter.begin_close())
             async def finish():
-                await asyncio.gather(*self._tasks, *self._segments, *self._prunes.values(), return_exceptions=True)
+                await asyncio.gather(*self._tasks, *self._segments, *self._batches, *self._prunes.values(), return_exceptions=True)
                 await asyncio.gather(*drains)
                 self._tasks.clear()
                 self._last_tv.clear()
@@ -153,7 +156,7 @@ class AmbientTranscriber:
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Snapshot finite actual operations, excluding idle room/maintenance loops."""
-        tasks = set(self._segments) | set(self._native._tasks) | set(self._prunes.values())
+        tasks = set(self._segments) | self._batches | set(self._native._tasks) | set(self._prunes.values())
         for room in self._room_states.values():
             tasks.update(room.snapshot_operations())
         for adapter in (self._stt, self._tagger):
@@ -163,9 +166,16 @@ class AmbientTranscriber:
             tasks.add(self._closing)
         return tuple(tasks)
 
+    def conversation_busy(self, conversation_id: str) -> bool:
+        """Check finite work; idle tap/VAD buffers need separate retirement proof."""
+        if self._privacy is None:
+            raise RuntimeError('privacy_authority_unavailable')
+        return self._scopes.busy(conversation_id, self._privacy.ledger)
+
     def resource_status(self) -> dict:
         """Expose counts without projecting capture IDs, room names, text or audio."""
         return {"closed": self._closed, "segments": len(self._segments),
+                "batches": len(self._batches), "source_scopes": self._scopes.resource_status(),
                 "operations": sum(not task.done() for task in self.snapshot_operations()),
                 "tap_chunks": self._tap.buffered_count() if self._tap is not None else 0,
                 "rooms": [room.status() for room in self._room_states.values()],
@@ -227,26 +237,47 @@ class AmbientTranscriber:
         """
         state = self._room_states[room_id]
         backoff = 1.0
-        items = seg = None
+        task = None
         while self._running:
             try:
                 self.prune_private()
-                items = self._tap.drain(room_id)
-                if items:
-                    await state.feed(items)
-                items = None
-                while state.ready:
-                    seg = state.ready.pop(0)
-                    await self._handle_segment(room_id, seg)
-                    seg = None
+                with producer_context(room_id):
+                    task = asyncio.create_task(self._consume_batch(room_id, state))
+                self._batches.add(task)
+                def finished(done):
+                    self._batches.discard(done)
+                    if not done.cancelled():
+                        done.exception()
+                task.add_done_callback(finished)
+                await asyncio.shield(task)
                 backoff = 1.0
                 await asyncio.sleep(self.poll_interval_s)
             except asyncio.CancelledError:
+                if task is not None:
+                    task.cancel()
                 return
             except Exception as error:
                 logger.warning("Ambient room processing deferred: %s", type(error).__name__)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60.0)
+            finally:
+                task = None
+
+    async def _consume_batch(self, room_id, state):
+        # The idle worker never owns arrays across an await. This finite task
+        # and its actual native children retain the metadata scope instead.
+        items = seg = None
+        with self._scopes.operation():
+            try:
+                items = self._tap.drain(room_id)
+                if items:
+                    await state.feed(items)
+                items = None
+                while state.ready:
+                    self._scopes.replace_sources(None)
+                    seg = state.ready.pop(0)
+                    await self._handle_segment(room_id, seg)
+                    seg = None
             finally:
                 items = seg = None
 
@@ -265,20 +296,22 @@ class AmbientTranscriber:
                 logger.debug("Ambient segment admission deferred: capacity")
                 return
             sources = (capture_source,) if capture_source is not None else ()
-            with producer_context(room_id, sources):
-                task = asyncio.create_task(self._run_segment(room_id, seg, capture_source))
-            self._segments[task] = capture_source
-            def finished(done):
-                self._segments.pop(done, None)
-                if not done.cancelled():
-                    done.exception()
-            task.add_done_callback(finished)
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                if asyncio.current_task().cancelling():
-                    task.cancel()
-                    raise
+            self._scopes.replace_sources(sources)
+            with self._scopes.operation(sources):
+                with producer_context(room_id, sources):
+                    task = asyncio.create_task(self._run_segment(room_id, seg, capture_source))
+                self._segments[task] = capture_source
+                def finished(done):
+                    self._segments.pop(done, None)
+                    if not done.cancelled():
+                        done.exception()
+                task.add_done_callback(finished)
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    if asyncio.current_task().cancelling():
+                        task.cancel()
+                        raise
         except (SourcesInvalidated, PermissionError):
             pass
         finally:

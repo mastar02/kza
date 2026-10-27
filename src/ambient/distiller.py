@@ -18,6 +18,7 @@ from typing import Awaitable, Callable
 
 from src.memory.fact_ledger import MemoryOrigin, MemorySource
 from src.memory.prompt_context import SourcesInvalidated, run_private
+from src.memory.producer_scopes import ProducerScopes
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 
 logger = logging.getLogger(__name__)
@@ -226,7 +227,9 @@ class Distiller:
         self._close_timeout_s = close_timeout_s
         self._cycles: set[asyncio.Task] = set()
         self._callbacks: set[asyncio.Task] = set()
+        self._reads: set[asyncio.Task] = set()
         self._native = OwnedBlockingWork(capacity=1, close_timeout_s=close_timeout_s)
+        self._scopes = ProducerScopes(self.snapshot_operations, capacity=2)
         self._closing = None
         if privacy is not None:
             privacy.add_borrower(self.begin_close)
@@ -263,22 +266,54 @@ class Distiller:
         return self._policy is None or self._policy.sources_available(sources)
 
     async def _extract(self) -> int:
+        failure = None
+        with self._scopes.operation():
+            try:
+                return await self._extract_body()
+            except SourcesInvalidated:
+                pass
+            except Exception as error:
+                failure = type(error).__name__
+        if failure is not None:
+            logger.warning("Distillation deferred: %s", failure)
+        return 0
+
+    async def _read_owned(self):
+        rows = None
         try:
-            return await self._extract_body()
-        except SourcesInvalidated:
-            return 0
-        except Exception as error:
-            logger.warning("Distillation deferred: %s", type(error).__name__)
-            return 0
+            rows = await self._store.undistilled_live(
+                limit=200, min_vad_prob=self.min_vad_prob, spanish_only=self.spanish_only,
+                require_provenance=True)
+            self._scopes.replace_sources(tuple(MemorySource(r['capture_id'], r['conversation_id'], r['t0'],
+                r['expires_at'], MemoryOrigin.AMBIENT) for r in rows))
+            return rows
+        except Exception:
+            pass
+        finally:
+            rows = None
+        # Dispose the original read exception before it can escape into an
+        # observer/diagnostic traceback with raw SQLite rows attached.
+        raise RuntimeError('distillation_read_failed')
+
+    async def _read_batch(self):
+        task = None
+        try:
+            task = asyncio.create_task(self._read_owned())
+            self._reads.add(task)
+            def finished(done):
+                self._reads.discard(done)
+                if not done.cancelled():
+                    done.exception()
+            task.add_done_callback(finished)
+            return await asyncio.shield(task)
+        finally:
+            task = None
 
     async def _extract_body(self) -> int:
         rows = batch = kept = dropped = lines = prompt = raw = facts = fact = r = callback = None
         sources = ()
         try:
-            rows = await self._store.undistilled_live(
-                limit=200, min_vad_prob=self.min_vad_prob, spanish_only=self.spanish_only,
-                require_provenance=True,
-            )
+            rows = await self._read_batch()
             if len(rows) < self.min_batch:
                 return 0
             # Truncar el lote por presupuesto de chars del prompt (7B local)
@@ -300,6 +335,7 @@ class Distiller:
             rows = r = None
             sources = tuple(MemorySource(r["capture_id"], r["conversation_id"], r["t0"],
                                         r["expires_at"], MemoryOrigin.AMBIENT) for r in batch)
+            self._scopes.replace_sources(sources)
             if not self._available(sources):
                 return 0
             self._log_language_shadow(batch)
@@ -320,6 +356,7 @@ class Distiller:
             ]
             prompt = "Transcripciones ambientales:\n" + "\n".join(lines)
             batch = kept = dropped = lines = r = None
+            self._scopes.replace_sources(sources)
             raw = await run_private(self._chat(prompt), lambda: self._available(sources))
             prompt = None
             if type(raw) is not str or len(raw) > 65536:
@@ -386,12 +423,19 @@ class Distiller:
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Expose actual retained cycles, callbacks and native operations on-loop."""
-        return tuple(self._cycles | self._callbacks | self._native._tasks)
+        return tuple(self._cycles | self._callbacks | self._reads | self._native._tasks)
+
+    def conversation_busy(self, conversation_id: str) -> bool:
+        """Include reads before lineage and native saves after observer exit."""
+        if self._policy is None:
+            raise RuntimeError('privacy_authority_unavailable')
+        return self._scopes.busy(conversation_id, self._policy)
 
     def resource_status(self) -> dict:
         """Report bounded stages without content, IDs, sources or exceptions."""
         return {"closed": self._closed, "cycles": len(self._cycles),
                 "store_callbacks": len(self._callbacks), "native_operations": self._native.status()["operations"],
+                "reads": len(self._reads), "source_scopes": self._scopes.resource_status(),
                 "closing": self._closing is not None and not self._closing.done()}
 
     def begin_close(self) -> asyncio.Task:
@@ -403,6 +447,7 @@ class Distiller:
                 task.cancel()
             async def finish():
                 await asyncio.gather(*self._cycles, return_exceptions=True)
+                await asyncio.gather(*self._reads, return_exceptions=True)
                 await asyncio.gather(*self._callbacks, return_exceptions=True)
                 await self._native.begin_close()
             self._closing = asyncio.create_task(finish())

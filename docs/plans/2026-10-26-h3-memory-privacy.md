@@ -1951,6 +1951,33 @@ No inicia hardware ni `main` completo, no modifica datos privados del hogar y
 no publica producción. Los límites no se amplían ni se manipula GC; la aceptación
 integrada de GC/hardware de H4/H6 continúa pendiente.
 
+### Avance: scopes finitos de handoffs ambientales y lecturas de destilación
+
+El worker ambiental de larga duración ya no conserva `items` o `seg` alrededor
+de sus awaits. Cada ciclo drena y procesa en una task finita registrada antes de
+adquirir arrays. Sus operaciones nativas heredan un recibo con metadata, sin
+referencias fuertes al owner, resultados o excepciones. El recibo permanece
+mientras un hijo real siga registrado, incluso después de cancelar al padre.
+Los contadores públicos no incluyen texto, IDs, fechas ni nombres de habitación.
+
+Destilación registra también las lecturas anteriores a conocer la procedencia.
+El query real de aiosqlite vive en una task retenida: cancelar al observador no
+cancela ese lector ni libera el lease durante su ejecución. La afinidad empieza
+como desconocida y se resuelve con las fuentes de todas las filas adquiridas.
+Se reduce al lote/prompt seleccionado sólo después de retirar los locales
+excluidos. Los saves nativos mantienen esa afinidad después de salir el ciclo;
+una conversación conocida ajena no queda bloqueada por ellos.
+
+La capacidad se libera tras retirar los hijos reales, sin forzar GC. Perder el
+owner no se considera prueba de salida. Una excepción del lector se sustituye
+fuera de su handler para evitar conservar el traceback original con datos.
+El cierre espera también los lectores retenidos antes de cerrar el catálogo.
+
+Esta consulta de afinidad cubre trabajo finito; los buffers tap/VAD en reposo
+requieren su prueba de retiro por separado. Falta integrar esos contratos con
+captura, comandos y el driver de `PRODUCERS`: no se emiten recibos globales ni
+se habilita el borrado amplio en la UI. Producción permanece sin cambios.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
