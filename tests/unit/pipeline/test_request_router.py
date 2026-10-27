@@ -381,58 +381,59 @@ class TestProcessCommandLegacy:
         assert result["success"] is False
 
 
+@pytest.mark.asyncio
 class TestFeedbackDetection:
     """Test feedback phrase detection."""
 
-    def test_feedback_good_detected(self):
+    async def test_feedback_good_detected(self):
         """Positive feedback phrase detected."""
         collector = MagicMock()
         router = _build_router(conversation_collector=collector)
         router._last_response = "some response"
 
-        fb = router._check_feedback("buena respuesta")
+        fb = await router._check_feedback("buena respuesta")
         assert fb["is_feedback"] is True
         assert "Gracias" in fb["response"]
         collector.mark_last_response.assert_called_once_with("good")
 
-    def test_feedback_bad_detected(self):
+    async def test_feedback_bad_detected(self):
         """Negative feedback phrase detected."""
         collector = MagicMock()
         router = _build_router(conversation_collector=collector)
         router._last_response = "some response"
 
-        fb = router._check_feedback("mala respuesta")
+        fb = await router._check_feedback("mala respuesta")
         assert fb["is_feedback"] is True
         assert "mejorar" in fb["response"]
         collector.mark_last_response.assert_called_once_with("bad")
 
-    def test_feedback_correction_detected(self):
+    async def test_feedback_correction_detected(self):
         """Correction feedback detected."""
         collector = MagicMock()
         router = _build_router(conversation_collector=collector)
         router._last_response = "some response"
 
-        fb = router._check_feedback("debiste decir hola mundo")
+        fb = await router._check_feedback("debiste decir hola mundo")
         assert fb["is_feedback"] is True
         assert "hola mundo" in fb["response"]
         collector.mark_last_response.assert_called_once_with("corrected", "hola mundo")
 
-    def test_no_feedback_without_last_response(self):
+    async def test_no_feedback_without_last_response(self):
         """No feedback if no previous response exists."""
         collector = MagicMock()
         router = _build_router(conversation_collector=collector)
         # _last_response is None by default
 
-        fb = router._check_feedback("buena respuesta")
+        fb = await router._check_feedback("buena respuesta")
         assert fb["is_feedback"] is False
 
-    def test_no_feedback_normal_text(self):
+    async def test_no_feedback_normal_text(self):
         """Normal text not detected as feedback."""
         collector = MagicMock()
         router = _build_router(conversation_collector=collector)
         router._last_response = "some response"
 
-        fb = router._check_feedback("enciende la luz de la sala")
+        fb = await router._check_feedback("enciende la luz de la sala")
         assert fb["is_feedback"] is False
 
 

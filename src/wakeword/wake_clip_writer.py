@@ -16,7 +16,7 @@ import numpy as np
 from src.core.owned_work import WorkCloseTimeout
 from src.memory.fact_ledger import MemorySource
 from src.memory.producer_context import PRODUCER_CONTEXT
-from src.wakeword.clip_store import ClipTarget, WakeClipStore, clip_directory
+from src.wakeword.clip_store import CollectorKind, ClipTarget, WakeClipStore, clip_directory
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class WakeClipWriter:
                  max_rejected_files: int = 4000, max_missed_files: int = 300,
                  queue_size: int = 8, *, store: WakeClipStore, target: ClipTarget,
                  close_timeout_s: float = 1):
-        if str(directory) != target.root:
+        if str(directory) != target.root or target.kind is not CollectorKind.WAKE_CLIPS:
             raise ValueError('wake_clip_target_mismatch')
         if any(type(n) is not int or n <= 0 for n in
                (sample_rate, max_files, max_rejected_files, max_missed_files, queue_size)):

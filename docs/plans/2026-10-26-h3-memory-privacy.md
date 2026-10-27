@@ -1601,9 +1601,59 @@ control alcanza 0,06 ms y el cleanup 10,93 ms. Esta suite no vuelve a medir las
 pausas globales de GC observadas antes ni cierra la aceptación física e
 integrada de H4/H6. Producción y los datos privados reales siguen sin cambios.
 
+## Avance: turnos y exportaciones de conversaciones
+
+`ConversationCollector` ya no carga `conv_*.json` ni mantiene otra copia raw
+global en `_conversations`. Cada turno nuevo exige fuentes explícitas del
+input y de la respuesta completa. Se publica como JSON inmutable con UUID,
+hash, permisos 0600 y localizador durable; grupo, sala y calidad se indexan en
+el catálogo. Su plazo es el menor de todas las fuentes, sin renovarlo al leer,
+agrupar, marcar o exportar. Las vistas de turnos comprueban sus recibos al
+acceder y se purgan sin una lectura posterior.
+
+El feedback reemplaza el turno por otra versión inmutable. La transacción
+comprueba que la versión anterior sigue vigente, publica la nueva y retira la
+anterior. La marca incorpora su propia fuente y conserva el plazo original.
+El feedback por voz busca el último turno de la misma sala y conversación;
+un caller con una vista real puede adjuntar una interacción explícita. Los
+nombres son sólo datos raw y no conceden permisos. El router espera el recibo
+real y no anuncia una marca guardada si no existe un turno vigente.
+
+Las exportaciones Alpaca, ShareGPT y conversaciones son JSONL temporales en
+destinos registrados. Cada entrada conserva fuentes y el turno original; el
+archivo completo vence con el plazo más antiguo. Los lotes se limitan por
+cantidad y por las 64 fuentes del scope; un cursor permite continuar sin
+truncar procedencia. Los edges de dependencia permanecen aunque se retire el
+turno padre: cambiar su calidad o borrarlo invalida las vistas, bloquea un
+exporter retenido y permite retirar el archivo derivado después de reiniciar.
+El intento precede al `.part`; los errores de unlink conservan el localizador.
+
+La publicación vuelve a comprobar el plazo después del callback transaccional
+y del commit real de SQLite. Las compuertas reprodujeron ambos vencimientos
+tardíos antes de corregirlos. La transferencia de procedencia al reemplazo se
+valida dentro de la transacción; retirar el predecesor no cancela la versión
+nueva que acaba de autorizarse. Ocho operaciones y 256 vistas acotan el trabajo
+y las copias retenidas. El cierre conserva recursos nativos reales y descarta
+payloads de cola sin esperar a encoders o barridos ocupados.
+
+El CLI de datos abre la autoridad privada, consulta estadísticas sin cargar
+texto legacy y devuelve direcciones temporales de exportación. Los consumidores
+de hábitos y entrenamiento antiguos rechazan el colector privado antes de
+copiar su texto; LoRA rechaza estos exports gestionados antes de cargar modelos.
+El perfil candidato deja el entrenamiento nocturno deshabilitado: sus copias y
+recursos aún no cumplen la aceptación integrada de H6. No se instala ni se
+reinicia producción y no se desarrolla LoRA nuevo. `main` construye el colector
+para retención y feedback independientemente de ese flag; este paso no agrega
+un productor automático de turnos.
+
+Siguen pendientes otros datasets y consumidores legacy, journal completo,
+diagnósticos, streams, voces y los demás entregables de H0–H6. Un turno o export
+retirado localmente no equivale a un recibo global de `COLLECTORS`.
+La validación completa y del artefacto se registra al terminarla.
+
 ## Trabajo restante
 
-1. Cubrir los demás consumidores de clips y aprendizaje y conectar
+1. Cubrir los demás datasets y consumidores de clips/aprendizaje y conectar
    todos los productores reales al journal. El procesador y ambient retenidos
    todavía no completan `PRODUCERS`.
 2. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

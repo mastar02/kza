@@ -561,6 +561,9 @@ class HabitDatasetGenerator:
         """Generar ejemplos de conversaciones marcadas como buenas"""
         if not self.conversation_collector:
             return
+        from src.training.conversation_collector import ConversationCollector
+        if isinstance(self.conversation_collector, ConversationCollector):
+            raise RuntimeError('private_training_session_unavailable')
 
         for conv in self.conversation_collector._conversations:
             for turn in conv.turns:

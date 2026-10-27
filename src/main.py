@@ -61,7 +61,7 @@ from src.audio.direction_observer import parse_direction_observation
 from src.conversation.follow_up_mode import FollowUpMode
 from src.orchestrator import MultiUserOrchestrator
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
-from src.training.conversation_collector import ConversationCollector
+from src.training.conversation_collector import build_conversation_collector
 from src.training.stt_correction_collector import build_stt_correction_collector
 from src.training.habit_dataset_generator import HabitDatasetGenerator
 from src.training.nightly_trainer import NightlyTrainer, NightlyConfig
@@ -575,6 +575,7 @@ async def _run_main(shutdown: AsyncExitStack):
     context_erasure = await build_context_erasure(config, privacy=privacy_services, owner=erasure_services, memory=memory_manager)
     wake_clip_store = await build_wake_clip_store(config, privacy=privacy_services, shutdown=shutdown)
     stt_correction_collector = await build_stt_correction_collector(config, store=wake_clip_store)
+    conversation_collector = await build_conversation_collector(config, store=wake_clip_store)
 
     # LLM Command Router (Opción 2 NLU) — clasificador de comandos vía vLLM 7B.
     # Independiente del LLMRouter: este valida texto post-wake contra
@@ -1528,6 +1529,7 @@ async def _run_main(shutdown: AsyncExitStack):
         privacy=privacy_services,
         user_manager=user_manager,
         enrollment=voice_enrollment,
+        conversation_collector=conversation_collector,
         event_logger=event_logger,
         suggestion_engine=suggestion_engine,
         latency_monitor=latency_monitor,
@@ -1675,12 +1677,6 @@ async def _run_main(shutdown: AsyncExitStack):
     nightly_trainer = None
 
     if nightly_config_data.get("enabled", False):
-        conversation_collector = ConversationCollector(
-            data_dir=training_config.get("conversations_dir", "./data/conversations"),
-            auto_save_interval=training_config.get("auto_save_interval", 10),
-            max_conversations_in_memory=training_config.get("max_conversations_in_memory", 100),
-        )
-
         habits_config = training_config.get("habits", {})
         habit_generator = HabitDatasetGenerator(
             data_dir=habits_config.get("data_dir", "./data/habit_training"),

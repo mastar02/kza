@@ -5,7 +5,6 @@ Herramientas para personalizar y entrenar la IA.
 """
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -111,45 +110,57 @@ def cmd_commands(args):
     return 0
 
 
-def cmd_training_data(args):
-    """Gestionar datos de entrenamiento"""
-    from src.training.conversation_collector import ConversationCollector
+async def _training_data(args):
+    from contextlib import AsyncExitStack
+    import asyncio
+    import yaml
+    from src.memory.privacy_services import build_privacy_services
+    from src.wakeword.clip_store import build_wake_clip_store
+    from src.training.conversation_collector import build_conversation_collector
 
-    collector = ConversationCollector()
-
-    if args.action == "stats":
-        stats = collector.get_stats()
-        print("\n📊 Estadísticas de Conversaciones")
-        print("=" * 40)
-        print(f"  Total conversaciones: {stats['total_conversations']}")
-        print(f"  Total turnos: {stats['total_turns']}")
-        print(f"\n  Distribución de calidad:")
-        for quality, count in stats['quality_distribution'].items():
-            print(f"    - {quality}: {count}")
-        print(f"\n  Listos para entrenamiento: {stats['marked_for_training']}")
-        print(f"  Directorio: {stats['data_dir']}")
-
-    elif args.action == "export":
-        output = args.output or "./data/training_data.jsonl"
-        format_type = args.format or "alpaca"
-
-        stats = collector.export_for_training(
-            output_path=output,
-            format=format_type,
-            only_marked=not args.include_all
-        )
-
-        print(f"\n✅ Datos exportados:")
-        print(f"   Archivo: {stats['output_path']}")
-        print(f"   Formato: {stats['format']}")
-        print(f"   Entradas: {stats['exported']}")
-        print(f"   - Buenos: {stats['good_responses']}")
-        print(f"   - Corregidos: {stats['corrected_responses']}")
-
-    elif args.action == "feedback-help":
-        print(collector.get_training_commands())
-
+    def load():
+        with open(getattr(args, 'config', 'config/settings.yaml')) as stream:
+            return yaml.safe_load(stream)
+    config = await asyncio.to_thread(load)
+    if type(config) is not dict:
+        raise ValueError('invalid_training_config')
+    async with AsyncExitStack() as shutdown:
+        privacy = await build_privacy_services(config, shutdown=shutdown)
+        store = await build_wake_clip_store(config, privacy=privacy, shutdown=shutdown)
+        collector = await build_conversation_collector(config, store=store)
+        if args.action == "stats":
+            stats = await collector.get_stats()
+            print(f"Conversaciones vigentes: {stats['total_conversations']}")
+            print(f"Turnos vigentes: {stats['total_turns']}")
+            print(f"Marcados: {stats['marked_for_training']}")
+            print("Los archivos legacy permanecen en cuarentena.")
+        else:
+            output_dir = getattr(args, 'output_dir', None) or str(Path(args.output or './data/training_data.jsonl').parent)
+            exported = await collector.export_for_training(output_dir, args.format or 'alpaca',
+                only_marked=not args.include_all, limit=getattr(args,'limit',32),
+                after_sequence=getattr(args,'after_sequence',0))
+            if exported is None:
+                print("No hay turnos vigentes para exportar.")
+            else:
+                print(f"Archivo temporal: {exported.output_path}")
+                print(f"Entradas: {exported.exported}; vencimiento: {exported.expires_at}")
+                if exported.has_more:
+                    print(f"Hay más turnos; siguiente cursor: {exported.next_cursor}")
     return 0
+
+
+def cmd_training_data(args):
+    """Inspect or export only the authoritative, expiring conversation policy."""
+    import asyncio
+    from src.training.conversation_collector import ConversationCollector
+    if args.action == 'feedback-help':
+        print(ConversationCollector.get_training_commands())
+        return 0
+    try:
+        return asyncio.run(_training_data(args))
+    except (RuntimeError, OSError, ValueError):
+        print('No se pudo acceder al catálogo privado o preparar la exportación.')
+        return 1
 
 
 def cmd_lora(args):
@@ -171,7 +182,7 @@ def cmd_lora(args):
             print("Uso: --action train --data ./data/training_data.jsonl")
             return 1
 
-        print(f"\n🧠 Iniciando entrenamiento LoRA")
+        print("\n🧠 Iniciando entrenamiento LoRA")
         print(f"   Modelo base: {trainer.base_model}")
         print(f"   Datos: {args.data}")
         print(f"   Épocas: {args.epochs}")
@@ -186,7 +197,7 @@ def cmd_lora(args):
         )
 
         if result["success"]:
-            print(f"\n✅ Entrenamiento completado")
+            print("\n✅ Entrenamiento completado")
             print(f"   Adapter: {result['adapter_path']}")
             print(f"   Parámetros entrenables: {result['trainable_params']:,}")
         else:
@@ -256,7 +267,12 @@ Ejemplos:
     train_parser = subparsers.add_parser("training", help="Datos de entrenamiento")
     train_parser.add_argument("--action", required=True,
                              choices=["stats", "export", "feedback-help"])
-    train_parser.add_argument("--output", help="Ruta de salida para export")
+    train_parser.add_argument("--config", default="config/settings.yaml", help="Configuración del catálogo privado")
+    destination = train_parser.add_mutually_exclusive_group()
+    destination.add_argument("--output-dir", help="Directorio para una exportación temporal")
+    destination.add_argument("--output", help="Usar el directorio padre de esta ruta; se devuelve un nombre temporal")
+    train_parser.add_argument("--limit", type=int, default=32, help="Máximo de turnos por lote")
+    train_parser.add_argument("--after-sequence", type=int, default=0, help="Continuar desde el cursor del lote anterior")
     train_parser.add_argument("--format", choices=["alpaca", "sharegpt", "conversations"],
                              default="alpaca")
     train_parser.add_argument("--include-all", action="store_true",

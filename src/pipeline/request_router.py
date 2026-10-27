@@ -1167,11 +1167,11 @@ class RequestRouter:
             return result
 
         # 2. Check feedback
-        feedback_result = self._check_feedback(text)
+        feedback_result = await self._check_feedback(text)
         if feedback_result["is_feedback"]:
             result["intent"] = "feedback"
             result["response"] = feedback_result["response"]
-            result["success"] = True
+            result["success"] = feedback_result.get("success", True)
             await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
@@ -1614,40 +1614,44 @@ class RequestRouter:
         )
         return pc
 
-    def _check_feedback(self, text: str) -> dict:
-        """Detect if text is feedback about the previous response."""
-        if not self.conversation_collector or not self._last_response:
+    async def _check_feedback(self, text: str) -> dict:
+        """Mark a scoped record and acknowledge only an actual saved receipt."""
+        from src.training.conversation_collector import ConversationCollector
+        collector = self.conversation_collector
+        managed = isinstance(collector, ConversationCollector)
+        if collector is None or not managed and not self._last_response:
             return {"is_feedback": False, "response": ""}
-
+        quality = correction = None
         text_lower = text.lower().strip()
-
-        for phrase in self.FEEDBACK_GOOD:
-            if phrase in text_lower:
-                self.conversation_collector.mark_last_response("good")
-                return {
-                    "is_feedback": True,
-                    "response": "Gracias, lo recordare para mejorar."
-                }
-
-        for phrase in self.FEEDBACK_BAD:
-            if phrase in text_lower:
-                self.conversation_collector.mark_last_response("bad")
-                return {
-                    "is_feedback": True,
-                    "response": "Entendido, tratare de mejorar."
-                }
-
-        for prefix in self.FEEDBACK_CORRECTION_PREFIX:
-            if text_lower.startswith(prefix):
-                correction = text[len(prefix):].strip()
-                if correction:
-                    self.conversation_collector.mark_last_response("corrected", correction)
-                    return {
-                        "is_feedback": True,
-                        "response": f"Entendido, deberia haber dicho: {correction}"
-                    }
-
-        return {"is_feedback": False, "response": ""}
+        if any(phrase in text_lower for phrase in self.FEEDBACK_GOOD):
+            quality = "good"
+        elif any(phrase in text_lower for phrase in self.FEEDBACK_BAD):
+            quality = "bad"
+        else:
+            for prefix in self.FEEDBACK_CORRECTION_PREFIX:
+                if text_lower.startswith(prefix):
+                    correction = text[len(prefix):].strip()
+                    if correction:
+                        quality = "corrected"
+                    break
+        if quality is None:
+            return {"is_feedback": False, "response": ""}
+        try:
+            if managed:
+                source = self._memory_source.get()
+                saved = await collector.mark_last_response(quality, correction,
+                    sources=(source,) if source is not None else ())
+            else:
+                saved = collector.mark_last_response(quality, correction) if correction is not None else collector.mark_last_response(quality)
+            if not saved:
+                return {"is_feedback": True, "success": False,
+                        "response": "No encuentro una respuesta vigente para marcar en esta conversación."}
+            response = {"good": "Gracias, marqué esa respuesta como buena.",
+                        "bad": "Entendido, marqué esa respuesta para revisar y mejorar.",
+                        "corrected": f"Entendido, guardé la corrección: {correction}"}[quality]
+            return {"is_feedback": True, "success": True, "response": response}
+        finally:
+            text = correction = None
 
     def _is_sync_command(self, text: str) -> bool:
         """Detect sync/update command."""

@@ -28,6 +28,8 @@ class CollectorKind(StrEnum):
 
     WAKE_CLIPS = 'wake_clips'
     STT_CORRECTIONS = 'stt_corrections'
+    CONVERSATIONS = 'conversations'
+    CONVERSATION_EXPORTS = 'conversation_exports'
 
 
 class ClipRetentionState(StrEnum):
@@ -52,6 +54,11 @@ class ClipTarget:
     id: str
     root: str
     kind: CollectorKind = CollectorKind.WAKE_CLIPS
+
+    @property
+    def extension(self) -> str:
+        """Select only the encoding registered for this dataset."""
+        return {CollectorKind.CONVERSATIONS: '.json', CollectorKind.CONVERSATION_EXPORTS: '.jsonl'}.get(self.kind, '.wav')
 
 
 @contextmanager
@@ -131,6 +138,14 @@ class WakeClipStore:
                 id TEXT PRIMARY KEY REFERENCES wake_clips_v1(id) ON DELETE CASCADE,
                 original_text TEXT NOT NULL, corrected_text TEXT NOT NULL,
                 user_id TEXT, sample_rate INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0)''')
+            db.execute('''CREATE TABLE IF NOT EXISTS conversation_turns_v1 (
+                id TEXT PRIMARY KEY REFERENCES wake_clips_v1(id) ON DELETE CASCADE,
+                group_id TEXT NOT NULL, input_sources_json TEXT NOT NULL,
+                quality TEXT NOT NULL, digest TEXT NOT NULL)''')
+            db.execute('CREATE INDEX IF NOT EXISTS conversation_group ON conversation_turns_v1(group_id)')
+            db.execute('''CREATE TABLE IF NOT EXISTS conversation_export_parents_v1 (
+                export_id TEXT NOT NULL REFERENCES wake_clips_v1(id) ON DELETE CASCADE,
+                parent_id TEXT NOT NULL, PRIMARY KEY(export_id,parent_id))''')
 
     def register(self, directory, kind: CollectorKind = CollectorKind.WAKE_CLIPS) -> ClipTarget:
         """Persist a canonical locator even when the corresponding feature is off."""
@@ -185,7 +200,7 @@ class WakeClipStore:
 
         self.changed()
 
-    def publish(self, target: ClipTarget, job, live) -> None:
+    def publish(self, target: ClipTarget, job, live, commit=None) -> None:
         """Atomically admit final rename before a tombstone can commit."""
         with self._files, self.ledger._transaction() as db:
             row = db.execute('SELECT sources_json,expires_at,published FROM wake_clips_v1 WHERE id=? AND target_id=?',
@@ -197,18 +212,28 @@ class WakeClipStore:
                 or not live() or not self.ledger._sources_live(db, job.sources)):
                 raise PermissionError('wake_clip_sources_invalidated')
             with clip_directory(target.root) as directory:
-                os.replace(job.id + '.part', job.id + '.wav', src_dir_fd=directory, dst_dir_fd=directory)
+                os.replace(job.id + '.part', job.id + target.extension, src_dir_fd=directory, dst_dir_fd=directory)
                 os.fsync(directory)
             if self.ledger.clock() >= row['expires_at'] or not live() or not self.ledger._sources_live(db, job.sources):
                 raise PermissionError('wake_clip_sources_invalidated')
+            if commit is not None:
+                commit(db)
+            if self.ledger.clock() >= row['expires_at'] or not live() or not self.ledger._sources_live(db, job.sources):
+                raise PermissionError('wake_clip_sources_invalidated')
             db.execute('UPDATE wake_clips_v1 SET published=1 WHERE id=? AND target_id=?', (job.id, target.id))
+        # SQLite commit itself is native I/O and may finish after the raw
+        # deadline. The caller still owns the locator and must retire the file.
+        # A later tombstone is ordered after this commit, so this final fence
+        # concerns time rather than reinterpreting that valid write order.
+        if self.ledger.clock() >= row['expires_at']:
+            raise PermissionError('wake_clip_sources_invalidated')
 
     def _unlink(self, target: ClipTarget, identifier: str) -> None:
         if str(UUID(identifier)) != identifier:
             raise ValueError('invalid_wake_clip_id')
         try:
             with clip_directory(target.root) as directory:
-                for extension in ('.part', '.wav'):
+                for extension in ('.part', target.extension):
                     try:
                         os.unlink(identifier + extension, dir_fd=directory)
                     except FileNotFoundError:
@@ -266,11 +291,14 @@ class WakeClipStore:
                 if target is None or not 0 < row['expires_at'] <= min(s.expires_at for s in sources):
                     raise ValueError('unrecognized_wake_clip_locator')
                 deadline = min(row['expires_at'], *(s.expires_at for s in sources))
+                stale_parent = db.execute('''SELECT 1 FROM conversation_export_parents_v1 d
+                    LEFT JOIN wake_clips_v1 p ON p.id=d.parent_id WHERE d.export_id=?
+                    AND (p.id IS NULL OR p.published!=1 OR p.expires_at<=?) LIMIT 1''', (row['id'],now)).fetchone()
                 if self._writing(row['id']):
                     pending += 1
                     self._cycle_deadline = min(self._cycle_deadline, now + .05)
                     continue
-                if not row['published'] or deadline <= now or self.ledger.sources_committed_unavailable(sources):
+                if not row['published'] or deadline <= now or stale_parent or self.ledger.sources_committed_unavailable(sources):
                     self._unlink(target, row['id'])
                     db.execute('DELETE FROM wake_clips_v1 WHERE id=?', (row['id'],))
                     removed += 1
@@ -364,5 +392,6 @@ async def build_wake_clip_store(config: dict, *, privacy, shutdown) -> WakeClipS
     await store._work.run(store.register, clips.get('dir', 'data/wakeword_training/captured'))
     corrections = config.get('training', {}).get('stt_corrections', {}) or {}
     await store._work.run(store.register, corrections.get('data_dir', 'data/stt_corrections'), CollectorKind.STT_CORRECTIONS)
+    await store._work.run(store.register, config.get('training', {}).get('conversations_dir', 'data/conversations'), CollectorKind.CONVERSATIONS)
     store.start()
     return store

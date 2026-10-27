@@ -331,6 +331,9 @@ class NightlyTrainer:
         Returns:
             Tuple de (lista de ejemplos, estadísticas)
         """
+        from src.training.conversation_collector import ConversationCollector
+        if isinstance(getattr(self.habit_generator, 'conversation_collector', None), ConversationCollector):
+            raise RuntimeError('private_training_session_unavailable')
         examples = []
         stats = {
             "contexts_processed": 0,

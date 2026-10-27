@@ -839,7 +839,9 @@ training:
   #   5. Recargar modelos de día
   #   6. Sistema listo para la mañana
   nightly:
-    enabled: true
+    # Candidate release: private training copies and runtime resources still
+    # require integrated verification. Development never changes production.
+    enabled: false
 
     # Horario de entrenamiento (24h)
     schedule:
