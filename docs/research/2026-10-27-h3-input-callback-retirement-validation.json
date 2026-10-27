@@ -1,0 +1,183 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "2f77ead1ad5cb1ef83afe9f9935eeef7ddc25d9c",
+  "tested_runtime_source_tree": "83a22858b339e21ef197db95ac7b5a440800d97c",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 admitted input callbacks and local idle capture buffers. Fixed metadata slots retain acquisition dates/admission fences through raw argument retirement; source-aware idle buffers remain pending until native sweep; close retains privacy through callback completion and failed reset retries. Covers single and multiroom capture actors. Complete PRODUCERS/journal, remaining producer/reset/provider/SDK lifetimes and integrated hardware/release acceptance remain open.",
+  "new_cases_total": 21,
+  "new_integration_cases": [
+    "test_empty_queue_fence_cannot_receive_an_old_inflight_copy[single]",
+    "test_empty_queue_fence_cannot_receive_an_old_inflight_copy[multi]",
+    "test_writer_lease_waits_for_actual_input_callback_after_driver_close[copy-single]",
+    "test_writer_lease_waits_for_actual_input_callback_after_driver_close[copy-multi]",
+    "test_writer_lease_waits_for_actual_input_callback_after_driver_close[reserved-single]",
+    "test_writer_lease_waits_for_actual_input_callback_after_driver_close[reserved-multi]",
+    "test_multichannel_timestamp_precedes_array_work_and_cannot_rename_retired_input",
+    "test_idle_buffers_remain_busy_until_explicit_native_prune_without_new_input[single]",
+    "test_idle_buffers_remain_busy_until_explicit_native_prune_without_new_input[multi]",
+    "test_failed_native_reset_retains_idle_affinity_and_writer_lease_until_retry[single]",
+    "test_failed_native_reset_retains_idle_affinity_and_writer_lease_until_retry[multi]",
+    "test_cancelled_idle_prune_retains_actual_reset_and_lease[single]",
+    "test_cancelled_idle_prune_retains_actual_reset_and_lease[multi]",
+    "test_callback_capacity_rejects_before_touching_another_input[single]",
+    "test_callback_capacity_rejects_before_touching_another_input[multi]",
+    "test_callback_failure_releases_slot_and_does_not_export_raw_exception[single]",
+    "test_callback_failure_releases_slot_and_does_not_export_raw_exception[multi]",
+    "test_ambient_tee_keeps_acquisition_time_across_a_delayed_copy",
+    "test_single_input_ambient_buffers_remain_busy_after_capture_epoch_reset",
+    "test_delayed_callback_clock_cannot_rename_input_after_a_privacy_fence[single]",
+    "test_delayed_callback_clock_cannot_rename_input_after_a_privacy_fence[multi]"
+  ],
+  "full_suite": {
+    "accepted": true,
+    "collected": 5285,
+    "passed": 5284,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 220.948,
+    "summary": "========= 5284 passed, 1 xfailed, 30006 warnings in 221.02s (0:03:41) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-input-callback-accepted-full.xml",
+    "log": "/tmp/kza-input-callback-accepted-full.log",
+    "xml": "/tmp/kza-input-callback-accepted-full.xml"
+  },
+  "focused_suite": {
+    "passed": 183,
+    "failed": 0,
+    "runtime_s": 13.54,
+    "log": "/tmp/kza-input-callback-final-focused-v2.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "scope": "src/, tests/, scripts/smart_automations.py, scripts/train_assistant.py, scripts/stage_legacy_memory.py"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-input-callback-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-input-callback-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-input-callback-dashboard.log"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "2f77ead1ad5cb1ef83afe9f9935eeef7ddc25d9c",
+    "artifact": "/tmp/kza-input-callback-runtime-jj5rr6af/runtime.tar.gz",
+    "verified_hashes": 322,
+    "runtime_s": 0.6930987539235502,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "hashes": 322,
+      "transports": [
+        {
+          "transport": "single",
+          "idle_buffer_affinity_and_explicit_sweep": true,
+          "empty_queue_fence_detaches_inflight_copy": true,
+          "input_callback_retains_writer_lease": true,
+          "driver_closed_before_callback_release": true,
+          "failed_reset_keeps_affinity_and_authority_until_retry": true,
+          "final_callbacks": 0
+        },
+        {
+          "transport": "multi",
+          "idle_buffer_affinity_and_explicit_sweep": true,
+          "empty_queue_fence_detaches_inflight_copy": true,
+          "input_callback_retains_writer_lease": true,
+          "driver_closed_before_callback_release": false,
+          "failed_reset_keeps_affinity_and_authority_until_retry": true,
+          "final_callbacks": 0
+        }
+      ],
+      "real_privacy_sqlite_and_capture_input_owners": true,
+      "synthetic_input_driver_wake_and_echo": true,
+      "gc_forced_disabled_or_frozen": false,
+      "full_main_hardware_or_journal_acceptance": false
+    },
+    "report": "/tmp/kza-input-callback-runtime-report.json",
+    "smoke_script": "/tmp/kza-input-callback-runtime-smoke.py",
+    "smoke_script_sha256": "6da0c7120ff1863a55bf9fbe8854abe3c3defdb003d008faa0e301db08fc2f04",
+    "build_script": "/tmp/kza-build-input-callback-runtime.py",
+    "build_script_sha256": "6d71ebf4a8dfed8df0981eb0794ed460d8145eaedd980b2c36c6e1621cbc631d",
+    "sources_packaged": false,
+    "private_household_data_packaged": false,
+    "notes": "Actual SQLite PrivacyServices, AudioLoop/AudioManager, MultiRoomAudioLoop/CaptureRoom and InputCallbacks. Synthetic wake/echo and input. Single opens/closes its owned synthetic driver; multi invokes the actual callback directly without opening a physical or synthetic PortAudio stream. No full main or complete producer/journal receipt."
+  },
+  "development_findings": {
+    "empty_queue_fence": {
+      "accepted": false,
+      "failed": 2,
+      "passed": 0,
+      "deselected": 7,
+      "runtime_s": 0.6,
+      "log": "/tmp/kza-input-callback-empty-queue-reproduction.log",
+      "description": "In both transports a copy holding the empty old deque appended retired audio into the still-current queue after a privacy fence.",
+      "correction": "On every stricter boundary publication detach the queue, including empty queues. Old callbacks may append only to their detached deque, retired before their slot is released."
+    },
+    "failed_reset_affinity": {
+      "accepted": false,
+      "failed": 2,
+      "passed": 0,
+      "deselected": 9,
+      "runtime_s": 0.61,
+      "log": "/tmp/kza-input-callback-reset-reproduction.log",
+      "description": "A failed native reset cleared source affinity while the fake wake backend still retained actual private arrays.",
+      "correction": "Keep failed state/source metadata pending, retain the wake model until reset/release succeed, and retry actual reset during close while holding the authority lease."
+    },
+    "prior_stop_expectation": {
+      "accepted": false,
+      "failed": 1,
+      "passed": 119,
+      "runtime_s": 11.27,
+      "log": "/tmp/kza-input-callback-first-focused.log",
+      "description": "An older test expected stop to finish even while an admitted input callback was deliberately blocked in its clock. The stronger callback ownership correctly returns WorkCloseTimeout to that observer.",
+      "correction": "Require the bounded observation timeout, then release the clock callback and await actual close. Keep the existing close deadline unchanged."
+    }
+  },
+  "bounds": {
+    "input_callback_slots_per_room": 8,
+    "capture_packet_queue": 32,
+    "reset_close_backoff_initial_s": 0.05,
+    "reset_close_backoff_max_s": 1.0,
+    "callback_drain_poll_s": 0.005,
+    "existing_capacities_or_runtime_limits_widened": false,
+    "gc_forced_disabled_or_frozen": false,
+    "integrated_gc_hardware_acceptance": false
+  },
+  "preserved_boundaries": {
+    "real_household_data_read_or_modified": false,
+    "private_quarantine_copy_modified": false,
+    "legacy_unsourced_facts_automatically_deleted": false,
+    "production_changed_or_restarted": false,
+    "new_dependencies_or_gpu_reassignment": false,
+    "full_main_or_hardware_acceptance": false,
+    "producers_journal_complete": false,
+    "global_erasure_claimed": false,
+    "release_published": false
+  },
+  "remaining_scope": [
+    "Connect complete runtime producer contracts, target claims, leased recovery and actual dependency shutdown to PRODUCERS. Local input callback/idle-buffer checks do not manufacture a global erasure receipt.",
+    "Audit reset failures in the remaining ambient producers, shared backends, legacy synchronous generation, and native SDK/provider buffers, plus other consumers. Integrate actual multiroom stream/driver lifecycle acceptance.",
+    "Complete diagnostics/JSONL/Logstash/aiosqlite, STREAMS/frontend and VOICES participants, ambient pause versus total mute, acoustic retention and authenticated voice grouping/review/calibration.",
+    "Keep 870 unsourced facts quarantined for manual review; complete snapshot/backup lifecycle, remaining migration copies, live-index rebuild and rollback preserving tombstones.",
+    "Verify selected HA effects/kitchen switch mapping, physical audio, H4 dependency/resource and instrumented GC acceptance, H5 routines/timers/reminders/local alerts and one H6 integrated release.",
+    "The earlier 495.68 ms instrumented GC pause is not remeasured or accepted by this uninstrumented suite or synthetic compiled smoke."
+  ]
+}

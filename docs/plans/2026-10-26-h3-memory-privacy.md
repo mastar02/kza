@@ -2226,6 +2226,56 @@ el retiro de todos los buffers de proveedores o de diagnósticos. Esto todavía
 no habilita el borrado global, no acepta GC/hardware de H4/H6 y no publica
 una release.
 
+## Callbacks de entrada y buffers locales en reposo — 27 de octubre
+
+Cada sala conserva ahora un pool fijo de ocho invocaciones del callback de
+entrada. Se reserva antes de consultar el reloj o tocar arrays. El pool guarda
+sólo metadatos: fecha de adquisición, fuente conocida y barrera de admisión;
+no conserva audio, funciones ni excepciones. La ausencia del slot en el pool
+libre cuenta como trabajo real incluso antes de publicar esos metadatos.
+No hay consultas a la autoridad ni esperas bloqueantes en el callback.
+
+La entrada única y multiroom retiran sus argumentos y copias locales antes de
+liberar el slot. El cierre sella la admisión y espera también estas invocaciones,
+aunque el driver sintético ya haya devuelto su cierre. Leer el reloj antes de
+tocar el array y conservar la barrera original impide asignar una fecha nueva
+a un frame detenido durante una revocación. El tee ambiental conserva esa
+misma fecha de adquisición, sin tomar otra al terminar la copia.
+
+Una reproducción en ambas entradas mostró que publicar una barrera con la
+cola vacía permitía a una copia ya iniciada anexar audio viejo a esa cola.
+La publicación ahora desacopla siempre la cola cuando se endurece la barrera.
+Los callbacks que conservan la cola anterior no pueden reintroducirla.
+
+El estado de ocupación incluye los callbacks y los buffers de captura/wake
+en reposo. Entrada única incluye también sus ventanas ambientales, aunque
+la época de captura ya se haya reseteado. `prune_private` publica el corte
+antes de esperar al worker, serializa el reset real y limpia sólo lo invalidado,
+sin consumir otra entrada ni consultar si terminó un comando.
+
+La reproducción de un reset fallido mostró que se perdía la procedencia
+aunque el detector siguiera reteniendo audio. Ahora se conserva como trabajo
+pendiente, se rechaza entrada nueva y el cierre reintenta la limpieza con
+backoff. `AudioManager` conserva su modelo hasta completar reset y liberación.
+Cancelar el observador no libera el worker de reset ni su autoridad. La prueba
+anterior que esperaba cerrar con el callback detenido se ajustó a este contrato:
+el observador agota su plazo, y el cierre real termina al retirar la entrada.
+
+La [validación de callbacks y buffers locales](../research/2026-10-27-h3-input-callback-retirement-validation.json)
+del commit `2f77ead` registra **5284 passed, 1 xfailed**, sin fallos, en
+221,02 s, con 21 casos nuevos y 183 pruebas dirigidas. Pasan Ruff, Bandit sin
+hallazgos medios/altos, los 18 tests de frontend y el smoke del dashboard.
+El artefacto compilado verifica 322 hashes y ejercita ambos actores de captura
+con SQLite de privacidad y dispositivos, wake y echo sintéticos en 0,69 s.
+Entrada única abre y cierra su driver sintético; multiroom invoca su callback
+directamente. No se declara aceptación física o de `main` completo.
+
+Todavía falta auditar los demás productores y sus fallos de reset, los backends
+compartidos y buffers de proveedores/SDK, y conectar todos los contratos reales
+al journal `PRODUCERS`. La limpieza local no habilita aún el borrado global.
+Siguen pendientes los demás participantes y voces de H3, la aceptación de
+GC/hardware de H4/H6 y la publicación única. Producción no se modifica.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

@@ -714,9 +714,18 @@ executor publique su resultado. La
 del commit `3c779e2` registra **5227 passed, 1 xfailed**, 24 casos nuevos,
 checks aceptados y artefacto sin fuentes con 321 hashes verificados. Conserva
 como no aceptada la suite anterior a los dos fallos descubiertos después.
-Faltan buffers en reposo, callbacks de entrada, dependencias semánticas de
-resultados enriquecidos con memoria y el driver completo de `PRODUCERS`.
-No se modifica producción ni se declara aceptación de hardware o de H3–H6.
+Las [lecturas de memoria](../research/2026-10-27-h3-memory-prompt-read-validation.json)
+y la [cola independiente](../research/2026-10-27-h3-queue-receiver-lineage-validation.json)
+ya publican las dependencias seleccionadas al receptor antes de entregar el
+contexto y guardan los efectos posteriores de respuestas derivadas.
+Los [callbacks y buffers locales](../research/2026-10-27-h3-input-callback-retirement-validation.json)
+conservan ahora sus invocaciones reales, barreras y estado en reposo hasta
+retirarlos. Un reset fallido conserva procedencia y autoridad para reintentar.
+La validación de `2f77ead` registra **5284 passed, 1 xfailed**, 21 casos nuevos,
+183 pruebas dirigidas, checks y un artefacto sin fuentes con 322 hashes.
+Quedan los demás productores y sus fallos de reset, buffers de backends/SDK
+y el driver completo de `PRODUCERS`, además del resto de H3–H6.
+Producción permanece intacta; la aceptación física e integrada sigue pendiente.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
