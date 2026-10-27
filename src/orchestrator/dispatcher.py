@@ -1927,7 +1927,7 @@ class MultiUserOrchestrator:
         """
         # Identificar usuario si no se proporciono
         if user_id is None and audio is not None and self.speaker_id:
-            user_id, user_name = await self._identify_speaker(audio)
+            user_id, user_name = await self._identify_speaker(audio,sources=memory_sources or ())
         else:
             user_name = None
             if self.user_manager and user_id:
@@ -1957,10 +1957,13 @@ class MultiUserOrchestrator:
             memory_sources=memory_sources,
         )
 
-    async def _identify_speaker(self, audio) -> tuple[str, str]:
+    async def _identify_speaker(self, audio, *, sources=()) -> tuple[str, str]:
         """Identificar usuario por voz"""
         if not self.speaker_id or not self.user_manager:
             return None, None
+        if getattr(self.user_manager,'voice_review_managed',False) is True:
+            self.user_manager.voice_registry.observe(self.speaker_id,audio,sources)
+            return None,None
 
         embeddings = self.user_manager.get_all_embeddings()
         if not embeddings:

@@ -1,0 +1,228 @@
+"""Source-bound acoustic fingerprints and explicit permanent profile review."""
+
+from collections.abc import Callable
+from dataclasses import dataclass,field
+import hashlib
+import json
+import math
+from uuid import UUID,uuid4
+
+import numpy as np
+
+from src.dashboard.auth import DashboardPrincipal
+from src.memory.fact_ledger import MemorySource
+
+
+@dataclass(frozen=True)
+class VoiceReviewer:
+    """Dashboard review authority; acoustic labels never construct it."""
+
+    subject: str
+    _current: Callable[[],bool] | None = field(default=None,repr=False,compare=False)
+
+    @classmethod
+    def from_dashboard(cls, principal: DashboardPrincipal, current: Callable[[],bool] | None = None) -> 'VoiceReviewer':
+        """Require server-owned review permission, independently of voice matches."""
+        if type(principal) is not DashboardPrincipal or 'voices:review' not in principal.permissions:
+            raise PermissionError('voice_review_denied')
+        return cls(principal.subject,current)
+
+    def require_current(self) -> None:
+        """A queued native mutation cannot outlive credential revocation."""
+        if self._current is not None and self._current() is not True:
+            raise PermissionError('voice_review_denied')
+
+
+def vector_bytes(vector: np.ndarray) -> tuple[bytes,int]:
+    """Validate and detach one finite float32 vector without object coercion."""
+    if (type(vector) is not np.ndarray or vector.dtype!=np.float32 or vector.ndim!=1
+            or not 16<=vector.size<=1024 or not np.isfinite(vector).all()):
+        raise ValueError('invalid_voice_embedding')
+    norm = float(np.linalg.norm(vector))
+    if not math.isfinite(norm) or norm<1e-8:
+        raise ValueError('invalid_voice_embedding')
+    return (vector/norm).astype('<f4').tobytes(),int(vector.size)
+
+
+class VoiceLedger:
+    """Use the leased authority transaction for every read, review and mutation."""
+
+    def __init__(self, ledger):
+        self.ledger = ledger
+
+    @staticmethod
+    def _sources(encoded):
+        decoded = json.loads(encoded)
+        if type(decoded) is not list or not 1<=len(decoded)<=256:
+            raise ValueError('invalid_voice_sources')
+        return tuple(MemorySource.from_dict(source) for source in decoded)
+
+    @staticmethod
+    def _model(model_key):
+        if type(model_key) is not str or not 1<=len(model_key)<=256:
+            raise ValueError('invalid_voice_encoder')
+
+    def _live(self, row, *, confirmed=False):
+        try:
+            sources = self._sources(row['sources_json'])
+            if confirmed:
+                return (row['deleted_at'] is None and type(row['confirmed_by']) is str and bool(row['confirmed_by'])
+                    and type(row['confirmed_at']) in (int,float) and math.isfinite(row['confirmed_at'])
+                    and row['confirmed_at']<=self.ledger.clock() and self.ledger.activity_sources_available(sources))
+            return self.ledger.clock()<row['expires_at'] and self.ledger.sources_available(sources)
+        except (ValueError,KeyError,TypeError):
+            return False
+
+    def put(self, model_key: str, embedding: np.ndarray, duration_s: float, sources: tuple[MemorySource,...]) -> str | None:
+        """Commit once per actual source set; retries cannot renew its deadline."""
+        self._model(model_key)
+        if (type(duration_s) not in (int,float) or not math.isfinite(duration_s) or not .8<=duration_s<=30
+                or type(sources) is not tuple or not 1<=len(sources)<=256
+                or any(type(source) is not MemorySource for source in sources)
+                or sum(len(source.fact_dependencies) for source in sources)>256):
+            raise ValueError('invalid_voice_capture')
+        encoded = json.dumps([source.to_dict() for source in sorted(sources,key=lambda source:source.capture_id)],sort_keys=True,separators=(',',':'))
+        identity = 'vf_'+hashlib.sha256((model_key+encoded).encode()).hexdigest()
+        raw,dimensions = vector_bytes(embedding)
+        try:
+            with self.ledger._transaction() as db:
+                if not self.ledger._sources_live(db,sources):
+                    return None
+                if db.execute('SELECT 1 FROM voice_fingerprints WHERE id=?',(identity,)).fetchone():
+                    return identity
+                if db.execute('SELECT COUNT(*) FROM voice_fingerprints').fetchone()[0]>=4096:
+                    raise RuntimeError('voice_fingerprint_capacity')
+                suggested,revision,similarity = None,None,None
+                for row in db.execute('SELECT * FROM voice_profiles WHERE deleted_at IS NULL AND model_key=? AND dimensions=?',(model_key,dimensions)):
+                    if not self._live(row,confirmed=True):
+                        continue
+                    profile = np.frombuffer(row['embedding'],dtype='<f4')
+                    score = float(np.dot(np.frombuffer(raw,dtype='<f4'),profile))
+                    if math.isfinite(score) and (similarity is None or score>similarity):
+                        suggested,revision,similarity = row['id'],row['revision'],max(-1.,min(1.,score))
+                if not self.ledger._sources_live(db,sources):
+                    return None
+                db.execute('INSERT INTO voice_fingerprints VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                    (identity,model_key,dimensions,raw,duration_s,self.ledger.clock(),min(source.expires_at for source in sources),encoded,suggested,revision,similarity))
+                db.executemany('INSERT INTO voice_fingerprint_sources VALUES (?,?)',
+                    [(identity,conversation) for conversation in sorted({source.conversation_id for source in sources})])
+                return identity
+        finally:
+            embedding = raw = None
+
+    def snapshot(self, cursor: str | None = None) -> dict:
+        """Return bounded review metadata, never vectors, transcripts or audio."""
+        if cursor is not None and (type(cursor) is not str or len(cursor)!=67 or not cursor.startswith('vf_')
+                or any(char not in '0123456789abcdef' for char in cursor[3:])):
+            raise ValueError('invalid_voice_cursor')
+        with self.ledger._transaction() as db:
+            profiles = {row['id']:row for row in db.execute('SELECT * FROM voice_profiles WHERE deleted_at IS NULL')
+                if self._live(row,confirmed=True)}
+            captures = []
+            page = db.execute('SELECT * FROM voice_fingerprints WHERE id>? ORDER BY id LIMIT 101',(cursor or '',)).fetchall()
+            for row in page[:100]:
+                if not self._live(row):
+                    continue
+                suggestion = profiles.get(row['suggested_profile'])
+                if suggestion is not None and suggestion['revision']!=row['suggested_revision']:
+                    suggestion = None
+                captures.append({'id':row['id'],'group_id':row['id'],'created_at':row['created_at'],
+                    'expires_at':row['expires_at'],'duration_s':row['duration_s'],'model_key':row['model_key'],
+                    'capture_ids':[source.capture_id for source in self._sources(row['sources_json'])],
+                    'suggested_profile':suggestion['id'] if suggestion is not None else None,
+                    'similarity':row['similarity'] if suggestion is not None else None,
+                    'association':'suggested' if suggestion is not None else 'unknown'})
+            return {'observed_at':self.ledger.clock(),'fingerprints':captures,
+                'profiles':[self._profile(row) for row in profiles.values()],
+                'automatic_grouping_accepted':False,'legacy_policy':'excluded_pending_inventory',
+                'recognition_grants_permissions':False,'similarity_metric':'cosine_not_identity_probability',
+                'next_cursor':page[99]['id'] if len(page)>100 else None}
+
+    @staticmethod
+    def _profile(row):
+        return {'id':row['id'],'name':row['name'],'revision':row['revision'],
+            'confirmed_at':row['confirmed_at'],'confirmed_by':row['confirmed_by'],'expires_at':None}
+
+    def confirm(self, identities: tuple[str,...], name: str, request_id: str, actor: VoiceReviewer) -> dict:
+        """Permanently retain a reviewed centroid; no account or permission changes."""
+        if type(actor) is not VoiceReviewer or not actor.subject:
+            raise PermissionError('voice_review_denied')
+        actor.require_current()
+        if type(name) is not str or not 1<=len(name.strip())<=64 or any(ord(char)<32 for char in name):
+            raise ValueError('invalid_voice_profile_name')
+        if type(identities) is not tuple or not 3<=len(identities)<=32 or len(set(identities))!=len(identities):
+            raise ValueError('voice_profile_requires_distinct_captures')
+        if type(request_id) is not str or str(UUID(request_id))!=request_id:
+            raise ValueError('invalid_voice_review_request')
+        digest = hashlib.sha256(json.dumps([sorted(identities),name.strip()]).encode()).hexdigest()
+        with self.ledger._transaction() as db:
+            actor.require_current()
+            prior = db.execute('SELECT * FROM voice_review_requests WHERE actor=? AND request_id=?',(actor.subject,request_id)).fetchone()
+            if prior is not None:
+                profile = db.execute('SELECT * FROM voice_profiles WHERE id=?',(prior['profile_id'],)).fetchone()
+                if profile is None or not self._live(profile,confirmed=True):
+                    raise LookupError('voice_profile_unavailable')
+                if prior['digest']!=digest:
+                    raise ValueError('voice_review_request_conflict')
+                return self._profile(profile)
+            rows = [db.execute('SELECT * FROM voice_fingerprints WHERE id=?',(identity,)).fetchone() for identity in identities]
+            if any(row is None or not self._live(row) for row in rows):
+                raise LookupError('voice_capture_unavailable')
+            if len({(row['model_key'],row['dimensions']) for row in rows})!=1:
+                raise ValueError('incompatible_voice_encoders')
+            sources = tuple({source for row in rows for source in self._sources(row['sources_json'])})
+            if len(sources)>256 or len({source.capture_id for source in sources})<3:
+                raise ValueError('voice_profile_requires_distinct_captures')
+            if db.execute('SELECT COUNT(*) FROM voice_profiles WHERE deleted_at IS NULL').fetchone()[0]>=256:
+                raise RuntimeError('voice_profile_capacity')
+            vector = np.mean([np.frombuffer(row['embedding'],dtype='<f4') for row in rows],axis=0).astype(np.float32)
+            raw,dimensions = vector_bytes(vector)
+            if not self.ledger._sources_live(db,sources):
+                raise LookupError('voice_capture_unavailable')
+            actor.require_current()
+            identity = str(uuid4())
+            encoded = json.dumps([source.to_dict() for source in sorted(sources,key=lambda source:source.capture_id)],sort_keys=True)
+            db.execute('INSERT INTO voice_profiles VALUES (?,?,?,?,?,?,?,?,?,NULL)',
+                (identity,name.strip(),rows[0]['model_key'],dimensions,raw,encoded,self.ledger.clock(),actor.subject,1))
+            db.executemany('INSERT INTO voice_profile_sources VALUES (?,?)',[(identity,conversation) for conversation in sorted({source.conversation_id for source in sources})])
+            db.execute('INSERT INTO voice_review_requests VALUES (?,?,?,?)',(actor.subject,request_id,digest,identity))
+            return self._profile(db.execute('SELECT * FROM voice_profiles WHERE id=?',(identity,)).fetchone())
+
+    def delete_profile(self, identity: str, revision: int, actor: VoiceReviewer) -> bool:
+        """Erase vector and name while preserving a minimal stale-write fence."""
+        if type(actor) is not VoiceReviewer:
+            raise PermissionError('voice_review_denied')
+        with self.ledger._transaction() as db:
+            actor.require_current()
+            row = db.execute('SELECT * FROM voice_profiles WHERE id=?',(identity,)).fetchone()
+            if row is None or row['deleted_at'] is not None:
+                return False
+            if type(revision) is not int or revision!=row['revision']:
+                raise ValueError('voice_profile_revision_conflict')
+            self._delete(db,identity)
+            return True
+
+    def _delete(self, db, identity):
+        db.execute('UPDATE voice_profiles SET name=NULL,embedding=NULL,deleted_at=?,revision=revision+1 WHERE id=? AND deleted_at IS NULL',
+            (self.ledger.clock(),identity))
+        db.execute('UPDATE voice_fingerprints SET suggested_profile=NULL,suggested_revision=NULL,similarity=NULL WHERE suggested_profile=?',(identity,))
+        db.execute("UPDATE voice_review_requests SET digest='deleted' WHERE profile_id=?",(identity,))
+
+    def prune(self) -> None:
+        """Physically remove expired captures and committed-invalid profiles."""
+        with self.ledger._transaction() as db:
+            for row in db.execute('SELECT id,sources_json,expires_at FROM voice_fingerprints').fetchall():
+                sources = self._sources(row['sources_json'])
+                if self.ledger.clock()>=row['expires_at'] or self.ledger.sources_committed_unavailable(sources):
+                    db.execute('DELETE FROM voice_fingerprints WHERE id=?',(row['id'],))
+            for row in db.execute('SELECT * FROM voice_profiles WHERE deleted_at IS NULL').fetchall():
+                if self.ledger.sources_committed_unavailable(self._sources(row['sources_json'])):
+                    self._delete(db,row['id'])
+
+    def pending(self, conversation: str) -> int:
+        """Count actual retained vectors linked to a committed deletion."""
+        with self.ledger._transaction() as db:
+            captures = db.execute('SELECT COUNT(*) FROM voice_fingerprint_sources WHERE conversation_id=?',(conversation,)).fetchone()[0]
+            profiles = db.execute('''SELECT COUNT(*) FROM voice_profile_sources s JOIN voice_profiles p ON p.id=s.profile_id
+                WHERE s.conversation_id=? AND p.embedding IS NOT NULL''',(conversation,)).fetchone()[0]
+            return captures+profiles

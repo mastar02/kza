@@ -43,7 +43,7 @@ from src.memory.privacy_services import build_privacy_services
 from src.memory.index_erasure import build_erasure_services
 from src.ambient.erasure import build_capture_erasure
 from src.users.speaker_identifier import SpeakerIdentifier
-from src.users.user_manager import UserManager
+from src.users.voice_registry import build_voice_registry
 from src.users.voice_enrollment import VoiceEnrollment
 from src.users.emotion_detector import EmotionDetector
 from src.monitoring.latency_monitor import LatencyMonitor
@@ -557,6 +557,7 @@ async def _run_main(shutdown: AsyncExitStack):
     memory_manager = memory_services.manager if memory_services is not None else None
     erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
         memory=memory_manager.long_term if memory_manager is not None else None)
+    voice_registry = await build_voice_registry(privacy=privacy_services,owner=erasure_services,shutdown=shutdown)
     diagnostic_services = await build_diagnostic_services(config, privacy=privacy_services, owner=erasure_services)
     metrics_emitter = diagnostic_services.emitter
     capture_erasure = await build_capture_erasure(config, privacy=privacy_services, owner=erasure_services)
@@ -613,13 +614,13 @@ async def _run_main(shutdown: AsyncExitStack):
             similarity_threshold=speaker_config.get("threshold", 0.75),
         )
 
-        user_manager = UserManager(
-            data_path=speaker_config.get("users_path", "./data/users.json")
-        )
+        voice_registry.register_encoder(speaker_identifier)
+        user_manager = await voice_registry.load_accounts(speaker_config.get('users_path','./data/users.json'))
 
         voice_enrollment = VoiceEnrollment(
             user_manager=user_manager,
-            speaker_identifier=speaker_identifier
+            speaker_identifier=speaker_identifier,
+            review_required=True,
         )
         logger.info("Speaker identification habilitado")
 
@@ -1136,6 +1137,7 @@ async def _run_main(shutdown: AsyncExitStack):
                         room_ids=list(room_streams.keys()),
                         store_fact_fn=_store_fact,
                         privacy=privacy_services,
+                        voice_registry=voice_registry,
                     )
                     shutdown.push_async_callback(ambient_path.stop)
                     await capture_erasure.attach(ambient_path)
@@ -1653,6 +1655,7 @@ async def _run_main(shutdown: AsyncExitStack):
             microphone_snapshot_provider=home_services.microphone_snapshot_provider,
             home_enabled=dashboard_config.get("home", {}).get("enabled", False),
             memory_manager=memory_manager,
+            voice_registry=voice_registry,
         )
         shutdown.push_async_callback(dashboard.stop)
         logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 9500)}")

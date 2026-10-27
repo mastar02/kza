@@ -88,11 +88,13 @@ class VoiceEnrollment:
         self,
         user_manager: UserManager,
         speaker_identifier: SpeakerIdentifier,
-        session_timeout: float = 120.0  # 2 minutos
+        session_timeout: float = 120.0,  # 2 minutos
+        *, review_required: bool = False,
     ):
         self.user_manager = user_manager
         self.speaker_id = speaker_identifier
         self.session_timeout = session_timeout
+        self.review_required = review_required
 
         self._session: EnrollmentSession | None = None
 
@@ -143,6 +145,10 @@ class VoiceEnrollment:
         }
 
         text_lower = text.lower().strip()
+        if self.review_required:
+            if self._is_enrollment_trigger(text_lower):
+                return {**result,'handled':True,'response':'La revisión de voces se confirma en el panel autenticado. Nombrar una voz no concede permisos.'}
+            return result
 
         # Verificar si es comando de inicio
         if self._is_enrollment_trigger(text_lower):

@@ -56,6 +56,7 @@ def register_admin_routes(
     user_manager=None,
     speaker_identifier=None,
     alert_manager=None,
+    voice_registry=None,
 ) -> None:
     """Registrar /api/admin/*. Llamar antes del mount de StaticFiles."""
 
@@ -121,36 +122,41 @@ def register_admin_routes(
         user_manager._save()
         return {"ok": True, "permission_level": level.name}
 
-    @router.post("/users/{user_id}/enroll", dependencies=[Depends(require_admin)])
-    async def enroll_voice(
-        user_id: str,
-        samples: list[UploadFile] = File(..., description="WAV mono PCM, ≥3 muestras"),
-    ):
-        if user_manager is None or speaker_identifier is None:
-            raise HTTPException(503, "user_manager o speaker_identifier no inyectados")
-        if len(samples) < 3:
-            raise HTTPException(400, "se requieren ≥3 muestras de audio")
-        user = user_manager.get_user(user_id)
-        if user is None:
-            raise HTTPException(404, f"user {user_id} no encontrado")
-        try:
-            audio_arrays = [await _decode_wav(s) for s in samples]
-        except ValueError as e:
-            raise HTTPException(400, f"audio inválido: {e}")
-        try:
-            embedding = await asyncio.to_thread(
-                speaker_identifier.create_enrollment_embedding, audio_arrays
-            )
-        except Exception as e:
-            logger.error(f"create_enrollment_embedding falló: {e}")
-            raise HTTPException(500, f"enrollment falló: {e}")
-        user.voice_embedding = embedding
-        user_manager._save()
-        return {
-            "ok": True, "user_id": user_id,
-            "samples": len(samples),
-            "embedding_dim": int(embedding.shape[0]),
-        }
+    if voice_registry is not None:
+        @router.post("/users/{user_id}/enroll", dependencies=[Depends(require_admin)])
+        async def review_voice_profile(user_id: str):
+            raise HTTPException(409,detail='voice_profile_review_required')
+    else:
+        @router.post("/users/{user_id}/enroll", dependencies=[Depends(require_admin)])
+        async def enroll_voice(
+            user_id: str,
+            samples: list[UploadFile] = File(..., description="WAV mono PCM, ≥3 muestras"),
+        ):
+            if user_manager is None or speaker_identifier is None:
+                raise HTTPException(503, "user_manager o speaker_identifier no inyectados")
+            if len(samples) < 3:
+                raise HTTPException(400, "se requieren ≥3 muestras de audio")
+            user = user_manager.get_user(user_id)
+            if user is None:
+                raise HTTPException(404, f"user {user_id} no encontrado")
+            try:
+                audio_arrays = [await _decode_wav(s) for s in samples]
+            except ValueError as e:
+                raise HTTPException(400, f"audio inválido: {e}")
+            try:
+                embedding = await asyncio.to_thread(
+                    speaker_identifier.create_enrollment_embedding, audio_arrays
+                )
+            except Exception as e:
+                logger.error(f"create_enrollment_embedding falló: {e}")
+                raise HTTPException(500, f"enrollment falló: {e}")
+            user.voice_embedding = embedding
+            user_manager._save()
+            return {
+                "ok": True, "user_id": user_id,
+                "samples": len(samples),
+                "embedding_dim": int(embedding.shape[0]),
+            }
 
     # ---------------- Alerts ----------------
 

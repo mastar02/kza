@@ -53,6 +53,8 @@ class CommandProcessor:
         for model in (stt, speaker_identifier, emotion_detector, shadow_stt):
             if model is not None:
                 self._locks.setdefault(id(model), threading.Lock())
+        if (speaker_identifier is not None and getattr(user_manager,'voice_review_managed',False) is True):
+            self._locks[id(speaker_identifier)] = user_manager.voice_registry.register_encoder(speaker_identifier)
         self._commands: set[asyncio.Task] = set()
         self._shadow_tasks: set[asyncio.Task] = set()
         self._emotion_tasks: set[asyncio.Task] = set()
@@ -239,6 +241,9 @@ class CommandProcessor:
 
     async def _speaker(self, audio):
         try:
+            if (self.speaker_id is not None and getattr(self.user_manager,'voice_review_managed',False) is True):
+                self.user_manager.voice_registry.observe(self.speaker_id,audio,PRODUCER_CONTEXT.get().sources,sample_rate=self.sample_rate)
+                return None
             if self.speaker_id is not None and self.user_manager is not None:
                 return await self._native(self.speaker_id, self._identify_speaker, audio, guarded=True)
         except SourcesInvalidated:

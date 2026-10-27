@@ -30,7 +30,7 @@ class SpeakerTagger:
         embeddings_loader: Callable[[], dict[str, np.ndarray]],
         min_audio_s: float = 0.8,
         sample_rate: int = 16000,
-        *, source_policy=None,
+        *, source_policy=None, voice_registry=None,
     ):
         self._identifier = identifier
         self._embeddings_loader = embeddings_loader
@@ -39,6 +39,9 @@ class SpeakerTagger:
         self._work = OwnedBlockingWork()
         self._source_policy = source_policy
         self._inference_lock = threading.Lock()
+        self._voice_registry = voice_registry
+        if voice_registry is not None:
+            self._inference_lock = voice_registry.register_encoder(identifier)
 
     async def tag(self, audio_mono: np.ndarray) -> tuple[str, float]:
         """Etiquetar el hablante de una utterance.
@@ -51,6 +54,10 @@ class SpeakerTagger:
                 raise RuntimeError("speaker_tagger_closed")
             if len(audio_mono) < self.min_audio_s * self.sample_rate:
                 return ("unknown", 0.0)
+            if self._voice_registry is not None:
+                self._require_live()
+                self._voice_registry.observe(self._identifier,audio_mono,PRODUCER_CONTEXT.get().sources,sample_rate=self.sample_rate)
+                return ('unknown',0.)
             return await self._work.run(self._identify, audio_mono)
         finally:
             audio_mono = None

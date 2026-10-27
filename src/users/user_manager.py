@@ -12,6 +12,8 @@ Jerarquía de permisos:
 
 import json
 import logging
+import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -96,9 +98,9 @@ class User:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "User":
+    def from_dict(cls, data: dict, *, include_voice: bool = True) -> "User":
         """Deserializar desde diccionario"""
-        embedding = data.get("voice_embedding")
+        embedding = data.get("voice_embedding") if include_voice else None
         if embedding is not None:
             embedding = np.array(embedding, dtype=np.float32)
 
@@ -136,31 +138,47 @@ class UserManager:
     - Embeddings de voz para identificación
     """
 
-    def __init__(self, data_path: str = "./data/users.json"):
-        self.data_path = Path(data_path)
+    def __init__(self, data_path: str = "./data/users.json", *, voice_registry=None):
+        self.legacy_path = Path(data_path)
+        self.voice_registry = voice_registry
+        self.voice_review_managed = voice_registry is not None
+        self.data_path = (self.legacy_path.with_name(self.legacy_path.stem+'_accounts_v1.json')
+            if self.voice_review_managed and not self.legacy_path.stem.endswith('_accounts_v1') else self.legacy_path)
         self._users: dict[str, User] = {}
+        self._load_error = False
         self._version: int = 0  # Incrementa cuando usuarios/embeddings cambian (para cache)
         self._load()
 
     def _load(self):
         """Cargar usuarios desde archivo"""
-        if self.data_path.exists():
+        source = self.data_path if self.data_path.exists() else self.legacy_path
+        if source.exists():
             try:
-                with open(self.data_path) as f:
+                with open(source) as f:
                     data = json.load(f)
+                if self.voice_review_managed and source==self.data_path and data.get('schema')!='kza-users-accounts-v1':
+                    raise ValueError('unverified_account_catalog')
 
                 for user_data in data.get("users", []):
-                    user = User.from_dict(user_data)
+                    user = User.from_dict(user_data,include_voice=not self.voice_review_managed)
                     self._users[user.user_id] = user
 
                 logger.info(f"Cargados {len(self._users)} usuarios")
 
             except Exception as e:
-                logger.error(f"Error cargando usuarios: {e}")
+                if self.voice_review_managed:
+                    self._users.clear()
+                    self._load_error = True
+                logger.error('Account loading unavailable: %s',type(e).__name__)
+
+    def _require_writable(self):
+        if self.voice_review_managed and self._load_error:
+            raise RuntimeError('unverified_account_catalog')
 
     def _save(self):
         """Guardar usuarios a archivo"""
-        self.data_path.parent.mkdir(parents=True, exist_ok=True)
+        self._require_writable()
+        self.data_path.parent.mkdir(parents=True, exist_ok=True,mode=0o700 if self.voice_review_managed else 0o777)
 
         # Incrementar versión para invalidar caches de embeddings
         self._version += 1
@@ -170,8 +188,23 @@ class UserManager:
             "last_updated": time.time()
         }
 
-        with open(self.data_path, "w") as f:
-            json.dump(data, f, indent=2)
+        if self.voice_review_managed:
+            data['schema']='kza-users-accounts-v1'
+            for row in data['users']:
+                row['voice_embedding']=None
+            descriptor,temporary = tempfile.mkstemp(prefix='.accounts-',dir=self.data_path.parent)
+            try:
+                with os.fdopen(descriptor,'w') as stream:
+                    json.dump(data,stream,indent=2)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary,self.data_path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        else:
+            with open(self.data_path, "w") as f:
+                json.dump(data, f, indent=2)
 
     # ==================== CRUD ====================
 
@@ -195,6 +228,9 @@ class UserManager:
             (User creado o None, mensaje de resultado)
         """
         # Verificar permisos del solicitante
+        self._require_writable()
+        if self.voice_review_managed and voice_embedding is not None:
+            return None,'La voz se revisa en el panel; no crea cuentas ni permisos.'
         if requesting_user is not None:
             check = self.check_action_permission(requesting_user, "add_user")
             if not check.allowed:
@@ -227,6 +263,7 @@ class UserManager:
         requesting_user: User | None = None
     ) -> tuple[bool, str]:
         """Eliminar usuario"""
+        self._require_writable()
         if requesting_user is not None:
             check = self.check_action_permission(requesting_user, "remove_user")
             if not check.allowed:
@@ -273,6 +310,9 @@ class UserManager:
 
     def update_user(self, user_id: str, **updates) -> tuple[bool, str]:
         """Actualizar datos de usuario"""
+        self._require_writable()
+        if self.voice_review_managed and 'voice_embedding' in updates:
+            raise ValueError('voice_profile_review_required')
         if user_id not in self._users:
             return False, "Usuario no encontrado"
 
@@ -293,6 +333,8 @@ class UserManager:
         embedding: np.ndarray
     ) -> bool:
         """Configurar embedding de voz para un usuario"""
+        if self.voice_review_managed:
+            return False
         if user_id not in self._users:
             return False
 
@@ -304,6 +346,8 @@ class UserManager:
 
     def get_all_embeddings(self) -> dict[str, np.ndarray]:
         """Obtener todos los embeddings de voz registrados"""
+        if self.voice_review_managed:
+            return {}
         return {
             user_id: user.voice_embedding
             for user_id, user in self._users.items()

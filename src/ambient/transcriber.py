@@ -648,6 +648,7 @@ def build_ambient_path(
     room_ids: list[str],
     store_fact_fn: Callable[..., str] | None,
     privacy=None,
+    voice_registry=None,
 ) -> AmbientPath:
     """Construir el ambient path completo desde config (wiring de main.py).
 
@@ -701,24 +702,16 @@ def build_ambient_path(
     )
 
     def embeddings_loader() -> dict:
-        # Enrolamiento pendiente en el proyecto (data/users.json no existe);
-        # loader vacío = speaker 'unknown' siempre, sin gastar GPU.
-        from pathlib import Path
-
-        import numpy as np
-
-        emb_dir = Path(sp_cfg.get("embeddings_dir", "./data/users"))
-        out = {}
-        if emb_dir.is_dir():
-            for f in emb_dir.glob("*_voice.npy"):
-                out[f.stem.replace("_voice", "")] = np.load(f)
-        return out
+        # Unversioned .npy files have no verified review or capture deadline.
+        # They remain untouched for the private migration inventory.
+        return {}
 
     tagger = SpeakerTagger(
         identifier=identifier,
         embeddings_loader=embeddings_loader,
         min_audio_s=sp_cfg.get("min_audio_s", 0.8),
         source_policy=privacy.ledger if privacy is not None else None,
+        voice_registry=voice_registry,
     )
 
     clf_cfg = ambient_cfg.get("classifier", {}) or {}
