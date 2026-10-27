@@ -1,0 +1,234 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "ad66e2bee0b2d2414eeadf9c1191d9fb51df03f1",
+  "tested_runtime_source_tree": "c16276f22d193591c01c3e4d5e0ed7d91a3dc0da",
+  "tested_scripts_source_tree": "b08e19ac09711a9d58c6c794af52fe47bcd6999e",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "Source-bound bounded background voice observations, original <=48h capture expiry, explicit dashboard-only permanent profile confirmation/deletion, excluded legacy vectors, immutable account originals and one local VOICES erasure target.",
+  "new_voice_cases_total": 30,
+  "new_voice_cases": [
+    "tests.integration.test_voice_registry::test_fingerprint_read_retry_and_restart_keep_the_original_capture_deadline",
+    "tests.integration.test_voice_registry::test_manual_profile_persists_after_capture_expiry_and_restart_without_granting_permissions",
+    "tests.integration.test_voice_registry::test_review_requires_current_distinct_captures_and_compatible_encoders",
+    "tests.integration.test_voice_registry::test_deleted_profile_cannot_be_recreated_by_a_retried_review_request",
+    "tests.integration.test_voice_registry::test_conversation_erasure_removes_its_vectors_profile_and_independent_suggestion_link",
+    "tests.integration.test_voice_registry::test_expired_or_revoked_output_of_a_running_model_cannot_commit",
+    "tests.integration.test_voice_registry::test_queued_model_is_not_entered_after_its_source_expires",
+    "tests.integration.test_voice_registry::test_idle_maintenance_physically_prunes_without_a_new_voice_query",
+    "tests.integration.test_voice_registry::test_native_model_and_reserved_post_keep_local_receipt_pending_until_actual_exit",
+    "tests.integration.test_voice_registry::test_legacy_profiles_are_excluded_and_account_writes_preserve_originals",
+    "tests.integration.test_voice_registry::test_voice_enrollment_cannot_create_accounts_or_permissions_in_managed_mode",
+    "tests.integration.test_voice_registry::test_unverified_account_catalog_is_read_only_and_drops_partial_accounts[payload0]",
+    "tests.integration.test_voice_registry::test_unverified_account_catalog_is_read_only_and_drops_partial_accounts[payload1]",
+    "tests.integration.test_voice_registry::test_non_16khz_audio_is_rejected_before_copy_or_model_admission",
+    "tests.integration.test_voice_registry::test_authenticated_review_api_never_returns_vectors_or_accepts_account_permissions",
+    "tests.integration.test_voice_registry::test_queued_review_rechecks_rotated_credentials_before_committing",
+    "tests.integration.test_voice_registry::test_real_command_processor_never_waits_for_background_voice_model_or_promotes_an_account[False]",
+    "tests.integration.test_voice_registry::test_real_command_processor_never_waits_for_background_voice_model_or_promotes_an_account[True]",
+    "tests.integration.test_voice_registry::test_real_ambient_tagger_posts_a_capture_without_reading_legacy_profiles",
+    "tests.integration.test_voice_registry::test_background_queue_stays_bounded_and_owns_its_pcm_copy",
+    "tests.integration.test_voice_registry::test_invalid_model_vectors_cannot_create_fingerprints[nan]",
+    "tests.integration.test_voice_registry::test_invalid_model_vectors_cannot_create_fingerprints[zero]",
+    "tests.integration.test_voice_registry::test_invalid_model_vectors_cannot_create_fingerprints[object]",
+    "tests.integration.test_voice_registry::test_invalid_model_vectors_cannot_create_fingerprints[dimensions]",
+    "tests.integration.test_voice_registry::test_pending_conversation_fence_does_not_physically_erase_a_review_on_rollback",
+    "tests.integration.test_voice_registry::test_orchestrator_audio_entry_only_posts_an_observation_and_never_matches_legacy_users",
+    "tests.integration.test_voice_registry::test_expiry_during_centroid_computation_prevents_permanent_confirmation",
+    "tests.integration.test_voice_registry::test_restored_voice_rows_reopen_receipts_and_cannot_override_current_tombstones",
+    "tests.integration.test_voice_registry::test_background_similarity_is_only_a_review_suggestion_even_after_manual_confirmation",
+    "tests.integration.test_voice_registry::test_cancelled_registry_observer_does_not_keep_an_eventual_private_result"
+  ],
+  "additional_private_route_cases": 12,
+  "new_collected_cases_total": 42,
+  "retention_and_authority": {
+    "new_fingerprints_original_source_expiry_max_hours": 48,
+    "manual_profiles_expire_automatically": false,
+    "confirmed_centroid_min_distinct_captures": 3,
+    "confirmed_centroid_max_fingerprints": 32,
+    "capture_source_union_max": 256,
+    "fingerprint_capacity": 4096,
+    "active_profile_capacity": 256,
+    "fingerprints_and_profiles_use_shared_leased_authority": true,
+    "queued_mutations_recheck_current_dashboard_credential": true,
+    "profile_names_or_cosine_suggestions_grant_accounts_or_permissions": false,
+    "managed_runtime_automatically_identifies_a_user_after_confirmation": false,
+    "legacy_voice_vectors_automatically_imported": false,
+    "legacy_user_file_preserved_and_private_accounts_sidecar_has_no_voice_vector": true,
+    "unverified_account_catalog_writes_blocked_and_partial_users_discarded": true,
+    "source_conversation_delete_invalidates_derived_profiles": true,
+    "pending_only_revocation_hides_without_irreversible_delete_on_rollback": true,
+    "local_voice_receipt_waits_for_actual_reserved_or_native_jobs": true,
+    "leased_restart_reopens_voice_receipts_against_restored_rows": true,
+    "unresolved_voice_inventory_version": 2
+  },
+  "background_resource_budget": {
+    "accepted_pcm_dtype": "float32",
+    "accepted_pcm_channels": 1,
+    "sample_rate_hz": 16000,
+    "min_capture_s": 0.8,
+    "max_capture_s": 30,
+    "model_reservations": 6,
+    "io_reservations": 2,
+    "total_reservations": 8,
+    "same_encoder_inference_lock_shared_with_command_and_ambient_owners": true,
+    "private_caller_context_automatically_copied_to_background_tasks": false,
+    "actual_model_completion_required_to_release_pcm_and_capacity": true,
+    "raw_pcm_written_by_this_registry": false,
+    "non_16khz_input_rejected_before_copy": true
+  },
+  "development_red_green_evidence": {
+    "initial_tests_introduced_with_implementation_no_preimplementation_red_claim": true,
+    "maintenance_and_model_shared_budget_failure": {
+      "log": "/tmp/kza-voices-expanded-cases.log",
+      "failed": 1,
+      "passed": 26,
+      "runtime_s": 3.46,
+      "finding": "With one shared native budget, maintenance could consume the last slot after model observation acceptance."
+    },
+    "review_starvation_failure": {
+      "log": "/tmp/kza-voices-shared-budget-red.log",
+      "failed": 1,
+      "runtime_s": 0.84,
+      "finding": "A snapshot review could not run while all accepted model observations retained the shared capacity."
+    },
+    "split_budget_fix": {
+      "log": "/tmp/kza-voices-split-budget-green.log",
+      "passed": 27,
+      "runtime_s": 5.06,
+      "change": "Partition the original total of eight reservations into six model observations and two registry I/O operations; preserve actual native ownership and all deadlines."
+    }
+  },
+  "full_suite": {
+    "accepted": true,
+    "collected": 5517,
+    "passed": 5516,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "summary": "========= 5516 passed, 1 xfailed, 31567 warnings in 308.43s (0:05:08) ==========",
+    "junit_time_s": 308.349,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "isolated_voice_metrics": {
+      "repetitions": 10,
+      "sentences_per_run": 100,
+      "samples_per_run": 2400000,
+      "provider_wait_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 2754,
+      "loop_lag_p95_ms": 0.9726980980485677,
+      "loop_lag_max_ms": 6.406332021579146,
+      "exact_pcm_runs": 10
+    },
+    "log": "/tmp/kza-voices-full.log",
+    "xml": "/tmp/kza-voices-full.xml",
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/tmp:/home/yo/projects/kza /home/kza/kza/.venv/bin/python -m pytest tests/ -q -p kza_voice_failure_capture --junitxml=/tmp/kza-voices-full.xml",
+    "native_timeout_capture": {
+      "terminal_exit_code": 0,
+      "captured": 0,
+      "events": []
+    },
+    "native_timeout_plugin": {
+      "path": "/tmp/kza_voice_failure_capture.py",
+      "sha256": "8d73b75bdb0d3b18b929853036e52f15818f4abe759b42054bd3db87dd132570",
+      "changes_tests_deadlines_execution_or_retry_policy": false
+    }
+  },
+  "focused_suite": {
+    "passed": 746,
+    "runtime_s": 43.05,
+    "log": "/tmp/kza-voices-final-focused.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-voices-final-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-voices-bandit.log"
+    },
+    "frontend": {
+      "passed": 49,
+      "failed": 0,
+      "log": "/tmp/kza-voices-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "mocked_services": true,
+      "log": "/tmp/kza-voices-dashboard-smoke.log"
+    },
+    "chromium": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "rendered_conversation_retirement": true,
+      "rendered_idle_expiry": true,
+      "disconnect_clears_ticker": true,
+      "lost_session_clears_private_dom": true,
+      "javascript_exceptions": 0,
+      "synthetic_sources_and_service_adapters": true,
+      "browser_ack_after_dom_and_cache_clear": true,
+      "browser_ack_waits_for_explicit_dom_commit": true,
+      "pagehide_handler_clears_and_acknowledges_owned_view": true,
+      "rest_conversation_original_deadline_clears_cache_dom_and_voice_filter": true,
+      "rest_conversation_payload_excluded_from_global_mock_cache": true,
+      "session_loss_clears_unmounted_rest_conversation_cache": true,
+      "rest_revocation_clears_before_original_expiry": true,
+      "rest_ack_waits_for_explicit_dom_commit": true,
+      "external_bootstrap_assets_blocked": true,
+      "global_streams_acceptance": false,
+      "log": "/tmp/kza-voices-browser.log"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "ad66e2bee0b2d2414eeadf9c1191d9fb51df03f1",
+    "artifact": "/tmp/kza-voices-runtime-8qw7r0g8/runtime.tar.gz",
+    "verified_hashes": 344,
+    "runtime_s": 1.094061431940645,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 344,
+      "real_http_authenticated_review_and_revision_delete": true,
+      "background_cpu_synthetic_encoder": true,
+      "capture_deadline_and_permanent_manual_profile_survive_restart": true,
+      "suggestions_only_never_accounts_or_permissions": true,
+      "old_upload_rejected_before_decode": true,
+      "local_voice_receipt_waits_for_actual_model_exit": true,
+      "legacy_original_untouched_private_accounts_sidecar": true,
+      "unresolved_voice_inventory_blocks_global_erasure": true,
+      "real_models_gpu_full_main_hardware_or_frontend_voice_review": false
+    },
+    "check_script": "/tmp/kza-voices-runtime-smoke.py",
+    "check_script_sha256": "6c9e76719d1f391043cd2e1272e7563d016485d7d8311c366d83c045ff17cb99"
+  },
+  "limits": {
+    "voice_review_frontend_clips_transcripts_room_linkage_and_merge_split_complete": false,
+    "unknown_voice_clustering_accepted": false,
+    "similarity_calibrated_as_identity_probability": false,
+    "model_namespace_proves_exact_weight_revision": false,
+    "overlap_tv_echo_distance_and_noise_acceptance": false,
+    "managed_runtime_voice_identity_propagation_complete": false,
+    "all_legacy_vectors_and_model_sdk_pipeline_or_browser_copies_resolved": false,
+    "new_voice_review_rest_metadata_has_durable_browser_retirement_receipts": false,
+    "global_voices_streams_or_producers_erasure_complete": false,
+    "global_conversation_erasure_ui_enabled": false,
+    "ambient_pause_total_mute_and_independent_reactivation_complete": false,
+    "full_main_real_models_gpu_audio_ha_gateway_sdk_or_hardware_acceptance": false,
+    "full_h4_capacity_gc_and_latency_acceptance": false,
+    "earlier_92_90_ms_loop_spike_and_495_68_ms_gc_pause_explained_or_fixed": false,
+    "historical_native_timeout_or_browser_start_failure_causal_explanation_extended": false,
+    "gc_forced_disabled_or_frozen": false,
+    "existing_deadlines_total_capacity_or_retries_enlarged_for_green_tests": false,
+    "production_modified": false,
+    "overall_h3_h4_or_roadmap_complete": false
+  }
+}

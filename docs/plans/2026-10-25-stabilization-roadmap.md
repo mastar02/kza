@@ -171,7 +171,19 @@ Decisión del usuario del 26 de octubre: huellas y grupos sin confirmar vencen
 a las 48 h; los perfiles confirmados manualmente se conservan hasta borrado
 manual. Los clips y las transcripciones siguen venciendo a las 48 h. Nombrar
 un grupo no le concede permisos; una sugerencia automática no equivale a una
-confirmación manual. La implementación y la migración siguen pendientes.
+confirmación manual. El backend nuevo de huellas y perfiles revisados aplica
+esa retención; agrupación, interfaz de revisión y migración siguen pendientes.
+
+El avance del 27 de octubre agrega observación de voz en segundo plano y una
+API de confirmación y borrado autenticados. Conserva el vencimiento original de
+cada captura y perfiles manuales sin caducidad; las sugerencias de similitud no
+identifican cuentas ni conceden permisos. El recibo local de `VOICES` espera la
+salida real de modelos y escrituras. Los vectores legacy quedan excluidos y su
+inventario mantiene bloqueado el borrado global. El alcance y las limitaciones
+se detallan en el plan de H3. La [validación del registro](../research/2026-10-27-h3-voice-registry-validation.json)
+pasó con 5.516 pruebas y un xfail conocido; el artefacto de `ad66e2b` verificó
+344 hashes y la API real con encoder sintético. No cierra H3 ni habilita la
+release.
 
 Primer avance de H3, 26 de octubre: el store de capturas aplica TTL al leer
 texto, lotes de destilación, estadísticas y clips, sin esperar la purga. Las

@@ -2984,6 +2984,94 @@ observaciones nuevas permiten contrastar una recurrencia sin ensanchar límites
 ni forzar, congelar o deshabilitar GC. H3, la aceptación completa de H4, hardware
 y H6 siguen abiertos; producción permanece sin cambios.
 
+## Registro de huellas y confirmación manual de perfiles — 27 de octubre
+
+El runtime incorpora `VoiceRegistry` como consumidor obligatorio de la autoridad
+privada ya arrendada. Sus tablas viven en el mismo catálogo SQLite; no se agrega
+configuración ni se importan automáticamente embeddings de usuarios anteriores.
+Cada vector nuevo conserva las fuentes y el vencimiento original de la captura,
+con un máximo de 48 horas. Repetir la observación no renueva ese plazo. Las
+lecturas excluyen fuentes vencidas o revocadas y el mantenimiento retira las
+filas aun sin nuevas consultas; el arranque aplica la misma política.
+
+Una confirmación autenticada requiere entre 3 y 32 huellas actuales, al menos
+3 capturas distintas y un encoder compatible. Retiene un centroide normalizado,
+nombre, revisor, fecha y revisión, sin vencimiento automático. El perfil puede
+sobrevivir al vencimiento del audio original y al reinicio. El borrado explícito
+retira nombre y vector, invalida sugerencias y conserva un tombstone mínimo
+contra reintentos antiguos. Borrar una conversación fuente también retira el
+perfil derivado; una revocación sólo pendiente lo oculta sin destruirlo si la
+transacción termina en rollback. Las credenciales se comprueban de nuevo dentro
+de la operación nativa antes de confirmar, incluidas las solicitudes en cola.
+
+`/api/voices` ofrece metadatos paginados; sus rutas de perfiles permiten confirmar
+y borrar con revisión exacta. Requieren `voices:review`, concedido al administrador
+autenticado del dashboard. No devuelven vectores, clips ni transcripciones, ni
+aceptan cuentas, permisos o un TTL editable. La carga anterior de WAV para
+enrolar cuentas se rechaza antes de decodificar; el diálogo de enrolamiento por
+voz tampoco crea cuentas en el grafo nuevo. La interfaz visual de revisión aún
+no está construida: estas rutas son la base de backend para completarla.
+
+Los caminos reales de `CommandProcessor`, `SpeakerTagger` y entrada de audio del
+orquestador publican la observación y continúan sin esperar el modelo. Admiten
+PCM mono float32 a 16 kHz, de 0,8 a 30 segundos, con fuentes verificables. Cada
+trabajo conserva una copia acotada hasta que termina realmente la inferencia;
+comprueba vigencia antes del modelo, después y dentro de la escritura. No se
+acepta salida tardía de una captura vencida o revocada. El límite total es ocho:
+seis reservas para modelos y dos para I/O. La prueba de saturación detectó que
+compartir todas las reservas impedía revisar mientras el modelo estaba retenido;
+la separación mantiene disponible esa consulta sin ampliar el total.
+
+Las coincidencias se exponen sólo como sugerencias de revisión con similitud
+coseno, sin presentarla como probabilidad de identidad. Cada huella desconocida
+conserva por ahora un grupo separado; no se aceptan agrupaciones automáticas.
+Los caminos gestionados devuelven identidad desconocida incluso después de una
+confirmación: todavía faltan calibración, agrupación y propagación de las
+asociaciones revisadas. Nombrar o reconocer una voz nunca le concede permisos.
+El namespace del encoder deriva del nombre, backend y frecuencia declarados;
+no certifica la revisión exacta de pesos ni la calidad del modelo.
+
+Los vectores legacy de JSON y `.npy` quedan excluidos del reconocimiento nuevo
+y sus archivos originales se conservan para el inventario y migración privados.
+Las escrituras de cuentas usan un catálogo lateral privado de roles sin
+`voice_embedding`; no sustituyen el archivo anterior. Si el catálogo no se
+puede validar, se descartan cuentas cargadas parcialmente y se bloquea su
+escritura para no sobrescribir datos desconocidos.
+
+El participante `VOICES` versión 1 confirma únicamente la limpieza de estas
+tablas y la salida del trabajo real retenido. Mientras un modelo de la
+conversación o una operación de I/O de linaje no determinado siga en curso,
+el recibo local queda pendiente. El arranque reabre recibos de voces, de modo
+que restaurar filas antiguas no prevalece sobre los tombstones vigentes.
+La versión 2, `unresolved_voice_inventory`, queda sin driver para impedir
+confundir este destino local con todas las copias de voces del sistema. Las
+respuestas HTTP nuevas de revisión tampoco tienen todavía recibos de retiro
+del frontend; la garantía global de `STREAMS` sigue abierta.
+
+La [validación del registro de voces](../research/2026-10-27-h3-voice-registry-validation.json)
+corresponde al commit `ad66e2b`. La suite completa terminó con **5.516 passed y
+1 xfailed en 308,43 s**: incorpora 30 casos de voces y 12 comprobaciones nuevas
+de autenticación de rutas. Pasaron 746 pruebas focalizadas, 49 de frontend,
+Ruff, Bandit sin hallazgos medios o altos y el smoke del dashboard. Chromium
+pasó con los assets externos bloqueados y sin excepciones JS. El capturador de
+fase nativa no observó timeouts inesperados; esto no demuestra la causa de los
+fallos históricos.
+
+El artefacto de ese commit verificó 344 hashes, sin fuentes Python ni datos o
+configuración privados. El ensayo terminó en 1,09 s con servidor HTTP real y
+encoder sintético en CPU: comprobó la API autenticada, rechazo de permisos y
+de la carga anterior, conservación del perfil tras 48 horas y reinicio,
+borrado por revisión, preservación del archivo legacy y recibo local retenido
+hasta salir el modelo. No ejecutó `main` completo, modelos reales ni hardware.
+
+Quedan abiertos los clips, transcripciones y habitación para la revisión,
+unión/separación de grupos, abstención y calibración frente a ruido, solapes,
+TV, eco y distancia; tampoco se da por resuelta la identidad en comandos ni
+el retiro de metadatos de revisión en todas las copias HTTP/frontend. La pausa
+ambiental, mute total, inventario legacy, aceptación de recursos/GC y hardware,
+el resto de H3–H6 y la única release siguen pendientes. Producción permanece
+sin cambios.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
@@ -3004,8 +3092,10 @@ y H6 siguen abiertos; producción permanece sin cambios.
    del catálogo y del índice no sustituye la operación completa.
 4. Implementar pausa ambiental y mute total con reactivación independiente del
    audio; definir qué productores se detienen y qué buffers se descartan.
-5. Aplicar 48 horas a huellas y grupos acústicos no confirmados; conservar perfiles
-   confirmados manualmente hasta borrado, registrando la revisión verificable.
+5. Extender el registro de voces a la agrupación y a los consumidores restantes;
+   completar el inventario y migración de vectores legacy. El backend nuevo ya
+   aplica el vencimiento original a huellas y conserva perfiles revisados hasta
+   borrado; esto no cubre todavía todas las copias de voz.
 6. Construir agrupación y revisión de voces, correcciones de unión/separación y
    abstención. Fijar métricas y corpus de calibración antes de evaluar el resultado.
 7. Completar las demás migraciones en copia y la aceptación de runtime, micrófono,
