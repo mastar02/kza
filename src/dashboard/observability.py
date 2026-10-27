@@ -22,12 +22,13 @@ no hay servicio inyectado, falla, o devuelve vacío.
 import logging
 import time
 from datetime import datetime
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect, WebSocketException
 
 from src.analytics.event_logger import EventLogger
 from src.dashboard import observability_mocks as mocks
 from src.dashboard import system_monitor
-from src.dashboard.auth import require_dashboard_session
+from src.dashboard.auth import COOKIE_NAME, auth_configured, check_token, require_dashboard_session
+from src.core.owned_work import WorkCloseTimeout
 from src.dashboard.live_event_bus import LiveEventBus
 
 logger = logging.getLogger(__name__)
@@ -457,17 +458,33 @@ def register_observability_routes(
     if event_bus is not None:
         @router.websocket("/ws/live")
         async def ws_live(ws: WebSocket):
-            await ws.accept()
-            sub_id, queue = await event_bus.subscribe()
             try:
-                while True:
-                    event = await queue.get()
-                    await ws.send_json(event.to_frame())
+                sub_id, _ = await event_bus.subscribe()
+            except RuntimeError:
+                await ws.close(code=1013)
+                return
+            async def send(frame):
+                try:
+                    await require_dashboard_session(ws, ws.headers.get('authorization'), ws.cookies.get(COOKIE_NAME))
+                except WebSocketException:
+                    await ws.close(code=1008)
+                    raise
+                await ws.send_json(frame)
+            def available():
+                return auth_configured() and check_token(ws.headers.get('authorization'), ws.cookies.get(COOKIE_NAME))
+            async def close():
+                await ws.close(code=1000 if available() else 1008)
+            try:
+                await ws.accept()
+                await event_bus.stream(sub_id, send, close, ws.receive, available)
             except WebSocketDisconnect:
                 pass
-            except Exception as e:
-                logger.warning(f"[ws/live] subscriber {sub_id} error: {e}")
+            except Exception:
+                logger.warning('Live subscriber unavailable')
             finally:
-                await event_bus.unsubscribe(sub_id)
+                try:
+                    await event_bus.unsubscribe(sub_id)
+                except WorkCloseTimeout:
+                    logger.warning('Live subscriber cleanup pending')
 
     app.include_router(router)

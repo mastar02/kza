@@ -199,13 +199,19 @@ class VoicePipeline:
                 "success": result.get("success", False),
                 "path": result.get("path", "fast"),
             }
-            await self._event_bus.publish(LiveEvent(type=LiveEventType.TURN, payload=payload))
-        except (RuntimeError, AttributeError, TypeError, asyncio.QueueFull) as e:
+            sources = ()
+            from src.pipeline.request_router import RequestRouter
+            if isinstance(self.request_router, RequestRouter):
+                sources = self.request_router._active_sources()
+            elif hasattr(self.request_router, '_active_sources'):
+                selected = self.request_router._active_sources()
+                sources = selected if type(selected) is tuple else ()
+            await self._event_bus.publish(LiveEvent(type=LiveEventType.TURN, payload=payload, sources=sources))
+        except (RuntimeError, AttributeError, TypeError, asyncio.QueueFull):
             if not _PUBLISH_FAILURE_LOGGED:
                 _PUBLISH_FAILURE_LOGGED = True
                 logger.warning(
-                    f"event_bus publish failed (suppressing future events): "
-                    f"{type(e).__name__}: {e}"
+                    "Live publication deferred"
                 )
 
     async def test_from_text(self, text: str) -> dict:

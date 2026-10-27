@@ -16,6 +16,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Awaitable, Callable
 
+from src.memory.fact_ledger import MemorySource
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +50,8 @@ class LiveEvent:
     payload: dict = field(default_factory=dict)
     ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
 
+    sources: tuple[MemorySource, ...] = field(default=(), repr=False)
+
     def to_frame(self) -> dict:
         return {"type": self.type.value, "payload": self.payload, "ts": self.ts}
 
@@ -67,6 +71,7 @@ class LiveEventBus:
         self,
         queue_size: int = 256,
         overflow_policy: OverflowPolicy | str = OverflowPolicy.DROP_OLDEST,
+        *, source_policy=None, clock=None, max_subscribers=16, close_timeout_s=1,
     ):
         try:
             self._overflow_policy = OverflowPolicy(overflow_policy)
@@ -79,6 +84,12 @@ class LiveEventBus:
         self._subscribers: dict[int, asyncio.Queue[LiveEvent]] = {}
         self._dropped: dict[int, int] = {}
         self._next_id = 0
+        self._retention = None
+        self._rejected = 0
+        if source_policy is not None:
+            from src.dashboard.live_retention import LiveRetention
+            self._retention = LiveRetention(self._subscribers, source_policy, clock=clock,
+                capacity=queue_size, max_subscribers=max_subscribers, close_timeout_s=close_timeout_s)
 
     async def publish(self, event: LiveEvent) -> None:
         """Llamado por el voice_pipeline. Nunca espera lock ni I/O.
@@ -87,8 +98,20 @@ class LiveEventBus:
         en CPython son thread-safe). El dispatch usa solo `put_nowait`/`get_nowait`,
         sin awaits reales.
         """
+        if self._retention is None:
+            self._rejected += 1
+            return
+        if self._retention is not None:
+            if type(event) is not LiveEvent or type(event.type) is not LiveEventType:
+                self._retention.rejected += 1
+                return
+            event = self._retention.admit(event)
+            if event is None:
+                return
         for sub_id, q in list(self._subscribers.items()):
             self._dispatch_to_subscriber(sub_id, q, event)
+            if self._retention is not None:
+                self._retention.notify(sub_id)
 
     def _dispatch_to_subscriber(
         self, sub_id: int, queue: asyncio.Queue[LiveEvent], event: LiveEvent
@@ -102,6 +125,7 @@ class LiveEventBus:
         if self._overflow_policy is OverflowPolicy.DROP_OLDEST:
             try:
                 queue.get_nowait()
+                queue.task_done()
                 queue.put_nowait(event)
             except (asyncio.QueueEmpty, asyncio.QueueFull):
                 pass
@@ -119,11 +143,15 @@ class LiveEventBus:
         sub_id = self._next_id
         self._next_id += 1
         queue: asyncio.Queue[LiveEvent] = asyncio.Queue(maxsize=self._queue_size)
+        if self._retention is not None:
+            self._retention.attach(sub_id, queue)
         self._subscribers[sub_id] = queue
         logger.debug(f"[LiveEventBus] subscriber {sub_id} attached")
         return sub_id, queue
 
     async def unsubscribe(self, sub_id: int) -> None:
+        if self._retention is not None:
+            await self._retention.detach(sub_id)
         self._subscribers.pop(sub_id, None)
         self._dropped.pop(sub_id, None)
         logger.debug(f"[LiveEventBus] subscriber {sub_id} detached")
@@ -134,3 +162,34 @@ class LiveEventBus:
 
     def dropped_count(self, sub_id: int) -> int:
         return self._dropped.get(sub_id, 0)
+
+    def start(self) -> None:
+        """Start source deadline maintenance before publishers are admitted."""
+        if self._retention is not None:
+            self._retention.start()
+
+    async def stream(self, sub_id, sender, close=None, receiver=None, guard=None):
+        """Retain the actual scoped transport after a cancelled observer."""
+        if self._retention is not None:
+            return await self._retention.stream(sub_id, sender, close, receiver, guard)
+        if close is not None:
+            await close()
+
+    def resource_status(self) -> dict:
+        """Read content-free ownership counts."""
+        return self._retention.status() if self._retention is not None else {'subscribers':self.subscriber_count,'rejected':self._rejected}
+
+    def begin_close(self) -> asyncio.Task:
+        """Seal scoped queues and drain actual socket resources."""
+        if self._retention is not None:
+            return self._retention.begin_close()
+        async def finish():
+            self._subscribers.clear()
+        return asyncio.create_task(finish())
+
+    async def aclose(self) -> None:
+        """Observe closure without cancelling actual scoped sends."""
+        if self._retention is not None:
+            await self._retention.aclose()
+        else:
+            await self.begin_close()

@@ -10,10 +10,14 @@ import pytest
 import src.pipeline.voice_pipeline as vp_module
 from tests.mocks.responses import response_handler_mock
 from src.pipeline.voice_pipeline import VoicePipeline
-from src.dashboard.live_event_bus import LiveEventBus, LiveEventType
+from src.dashboard.live_event_bus import LiveEventType
+from tests.mocks.memory_sources import memory_source
 
 
 def _make_pipeline(event_bus=None, request_router=None):
+    if request_router is None:
+        request_router = MagicMock()
+        request_router._active_sources.return_value = (memory_source(),)
     return VoicePipeline(
         audio_loop=MagicMock(),
         command_processor=MagicMock(),
@@ -25,14 +29,14 @@ def _make_pipeline(event_bus=None, request_router=None):
 
 
 @pytest.mark.asyncio
-async def test_publish_turn_event_noop_when_bus_is_none():
+async def test_publish_turn_event_noop_when_bus_is_none(live_graph):
     p = _make_pipeline(event_bus=None)
     await p._publish_turn_event(SimpleNamespace(room_id="sala"), {"text": "x"})
 
 
 @pytest.mark.asyncio
-async def test_publish_turn_event_full_payload():
-    bus = LiveEventBus(queue_size=4)
+async def test_publish_turn_event_full_payload(live_graph):
+    bus = live_graph.bus(queue_size=4)
     sub_id, q = await bus.subscribe()
     p = _make_pipeline(event_bus=bus)
     audio = SimpleNamespace(room_id="cocina")
@@ -50,8 +54,8 @@ async def test_publish_turn_event_full_payload():
 
 
 @pytest.mark.asyncio
-async def test_publish_turn_event_falls_back_to_zone_attr():
-    bus = LiveEventBus()
+async def test_publish_turn_event_falls_back_to_zone_attr(live_graph):
+    bus = live_graph.bus()
     sub_id, q = await bus.subscribe()
     p = _make_pipeline(event_bus=bus)
     audio = SimpleNamespace(zone="estudio")  # no room_id
@@ -62,8 +66,8 @@ async def test_publish_turn_event_falls_back_to_zone_attr():
 
 
 @pytest.mark.asyncio
-async def test_publish_turn_event_with_ndarray_input_zone_is_none():
-    bus = LiveEventBus()
+async def test_publish_turn_event_with_ndarray_input_zone_is_none(live_graph):
+    bus = live_graph.bus()
     sub_id, q = await bus.subscribe()
     p = _make_pipeline(event_bus=bus)
     audio = np.zeros(16000, dtype=np.float32)
@@ -74,7 +78,7 @@ async def test_publish_turn_event_with_ndarray_input_zone_is_none():
 
 
 @pytest.mark.asyncio
-async def test_publish_turn_event_swallows_publish_exception(monkeypatch):
+async def test_publish_turn_event_swallows_publish_exception(monkeypatch, live_graph):
     # Reset module-level flag para que el primer fail loguee
     monkeypatch.setattr(vp_module, "_PUBLISH_FAILURE_LOGGED", False)
     bus = MagicMock()
@@ -86,8 +90,8 @@ async def test_publish_turn_event_swallows_publish_exception(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_publish_turn_event_defaults_when_result_is_empty():
-    bus = LiveEventBus()
+async def test_publish_turn_event_defaults_when_result_is_empty(live_graph):
+    bus = live_graph.bus()
     sub_id, q = await bus.subscribe()
     p = _make_pipeline(event_bus=bus)
     await p._publish_turn_event(SimpleNamespace(room_id="sala"), {})
@@ -99,10 +103,11 @@ async def test_publish_turn_event_defaults_when_result_is_empty():
 
 
 @pytest.mark.asyncio
-async def test_process_command_publishes_event():
-    bus = LiveEventBus()
+async def test_process_command_publishes_event(live_graph):
+    bus = live_graph.bus()
     sub_id, q = await bus.subscribe()
     request_router = MagicMock()
+    request_router._active_sources.return_value = live_graph.sources
     request_router.process_command = AsyncMock(return_value={
         "text": "x", "success": True, "latency_ms": 150,
     })

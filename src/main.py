@@ -1619,7 +1619,12 @@ async def _run_main(shutdown: AsyncExitStack):
     live_event_bus = LiveEventBus(
         queue_size=dashboard_config.get("live_event_queue_size", 256),
         overflow_policy=dashboard_config.get("live_event_overflow_policy", "drop_oldest"),
+        source_policy=privacy_services.ledger, clock=privacy_services.ledger.clock,
     )
+
+    privacy_services.add_borrower(live_event_bus.begin_close)
+    shutdown.push_async_callback(live_event_bus.aclose)
+    live_event_bus.start()
 
     if dashboard_config.get("enabled", True):
         health_aggregator = HealthAggregator(

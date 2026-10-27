@@ -192,6 +192,7 @@ function replaceData(key, data) {
 }
 
 function clearPrivateData() {
+  window.__kzaLiveState?.clear();
   for (const [key, data] of Object.entries(initialMocks)) replaceData(key, JSON.parse(JSON.stringify(data)));
   window.__kzaSources = Object.fromEntries(ENDPOINT_MAP.map(([key]) => [key, 'mock/sin verificar']));
 }
@@ -231,6 +232,13 @@ async function hydrateMocks({ signal }) {
 }
 
 function mountWsLiveBridge() {
+  const live = window.KzaLivePrivacy.createLiveState({
+    onChange: frame => window.dispatchEvent(new CustomEvent('kza:live', { detail: frame })),
+  });
+  window.__kzaLiveState = live;
+  const checkExpiry = () => live.expire();
+  window.addEventListener('focus', checkExpiry);
+  document.addEventListener('visibilitychange', checkExpiry);
   let retired = false, retry = null, socket = null;
   function connect() {
     if (retired) return;
@@ -241,10 +249,11 @@ function mountWsLiveBridge() {
     ws.onmessage = (ev) => {
       try {
         const frame = JSON.parse(ev.data);
-        window.dispatchEvent(new CustomEvent('kza:live', { detail: frame }));
+        live.receive(frame);
       } catch {}
     };
     ws.onclose = async (event) => {
+      live.clear();
       if (retired) return;
       let needsLogin = event.code === 1008;
       try {
@@ -263,6 +272,10 @@ function mountWsLiveBridge() {
   connect();
   return () => {
     retired = true; clearTimeout(retry); socket?.close();
+    window.removeEventListener('focus', checkExpiry);
+    document.removeEventListener('visibilitychange', checkExpiry);
+    live.dispose();
+    if (window.__kzaLiveState === live) window.__kzaLiveState = null;
     if (window.__kzaLiveWs === socket) window.__kzaLiveWs = null;
   };
 }

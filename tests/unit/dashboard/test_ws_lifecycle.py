@@ -4,7 +4,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.dashboard.live_event_bus import LiveEventBus, LiveEvent, LiveEventType
+from src.dashboard.live_event_bus import LiveEventBus, LiveEventType
 from src.dashboard.observability import register_observability_routes
 
 
@@ -14,21 +14,21 @@ def _build_app(bus: LiveEventBus | None):
     return app
 
 
-def test_ws_route_absent_when_no_bus(dashboard_auth):
+def test_ws_route_absent_when_no_bus(dashboard_auth, live_graph):
     app = _build_app(bus=None)
     paths = {getattr(r, "path", None) for r in app.routes}
     assert "/ws/live" not in paths
 
 
-def test_ws_route_present_with_bus(dashboard_auth):
-    bus = LiveEventBus()
+def test_ws_route_present_with_bus(dashboard_auth, live_graph):
+    bus = live_graph.bus()
     app = _build_app(bus)
     paths = {getattr(r, "path", None) for r in app.routes}
     assert "/ws/live" in paths
 
 
-def test_ws_handshake_and_unsubscribe_on_disconnect(dashboard_auth):
-    bus = LiveEventBus()
+def test_ws_handshake_and_unsubscribe_on_disconnect(dashboard_auth, live_graph):
+    bus = live_graph.bus()
     app = _build_app(bus)
     client = TestClient(app, headers=dashboard_auth)
     assert bus.subscriber_count == 0
@@ -40,14 +40,14 @@ def test_ws_handshake_and_unsubscribe_on_disconnect(dashboard_auth):
     assert bus.subscriber_count == 0
 
 
-def test_ws_publish_round_trip(dashboard_auth):
+def test_ws_publish_round_trip(dashboard_auth, live_graph):
     """Publish desde el mismo loop del server (vía un endpoint trigger)."""
-    bus = LiveEventBus()
+    bus = live_graph.bus()
     app = _build_app(bus)
 
     @app.post("/test/publish")
     async def _trigger():
-        await bus.publish(LiveEvent(
+        await bus.publish(live_graph.event(
             type=LiveEventType.WAKE,
             payload={"zone": "sala", "confidence": 0.91},
             ts="14:32:08",
@@ -58,20 +58,20 @@ def test_ws_publish_round_trip(dashboard_auth):
     with client.websocket_connect("/ws/live") as ws:
         client.post("/test/publish")
         frame = ws.receive_json()
-        assert frame == {
+        assert {key:frame[key] for key in ("type","payload","ts")} == {
             "type": "wake",
             "payload": {"zone": "sala", "confidence": 0.91},
             "ts": "14:32:08",
         }
 
 
-def test_ws_two_subscribers_each_receive_frame(dashboard_auth):
-    bus = LiveEventBus()
+def test_ws_two_subscribers_each_receive_frame(dashboard_auth, live_graph):
+    bus = live_graph.bus()
     app = _build_app(bus)
 
     @app.post("/test/publish")
     async def _trigger():
-        await bus.publish(LiveEvent(type=LiveEventType.TURN, payload={"id": "t1"}))
+        await bus.publish(live_graph.event(type=LiveEventType.TURN, payload={"id": "t1"}))
         return {"ok": True}
 
     client = TestClient(app, headers=dashboard_auth)

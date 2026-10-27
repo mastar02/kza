@@ -485,3 +485,30 @@ def sample_ha_entities():
         # Media
         {"entity_id": "media_player.spotify", "state": "paused", "attributes": {"friendly_name": "Spotify"}},
     ]
+
+
+@pytest.fixture
+async def live_graph():
+    """Build actual in-memory live authority for queue/WS unit fixtures."""
+    import asyncio
+    import time
+    from types import SimpleNamespace
+    from src.dashboard.live_event_bus import LiveEvent, LiveEventBus
+    from src.memory.fact_ledger import FactLedger
+    from tests.mocks.memory_sources import memory_source
+    owners = []
+    sources = (memory_source(now=time.time()),)
+    def bus(*args, **kwargs):
+        policy = FactLedger(':memory:')
+        policy.initialize()
+        instance = LiveEventBus(*args, source_policy=policy, **kwargs)
+        owners.append((instance, policy))
+        return instance
+    def event(*args, **kwargs):
+        return LiveEvent(*args, sources=sources, **kwargs)
+    try:
+        yield SimpleNamespace(bus=bus, event=event, sources=sources)
+    finally:
+        for instance, policy in owners:
+            await instance.aclose()
+            await asyncio.to_thread(policy.close)
