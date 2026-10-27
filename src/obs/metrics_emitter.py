@@ -5,7 +5,6 @@ import asyncio
 from collections import deque
 from contextvars import Context
 from enum import StrEnum
-import json
 import logging
 import math
 from pathlib import Path
@@ -15,6 +14,7 @@ import time
 from typing import Any
 
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.obs.diagnostic_store import DiagnosticRecord, DiagnosticStore
 
 logger = logging.getLogger(__name__)
 _ROTATE_BYTES_DEFAULT = 100 * 1024 * 1024
@@ -50,6 +50,21 @@ class DiagnosticKind(StrEnum):
     REQUEST = 'request'
     WAKE = 'wake'
     ERROR = 'error'
+
+
+class DiagnosticFailure(StrEnum):
+    FAILED = 'diagnostic_retention_failed'
+    BUSY = 'diagnostic_writer_busy'
+    UNSUPPORTED = 'unsupported_diagnostic_catalog'
+
+
+def _failure(error):
+    # Only fixed errors defined by this module cross the native boundary.
+    if type(error) is RuntimeError and len(error.args) == 1 and type(error.args[0]) is str:
+        for code in (DiagnosticFailure.BUSY, DiagnosticFailure.UNSUPPORTED):
+            if error.args == (code.value,):
+                return code
+    return DiagnosticFailure.FAILED
 
 
 def diagnostic_timings(timings: object) -> dict[str, float]:
@@ -103,7 +118,8 @@ class MetricsEmitter:
     def __init__(self, path: str = '/home/kza/logs/kza-metrics.jsonl',
                  rotate_bytes: int = _ROTATE_BYTES_DEFAULT, service_name: str = 'kza-voice',
                  logstash_host: str | None = None, logstash_port: int = 5515,
-                 *, capacity: int = 8, close_timeout_s: float = 1):
+                 *, capacity: int = 8, close_timeout_s: float = 1,
+                 retention_days: float = 90, clock=None):
         if type(capacity) is not int or not 1 <= capacity <= 64:
             raise ValueError('invalid_metric_capacity')
         self.legacy_path = Path(path)
@@ -116,6 +132,13 @@ class MetricsEmitter:
         self._sock: socket.socket | None = None
         self._capacity, self._close_timeout_s = capacity, close_timeout_s
         self._work = OwnedBlockingWork(capacity=capacity, close_timeout_s=close_timeout_s)
+        self._clock = clock or time.time
+        self._store = DiagnosticStore(self.path, clock=self._clock,
+            retention_days=retention_days, rotate_bytes=rotate_bytes, project=project_diagnostic)
+        self._retention_work = OwnedBlockingWork(capacity=1, close_timeout_s=close_timeout_s)
+        self._maintenance = None
+        self._sweep = None
+        self._wake = asyncio.Event()
         self._free = deque(range(capacity))
         self._tasks: set[asyncio.Task] = set()
         self._closed = False
@@ -142,15 +165,18 @@ class MetricsEmitter:
             self._free.append(slot)
             return
         try:
+            record = self._store.record(safe)
             # A normal thread-safe post captures arbitrary ContextVars as well.
             # This channel deliberately inherits no caller payload or identity.
-            self._loop.call_soon_threadsafe(self._start, slot, safe, context=Context())
-        except RuntimeError:
+            self._loop.call_soon_threadsafe(self._start, slot, record, context=Context())
+        except Exception:
             self._dropped += 1
             self._free.append(slot)
 
     def _start(self, slot, doc):
-        operation = self._work.run(self._write, doc)
+        if self._maintenance is None and not self._closed:
+            self._maintenance = asyncio.create_task(self._maintain(), context=Context())
+        operation = self._work.run(self._invoke_write, doc)
         try:
             task = asyncio.create_task(operation, context=Context())
         except Exception:
@@ -163,20 +189,24 @@ class MetricsEmitter:
         def finished(done):
             self._tasks.discard(done)
             self._free.append(slot)
-            if done.cancelled() or done.exception() is not None:
+            if done.cancelled() or done.exception() is not None or done.result() is not None:
                 self._failed += 1
 
         task.add_done_callback(finished, context=Context())
 
-    def _iso_now(self) -> str:
-        return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()) + f'.{int(time.time()*1000)%1000:03d}Z'
+    def _invoke_write(self, record):
+        try:
+            self._write(record)
+        except (Exception, asyncio.CancelledError) as error:
+            return _failure(error)
+        finally:
+            record = None
 
-    def _maybe_rotate(self) -> None:
-        if self.path.exists() and self.path.stat().st_size >= self.rotate_bytes:
-            backup = self.path.with_suffix(self.path.suffix+'.1')
-            if backup.exists():
-                backup.unlink()
-            self.path.rename(backup)
+    def _invoke_retention(self):
+        try:
+            self._store.prune()
+        except (Exception, asyncio.CancelledError) as error:
+            return _failure(error)
 
     def _get_sock(self) -> socket.socket | None:
         if not self.logstash_host:
@@ -186,11 +216,13 @@ class MetricsEmitter:
             self._sock.settimeout(1.)
         return self._sock
 
-    def _send_tcp(self, line: str) -> None:
+    def _send_tcp(self, line: str, expires_at: float) -> None:
         with self._sock_lock:
             try:
+                if expires_at <= self._clock():
+                    return
                 connection = self._get_sock()
-                if connection is not None:
+                if connection is not None and expires_at > self._clock():
                     connection.sendall((line+'\n').encode('utf-8'))
             except OSError:
                 if self._sock is not None:
@@ -201,23 +233,55 @@ class MetricsEmitter:
                 self._sock = None
                 logger.warning('Diagnostic TCP delivery deferred')
 
-    def _write(self, doc: dict[str, Any]) -> None:
-        safe = project_diagnostic(doc)
+    def _write(self, doc: dict[str, Any] | DiagnosticRecord) -> None:
+        record = doc if isinstance(doc, DiagnosticRecord) else self._store.record(doc)
         doc = None
-        if safe is None:
+        if record is None:
             return
-        safe.update({'@timestamp': self._iso_now(), 'service': self.service_name})
-        line = json.dumps(safe, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
-        with self._lock:
+        published = self._store.append(record)
+        if published is not None and self.logstash_host:
+            self._send_tcp(published.line, published.expires_at)
+
+    async def aprune(self) -> None:
+        """Reconcile durable deadlines and both local files without another event."""
+        if self._sweep is None or self._sweep.done():
+            self._sweep = asyncio.create_task(self._retention_work.run(self._invoke_retention), context=Context())
+            self._sweep.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
+        failure = await asyncio.shield(self._sweep)
+        if failure is not None:
+            raise RuntimeError(failure.value)
+
+    async def start(self) -> None:
+        """Repair local retention before starting its idle maintenance loop."""
+        if self._closed:
+            raise RuntimeError('diagnostics_closed')
+        loop = asyncio.get_running_loop()
+        if self._loop is None:
+            self._loop = loop
+        elif self._loop is not loop:
+            raise RuntimeError('diagnostic_loop_mismatch')
+        try:
             try:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                self._maybe_rotate()
-                with self.path.open('a', encoding='utf-8') as stream:
-                    stream.write(line+'\n')
-            except OSError:
-                logger.warning('Diagnostic file delivery deferred')
-        if self.logstash_host:
-            self._send_tcp(line)
+                async with asyncio.timeout(self._close_timeout_s):
+                    await self.aprune()
+            except TimeoutError:
+                raise WorkCloseTimeout('diagnostic_initialization_pending') from None
+        finally:
+            if self._maintenance is None and not self._closed:
+                self._maintenance = asyncio.create_task(self._maintain(), context=Context())
+
+    async def _maintain(self):
+        while not self._closed:
+            self._wake.clear()
+            try:
+                await self.aprune()
+            except Exception:
+                logger.warning('Diagnostic retention deferred')
+            try:
+                async with asyncio.timeout(1):
+                    await self._wake.wait()
+            except TimeoutError:
+                pass
 
     def emit_request(self, *, user_id: str, zone_id: str | None, text: str,
                      intent: str | None, path: str | None, success: bool,
@@ -273,6 +337,7 @@ class MetricsEmitter:
         return {'closed': self._closed, 'capacity': self._capacity,
             'pending': self._capacity-len(self._free), 'dropped': self._dropped,
             'failed': self._failed, 'native_operations': self._work.status()['operations'],
+            'retention': self._store.status(),
             'closing': self._closing is not None and not self._closing.done()}
 
     def _close_socket(self):
@@ -287,11 +352,16 @@ class MetricsEmitter:
     def begin_close(self) -> asyncio.Task:
         """Seal posts, drain actual I/O and close the socket despite observer exit."""
         self._closed = True
+        self._wake.set()
         if self._closing is None:
             async def finish():
                 await self.flush()
+                if self._maintenance is not None:
+                    await self._maintenance
                 await self._work.begin_close()
+                await self._retention_work.begin_close()
                 await asyncio.to_thread(self._close_socket)
+                await asyncio.to_thread(self._store.close)
             self._closing = asyncio.create_task(finish(), context=Context())
         return self._closing
 

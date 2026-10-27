@@ -336,8 +336,13 @@ async def _run_main(shutdown: AsyncExitStack):
             rotate_bytes=obs_cfg.get("rotate_bytes", 100 * 1024 * 1024),
             logstash_host=obs_cfg.get("logstash_host"),
             logstash_port=obs_cfg.get("logstash_port", 5515),
+            retention_days=config.get('analytics', {}).get('retention_days', 90),
         )
         shutdown.push_async_callback(metrics_emitter.aclose)
+        try:
+            await metrics_emitter.start()
+        except Exception:
+            logger.warning('Diagnostic retention unavailable; numeric metrics will retry')
         logger.info(f"MetricsEmitter habilitado → {metrics_emitter.path}")
 
     # Verificar Home Assistant
