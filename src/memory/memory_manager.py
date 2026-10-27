@@ -299,7 +299,10 @@ class MemoryManager:
 
     async def aformat_context_for_prompt(self, query: str) -> str:
         """Build memory context without performing disk or embeddings on-loop."""
-        return await self.long_term.acall(self.format_context_for_prompt, query)
+        try:
+            return (await self.aprompt_context(query)).text
+        finally:
+            query = None
 
     def recent_prompt_context(self, limit: int = 3) -> PromptContext:
         """Select short-term router context with the same raw dependency snapshot."""
@@ -308,7 +311,14 @@ class MemoryManager:
 
     async def aprompt_context(self, query: str) -> PromptContext:
         """Build text and provenance in one owned memory operation."""
-        return await self.long_term.acall(self.prompt_context, query)
+        try:
+            return await self.long_term.acall_prompt(self.prompt_context, query)
+        finally:
+            query = None
+
+    async def arecent_prompt_context(self, limit: int = 3) -> PromptContext:
+        """Own recent context selection through native result delivery."""
+        return await self.long_term.acall_prompt(self.recent_prompt_context, limit)
 
     def record_interaction(
         self,

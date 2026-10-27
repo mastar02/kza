@@ -1,6 +1,8 @@
 """Policy-owned long-term memory, with a rebuildable local vector index."""
 
 import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass
 import fcntl
 import logging
 import math
@@ -10,12 +12,54 @@ from pathlib import Path
 
 from src.memory.fact_ledger import FactLedger, MemoryReviewer, MemorySource
 from src.memory.privacy_services import PrivacyServices
+from src.memory.producer_scopes import ProducerScope, current_producer_scope
+from src.memory.prompt_context import PromptContext
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryCloseTimeout(RuntimeError):
     """A native memory operation still owns resources after close deadline."""
+
+
+@dataclass
+class _MemoryCall:
+    function: Callable | None
+    args: tuple
+    kwargs: dict
+    prompt: bool = False
+    scope: ProducerScope | None = None
+
+    def clear(self):
+        self.function, self.args, self.kwargs, self.scope = None, (), {}, None
+
+
+@dataclass(frozen=True)
+class _PromptOutcome:
+    prompt: PromptContext | None = None
+
+
+def _invoke_memory(call):
+    result = None
+    try:
+        if not call.prompt:
+            return call.function(*call.args, **call.kwargs)
+        try:
+            result = call.function(*call.args, **call.kwargs)
+            if not isinstance(result, PromptContext):
+                return _PromptOutcome()
+            if call.scope is not None:
+                call.scope.include_prompt(result)
+            return _PromptOutcome(result)
+        except (Exception, asyncio.CancelledError):
+            # Prompt errors must not export native tracebacks with selected text
+            # and arguments beyond the actual worker's ownership interval.
+            return _PromptOutcome()
+    finally:
+        # Executor transport tuples may outlive native completion. They retain
+        # this empty box rather than a callable closure and raw arguments.
+        call.clear()
+        call = result = None
 
 
 class LongTermMemory:
@@ -207,39 +251,81 @@ class LongTermMemory:
                 "legacy_collection": self._collection_name, "legacy_policy": "quarantined",
                 **self.ledger.status()}
 
-    async def _run(self, function, *args, **kwargs):
-        with self._resources_lock:
-            self._require_open()
-            if not self._slots.acquire(blocking=False):
-                raise RuntimeError("memory_operation_capacity")
-            task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-            self._operations.add(task)
-
-        def finished(completed):
+    async def _run(self, function, args, kwargs, *, prompt=False):
+        task = call = scope = operation = None
+        try:
             with self._resources_lock:
-                self._operations.discard(completed)
-                self._slots.release()
-            if not completed.cancelled():
-                completed.exception()
+                self._require_open()
+                if not self._slots.acquire(blocking=False):
+                    raise RuntimeError("memory_operation_capacity")
+                scope = current_producer_scope() if prompt else None
+                call = _MemoryCall(function, args, kwargs, prompt, scope)
+                if scope is not None:
+                    scope.begin_read()
+                operation = asyncio.to_thread(_invoke_memory, call)
+                try:
+                    task = asyncio.create_task(operation)
+                except BaseException:
+                    operation.close()
+                    call.clear()
+                    if scope is not None:
+                        scope.finish_read()
+                    self._slots.release()
+                    raise
+                self._operations.add(task)
 
-        task.add_done_callback(finished)
-        return await asyncio.shield(task)
+            def finished(completed, receipt=scope):
+                with self._resources_lock:
+                    self._operations.discard(completed)
+                    self._slots.release()
+                if receipt is not None:
+                    receipt.finish_read()
+                if not completed.cancelled():
+                    completed.exception()
+
+            task.add_done_callback(finished)
+            return await asyncio.shield(task)
+        finally:
+            # The actual owner keeps native work alive after cancellation. An
+            # observer's retained traceback must not keep its eventual result
+            # or rejected inputs after that owner's completion callback exits.
+            task, call, scope, operation, function, args, kwargs = None, None, None, None, None, (), {}
 
     async def astore_fact(self, *args, **kwargs) -> str:
         """Store through an owned worker without blocking capture."""
-        return await self._run(self.store_fact, *args, **kwargs)
+        try:
+            return await self._run(self.store_fact, args, kwargs)
+        finally:
+            args, kwargs = (), {}
 
     async def asearch_relevant(self, *args, **kwargs) -> list[dict]:
         """Search through a bounded owned worker."""
-        return await self._run(self.search_relevant, *args, **kwargs)
+        try:
+            return await self._run(self.search_relevant, args, kwargs)
+        finally:
+            args, kwargs = (), {}
 
     async def areconcile(self) -> dict:
         """Run durable cleanup/index maintenance off the event loop."""
-        return await self._run(self.reconcile)
+        return await self._run(self.reconcile, (), {})
 
     async def acall(self, function, *args, **kwargs):
         """Run another memory producer/reader in this same resource scope."""
-        return await self._run(function, *args, **kwargs)
+        try:
+            return await self._run(function, args, kwargs)
+        finally:
+            function, args, kwargs = None, (), {}
+
+    async def acall_prompt(self, function, *args, **kwargs) -> PromptContext:
+        """Own a prompt read and publish its lineage before native delivery."""
+        outcome = None
+        try:
+            outcome = await self._run(function, args, kwargs, prompt=True)
+            if outcome.prompt is None:
+                raise RuntimeError("memory_prompt_unavailable")
+            return outcome.prompt
+        finally:
+            function, args, kwargs, outcome = None, (), {}, None
 
     def resource_status(self) -> dict:
         """Report actual retained work, including cancelled native calls."""

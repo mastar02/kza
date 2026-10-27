@@ -5,10 +5,12 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+import threading
 from uuid import uuid4
 from weakref import WeakMethod
 
 from src.memory.fact_ledger import FactLedger, MemorySource
+from src.memory.prompt_context import PromptContext
 
 
 def _validate_sources(sources):
@@ -24,6 +26,8 @@ class ProducerScope:
     token: str = field(default_factory=lambda: str(uuid4()))
     sources: tuple[MemorySource, ...] | None = None
     active: bool = True
+    _reads: int = field(default=0, init=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def bind(self, sources: tuple[MemorySource, ...] | None) -> None:
         """Publish metadata to an exclusive receiver before returning raw data.
@@ -32,10 +36,48 @@ class ProducerScope:
         receipt. Binding cannot extend ownership, retention or authority.
         """
         _validate_sources(sources)
-        self.sources = sources
+        with self._lock:
+            self.sources = sources
+
+    def begin_read(self) -> None:
+        """Retain unresolved affinity until an admitted memory worker exits."""
+        with self._lock:
+            self._reads += 1
+
+    def finish_read(self) -> None:
+        """Release only from the actual memory task's completion callback."""
+        with self._lock:
+            if self._reads <= 0:
+                raise RuntimeError('producer_read_not_owned')
+            self._reads -= 1
+
+    def include_prompt(self, prompt: PromptContext) -> None:
+        """Merge selected provenance before a worker publishes its raw result."""
+        with self._lock:
+            if self.sources is None:
+                return
+            try:
+                sources = prompt.bind_sources(self.sources)
+                _validate_sources(sources)
+            except (ValueError, PermissionError):
+                # Unbindable metadata cannot prove unrelated work. The consumer
+                # still validates its own prompt; no authority is granted here.
+                self.sources = None
+            else:
+                self.sources = sources
+
+    def snapshot(self) -> tuple[tuple[MemorySource, ...] | None, int]:
+        """Read metadata atomically while native selectors may enrich it."""
+        with self._lock:
+            return self.sources, self._reads
 
 
 _CURRENT_SCOPE = ContextVar('owned_producer_scope', default=None)
+
+
+def current_producer_scope() -> ProducerScope | None:
+    """Return only metadata for a memory worker admitted in the current scope."""
+    return _CURRENT_SCOPE.get()
 
 
 class ProducerScopes:
@@ -63,7 +105,7 @@ class ProducerScopes:
         retained = {scope.token for task in snapshot()
                     if (scope := task.get_context().get(_CURRENT_SCOPE)) is not None}
         for token, scope in tuple(self._scopes.items()):
-            if not scope.active and token not in retained:
+            if not scope.active and not scope.snapshot()[1] and token not in retained:
                 del self._scopes[token]
 
     @staticmethod
@@ -92,19 +134,21 @@ class ProducerScopes:
         self._validate(sources)
         current = _CURRENT_SCOPE.get()
         if current is not None and self._scopes.get(current.token) is current:
-            current.sources = sources
+            current.bind(sources)
 
     def busy(self, conversation_id: str, ledger: FactLedger) -> bool:
         """Unknown reads stay pending; known unrelated work does not block."""
         if not ledger.authority_available:
             raise RuntimeError('privacy_authority_unavailable')
         self._reap()
-        return any(scope.sources is None or any(source.conversation_id == conversation_id
+        snapshots = [scope.snapshot() for scope in self._scopes.values()]
+        return any(reads or sources is None or any(source.conversation_id == conversation_id
                    or ledger.dependencies_committed_unavailable(source.fact_dependencies)
-                   for source in scope.sources) for scope in self._scopes.values())
+                   for source in sources) for sources, reads in snapshots)
 
     def resource_status(self) -> dict:
         """Expose bounded counters without lineage, raw values or task objects."""
         self._reap()
+        snapshots = [scope.snapshot() for scope in self._scopes.values()]
         return {'scopes': len(self._scopes), 'capacity': self._capacity,
-                'unknown': sum(scope.sources is None for scope in self._scopes.values())}
+                'unknown': sum(sources is None or reads > 0 for sources, reads in snapshots)}
