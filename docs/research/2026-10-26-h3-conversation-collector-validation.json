@@ -1,0 +1,301 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "fc0449002412a5861f1824e23fad986720e7368b",
+  "tested_runtime_source_tree": "31261077a3651950754f629386811b87cddccf50",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 immutable sourced conversation JSON records, scoped feedback and version replacement, revocable views, managed derived JSONL exports with persistent parents, native commit expiry fences, CLI authority and disabled candidate nightly profile. Synthetic sources/audio/models; real filesystem, SQLite, router, processors and compiled runtime. No production intervention.",
+  "new_integration_cases": [
+    "test_either_source_revocation_fences_record_and_export_before_cleanup[input]",
+    "test_either_source_revocation_fences_record_and_export_before_cleanup[response]",
+    "test_idle_ttl_clears_held_raw_fields_and_removes_all_file_kinds",
+    "test_feedback_invalidates_previously_exported_version_even_with_live_captures",
+    "test_expired_parent_during_export_encoding_cannot_publish",
+    "test_feedback_replacement_while_export_is_blocked_prevents_stale_copy",
+    "test_cancelled_turn_observer_keeps_native_writer_and_privacy_lease",
+    "test_failed_unlink_keeps_file_locator_and_blocks_expired_reads",
+    "test_raw_reader_is_owned_after_cancel_and_cannot_deliver_revoked_data",
+    "test_native_error_and_blocked_log_do_not_keep_job_payload",
+    "test_legacy_conversations_are_not_read_exported_or_rotated",
+    "test_unrecognized_turn_file_cannot_become_an_input[content]",
+    "test_unrecognized_turn_file_cannot_become_an_input[oversize]",
+    "test_unrecognized_turn_file_cannot_become_an_input[symlink]",
+    "test_feedback_never_extends_original_deadline_and_uses_feedback_source",
+    "test_router_only_acknowledges_actual_scoped_feedback",
+    "test_closed_views_and_exports_are_scrubbed_while_valid_files_keep_original_ttl",
+    "test_restart_without_nightly_training_cleans_historical_exports",
+    "test_untracked_learning_consumers_reject_managed_conversations_before_copy",
+    "test_candidate_profile_keeps_unverified_nightly_training_disabled",
+    "test_export_batches_continue_without_silently_dropping_source_lineage",
+    "test_full_executor_queue_expires_without_waiting_for_physical_sweep",
+    "test_export_partial_failure_keeps_durable_intent_for_later_cleanup",
+    "test_replacement_race_has_one_winner_and_cannot_fall_back_to_an_older_turn",
+    "test_source_metadata_and_digest_are_required_for_legacy_like_files",
+    "test_offline_cli_uses_authority_and_managed_output_paths",
+    "test_deadline_expiring_inside_commit_callback_cannot_publish",
+    "test_deadline_expiring_during_actual_sqlite_commit_cannot_publish"
+  ],
+  "new_unit_cases": [
+    "test_valid_turn_has_opaque_file_and_source_deadline",
+    "test_no_unsourced_or_invalid_record_is_collected",
+    "test_mark_last_only_matches_exact_conversation_and_room",
+    "test_feedback_replaces_file_and_retires_existing_view",
+    "test_export_format_and_lineage_are_preserved[alpaca]",
+    "test_export_format_and_lineage_are_preserved[sharegpt]",
+    "test_export_format_and_lineage_are_preserved[conversations]",
+    "test_stats_and_grouping_use_available_records"
+  ],
+  "new_cases_total": 36,
+  "existing_contract_migrations": [
+    "Five feedback-detection unit cases await the async receipt. Synthetic adapters retain their prior call contract; real private feedback requires exact room/conversation or an owned record view. Unavailable marking returns success=false instead of falsely promising learning.",
+    "Old unsourced ConversationCollector construction/private raw cache is replaced with initialized authority/target and bounded source-aware APIs. Each turn publishes durably; the legacy auto-save interval no longer accumulates raw turns in memory.",
+    "Training CLI stats/export uses the authoritative catalog and registered temporary output directories, with source-bounded batches and cursor continuation. LoRA and old habit/nightly private consumers cannot copy these records without a verified private session. Candidate settings disable unverified nightly training; runtime configuration remains external to the artifact."
+  ],
+  "full_suite": {
+    "collected": 5035,
+    "passed": 5034,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 211.46,
+    "junit_time_s": 211.388,
+    "log": "/tmp/kza-conversation-full.log",
+    "xml": "/tmp/kza-conversation-full.xml",
+    "accepted": true,
+    "integrated_runtime_gc_acceptance": false,
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-conversation-full.xml"
+  },
+  "latency_properties": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.385891180485487,
+        "max": 1.1582679580897093
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05161808803677559,
+          "p95": 0.06402703002095222,
+          "max": 0.06402703002095222
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.861085960641503,
+          "p95": 11.026156134903431,
+          "max": 11.026156134903431
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 425,
+        "loop_lag_p95_ms": 0.2880152314901352,
+        "loop_lag_max_ms": 1.0462221689522266,
+        "cancel_cleanup_max_ms": 1.5058768913149834,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2740,
+        "loop_lag_p95_ms": 0.9819358866661786,
+        "loop_lag_max_ms": 3.572232909500599,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.7421530317515135,
+        "p95": 5.803667940199375,
+        "max": 5.803667940199375,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_checks": [
+    {
+      "log": "/tmp/kza-conversation-initial.log",
+      "passed": 119,
+      "failed": 0,
+      "runtime_s": 17.28
+    },
+    {
+      "log": "/tmp/kza-conversation-expanded.log",
+      "passed": 138,
+      "failed": 0,
+      "runtime_s": 6.01
+    },
+    {
+      "log": "/tmp/kza-conversation-commit-fixed-focused.log",
+      "passed": 815,
+      "failed": 0,
+      "runtime_s": 42.85
+    }
+  ],
+  "controlled_findings": [
+    {
+      "log": "/tmp/kza-conversation-expanded-final.log",
+      "passed": 143,
+      "failed": 1,
+      "correction": "The independent CLI uses real time; the first fixture seeded future captures with its +1 s logical recording clock and correctly got no eligible data. Seed that case with real capture time instead of sleeping, relaxing source validation or widening deadlines."
+    },
+    {
+      "log": "/tmp/kza-conversation-commit-deadline-reproduction.log",
+      "failed": 2,
+      "correction": "A source expired while the final metadata callback or actual SQLite commit was gated. Recheck raw deadline after callback and after native commit; retain then retire part/final/locator rather than acknowledging expired publication. Preserve the ordering of a legitimate earlier write versus a later tombstone. During feedback, transfer validated predecessor provenance before retiring it so its own logical replacement is not cancelled."
+    }
+  ],
+  "implementation": {
+    "mandatory_input_and_full_response_sources": true,
+    "original_sources_and_minimum_deadline_preserved": true,
+    "no_legacy_conv_json_load_or_duplicate_global_raw_cache": true,
+    "opaque_uuid_json_and_jsonl_mode_0600": true,
+    "durable_file_intents_and_descriptor_walk_reused": true,
+    "bounded_record_bytes": 65536,
+    "bounded_export_bytes": 2097152,
+    "native_capacity": 8,
+    "view_capacity": 256,
+    "export_turn_limit": 32,
+    "export_scope_source_limit": 64,
+    "export_pagination_stops_before_source_budget_without_discarding_provenance": true,
+    "body_digest_and_source_envelope_checked_before_handoff": true,
+    "immutable_feedback_version_and_transactional_predecessor_retirement": true,
+    "voice_feedback_exact_room_and_conversation_scope": true,
+    "explicit_feedback_requires_owned_view": true,
+    "feedback_adds_its_source_without_renewing_original_deadline": true,
+    "router_waits_actual_feedback_receipt_and_reports_unavailable_correctly": true,
+    "field_access_guards_and_independent_view_scrub": true,
+    "export_sources_and_parent_ids_durable": true,
+    "parent_links_survive_parent_removal_until_child_retirement": true,
+    "editing_parent_invalidates_previous_export_with_captures_still_live": true,
+    "stale_or_expired_parent_cannot_publish_late_export": true,
+    "physical_derived_export_cleanup_independent_of_nightly_enabled_flag": true,
+    "native_encoder_and_reader_survive_observer_cancel": true,
+    "expired_queued_payloads_clear_while_encoders_and_sweep_wait": true,
+    "actual_native_commit_deadline_rechecked": true,
+    "shared_privacy_lease_until_actual_exit": true,
+    "private_payload_dropped_before_blocking_diagnostic": true,
+    "legacy_private_training_consumers_block_before_copy_or_model_load": true,
+    "candidate_nightly_enabled": false,
+    "production_runtime_config_changed": false,
+    "new_automatic_turn_producer_enabled": false,
+    "new_private_training_session_enabled": false,
+    "collector_journal_driver_marked_complete": false,
+    "producer_journal_participant_marked_complete": false,
+    "new_dependencies": false,
+    "new_configuration_files": false,
+    "gpu_assignment_changed": false
+  },
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-conversation-ruff.log"
+    },
+    "cli_ruff": {
+      "passed": true,
+      "log": "/tmp/kza-conversation-cli-ruff.log",
+      "routine_existing_style_findings_fixed": 3
+    },
+    "cli_help": {
+      "passed": true,
+      "log": "/tmp/kza-conversation-cli-help.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 27,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-conversation-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-conversation-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-conversation-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 1.124,
+      "git_commit": "fc0449002412a5861f1824e23fad986720e7368b",
+      "artifact": "/tmp/kza-conversation-runtime-pgyct33h/runtime.tar.gz",
+      "reused_exact_built_artifact": true,
+      "log": "/tmp/kza-conversation-runtime-report.json",
+      "external_candidate_profile": {
+        "source_commit": "fc0449002412a5861f1824e23fad986720e7368b",
+        "config_source_sha256": "5e094671a9c0371aaa7252258a1f1ff10414845f6c2d2dd73a0ce387011de264",
+        "training": {
+          "nightly": {
+            "enabled": false
+          }
+        }
+      },
+      "exercise": {
+        "passed": true,
+        "git_commit": "fc0449002412a5861f1824e23fad986720e7368b",
+        "source_free": true,
+        "files_verified": 317,
+        "actual_multiroom_capture_endpoint_router_processor_source": true,
+        "actual_configured_conversation_collector": true,
+        "real_router_feedback_waits_for_scoped_replacement": true,
+        "managed_export_preserves_sources_and_is_invalidated_by_correction": true,
+        "late_encoder_keeps_intent_and_writer_lease_until_actual_exit": true,
+        "expired_record_cannot_publish_after_native_release": true,
+        "restart_without_nightly_training_retires_records_and_historical_exports": true,
+        "candidate_nightly_profile_disabled_and_external_to_artifact": true
+      },
+      "fixture_findings": [
+        {
+          "log": "/tmp/kza-conversation-runtime-first-report.json",
+          "reason": "The artifact explicitly externalizes config/data/models/logs; the first smoke wrongly expected settings.yaml inside it. Verify the candidate flag from that exact Git revision and supply only its sanitized external profile next to the unchanged artifact."
+        },
+        {
+          "log": "/tmp/kza-conversation-runtime-wake-gate-report.json",
+          "reason": "The standalone router default required a textual wake. Match main dedicated acoustic-wake DI with CommandAcceptanceGate(wake_words=()), retaining confidence/quality gates. Use fresh synthetic private state for each exercise."
+        },
+        {
+          "log": "/tmp/kza-conversation-runtime-responder-report.json",
+          "reason": "Complete the synthetic output endpoint with its actual async cancel contract before retrying the same artifact. No runtime code or gate policy was changed for these fixture fixes."
+        }
+      ]
+    }
+  },
+  "unchanged_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancel_ms": 100,
+    "cooperative_cleanup_ms": 1000,
+    "gc_forced_disabled_or_frozen": false
+  },
+  "gc_manipulated": false,
+  "prior_integrated_gc_and_hardware_limitations_resolved": false,
+  "remaining_scope": [
+    "PRODUCERS and COLLECTORS remain open: other learning datasets, context/profile/event-derived copies, alternate legacy consumers and full producer/distillation journal integration. Wake/STT/turn/export targets are registered and managed raw data has source TTL, but no collector driver claims global completion. No automatic turn or correction producer or private training session is enabled.",
+    "DIAGNOSTICS, COLLECTORS, STREAMS and VOICES remain; diagnostic/SQL/JSONL/Logstash, collector/stream/frontend copies and alternate prompt consumers require their own source/TTL/erasure coverage",
+    "Pause ambient and total mute with non-audio reactivation; 48h automatic voiceprint/group expiry and authenticated calibrated voice grouping/review/merge/split, confirmed profiles until deletion",
+    "Private real-copy quarantine migration of 870 legacy facts, compatible catalog/tombstone/runtime restore, live semantic index rebuild and authenticated broad erasure UI after guarantees",
+    "H0/H1 live HA memberships/effects, H2 physical audio/barge-in, H4 recovery and large-history/runtime/GC acceptance, H5 real typed local execution/routines/timers/reminders, H6 fully integrated candidate and one final release/rollback",
+    "Previously instrumented GC pauses up to 495.68ms remain unresolved; this uninstrumented suite does not remeasure or accept integrated runtime/GC."
+  ],
+  "production_modified": false
+}

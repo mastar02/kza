@@ -596,6 +596,24 @@ reproducciones y la corrección compartida. No se ampliaron límites ni se
 manipuló GC. Las pausas globales observadas antes y la aceptación física e
 integrada siguen pendientes; tampoco se anuncia borrado global.
 
+Los turnos nuevos del colector y sus exportaciones conservan ahora fuentes y
+plazos. El feedback crea otra versión y retira la anterior; los exports guardan
+sus padres para invalidarse al corregir o retirar un turno, también después de
+reiniciar. El CLI usa el catálogo y genera lotes temporales con continuación;
+los consumidores privados antiguos quedan bloqueados antes de copiar datos.
+El perfil candidato deshabilita el entrenamiento nocturno no verificado; la
+configuración instalada se conserva hasta H6.
+
+La [validación de conversaciones](../research/2026-10-26-h3-conversation-collector-validation.json)
+del commit `fc04490` registra **5034 passed, 1 xfailed**, 36 casos nuevos,
+815 pruebas dirigidas y checks/artefacto sin fuentes aceptados. Conserva las
+reproducciones de plazo vencido durante callback y commit de SQLite, y verifica
+feedback por el router y retirada de exports tras corregir y reiniciar. No se
+habilita un productor automático de turnos ni entrenamiento nuevo. Siguen
+pendientes otros datasets y consumidores, journal completo, diagnósticos,
+streams, voces, migración, validación física y el resto de H0–H6; no equivale
+todavía a borrado global de `COLLECTORS` ni cierra H3.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

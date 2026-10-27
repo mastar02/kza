@@ -1649,7 +1649,32 @@ un productor automático de turnos.
 Siguen pendientes otros datasets y consumidores legacy, journal completo,
 diagnósticos, streams, voces y los demás entregables de H0–H6. Un turno o export
 retirado localmente no equivale a un recibo global de `COLLECTORS`.
-La validación completa y del artefacto se registra al terminarla.
+La [validación de conversaciones y exports](../research/2026-10-26-h3-conversation-collector-validation.json)
+del commit `fc04490` registra **5034 passed, 1 xfailed**, sin fallos, en 211,46 s.
+Incluye 36 casos nuevos y 815 pruebas dirigidas; pasan Ruff, incluido el CLI,
+Bandit sin hallazgos medios/altos, 18 tests de frontend y smoke del dashboard.
+La evidencia conserva las dos reproducciones de commit tardío y el fixture
+del CLI que había sembrado capturas futuras respecto de su reloj real. Las
+correcciones no amplían límites ni relajan validación de fuentes.
+
+El artefacto sin fuentes verifica 317 hashes y ejecuta captura, endpoint,
+router y procesador reales con modelos y audio sintéticos. El feedback pasa por
+el router y espera la nueva versión; corregirla invalida su export anterior
+aunque las capturas sigan vivas. Con un encoder retenido verifica lease y
+descarte tardío; un arranque nuevo sin entrenamiento retira los JSON y JSONL
+vencidos. El ejercicio aceptado dura 1,12 s y reutiliza el mismo artefacto.
+
+La configuración permanece fuera del paquete, como exige el builder. La
+prueba verifica el flag nocturno desde la revisión exacta de Git y suministra
+solamente ese perfil saneado junto al artefacto; no copia configuración privada
+al tar. También conserva los ajustes de fixture del gate acústico y del
+endpoint sintético de respuesta. Nada de esto valida todavía la configuración
+privada instalada ni sustituye la integración de H6.
+
+El heartbeat alcanza p95 de 0,39 ms y máximo de 1,16 ms; la cancelación de
+control llega a 0,06 ms y el cleanup a 11,03 ms. No se manipuló GC. Las pausas
+globales anteriores, el hardware y la aceptación integrada siguen pendientes.
+Producción y los datos privados reales permanecen sin cambios.
 
 ## Trabajo restante
 
