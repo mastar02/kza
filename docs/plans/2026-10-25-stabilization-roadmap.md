@@ -837,6 +837,21 @@ acciones simultáneas de una misma captura. Esta cobertura local de TTL no
 resuelve los recibos REST, la invalidación anticipada por borrado ni las cachés
 de las demás vistas. `STREAMS` y H3 siguen abiertos.
 
+Los [recibos REST de Conversaciones](../research/2026-10-27-h3-rest-receipts-validation.json)
+ya ligan cada lectura real a una conexión autenticada y un reset confirmado,
+persisten un ticket antes de enviar y retiran el lote al revocarse sus fuentes.
+El journal espera tanto la confirmación de caché y DOM como las lecturas nativas,
+buffers del middleware y callbacks exteriores realmente activos. La cancelación
+del observador no libera esas operaciones. Su destino local versión 3 conserva
+el bloqueo explícito del inventario restante: otras vistas, WebSockets, clientes
+legacy y páginas sin confirmar impiden cerrar `STREAMS` y H3.
+La suite completa de esta revisión no se acepta: 5.453 pruebas pasaron y cuatro
+fallaron por límites de inicialización o cierre de recursos del colector y de
+diagnóstico, con 1 xfail. Los cuatro casos pasaron aislados sin cambiar límites;
+esa repetición no explica los fallos ni cierra la aceptación de H4. También se
+conserva un arranque de navegador que excedió su plazo, aunque el ensayo
+diagnóstico posterior pasó con el mismo límite.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

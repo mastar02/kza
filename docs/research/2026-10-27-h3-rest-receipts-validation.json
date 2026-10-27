@@ -1,0 +1,253 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "a4dddcf971b3346dbe421a2a6b34a2485cfebcec",
+  "tested_runtime_source_tree": "01791630ae498eb365d55cb16cc71d5afdb10566",
+  "tested_scripts_source_tree": "dbea44016428379ce5f2f970b1d70010641711ce",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "Sourced REST Conversations require an authenticated version-two Live connection, a durable pre-send batch ticket, whole-scope ASGI/native ownership and actual browser cache/DOM/parser retirement. Other views, legacy consumers and unconfirmed pages still block global STREAMS.",
+  "new_backend_cases_total": 8,
+  "new_backend_cases": [
+    "tests.integration.test_rest_receipts::test_rest_requires_auth_and_a_confirmed_version_two_connection_before_read",
+    "tests.integration.test_rest_receipts::test_ticket_precedes_actual_outer_body_and_ack_cannot_hide_buffered_send",
+    "tests.integration.test_rest_receipts::test_cancelled_observer_keeps_unknown_native_read_in_streams_claim",
+    "tests.integration.test_rest_receipts::test_source_or_session_change_while_headers_wait_never_starts_private_body[expire]",
+    "tests.integration.test_rest_receipts::test_source_or_session_change_while_headers_wait_never_starts_private_body[revoke]",
+    "tests.integration.test_rest_receipts::test_source_or_session_change_while_headers_wait_never_starts_private_body[session]",
+    "tests.integration.test_rest_receipts::test_receipt_metadata_contains_no_transcript_and_disconnect_does_not_retire",
+    "tests.integration.test_rest_receipts::test_scope_capacity_and_close_timeout_keep_actual_native_operations"
+  ],
+  "new_frontend_cases_total": 8,
+  "baseline_gap": "The prior TTL-only implementation explicitly left actual REST transport ownership, durable client ACK and early revocation incomplete. New tests were introduced with this implementation; no preimplementation failing run is claimed.",
+  "protocol": {
+    "hello_versions": [
+      1,
+      2
+    ],
+    "rest_requires_version": 2,
+    "rest_requires_committed_reset": true,
+    "http_binding_header": "X-KZA-Live-Connection",
+    "unbound_real_read_status": 428,
+    "snapshot_rows_max": 50,
+    "snapshot_source_union_max": 256,
+    "outer_asgi_scopes_max": 8,
+    "ticket_storage": "Existing private live_deliveries and lineage tables; no raw REST body or transcript.",
+    "batch_expiry": "The earliest original source deadline applies to the entire snapshot.",
+    "capabilities_are_identity_or_permission_grants": false
+  },
+  "journal": {
+    "supported_local_targets": [
+      {
+        "version": 1,
+        "descriptor": {
+          "kind": "live_browser_receipts",
+          "protocol": 1
+        }
+      },
+      {
+        "version": 3,
+        "descriptor": {
+          "kind": "conversation_rest_and_live_receipts",
+          "protocol": 2
+        }
+      }
+    ],
+    "unresolved_target": {
+      "version": 2,
+      "descriptor": {
+        "kind": "unresolved_stream_inventory"
+      },
+      "supported": false
+    }
+  },
+  "nonaccepted_fixture_runs": [
+    {
+      "log": "/tmp/kza-rest-receipts-first-focused.log",
+      "failed": 2,
+      "passed": 29,
+      "finding": "Two existing HTTP tests still expected raw unaffiliated reads. Fixtures now complete the real hello/reset/ready protocol and inspect the bound snapshot envelope. No private bypass was added."
+    },
+    {
+      "log": "/tmp/kza-rest-receipts-first-browser.log",
+      "finding": "An old assertion required retirement to occur after the original wall deadline; conservative request-duration accounting may clear sooner. The updated check verifies actual cache/DOM clear and persisted ACK."
+    },
+    {
+      "log": "/tmp/kza-rest-receipts-final-browser.log",
+      "accepted": false,
+      "finding": "The initial rendered Live view and open WebSocket did not appear inside the unchanged five-second Page.wait_for deadline. The failed run did not collect page diagnostics; its cause is not established. A subsequent diagnostic wrapper kept the exact wait implementation and passed, which does not explain the failed startup."
+    }
+  ],
+  "isolated_failed_case_followup": {
+    "passed": 4,
+    "failed": 0,
+    "runtime_s": 2.26,
+    "log": "/tmp/kza-rest-receipts-failed-cases-isolated.log",
+    "xml": "/tmp/kza-rest-receipts-failed-cases-isolated.xml",
+    "same_code_and_deadlines": true,
+    "causal_fix_or_full_suite_acceptance": false,
+    "failed_modules_and_tests_unchanged_since_previous_commit": "770bfa3"
+  },
+  "full_suite": {
+    "accepted": false,
+    "counts": {
+      "tests": 5458,
+      "failures": 4,
+      "errors": 0,
+      "skipped": 1
+    },
+    "passed": 5453,
+    "xfailed": 1,
+    "summary": "==== 4 failed, 5453 passed, 1 xfailed, 31532 warnings in 512.51s (0:08:32) =====",
+    "failed_cases": [
+      {
+        "case": "tests.integration.test_collector_erasure::test_unrecognized_source_metadata_keeps_file_and_only_fixed_receipt_errors",
+        "message": "src.core.owned_work.WorkCloseTimeout: privacy_resources_still_running"
+      },
+      {
+        "case": "tests.integration.test_diagnostic_metric_privacy::test_metric_transport_cannot_retain_arbitrary_request_context",
+        "message": "src.core.owned_work.WorkCloseTimeout: diagnostic_io_still_running"
+      },
+      {
+        "case": "tests.integration.test_diagnostic_retention::test_active_and_rotated_files_expire_without_another_metric",
+        "message": "src.core.owned_work.WorkCloseTimeout: diagnostic_io_still_running"
+      },
+      {
+        "case": "tests.integration.test_diagnostic_retention::test_previous_numeric_schema_uses_original_timestamp_not_import_time",
+        "message": "src.core.owned_work.WorkCloseTimeout: diagnostic_initialization_pending"
+      }
+    ],
+    "junit_time_s": 512.419,
+    "new_rest_cases_passed": 8,
+    "log": "/tmp/kza-rest-receipts-full.log",
+    "xml": "/tmp/kza-rest-receipts-full.xml",
+    "isolated_voice_metrics": {
+      "repetitions": 10,
+      "sentences_per_run": 100,
+      "samples_per_run": 2400000,
+      "provider_wait_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 2720,
+      "loop_lag_p95_ms": 0.9931220021098851,
+      "loop_lag_max_ms": 1.2379830051213503,
+      "exact_pcm_runs": 10
+    },
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-rest-receipts-full.xml"
+  },
+  "focused_suite": {
+    "passed": 443,
+    "runtime_s": 37.33,
+    "log": "/tmp/kza-rest-receipts-accepted-focused.log",
+    "final_response_header_failure_flag_adjustment_followed_this_run": true
+  },
+  "final_rest_cases": {
+    "passed": 8,
+    "runtime_s": 20.15,
+    "log": "/tmp/kza-rest-receipts-final-cases.log"
+  },
+  "other_checks": {
+    "frontend": {
+      "passed": 47,
+      "failed": 0,
+      "log": "/tmp/kza-rest-receipts-accepted-frontend.log"
+    },
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-rest-receipts-final-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-rest-receipts-bandit.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "mocked_services": true,
+      "log": "/tmp/kza-rest-receipts-dashboard.log"
+    },
+    "chromium": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "rendered_conversation_retirement": true,
+      "rendered_idle_expiry": true,
+      "disconnect_clears_ticker": true,
+      "lost_session_clears_private_dom": true,
+      "javascript_exceptions": 0,
+      "synthetic_sources_and_service_adapters": true,
+      "browser_ack_after_dom_and_cache_clear": true,
+      "browser_ack_waits_for_explicit_dom_commit": true,
+      "pagehide_handler_clears_and_acknowledges_owned_view": true,
+      "rest_conversation_original_deadline_clears_cache_dom_and_voice_filter": true,
+      "rest_conversation_payload_excluded_from_global_mock_cache": true,
+      "session_loss_clears_unmounted_rest_conversation_cache": true,
+      "rest_revocation_clears_before_original_expiry": true,
+      "rest_ack_waits_for_explicit_dom_commit": true,
+      "global_streams_acceptance": false,
+      "log": "/tmp/kza-rest-receipts-diagnostic-browser.log",
+      "diagnostic_driver": "/tmp/kza-rest-browser-diagnostic.py",
+      "wait_implementation_and_deadline_unchanged": true
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "a4dddcf971b3346dbe421a2a6b34a2485cfebcec",
+    "artifact": "/tmp/kza-rest-receipts-runtime-v_v0_h0d/runtime.tar.gz",
+    "verified_hashes": 334,
+    "runtime_s": 2.0303354719653726,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 334,
+      "actual_uvicorn_aiohttp_version_two_ws_and_rest": true,
+      "rest_read_requires_confirmed_connection": true,
+      "source_deadline_and_ticket_precede_private_body": true,
+      "wrong_nonce_cannot_retire": true,
+      "rest_revocation_control_contains_exact_batch_token": true,
+      "local_v3_journal_waits_for_browser_ack": true,
+      "disconnect_does_not_retire_and_same_page_reset_covers_exact_old_tickets": true,
+      "exact_compiled_conversation_channel_asset_served": true,
+      "actual_dom_retirement_in_separate_chromium_check": true,
+      "actual_buffered_callback_and_native_read_ownership_in_integration_checks": true,
+      "synthetic_clock_sources_and_service_adapters": true,
+      "unresolved_stream_inventory_still_blocks_global_completion": true,
+      "global_streams_full_main_or_hardware_acceptance": false
+    }
+  },
+  "verified_behaviors": {
+    "no_real_rest_read_before_auth_and_committed_v2_connection": true,
+    "metadata_ticket_committed_before_actual_outer_private_body_callback": true,
+    "tested_framework_middleware_body_buffers_remain_owned_until_actual_exit": true,
+    "browser_ack_does_not_hide_a_still_running_actual_body_callback": true,
+    "cancelled_observer_cannot_hide_native_read_with_unknown_lineage": true,
+    "unknown_reads_count_for_every_conversation_until_lineage_is_known": true,
+    "source_expiry_revocation_or_session_rotation_before_outer_body_prevents_private_send": true,
+    "native_and_outer_send_tasks_use_empty_caller_contexts": true,
+    "eight_scope_cap_and_close_timeout_retain_actual_resources": true,
+    "disconnect_never_substitutes_for_ack": true,
+    "client_retire_before_http_decode_prevents_late_cache_admission": true,
+    "client_ack_waits_for_decode_and_explicit_dom_commit_then_microtask": true,
+    "reset_waits_for_actual_decode_settlement_after_abort_request": true,
+    "real_chromium_holds_dom_commit_and_observes_ticket_still_pending": true,
+    "local_v3_receipt_waits_for_both_browser_ack_and_actual_asgi_scope": true
+  },
+  "limits": {
+    "other_rest_views_generic_ws_and_legacy_clients_complete": false,
+    "unknown_or_permanently_departed_pages_resolved": false,
+    "browser_ram_overwrite_or_all_lower_transport_buffers_attested": false,
+    "global_streams_participant_complete": false,
+    "global_conversation_erasure_ui_enabled": false,
+    "full_producers_diagnostics_or_voices_complete": false,
+    "full_main_audio_sdk_or_hardware_acceptance": false,
+    "full_h4_capacity_gc_and_latency_acceptance": false,
+    "earlier_92_90_ms_loop_spike_and_495_68_ms_gc_pause_explained_or_fixed": false,
+    "failed_final_browser_startup_explained_or_fixed": false,
+    "four_full_suite_native_initialization_or_close_timeouts_explained_or_fixed": false,
+    "production_modified": false,
+    "gc_forced_disabled_or_frozen": false,
+    "existing_deadlines_capacities_or_retries_enlarged_for_green_tests": false,
+    "overall_h3_or_roadmap_complete": false
+  }
+}

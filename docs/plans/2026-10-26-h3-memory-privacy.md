@@ -2819,6 +2819,96 @@ produce antes. Tampoco cubre cachés de acciones HA, recuerdos, alertas u otras
 vistas, ni navegadores legacy. La aceptación integrada de H3/H4/H6 y hardware
 sigue pendiente. Producción permanece sin cambios.
 
+## Entregas REST retenidas y recibos de Conversaciones — 2026-10-27
+
+`/api/conversations` deja de entregar texto real a lectores sin el protocolo de
+recibos. Además de la sesión autenticada, exige una conexión de Live versión 2
+que haya confirmado su reset en SQLite. El servidor emite `rest_ready` sólo
+después de ese commit; el navegador carga entonces el snapshot por HTTP con el
+ID de esa conexión. El ID no atribuye identidad ni concede permisos. Los
+lectores sin este contrato reciben 428; un backend sin autoridad compatible no
+dispone de una ruta alternativa que entregue datos privados sin recibos. Live
+versión 1 sigue funcionando para sus clientes anteriores.
+
+Cada snapshot contiene un único ticket opaco, con el linaje de todas sus filas,
+confirmado antes de entregar bytes privados. El plazo del lote es el menor de
+sus fuentes y alcanza a toda la copia. Al borrar una conversación o revocar una
+dependencia, el servidor pide retirar ese lote mediante `rest_retire`, incluso
+si su HTTP todavía no terminó. Los tickets usan el almacén privado existente:
+no se persisten transcripciones, nombres ni cuerpos REST, y desconectarse o
+vencer no equivalen a confirmarlos. El reset de la misma página puede retirar
+sus obligaciones anteriores hasta el corte exacto registrado.
+
+La propiedad del servidor abarca la entrada ASGI, no sólo la clase Response.
+Así conserva también los cuerpos que buffers del framework o middleware
+puedan retener después de terminar la respuesta interna. Un máximo de ocho
+operaciones admite lecturas nativas y envíos reales; cancelar al observador no
+cancela esas operaciones ni libera su cupo. Mientras una lectura todavía no
+declare su linaje, cuenta como pendiente para cualquier conversación. El envío
+exterior vuelve a comprobar fuentes, conexión y sesión antes de comenzar los
+bytes privados. El cierre retiene la autoridad hasta que terminen el framework,
+los callbacks reales y la lectura nativa, aunque su observación venza.
+
+En el cliente, el canal de recibos conserva sólo metadatos. La caché y el
+renderer de Conversaciones mantienen el texto con los plazos ya implementados;
+notifican la retirada efectiva del DOM. El ACK espera además que terminen las
+descargas y decodificaciones pendientes y que retorne el stack que retiró los
+datos. Un control recibido antes del cuerpo HTTP impide que ese cuerpo vuelva
+a poblar la vista. Abortarlo no se toma como prueba de que la decodificación
+terminó: el reset espera su promesa real. Una pérdida de sesión vacía la caché;
+los recibos sin confirmación exacta permanecen pendientes.
+
+El journal registra el destino local versión 3,
+`conversation_rest_and_live_receipts` con protocolo 2. Su driver comprueba tanto
+los tickets como los scopes HTTP y callbacks de Live realmente activos. La
+versión 1 se conserva para los recibos de Live existentes. El destino versión 2
+del inventario no resuelto permanece no soportado: completar el destino local
+no certifica `STREAMS` ni habilita el borrado global.
+
+La [evidencia de los recibos REST](../research/2026-10-27-h3-rest-receipts-validation.json)
+corresponde a `a4dddcf`. Pasaron 443 pruebas focalizadas y las 8 nuevas de backend
+en una comprobación posterior del código final; frontend terminó con 47 pruebas
+(8 nuevas). Pasaron Ruff, Bandit sin hallazgos medios o altos y el smoke del
+dashboard. El artefacto sin fuentes verificó 334 hashes y su ensayo HTTP/WS real
+terminó en 2,03 s, con fuentes y reloj sintéticos. Los casos
+conectados retienen deliberadamente una lectura nativa, el callback exterior
+detrás de un middleware y los headers mientras vencen fuentes, se revoca una
+conversación o cambia la sesión. También comprueban el límite de operaciones,
+el cierre pendiente, contextos vacíos y que un ACK previo no oculte un callback
+real todavía suspendido. Chromium mantiene cerrada la confirmación del DOM:
+observa la retirada anterior al vencimiento, pero el ticket sólo se resuelve
+cuando permite confirmar esa retirada.
+
+La primera ejecución focalizada conservó dos fallos de fixtures que aún
+esperaban el contrato HTTP anterior; las pruebas se adaptaron para completar
+el handshake real, sin habilitar una excepción de autenticación o de recibos.
+El primer ensayo del navegador exigía que el retiro ocurriera exactamente
+después del vencimiento de pared; la cuenta conservadora del tiempo de descarga
+puede retirarlo antes. El ensayo actualizado espera además el commit del ACK.
+No se ampliaron plazos, capacidades ni reintentos para hacer pasar las pruebas.
+
+La suite completa **no se acepta**: terminó con **5.453 passed, 1 xfailed y
+4 failed en 512,51 s**. Fallaron el cierre de recursos del colector, dos cierres
+de diagnóstico y una inicialización de diagnóstico por `WorkCloseTimeout`.
+Los ocho casos REST nuevos pasaron dentro de esa misma suite. Los cuatro casos
+fallidos pasaron después por separado, con el mismo código y límites, en
+2,26 s; sus módulos y pruebas no cambiaron desde `770bfa3`. Esa ejecución
+aislada no explica ni corrige los fallos de la suite completa: siguen abiertos
+para la aceptación de recursos e I/O de H4.
+
+Un ensayo final de Chromium tampoco abrió la vista inicial dentro de los cinco
+segundos de su helper. No se recogió el estado de la página durante ese fallo,
+por lo que no se le atribuye una causa. La siguiente ejecución agregó captura
+diagnóstica al fallar, conservó exactamente el mismo helper y plazo y pasó sin
+excepciones JavaScript. Ese resultado verifica el escenario funcional pero no
+resuelve la inestabilidad de arranque anterior; también queda pendiente.
+
+Quedan otros cuerpos REST y caches del dashboard, el WebSocket de rutinas y los
+consumidores legacy, junto con páginas que nunca vuelvan a confirmar. Las
+obligaciones de una página perdida no se borran por expiración ni por cerrar el
+proceso. La UI global de borrado sigue deshabilitada, y H3, H4/H6 y la aceptación
+de hardware permanecen abiertos. Producción sigue sin cambios.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
