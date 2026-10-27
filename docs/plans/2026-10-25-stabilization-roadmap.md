@@ -565,6 +565,17 @@ observador. Esto cubre ambos caminos de captura, con los alcances pendientes
 anteriores; todavía no completa `PRODUCERS` ni `STREAMS`. Las pausas de GC y la
 aceptación física e integrada siguen pendientes.
 
+Los clips de wake aceptados, rechazados y missed conservan ahora sus fuentes y
+vencimiento en el catálogo privado. Un intento durable precede al archivo; el
+rename comparte la barrera de admisión y el cierre espera al writer real. La
+retención funciona con la captura apagada, conserva raíces históricas y purga
+la cola sin esperar a un encoder bloqueado. Los WAV legacy no se importan ni
+rotan con los nuevos. La [validación de clips](../research/2026-10-26-h3-wake-clips-validation.json)
+del commit `a239fa7` registra **4971 passed, 1 xfailed**, 30 casos nuevos,
+checks y artefacto sin fuentes aceptados. Siguen pendientes los demás
+colectores y datasets de aprendizaje, journal completo, pausa/mute, voces,
+migración y el resto de H0–H6; no se anuncia borrado global.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

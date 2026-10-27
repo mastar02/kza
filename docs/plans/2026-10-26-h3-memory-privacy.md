@@ -1505,7 +1505,27 @@ Este avance registra destinos de collectors, pero no da de alta un driver que
 finja completar todo `COLLECTORS`. Faltan conversaciones, correcciones STT y
 otros datasets de aprendizaje, además del journal completo de productores.
 La limpieza física local de clips no constituye un recibo global de borrado.
-La validación completa y del artefacto se registra al terminarla.
+La [validación de clips de wake](../research/2026-10-26-h3-wake-clips-validation.json)
+del commit `a239fa7` registra **4971 passed, 1 xfailed**, sin fallos, en 206,89 s.
+Incluye 30 casos nuevos y los 11 casos de formato, rotación y cola adaptados al
+contrato con fuentes. Pasan 876 pruebas dirigidas, los 41 casos finales del
+writer/privacidad, Ruff, Bandit sin hallazgos medios/altos, 18 tests de frontend
+y smoke del dashboard. La prueba de saturación expuso inicialmente el cierre
+delegado al pool general; la evidencia conserva ese fallo y su corrección,
+sin ampliar límites. También comprueba la liberación de la onda antes de un
+diagnóstico bloqueado, sin forzar GC.
+
+El artefacto sin fuentes verifica 317 hashes y ejecuta el warmup y `run` reales
+multiroom con InputStream y modelos sintéticos, endpoint, router, procesador y
+writer. Comprueba intención durable y fuentes antes de codificar, revoca con
+el encoder bloqueado, mantiene la lease durante los timeouts y, al liberar la
+compuerta, rechaza el WAV tardío y retira parte, WAV y metadatos. También espera
+la salida real del hilo y del pool privado, en 2,66 s fuera del checkout.
+
+El heartbeat llega a p95 de 0,18 ms y máximo de 1,02 ms; la cancelación de
+control alcanza 0,08 ms y el cleanup 11,17 ms. Los presupuestos siguen intactos.
+Esta suite no vuelve a medir las pausas globales de GC anteriores ni cierra la
+aceptación física e integrada de H4/H6. No se tocaron producción ni datos reales.
 
 ## Trabajo restante
 

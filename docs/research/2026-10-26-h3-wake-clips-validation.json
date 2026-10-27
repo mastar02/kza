@@ -1,0 +1,264 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "a239fa7ab72c71973a07a9f286a6d9218c093e99",
+  "tested_runtime_source_tree": "b0468f3727ac82619cf0a1bd7c7d55d919627179",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 actual accepted/rejected/missed wake clip producer, bounded copied queues, original capture lineage, durable reserve/part/rename/file cleanup, independent managed-file TTL across disabled-feature restart and historical targets, source barriers and actual native writer/private pool ownership. No production data or trained models.",
+  "new_integration_cases": [
+    "test_unsourced_or_expired_inputs_cannot_create_files",
+    "test_idle_background_ttl_removes_wav_and_all_metadata_in_every_bucket[accepted]",
+    "test_idle_background_ttl_removes_wav_and_all_metadata_in_every_bucket[rejected]",
+    "test_idle_background_ttl_removes_wav_and_all_metadata_in_every_bucket[missed]",
+    "test_revocation_removes_existing_clip_without_another_submission",
+    "test_mixed_sources_keep_oldest_deadline_and_original_ids",
+    "test_expired_queued_wave_is_freed_while_native_encoder_remains_owned",
+    "test_native_encoder_exit_keeps_writer_lease_after_close_timeout",
+    "test_revocation_before_publish_cannot_repopulate_after_cleanup",
+    "test_cleanup_observer_cancel_does_not_cancel_actual_unlink_or_lease",
+    "test_failed_unlink_retains_locator_then_retries_without_private_logs",
+    "test_replaced_root_cannot_redirect_encoder_or_cleanup",
+    "test_cleanup_unlinks_own_symlink_without_following_its_target",
+    "test_disabled_feature_restart_retires_registered_historical_root",
+    "test_unknown_source_metadata_blocks_cleanup_and_preserves_locator[[]]",
+    "test_unknown_source_metadata_blocks_cleanup_and_preserves_locator[{}]",
+    "test_unknown_source_metadata_blocks_cleanup_and_preserves_locator[not JSON]",
+    "test_unknown_source_metadata_blocks_cleanup_and_preserves_locator[[{}]]",
+    "test_nonpositive_sequence_cannot_be_silently_skipped[0]",
+    "test_nonpositive_sequence_cannot_be_silently_skipped[-1]",
+    "test_each_physical_sweep_scans_at_most_128_metadata_rows",
+    "test_real_native_capture_actor_passes_its_source_without_minting_another",
+    "test_textual_wake_clip_inherits_the_exact_ambient_source",
+    "test_local_wake_cleanup_does_not_claim_all_collectors_erased",
+    "test_encode_errors_do_not_retain_audio_or_copy_payload_to_logs",
+    "test_observed_native_expiry_cannot_be_undone_by_clock_rollback",
+    "test_file_commit_admission_precedes_tombstone_and_later_physical_cleanup",
+    "test_private_storage_and_writer_join_do_not_need_the_default_executor",
+    "test_orphaned_part_intent_is_reconciled_after_leased_restart",
+    "test_blocked_diagnostic_sink_cannot_keep_the_failed_waveform"
+  ],
+  "new_integration_case_count": 30,
+  "updated_unit_cases": [
+    "test_writes_valid_wav_with_opaque_name_and_original_lineage",
+    "test_clips_audio_out_of_range",
+    "test_accepts_plain_list",
+    "test_rotation_keeps_newest_managed_clips_and_legacy_unchanged",
+    "test_bucket_and_missing_score_are_metadata_not_file_identity[accepted]",
+    "test_bucket_and_missing_score_are_metadata_not_file_identity[rejected]",
+    "test_bucket_and_missing_score_are_metadata_not_file_identity[missed]",
+    "test_rotation_is_independent_by_bucket[rejected]",
+    "test_rotation_is_independent_by_bucket[missed]",
+    "test_stop_is_idempotent_and_rejects_later_input",
+    "test_full_queue_never_blocks_and_does_not_alias_caller_waveform"
+  ],
+  "prior_unit_case_count": 11,
+  "unit_contract_migration": "Preserve mono 16kHz int16 WAV, clipping, list input, independent accepted/rejected/missed caps, missing-score sentinel and close idempotence. Replace private room/score file naming with opaque UUIDs and sourced catalog metadata; managed rotation preserves legacy WAVs. Replace the old vacuous queue-full assertion with a gated bounded queue and independent waveform-copy check. Stop explicitly retires queued audio; await actual idle for completed-write rotation assertions.",
+  "full_suite": {
+    "collected": 4972,
+    "passed": 4971,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 206.89,
+    "junit_time_s": 206.819,
+    "log": "/tmp/kza-wake-clips-full.log",
+    "xml": "/tmp/kza-wake-clips-full.xml",
+    "accepted": true,
+    "integrated_runtime_gc_acceptance": false,
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-wake-clips-full.xml"
+  },
+  "latency_properties": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.17718318849802017,
+        "max": 1.0232322383672
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05635595880448818,
+          "p95": 0.08471915498375893,
+          "max": 0.08471915498375893
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.892726015299559,
+          "p95": 11.167144170030951,
+          "max": 11.167144170030951
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 425,
+        "loop_lag_p95_ms": 0.30302326194942,
+        "loop_lag_max_ms": 1.0338460560888052,
+        "cancel_cleanup_max_ms": 1.5177910681813955,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2718,
+        "loop_lag_p95_ms": 0.9900691267102956,
+        "loop_lag_max_ms": 1.7973670084029436,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6605249363929033,
+        "p95": 2.350718015804887,
+        "max": 2.350718015804887,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "focused_checks": [
+    {
+      "log": "/tmp/kza-wake-clips-expanded.log",
+      "passed": 198,
+      "failed": 0,
+      "runtime_s": 8.26
+    },
+    {
+      "log": "/tmp/kza-wake-clips-fixed-focused.log",
+      "passed": 876,
+      "failed": 0,
+      "runtime_s": 18.9
+    },
+    {
+      "log": "/tmp/kza-wake-clips-final-new.log",
+      "passed": 41,
+      "failed": 0,
+      "runtime_s": 2.78
+    }
+  ],
+  "controlled_findings": [
+    {
+      "log": "/tmp/kza-wake-clips-first.log",
+      "passed": 172,
+      "failed": 1,
+      "correction": "Update the old textual-wake diagnostic-prefix assertion to require an error type and exclude private exception payload. Dispatch remains successful when the missed-clip callback fails."
+    },
+    {
+      "log": "/tmp/kza-wake-clips-final-focused.log",
+      "passed": 875,
+      "failed": 1,
+      "correction": "The gated default-executor saturation case exposed that storage shutdown still delegated a join to that same executor. After closing admission and draining submitted work, signal private pool shutdown without joining on-loop and await actual thread exit with cooperative polling. Keep the general executor blocked throughout writer and storage close, asserting real threads exited; release the test gate before closing the separate privacy authority. No deadlines widened."
+    }
+  ],
+  "implementation": {
+    "mandatory_initialized_store_and_registered_canonical_target": true,
+    "rejected_unsourced_expired_or_revoked_inputs": true,
+    "copied_queue_capacity_default": 8,
+    "max_input_audio_s": 30,
+    "submission_has_no_disk_or_log_calls": true,
+    "nonblocking_queue_admission_lock": true,
+    "original_source_ids_times_deadlines_and_fact_dependencies": true,
+    "textual_wake_explicit_ambient_lineage": true,
+    "mixed_source_minimum_deadline": true,
+    "opaque_uuid_names_and_file_mode_0600": true,
+    "durable_catalog_intent_before_part_creation": true,
+    "file_and_directory_fsync_native": true,
+    "rename_publication_inside_source_admission_transaction": true,
+    "part_and_final_unlinked_before_locator_retirement": true,
+    "failed_unlink_or_unknown_metadata_keeps_locator": true,
+    "descriptor_walk_without_following_replaced_symlinks": true,
+    "managed_only_independent_bucket_rotation": true,
+    "legacy_wavs_not_imported_rotated_or_erased": true,
+    "physical_sweep_max_metadata_rows": 128,
+    "queue_prune_poll_s": 0.05,
+    "observed_native_job_expiry_latched_against_clock_rollback": true,
+    "retention_runs_with_capture_disabled_and_remembers_historical_roots": true,
+    "actual_encoder_and_cleanup_survive_observer_cancel": true,
+    "shared_lease_held_until_actual_writer_and_private_threads_exit": true,
+    "saturated_general_executor_does_not_starve_writer_storage_close": true,
+    "failed_waveform_and_traceback_released_before_blocking_log_sink": true,
+    "multiroom_close_retains_real_writer_without_old_timed_sync_adapter": true,
+    "collector_targets_registered": true,
+    "collector_journal_driver_marked_complete": false,
+    "producer_journal_participant_marked_complete": false,
+    "new_dependencies": false,
+    "new_configuration_files": false,
+    "gpu_assignment_changed": false
+  },
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-wake-clips-ruff-final.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 29,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-wake-clips-bandit-final.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-wake-clips-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-wake-clips-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 2.662,
+      "git_commit": "a239fa7ab72c71973a07a9f286a6d9218c093e99",
+      "artifact": "/tmp/kza-wake-clips-runtime-djudvela/runtime.tar.gz",
+      "log": "/tmp/kza-wake-clips-runtime-report.json",
+      "exercise": {
+        "passed": true,
+        "git_commit": "a239fa7ab72c71973a07a9f286a6d9218c093e99",
+        "source_free": true,
+        "files_verified": 317,
+        "actual_multiroom_warmup_run_callback_endpoint_router_processor": true,
+        "actual_sourced_wake_clip_reservation_before_native_encode": true,
+        "clip_original_source_ids_and_deadline": true,
+        "pending_file_locator_not_dropped_while_encoder_running": true,
+        "late_wav_encode_after_revocation_cannot_publish": true,
+        "shared_lease_until_actual_capture_writer_and_private_pool_exit": true,
+        "physical_part_wav_and_metadata_removed": true
+      }
+    }
+  },
+  "unchanged_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancel_ms": 100,
+    "cooperative_cleanup_ms": 1000,
+    "gc_forced_disabled_or_frozen": false
+  },
+  "gc_manipulated": false,
+  "prior_integrated_gc_and_hardware_limitations_resolved": false,
+  "remaining_scope": [
+    "PRODUCERS and COLLECTORS remain open: conversation/STT-correction and other learning datasets, other clip consumers and full producer/distillation journal integration remain. Wake clip targets are durably registered, but no collector driver claims completion before those other paths are covered.",
+    "DIAGNOSTICS, COLLECTORS, STREAMS and VOICES remain; diagnostic/SQL/JSONL/Logstash, collector/stream/frontend copies and alternate prompt consumers require their own source/TTL/erasure coverage",
+    "Pause ambient and total mute with non-audio reactivation; 48h automatic voiceprint/group expiry and authenticated calibrated voice grouping/review/merge/split, confirmed profiles until deletion",
+    "Private real-copy quarantine migration of 870 legacy facts, compatible catalog/tombstone/runtime restore, live semantic index rebuild and authenticated broad erasure UI after guarantees",
+    "H0/H1 live HA memberships/effects, H2 physical audio/barge-in, H4 recovery and large-history/runtime/GC acceptance, H5 real typed local execution/routines/timers/reminders, H6 fully integrated candidate and one final release/rollback",
+    "Previously instrumented GC pauses up to 495.68ms remain unresolved; this uninstrumented suite does not remeasure or accept integrated runtime/GC."
+  ],
+  "production_modified": false
+}
