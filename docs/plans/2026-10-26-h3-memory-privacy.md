@@ -1930,6 +1930,27 @@ array hasta su salida real, sin entregarlo a STT ni persistirlo después de la
 rotación. Esto corrige una condición necesaria para el journal; todavía no
 conecta ni declara completo `PRODUCERS`.
 
+La integración pendiente debe seguir también los handoffs completos: el worker
+ambiental conserva `items` y `seg` alrededor de sus awaits, mientras destilación
+obtiene su procedencia después de leer el lote. Contar sólo las tasks de modelos
+no demuestra que esos locales, callbacks de captura y lecturas hayan salido.
+
+La [validación](../research/2026-10-27-h3-capture-scope-rotation-validation.json)
+del commit `864c2ed` registra **5160 passed, 1 xfailed**, sin fallos, en 216,68 s,
+incluidos 23 casos nuevos. La reproducción anterior alcanzó 15 fallos y tres
+casos correctos; la prueba aislada del código anterior confirmó además el tercer
+ID autorizado después del borrado. Pasan las 143 pruebas dirigidas finales,
+Ruff, Bandit sin hallazgos medios/altos, 18 tests de frontend y el smoke del dashboard.
+
+El artefacto sin fuentes verifica 320 hashes y ejecuta seis combinaciones de
+origen/rotación, una cola de comandos real y controllers ambientales con VAD
+bloqueado, tap y SQLite. El array se conserva durante la llamada nativa y se
+libera al salir; ese audio retirado no llega a STT ni genera una fila en el
+almacén. El ejercicio dura 0,51 s y usa únicamente datos y endpoints sintéticos.
+No inicia hardware ni `main` completo, no modifica datos privados del hogar y
+no publica producción. Los límites no se amplían ni se manipula GC; la aceptación
+integrada de GC/hardware de H4/H6 continúa pendiente.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

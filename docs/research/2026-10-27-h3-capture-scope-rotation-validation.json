@@ -1,0 +1,270 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "864c2ed9b102f3e1e4c3b0eab68e5551e0366dcb",
+  "tested_runtime_source_tree": "493cdd43f5873acdb34f1261cb297ed234c3c386",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 prerequisite for PRODUCERS erasure: monotonic implicit capture allocation across idle/hour rotation, retirement of old unsourced raw buffers, stable current-exchange identity for out-of-order packets, preservation of explicit original lineage. Real queued audio and held VAD ownership; no global producer receipt.",
+  "new_integration_cases": [
+    "test_previous_scope_input_is_retired_after_rotation[rotated-idle-ambient]",
+    "test_previous_scope_input_is_retired_after_rotation[rotated-idle-voice]",
+    "test_previous_scope_input_is_retired_after_rotation[rotated-idle-interaction]",
+    "test_previous_scope_input_is_retired_after_rotation[rotated-hour-ambient]",
+    "test_previous_scope_input_is_retired_after_rotation[rotated-hour-voice]",
+    "test_previous_scope_input_is_retired_after_rotation[rotated-hour-interaction]",
+    "test_previous_scope_input_is_retired_after_rotation[old-revoked-idle-ambient]",
+    "test_previous_scope_input_is_retired_after_rotation[old-revoked-idle-voice]",
+    "test_previous_scope_input_is_retired_after_rotation[old-revoked-idle-interaction]",
+    "test_previous_scope_input_is_retired_after_rotation[old-revoked-hour-ambient]",
+    "test_previous_scope_input_is_retired_after_rotation[old-revoked-hour-voice]",
+    "test_previous_scope_input_is_retired_after_rotation[old-revoked-hour-interaction]",
+    "test_real_ambient_tap_drops_previous_exchange_without_touching_another_room[rotated]",
+    "test_real_ambient_tap_drops_previous_exchange_without_touching_another_room[old-revoked]",
+    "test_real_command_queue_drops_old_packets_before_wake_and_keeps_other_room[rotated]",
+    "test_real_command_queue_drops_old_packets_before_wake_and_keeps_other_room[old-revoked]",
+    "test_real_vad_retains_native_input_until_exit_but_cannot_publish_rotated_audio",
+    "test_delayed_input_within_current_scope_keeps_identity_and_high_watermark[ambient]",
+    "test_delayed_input_within_current_scope_keeps_identity_and_high_watermark[voice]",
+    "test_delayed_input_within_current_scope_keeps_identity_and_high_watermark[interaction]",
+    "test_explicit_lineage_stays_original_without_moving_current_scope_backwards[ambient]",
+    "test_explicit_lineage_stays_original_without_moving_current_scope_backwards[voice]",
+    "test_explicit_lineage_stays_original_without_moving_current_scope_backwards[interaction]"
+  ],
+  "new_cases_total": 23,
+  "full_suite": {
+    "accepted": true,
+    "collected": 5161,
+    "passed": 5160,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "runtime_s": 216.68,
+    "junit_time_s": 216.607,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-scope-rotation-full.xml",
+    "log": "/tmp/kza-scope-rotation-full.log",
+    "xml": "/tmp/kza-scope-rotation-full.xml"
+  },
+  "focused_suites": [
+    {
+      "passed": 138,
+      "runtime_s": 10.77,
+      "log": "/tmp/kza-scope-rotation-focused.log",
+      "note": "The initial 18 cases plus existing capture/privacy tests, before five actual raw queue/VAD cases."
+    },
+    {
+      "passed": 23,
+      "runtime_s": 1.18,
+      "log": "/tmp/kza-scope-rotation-native.log",
+      "note": "All new cases before the equivalent simplification of the boundary start calculation."
+    },
+    {
+      "passed": 143,
+      "runtime_s": 11.12,
+      "log": "/tmp/kza-scope-rotation-focused-final.log",
+      "note": "Final focused source before commit; the full suite covers the exact committed source."
+    }
+  ],
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "includes_training_and_migration_clis": true,
+      "log": "/tmp/kza-scope-rotation-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 27,
+      "medium": 0,
+      "high": 0,
+      "includes_training_and_migration_clis": true,
+      "log": "/tmp/kza-scope-rotation-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-scope-rotation-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-scope-rotation-dashboard.log"
+    }
+  },
+  "runtime_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.18222793005406857,
+        "max": 1.042874064296484
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05602487362921238,
+          "p95": 0.06410712376236916,
+          "max": 0.06410712376236916
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.844434145838022,
+          "p95": 11.07059814967215,
+          "max": 11.07059814967215
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 427,
+        "loop_lag_p95_ms": 0.2448740415275097,
+        "loop_lag_max_ms": 1.0622951667755842,
+        "cancel_cleanup_max_ms": 1.6520589124411345,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2719,
+        "loop_lag_p95_ms": 0.9872518759220837,
+        "loop_lag_max_ms": 2.148283999413252,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6150540430098772,
+        "p95": 5.951025988906622,
+        "max": 5.951025988906622,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "864c2ed9b102f3e1e4c3b0eab68e5551e0366dcb",
+    "artifact": "/tmp/kza-scope-rotation-runtime-ularhpsl/runtime.tar.gz",
+    "verified_hashes": 320,
+    "runtime_s": 0.5082355400081724,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "stdout": "\u001b[90m02:01:52.495\u001b[0m \u001b[32mINFO    \u001b[0m \u001b[34msrc.ambient.store        \u001b[0m AmbientStore listo (/tmp/kza-scope-rotation-state-t3hl357o/ambient.db, TTL 48.0h) \u001b[2m(store.py:212)\u001b[0m\n\u001b[90m02:01:52.496\u001b[0m \u001b[32mINFO    \u001b[0m \u001b[34msrc.ambient.transcriber  \u001b[0m AmbientTranscriber activo (2 rooms) \u001b[2m(transcriber.py:113)\u001b[0m\n{\"passed\": true, \"verified_hashes\": 320, \"source_free\": true, \"scope_cases\": [{\"origin\": \"ambient\", \"rotation\": \"idle\", \"old_raw_rejected\": true, \"current_scope_live\": true}, {\"origin\": \"ambient\", \"rotation\": \"hour\", \"old_raw_rejected\": true, \"current_scope_live\": true}, {\"origin\": \"voice\", \"rotation\": \"idle\", \"old_raw_rejected\": true, \"current_scope_live\": true}, {\"origin\": \"voice\", \"rotation\": \"hour\", \"old_raw_rejected\": true, \"current_scope_live\": true}, {\"origin\": \"interaction\", \"rotation\": \"idle\", \"old_raw_rejected\": true, \"current_scope_live\": true}, {\"origin\": \"interaction\", \"rotation\": \"hour\", \"old_raw_rejected\": true, \"current_scope_live\": true}], \"real_command_queue_retired_before_processing\": true, \"fresh_command_kept_current_scope\": true, \"actual_ambient_controllers_and_sqlite\": true, \"blocked_vad_retained_input_and_lease\": true, \"late_vad_output_not_sent_to_stt\": true, \"raw_array_released_after_native_exit\": true, \"stale_utterances_persisted\": 0, \"private_household_data_read_or_packaged\": false, \"production_changed\": false, \"producers_journal_complete\": false, \"full_main_or_hardware_acceptance\": false}\n",
+    "stderr": "",
+    "passed": true,
+    "exercise": {
+      "passed": true,
+      "verified_hashes": 320,
+      "source_free": true,
+      "scope_cases": [
+        {
+          "origin": "ambient",
+          "rotation": "idle",
+          "old_raw_rejected": true,
+          "current_scope_live": true
+        },
+        {
+          "origin": "ambient",
+          "rotation": "hour",
+          "old_raw_rejected": true,
+          "current_scope_live": true
+        },
+        {
+          "origin": "voice",
+          "rotation": "idle",
+          "old_raw_rejected": true,
+          "current_scope_live": true
+        },
+        {
+          "origin": "voice",
+          "rotation": "hour",
+          "old_raw_rejected": true,
+          "current_scope_live": true
+        },
+        {
+          "origin": "interaction",
+          "rotation": "idle",
+          "old_raw_rejected": true,
+          "current_scope_live": true
+        },
+        {
+          "origin": "interaction",
+          "rotation": "hour",
+          "old_raw_rejected": true,
+          "current_scope_live": true
+        }
+      ],
+      "real_command_queue_retired_before_processing": true,
+      "fresh_command_kept_current_scope": true,
+      "actual_ambient_controllers_and_sqlite": true,
+      "blocked_vad_retained_input_and_lease": true,
+      "late_vad_output_not_sent_to_stt": true,
+      "raw_array_released_after_native_exit": true,
+      "stale_utterances_persisted": 0,
+      "private_household_data_read_or_packaged": false,
+      "production_changed": false,
+      "producers_journal_complete": false,
+      "full_main_or_hardware_acceptance": false
+    }
+  },
+  "development_findings": {
+    "initial_regression_tests": {
+      "accepted": false,
+      "passed": 3,
+      "failed": 15,
+      "runtime_s": 0.69,
+      "log": "/tmp/kza-scope-rotation-reproduction.log",
+      "description": "Twelve rotation cases reached stale buffer acceptance and three cases reached a changed conversation ID for a delayed packet within the active exchange. Explicit-lineage cases passed."
+    },
+    "baseline_native_admission": {
+      "baseline_commit": "9e37513",
+      "old_conversation_revoked": true,
+      "delayed_input_received_third_conversation_id": true,
+      "delayed_input_authorized": true,
+      "original_source_authorized": false,
+      "synthetic_data_only": true
+    },
+    "baseline_reproduction_method": "Load only the sources.py blob from committed 9e37513 in an isolated module, with a real temporary leased privacy SQLite authority and synthetic sources. Rotate, revoke the original, then admit its old timestamp without explicit lineage. The baseline creates an authorized third conversation ID. The development checkout and installed runtime are unchanged by this reproduction."
+  },
+  "runtime_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancellation_max_ms": 100,
+    "cleanup_ms": 1000,
+    "limits_widened": false,
+    "gc_forced_disabled_or_frozen": false,
+    "integrated_gc_hardware_acceptance": false
+  },
+  "preserved_boundaries": {
+    "real_household_data_read_or_modified": false,
+    "prior_private_quarantine_copy_modified": false,
+    "quarantined_unsourced_data_automatically_deleted": false,
+    "unknown_legacy_files_automatically_deleted": false,
+    "config_or_runtime_under_kza_changed": false,
+    "production_restarted": false,
+    "new_training_or_gpu_reassignment": false,
+    "global_erasure_claimed": false,
+    "full_main_or_hardware_acceptance": false,
+    "release_published": false,
+    "producers_journal_complete": false
+  },
+  "remaining_scope": [
+    "PRODUCERS journal remains unconnected. Finite ownership must include raw locals in ambient worker handoffs, pre-lineage distillation reads and actual input callbacks, as well as sourced model/controller operations.",
+    "Remaining diagnostics, streams/frontend and VOICES journal participants, pause versus total mute, acoustic retention and authenticated grouping review remain open. Broad erasure remains unavailable in the UI.",
+    "Unknown legacy datasets/adapters and quarantine rows/backups remain preserved pending manual review/lifecycle; complete migrations, live-index rebuild and compatible rollback remain open.",
+    "Selected HA effects and kitchen switch mapping, physical audio, remaining H4 runtime/dependency acceptance, H5 voice functions and the one integrated H6 release remain open.",
+    "The earlier instrumented GC pause of 495.68 ms is not remeasured or accepted by this uninstrumented suite. The compiled smoke uses real components with synthetic endpoint callbacks and no audio hardware or full main startup."
+  ]
+}

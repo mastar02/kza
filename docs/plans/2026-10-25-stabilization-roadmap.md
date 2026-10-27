@@ -671,6 +671,19 @@ commit `780f212` registra **5137 passed, 1 xfailed**, 38 casos nuevos, checks
 aceptados y artefacto sin fuentes con 320 hashes verificados. No se leen datos
 reales del hogar ni se modifica la copia privada anterior o producción.
 
+La revisión de productores detectó y corrigió una [reintroducción de audio tras
+rotar la conversación](2026-10-26-h3-memory-privacy.md#avance-impedir-que-una-rotación-renombre-audio-atrasado).
+El límite de admisión y de buffers avanza por habitación y origen; un paquete
+anterior al intercambio vigente no puede recibir otro ID. Los paquetes atrasados
+del mismo intercambio conservan su ID sin retroceder la fecha de actividad.
+Las pruebas incluyen tap, cola de comandos y VAD retenido reales. Sigue pendiente
+la conexión completa de `PRODUCERS`, incluidos los datos entre handoffs y las
+lecturas de destilación anteriores a conocer su procedencia.
+La [validación](../research/2026-10-27-h3-capture-scope-rotation-validation.json)
+del commit `864c2ed` registra **5160 passed, 1 xfailed**, 23 casos nuevos,
+checks aceptados y artefacto sin fuentes con 320 hashes verificados. No completa
+`PRODUCERS`, H3 ni la aceptación de hardware o de la release.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una
