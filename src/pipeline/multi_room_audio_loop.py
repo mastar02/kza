@@ -1485,11 +1485,12 @@ class MultiRoomAudioLoop:
 
         def audio_callback(indata, frames, time_info, status):
             tap = self._ambient_tap
+            ambient_admitted = not isinstance(tap, MultiChannelTap) or tap.accepting
             ambient_boundary = tap.input_boundary(rs.room_id) if isinstance(tap, MultiChannelTap) else None
             ambient_epoch = tap.input_epoch(rs.room_id) if isinstance(tap, MultiChannelTap) else None
             voice_epoch = room.input_epoch
             ticket = room.callbacks.enter(room.input_boundary,
-                branch=tap.ingress_token if isinstance(tap, MultiChannelTap) else None)
+                branch=tap.ingress_token if isinstance(tap, MultiChannelTap) and ambient_admitted else None)
             ambient = None
             try:
                 if ticket is None or not room.callbacks.accepting or self._closed or self._microphone_captures.get(rs.room_id) is not holder:
@@ -1539,7 +1540,8 @@ class MultiRoomAudioLoop:
                 # echo suppressor descartan para el command path. O(1). El
                 # try/except hace el fail-open EXPLÍCITO: una excepción acá
                 # abortaría el stream de audio del command path (thread C).
-                if tap is not None and (not isinstance(tap, MultiChannelTap) or tap.accepts(rs.room_id, timestamp, ambient_boundary)):
+                if tap is not None and ambient_admitted and (not isinstance(tap, MultiChannelTap)
+                        or tap.accepts(rs.room_id, timestamp, ambient_boundary,epoch=ambient_epoch)):
                     try:
                         tts_now = (
                             self._response_handler is not None

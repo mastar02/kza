@@ -30,6 +30,7 @@ from src.dashboard.live_event_bus import LiveEventBus
 from src.dashboard.memory_api import register_memory_routes
 from src.dashboard.rest_delivery import DashboardApplication
 from src.dashboard.voice_api import register_voice_routes
+from src.dashboard.ambient_api import register_ambient_routes
 from src.dashboard.observability import register_observability_routes
 from src.rooms.room_context import RoomConfig
 from src.routines.models import (
@@ -182,6 +183,7 @@ class DashboardAPI:
         home_enabled: bool = True,
         memory_manager=None,
         voice_registry=None,
+        ambient_control=None,
     ):
         self.scheduler = routine_scheduler
         self.executor = routine_executor
@@ -206,6 +208,7 @@ class DashboardAPI:
         self.home_enabled = home_enabled
         self.memory_manager = memory_manager
         self.voice_registry = voice_registry
+        self.ambient_control = ambient_control
         self.home_actions = home_actions if home_actions is not None else (
             HomeActionService(ha_client) if ha_client is not None else None
         )
@@ -857,6 +860,7 @@ class DashboardAPI:
         )
         register_memory_routes(self.app, manager=self.memory_manager)
         register_voice_routes(self.app,voices=self.voice_registry)
+        register_ambient_routes(self.app,control=self.ambient_control)
 
         register_home_routes(
             self.app, catalog=self.home_catalog, actions=self.home_actions,

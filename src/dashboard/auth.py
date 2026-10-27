@@ -113,7 +113,7 @@ async def require_dashboard_session(
     await require_dashboard_origin(request, kza_dashboard_token)
     return DashboardPrincipal(
         subject="dashboard-admin",
-        permissions=frozenset({"home:read", "home:control", "routines:manage", "memory:review", "voices:review"}),
+        permissions=frozenset({"home:read", "home:control", "routines:manage", "memory:review", "voices:review", "ambient:control"}),
     )
 
 

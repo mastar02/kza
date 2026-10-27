@@ -7,6 +7,7 @@ const { useState, useEffect } = React;
 const NAV = [
   { id: 'live',          label: 'Live',           group: 'Operación', icon: '◉', view: 'LiveView',          badge: 'WS' },
   { id: 'conversations', label: 'Conversaciones', group: 'Operación', icon: '◰', view: 'ConversationsView' },
+  { id: 'privacy',       label: 'Privacidad',     group: 'Operación', icon: '◌', view: 'PrivacyView' },
   { id: 'alerts',        label: 'Alertas',        group: 'Operación', icon: '◬', view: 'AlertsView',        badge: '3' },
   { id: 'ha',            label: 'Home Assistant', group: 'Plataforma', icon: '◧', view: 'HAView' },
   { id: 'llm',           label: 'LLM Router',     group: 'Plataforma', icon: '◆', view: 'LLMView',           badge: '!' },
@@ -98,6 +99,7 @@ function App() {
   const Views = {
     live:          window.LiveView,
     conversations: window.ConversationsView,
+    privacy:       window.PrivacyView,
     ha:            window.HAView,
     llm:           window.LLMView,
     users:         window.UsersView,

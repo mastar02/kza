@@ -175,6 +175,10 @@ class AudioArchiver:
         """Report actual encoders, without filesystem I/O or clip content."""
         return any(saved_path == path and not task.done() for task, (_, saved_path) in self._writes.items())
 
+    def snapshot_operations(self) -> tuple[asyncio.Future,...]:
+        """Include actual encoders and caller cleanup after observer cancellation."""
+        return tuple(set(self._writes) | set(self._calls))
+
     async def drain_conversation(self, conversation_id: str) -> None:
         """Wait actual pre-revocation encoders; observation cancellation is shielded."""
         tasks = [task for task, source in self._calls.items()

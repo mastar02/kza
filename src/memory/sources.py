@@ -58,6 +58,8 @@ class CaptureScopes:
         self._buffer_expiry_floor = float('-inf')
         self._ingress = {}
         self._ingress_authority = object()
+        self._suspended_origins = frozenset()
+        self._origin_fences = {}
         self._lock = threading.Lock()
         ledger.add_revocation_observer(self._retire_conversations)
 
@@ -71,7 +73,43 @@ class CaptureScopes:
                     ingress.current = self._new_epoch(key)
 
     def _new_epoch(self, key):
-        return CaptureEpoch(key[1], key[0], self.ledger.clock()+48*3600, authority=self._ingress_authority)
+        return CaptureEpoch(key[1], key[0], self.ledger.clock()+48*3600,
+            retired=key[0] in self._suspended_origins,authority=self._ingress_authority)
+
+    def suspend_origin(self, origin: MemoryOrigin) -> None:
+        """Seal one producer lane without revoking its historical conversation."""
+        if type(origin) is not MemoryOrigin:
+            raise ValueError('invalid_capture_origin')
+        with self._lock:
+            if origin in self._suspended_origins:
+                return
+            self._suspended_origins = self._suspended_origins | {origin}
+            self._origin_fences = {**self._origin_fences,origin:max(self.ledger.clock(),self._origin_fences.get(origin,float('-inf')))}
+            for key,ingress in self._ingress.items():
+                if key[0] is origin:
+                    ingress.current.retired = True
+
+    def resume_origin(self, origin: MemoryOrigin) -> None:
+        """Replace retired admissions and reject all pre-resume input."""
+        if type(origin) is not MemoryOrigin:
+            raise ValueError('invalid_capture_origin')
+        with self._lock:
+            self._origin_fences = {**self._origin_fences,origin:max(self.ledger.clock(),self._origin_fences.get(origin,float('-inf')))}
+            self._suspended_origins = self._suspended_origins - {origin}
+            for key in tuple(self._scopes):
+                if key[0] is origin:
+                    del self._scopes[key]
+            for key,ingress in self._ingress.items():
+                if key[0] is origin:
+                    ingress.current.retired = True
+                    ingress.current = self._new_epoch(key)
+
+    def _require_origin(self, origin, captured_at):
+        if type(origin) is not MemoryOrigin:
+            return  # MemorySource reports malformed metadata uniformly.
+        fence = self._origin_fences.get(origin)
+        if origin in self._suspended_origins or fence is not None and type(captured_at) in (int,float) and captured_at<=fence:
+            raise PermissionError('capture_lane_suspended_or_retired')
 
     def _ingress_locked(self, key):
         if key not in self._ingress:
@@ -92,6 +130,7 @@ class CaptureScopes:
     def epoch_available(self, epoch: object, room_id: str | None, *, origin: MemoryOrigin) -> bool:
         """Validate native admission against authority, independently of publication."""
         return (self.ledger.authority_available and isinstance(epoch, CaptureEpoch)
+                and origin not in self._suspended_origins
                 and epoch.authority is self._ingress_authority
                 and epoch.room_id == room_id and epoch.origin == origin and not epoch.retired
                 and epoch.expires_at > self.ledger.clock()
@@ -122,7 +161,8 @@ class CaptureScopes:
                 # a different conversation ID when it eventually reaches STT.
                 starts.append(self._scopes[key][2])
             return CaptureBoundary(max(starts, default=None),
-                max(self._buffer_expiry_floor, self._revocation_fences.get(key, float('-inf'))))
+                max(self._buffer_expiry_floor, self._revocation_fences.get(key, float('-inf')),
+                    self._origin_fences.get(origin,float('-inf'))))
 
     def _observe_revocation(self, key):
         previous = self._scopes.get(key)
@@ -146,6 +186,7 @@ class CaptureScopes:
         Delayed input within the current exchange keeps its original identity.
         Older raw input is retired; explicit lineage retains its existing ID.
         """
+        self._require_origin(origin,captured_at)
         source = MemorySource(capture_id, conversation_id or str(uuid4()), captured_at,
             expires_at if expires_at is not None else min(captured_at, self.ledger.clock())+48*3600, origin)
         if conversation_id is None:
@@ -153,6 +194,7 @@ class CaptureScopes:
                 raise PermissionError("capture_precedes_privacy_start")
             key = (origin, room_id)
             with self._lock:
+                self._require_origin(origin,captured_at)
                 if captured_at <= self._buffer_expiry_floor:
                     raise PermissionError("capture_precedes_buffer_retirement")
                 previous = self._scopes.get(key)
@@ -170,4 +212,5 @@ class CaptureScopes:
                     latest = max(captured_at, previous[1])
                 self._scopes[key] = (conversation_id, latest, started)
                 self._bind_epoch(key, replace(source, conversation_id=conversation_id))
+        self._require_origin(origin,captured_at)
         return replace(source, conversation_id=conversation_id) if source.conversation_id != conversation_id else source

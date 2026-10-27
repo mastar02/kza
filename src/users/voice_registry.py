@@ -15,7 +15,7 @@ import numpy as np
 from src.core.owned_work import OwnedBlockingWork,WorkCloseTimeout
 from src.memory.erasure_journal import ErasureParticipant,ErasureResult
 from src.memory.producer_context import model_admission
-from src.memory.fact_ledger import MemorySource
+from src.memory.fact_ledger import MemoryOrigin,MemorySource
 from src.users.voice_ledger import VoiceLedger
 from src.users.voice_capture import build_review_capture
 
@@ -54,6 +54,7 @@ class VoiceRegistry:
         self._loop = asyncio.get_running_loop()
         self._maintenance = self._closing = None
         self._closed = False
+        self._suspended_origins = frozenset()
         self._dropped = self._failed = 0
 
     def register_encoder(self, identifier) -> threading.Lock:
@@ -81,6 +82,7 @@ class VoiceRegistry:
                 or type(transcript) is not str or len(transcript)>8192
                 or room_id is not None and (type(room_id) is not str or not 1<=len(room_id)<=128)
                 or any(type(source) is not MemorySource for source in sources)
+                or any(source.origin in self._suspended_origins for source in sources)
                 or not np.isfinite(audio).all() or not self.privacy.sources_available(sources)):
             self._dropped+=1
             return False
@@ -103,6 +105,20 @@ class VoiceRegistry:
             return False
         return True
 
+    def suspend_origin(self, origin: MemoryOrigin) -> None:
+        """Seal one recording lane while keeping command observations available."""
+        self._suspended_origins = self._suspended_origins | {origin}
+
+    def pending_origin(self, origin: MemoryOrigin) -> int:
+        """Count actual retained PCM/model/commit owners for this lane."""
+        return sum(any(source.origin is origin for source in job.sources) for job in self._jobs.values())
+
+    def resume_origin(self, origin: MemoryOrigin) -> None:
+        """Old model work must finish before its lane may accept new captures."""
+        if self.pending_origin(origin):
+            raise RuntimeError('voice_lane_still_owned')
+        self._suspended_origins = self._suspended_origins - {origin}
+
     def _start(self, slot, job):
         task = asyncio.create_task(self._work.run(self._observe_native,job),context=Context())
         self._tasks.add(task)
@@ -117,7 +133,7 @@ class VoiceRegistry:
     def _observe_native(self, job):
         vector = review = None
         def require_live():
-            if self._closed or not self.privacy.sources_available(job.sources):
+            if self._closed or any(source.origin in self._suspended_origins for source in job.sources) or not self.privacy.sources_available(job.sources):
                 raise RuntimeError('voice_sources_unavailable')
         try:
             with model_admission(job.lock,require_live):

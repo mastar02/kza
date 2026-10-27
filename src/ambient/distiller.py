@@ -224,6 +224,7 @@ class Distiller:
         self._running = False
         self._stop_event = asyncio.Event()
         self._closed = False
+        self._paused = False
         self._close_timeout_s = close_timeout_s
         self._cycles: set[asyncio.Task] = set()
         self._callbacks: set[asyncio.Task] = set()
@@ -238,6 +239,8 @@ class Distiller:
         """Own one cycle and actual callbacks even if its observer is cancelled."""
         if self._closed:
             raise RuntimeError("distillation_closed")
+        if self._paused:
+            return 0
         if any(not t.done() for t in self.snapshot_operations()):
             raise RuntimeError("distillation_capacity")
         if self._privacy is not None:
@@ -259,11 +262,18 @@ class Distiller:
             task.exception()
 
     def _available(self, sources):
-        if self._closed:
+        if self._closed or self._paused:
             return False
         if self._privacy is not None:
             return self._privacy.sources_available(sources)
         return self._policy is None or self._policy.sources_available(sources)
+
+    def set_paused(self, paused: bool) -> None:
+        """Pause extraction without closing history, purge or the reusable worker."""
+        self._paused = paused
+        if paused:
+            for task in tuple(self._cycles):
+                task.cancel()
 
     async def _extract(self) -> int:
         failure = None

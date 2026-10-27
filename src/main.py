@@ -1621,6 +1621,12 @@ async def _run_main(shutdown: AsyncExitStack):
     live_event_bus = await build_live_services(config,privacy=privacy_services,
         owner=erasure_services,shutdown=shutdown)
 
+    ambient_control = None
+    if ambient_path is not None:
+        from src.ambient.control import build_ambient_control
+        ambient_control = await build_ambient_control(privacy=privacy_services,path=ambient_path,
+            voices=voice_registry,shutdown=shutdown)
+
     if dashboard_config.get("enabled", True):
         health_aggregator = HealthAggregator(
             ha_client=ha_client,
@@ -1656,6 +1662,7 @@ async def _run_main(shutdown: AsyncExitStack):
             home_enabled=dashboard_config.get("home", {}).get("enabled", False),
             memory_manager=memory_manager,
             voice_registry=voice_registry,
+            ambient_control=ambient_control,
         )
         shutdown.push_async_callback(dashboard.stop)
         logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 9500)}")

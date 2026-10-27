@@ -79,6 +79,7 @@ class AmbientTranscriber:
         self._native = OwnedBlockingWork(close_timeout_s=close_timeout_s)
         self._close_timeout_s = close_timeout_s
         self._closed = False
+        self._paused = False
         self._closing = None
         self._segments = {}
         self._batches: set[asyncio.Task] = set()
@@ -173,7 +174,7 @@ class AmbientTranscriber:
         tasks = set(self._segments) | self._batches | set(self._native._tasks) | set(self._prunes.values())
         for room in self._room_states.values():
             tasks.update(room.snapshot_operations())
-        for adapter in (self._stt, self._tagger):
+        for adapter in (self._stt, self._tagger, self._archiver):
             if callable(getattr(type(adapter), "snapshot_operations", None)):
                 tasks.update(adapter.snapshot_operations())
         if self._closing is not None and not self._closing.done():
@@ -190,12 +191,47 @@ class AmbientTranscriber:
 
     def resource_status(self) -> dict:
         """Expose counts without projecting capture IDs, room names, text or audio."""
-        return {"closed": self._closed, "segments": len(self._segments),
+        return {"closed": self._closed, "paused": self._paused, "segments": len(self._segments),
                 "batches": len(self._batches), "source_scopes": self._scopes.resource_status(),
                 "operations": sum(not task.done() for task in self.snapshot_operations()),
                 "tap_chunks": self._tap.buffered_count() if self._tap is not None else 0,
                 "rooms": [room.status() for room in self._room_states.values()],
                 "closing": self._closing is not None and not self._closing.done()}
+
+    def pause_admission(self) -> None:
+        """Stop new batches and invalidate active segment consumers immediately."""
+        self._paused = True
+        self._tap.pause()
+        self._last_tv.clear()
+
+    async def drain_pause(self) -> None:
+        """Await actual models, archive and callbacks before resetting all rooms."""
+        if not self._paused:
+            raise RuntimeError('ambient_pause_not_sealed')
+        await self._drain_pause_operations()
+        if self._tap.ingress_pending():
+            while self._tap.ingress_pending():
+                await asyncio.sleep(.005)
+        if not self._closed:
+            results = await asyncio.gather(*(room.discard_private() for room in self._room_states.values()))
+            if not all(results):
+                raise RuntimeError('ambient_reset_incomplete')
+        await self._drain_pause_operations()
+
+    async def _drain_pause_operations(self):
+        while self.snapshot_operations():
+            await asyncio.gather(*self.snapshot_operations(),return_exceptions=True)
+            for key,task in tuple(self._prunes.items()):
+                if task.done():
+                    self._prunes.pop(key,None)
+            await asyncio.sleep(0)
+
+    def resume_admission(self) -> None:
+        """The control owner must first drain and replace capture epochs."""
+        if self._closed or self.snapshot_operations():
+            raise RuntimeError('ambient_operations_still_owned')
+        self._tap.resume()
+        self._paused = False
 
     def prune_private(self) -> None:
         """Publish capture fences and schedule native reset without blocking capture."""
@@ -256,6 +292,9 @@ class AmbientTranscriber:
         task = None
         while self._running:
             try:
+                if self._paused:
+                    await asyncio.sleep(self.poll_interval_s)
+                    continue
                 self.prune_private()
                 with producer_context(room_id):
                     task = asyncio.create_task(self._consume_batch(room_id, state))
@@ -285,6 +324,8 @@ class AmbientTranscriber:
         items = seg = None
         with self._scopes.operation():
             try:
+                if self._paused:
+                    return
                 from src.ambient.tap import MultiChannelTap
                 items = self._tap.drain_owned(room_id) if isinstance(self._tap, MultiChannelTap) else self._tap.drain(room_id)
                 if items:
@@ -302,7 +343,7 @@ class AmbientTranscriber:
         """Own one sourced pipeline even after its observer is cancelled."""
         task = capture_source = input_source = None
         try:
-            if self._closed:
+            if self._closed or self._paused:
                 return
             if self._privacy is not None:
                 from uuid import uuid4
@@ -349,7 +390,7 @@ class AmbientTranscriber:
             task = seg = capture_source = input_source = None
 
     def _live(self, source) -> bool:
-        return not self._closed and (self._privacy is None or self._privacy.sources_available((source,)))
+        return not self._closed and not self._paused and (self._privacy is None or self._privacy.sources_available((source,)))
 
     def _require_live(self, source) -> None:
         if not self._live(source):
@@ -391,6 +432,7 @@ class AmbientTranscriber:
                     text_empty=True, **provenance,
                 )
                 empty_id = await self._store.add(empty)
+                self._require_live(capture_source)
                 try:
                     await self._archive_audio(room_id, empty_id, seg.audio, source=capture_source)
                 except Exception:
@@ -446,6 +488,7 @@ class AmbientTranscriber:
             if source == "tv":
                 self._last_tv[room_id] = time.time()
             utt_id = await self._store.add(utt)
+            self._require_live(capture_source)
             logger.debug(
                 "[Ambient] room=%s source=%s azimuth=%s stability=%.2f",
                 room_id, source, azimuth, stability
@@ -528,7 +571,7 @@ class AmbientTranscriber:
             utt_id: rowid devuelto por store.add().
             audio: Audio multicanal del segmento.
         """
-        if source is not None and not self._privacy.sources_available((source,)):
+        if not self._live(source):
             return
         options = {'source': source} if source is not None else {}
         path = await self._archiver.write(room_id, utt_id, audio, **options)

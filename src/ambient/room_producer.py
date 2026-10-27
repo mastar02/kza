@@ -295,6 +295,11 @@ class RoomProducer:
         """Wait for real VAD completion before retiring stale native buffers."""
         await self._call(self._prune)
 
+    async def discard_private(self) -> bool:
+        """Reset actual VAD/preroll after its worker exits, keeping it reusable."""
+        self.ready.clear()
+        return await self._call(self._discard)
+
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Observe actual VAD/reset work and its shielded native completion."""
         tasks = set(self._work._tasks)

@@ -45,6 +45,7 @@ class MultiChannelTap:
         self._boundaries: dict[str, CaptureBoundary] = {}
         self._clock = clock or time.time
         self._closed = False
+        self._paused = False
         self._ingress_token = object()
         self._ingress: WeakSet[InputCallbacks] = WeakSet()
         self._pushes = InputCallbacks()
@@ -74,6 +75,24 @@ class MultiChannelTap:
         """Metadata identity for the callback's independent ambient branch."""
         return self._ingress_token
 
+    @property
+    def accepting(self) -> bool:
+        """Let voice callbacks skip the disabled ambient branch before copying."""
+        return not self._closed and not self._paused
+
+    def pause(self) -> None:
+        """Seal ingress and detach copied queues without closing command capture."""
+        self._paused = True
+        for room_id,queue in tuple(self._queues.items()):
+            self._queues[room_id] = deque(maxlen=self._maxlen)
+            queue.clear()
+
+    def resume(self) -> None:
+        """Reopen only after the control owner has retired prior ingress epochs."""
+        if self._closed or self.ingress_pending():
+            raise RuntimeError('ambient_ingress_still_owned')
+        self._paused = False
+
     def register_ingress(self, callbacks: InputCallbacks) -> None:
         """Register metadata ownership before exposing this tap to a microphone."""
         self._ingress.add(callbacks)
@@ -87,10 +106,12 @@ class MultiChannelTap:
         """Snapshot control-loop metadata before a microphone touches its input."""
         return self._boundaries.get(room_id, _PUSH_BOUNDARY)
 
-    def accepts(self, room_id: str, timestamp: float, boundary: CaptureBoundary) -> bool:
+    def accepts(self, room_id: str, timestamp: float, boundary: CaptureBoundary, *, epoch: object = _UNSTAMPED) -> bool:
         """Reject a copy admitted before a published ambient boundary changed."""
         current = self.input_boundary(room_id)
-        return not self._closed and current == boundary and current.allows(timestamp)
+        epoch = self.input_epoch(room_id) if epoch is _UNSTAMPED else epoch
+        admitted = room_id not in self._capture_ingress or epoch is self.input_epoch(room_id) and not epoch.retired
+        return self.accepting and admitted and current == boundary and current.allows(timestamp)
 
     def register_room(self, room_id: str) -> None:
         """Registrar una room (idempotente)."""
@@ -118,7 +139,7 @@ class MultiChannelTap:
         ticket = self._pushes.enter(_PUSH_BOUNDARY)
         q = None
         try:
-            if ticket is None or self._closed:
+            if ticket is None or not self.accepting:
                 return
             timestamp = ts if ts is not None else self._clock()
             # Snapshot the queue before reading its fence. Publication installs
