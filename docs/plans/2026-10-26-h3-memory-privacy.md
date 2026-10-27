@@ -2685,6 +2685,81 @@ todos los buffers de transporte o copias remotas. `STREAMS` sigue sin un driver
 que certifique borrado global; H3, la aceptación de recursos/GC y hardware, y la
 release siguen abiertos. Producción permanece sin cambios.
 
+## Recibos durables del navegador de Live — 2026-10-27
+
+El canal de red de Live requiere ahora un handshake versionado. Cada página
+usa un ID opaco en memoria, sin atribuir identidad ni permisos; sólo una
+conexión activa puede reclamar ese ID. Antes de entregar texto, el servidor
+pide vaciar la vista y espera el ACK de ese reset. Al reconectar la misma
+página, el reset abarca sólo sus tickets hasta el corte registrado. Una
+confirmación vieja no retira entregas posteriores ni las de otra página.
+
+La autoridad común conserva tickets y vínculos con conversaciones, sin texto,
+audio, nombres o etiquetas de voz. Cada ticket se confirma en SQLite **antes**
+del callback de envío; la fuente se vuelve a comprobar antes de serializar. El
+vencimiento del contenido, la desconexión y un reinicio no equivalen a un ACK.
+Los pendientes sobreviven y se resuelven mediante capacidades exactas de la
+conexión autenticada. El almacén limita los tickets globales y por página; al
+saturarse deja de entregar frames y solicita otro reset, sin borrar obligaciones
+para hacer espacio. Las operaciones nativas y sus locks siguen retenidos si
+se cancela al observador.
+
+El ticker dejó de guardar texto en estado o props de React. React sólo crea su
+contenedor; un renderer acotado reemplaza sus nodos desde la caché vigente del
+bridge. Los eventos de ventana transportan únicamente el token. El cliente
+envía el ACK después de retirar el frame de la caché y del DOM, en una microtarea
+posterior al stack que hizo esa retirada. También limpia al salir de la página.
+Chromium retiene deliberadamente la confirmación del renderer y comprueba que
+el ticket siga pendiente aunque el DOM ya esté vacío; sólo después permite
+confirmarla y observa el commit del ACK en el servidor.
+
+El journal tiene un destino versionado para estos recibos de Live. El driver
+comprueba tanto los tickets pendientes como el callback local que aún pueda
+conservar bytes. Un ACK del cliente no completa ese destino mientras continúe
+el envío real. El driver devuelve progreso sin ocupar indefinidamente un slot
+del coordinador esperando páginas desconectadas. Un arranque con lease reabre
+sus recibos para comprobar tickets restaurados; filas sin linaje mantienen el
+destino pendiente. El cierre del socket libera su lease sólo después del
+callback real y del trabajo de metadatos que continúe en curso.
+
+La revisión encontró además que el coordinador de borrado heredaba contexto
+libre del solicitante. Dos regresiones lo reprodujeron: tanto sus tareas de
+ciclo, cleanup, mantenimiento y cierre como sus callbacks de finalización
+parten ahora de un contexto vacío. Cancelar al observador no retiene su objeto
+privado a través del callback del ciclo. Los workers del almacén de recibos
+reciben sólo metadatos validados y resultados de tipo cerrado. La revocación de
+sesión se vuelve a comprobar también antes de aceptar un ACK; el nonce o el ID
+de página no conceden permisos.
+
+La [evidencia de los recibos de Live](../research/2026-10-27-h3-live-browser-receipts-validation.json)
+corresponde a la revisión final `14700cc`, que incluye la implementación de
+`8d17a09` y la corrección del fixture en `6c3d9da`. La suite completa terminó
+con **5.444 passed y 1 xfailed en 244,31 s**, incluidos 20 casos nuevos de
+backend. Pasaron también 465 pruebas focalizadas, 30 de frontend (7 nuevas),
+Ruff, Bandit sin hallazgos medios o altos y el smoke del dashboard. El artefacto
+sin fuentes verificó 329 hashes y completó su smoke en 0,86 s. Chromium probó
+HTTP, WebSocket, React y el ACK posterior a la confirmación del DOM sin
+excepciones JavaScript; el código del cliente y dashboard no cambió desde ese
+ensayo. Los adaptadores de servicio, fallos de I/O y relojes son sintéticos.
+
+La evidencia conserva los resultados no aceptados. La primera suite completa
+detectó que un test de restauración de diagnósticos avanzaba el reloj del
+grafo anterior; el fixture observa ahora su sweep real y usa el reloj de la
+autoridad reabierta, sin ampliar plazos ni reintentos. Otra suite se detuvo al
+confirmar la retención de contexto del callback, antes de corregirla y ejecutar
+la suite final completa. El ensayo de navegador que intentó continuar una
+sesión ya detenida por `pagehide` también queda registrado; el ensayo corregido
+recarga la página antes del siguiente escenario. El smoke estático compara los
+bytes del asset servido en lugar del nombre de una función retirada.
+
+El inventario restante de `STREAMS` queda como destino explícito no soportado:
+faltan otros WebSockets y caches REST, clientes legacy y la resolución revisada
+de páginas que nunca vuelvan a confirmar. Un proceso de navegador cerrado no
+se toma como prueba de borrado. El ACK certifica la liberación por esta vista,
+sin afirmar sobreescritura física de RAM ni aceptación de todos los buffers
+inferiores de transporte. No se habilita borrado global ni se cierra H3, H4/H6
+o la release. Producción permanece sin cambios.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

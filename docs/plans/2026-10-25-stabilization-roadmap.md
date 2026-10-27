@@ -816,6 +816,19 @@ fuga de contexto en logs detectada y corregida durante la validación y su suite
 parcial detenida. Quedan el ACK y recibo durable del navegador, otros WebSockets y
 caches de otras vistas; `STREAMS`, H3 y la aceptación integrada siguen abiertos.
 
+Los [recibos del navegador de Live](../research/2026-10-27-h3-live-browser-receipts-validation.json)
+ya persisten tickets sin texto antes de enviar, exigen un reset confirmado al
+reconectar y esperan la retirada de caché y DOM. React conserva sólo el
+contenedor; Chromium verifica que el ACK no salga antes de confirmar la
+retirada. El driver local del journal espera también el callback real del
+servidor y reabre recibos al restaurar metadatos. La revisión validada en
+`14700cc` corrige además la herencia de contexto privado en tareas y callbacks
+de finalización del coordinador. Pasaron 5.444 pruebas con 1 xfail, 465 pruebas
+focalizadas, 30 de frontend, Chromium y el artefacto compilado con 329 hashes
+verificados. El inventario restante de `STREAMS` sigue bloqueado: otros
+WebSockets, caches REST, clientes legacy y páginas sin confirmación necesitan
+cobertura. No se cierra H3.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

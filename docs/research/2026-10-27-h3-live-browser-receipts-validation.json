@@ -1,0 +1,249 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "14700cceeeb4459cdaf4a88d05852e96ed9e865e",
+  "implementation_commit": "8d17a09c56f2799fd981d04d02a75730b106e27d",
+  "tested_runtime_source_tree": "43b7f4564cf5e9bb71e92520806622c8de7aed4f",
+  "tested_scripts_source_tree": "dbea44016428379ce5f2f970b1d70010641711ce",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 durable metadata-only Live tickets committed before transport, page-scoped reset cutoffs and capabilities, actual browser cache/DOM retirement ACK, actual send/SQL ownership and a local STREAMS cleanup target. Other WS/REST caches, unknown legacy/offline pages and global STREAMS remain blocked.",
+  "new_cases_total": 20,
+  "new_cases": [
+    "tests.integration.test_erasure_coordinator::test_owned_cleanup_tasks_cannot_retain_arbitrary_request_context",
+    "tests.integration.test_erasure_coordinator::test_cancelled_cycle_observer_does_not_leave_private_context_in_done_callback",
+    "tests.integration.test_live_receipts::test_receipt_is_content_free_and_wrong_nonce_or_other_connection_cannot_retire",
+    "tests.integration.test_live_receipts::test_disconnect_expiry_and_restart_never_infer_browser_erasure",
+    "tests.integration.test_live_receipts::test_reset_ack_covers_only_its_client_and_captured_cutoff",
+    "tests.integration.test_live_receipts::test_duplicate_page_cannot_evict_live_connection_or_take_its_reset",
+    "tests.integration.test_live_receipts::test_global_and_client_caps_fail_closed_without_deleting_unacked_rows",
+    "tests.integration.test_live_receipts::test_concurrent_page_handshakes_preserve_all_connection_leases",
+    "tests.integration.test_live_receipts::test_second_receipt_owner_cannot_recover_over_the_live_writer",
+    "tests.integration.test_live_receipts::test_failed_disconnect_metadata_retries_without_evicting_an_active_peer",
+    "tests.integration.test_live_stream_privacy::test_revoked_session_cannot_mutate_receipts_before_idle_guard_tick",
+    "tests.integration.test_live_stream_receipts::test_private_delivery_waits_for_clear_handshake_and_durable_ticket",
+    "tests.integration.test_live_stream_receipts::test_local_step_stays_pending_until_browser_ack_and_inventory_blocks_global_completion",
+    "tests.integration.test_live_stream_receipts::test_peer_ack_does_not_hide_a_still_running_actual_send_callback",
+    "tests.integration.test_live_stream_receipts::test_unacknowledged_client_survives_restart_and_only_its_new_clear_settles_it",
+    "tests.integration.test_live_stream_receipts::test_unattributed_restored_ticket_blocks_receipt_without_invented_lineage",
+    "tests.integration.test_live_stream_receipts::test_idle_page_cannot_hold_handshake_slot_after_its_fixed_deadline",
+    "tests.integration.test_live_stream_receipts::test_cancelled_ack_observer_and_close_retain_actual_sqlite_commit_and_lease",
+    "tests.integration.test_live_stream_receipts::test_restored_ticket_reopens_previously_completed_local_step",
+    "tests.integration.test_live_stream_receipts::test_disconnect_during_native_ticket_issue_never_starts_late_private_send"
+  ],
+  "baseline_gap": "The previous accepted Live validation explicitly left browser ACKs and durable receipts incomplete. New receipt store tests were introduced with the implementation; no preimplementation failing run is claimed.",
+  "context_regressions": {
+    "cleanup_task_red": {
+      "log": "/tmp/kza-live-receipts-coordinator-context-red.log",
+      "failed": 1,
+      "finding": "The retained cleanup task inherited arbitrary caller LogContext."
+    },
+    "completion_callback_red": {
+      "log": "/tmp/kza-live-receipts-cycle-context-red.log",
+      "private_context_retained_after_cancel": true
+    },
+    "completion_callback_green": {
+      "log": "/tmp/kza-live-receipts-cycle-context-green.log",
+      "private_context_retained_after_cancel": false
+    },
+    "fix": "Coordinator tasks and completion callbacks use empty Context instances. Cancellation of an observer cannot pin its private object through the owned cycle."
+  },
+  "nonaccepted_full_suite": {
+    "commit": "8d17a09c56f2799fd981d04d02a75730b106e27d",
+    "failed": 1,
+    "passed": 5442,
+    "xfailed": 1,
+    "runtime_s": 244.63,
+    "log": "/tmp/kza-live-receipts-accepted-full.log",
+    "xml": "/tmp/kza-live-receipts-accepted-full.xml",
+    "failed_test": "tests.integration.test_diagnostic_erasure::test_unverified_restored_catalog_is_not_republished_and_receipts_follow_physical_repair[payload_matching]",
+    "finding": "The existing restored-diagnostic test advanced the previous graph clock instead of the reopened authority clock. Its intended retry was never due when startup maintenance had failed.",
+    "fix": "Bind the current graph clock, observe the actual prior sweep before selecting repair, and inject one exact erasure-batch failure before the existing retry. No timeout, capacity or retry count was enlarged."
+  },
+  "nonaccepted_retry_fixture_run": {
+    "log": "/tmp/kza-live-receipts-final-accepted-focused.log",
+    "failed": 1,
+    "passed": 463,
+    "runtime_s": 33.39,
+    "finding": "A selected pre-marker sweep could still fail at the first repair call. The fixture now awaits that exact retained sweep before starting post-marker repair.",
+    "accepted_followup_log": "/tmp/kza-live-receipts-diagnostic-retry-focused.log",
+    "accepted_followup_passed": 17
+  },
+  "nonaccepted_interrupted_full_suite": {
+    "commit": "6c3d9da4fd7e8d1402f1f75bc4480c4b66d40b27",
+    "log": "/tmp/kza-live-receipts-final-accepted-full.log",
+    "xml": "/tmp/kza-live-receipts-final-accepted-full.xml",
+    "terminal_exit_code": 2,
+    "runtime_s": 199.24,
+    "completed_passed": 4115,
+    "xfailed": 1,
+    "observed_junit_counts": {
+      "tests": 4116,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "accepted": false,
+    "reason": "Stopped the verified live pytest process with SIGINT after the native-claim probe confirmed a private completion-callback context surviving observer cancellation."
+  },
+  "nonaccepted_browser_run": {
+    "log": "/tmp/kza-live-receipts-accepted-browser.log",
+    "finding": "The test correctly stopped the session on pagehide and then incorrectly tried to keep using it. The corrected sequence navigates to the page again before continuing. It does not weaken the ACK gate."
+  },
+  "smoke_update": {
+    "nonaccepted_log": "/tmp/kza-live-receipts-dashboard.log",
+    "finding": "The static routing smoke searched for the removed useLiveStream implementation name. It now verifies the exact served asset bytes; real client behavior is exercised separately in Chromium."
+  },
+  "full_suite": {
+    "accepted": true,
+    "collected": 5445,
+    "passed": 5444,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 244.232,
+    "summary": "========= 5444 passed, 1 xfailed, 31584 warnings in 244.31s (0:04:04) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-live-receipts-sanitized-accepted-full.xml",
+    "log": "/tmp/kza-live-receipts-sanitized-accepted-full.log",
+    "xml": "/tmp/kza-live-receipts-sanitized-accepted-full.xml",
+    "isolated_voice_metrics": {
+      "repetitions": 10,
+      "sentences_per_run": 100,
+      "samples_per_run": 2400000,
+      "provider_wait_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 2725,
+      "loop_lag_p95_ms": 0.9785088524222373,
+      "loop_lag_max_ms": 1.145142950117588,
+      "exact_pcm_runs": 10
+    }
+  },
+  "focused_suite": {
+    "passed": 465,
+    "failed": 0,
+    "runtime_s": 33.38,
+    "summary": "===================== 465 passed, 2195 warnings in 33.38s ======================",
+    "log": "/tmp/kza-live-receipts-sanitized-accepted-focused.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-live-receipts-sanitized-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-live-receipts-sanitized-bandit.log"
+    },
+    "frontend": {
+      "passed": 30,
+      "new_cases": 7,
+      "failed": 0,
+      "log": "/tmp/kza-live-receipts-final-accepted-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "mocked_services": true,
+      "log": "/tmp/kza-live-receipts-sanitized-dashboard.log"
+    },
+    "chromium": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "rendered_conversation_retirement": true,
+      "rendered_idle_expiry": true,
+      "disconnect_clears_ticker": true,
+      "lost_session_clears_private_dom": true,
+      "javascript_exceptions": 0,
+      "synthetic_sources_and_service_adapters": true,
+      "browser_ack_after_dom_and_cache_clear": true,
+      "browser_ack_waits_for_explicit_dom_commit": true,
+      "pagehide_handler_clears_and_acknowledges_owned_view": true,
+      "global_streams_acceptance": false,
+      "log": "/tmp/kza-live-receipts-final-accepted-browser.log",
+      "checked_dashboard_and_client_code_unchanged_since": "8d17a09c56f2799fd981d04d02a75730b106e27d",
+      "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m tests.frontend.browser_live_privacy"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "14700cceeeb4459cdaf4a88d05852e96ed9e865e",
+    "artifact": "/tmp/kza-live-receipts-runtime-7d0yjk3c/runtime.tar.gz",
+    "verified_hashes": 329,
+    "runtime_s": 0.8563488319050521,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 329,
+      "actual_uvicorn_aiohttp_receipt_handshake": true,
+      "no_private_bytes_before_reset_ack": true,
+      "ticket_persisted_before_transport": true,
+      "wrong_nonce_cannot_retire": true,
+      "local_journal_waits_for_browser_ack_and_actual_callback": true,
+      "unacknowledged_ticket_survives_disconnect_and_restart": true,
+      "same_page_reconnect_reset_retires_exact_old_cutoff": true,
+      "no_transcript_persisted_in_receipt_ledger": true,
+      "cleanup_owned_context_empty": true,
+      "unresolved_stream_inventory_blocks_global_completion": true,
+      "synthetic_protocol_peer_clock_and_send_gate": true,
+      "actual_dom_commit_browser_proof_in_separate_chromium_check": true,
+      "global_streams_full_main_or_hardware_acceptance": false
+    }
+  },
+  "verified_behaviors": {
+    "metadata_only_ticket_and_conversation_lineage_committed_before_private_bytes": true,
+    "private_hello_and_reset_ack_required_before_delivery": true,
+    "one_active_connection_per_page_id_without_identity_or_permission_grant": true,
+    "nonce_connection_client_and_cutoff_scope_enforced": true,
+    "wrong_nonce_and_duplicate_ack_do_not_fabricate_retirement": true,
+    "original_source_expiry_disconnect_and_restart_do_not_settle_tickets": true,
+    "same_page_reconnect_can_ack_an_exact_old_cutoff_without_raw_replay": true,
+    "global_1024_and_per_page_64_ticket_caps_fail_closed": true,
+    "unattributed_restored_rows_block_local_receipt": true,
+    "restored_tickets_reopen_completed_local_steps": true,
+    "peer_ack_does_not_hide_local_raw_callback_still_running": true,
+    "native_ack_commit_and_connection_close_keep_privacy_lease_after_timeout": true,
+    "disconnect_during_native_issue_cannot_start_late_private_send": true,
+    "incoming_ack_rechecks_current_session": true,
+    "weak_owner_registry_prevents_parallel_recovery_over_live_metadata_writer": true,
+    "concurrent_hello_recovery_and_initialized_flag_share_authority_lock": true,
+    "failed_disconnect_metadata_can_recover_only_a_known_exited_connection": true,
+    "client_cache_and_dom_must_both_clear_before_ack": true,
+    "ack_microtask_waits_for_render_stack_release": true,
+    "react_props_state_and_window_events_do_not_hold_private_frame_payload": true,
+    "actual_chromium_can_hold_dom_commit_and_observe_ticket_still_pending": true,
+    "owned_coordinator_tasks_and_completion_callbacks_do_not_inherit_private_context": true,
+    "unresolved_stream_inventory_remains_explicitly_unsupported": true
+  },
+  "limits": {
+    "local_target": {
+      "kind": "live_browser_receipts",
+      "protocol": 1,
+      "erasure_target_version": 1
+    },
+    "unresolved_target": {
+      "kind": "unresolved_stream_inventory",
+      "erasure_target_version": 2,
+      "accepted_by_driver": false
+    },
+    "ack_meaning": "ACK certifies release of this application-owned Live cache, DOM and render stack. It does not attest to RAM overwriting or all lower browser/transport buffers.",
+    "offline_pages": "A page ID lives only in that page memory. Unknown, crashed or permanently departed pages remain pending if no exact ACK arrives; close/expiry is never substituted for a receipt. Reviewed resolution and legacy coverage remain open.",
+    "receipt_metadata": "Only opaque delivery/page/connection IDs, nonce capabilities, original expiry and conversation links persist while unacknowledged. No text, audio, names, speaker labels or raw replay payload is stored.",
+    "other_websockets_and_rest_snapshot_caches_complete": false,
+    "global_streams_participant_complete": false,
+    "global_conversation_erasure_ui_enabled": false,
+    "full_producers_diagnostics_or_voices_complete": false,
+    "full_main_audio_sdk_or_hardware_acceptance": false,
+    "full_h4_capacity_gc_and_latency_acceptance": false,
+    "earlier_92_90_ms_loop_spike_and_495_68_ms_gc_pause_explained_or_fixed": false,
+    "production_modified": false,
+    "gc_forced_disabled_or_frozen": false,
+    "existing_deadlines_capacities_or_retries_enlarged_for_green_tests": false,
+    "overall_h3_or_roadmap_complete": false
+  }
+}
