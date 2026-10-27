@@ -3180,6 +3180,100 @@ executor general todavía retenido, comprobando la salida real de sus threads
 y la liberación del contexto del solicitante. Usó modelos sintéticos en CPU;
 no probó la pantalla de voces, modelos reales, `main` completo ni hardware.
 
+## Revisión manual y recibos de la pantalla de voces — 27 de octubre
+
+La pantalla `Voces` reemplaza los perfiles, permisos y gráfico simulados por
+consultas autenticadas del registro real. Permite seleccionar entre tres y
+32 muestras de la misma voz, escuchar los fragmentos con su transcripción y
+habitación, confirmar un nombre y borrar el perfil indicando su revisión.
+La confirmación no concede permisos ni propaga identidad a los comandos.
+La puntuación se muestra como similitud; todavía no es una medida calibrada.
+Las muestras sin material de escucha no se habilitan para confirmación en esta
+vista. La agrupación automática y las correcciones de unión/separación siguen
+pendientes; esta pantalla no las sustituye.
+
+Los GET de voces requieren la conexión viva autenticada y el protocolo 3.
+Los canales `voices:profiles`, `voices:captures` y `voices:review` tienen
+recibos independientes: un ACK de conversaciones no puede retirar audio.
+El cuerpo privado se consulta dentro del scope HTTP retenido, revalida autoridad
+antes del envío real y registra su recibo antes de entregar bytes. Cancelar
+al observador no libera el lector nativo ni el callback de transporte todavía
+activos. Las mutaciones devuelven estado e identificadores, sin repetir el nombre.
+El frontend espera también el cuerpo real de sus respuestas antes de retirar
+la acción; no basta recibir sus encabezados. Cada canal admite una sola
+lectura hasta que termine su decodificación real. Antes de pedir otro audio
+espera el retiro nativo del anterior; los clics repetidos no agregan trabajo
+retenido ni dependen de que abortar un fetch libere inmediatamente su cuerpo.
+
+Los perfiles conservan su plazo permanente, pero la vista de nombres tiene un
+lease de cinco minutos y exige prueba de cada revisión confirmada. El audio y
+la transcripción conservan el vencimiento original. Los metadatos de una
+sugerencia incluyen las fuentes del perfil padre, aunque haya vencido su audio;
+esta excepción sólo autoriza la asociación, nunca renueva la captura candidata.
+Las páginas respetan los límites existentes de 256 fuentes y dependencias,
+sin omitir procedencia. La resolución transitiva de hechos admite hasta 4.096
+ancestros y conversaciones; una prueba incompleta rechaza la entrega.
+
+Los recibos guardan conversaciones de origen y un hash del conjunto completo.
+Un recibo anterior sin prueba, o una restauración parcial que pierde fuentes,
+permanece pendiente para todas las conversaciones. El sello de revisión reside
+en la autoridad compartida: borrar con otro wrapper del registro también
+invalida un nombre que el framework todavía esté reteniendo. En la página de
+capturas el sello sólo se aplica si incluyen una asociación: borrar un perfil no retira
+metadatos independientes. La primera suite completa detectó esa invalidación
+innecesaria; se corrigió sin depender del orden de los controles. Tres pruebas
+fallaron antes de corregir este sello y las dos rutas de procedencia ausentes.
+Sus resultados se conservan en la evidencia.
+
+La vista mantiene audio fuera de React, props y cachés generales. Usa una URL
+Blob por muestra y al vencer, navegar o perder sesión retira texto, pausa y
+separa el reproductor, elimina su fuente y revoca la URL. El ACK espera el commit
+del DOM, la salida real del decodificador y el retiro nativo observado. Chromium
+puede conservar la cadena histórica `currentSrc` tras descargar el recurso;
+se exige el evento `emptied` cuando corresponde y los estados reales de recurso,
+buffer, duración y conexión vacíos. Si el evento precede al estado final, se
+observan esos estados cada cinco milisegundos: el tiempo transcurrido por sí
+solo nunca autoriza el ACK. Una actualización de estado mantiene el mismo
+reproductor para no interrumpir la escucha ni crear retiros innecesarios.
+
+La [validación de la interfaz y recibos](../research/2026-10-27-h3-voice-review-ui-validation.json)
+registra las suites y el artefacto compilado por commit. El fixture de Chromium
+comprueba confirmación y borrado en la UI, reproducción WAV real, retiro
+retenido, caducidad local con reloj de servidor congelado, navegación y pérdida
+de sesión. El ensayo final pasó con HTTP, WebSocket v3 y audio nativo reales,
+assets externos bloqueados y cero excepciones JavaScript. La evidencia conserva
+los intentos anteriores que no lograron iniciar el Chromium Snap (`transient
+scope not created in 10s`) y el rechazo del Chrome alternativo por el sandbox
+del sistema. No se deshabilitó el sandbox ni se modificaron servicios. Este
+ensayo acotado no demuestra el retiro de todas las copias de navegadores, SDK
+o modelos del sistema.
+
+La revisión `d749ed8` pasó **5.565 pruebas con 1 xfail conocido en 314,05 s**,
+los 68 casos de frontend, Ruff, Bandit sin hallazgos medios o altos y el smoke
+del dashboard. Las 15 pruebas nuevas de entrega pasaron también enfocadas.
+El capturador de fases nativas no observó timeouts inesperados; el fallo de
+invalidación de la primera suite permanece documentado. El artefacto verificó
+350 hashes sin fuentes Python y su ensayo de HTTP/WebSocket real terminó en
+1,51 s con encoder sintético. Comprobó el plazo separado de los nombres,
+la revisión WAV, persistencia tras reinicio y que el ACK exacto permite completar
+el destino local v4 sin declarar completo el borrado global. El primer ensayo
+del artefacto usó por error una conexión aleatoria en una aserción; corregido
+el harness, pasó el mismo artefacto sin modificarlo.
+
+La repetición del navegador de conversaciones y el ensayo de voces contra
+bytecode no llegaron a abrir la página por el fallo intermitente de arranque
+de Snap. Quedan pendientes esas dos comprobaciones adicionales; el ensayo
+aceptado de voces usa el código fuente de la misma revisión, y el artefacto
+se verificó por separado con HTTP/WebSocket real y todos sus hashes. No se
+presentan los fallos de infraestructura como pruebas de la aplicación.
+
+El participante local `STREAMS` v4 conserva las operaciones HTTP reales y los
+recibos de estas vistas. El destino indeterminado v2 sigue bloqueando la
+garantía global. No se habilita el borrado global de conversación ni se declara
+resuelto el inventario de productores, SDK, caches, voces legacy o hardware.
+Pausa ambiental, mute total, calibración y el resto de H3–H6 siguen abiertos.
+Producción permanece sin cambios.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
@@ -3204,8 +3298,9 @@ no probó la pantalla de voces, modelos reales, `main` completo ni hardware.
    completar el inventario y migración de vectores legacy. El backend nuevo ya
    aplica el vencimiento original a huellas y conserva perfiles revisados hasta
    borrado; esto no cubre todavía todas las copias de voz.
-6. Construir agrupación y revisión de voces, correcciones de unión/separación y
-   abstención. Fijar métricas y corpus de calibración antes de evaluar el resultado.
+6. Construir la agrupación de voces, correcciones de unión/separación y
+   abstención; ampliar la aceptación a las demás copias y consumidores. Fijar
+   métricas y corpus de calibración antes de evaluar el resultado.
 7. Completar las demás migraciones en copia y la aceptación de runtime, micrófono,
    reproducción, HA y rollback durante H6. La restauración debe conservar la
    intención de borrado y evitar reintroducir datos eliminados. No se ha

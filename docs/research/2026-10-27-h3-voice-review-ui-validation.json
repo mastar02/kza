@@ -1,0 +1,267 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "d749ed8fe0617441a4f044c35f975a0c2d882dd2",
+  "tested_runtime_source_tree": "e6f13de634a40f4beadf4b299034414f1296ba2f",
+  "tested_scripts_source_tree": "b08e19ac09711a9d58c6c794af52fe47bcd6999e",
+  "tested_frontend_tree": "972ca9f2b3a8549ca7e1a09b48b55f4bb4cd46cf",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "Real manual voice review UI, bounded native media ownership, authenticated protocol-three per-channel REST receipts, exact permanent-profile metadata proof, association parent and transitive fact conversation lineage, partial restore fail-closed accounting.",
+  "new_backend_delivery_cases": 15,
+  "new_private_route_cases": 4,
+  "new_python_cases_net": 19,
+  "new_frontend_cases": 19,
+  "contract": {
+    "live_protocol": 3,
+    "voice_channels": [
+      "voices:profiles",
+      "voices:captures",
+      "voices:review"
+    ],
+    "voices_rest_requires_ready_v3_connection_and_same_leased_authority": true,
+    "profiles_page_max_rows": 50,
+    "profiles_page_lease_max_s": 300,
+    "profile_persistence_until_manual_delete": true,
+    "raw_max_ttl_hours": 48,
+    "profile_confirmation_or_view_does_not_extend_raw_ttl": true,
+    "manual_profile_capture_min": 3,
+    "manual_profile_capture_max": 32,
+    "confirmation_returns_only_profile_id_and_revision": true,
+    "manual_profile_never_grants_permissions": true,
+    "page_source_and_fact_dependency_budgets_each": 256,
+    "transitive_lineage_bound": 4096,
+    "receipt_proves_exact_profile_revisions_and_all_parent_sources": true,
+    "suggestion_ticket_includes_parent_activity_sources_without_candidate_raw_extension": true,
+    "receipt_includes_transitive_fact_origin_conversations": true,
+    "missing_lineage_proof_or_partial_restored_index_is_pending_for_every_conversation": true,
+    "shared_authority_revision_invalidates_buffered_names_across_ledger_wrappers": true,
+    "unassociated_capture_metadata_has_no_unrelated_profile_revision_fence": true,
+    "outer_http_scope_retains_framework_buffer_and_actual_send_after_observer_cancel": true,
+    "mutation_action_owns_actual_response_body_after_headers": true,
+    "per_channel_single_actual_read_admitted_until_real_decode_or_retirement_settles": true,
+    "frontend_private_voice_rows_excluded_from_react_props_and_general_mock_cache": true,
+    "frontend_audio_base64_never_cached_and_blob_url_revoked": true,
+    "frontend_ack_waits_for_dom_commit_real_decode_and_native_media_teardown": true,
+    "native_teardown_requires_observed_emptied_if_initialized_and_actual_empty_resource_state": true,
+    "historical_current_src_uri_not_used_as_evidence_of_loaded_resource": true,
+    "native_state_observation_interval_ms": 5,
+    "elapsed_time_alone_authorizes_native_ack": false,
+    "status_update_preserves_current_player_identity": true,
+    "local_streams_participant_version": 4,
+    "global_unknown_streams_v2_or_voices_v2_resolved": false,
+    "registry_observation_reservations_unchanged": 6,
+    "registry_io_reservations_unchanged": 2,
+    "rest_outer_scope_capacity_unchanged": 8
+  },
+  "causal_regressions": [
+    {
+      "log": "/tmp/kza-voice-view-shared-revision-red.log",
+      "failed": 1,
+      "cause": "Revision fence was per VoiceLedger wrapper; deletion through another wrapper failed to invalidate an already buffered name.",
+      "correction": "Counter moved to the shared FactLedger authority."
+    },
+    {
+      "log": "/tmp/kza-voice-view-source-lineage-red.log",
+      "failed": 2,
+      "cause": "Suggestion metadata omitted reviewed parent sources; dependent capture tickets omitted transitive fact origin conversations.",
+      "correction": "Prove exact parent sources and recursively resolve fact origin conversations before issuing a ticket."
+    },
+    {
+      "log": "/tmp/kza-voice-view-admission-red.log",
+      "failed": 1,
+      "cause": "Refresh admitted another request while the previous actual decoder still owned its response.",
+      "correction": "One actual read per channel; wait for native media retirement before fetching replacement audio."
+    }
+  ],
+  "nonaccepted_full_suite": {
+    "collected": 5566,
+    "passed": 5564,
+    "failed": 1,
+    "xfailed": 1,
+    "runtime_s": 360.59,
+    "failures": [
+      {
+        "case": "tests.integration.test_voice_review_delivery::test_deleted_profile_retires_only_its_metadata_channel",
+        "message": "AssertionError: assert ('rest_retire' == 'rest_retire'\n  \n    rest_retire and 'voices:captures' == 'voices:profiles'\n  \n  - voices:profiles\n  + voices:captures)",
+        "trace": "tests/integration/test_voice_review_delivery.py:128: in test_deleted_profile_retires_only_its_metadata_channel\n    assert control['type']=='rest_retire' and control['channel']=='voices:profiles'\nE   AssertionError: assert ('rest_retire' == 'rest_retire'\nE     \nE       rest_retire and 'voices:captures' == 'voices:profiles'\nE     \nE     - voices:profiles\nE     + voices:captures)"
+      }
+    ],
+    "accepted": false,
+    "log": "/tmp/kza-voice-view-full.log",
+    "xml": "/tmp/kza-voice-view-full.xml",
+    "numeric_native_timeout_capture": {
+      "terminal_exit_code": 1,
+      "captured": 0,
+      "events": []
+    },
+    "cause": "Capture projections without a profile association unnecessarily shared the mutable profile revision fence; profile deletion could emit an unrelated capture retirement first.",
+    "correction": "Only associated capture metadata uses the revision fence; test also directly checks that the unassociated snapshot remains available, independent of control ordering.",
+    "junit_runtime_s": 360.501,
+    "uncommitted_feature_before_final_revision_fence_and_admission_corrections": true
+  },
+  "validation": {
+    "full_suite": {
+      "collected": 5566,
+      "passed": 5565,
+      "failed": 0,
+      "xfailed": 1,
+      "runtime_s": 314.05,
+      "failures": [],
+      "log": "/tmp/kza-voice-view-accepted-full.log",
+      "xml": "/tmp/kza-voice-view-accepted-full.xml",
+      "numeric_native_timeout_capture": {
+        "terminal_exit_code": 0,
+        "captured": 0,
+        "events": []
+      },
+      "application_edited_while_suite_running": false,
+      "junit_runtime_s": 313.958
+    },
+    "focused_before_final_unassociated_fence_correction": {
+      "passed": 799,
+      "runtime_s": 51.04,
+      "log": "/tmp/kza-voice-view-source-complete-focused.log"
+    },
+    "final_delivery_cases": {
+      "passed": 15,
+      "runtime_s": 6.78,
+      "log": "/tmp/kza-voice-view-final-delivery-green.log"
+    },
+    "frontend": {
+      "passed": 68,
+      "failed": 0,
+      "log": "/tmp/kza-voice-view-frontend-bounded.log",
+      "runtime_ms": 88.211938
+    },
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-voice-view-final-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "log": "/tmp/kza-voice-view-final-bandit.log",
+      "low": 28,
+      "medium": 0,
+      "high": 0
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "mocked_services": true,
+      "log": "/tmp/kza-voice-view-final-dashboard-smoke.log"
+    },
+    "chromium_voice_review": {
+      "passed": true,
+      "checks": {
+        "passed": true,
+        "actual_chromium_http_v3_ws_react_and_native_audio": true,
+        "manual_profile_confirmation_and_revision_delete": true,
+        "review_uses_real_transcript_and_room": true,
+        "permanent_profile_survives_raw_expiry": true,
+        "raw_retirement_waits_for_actual_emptied_callback": true,
+        "urls_cache_dom_and_player_source_retired": true,
+        "idle_expiry_with_frozen_server_clock": true,
+        "navigation_and_session_loss_stop_audio_and_clear_text": true,
+        "external_bootstrap_assets_blocked": true,
+        "javascript_exceptions": 0,
+        "synthetic_encoder_and_sources": true,
+        "browser_binary": "chromium",
+        "grouping_calibration_all_browser_copies_or_hardware_acceptance": false
+      },
+      "log": "/tmp/kza-voice-view-browser-final.log"
+    },
+    "chromium_conversations": {
+      "passed": false,
+      "application_assertions_executed": false,
+      "startup_error": "transient scope not created in 10s",
+      "logs": [
+        "/tmp/kza-voice-view-browser-conversations-final.log",
+        "/tmp/kza-voice-view-browser-conversations-recheck.log"
+      ]
+    },
+    "compiled_chromium_voice_review": {
+      "passed": false,
+      "application_assertions_executed": false,
+      "startup_error": "transient scope not created in 10s",
+      "checks": null,
+      "log": "/tmp/kza-voice-view-compiled-browser.log"
+    }
+  },
+  "browser_observations": {
+    "initial_snap_startup_failure": "transient scope not created in 10s (also observed intermittently for chromium --version)",
+    "alternate_installed_browser_failure": "Chrome for Testing 147 could report version but launch was refused by the system sandbox / AppArmor policy.",
+    "sandbox_or_system_services_changed_to_run_browser": false,
+    "startup_failures_explain_application_privacy_correctness": false,
+    "voice_review_startup_failure_log": "/tmp/kza-voice-view-browser-current.log",
+    "current_source_voice_review_final_acceptance_passed": true,
+    "existing_conversations_and_compiled_voice_browser_rechecks_blocked_before_page": true,
+    "fixture_predicate_correction": "CDP returnByValue DOM nodes were empty objects; readiness predicates now return explicit booleans.",
+    "fixture_playback_uses_explicit_cdp_user_gesture": true,
+    "fixture_cookie_set_explicitly_before_navigation": true,
+    "historical_current_src_observed_after_actual_resource_unloaded": true,
+    "primary_media_load_contract": "https://html.spec.whatwg.org/multipage/media.html#media-element-load-algorithm",
+    "emptied_may_precede_final_public_empty_media_state": true,
+    "native_final_state_followup_regression_and_stable_player_case": true
+  },
+  "limits": {
+    "grouping_merge_split_abstention_and_acoustic_calibration_complete": false,
+    "manual_profile_proves_real_world_identity_or_acoustic_accuracy": false,
+    "managed_runtime_voice_identity_propagation_complete": false,
+    "all_model_sdk_pipeline_legacy_audio_datasets_and_browser_copies_resolved": false,
+    "global_voices_streams_or_producers_erasure_complete": false,
+    "global_conversation_erasure_ui_enabled": false,
+    "ambient_pause_total_mute_and_independent_reactivation_complete": false,
+    "full_main_real_models_gpu_audio_ha_gateway_sdk_or_hardware_acceptance": false,
+    "full_h4_capacity_gc_and_latency_acceptance": false,
+    "all_historical_timeouts_causally_explained": false,
+    "earlier_92_90_ms_loop_spike_and_495_68_ms_gc_pause_explained_or_fixed": false,
+    "gc_forced_disabled_or_frozen": false,
+    "existing_deadlines_total_capacity_or_retries_enlarged_for_green_tests": false,
+    "production_modified": false,
+    "overall_h3_h4_or_roadmap_complete": false
+  },
+  "compiled_runtime": {
+    "git_commit": "d749ed8fe0617441a4f044c35f975a0c2d882dd2",
+    "artifact": "/tmp/kza-voice-view-runtime-w4c8soza/runtime.tar.gz",
+    "verified_hashes": 350,
+    "runtime_s": 1.5064637099858373,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 350,
+      "real_http_authenticated_review_and_revision_delete": true,
+      "background_cpu_synthetic_encoder": true,
+      "event_private_pool_closes_while_general_executor_remains_saturated": true,
+      "event_cleanup_releases_caller_context_and_observes_real_thread_exit": true,
+      "authenticated_wav_matches_owned_pcm_and_actual_metadata": true,
+      "preview_bounded_six_seconds_full_segment_transcript_scope_explicit": true,
+      "permanent_profile_does_not_extend_review_audio_or_text": true,
+      "source_expiry_physically_cascades_review_rows_and_denies_http_read": true,
+      "capture_deadline_and_permanent_manual_profile_survive_restart": true,
+      "suggestions_only_never_accounts_or_permissions": true,
+      "old_upload_rejected_before_decode": true,
+      "local_voice_receipt_waits_for_actual_model_exit": true,
+      "legacy_original_untouched_private_accounts_sidecar": true,
+      "unresolved_voice_inventory_blocks_global_erasure": true,
+      "protocol_three_real_http_websocket_handshake_and_separate_channels": true,
+      "permanent_profile_metadata_has_bounded_page_lease_after_raw_expiry": true,
+      "profile_mutation_never_echoes_private_name": true,
+      "actual_ws_exact_ack_retires_local_stream_v4_without_global_false_completion": true,
+      "voice_frontend_assets_packaged": true,
+      "real_models_gpu_full_main_hardware_or_frontend_voice_review": false
+    },
+    "check_script": "/tmp/kza-voice-view-runtime-smoke.py",
+    "check_script_sha256": "61d70f314128cc6957d0e8464b055420c310080b28569bc5d7e19e64770302df",
+    "archive_sha256": "74673ee59be4daa1ef0ae9698c6acfa1a054eec9dde3651a8a90d040dc3dd94e"
+  },
+  "compiled_runtime_initial_harness_failure": {
+    "report": "/tmp/kza-voice-view-runtime-initial-report.json",
+    "log": "/tmp/kza-voice-view-runtime-build.log",
+    "cause": "The harness passed an unknown random connection to the raw-ticket expiry assertion; connection validation correctly raised before checking TTL.",
+    "correction": "Use the real authenticated protocol-three connection; recheck the same unchanged compiled artifact.",
+    "application_or_artifact_modified_for_recheck": false,
+    "initial_check_script_sha256": "fc31a4d695c789f31ac173af6e7a20c65a39b358d2b0dd91fff23c0f1284b7e9"
+  }
+}

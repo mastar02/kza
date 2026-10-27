@@ -172,7 +172,9 @@ a las 48 h; los perfiles confirmados manualmente se conservan hasta borrado
 manual. Los clips y las transcripciones siguen venciendo a las 48 h. Nombrar
 un grupo no le concede permisos; una sugerencia automática no equivale a una
 confirmación manual. El backend nuevo de huellas y perfiles revisados aplica
-esa retención; agrupación, interfaz de revisión y migración siguen pendientes.
+esa retención. La interfaz permite revisar muestras, confirmar perfiles y
+borrarlos por revisión; agrupación, unión/separación, calibración y migración
+siguen pendientes. La validación en navegador se documenta abajo.
 
 El avance del 27 de octubre agrega observación de voz en segundo plano y una
 API de confirmación y borrado autenticados. Conserva el vencimiento original de
@@ -188,11 +190,28 @@ release.
 El avance posterior agrega [muestras locales de revisión](../research/2026-10-27-h3-voice-capture-review-validation.json):
 hasta seis segundos por huella, con transcripción del segmento, habitación y
 vencimiento original, incluso si el perfil confirmado se conserva. La API
-autenticada las lee sin vectores y revalida autoridad; siguen pendientes la
-pantalla y sus recibos durables de retiro. La revisión `2adaca2` pasó 5.546
-pruebas con un xfail conocido y verificó 345 hashes del artefacto. La evidencia
+autenticada las lee sin vectores y revalida autoridad. El avance posterior
+conecta la pantalla y sus recibos durables de retiro. La revisión `2adaca2` pasó
+5.546 pruebas con un xfail conocido y verificó 345 hashes del artefacto. La evidencia
 conserva tres fallos de la corrida inicial y la causa aún no demostrada de un
 timeout de escritura. No cierra H3 ni la aceptación de H4/H6.
+
+La [revisión manual de voces y sus recibos](../research/2026-10-27-h3-voice-review-ui-validation.json)
+reemplaza la pantalla simulada por muestras reales, escucha, transcripción,
+habitación, confirmación de perfiles y borrado por revisión. El protocolo 3
+separa canales de perfiles, capturas y audio. Un perfil permanente autoriza
+sólo su vista de metadatos durante cinco minutos; nunca prolonga el audio.
+Los recibos incluyen los padres de sugerencias y las conversaciones de hechos
+derivados, y una restauración parcial del índice mantiene pendiente el borrado.
+El destino local `STREAMS` v4 espera los envíos reales y los ACK de cada canal;
+el inventario global continúa pendiente. La evidencia distingue las pruebas
+unitarias/integradas del ensayo final en Chromium, que pasó con reproducción
+y retiro nativo reales, sin excepciones JS. Conserva también los intentos
+anteriores fallidos al iniciar el navegador. La revisión `d749ed8` pasó 5.565
+pruebas con un xfail conocido, 68 de frontend y 350 hashes del artefacto. Las
+repeticiones adicionales del navegador de conversaciones y del artefacto no
+llegaron a abrir la página por el arranque intermitente de Snap; quedan
+pendientes. No cierra la agrupación, H3/H4 ni H6.
 
 Primer avance de H3, 26 de octubre: el store de capturas aplica TTL al leer
 texto, lotes de destilación, estadísticas y clips, sin esperar la purga. Las
@@ -896,9 +915,11 @@ una puntuación de similitud no se presenta como probabilidad calibrada de ident
 
 Reutilizar `SpeakerTagger`, `SpeakerIdentifier` y `AmbientStore` donde alcance.
 Hoy el tagger compara con perfiles registrados y devuelve `unknown` cuando no
-hay perfiles: no existe todavía el agrupador de hablantes desconocidos ni su
-vista de revisión. Evaluar agrupación con capturas representativas antes de
-elegir o cambiar modelos. Procesar en background sin cambiar la asignación de
+hay perfiles: no existe todavía el agrupador de hablantes desconocidos. La
+vista actual permite seleccionar muestras y confirmar perfiles manualmente;
+faltan las correcciones de unión/separación y la evaluación acústica. Evaluar
+agrupación con capturas representativas antes de elegir o cambiar modelos.
+Procesar en background sin cambiar la asignación de
 GPUs ni bloquear el camino de comandos.
 
 **Salida:** los vencimientos se aplican también al consultar y después de un
