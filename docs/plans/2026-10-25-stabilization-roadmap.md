@@ -614,6 +614,18 @@ pendientes otros datasets y consumidores, journal completo, diagnósticos,
 streams, voces, migración, validación física y el resto de H0–H6; no equivale
 todavía a borrado global de `COLLECTORS` ni cierra H3.
 
+La [admisión del entrenamiento antiguo](2026-10-26-h3-memory-privacy.md#avance-admisión-del-entrenamiento-antiguo)
+también bloquea las lecturas de perfiles e historial en sus constructores,
+antes de tocar disco. `main` pasa la autoridad privada: aun si se habilita el
+flag nocturno, no inicia el scheduler ni anuncia que quedó programado. La
+ejecución manual devuelve `blocked` sin datasets, modelos, callbacks o reportes.
+La [validación](../research/2026-10-26-h3-private-training-admission-validation.json)
+del commit `b793903` registra **5050 passed, 1 xfailed**, 16 casos nuevos,
+129 pruebas dirigidas y checks/artefacto sin fuentes aceptados. Los archivos
+legacy permanecen intactos; su migración/retención y los consumidores alternos,
+incluido el CLI nocturno sin autoridad, siguen pendientes. Tampoco cierra
+`COLLECTORS`, la aceptación integrada de runtime/GC, H3 o H6. Producción no cambia.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

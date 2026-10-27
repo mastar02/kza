@@ -1699,8 +1699,27 @@ adaptadores sintéticos. No incorpora entrenamiento privado ni sanea los dataset
 anteriores: siguen pendientes su inventario, cuarentena, retención y los otros
 consumidores alternos, incluido el CLI nocturno antiguo sin autoridad. Tampoco
 completa `COLLECTORS`, los demás participantes del journal o H6. La configuración
-instalada y producción permanecen sin cambios. Validación final pendiente sobre
-el commit y su artefacto compilado.
+instalada y producción permanecen sin cambios.
+
+La [validación de admisión](../research/2026-10-26-h3-private-training-admission-validation.json)
+del commit `b793903` registra **5050 passed, 1 xfailed**, sin fallos, en 205,88 s.
+Incluye 16 casos nuevos y 129 pruebas dirigidas. Pasan Ruff, Bandit sin hallazgos
+medios/altos, 18 tests de frontend y el smoke del dashboard. El único xfail sigue
+siendo la limitación conocida de elipsis del extractor NLU.
+
+El artefacto sin fuentes verifica 317 hashes e importa el `main` compilado fuera
+del checkout. Con autoridad SQLite y factories reales de ambos colectores,
+fuerza un perfil sintético con el flag nocturno habilitado: no consulta perfiles
+ni historial legacy, no crea threads ni datasets y no llama modelos o procesos.
+Una ejecución manual devuelve `blocked` y los archivos originales permanecen
+idénticos. El ejercicio dura 4,11 s; la configuración sigue fuera del paquete.
+Esto no ejecuta el arranque completo de `main` ni prueba hardware o recursos de
+entrenamiento.
+
+El heartbeat registra p95 de 0,28 ms y máximo de 1,07 ms; la cancelación de
+control llega a 0,07 ms y el cleanup a 10,86 ms, con los límites anteriores.
+No se manipuló GC. Las pausas instrumentadas previas y la aceptación física e
+integrada de H4/H6 continúan pendientes.
 
 ## Trabajo restante
 

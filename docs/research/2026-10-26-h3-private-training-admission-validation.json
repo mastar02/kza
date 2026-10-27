@@ -1,0 +1,198 @@
+{
+  "checked_on": "2026-10-26",
+  "tested_commit": "b793903e62bb50319750f2271dcd104c66104fa2",
+  "tested_runtime_source_tree": "8b955145ab380668d0df675596c33cb1afab03e1",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3/H6 private training admission before legacy startup profiles/history reads, raw dataset copies, scheduler threads, model callbacks, generated processes or adapter discovery. Main supplies the authority even with optional producers disabled. This is an unavailable session, not new LoRA training or a completed collector driver.",
+  "baseline_reproduction": {
+    "baseline_commit": "3c5a934d88d3f67c2eae022a5d851a9e62aa38d0",
+    "legacy_profiles_loaded_before_rejection": true,
+    "legacy_history_loaded_before_rejection": true,
+    "unneeded_model_directory_created": true,
+    "models_loaded": false,
+    "scheduler_started": false,
+    "production_changed": false
+  },
+  "new_integration_cases": [
+    "test_private_habit_constructor_does_not_load_legacy_profiles_or_create_roots[policy]",
+    "test_private_habit_constructor_does_not_load_legacy_profiles_or_create_roots[conversation]",
+    "test_private_habit_constructor_does_not_load_legacy_profiles_or_create_roots[events]",
+    "test_private_habit_entrypoints_reject_before_any_io[build_user_profiles]",
+    "test_private_habit_entrypoints_reject_before_any_io[generate_dataset]",
+    "test_private_habit_entrypoints_reject_before_any_io[export_jsonl]",
+    "test_private_habit_entrypoints_reject_before_any_io[export_with_metadata]",
+    "test_private_habit_entrypoints_reject_before_any_io[prepare_for_nightly_training]",
+    "test_private_nightly_start_and_manual_run_are_inert_with_legacy_history",
+    "test_private_nightly_direct_entrypoints_cannot_bypass_admission[collect]",
+    "test_private_nightly_direct_entrypoints_cannot_bypass_admission[dataset]",
+    "test_private_nightly_direct_entrypoints_cannot_bypass_admission[script]",
+    "test_private_nightly_direct_entrypoints_cannot_bypass_admission[report]",
+    "test_managed_conversation_dependency_blocks_entire_legacy_nightly_lifecycle",
+    "test_managed_stt_dependency_blocks_nightly_before_other_legacy_reads",
+    "test_managed_context_dependency_blocks_legacy_history_and_training"
+  ],
+  "new_cases_total": 16,
+  "full_suite": {
+    "accepted": true,
+    "collected": 5051,
+    "passed": 5050,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 205.88,
+    "junit_time_s": 205.81,
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-private-training-full.xml",
+    "log": "/tmp/kza-private-training-full.log",
+    "xml": "/tmp/kza-private-training-full.xml"
+  },
+  "focused_suite": {
+    "passed": 129,
+    "runtime_s": 20.88,
+    "log": "/tmp/kza-private-training-focused-final.log"
+  },
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-private-training-ruff.log",
+      "includes_training_cli": true
+    },
+    "bandit": {
+      "passed": true,
+      "low": 27,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-private-training-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-private-training-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-private-training-dashboard.log"
+    }
+  },
+  "runtime_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.28487108647823334,
+        "max": 1.0694721713662148
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05322089418768883,
+          "p95": 0.07263012230396271,
+          "max": 0.07263012230396271
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.82107494585216,
+          "p95": 10.85851201787591,
+          "max": 10.85851201787591
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 424,
+        "loop_lag_p95_ms": 0.4533871542662382,
+        "loop_lag_max_ms": 1.1385572142899036,
+        "cancel_cleanup_max_ms": 1.3461729977279902,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2729,
+        "loop_lag_p95_ms": 0.9882688801735638,
+        "loop_lag_max_ms": 1.1073799151927233,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6051079835742712,
+        "p95": 5.799402948468924,
+        "max": 5.799402948468924,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "b793903e62bb50319750f2271dcd104c66104fa2",
+    "artifact": "/tmp/kza-private-training-runtime-fhg2x93p/runtime.tar.gz",
+    "verified_hashes": 317,
+    "runtime_s": 4.105568270897493,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "stdout": "\u001b[90m23:38:57.379\u001b[0m \u001b[33mWARNING \u001b[0m \u001b[34m...aining.nightly_trainer\u001b[0m Nightly training blocked: private_training_session_unavailable \u001b[2m(nightly_trainer.py:212)\u001b[0m\n\u001b[90m23:38:57.379\u001b[0m \u001b[33mWARNING \u001b[0m \u001b[34m...aining.nightly_trainer\u001b[0m Nightly scheduler blocked: private_training_session_unavailable \u001b[2m(nightly_trainer.py:295)\u001b[0m\n{\"passed\": true, \"verified_hashes\": 317, \"compiled_main_imported\": true, \"source_free\": true, \"real_authority_and_collector_factories\": true, \"nightly_enabled_override\": true, \"scheduler_started\": false, \"native_boundary_calls\": 0, \"legacy_files_preserved\": true, \"private_profiles_loaded\": 0, \"private_history_loaded\": 0, \"session_status\": \"blocked\", \"model_callbacks\": 0, \"datasets_created\": 0, \"production_changed\": false, \"full_main_startup_exercised\": false}\n",
+    "stderr": "/home/kza/kza/.venv/lib/python3.13/site-packages/requests/__init__.py:86: RequestsDependencyWarning: Unable to find acceptable character detection dependency (chardet or charset_normalizer).\n  warnings.warn(\n",
+    "passed": true,
+    "exercise": {
+      "passed": true,
+      "verified_hashes": 317,
+      "compiled_main_imported": true,
+      "source_free": true,
+      "real_authority_and_collector_factories": true,
+      "nightly_enabled_override": true,
+      "scheduler_started": false,
+      "native_boundary_calls": 0,
+      "legacy_files_preserved": true,
+      "private_profiles_loaded": 0,
+      "private_history_loaded": 0,
+      "session_status": "blocked",
+      "model_callbacks": 0,
+      "datasets_created": 0,
+      "production_changed": false,
+      "full_main_startup_exercised": false
+    }
+  },
+  "runtime_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancellation_max_ms": 100,
+    "cleanup_ms": 1000,
+    "limits_widened": false,
+    "gc_forced_disabled_or_frozen": false,
+    "integrated_gc_hardware_acceptance": false
+  },
+  "preserved_boundaries": {
+    "tracked_nightly_enabled": false,
+    "installed_configuration_changed": false,
+    "production_modified": false,
+    "production_restarted": false,
+    "real_private_data_read_or_changed": false,
+    "new_private_training_or_model_downloads": false,
+    "full_main_startup_exercised": false,
+    "private_legacy_files_deleted_or_migrated": false,
+    "global_erasure_claimed": false
+  },
+  "remaining_scope": [
+    "Private training remains unavailable. Legacy standalone nightly CLI without injected authority and other alternate consumers still need audit; source-free import and constructor exercise do not replace full-main or hardware acceptance.",
+    "Legacy habit profiles, historical datasets and adapter artifacts are unchanged. Their inventory, quarantine, physical retention and erasure are still pending; denying a read does not provide a global COLLECTORS receipt.",
+    "PRODUCERS/COLLECTORS journal integration, remaining diagnostics, streams, voices and pause/mute controls remain open.",
+    "Real-copy legacy migration, acoustic calibration/review, selected HA effects, H4 dependency/runtime GC acceptance, H5 functions and one integrated H6 release/rollback remain pending.",
+    "Prior instrumented GC pauses up to 495.68 ms were not remeasured or fixed by this uninstrumented suite. Production and installed private configuration remain unchanged."
+  ]
+}
