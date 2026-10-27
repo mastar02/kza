@@ -40,10 +40,11 @@ class SpeakerTagger:
         self._source_policy = source_policy
         self._inference_lock = threading.Lock()
         self._voice_registry = voice_registry
+        self.review_managed = voice_registry is not None
         if voice_registry is not None:
             self._inference_lock = voice_registry.register_encoder(identifier)
 
-    async def tag(self, audio_mono: np.ndarray) -> tuple[str, float]:
+    async def tag(self, audio_mono: np.ndarray, *, transcript: str = '', room_id: str | None = None) -> tuple[str, float]:
         """Etiquetar el hablante de una utterance.
 
         Best-effort: audio corto, sin enrolados, o cualquier error del
@@ -56,7 +57,8 @@ class SpeakerTagger:
                 return ("unknown", 0.0)
             if self._voice_registry is not None:
                 self._require_live()
-                self._voice_registry.observe(self._identifier,audio_mono,PRODUCER_CONTEXT.get().sources,sample_rate=self.sample_rate)
+                self._voice_registry.observe(self._identifier,audio_mono,PRODUCER_CONTEXT.get().sources,
+                    sample_rate=self.sample_rate,transcript=transcript,room_id=room_id)
                 return ('unknown',0.)
             return await self._work.run(self._identify, audio_mono)
         finally:

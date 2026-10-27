@@ -1,6 +1,7 @@
 """Source-bound acoustic fingerprints and explicit permanent profile review."""
 
 from collections.abc import Callable
+import base64
 from dataclasses import dataclass,field
 import hashlib
 import json
@@ -11,6 +12,7 @@ import numpy as np
 
 from src.dashboard.auth import DashboardPrincipal
 from src.memory.fact_ledger import MemorySource
+from src.users.voice_capture import VoiceCaptureReview
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,8 @@ class VoiceLedger:
         except (ValueError,KeyError,TypeError):
             return False
 
-    def put(self, model_key: str, embedding: np.ndarray, duration_s: float, sources: tuple[MemorySource,...]) -> str | None:
+    def put(self, model_key: str, embedding: np.ndarray, duration_s: float, sources: tuple[MemorySource,...],
+            review: VoiceCaptureReview | None = None) -> str | None:
         """Commit once per actual source set; retries cannot renew its deadline."""
         self._model(model_key)
         if (type(duration_s) not in (int,float) or not math.isfinite(duration_s) or not .8<=duration_s<=30
@@ -81,6 +84,8 @@ class VoiceLedger:
                 or any(type(source) is not MemorySource for source in sources)
                 or sum(len(source.fact_dependencies) for source in sources)>256):
             raise ValueError('invalid_voice_capture')
+        if review is not None and (type(review) is not VoiceCaptureReview or abs(review.duration_s-duration_s)>1/16000):
+            raise ValueError('invalid_voice_review_capture')
         encoded = json.dumps([source.to_dict() for source in sorted(sources,key=lambda source:source.capture_id)],sort_keys=True,separators=(',',':'))
         identity = 'vf_'+hashlib.sha256((model_key+encoded).encode()).hexdigest()
         raw,dimensions = vector_bytes(embedding)
@@ -106,9 +111,12 @@ class VoiceLedger:
                     (identity,model_key,dimensions,raw,duration_s,self.ledger.clock(),min(source.expires_at for source in sources),encoded,suggested,revision,similarity))
                 db.executemany('INSERT INTO voice_fingerprint_sources VALUES (?,?)',
                     [(identity,conversation) for conversation in sorted({source.conversation_id for source in sources})])
+                if review is not None:
+                    db.execute('INSERT INTO voice_capture_reviews VALUES (?,?,?,?,?,?)',
+                        (identity,review.audio_wav,review.transcript,review.room_id,review.duration_s,review.clip_duration_s))
                 return identity
         finally:
-            embedding = raw = None
+            embedding = raw = review = None
 
     def snapshot(self, cursor: str | None = None) -> dict:
         """Return bounded review metadata, never vectors, transcripts or audio."""
@@ -119,7 +127,8 @@ class VoiceLedger:
             profiles = {row['id']:row for row in db.execute('SELECT * FROM voice_profiles WHERE deleted_at IS NULL')
                 if self._live(row,confirmed=True)}
             captures = []
-            page = db.execute('SELECT * FROM voice_fingerprints WHERE id>? ORDER BY id LIMIT 101',(cursor or '',)).fetchall()
+            page = db.execute('''SELECT v.*,EXISTS(SELECT 1 FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id) AS review_available
+                FROM voice_fingerprints v WHERE v.id>? ORDER BY v.id LIMIT 101''',(cursor or '',)).fetchall()
             for row in page[:100]:
                 if not self._live(row):
                     continue
@@ -129,6 +138,7 @@ class VoiceLedger:
                 captures.append({'id':row['id'],'group_id':row['id'],'created_at':row['created_at'],
                     'expires_at':row['expires_at'],'duration_s':row['duration_s'],'model_key':row['model_key'],
                     'capture_ids':[source.capture_id for source in self._sources(row['sources_json'])],
+                    'review_available':bool(row['review_available']),
                     'suggested_profile':suggestion['id'] if suggestion is not None else None,
                     'similarity':row['similarity'] if suggestion is not None else None,
                     'association':'suggested' if suggestion is not None else 'unknown'})
@@ -137,6 +147,45 @@ class VoiceLedger:
                 'automatic_grouping_accepted':False,'legacy_policy':'excluded_pending_inventory',
                 'recognition_grants_permissions':False,'similarity_metric':'cosine_not_identity_probability',
                 'next_cursor':page[99]['id'] if len(page)>100 else None}
+
+    def review_capture(self, identity: str, actor: VoiceReviewer) -> dict:
+        """Return one listening sample only while its original raw sources live."""
+        if type(actor) is not VoiceReviewer or not actor.subject:
+            raise PermissionError('voice_review_denied')
+        if (type(identity) is not str or len(identity)!=67 or not identity.startswith('vf_')
+                or any(char not in '0123456789abcdef' for char in identity[3:])):
+            raise ValueError('invalid_voice_capture_id')
+        data = row = capture = None
+        try:
+            actor.require_current()
+            with self.ledger._transaction() as db:
+                row = db.execute('''SELECT v.sources_json,v.expires_at,r.* FROM voice_capture_reviews r
+                    JOIN voice_fingerprints v ON v.id=r.fingerprint_id WHERE v.id=?
+                    AND length(r.audio_wav)<=192044 AND length(r.transcript)<=8192''',(identity,)).fetchone()
+                if row is None or not self._live(row):
+                    raise LookupError('voice_capture_unavailable')
+            # SQLite has already detached this bounded row. Preview validation
+            # and encoding must not hold the authority's writer transaction.
+            valid = True
+            try:
+                capture = VoiceCaptureReview(row['audio_wav'],row['transcript'],row['room_id'],row['duration_s'],row['clip_duration_s'])
+            except ValueError:
+                valid = False
+            if not valid:
+                raise LookupError('voice_capture_unavailable')
+            actor.require_current()
+            data = {'id':identity,'observed_at':self.ledger.clock(),'expires_at':row['expires_at'],
+                'transcript':capture.transcript,'room_id':capture.room_id,
+                'duration_s':capture.duration_s,'clip_duration_s':capture.clip_duration_s,
+                'clip_truncated':capture.clip_duration_s<capture.duration_s,
+                'transcript_scope':'full_segment','audio_mime':'audio/wav',
+                'audio_base64':base64.b64encode(capture.audio_wav).decode('ascii')}
+            actor.require_current()
+            if not self._live(row):
+                raise LookupError('voice_capture_unavailable')
+            return data
+        finally:
+            row = data = capture = None
 
     @staticmethod
     def _profile(row):
@@ -222,7 +271,16 @@ class VoiceLedger:
     def pending(self, conversation: str) -> int:
         """Count actual retained vectors linked to a committed deletion."""
         with self.ledger._transaction() as db:
-            captures = db.execute('SELECT COUNT(*) FROM voice_fingerprint_sources WHERE conversation_id=?',(conversation,)).fetchone()[0]
-            profiles = db.execute('''SELECT COUNT(*) FROM voice_profile_sources s JOIN voice_profiles p ON p.id=s.profile_id
-                WHERE s.conversation_id=? AND p.embedding IS NOT NULL''',(conversation,)).fetchone()[0]
-            return captures+profiles
+            pending = 0
+            for query in ('SELECT sources_json FROM voice_fingerprints',
+                    'SELECT sources_json FROM voice_profiles WHERE embedding IS NOT NULL'):
+                for row in db.execute(query):
+                    try:
+                        sources = self._sources(row['sources_json'])
+                        pending+=any(source.conversation_id==conversation for source in sources)
+                    except (ValueError,KeyError,TypeError):
+                        pending+=1
+            # A damaged partial restore cannot certify unindexed or orphaned PCM.
+            pending+=db.execute('''SELECT COUNT(*) FROM voice_capture_reviews r LEFT JOIN voice_fingerprints v
+                ON v.id=r.fingerprint_id WHERE v.id IS NULL''').fetchone()[0]
+            return pending

@@ -17,6 +17,7 @@ from src.memory.erasure_journal import ErasureParticipant,ErasureResult
 from src.memory.producer_context import model_admission
 from src.memory.fact_ledger import MemorySource
 from src.users.voice_ledger import VoiceLedger
+from src.users.voice_capture import build_review_capture
 
 VOICE_TARGET = {'kind':'source_bound_voice_registry','schema':1}
 
@@ -33,6 +34,8 @@ class VoiceObservation:
     lock: object
     sources: tuple
     audio: np.ndarray | None = field(repr=False)
+    transcript: str = field(default='',repr=False)
+    room_id: str | None = None
 
 
 class VoiceRegistry:
@@ -67,13 +70,16 @@ class VoiceRegistry:
             self._encoders[key] = (identifier,threading.Lock())
         return self._encoders[key][1]
 
-    def observe(self, identifier, audio: np.ndarray, sources: tuple, *, sample_rate: int = 16000) -> bool:
+    def observe(self, identifier, audio: np.ndarray, sources: tuple, *, sample_rate: int = 16000,
+            transcript: str = '', room_id: str | None = None) -> bool:
         """Reserve bounded PCM ownership and return without model or disk I/O."""
         registration = self._encoders.get(id(identifier))
         if (self._closed or registration is None or type(sample_rate) is not int or sample_rate!=16000
                 or type(audio) is not np.ndarray
                 or audio.dtype!=np.float32 or audio.ndim!=1 or not .8*16000<=audio.size<=30*16000
                 or type(sources) is not tuple or not 1<=len(sources)<=256
+                or type(transcript) is not str or len(transcript)>8192
+                or room_id is not None and (type(room_id) is not str or not 1<=len(room_id)<=128)
                 or any(type(source) is not MemorySource for source in sources)
                 or not np.isfinite(audio).all() or not self.privacy.sources_available(sources)):
             self._dropped+=1
@@ -87,7 +93,7 @@ class VoiceRegistry:
             self._free.append(slot)
             return False
         try:
-            job = VoiceObservation(identifier,registration[1],sources,audio.copy())
+            job = VoiceObservation(identifier,registration[1],sources,audio.copy(),transcript,room_id)
             self._jobs[slot] = job
             self._loop.call_soon_threadsafe(self._start,slot,job,context=Context())
         except Exception:
@@ -109,7 +115,7 @@ class VoiceRegistry:
         task.add_done_callback(finished,context=Context())
 
     def _observe_native(self, job):
-        vector = None
+        vector = review = None
         def require_live():
             if self._closed or not self.privacy.sources_available(job.sources):
                 raise RuntimeError('voice_sources_unavailable')
@@ -119,12 +125,15 @@ class VoiceRegistry:
                 require_live()
                 descriptor = [job.identifier.model_name,getattr(job.identifier,'_model_type','unknown'),job.identifier.sample_rate]
                 model_key = 'enc_'+hashlib.sha256(json.dumps(descriptor).encode()).hexdigest()
-                return self.ledger.put(model_key,vector,job.audio.size/job.identifier.sample_rate,job.sources)
+                review = build_review_capture(job.audio,job.transcript,job.room_id)
+                require_live()
+                return self.ledger.put(model_key,vector,job.audio.size/job.identifier.sample_rate,job.sources,review)
         except (Exception,asyncio.CancelledError):
             return VoiceFailure.FAILED
         finally:
             job.audio = None
-            job = vector = require_live = None
+            job.transcript = ''
+            job = vector = review = require_live = None
 
     async def acall(self, function, *args):
         """Run bounded registry I/O without retaining native exception payloads."""

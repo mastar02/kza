@@ -62,6 +62,9 @@ def register_voice_routes(app, *, voices=None) -> None:
     @router.post('/profiles')
     async def confirm(body: ConfirmVoiceBody,actor: VoiceReviewer = Depends(reviewer)):
         return {'profile':await call(service().ledger.confirm,tuple(body.fingerprint_ids),body.name,body.request_id,actor)}
+    @router.get('/captures/{fingerprint_id}/review')
+    async def review(fingerprint_id: str,actor: VoiceReviewer = Depends(reviewer)):
+        return await call(service().ledger.review_capture,fingerprint_id,actor)
     @router.delete('/profiles/{profile_id}')
     async def delete(profile_id: str,body: DeleteVoiceBody,actor: VoiceReviewer = Depends(reviewer)):
         return {'deleted':await call(service().ledger.delete_profile,profile_id,body.expected_revision,actor)}

@@ -191,6 +191,10 @@ class CommandProcessor:
                 text = await self._apply_shadow_veto(shadow, text, result)
             self._require_live()
             result.text, result.success = text, bool(text.strip())
+            if (self.speaker_id is not None and getattr(self.user_manager,'voice_review_managed',False) is True):
+                context = PRODUCER_CONTEXT.get()
+                self.user_manager.voice_registry.observe(self.speaker_id,audio,context.sources,
+                    sample_rate=self.sample_rate,transcript=text[:8192],room_id=context.room_id)
             if result.success:
                 self._current_user, self._current_emotion = result.user, result.emotion
                 self._current_sources = PRODUCER_CONTEXT.get().sources
@@ -242,7 +246,6 @@ class CommandProcessor:
     async def _speaker(self, audio):
         try:
             if (self.speaker_id is not None and getattr(self.user_manager,'voice_review_managed',False) is True):
-                self.user_manager.voice_registry.observe(self.speaker_id,audio,PRODUCER_CONTEXT.get().sources,sample_rate=self.sample_rate)
                 return None
             if self.speaker_id is not None and self.user_manager is not None:
                 return await self._native(self.speaker_id, self._identify_speaker, audio, guarded=True)

@@ -418,7 +418,10 @@ class AmbientTranscriber:
             # post-proceso completo; el ASR prefiere el tap sin NS.
             mono = seg.audio[:, 0] if seg.audio.ndim == 2 else seg.audio
             self._require_live(capture_source)
-            speaker, sp_conf = await self._tagger.tag(mono)
+            if getattr(self._tagger,'review_managed',False) is True:
+                speaker, sp_conf = await self._tagger.tag(mono,transcript=text[:8192],room_id=room_id)
+            else:
+                speaker, sp_conf = await self._tagger.tag(mono)
             self._require_live(capture_source)
             doa = await self._native.run(self._direction, seg.audio, capture_source)
             self._require_live(capture_source)
