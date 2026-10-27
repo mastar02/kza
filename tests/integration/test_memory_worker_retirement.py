@@ -149,6 +149,20 @@ async def test_selected_sources_are_published_before_result_delivery(tmp_path, m
         entered, release = threading.Event(), threading.Event()
         held, finish = asyncio.Event(), asyncio.Event()
         observations, selected_scopes = [], []
+        native_reads = []
+        competing_entered, competing_release = threading.Event(), threading.Event()
+        to_thread = asyncio.to_thread
+
+        async def transport(function, *args, **kwargs):
+            if function is module._invoke_memory and args[0].prompt and args[0].scope in selected_scopes:
+                native_reads.append(asyncio.current_task())
+            return await to_thread(function, *args, **kwargs)
+
+        def competing_work():
+            competing_entered.set()
+            assert competing_release.wait(3)
+
+        monkeypatch.setattr(asyncio, 'to_thread', transport)
         original = manager.recent_prompt_context if entry == 'arecent_prompt_context' else manager.prompt_context
         if entry == 'arecent_prompt_context':
             manager.short_term.add_turn('Texto anterior.', fact.content, sources=(origin,))
@@ -169,12 +183,19 @@ async def test_selected_sources_are_published_before_result_delivery(tmp_path, m
                 await finish.wait()
                 return bool(result)
 
+        competing = asyncio.create_task(memory.acall(competing_work))
         observer = asyncio.create_task(consume())
         try:
             await until(entered.is_set)
+            await until(competing_entered.is_set)
             assert scopes.busy(str(uuid4()), memory.ledger)  # Selection still native-owned.
-            native = next(iter(memory._operations))
+            assert len(native_reads) == 1
+            native = native_reads[0]
+            assert native in memory._operations and len(memory._operations) >= 2
             native.add_done_callback(lambda _: observations.append(selected_scopes[0].snapshot()))
+            competing_release.set()
+            await competing
+            assert not observations and selected_scopes[0].snapshot()[1] == 1
             release.set()
             await asyncio.wait_for(held.wait(), 3)
             assert observations and observations[0][1] == 0
@@ -190,8 +211,9 @@ async def test_selected_sources_are_published_before_result_delivery(tmp_path, m
                 assert scopes.busy(origin.conversation_id, memory.ledger)
         finally:
             release.set()
+            competing_release.set()
             finish.set()
-            await observer
+            await asyncio.gather(observer, competing)
         assert scopes.resource_status()['scopes'] == 0
 
 
