@@ -383,6 +383,11 @@ async def test_blocked_historical_target_does_not_hold_current_target_barrier(tm
         try:
             await until(entered.is_set)
             await until(lambda:g.policy.count()==0)
+            # Physical deletion precedes its durable finish callback. Require
+            # the current target's own receipt while history is still blocked.
+            async with asyncio.timeout(3):
+                while await g.privacy.acall(g.privacy.ledger.index_deletions.pending_count,g.target):
+                    await asyncio.sleep(.001)
             assert other.count()==1
             assert (await g.privacy.acall(g.privacy.ledger.status))['pending_index_cleanup']==1
         finally:
