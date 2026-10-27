@@ -538,6 +538,18 @@ correcciones. Quedan captura previa, wake/VAD, STT temprano, aprendizaje y journ
 completo, los demás participantes y voces de H3 y el resto de H0–H6. No cierra
 H3 ni la aceptación física o de runtime/GC.
 
+La captura multiroom ahora mantiene wake, VAD, buffers, STT temprano y reset
+en propietarios nativos por sala; el callback sólo conserva telemetría, tee y
+entrada acotada. El evento conserva la procedencia creada antes de wake.
+El retiro de un stream desacopla su cola y rechaza callbacks antiguos, incluso
+si avanzó el reloj. La [validación de captura](../research/2026-10-26-h3-capture-producers-validation.json)
+del commit `71c0588` registra **4908 passed, 1 xfailed**, 28 casos nuevos, 814
+pruebas dirigidas y checks/artefacto compilado aceptados. Conserva la reproducción
+del callback retirado y del helper que cancelaba un cleanup ajeno, y sus
+correcciones. Quedan el camino alternativo `AudioLoop`/`AudioManager`, consumidores
+de clips y aprendizaje, journal completo, los demás participantes, voces y el
+resto de H0–H6. No habilita borrado global ni cierra aceptación física o runtime/GC.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

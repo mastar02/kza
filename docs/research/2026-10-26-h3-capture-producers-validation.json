@@ -1,0 +1,306 @@
+{
+  "checked_on": "2026-10-26",
+  "feature_commit": "98ca14fead8008bedce3e045b609fbfa82d18c18",
+  "capture_fix_commit": "d966ff94433c0f87720da4083040430dcf57c83e",
+  "tested_commit": "71c0588e4cfc2685a3e7199a7ef94214c3bc3c05",
+  "tested_runtime_source_tree": "86ff96559ef7dc913b5eb19551f2479227a453cb",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 actual multiroom callback admission, serialized native wake/VAD/capture/reset and early STT, original input provenance, independent idle retirement, retained native startup and Porcupine deletion, shared model admission, retired microphone generation fences; alternate capture, other consumers, full journal and integrated runtime acceptance remain pending",
+  "plan_reference": "docs/plans/2026-10-26-h3-memory-privacy.md",
+  "suite": {
+    "collected": 4909,
+    "passed": 4908,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 201.4,
+    "junit_time_s": 201.322,
+    "log": "/tmp/kza-capture-owners-final.log",
+    "xml": "/tmp/kza-capture-owners-final.xml",
+    "accepted": true,
+    "integrated_runtime_gc_acceptance": false,
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-capture-owners-final.xml"
+  },
+  "new_cases": 28,
+  "new_case_names": [
+    "test_cancelled_flush_observer_cannot_cancel_owned_capture_cleanup",
+    "test_callback_returns_before_native_wake_and_does_not_query_authority",
+    "test_revoking_inflight_stage_prevents_late_capture_and_hint_publication[wake]",
+    "test_revoking_inflight_stage_prevents_late_capture_and_hint_publication[vad]",
+    "test_revoking_inflight_stage_prevents_late_capture_and_hint_publication[early]",
+    "test_native_capture_and_reset_keep_writer_lease_after_bounded_close[wake]",
+    "test_native_capture_and_reset_keep_writer_lease_after_bounded_close[vad]",
+    "test_native_capture_and_reset_keep_writer_lease_after_bounded_close[early]",
+    "test_native_capture_and_reset_keep_writer_lease_after_bounded_close[reset]",
+    "test_idle_wake_and_preroll_retire_at_original_deadline_without_input",
+    "test_other_room_continues_when_native_wake_is_blocked",
+    "test_original_source_reaches_event_instead_of_being_minted_at_dispatch",
+    "test_cancelled_capture_observer_does_not_retain_input_after_real_close",
+    "test_retired_callback_queue_cannot_revive_input_after_close",
+    "test_actual_wake_warmup_is_owned_off_loop_and_closes_after_late_load",
+    "test_pre_epoch_audio_is_not_renamed_inside_an_existing_capture",
+    "test_callback_admission_stays_bounded_while_native_wake_is_blocked",
+    "test_callback_failure_has_no_private_exception_trace_and_rejects_late_input",
+    "test_pending_failed_revocation_discards_transients_and_allows_fresh_input",
+    "test_real_whisper_wake_reset_discards_audio_and_pending_transcript[utterance]",
+    "test_real_whisper_wake_reset_discards_audio_and_pending_transcript[streaming]",
+    "test_actual_native_wake_and_primary_command_share_cancellable_model_admission",
+    "test_porcupine_native_handle_delete_remains_owned_until_real_exit",
+    "test_one_failed_native_warmup_does_not_disable_other_room",
+    "test_retiring_microphone_cannot_publish_an_inflight_old_callback",
+    "test_retired_callback_cannot_rename_old_input_with_a_later_clock",
+    "test_retiring_driver_invalidates_actual_native_wake_before_fresh_stream",
+    "test_delayed_boundary_publisher_cannot_loosen_retired_stream_fence"
+  ],
+  "full_suite_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.2688942477107048,
+        "max": 1.0911792051047087
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.053511932492256165,
+          "p95": 0.1821070909500122,
+          "max": 0.1821070909500122
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.83898893557489,
+          "p95": 11.308835120871663,
+          "max": 11.308835120871663
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 427,
+        "loop_lag_p95_ms": 0.24070125073194504,
+        "loop_lag_max_ms": 1.0383280459791422,
+        "cancel_cleanup_max_ms": 1.6183871775865555,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2744,
+        "loop_lag_p95_ms": 0.9745798353105782,
+        "loop_lag_max_ms": 2.3066111654043198,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.7867999374866486,
+        "p95": 5.879906006157398,
+        "max": 5.879906006157398,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "draft_full_suite": {
+    "collected": 4904,
+    "passed": 4903,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "failed_tests": [],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 197.59,
+    "junit_time_s": 197.522,
+    "log": "/tmp/kza-capture-owners-full.log",
+    "xml": "/tmp/kza-capture-owners-full.xml",
+    "tested_commit": "98ca14fead8008bedce3e045b609fbfa82d18c18",
+    "accepted": false,
+    "reason": "The draft suite passed but a separately controlled reproduction reintroduced one retired callback frame. The source fix was developed while this draft suite ran; only the final suite accepts the corrected candidate."
+  },
+  "failed_full_suite": {
+    "collected": 4908,
+    "passed": 4906,
+    "failed": 1,
+    "xfailed": 1,
+    "skipped": 0,
+    "failed_tests": [
+      "tests.integration.test_capture_erasure::test_textual_wake_finishing_after_erasure_cannot_create_a_new_clip"
+    ],
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 204.78,
+    "junit_time_s": 204.696,
+    "log": "/tmp/kza-capture-owners-fixed.log",
+    "xml": "/tmp/kza-capture-owners-fixed.xml",
+    "tested_commit": "d966ff94433c0f87720da4083040430dcf57c83e",
+    "accepted": false,
+    "reason": "A previously timing-dependent capture-erasure fixture cancelled the coordinator-owned physical cleanup by awaiting its task unshielded. SQLite showed a committed tombstone and a pending cleanup_failed receipt; the row remained. The fixture was corrected and given a gated deterministic regression, without changing runtime erasure policy or deadlines."
+  },
+  "focused_runs": [
+    {
+      "log": "/tmp/kza-capture-owners-baseline.log",
+      "passed": 109,
+      "failed": 14,
+      "runtime_s": 9.69,
+      "note": "Existing callback unit tests still asserted synchronous inference; moved pure state assertions to the native processor, while real callback/actor/capture e2e tests remain connected. The global to_thread early-STT stub was replaced with an actual gated native endpoint; error logs now check fixed metadata rather than private messages."
+    },
+    {
+      "log": "/tmp/kza-capture-owners-migrated.log",
+      "passed": 123,
+      "failed": 0,
+      "runtime_s": 7.24
+    },
+    {
+      "log": "/tmp/kza-capture-owners-new.log",
+      "passed": 14,
+      "failed": 0,
+      "runtime_s": 1.32
+    },
+    {
+      "log": "/tmp/kza-capture-owners-focused.log",
+      "passed": 756,
+      "failed": 1,
+      "runtime_s": 14.54,
+      "note": "Synthetic RMS-only Whisper fixture reported .5 against default .7; configure the fixture at .4 to exercise speech buffers without a trained model. Production VAD and time budgets unchanged."
+    },
+    {
+      "log": "/tmp/kza-capture-owners-focused-fixed.log",
+      "passed": 757,
+      "failed": 0,
+      "runtime_s": 14.77
+    },
+    {
+      "log": "/tmp/kza-capture-owners-final-focused.log",
+      "passed": 757,
+      "failed": 1,
+      "runtime_s": 14.52,
+      "note": "A native barge-in update exposed listening before follow-up preparation. Prepare continuation and validate source before publishing listening in the same serialized native operation."
+    },
+    {
+      "log": "/tmp/kza-capture-owners-final-fixed-focused.log",
+      "passed": 759,
+      "failed": 0,
+      "runtime_s": 14.26
+    },
+    {
+      "log": "/tmp/kza-capture-owners-retired-fixed-focused.log",
+      "passed": 763,
+      "failed": 0,
+      "runtime_s": 15.55
+    },
+    {
+      "log": "/tmp/kza-capture-owners-cancel-fixed-focused.log",
+      "passed": 814,
+      "failed": 0,
+      "runtime_s": 19.09
+    }
+  ],
+  "controlled_reproductions": [
+    {
+      "log": "/tmp/kza-capture-retired-callback-reproduction.log",
+      "failed": 1,
+      "retired_frames_reintroduced": 1,
+      "correction": "Publish local stream-retirement fence before deque detachment and recheck callback holder identity; serialize control publishers only, without callback locks. Test copy-pause, a later clock, in-flight native wake, fresh stream admission and delayed boundary publication."
+    },
+    {
+      "log": "/tmp/kza-capture-flush-cancel-reproduction.log",
+      "failed": 1,
+      "correction": "Shield each coordinator-owned callback in the test flush helper. Cancel the observer while a real capture cleanup is gated; assert the actual callback stays pending, then release it and verify SQLite row, FLAC and complete capture receipt."
+    }
+  ],
+  "implementation": {
+    "callback_only_telemetry_ambient_tee_and_bounded_copy": true,
+    "callback_queue_frames": 32,
+    "native_batch_frames": 8,
+    "capture_poll_s": 0.05,
+    "callback_has_no_model_calls_or_authority_queries": true,
+    "control_boundary_lock_not_acquired_on_callback": true,
+    "per_room_actual_native_wake_vad_endpoint_snapshot_publish_reset_serialized": true,
+    "source_minted_before_wake_from_earliest_batch_frame": true,
+    "source_ids_and_deadline_preserved_at_dispatch": true,
+    "model_state_epoch_conservative_with_idle_hour_rotation": true,
+    "pre_epoch_inputs_rejected": true,
+    "long_input_gaps_reset_previous_model_state": true,
+    "idle_buffers_retire_without_new_frames": true,
+    "warmup_and_native_reset_keep_privacy_writer_lease_until_actual_exit": true,
+    "porcupine_delete_then_lazy_reload_retires_opaque_native_history": true,
+    "wake_early_and_primary_share_native_model_admission": true,
+    "early_stt_checks_source_generation_and_cancellation": true,
+    "pending_dispatch_capacity": 8,
+    "barge_listening_published_after_followup_preparation": true,
+    "late_retired_callback_cannot_relabel_audio_after_clock_advances": true,
+    "control_publication_cannot_loosen_fences": true,
+    "main_registers_close_before_warmup_and_injects_shared_privacy": true,
+    "failed_wake_warmup_isolated_to_one_room": true,
+    "producer_journal_participant_marked_complete": false,
+    "new_dependencies": false,
+    "new_configuration_files": false,
+    "gpu_assignment_changed": false
+  },
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-capture-owners-ruff-final-fixed.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 30,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-capture-owners-bandit-fixed.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-capture-owners-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-capture-owners-dashboard.log"
+    },
+    "compiled_runtime": {
+      "passed": true,
+      "runtime_s": 2.634,
+      "git_commit": "71c0588e4cfc2685a3e7199a7ef94214c3bc3c05",
+      "artifact": "/tmp/kza-capture-runtime-8pot8duc/runtime.tar.gz",
+      "log": "/tmp/kza-capture-producers-runtime-report.json",
+      "exercise": "Source-free artifact outside checkout verifies all hashes, runs actual multiroom warmup/run with synthetic InputStream, invokes the production callback and native room actor, completes an endpoint through actual RequestRouter and CommandProcessor and checks original source lineage, blocks wake, retires its driver, revokes the conversation, verifies rejected old input and retained writer lease after native close observation timeout, then releases the native endpoint and verifies model state, driver and shared authority really close. No real microphone or trained models."
+    }
+  },
+  "unchanged_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancel_ms": 100,
+    "cooperative_cleanup_ms": 1000,
+    "gc_forced_disabled_or_frozen": false
+  },
+  "remaining_scope": [
+    "PRODUCERS remains open: alternate AudioLoop/AudioManager capture path, clip/learning consumers, complete producer/distillation journal integration and actual driver stream closure must be covered before broad erasure completion",
+    "DIAGNOSTICS, COLLECTORS, STREAMS and VOICES remain; diagnostic/SQL/JSONL/Logstash, collector/stream/frontend copies and alternate prompt consumers require their own source/TTL/erasure coverage",
+    "Pause ambient and total mute with non-audio reactivation; 48h automatic voiceprint/group expiry and authenticated calibrated voice grouping/review/merge/split, confirmed profiles until deletion",
+    "Private real-copy quarantine migration of 870 legacy facts, compatible catalog/tombstone/runtime restore, live semantic index rebuild and authenticated broad erasure UI after guarantees",
+    "H0/H1 live HA memberships/effects, H2 physical audio/barge-in, H4 recovery and large-history/runtime/GC acceptance, H5 real typed local execution/routines/timers/reminders, H6 fully integrated candidate and one final release/rollback",
+    "Previously instrumented GC pauses up to 495.68ms remain unresolved; this uninstrumented suite does not remeasure or accept integrated runtime/GC."
+  ],
+  "production_modified": false
+}

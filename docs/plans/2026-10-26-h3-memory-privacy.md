@@ -1390,6 +1390,31 @@ aceptación integrada de hardware y runtime/GC. No se anuncia borrado global ni
 se habilita la UI de borrado amplio. La validación completa acompaña al commit
 construido y probado, antes de cualquier release.
 
+La [validación de captura](../research/2026-10-26-h3-capture-producers-validation.json)
+del commit `71c0588` registra **4908 passed, 1 xfailed**, sin fallos, en 201,40 s,
+con 28 casos nuevos y 814 pruebas dirigidas. Pasan Ruff, Bandit sin hallazgos
+medios/altos, 18 tests de frontend y el smoke del dashboard. El artefacto sin
+fuentes verifica 315 hashes y ejecuta el `run` real con InputStream sintético,
+endpoint, router y procesador, incluyendo la procedencia original, retiro del
+driver, revocación y cierre retenido hasta salir del modelo, en 2,63 s.
+
+La primera suite de borrador pasó, pero una reproducción independiente
+reintrodujo un frame desde un callback retirado: no se acepta ese borrador.
+Las correcciones del fence, holder y publicación atrasada quedan en `d966ff9`.
+La siguiente suite detectó que un helper de prueba cancelaba el cleanup del
+coordinador al ser cancelado por el monitor de fuentes. El catálogo tenía el
+tombstone y el recibo pendiente con error; no hubo una confirmación falsa de
+borrado. El helper ahora observa con `shield`, y una compuerta demuestra que
+cancelar ese observador no cancela la tarea real. La suite final verifica también
+la retirada efectiva de la fila y del FLAC. La evidencia conserva ambos hallazgos,
+la carrera de publicación de barge-in y la corrección del fixture RMS sintético.
+
+El heartbeat llega a p95 de 0,27 ms y máximo de 1,09 ms; la cancelación de control
+alcanza 0,18 ms y el cleanup 11,31 ms, sin ampliar límites ni manipular GC.
+Esto no vuelve a medir ni corrige las pausas globales de GC observadas antes;
+la aceptación integrada y física de H4/H6 sigue pendiente. No se modificaron
+producción ni los datos privados reales.
+
 ## Trabajo restante
 
 1. Completar fuentes, buffers y scopes del camino alternativo `AudioLoop` y
