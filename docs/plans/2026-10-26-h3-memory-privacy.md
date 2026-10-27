@@ -1748,6 +1748,29 @@ de datasets y adapters históricos ni el resto de `COLLECTORS`. La suite final
 y el artefacto compilado de este cambio siguen pendientes de validar. Producción
 y configuración instalada permanecen sin cambios.
 
+## Avance: cierre de memoria sin hambre de callbacks
+
+La primera suite completa del cambio de CLI, sobre `0fb14ee`, se detuvo en
+privacidad transitoria mientras consumía un núcleo. Se conservó como no
+aceptada y se interrumpió para obtener el stack: el cierre de `LongTermMemory`
+iteraba sobre tareas terminadas dentro de `gather`. En CPython 3.13 ese gather
+puede terminar inmediatamente, sin ejecutar los callbacks que retiran las
+tareas del conjunto; el bucle impedía incluso procesar su propio timeout.
+
+Una reproducción aislada ordena la finalización del trabajo justo antes del
+cierre y deja el callback de retirada detrás de él. El código anterior agota
+un watchdog externo de tres segundos; el corregido termina y retira la tarea.
+El cierre usa `wait` para permitir esos callbacks y conserva la espera del
+trabajo nativo real. Cuatro casos en procesos separados cubren resultado,
+error, cancelación y un worker nativo bloqueado: el timeout de observación
+mantiene la lease hasta que termina ese worker. No se fuerzan ni deshabilitan
+GC ni sus pausas, y no se amplían límites de runtime para aceptar el cambio.
+
+Pasan 51 pruebas dirigidas de cierre, privacidad transitoria, servicios de
+memoria y CLI. La suite completa y el artefacto compilado del nuevo commit
+siguen pendientes; la prueba de CLI anterior no cubría este cruce de cierre.
+La aceptación integrada de GC y hardware continúa abierta.
+
 ## Trabajo restante
 
 1. Cubrir los demás datasets y consumidores de clips/aprendizaje y conectar

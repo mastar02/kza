@@ -288,7 +288,12 @@ class LongTermMemory:
                         tasks = list(self._operations)
                     if not tasks:
                         break
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    # Completed tasks can precede their retirement callbacks in
+                    # the ready queue. gather() may complete eagerly here and
+                    # spin forever without letting those callbacks remove them.
+                    # wait() gives the queued callbacks a turn before checking
+                    # ownership again, without releasing live native work.
+                    await asyncio.wait(tasks)
                 await asyncio.to_thread(self._close_resources)
             self._close_task = asyncio.create_task(finish())
         return self._close_task
