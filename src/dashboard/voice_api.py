@@ -5,6 +5,7 @@ from pydantic import BaseModel,ConfigDict,Field
 
 from src.dashboard.auth import COOKIE_NAME,DashboardPrincipal,check_token,require_dashboard_session
 from src.users.voice_ledger import VoiceReviewer
+from src.dashboard.voice_delivery import VoiceResponse
 
 
 class ConfirmVoiceBody(BaseModel):
@@ -48,23 +49,23 @@ def register_voice_routes(app, *, voices=None) -> None:
         except RuntimeError:
             raise HTTPException(503,detail='voices_unavailable') from None
     @router.get('')
-    async def snapshot(cursor: str | None = Query(None,max_length=67),_actor: VoiceReviewer = Depends(reviewer)):
-        def read():
-            data = None
-            try:
-                _actor.require_current()
-                data = service().ledger.snapshot(cursor)
-                _actor.require_current()
-                return data
-            finally:
-                data = None
-        return await call(read)
+    async def snapshot(request: Request,cursor: str | None = Query(None,max_length=67),actor: VoiceReviewer = Depends(reviewer)):
+        return response(request,'captures',cursor,actor)
+    @router.get('/profiles')
+    async def profiles(request: Request,cursor: str | None = Query(None,max_length=36),actor: VoiceReviewer = Depends(reviewer)):
+        return response(request,'profiles',cursor,actor)
+    def response(request,kind,cursor,actor):
+        owner = getattr(app.state,'rest_delivery_owner',None)
+        if owner is None:
+            raise HTTPException(503,detail='voice_delivery_unavailable')
+        return VoiceResponse(owner,service(),request.headers.get('x-kza-live-connection'),kind,cursor,actor)
     @router.post('/profiles')
     async def confirm(body: ConfirmVoiceBody,actor: VoiceReviewer = Depends(reviewer)):
-        return {'profile':await call(service().ledger.confirm,tuple(body.fingerprint_ids),body.name,body.request_id,actor)}
+        profile = await call(service().ledger.confirm,tuple(body.fingerprint_ids),body.name,body.request_id,actor)
+        return {'profile_id':profile['id'],'revision':profile['revision']}
     @router.get('/captures/{fingerprint_id}/review')
-    async def review(fingerprint_id: str,actor: VoiceReviewer = Depends(reviewer)):
-        return await call(service().ledger.review_capture,fingerprint_id,actor)
+    async def review(request: Request,fingerprint_id: str,actor: VoiceReviewer = Depends(reviewer)):
+        return response(request,'review',fingerprint_id,actor)
     @router.delete('/profiles/{profile_id}')
     async def delete(profile_id: str,body: DeleteVoiceBody,actor: VoiceReviewer = Depends(reviewer)):
         return {'deleted':await call(service().ledger.delete_profile,profile_id,body.expected_revision,actor)}

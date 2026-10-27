@@ -216,6 +216,7 @@ class FactLedger:
         self._pending_fact_ids: frozenset[str] = frozenset()
         self._pending_conversations: frozenset[str] = frozenset()
         self._authority_version = 0
+        self._voice_projection_revision = 0
         self._revocation_observers: list[WeakMethod] = []
         self.erasures = ErasureJournal(self)
         self.index_deletions = IndexDeletionQueue(self)

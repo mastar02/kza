@@ -7,12 +7,15 @@ import hashlib
 import json
 import math
 from uuid import UUID,uuid4
+from weakref import ref
 
 import numpy as np
 
 from src.dashboard.auth import DashboardPrincipal
 from src.memory.fact_ledger import MemorySource
 from src.users.voice_capture import VoiceCaptureReview
+from src.users.voice_projection import VoiceProjection
+from src.dashboard.live_retention_types import RevisionStamp
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,11 @@ class VoiceLedger:
 
     def __init__(self, ledger):
         self.ledger = ledger
+
+    @property
+    def projection_revision(self) -> int:
+        """All wrappers over the sole authority share one invalidation fence."""
+        return self.ledger._voice_projection_revision
 
     @staticmethod
     def _sources(encoded):
@@ -124,7 +132,7 @@ class VoiceLedger:
                 or any(char not in '0123456789abcdef' for char in cursor[3:])):
             raise ValueError('invalid_voice_cursor')
         with self.ledger._transaction() as db:
-            profiles = {row['id']:row for row in db.execute('SELECT * FROM voice_profiles WHERE deleted_at IS NULL')
+            profiles = {row['id']:row for row in db.execute('SELECT id,name,revision,sources_json,confirmed_at,confirmed_by,deleted_at FROM voice_profiles WHERE deleted_at IS NULL')
                 if self._live(row,confirmed=True)}
             captures = []
             page = db.execute('''SELECT v.*,EXISTS(SELECT 1 FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id) AS review_available
@@ -192,6 +200,98 @@ class VoiceLedger:
         return {'id':row['id'],'name':row['name'],'revision':row['revision'],
             'confirmed_at':row['confirmed_at'],'confirmed_by':row['confirmed_by'],'expires_at':None}
 
+    def project(self, kind: str, cursor: str | None, actor: VoiceReviewer) -> VoiceProjection:
+        """Separate raw capture lists from source-linked permanent profile labels."""
+        if type(actor) is not VoiceReviewer:
+            raise PermissionError('voice_review_denied')
+        actor.require_current()
+        rows = sources = snapshot = data = result = page = row = original = None
+        try:
+            if kind=='review':
+                data = self.review_capture(cursor,actor)
+                with self.ledger._transaction() as db:
+                    source_row = db.execute('SELECT sources_json FROM voice_fingerprints WHERE id=?',(cursor,)).fetchone()
+                    if source_row is None:
+                        raise LookupError('voice_capture_unavailable')
+                    sources = self._sources(source_row['sources_json'])
+                actor.require_current()
+                if not self.ledger.sources_available(sources):
+                    raise LookupError('voice_capture_unavailable')
+                return VoiceProjection([data],sources,data['observed_at'],data['expires_at'],'voices:review')
+            if kind not in ('captures','profiles'):
+                raise ValueError('invalid_voice_projection')
+            snapshot = self.snapshot(cursor) if kind=='captures' else None
+            with self.ledger._transaction() as db:
+                if kind=='profiles':
+                    if cursor is not None and (type(cursor) is not str or str(UUID(cursor))!=cursor):
+                        raise ValueError('invalid_voice_cursor')
+                    page = db.execute('SELECT id,name,revision,sources_json,confirmed_at,confirmed_by,deleted_at FROM voice_profiles WHERE deleted_at IS NULL AND id>? ORDER BY id LIMIT 51',(cursor or '',)).fetchall()
+                    rows,sources,refs = [],set(),[]
+                    next_cursor = None
+                    for index,row in enumerate(page):
+                        if index==50:
+                            next_cursor = page[49]['id']
+                            break
+                        if not self._live(row,confirmed=True):
+                            continue
+                        original = self._sources(row['sources_json'])
+                        candidate = sources | set(original)
+                        if len(candidate)>256 or sum(len(source.fact_dependencies) for source in candidate)>256:
+                            if not rows:
+                                raise ValueError('voice_profile_source_capacity')
+                            next_cursor = page[index-1]['id'] if index else None
+                            break
+                        sources.update(original)
+                        rows.append(self._profile(row))
+                        refs.append((row['id'],row['revision']))
+                    observed = self.ledger.clock()
+                    expiry = min([observed+300,*[dep.expires_at for source in sources
+                        for dep in source.fact_dependencies if dep.expires_at is not None]])
+                    result = VoiceProjection(rows,tuple(sources),observed,expiry,'voices:profiles',next_cursor,tuple(refs),
+                        RevisionStamp(ref(self),self.projection_revision))
+                else:
+                    rows,sources,extra,associated = [],set(),set(),set()
+                    next_cursor = snapshot['next_cursor']
+                    for index,item in enumerate(snapshot['fingerprints']):
+                        if index==50:
+                            next_cursor = rows[-1]['id']
+                            break
+                        original = self._sources(db.execute('SELECT sources_json FROM voice_fingerprints WHERE id=?',(item['id'],)).fetchone()[0])
+                        parent = None
+                        related = ()
+                        if item['suggested_profile']:
+                            parent = db.execute('SELECT id,revision,sources_json,confirmed_at,confirmed_by,deleted_at FROM voice_profiles WHERE id=?',(item['suggested_profile'],)).fetchone()
+                            if parent is not None and self._live(parent,confirmed=True):
+                                related = self._sources(parent['sources_json'])
+                            else:
+                                item = dict(item,suggested_profile=None,similarity=None,association='unknown')
+                        candidate = sources | extra | set(original) | set(related)
+                        if len(candidate)>256 or sum(len(source.fact_dependencies) for source in candidate)>256:
+                            if rows:
+                                next_cursor = rows[-1]['id']
+                                break
+                            # An unrepresentable hint is an abstention, never
+                            # an association with silently dropped parents.
+                            item = dict(item,suggested_profile=None,similarity=None,association='unknown')
+                            related = ()
+                            if len(set(original))>256 or sum(len(source.fact_dependencies) for source in original)>256:
+                                raise ValueError('voice_capture_source_capacity')
+                        sources.update(original)
+                        extra.update(related)
+                        if related:
+                            associated.add((parent['id'],parent['revision']))
+                        rows.append(item)
+                    observed = self.ledger.clock()
+                    expiry = min([*[source.expires_at for source in sources],*[dep.expires_at for source in extra
+                        for dep in source.fact_dependencies if dep.expires_at is not None]],default=observed)
+                    result = VoiceProjection(rows,tuple(sources),observed,expiry,'voices:captures',next_cursor,
+                        revision=RevisionStamp(ref(self),self.projection_revision) if associated else None,
+                        associated_profiles=tuple(sorted(associated)),activity_sources=tuple(extra))
+                actor.require_current()
+                return result
+        finally:
+            rows = sources = snapshot = data = result = page = row = original = None
+
     def confirm(self, identities: tuple[str,...], name: str, request_id: str, actor: VoiceReviewer) -> dict:
         """Permanently retain a reviewed centroid; no account or permission changes."""
         if type(actor) is not VoiceReviewer or not actor.subject:
@@ -222,6 +322,8 @@ class VoiceLedger:
             sources = tuple({source for row in rows for source in self._sources(row['sources_json'])})
             if len(sources)>256 or len({source.capture_id for source in sources})<3:
                 raise ValueError('voice_profile_requires_distinct_captures')
+            if sum(len(source.fact_dependencies) for source in sources)>256:
+                raise ValueError('voice_profile_source_capacity')
             if db.execute('SELECT COUNT(*) FROM voice_profiles WHERE deleted_at IS NULL').fetchone()[0]>=256:
                 raise RuntimeError('voice_profile_capacity')
             vector = np.mean([np.frombuffer(row['embedding'],dtype='<f4') for row in rows],axis=0).astype(np.float32)
@@ -230,6 +332,7 @@ class VoiceLedger:
                 raise LookupError('voice_capture_unavailable')
             actor.require_current()
             identity = str(uuid4())
+            self.ledger._voice_projection_revision+=1
             encoded = json.dumps([source.to_dict() for source in sorted(sources,key=lambda source:source.capture_id)],sort_keys=True)
             db.execute('INSERT INTO voice_profiles VALUES (?,?,?,?,?,?,?,?,?,NULL)',
                 (identity,name.strip(),rows[0]['model_key'],dimensions,raw,encoded,self.ledger.clock(),actor.subject,1))
@@ -252,6 +355,7 @@ class VoiceLedger:
             return True
 
     def _delete(self, db, identity):
+        self.ledger._voice_projection_revision+=1
         db.execute('UPDATE voice_profiles SET name=NULL,embedding=NULL,deleted_at=?,revision=revision+1 WHERE id=? AND deleted_at IS NULL',
             (self.ledger.clock(),identity))
         db.execute('UPDATE voice_fingerprints SET suggested_profile=NULL,suggested_revision=NULL,similarity=NULL WHERE suggested_profile=?',(identity,))

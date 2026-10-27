@@ -29,6 +29,9 @@ from tests.integration.test_live_stream_receipts import flush
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.voice_registry import ACTOR,AUDIO,Encoder,VECTOR,graph,idle,seed
 
+from tests.mocks.rest_browser import ready_browser
+from tests.mocks.voice_registry import web_graph
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -254,22 +257,23 @@ async def test_non_16khz_audio_is_rejected_before_copy_or_model_admission(tmp_pa
 
 
 async def test_authenticated_review_api_never_returns_vectors_or_accepts_account_permissions(tmp_path,dashboard_auth):
-    async with graph(tmp_path) as (_,_,voices,clock):
-        _,identities = await seed(voices,clock)
-        app = DashboardAPI(voice_registry=voices).app
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver') as client:
-            assert (await client.get('/api/voices')).status_code==401
-            body = {'fingerprint_ids':list(identities),'name':'Synthetic reviewed voice','request_id':str(uuid4())}
-            assert (await client.post('/api/voices/profiles',headers=dashboard_auth,json={**body,'permission_level':'admin'})).status_code==422
-            response = await client.post('/api/voices/profiles',headers=dashboard_auth,json=body)
-            assert response.status_code==200
-            data = (await client.get('/api/voices',headers=dashboard_auth)).json()
-            assert len(data['profiles'])==1 and 'embedding' not in json.dumps(data)
-            assert 'permission_level' not in response.text and not data['recognition_grants_permissions']
-            assert (await client.post('/api/admin/users/unknown/enroll',headers=dashboard_auth,content=b'not a WAV')).status_code==409
-            assert response.headers['cache-control']=='no-store'
-            app.dependency_overrides[require_dashboard_session] = lambda:DashboardPrincipal('reader',frozenset({'home:read'}))
-            assert (await client.get('/api/voices',headers=dashboard_auth)).status_code==403
+    async with web_graph(tmp_path) as (_,_,voices,clock,bus):
+        async with ready_browser(bus,version=3) as peer:
+            _,identities = await seed(voices,clock)
+            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver') as client:
+                assert (await client.get('/api/voices')).status_code==401
+                body = {'fingerprint_ids':list(identities),'name':'Synthetic reviewed voice','request_id':str(uuid4())}
+                assert (await client.post('/api/voices/profiles',headers=dashboard_auth,json={**body,'permission_level':'admin'})).status_code==422
+                response = await client.post('/api/voices/profiles',headers=dashboard_auth,json=body)
+                assert response.status_code==200
+                data = (await client.get('/api/voices/profiles',headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection})).json()
+                assert len(data['snapshot']['rows'])==1 and 'embedding' not in json.dumps(data)
+                assert 'permission_level' not in response.text and 'name' not in response.json()
+                assert (await client.post('/api/admin/users/unknown/enroll',headers=dashboard_auth,content=b'not a WAV')).status_code==409
+                assert response.headers['cache-control']=='no-store'
+                app.dependency_overrides[require_dashboard_session] = lambda:DashboardPrincipal('reader',frozenset({'home:read'}))
+                assert (await client.get('/api/voices',headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection})).status_code==403
 
 
 async def test_queued_review_rechecks_rotated_credentials_before_committing(tmp_path,dashboard_auth,monkeypatch):

@@ -67,7 +67,7 @@ class LiveBrowserSession:
             raise ValueError('invalid_live_protocol')
         kind = doc.get('type')
         if kind == 'live_hello' and set(doc) == {'type','version','client_id'}:
-            if type(doc['version']) is not int or doc['version'] not in (1,2):
+            if type(doc['version']) is not int or doc['version'] not in (1,2,3):
                 raise ValueError('unsupported_live_protocol')
             return kind,(canonical_id(doc['client_id']),doc['version'])
         if kind == 'live_reset_ack' and set(doc) == {'type','id','nonce'}:
@@ -109,7 +109,7 @@ class LiveBrowserSession:
                     self._reset = None
                     self.phase = BrowserPhase.READY
                     self._deadline = None
-                    self._rest_ready = self.protocol == 2
+                    self._rest_ready = self.protocol in (2,3)
             elif kind == 'live_ack':
                 if self.phase not in {BrowserPhase.READY,BrowserPhase.RESET}:
                     raise ValueError('unexpected_live_ack')
@@ -131,7 +131,15 @@ class LiveBrowserSession:
         """Persist lineage before private bytes, retaining no payload in SQLite."""
         if not self.ready:
             return None
-        ticket = await self.receipts.issue(self.connection,record.event_id,record.expires_at,record.sources)
+        profiles = getattr(record,'profile_refs',())
+        associated = getattr(record,'associated_profiles',())
+        if profiles:
+            ticket = await self.receipts.issue_profiles(self.connection,record.event_id,record.expires_at,record.sources,profiles)
+        elif associated:
+            ticket = await self.receipts.issue_associations(self.connection,record.event_id,record.expires_at,
+                record.sources,associated,record.activity_sources)
+        else:
+            ticket = await self.receipts.issue(self.connection,record.event_id,record.expires_at,record.sources)
         if ticket is not None:
             self._tickets[record.event_id] = ticket
             return ticket

@@ -6,6 +6,7 @@ from src.memory.erasure_journal import ErasureParticipant, ErasureResult, Erasur
 
 LIVE_TARGET = {'kind':'live_browser_receipts','protocol':1}
 REST_TARGET = {'kind':'conversation_rest_and_live_receipts','protocol':2}
+VOICE_REVIEW_TARGET = {'kind':'voice_review_rest_and_live_receipts','protocol':3}
 
 
 class LiveStreamEraser:
@@ -16,7 +17,7 @@ class LiveStreamEraser:
 
     async def clean(self, step: ErasureStep) -> ErasureResult:
         """Return progress without holding a coordinator slot for offline pages."""
-        descriptor = {1:LIVE_TARGET,3:REST_TARGET}.get(step.version)
+        descriptor = {1:LIVE_TARGET,3:REST_TARGET,4:VOICE_REVIEW_TARGET}.get(step.version)
         if (step.participant is not ErasureParticipant.STREAMS or descriptor is None
                 or step.descriptor != descriptor):
             raise ValueError('unsupported_live_stream_target')
@@ -42,9 +43,10 @@ async def build_live_services(config: dict, *, privacy, owner, shutdown) -> Live
     privacy.add_borrower(bus.begin_close)
     shutdown.push_async_callback(bus.aclose)
     driver = LiveStreamEraser(privacy,bus,receipts)
-    owner.register(ErasureParticipant.STREAMS,driver.clean,versions=frozenset({1,3}),begin_close=bus.begin_close)
+    owner.register(ErasureParticipant.STREAMS,driver.clean,versions=frozenset({1,3,4}),begin_close=bus.begin_close)
     await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.STREAMS,1,LIVE_TARGET)
     await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.STREAMS,3,REST_TARGET)
+    await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.STREAMS,4,VOICE_REVIEW_TARGET)
     await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.STREAMS,2,
         {'kind':'unresolved_stream_inventory'})
     bus.start()

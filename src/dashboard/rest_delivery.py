@@ -17,7 +17,7 @@ from starlette.types import ASGIApp,Receive,Scope,Send
 
 from src.analytics.event_logger import EventLogger
 from src.dashboard.conversation_projection import ConversationProjection
-from src.dashboard.live_retention_types import SnapshotMetadata
+from src.dashboard.live_retention_types import RevisionStamp,SnapshotMetadata
 from src.memory.fact_ledger import MemorySource
 
 if TYPE_CHECKING:
@@ -39,6 +39,15 @@ class RestOperation:
     expires_at: float = 0
     connection: str | None = None
     guard: object | None = field(default=None,repr=False)
+    channel: str = 'conversations'
+    profile_refs: tuple = ()
+    revision: RevisionStamp | None = None
+    associated_profiles: tuple = ()
+    activity_sources: tuple = ()
+
+    def metadata(self) -> SnapshotMetadata:
+        """Retain only lineage, view expiry and a weak revision fence."""
+        return SnapshotMetadata(self.event_id,self.sources,self.expires_at,self.channel,bool(self.profile_refs),self.revision,self.activity_sources)
 
 
 class DashboardApplication(FastAPI):
@@ -47,7 +56,8 @@ class DashboardApplication(FastAPI):
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Keep actual outer ASGI sends visible after observer cancellation."""
         owner = getattr(self.state,'rest_delivery_owner',None)
-        if owner is not None and scope['type']=='http' and scope.get('path')=='/api/conversations':
+        if owner is not None and scope['type']=='http' and (scope.get('path')=='/api/conversations'
+                or scope.get('path','').startswith('/api/voices')):
             await owner.scope(super().__call__,scope,receive,send)
         else:
             await super().__call__(scope,receive,send)
@@ -114,7 +124,7 @@ class RestDeliveryOwner:
             if (message.get('type')=='http.response.body' and message.get('body') and operation.sources
                     and (self.connection(operation.connection) is None
                         or operation.guard is None or operation.guard() is not True
-                        or not self.retention.policy.sources_available(operation.sources))):
+                        or not operation.metadata().available(self.retention.policy,self.retention.clock()))):
                 message = {'type':'http.response.body','body':b'{"snapshot":null}'}
             task = asyncio.create_task(transmit(message),context=Context())
             message = None
@@ -139,10 +149,10 @@ class RestDeliveryOwner:
             operation.guard = None
             app = scope = receive = send = None
 
-    def connection(self, identity: str | None) -> LiveSubscriber | None:
+    def connection(self, identity: str | None, *, minimum_protocol: int = 2) -> LiveSubscriber | None:
         for state in self.retention._states.values():
             browser = state.browser
-            if (not state.closed and browser is not None and browser.ready and browser.protocol == 2
+            if (not state.closed and browser is not None and browser.ready and browser.protocol>=minimum_protocol
                     and browser.connection == identity and (state.guard is None or state.guard() is True)):
                 return state
         return None
@@ -150,7 +160,7 @@ class RestDeliveryOwner:
     def pending(self, conversation: str) -> int:
         """A committed ACK cannot hide an actual raw callback or unknown read."""
         return sum(operation.sources is None or any(source.conversation_id == conversation
-            for source in operation.sources) for operation in (*self._tasks.values(),*self._scopes.values()))
+            for source in (*operation.sources,*operation.activity_sources)) for operation in (*self._tasks.values(),*self._scopes.values()))
 
     async def run(self, connection: str, events: EventLogger, filters: dict[str,str | None],
             guard: Callable[[],bool], send: Send) -> None:
@@ -215,7 +225,7 @@ class RestDeliveryOwner:
                     started = True
                     await self._error(send,503)
                     return RestResult.FAILED
-                state.snapshots[operation.event_id] = SnapshotMetadata(operation.event_id,operation.sources)
+                state.snapshots[operation.event_id] = operation.metadata()
             if self.retention._closed or self.connection(connection) is not state or guard() is not True:
                 started = True
                 await self._error(send,428)

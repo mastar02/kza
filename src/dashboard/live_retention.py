@@ -226,7 +226,8 @@ class LiveRetention:
                 for token, snapshot in tuple(state.snapshots.items()):
                     if token not in state.browser._tickets:
                         state.snapshots.pop(token,None)
-                    elif not self.policy.sources_available(snapshot.sources):
+                        state.snapshot_retired.discard(token)
+                    elif not snapshot.available(self.policy,now):
                         state.snapshot_retired.add(token)
             if state.browser is not None and state.browser.timed_out():
                 state.closed = True
@@ -301,8 +302,13 @@ class LiveRetention:
                         continue
                 if state.snapshot_retired and state.browser is not None:
                     tokens = sorted(state.snapshot_retired)[:32]
+                    channel = state.snapshots[tokens[0]].channel
+                    if state.browser.protocol>=3:
+                        tokens = [token for token in tokens if state.snapshots[token].channel==channel]
                     control = state.browser.retirement_frame(tokens)
                     control['type'] = 'rest_retire'
+                    if state.browser.protocol>=3:
+                        control['channel'] = channel
                     await self._send(sender,control)
                     control = None
                     state.snapshot_retired.difference_update(tokens)

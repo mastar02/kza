@@ -21,7 +21,7 @@ class RestBrowser:
 
 
 @asynccontextmanager
-async def ready_browser(bus):
+async def ready_browser(bus, *, version=2):
     """Complete hello/reset and wait for the persisted REST-ready control."""
     subscription,_ = await bus.subscribe()
     incoming,outgoing = asyncio.Queue(),asyncio.Queue()
@@ -30,7 +30,7 @@ async def ready_browser(bus):
     observing = asyncio.create_task(bus.browser_stream(subscription,send,receiver=incoming.get))
     peer = RestBrowser('',incoming,outgoing)
     try:
-        await peer.message({'type':'live_hello','version':2,'client_id':str(uuid4())})
+        await peer.message({'type':'live_hello','version':version,'client_id':str(uuid4())})
         async with asyncio.timeout(3):
             reset = await outgoing.get()
         assert reset['type']=='live_reset'

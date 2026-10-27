@@ -10,7 +10,7 @@ const NAV = [
   { id: 'alerts',        label: 'Alertas',        group: 'Operación', icon: '◬', view: 'AlertsView',        badge: '3' },
   { id: 'ha',            label: 'Home Assistant', group: 'Plataforma', icon: '◧', view: 'HAView' },
   { id: 'llm',           label: 'LLM Router',     group: 'Plataforma', icon: '◆', view: 'LLMView',           badge: '!' },
-  { id: 'users',         label: 'Usuarios',       group: 'Plataforma', icon: '◐', view: 'UsersView' },
+  { id: 'users',         label: 'Voces',          group: 'Plataforma', icon: '◐', view: 'UsersView' },
   { id: 'system',        label: 'Sistema',        group: 'Infraestructura', icon: '▦', view: 'SystemView' },
   { id: 'admin',         label: 'Admin',          group: 'Infraestructura', icon: '⚙', view: 'AdminView' },
 ];
@@ -172,7 +172,6 @@ const ENDPOINT_MAP = [
   ['LLM_ENDPOINTS', '/api/llm/endpoints'],
   ['HA_ENTITIES',   '/api/ha/entities'],
   ['HA_ACTIONS',    '/api/ha/actions'],
-  ['USERS',         '/api/users'],
   ['ALERTS',        '/api/alerts'],
   ['GPUS',          '/api/system/gpus'],
   ['SERVICES',      '/api/system/services'],
@@ -181,6 +180,7 @@ window.__kzaSources = Object.fromEntries(ENDPOINT_MAP.map(([key]) => [key, 'mock
 
 const initialMocks = JSON.parse(JSON.stringify(window.MOCKS));
 window.__kzaConversationState = window.KzaConversationPrivacy.createConversationState();
+window.__kzaVoiceState = window.KzaVoicePrivacy.createVoiceState();
 
 function replaceData(key, data) {
   const target = window.MOCKS[key];
@@ -194,6 +194,7 @@ function replaceData(key, data) {
 function clearPrivateData() {
   window.__kzaLiveState?.clear();
   window.__kzaConversationState.clear();
+  window.__kzaVoiceState.clear();
   for (const [key, data] of Object.entries(initialMocks)) replaceData(key, JSON.parse(JSON.stringify(data)));
   window.__kzaSources = Object.fromEntries(ENDPOINT_MAP.map(([key]) => [key, 'mock/sin verificar']));
 }
@@ -245,6 +246,12 @@ function mountWsLiveBridge() {
     onState:state => { window.__kzaSources.CONVERSATIONS = state === 'real' ? 'real' :
       ({ waiting:'sin confirmar', loading:'consultando', unavailable:'degradada', closed:'sin sesión' })[state]; },
   });
+  const voices = window.KzaVoiceChannel.createVoiceController({ state:window.__kzaVoiceState,
+    fetch:window.fetch.bind(window), emitAck, hasView:() => !!document.querySelector('#view-users'),
+    onUnauthorized:() => window.dispatchEvent(new CustomEvent('kza:auth-required')),
+    onStatus:status => { window.__kzaSources.VOICES = status; },
+  });
+  window.__kzaVoiceController = voices;
   const live = window.KzaLivePrivacy.createLiveState({
     emitAck,
     onChange: eventId => {
@@ -263,7 +270,7 @@ function mountWsLiveBridge() {
     const ws = new WebSocket(`${proto}//${window.location.host}/ws/live`);
     socket = ws;
     ws.onopen = () => {
-      if (!retired && socket === ws) ws.send(JSON.stringify({ type:'live_hello', version:2, client_id:window.KzaLivePrivacy.pageId() }));
+      if (!retired && socket === ws) ws.send(JSON.stringify({ type:'live_hello', version:3, client_id:window.KzaLivePrivacy.pageId() }));
     };
     ws.onmessage = (ev) => {
       if (socket !== ws || retired) return;
@@ -271,9 +278,14 @@ function mountWsLiveBridge() {
         const frame = JSON.parse(ev.data);
         if (frame.type === 'live_reset') {
           live.clear();
-          conversations.reset().then(cleared => { if (cleared && socket === ws && !retired) live.receive(frame); });
-        } else if (frame.type === 'rest_ready') conversations.open(frame.connection_id);
-        else if (frame.type === 'rest_retire') conversations.retire(frame);
+          Promise.all([conversations.reset(),voices.reset()]).then(cleared => {
+            if (cleared.every(Boolean) && socket === ws && !retired) live.receive(frame);
+          });
+        } else if (frame.type === 'rest_ready') { conversations.open(frame.connection_id); voices.open(frame.connection_id); }
+        else if (frame.type === 'rest_retire') {
+          if (frame.channel?.startsWith('voices:')) voices.retire(frame);
+          else conversations.retire(frame);
+        }
         else live.receive(frame);
       } catch {}
     };
@@ -281,6 +293,7 @@ function mountWsLiveBridge() {
       if (socket !== ws) return;
       live.clear();
       conversations.reset();
+      voices.reset();
       if (retired) return;
       let needsLogin = event.code === 1008;
       try {
@@ -303,6 +316,7 @@ function mountWsLiveBridge() {
     document.removeEventListener('visibilitychange', checkExpiry);
     live.dispose();
     conversations.dispose();
+    voices.dispose();
     queueMicrotask(() => socket?.close());
     if (window.__kzaLiveState === live) window.__kzaLiveState = null;
     if (window.__kzaLiveWs === socket) window.__kzaLiveWs = null;

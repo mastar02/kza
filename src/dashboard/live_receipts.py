@@ -5,6 +5,8 @@ from contextvars import Context
 from dataclasses import dataclass, field
 from enum import StrEnum
 import math
+import json
+import hashlib
 from uuid import UUID, uuid4
 from weakref import WeakKeyDictionary, ref
 
@@ -22,6 +24,10 @@ CREATE TABLE IF NOT EXISTS live_delivery_sources (
  conversation_id TEXT NOT NULL, PRIMARY KEY(ticket,conversation_id)
 );
 CREATE INDEX IF NOT EXISTS live_delivery_conversation ON live_delivery_sources(conversation_id);
+CREATE TABLE IF NOT EXISTS live_delivery_lineage (
+ ticket TEXT PRIMARY KEY REFERENCES live_deliveries(ticket) ON DELETE CASCADE,
+ version INTEGER NOT NULL, source_digest TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS live_connections (
  connection_id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, runtime_id TEXT NOT NULL
 );
@@ -184,7 +190,39 @@ class LiveReceiptStore:
         """Persist a page clear only for its exact authenticated connection."""
         return await self._call(self._reset_ack,connection,identity,nonce)
 
-    def _issue(self, db, connection, event_id, expires_at, sources):
+    def _profile_sources(self, db, profiles):
+        if type(profiles) is not tuple or not 1<=len(profiles)<=50:
+            return None
+        from src.users.voice_ledger import VoiceLedger
+        voices = VoiceLedger(self.ledger)
+        expected = set()
+        for identity,revision in profiles:
+            row = db.execute('SELECT id,revision,sources_json,confirmed_at,confirmed_by,deleted_at FROM voice_profiles WHERE id=?',(canonical_id(identity),)).fetchone()
+            if row is None or type(revision) is not int or row['revision']!=revision or not voices._live(row,confirmed=True):
+                return None
+            expected.update(voices._sources(row['sources_json']))
+        return expected
+
+    def _lineage(self, db, sources):
+        conversations = {source.conversation_id for source in sources}
+        parents = {dep.fact_id for source in sources for dep in source.fact_dependencies}
+        if parents:
+            ancestors = [row[0] for row in db.execute('''WITH RECURSIVE ancestors(id) AS (
+                SELECT value FROM json_each(?) UNION
+                SELECT d.source_fact_id FROM fact_dependencies d JOIN ancestors a ON d.fact_id=a.id LIMIT 4097)
+                SELECT id FROM ancestors''',(json.dumps(sorted(parents)),))]
+            if len(ancestors)>4096:
+                raise ValueError('live_fact_lineage_capacity')
+            origins = list(db.execute('''SELECT fact_id,conversation_id FROM fact_sources
+                WHERE fact_id IN (SELECT value FROM json_each(?)) LIMIT 4097''',(json.dumps(ancestors),)))
+            if len(origins)>4096 or {row[0] for row in origins}!=set(ancestors):
+                raise ValueError('live_fact_lineage_unavailable')
+            conversations.update(row[1] for row in origins)
+        if len(conversations)>4096:
+            raise ValueError('live_conversation_lineage_capacity')
+        return conversations
+
+    def _issue(self, db, connection, event_id, expires_at, sources, profiles=(), associated=(), activity_sources=()):
         client = self._connection(db,connection)
         event_id = canonical_id(event_id)
         from src.memory.fact_ledger import MemorySource, FactDependency
@@ -192,11 +230,28 @@ class LiveReceiptStore:
                 or any(type(source) is not MemorySource or any(type(dep) is not FactDependency
                     for dep in source.fact_dependencies) for source in sources)
                 or sum(len(source.fact_dependencies) for source in sources)>256
-                or not self.ledger.sources_available(sources)
                 or type(expires_at) not in (int,float) or not math.isfinite(expires_at)
-                or expires_at > min(source.expires_at for source in sources)
                 or expires_at <= self.ledger.clock()):
             return None
+        if profiles:
+            if associated or activity_sources or expires_at>self.ledger.clock()+300:
+                return None
+            expected = self._profile_sources(db,profiles)
+            if expected!=set(sources) or not self.ledger.activity_sources_available(sources):
+                return None
+        elif not self.ledger.sources_available(sources) or expires_at>min(source.expires_at for source in sources):
+            return None
+        if associated:
+            expected = self._profile_sources(db,associated)
+            if (type(activity_sources) is not tuple or expected!=set(activity_sources)
+                    or not self.ledger.activity_sources_available(activity_sources)):
+                return None
+        elif activity_sources:
+            return None
+        all_sources = set(sources) | set(activity_sources)
+        if len(all_sources)>256 or sum(len(source.fact_dependencies) for source in all_sources)>256:
+            return None
+        conversations = self._lineage(db,all_sources)
         total = db.execute('SELECT COUNT(*) FROM live_deliveries').fetchone()[0]
         count = db.execute('SELECT COUNT(*) FROM live_deliveries WHERE client_id=?',(client,)).fetchone()[0]
         if total>=self.capacity or count>=self.client_capacity:
@@ -205,12 +260,27 @@ class LiveReceiptStore:
         db.execute('INSERT INTO live_deliveries(ticket,client_id,connection_id,event_id,nonce,issued_at,expires_at) VALUES (?,?,?,?,?,?,?)',
             (ticket.ticket,client,connection,event_id,ticket.nonce,self.ledger.clock(),expires_at))
         db.executemany('INSERT OR IGNORE INTO live_delivery_sources VALUES (?,?)',
-            [(ticket.ticket,source.conversation_id) for source in sources])
+            [(ticket.ticket,conversation) for conversation in conversations])
+        digest = hashlib.sha256(json.dumps(sorted(conversations)).encode()).hexdigest()
+        db.execute('INSERT INTO live_delivery_lineage VALUES (?,1,?)',(ticket.ticket,digest))
         return ticket
 
     async def issue(self, connection: str, event_id: str, expires_at: float, sources: tuple) -> LiveTicket | None:
         """Commit a content-free ticket before handing bytes to the transport."""
         return await self._call(self._issue,connection,event_id,expires_at,sources)
+
+    async def issue_profiles(self, connection: str, event_id: str, expires_at: float, sources: tuple, profiles: tuple) -> LiveTicket | None:
+        """Only exact confirmed profile revisions may authorize metadata past raw TTL."""
+        if not profiles:
+            return None
+        return await self._call(self._issue,connection,event_id,expires_at,sources,profiles)
+
+    async def issue_associations(self, connection: str, event_id: str, expires_at: float,
+            sources: tuple, profiles: tuple, activity_sources: tuple) -> LiveTicket | None:
+        """Keep suggestion parents without extending the candidate's raw lifetime."""
+        if not profiles:
+            return None
+        return await self._call(self._issue,connection,event_id,expires_at,sources,(),profiles,activity_sources)
 
     def _ack(self, db, connection, receipts):
         client = self._connection(db,connection)
@@ -238,9 +308,23 @@ class LiveReceiptStore:
 
     def _pending(self, db, conversation):
         canonical_id(conversation)
-        attributed = db.execute('SELECT COUNT(*) FROM live_delivery_sources WHERE conversation_id=?',(conversation,)).fetchone()[0]
-        unknown = db.execute('SELECT COUNT(*) FROM live_deliveries d WHERE NOT EXISTS (SELECT 1 FROM live_delivery_sources s WHERE s.ticket=d.ticket)').fetchone()[0]
-        return attributed+unknown
+        attributed,unknown = set(),set()
+        ticket,roots,version,digest = None,[],None,None
+        def verify():
+            if ticket is not None and (not roots or version!=1 or digest!=hashlib.sha256(json.dumps(roots).encode()).hexdigest()):
+                unknown.add(ticket)
+        for row in db.execute('''SELECT d.ticket,p.version,p.source_digest,s.conversation_id FROM live_deliveries d
+                LEFT JOIN live_delivery_lineage p ON p.ticket=d.ticket
+                LEFT JOIN live_delivery_sources s ON s.ticket=d.ticket ORDER BY d.ticket,s.conversation_id'''):
+            if row[0]!=ticket:
+                verify()
+                ticket,version,digest,roots = row[0],row[1],row[2],[]
+            if row[3] is not None:
+                roots.append(row[3])
+            if row[3]==conversation:
+                attributed.add(ticket)
+        verify()
+        return len(attributed | unknown)
 
     async def pending(self, conversation: str) -> int:
         """Count private-metadata obligations without trusting wall clock expiry."""

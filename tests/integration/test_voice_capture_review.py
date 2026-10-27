@@ -28,6 +28,9 @@ from tests.mocks.memory_sources import memory_source
 from tests.mocks.voice_registry import ACTOR,AUDIO,Encoder,VECTOR,graph,idle
 from tests.mocks.ambient_graph import ambient_graph
 
+from tests.mocks.rest_browser import ready_browser
+from tests.mocks.voice_registry import web_graph
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -247,58 +250,60 @@ async def test_existing_fingerprints_do_not_gain_invented_review_material_after_
 
 
 async def test_authenticated_capture_endpoint_applies_original_expiry_and_never_exposes_vectors(tmp_path,dashboard_auth):
-    async with graph(tmp_path) as (_,_,voices,clock):
-        source,identity = await observe(voices,clock,ttl=10)
-        app = DashboardAPI(voice_registry=voices).app
-        url = '/api/voices/captures/'+identity+'/review'
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver') as client:
-            assert (await client.get(url)).status_code==401
-            response = await client.get(url,headers=dashboard_auth)
-            assert response.status_code==200 and response.headers['cache-control']=='no-store'
-            data = response.json()
-            assert data['expires_at']==source.expires_at and data['audio_base64']
-            assert 'embedding' not in response.text
-            clock.now+=10
-            assert (await client.get(url,headers=dashboard_auth)).status_code==404
+    async with web_graph(tmp_path) as (_,_,voices,clock,bus):
+        async with ready_browser(bus,version=3) as peer:
+            source,identity = await observe(voices,clock,ttl=10)
+            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            url = '/api/voices/captures/'+identity+'/review'
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver') as client:
+                assert (await client.get(url)).status_code==401
+                response = await client.get(url,headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection})
+                assert response.status_code==200 and response.headers['cache-control']=='no-store'
+                data = response.json()['snapshot']['rows'][0]
+                assert data['expires_at']==source.expires_at and data['audio_base64']
+                assert 'embedding' not in response.text
+                clock.now+=10
+                assert (await client.get(url,headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection})).status_code==404
 
 
 @pytest.mark.parametrize('change',['expiry','credential','revocation'])
 async def test_native_preview_encoding_rechecks_current_authority_without_holding_sqlite(tmp_path,dashboard_auth,monkeypatch,change):
     import src.users.voice_ledger as module
-    async with graph(tmp_path) as (privacy,owner,voices,clock):
-        source,identity = await observe(voices,clock,ttl=10)
-        entered,release = threading.Event(),threading.Event()
-        encode = module.base64.b64encode
-        def held(raw):
-            entered.set()
-            assert release.wait(3)
-            return encode(raw)
-        monkeypatch.setattr(module.base64,'b64encode',held)
-        app = DashboardAPI(voice_registry=voices).app
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',headers=dashboard_auth) as client:
-            observing = asyncio.create_task(client.get('/api/voices/captures/'+identity+'/review'))
-            try:
-                await until(entered.is_set)
-                if change=='expiry':
-                    clock.now+=10
-                elif change=='credential':
-                    monkeypatch.setenv('KZA_DASHBOARD_TOKEN','synthetic-rotated-credential')
-                else:
-                    operation = await owner.request(source.conversation_id,MemoryReviewer('synthetic-admin'))
-                    await flush(owner)
-                    assert (await privacy.acall(privacy.ledger.erasures.snapshot,operation['id']))['state']!='complete'
-                    assert await voices.acall(counts,voices)==(0,0,0)
-                    def local_pending():
-                        with privacy.ledger._transaction() as db:
-                            return db.execute("SELECT pending_count FROM erasure_steps WHERE operation_id=? AND participant='voices' AND target_id IN (SELECT id FROM erasure_targets WHERE version=1)",(operation['id'],)).fetchone()[0]
-                    assert await privacy.acall(local_pending)>=1
-                release.set()
-                response = await observing
-                assert response.status_code==(403 if change=='credential' else 404)
-                assert 'audio_base64' not in response.text and 'Synthetic source transcript' not in response.text
-            finally:
-                release.set()
-                await asyncio.gather(observing,return_exceptions=True)
+    async with web_graph(tmp_path) as (privacy,owner,voices,clock,bus):
+        async with ready_browser(bus,version=3) as peer:
+            source,identity = await observe(voices,clock,ttl=10)
+            entered,release = threading.Event(),threading.Event()
+            encode = module.base64.b64encode
+            def held(raw):
+                entered.set()
+                assert release.wait(3)
+                return encode(raw)
+            monkeypatch.setattr(module.base64,'b64encode',held)
+            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
+                observing = asyncio.create_task(client.get('/api/voices/captures/'+identity+'/review'))
+                try:
+                    await until(entered.is_set)
+                    if change=='expiry':
+                        clock.now+=10
+                    elif change=='credential':
+                        monkeypatch.setenv('KZA_DASHBOARD_TOKEN','synthetic-rotated-credential')
+                    else:
+                        operation = await owner.request(source.conversation_id,MemoryReviewer('synthetic-admin'))
+                        await flush(owner)
+                        assert (await privacy.acall(privacy.ledger.erasures.snapshot,operation['id']))['state']!='complete'
+                        assert await voices.acall(counts,voices)==(0,0,0)
+                        def local_pending():
+                            with privacy.ledger._transaction() as db:
+                                return db.execute("SELECT pending_count FROM erasure_steps WHERE operation_id=? AND participant='voices' AND target_id IN (SELECT id FROM erasure_targets WHERE version=1)",(operation['id'],)).fetchone()[0]
+                        assert await privacy.acall(local_pending)>=1
+                    release.set()
+                    response = await observing
+                    assert response.status_code==(403 if change=='credential' else 404)
+                    assert 'audio_base64' not in response.text and 'Synthetic source transcript' not in response.text
+                finally:
+                    release.set()
+                    await asyncio.gather(observing,return_exceptions=True)
 
 
 @pytest.mark.parametrize('damage',['audio','oversize_audio','text','room'])
