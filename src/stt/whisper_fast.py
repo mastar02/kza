@@ -222,7 +222,8 @@ class FastWhisperSTT:
             comp_ratio = None
 
         elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.debug(f"STT ({elapsed_ms:.0f}ms): {text[:50]}...")
+        from contextvars import Context
+        Context().run(logger.debug, "STT completed in %.0fms", elapsed_ms)
 
         return STTResult(
             text=text,
@@ -485,7 +486,8 @@ class MoonshineSTT:
         text = self._model.transcribe(audio, sample_rate)
 
         elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.debug(f"Moonshine STT ({elapsed_ms:.0f}ms): {text[:50]}...")
+        from contextvars import Context
+        Context().run(logger.debug, "Moonshine STT completed in %.0fms", elapsed_ms)
 
         return text, elapsed_ms
 

@@ -1155,11 +1155,9 @@ class WhisperWakeDetector:
             was_active = now < self._tv_mode_until
             self._tv_mode_until = now + TV_MODE_DURATION_S
             if not was_active:
-                logger.warning(
-                    f"📺 TV-mode ACTIVATED — {len(self._reject_timestamps)} wake-rejects "
-                    f"en {TV_MODE_ENTRY_WINDOW_S:.0f}s (último: {reason}). "
-                    f"Wakes aceptados loggearán flag 'tv_mode' por {TV_MODE_DURATION_S:.0f}s."
-                )
+                from contextvars import Context
+                Context().run(logger.warning, "TV mode activated after %s wake rejects in %.0fs",
+                    len(self._reject_timestamps), TV_MODE_ENTRY_WINDOW_S)
 
     def _is_tv_mode_active(self) -> bool:
         """True si TV-mode está activo (rolling window)."""
@@ -1220,23 +1218,24 @@ class WhisperWakeDetector:
         if not matched and rejection_reason:
             self._record_reject(rejection_reason)
         elif matched and tv_mode_active:
-            logger.warning(
-                f"⚠️  Wake ACCEPTED en TV-mode (probable false-positive del entorno): {text!r}"
-            )
+            from contextvars import Context
+            Context().run(logger.warning, "Wake accepted while TV mode is active")
 
         if not self.metrics_emitter:
             return
+        from src.obs.metrics_emitter import project_diagnostic
+        diagnostic = project_diagnostic({'event_type': 'wake', 'rejection_reason': rejection_reason})
         try:
             self.metrics_emitter.emit_wake(
-                room_id=self.room_id,
+                room_id='',
                 matched=matched,
-                wake_word=wake_word,
+                wake_word=None,
                 matched_via=matched_via,
-                text=text,
+                text=None,
                 audio_duration_ms=dur_ms,
                 wake_stt_ms=stt_ms,
                 fuzzy_ratio=fuzzy_ratio,
-                rejection_reason=rejection_reason,
+                rejection_reason=diagnostic.get('rejection_reason'),
                 tv_mode=tv_mode_active,
                 no_speech_prob=no_speech_prob,
                 avg_logprob=avg_logprob,
@@ -1245,19 +1244,21 @@ class WhisperWakeDetector:
             # MetricsEmitter sin soporte de tv_mode (fallback: emite sin el flag).
             try:
                 self.metrics_emitter.emit_wake(
-                    room_id=self.room_id,
+                    room_id='',
                     matched=matched,
-                    wake_word=wake_word,
+                    wake_word=None,
                     matched_via=matched_via,
-                    text=text,
+                    text=None,
                     audio_duration_ms=dur_ms,
                     wake_stt_ms=stt_ms,
                     fuzzy_ratio=fuzzy_ratio,
-                    rejection_reason=rejection_reason,
+                    rejection_reason=diagnostic.get('rejection_reason'),
                     no_speech_prob=no_speech_prob,
                     avg_logprob=avg_logprob,
                 )
-            except Exception as e:
-                logger.warning(f"MetricsEmitter emit_wake failed: {e}")
-        except Exception as e:
-            logger.warning(f"MetricsEmitter emit_wake failed: {e}")
+            except Exception:
+                from contextvars import Context
+                Context().run(logger.warning, "Diagnostic wake metric deferred")
+        except Exception:
+            from contextvars import Context
+            Context().run(logger.warning, "Diagnostic wake metric deferred")

@@ -23,6 +23,7 @@ ambient path es ``vad_prob`` (Silero), no el STT.
 from __future__ import annotations
 
 import logging
+from contextvars import Context
 import time
 
 import numpy as np
@@ -97,7 +98,7 @@ class ParakeetSTT:
         start = time.perf_counter()
         text = self._model.recognize(audio, language=self.language) or ""
         elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.debug(f"Parakeet STT ({elapsed_ms:.0f}ms): {text[:50]}...")
+        Context().run(logger.debug, "Parakeet STT completed in %.0fms", elapsed_ms)
 
         return STTResult(text=text.strip(), elapsed_ms=elapsed_ms)
 

@@ -337,6 +337,7 @@ async def _run_main(shutdown: AsyncExitStack):
             logstash_host=obs_cfg.get("logstash_host"),
             logstash_port=obs_cfg.get("logstash_port", 5515),
         )
+        shutdown.push_async_callback(metrics_emitter.aclose)
         logger.info(f"MetricsEmitter habilitado → {metrics_emitter.path}")
 
     # Verificar Home Assistant

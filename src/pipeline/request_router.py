@@ -1852,48 +1852,43 @@ class RequestRouter:
 
     def _log_latency(self, result: dict):
         """Log latency metrics."""
-        total = result["latency_ms"]
+        from contextvars import Context
+        from src.obs.metrics_emitter import diagnostic_timings, project_diagnostic
+        timings = diagnostic_timings(result.get('timings'))
+        safe = project_diagnostic({'event_type': 'request', 'total_ms': result.get('latency_ms'),
+            'intent': result.get('intent'), 'path': result.get('path')})
+        total = safe.get('total_ms', 0.)
         target = self.latency_target_ms
         status = "OK" if total <= target else "SLOW"
         timings_str = " + ".join(
-            f"{k}={v:.0f}" if isinstance(v, (int, float)) else f"{k}={v}"
-            for k, v in result["timings"].items()
+            f"{k}={v:.0f}" for k, v in timings.items()
         )
-        logger.info(f"[{status}] Total: {total:.0f}ms (target: {target}ms) [{timings_str}]")
+        Context().run(logger.info, "[%s] Total: %.0fms (target: %sms) [%s]", status, total, target, timings_str)
 
         if self.latency_monitor:
-            user_name = result.get("user", {}).get("name") if result.get("user") else None
             self.latency_monitor.record(
-                timings={
-                    key: value for key, value in result["timings"].items()
-                    if isinstance(value, (int, float))
-                },
-                user=user_name,
-                intent=result.get("intent")
+                timings=timings,
+                user=None,
+                intent=safe.get('intent')
             )
 
         if self.metrics_emitter:
             meta = getattr(self, "_last_request_meta", {}) or {}
-            action = result.get("action") or {}
-            timings = dict(result.get("timings") or {})
             timings["total"] = total
             try:
                 self.metrics_emitter.emit_request(
-                    user_id=(result.get("user") or {}).get("name", "unknown"),
-                    zone_id=(result.get("room") or {}).get("id") or None,
-                    text=result.get("text", ""),
-                    intent=result.get("intent"),
-                    path=result.get("path"),
+                    user_id='', zone_id=None, text='',
+                    intent=safe.get('intent'),
+                    path=safe.get('path'),
                     success=bool(result.get("success")),
                     timings=timings,
                     audio_duration_ms=meta.get("audio_duration_ms"),
-                    entity_id=action.get("entity_id"),
-                    service=action.get("service"),
+                    entity_id=None, service=None,
                     used_wake_text=bool(meta.get("used_wake_text")),
                     early_dispatch=bool(meta.get("early_dispatch")),
                 )
-            except Exception as e:
-                logger.warning(f"MetricsEmitter emit_request failed: {e}")
+            except Exception:
+                Context().run(logger.warning, "Diagnostic request metric deferred")
 
     async def _get_conversation_context(self) -> str:
         """Select recent text and its sources off-loop for the fast reasoner."""
