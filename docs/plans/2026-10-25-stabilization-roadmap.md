@@ -658,6 +658,19 @@ reales quedan fuera de Git y del artefacto. No se migra producción ni se afirma
 un rollback completo: faltan HNSW/restauración compatible, revisión manual,
 demás migraciones, ciclo de vida de snapshots/cuarentenas y los otros entregables.
 
+El [journal de colectores](2026-10-26-h3-memory-privacy.md#avance-journal-de-archivos-y-scopes-nativos-de-colectores)
+ya tiene un driver conectado en `main` para wake, correcciones STT, conversaciones
+y exports. Los recibos esperan la salida nativa real, conservan los locators
+hasta completar el borrado físico y vuelven a comprobar los destinos históricos
+tras reiniciar. Un disco bloqueado no impide revocar otra conversación. Los
+archivos legacy, cuarentenas y snapshots sin procedencia verificable continúan
+preservados y pendientes. Este avance no completa el borrado global, los demás
+participantes, la aceptación integrada de GC/hardware ni H3–H6.
+La [validación](../research/2026-10-27-h3-collector-journal-validation.json) del
+commit `780f212` registra **5137 passed, 1 xfailed**, 38 casos nuevos, checks
+aceptados y artefacto sin fuentes con 320 hashes verificados. No se leen datos
+reales del hogar ni se modifica la copia privada anterior o producción.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

@@ -1,0 +1,248 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "780f212a98c3be63d27438a6353d5e5b51ecc115",
+  "tested_runtime_source_tree": "e9ab15baa7575da9b84c6e5641f76b4f65e29c70",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 COLLECTORS journal driver for four managed datasets, actual native reader/writer ownership, historical root recovery, conservative legacy/quarantine coverage. Synthetic data only; global erasure and release acceptance remain open.",
+  "new_integration_cases": [
+    "test_journal_removes_each_managed_dataset_and_keeps_unrelated_sources[wake]",
+    "test_journal_removes_each_managed_dataset_and_keeps_unrelated_sources[stt]",
+    "test_journal_removes_each_managed_dataset_and_keeps_unrelated_sources[conversations]",
+    "test_journal_removes_each_managed_dataset_and_keeps_unrelated_sources[exports]",
+    "test_native_writer_retains_claim_and_lease_until_its_real_exit[wake]",
+    "test_native_writer_retains_claim_and_lease_until_its_real_exit[stt]",
+    "test_native_writer_retains_claim_and_lease_until_its_real_exit[conversations]",
+    "test_native_writer_retains_claim_and_lease_until_its_real_exit[exports]",
+    "test_unrelated_blocked_encoder_does_not_block_another_conversation",
+    "test_unattributed_files_remain_pending_and_are_never_deleted[legacy]",
+    "test_unattributed_files_remain_pending_and_are_never_deleted[orphan]",
+    "test_unattributed_files_remain_pending_and_are_never_deleted[symlink]",
+    "test_configured_legacy_training_root_blocks_only_its_receipt",
+    "test_old_numeric_cursor_cannot_hide_raw_metadata_behind_it",
+    "test_native_reader_scope_survives_observer_cancellation_and_source_revocation[stt]",
+    "test_native_reader_scope_survives_observer_cancellation_and_source_revocation[conversations]",
+    "test_duplicate_claim_observers_share_actual_unlink_and_cancel_does_not_release_lease",
+    "test_missing_unlink_keeps_locator_and_retry_removes_file_before_ack",
+    "test_unowned_claim_or_unknown_protocol_cannot_delete_known_files[claim]",
+    "test_unowned_claim_or_unknown_protocol_cannot_delete_known_files[descriptor]",
+    "test_unowned_claim_or_unknown_protocol_cannot_delete_known_files[version]",
+    "test_unowned_claim_or_unknown_protocol_cannot_delete_known_files[cursor]",
+    "test_closing_observation_keeps_native_cleanup_and_shared_authority_lease",
+    "test_removed_fact_dependency_keeps_derived_native_scope_owned[reader]",
+    "test_removed_fact_dependency_keeps_derived_native_scope_owned[unreserved_writer]",
+    "test_feedback_retains_original_conversation_before_unreserved_raw_read",
+    "test_metadata_and_directory_pages_cross_128_without_losing_live_rows",
+    "test_replaced_policy_directory_cannot_complete_an_existing_audit",
+    "test_runtime_factory_registers_collectors_when_all_learning_flags_are_off",
+    "test_restored_files_behind_complete_receipt_are_rechecked_on_leased_restart",
+    "test_legacy_quarantine_rows_and_snapshot_never_get_a_false_collector_receipt",
+    "test_missing_quarantine_location_remains_pending_until_explicit_copy_registration",
+    "test_blocked_physical_unlink_does_not_hold_the_authority_writer",
+    "test_unrecognized_source_metadata_keeps_file_and_only_fixed_receipt_errors",
+    "test_default_cli_export_uses_configured_dedicated_root",
+    "test_distinct_registered_collectors_can_share_a_policy_directory",
+    "test_directory_iterator_failure_releases_descriptors_with_exception_retained[root]",
+    "test_directory_iterator_failure_releases_descriptors_with_exception_retained[policy]"
+  ],
+  "new_cases_total": 38,
+  "full_suite": {
+    "accepted": true,
+    "collected": 5138,
+    "passed": 5137,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "runtime_s": 220.0,
+    "junit_time_s": 219.923,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-collector-journal-full.xml",
+    "log": "/tmp/kza-collector-journal-full.log",
+    "xml": "/tmp/kza-collector-journal-full.xml"
+  },
+  "focused_suites": [
+    {
+      "passed": 172,
+      "runtime_s": 16.19,
+      "log": "/tmp/kza-collector-journal-focused-final.log",
+      "note": "Before the two added descriptor allocation failure cases and public lifecycle annotations."
+    },
+    {
+      "passed": 38,
+      "runtime_s": 7.26,
+      "log": "/tmp/kza-collector-journal-resources.log",
+      "note": "All final new cases before the code commit; the full suite runs the exact committed code."
+    }
+  ],
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "includes_training_and_migration_clis": true,
+      "log": "/tmp/kza-collector-journal-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 27,
+      "medium": 0,
+      "high": 0,
+      "includes_training_and_migration_clis": true,
+      "log": "/tmp/kza-collector-journal-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-collector-journal-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-collector-journal-dashboard.log"
+    }
+  },
+  "runtime_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.21660211496055126,
+        "max": 1.059733098372817
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.05099782720208168,
+          "p95": 0.20085577853024006,
+          "max": 0.20085577853024006
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.817947797477245,
+          "p95": 11.207469971850514,
+          "max": 11.207469971850514
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 424,
+        "loop_lag_p95_ms": 0.335141085088253,
+        "loop_lag_max_ms": 1.0555170010775328,
+        "cancel_cleanup_max_ms": 1.7416479531675577,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2724,
+        "loop_lag_p95_ms": 0.9869729448109864,
+        "loop_lag_max_ms": 9.910640893504022,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.5018629599362612,
+        "p95": 5.7967540342360735,
+        "max": 5.7967540342360735,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "780f212a98c3be63d27438a6353d5e5b51ecc115",
+    "artifact": "/tmp/kza-collector-journal-runtime-npbaeyex/runtime.tar.gz",
+    "verified_hashes": 320,
+    "runtime_s": 0.5351304369978607,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "stdout": "{\"passed\": true, \"verified_hashes\": 320, \"source_free\": true, \"managed_dataset_kinds\": 4, \"initial_records\": 8, \"unrelated_records_preserved\": 3, \"cancelled_raw_reader_retained_until_native_exit\": true, \"writer_lease_retained\": true, \"restored_completed_receipt_reopened\": true, \"restored_locator_and_file_removed\": true, \"unknown_legacy_preserved_pending\": true, \"retention_poller_started\": false, \"global_erasure_complete\": false, \"household_data_read_or_packaged\": false, \"full_main_or_hardware_acceptance\": false, \"production_changed\": false}\n",
+    "stderr": "",
+    "passed": true,
+    "exercise": {
+      "passed": true,
+      "verified_hashes": 320,
+      "source_free": true,
+      "managed_dataset_kinds": 4,
+      "initial_records": 8,
+      "unrelated_records_preserved": 3,
+      "cancelled_raw_reader_retained_until_native_exit": true,
+      "writer_lease_retained": true,
+      "restored_completed_receipt_reopened": true,
+      "restored_locator_and_file_removed": true,
+      "unknown_legacy_preserved_pending": true,
+      "retention_poller_started": false,
+      "global_erasure_complete": false,
+      "household_data_read_or_packaged": false,
+      "full_main_or_hardware_acceptance": false,
+      "production_changed": false
+    }
+  },
+  "development_findings": {
+    "authority_writer_regression": {
+      "accepted": false,
+      "log": "/tmp/kza-collector-journal-authority-reproduction.log",
+      "failure": "A held physical unlink in the draft kept the authority transaction open, timing out another conversation revocation at 200 ms.",
+      "correction": "Read metadata under a short transaction, retain the durable locator during off-transaction unlink/fsync, conditionally delete the locator in a new short transaction.",
+      "final_test": "test_blocked_physical_unlink_does_not_hold_the_authority_writer"
+    },
+    "draft_fixture_errors": {
+      "accepted": false,
+      "description": "Some new dependency fixtures omitted required confidence and failed before reaching regression assertions. These are not proof of a dependency regression. An intermediate insertion also had a test syntax error. Both fixtures were corrected before the accepted runs.",
+      "logs": [
+        "/tmp/kza-collector-journal-dependency-reproduction.log",
+        "/tmp/kza-collector-journal-dependency-fixed.log",
+        "/tmp/kza-collector-journal-complete.log",
+        "/tmp/kza-collector-journal-test-collection-error.log"
+      ]
+    },
+    "first_compiled_fixture": {
+      "accepted": false,
+      "report": "/tmp/kza-collector-journal-runtime-first-report.json",
+      "failure": "The verifier expected seven rows but immutable feedback leaves the superseded original until physical retirement. Counts were 2 wake, 2 STT, 3 turns and 1 export.",
+      "correction": "Use the verified eight-row fixture; application sources and test limits were unchanged."
+    }
+  },
+  "runtime_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancellation_max_ms": 100,
+    "cleanup_ms": 1000,
+    "limits_widened": false,
+    "gc_forced_disabled_or_frozen": false,
+    "integrated_gc_hardware_acceptance": false
+  },
+  "preserved_boundaries": {
+    "real_household_data_read_or_modified": false,
+    "prior_private_quarantine_copy_modified": false,
+    "quarantined_unsourced_data_automatically_deleted": false,
+    "unknown_legacy_files_automatically_deleted": false,
+    "config_or_runtime_under_kza_changed": false,
+    "production_restarted": false,
+    "new_training_or_gpu_reassignment": false,
+    "global_erasure_claimed": false,
+    "full_main_or_hardware_acceptance": false,
+    "release_published": false
+  },
+  "remaining_scope": [
+    "Unknown legacy datasets, adapters and quarantine rows/backups remain preserved and pending until explicit attributable retirement or manual review. The new callback does not invent conversation affinity for them.",
+    "PRODUCERS still lacks full journal coverage across capture/ambient/command/distiller scopes; remaining diagnostics, streams/frontend and VOICES are open. Broad erasure stays unavailable in the UI.",
+    "Pause versus total mute, acoustic retention and authenticated grouping review, remaining migrations/live-index rebuild and compatible rollback remain open.",
+    "Selected HA effects and kitchen switch mapping, physical audio, remaining H4 runtime/dependency acceptance, H5 voice functions and the one integrated H6 release remain open.",
+    "The earlier instrumented GC pause of 495.68 ms is not remeasured or accepted by this uninstrumented suite. Runtime smoke exercises collectors and journal components with synthetic sources and real SQLite/files; it does not start the full main graph or hardware."
+  ]
+}

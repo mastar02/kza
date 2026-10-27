@@ -1883,6 +1883,28 @@ automáticamente: el recibo sigue pendiente mientras cualquiera exista. Este
 driver no completa los demás participantes ni habilita todavía el borrado global
 en la UI. No se modifica la copia privada real ni producción.
 
+La [validación](../research/2026-10-27-h3-collector-journal-validation.json)
+del commit `780f212` registra **5137 passed, 1 xfailed**, sin fallos, en 220 s,
+incluidos 38 casos nuevos. Pasan Ruff, Bandit sin hallazgos medios/altos, los
+18 tests de frontend y el smoke del dashboard. Los casos nuevos cubren también
+fallos de `scandir` con la excepción retenida: no quedan descriptores abiertos.
+La evidencia conserva la reproducción del bloqueo de autoridad en el borrado
+físico y distingue los errores de fixtures de las regresiones alcanzadas.
+
+El artefacto sin fuentes verifica 320 hashes y ejercita los cuatro datasets con
+SQLite y archivos reales, pero fuentes y audio sintéticos. Conserva tres
+registros de otra conversación, espera al lector cancelado y vuelve a borrar
+un archivo/locator restaurado detrás de un recibo completo. Un archivo legacy
+desconocido permanece pendiente e intacto. El ejercicio tarda 0,54 s; no arranca
+`main` completo ni el poller de retención, para aislar la prueba del journal.
+El primer verificador esperaba siete filas e ignoraba la versión de turno
+sustituida por feedback; se corrigió su cuenta a ocho sin cambiar las fuentes.
+
+El heartbeat de la suite registra p95 de 0,22 ms y máximo de 1,06 ms; cancelar
+el control tarda como máximo 0,20 ms y limpiar stream/cliente 11,21 ms.
+Los presupuestos no cambian y no se manipula GC. La pausa instrumentada anterior
+de 495,68 ms sigue pendiente de aceptación integrada en H4/H6.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
