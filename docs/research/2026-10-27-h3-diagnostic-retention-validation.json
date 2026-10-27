@@ -1,0 +1,145 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "3b18d0c1a9a63715e6379f9301d83bea7719e6e8",
+  "tested_runtime_source_tree": "42ac56db9b966a4dfebd8c19257877cf081e7b4a",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 durable local numeric diagnostic deadlines, periodic idle expiry, single-writer recovery and safe import of the existing policy-v1 projection. Conversation provenance, remote/legacy erasure and the complete DIAGNOSTICS journal contract remain open.",
+  "new_cases_total": 15,
+  "new_integration_cases": [
+    "test_active_and_rotated_files_expire_without_another_metric",
+    "test_queued_metric_deadline_precedes_native_writer_and_tcp",
+    "test_shorter_policy_survives_failed_projection_and_later_widening",
+    "test_previous_numeric_schema_uses_original_timestamp_not_import_time",
+    "test_unverified_policy_file_is_preserved_in_quarantine_and_never_sent",
+    "test_second_writer_cannot_reinterpret_or_republish_the_live_catalog",
+    "test_expired_record_is_not_sent_after_connect_finishes",
+    "test_blocked_prune_retains_writer_lease_through_close_timeout[waiting]",
+    "test_blocked_prune_retains_writer_lease_through_close_timeout[cancelled]",
+    "test_failed_projection_stage_is_retired_on_retry_without_restart",
+    "test_valid_previous_numeric_rows_keep_birth_deadline_and_identity_without_tcp_replay",
+    "test_deadline_is_rechecked_after_native_encoding_wait",
+    "test_unrecognized_catalog_is_not_reinterpreted_or_modified",
+    "test_retained_error_does_not_keep_native_unverified_payload_or_message",
+    "test_startup_timeout_does_not_orphan_initial_cleanup_or_block_forever"
+  ],
+  "initial_red": {
+    "failed": 6,
+    "passed": 0,
+    "runtime_s": 0.57,
+    "log": "/tmp/kza-diagnostic-retention-red.log",
+    "finding": "The previous numeric emitter had no time-based retention or owned retention startup contract."
+  },
+  "nonaccepted_focused_runs": [
+    {
+      "log": "/tmp/kza-diagnostic-retention-focused.log",
+      "failed": 1,
+      "passed": 18,
+      "finding": "The idle test observed physical empty files before cached cleanup acknowledgement; it now waits for both."
+    },
+    {
+      "log": "/tmp/kza-diagnostic-retention-final-checks.log",
+      "failed": 1,
+      "passed": 262,
+      "finding": "A gate could intercept startup maintenance rather than the selected sweep; startup maintenance is now awaited before installing the gate."
+    }
+  ],
+  "full_suite": {
+    "accepted": true,
+    "collected": 5388,
+    "passed": 5387,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 230.005,
+    "summary": "========= 5387 passed, 1 xfailed, 31391 warnings in 230.09s (0:03:50) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-diagnostic-retention-accepted-full.xml",
+    "log": "/tmp/kza-diagnostic-retention-accepted-full.log",
+    "xml": "/tmp/kza-diagnostic-retention-accepted-full.xml"
+  },
+  "focused_suite": {
+    "passed": 265,
+    "failed": 0,
+    "runtime_s": 4.14,
+    "summary": "====================== 265 passed, 299 warnings in 4.14s =======================",
+    "log": "/tmp/kza-diagnostic-retention-accepted-focused.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-diagnostic-retention-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-diagnostic-retention-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-diagnostic-retention-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "mocked_dependencies": true,
+      "log": "/tmp/kza-diagnostic-retention-dashboard.log"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "3b18d0c1a9a63715e6379f9301d83bea7719e6e8",
+    "artifact": "/tmp/kza-diagnostic-retention-runtime-6xihla13/runtime.tar.gz",
+    "verified_hashes": 323,
+    "runtime_s": 1.281432595103979,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "idle_expiry": true,
+      "sticky_deadline_after_fault_restart_clock_rollback": true,
+      "original_timestamp_import": true,
+      "quarantine_and_legacy_preservation": true,
+      "lease_through_native_close_timeout": true,
+      "sourcefree_hashes": 323,
+      "synthetic_clock_and_faults": true,
+      "full_main_hardware_remote_retention_acceptance": false
+    }
+  },
+  "verified_behaviors": {
+    "admission_deadline_precedes_loop_post_native_write_and_tcp": true,
+    "active_and_backup_expire_without_new_metrics_while_running": true,
+    "catalog_is_authority_after_failed_file_publication": true,
+    "shorter_policy_persisted_before_file_repair_and_not_extended_by_restart": true,
+    "deleted_rows_not_reimported_from_stale_projection_even_after_clock_rollback": true,
+    "valid_previous_policy_rows_keep_timestamp_identity_and_original_deadline": true,
+    "unverified_policy_rows_preserved_whole_in_quarantine_without_tcp_replay": true,
+    "unversioned_legacy_files_unchanged": true,
+    "pending_staged_files_retried_before_new_projection_in_same_process": true,
+    "unknown_catalog_rejected_without_modifying_original_bytes": true,
+    "lease_held_until_actual_native_retention_exits": true,
+    "native_failures_cross_boundary_as_closed_codes_without_payload_tracebacks": true,
+    "optional_startup_timeout_retains_actual_cleanup_and_maintenance": true,
+    "main_uses_existing_analytics_retention_days_even_if_analytics_disabled": true
+  },
+  "limits": {
+    "retention_execution": "Expiry is polled every second while the owner is running, plus append/startup cleanup. Native I/O failures defer physical projection cleanup; ready remains false until repair. This does not promise deletion while offline or a strict physical deadline during stalled I/O.",
+    "quarantines": "Unverified policy files are preserved outside the projection pending manual review. Unversioned legacy files are untouched.",
+    "remote_logstash_retention_and_deletion_verified": false,
+    "all_diagnostic_rows_have_conversation_provenance_and_retention_receipts": false,
+    "diagnostics_journal_participant_complete": false,
+    "all_other_backend_and_application_log_sites_audited": false,
+    "full_producers_streams_voices_complete": false,
+    "physical_audio_sdk_or_full_main_acceptance": false,
+    "instrumented_gc_measurement_replaced_or_accepted": false,
+    "production_modified": false,
+    "gc_forced_disabled_or_frozen": false,
+    "existing_deadlines_or_capacities_widened": false,
+    "overall_h3_or_roadmap_complete": false
+  }
+}

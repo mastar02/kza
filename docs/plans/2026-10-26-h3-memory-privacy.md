@@ -2510,6 +2510,48 @@ TCP, loop, threads y wrappers de STT reales, usando engines sintéticos y una
 escritura nativa detenida. No se fuerza GC ni se amplían los presupuestos
 existentes; la medición instrumentada y la aceptación física siguen pendientes.
 
+## Retención local del diagnóstico numérico — 2026-10-27
+
+El JSONL `_policy_v1` tiene ahora un catálogo SQLite propio que conserva la
+fecha de admisión, la identidad y el vencimiento de cada métrica. Se usa el
+campo existente `analytics.retention_days`, incluso si analytics está
+deshabilitado. La marca se fija antes del post al loop y del trabajo nativo;
+esperar para escribir o conectar TCP no renueva el plazo. Sólo las filas nuevas
+pueden enviarse: reparar los archivos nunca reproduce métricas por TCP.
+
+La poda corre al arrancar, al escribir y cada segundo en reposo. Retira filas
+vencidas del catálogo y reconstruye el archivo activo y su copia rotada. El
+catálogo es la autoridad: reducir 90→1 días queda persistido antes de publicar
+archivos; reiniciar con 90 días no restaura el plazo ni reimporta filas borradas
+desde una copia física vieja, incluso con retroceso del reloj. Los fallos de
+publicación mantienen el estado pendiente y se reintentan, incluidos los
+temporales registrados. La eliminación física depende de que el proceso corra
+y el I/O pueda terminar; no se promete una fecha física estricta durante un
+bloqueo nativo ni mientras el servicio esté apagado.
+
+El primer uso sólo importa archivos del esquema numérico `_policy_v1` cuya
+proyección completa y fecha UTC se verifican. Una fila anterior sin plazo usa
+su fecha original, sin renovar desde la importación. Un archivo no verificable
+se conserva entero en cuarentena para revisión manual y queda fuera de la
+proyección y del envío. El JSONL original sin versión continúa intacto.
+Un catálogo ajeno se rechaza sin reinterpretarlo. Un lease impide dos writers;
+el cierre lo conserva hasta que termina la poda nativa real. El arranque tiene
+observación acotada y conserva su tarea de reparación si vence esa espera.
+Los errores nativos cruzan como códigos cerrados, sin conservar payloads ni
+tracebacks privados en las tareas observadoras.
+
+La [evidencia de retención local](../research/2026-10-27-h3-diagnostic-retention-validation.json)
+registra **5387 passed, 1 xfailed**, sin fallos, en 230,09 s sobre `3b18d0c`;
+15 casos nuevos y 265 pruebas dirigidas, incluidos fallos de publicación,
+reinicios, cuarentena, vencimiento sin nuevas métricas y observadores
+cancelados. Pasan Ruff, Bandit sin hallazgos medios/altos, los 18 casos de
+frontend y el smoke del dashboard. El artefacto sin fuentes verifica 323 hashes
+y ejercita en 1,28 s el catálogo,
+los archivos y el lease usando reloj y fallos sintéticos. Esta entrega no
+completa procedencia por conversación, recibos del journal, borrado remoto,
+otros logs ni aceptación física. Tampoco sustituye la medición instrumentada
+de GC pendiente ni modifica producción.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

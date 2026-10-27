@@ -774,6 +774,20 @@ usa otro nombre y no reenvía archivos anteriores. Siguen pendientes la
 procedencia/retención completas, las copias legacy y remotas, otros logs y el
 participante `DIAGNOSTICS`; no se cierra H3 ni se modifica producción.
 
+La [retención local del diagnóstico](../research/2026-10-27-h3-diagnostic-retention-validation.json)
+añade fechas de admisión y vencimiento persistentes, poda en reposo y reparación
+del JSONL activo y rotado desde un catálogo propio. Acortar el plazo queda
+registrado antes de publicar; reiniciar con un plazo mayor no restaura filas
+borradas desde una copia vieja. La importación del esquema numérico anterior
+conserva su fecha original; archivos no verificables quedan en cuarentena para
+revisión manual. Los originales sin versión siguen intactos. Un lease conserva
+la propiedad hasta terminar el trabajo nativo real. La validación corresponde
+a `3b18d0c`, con **5387 passed, 1 xfailed**, 15 casos nuevos, 265 pruebas
+dirigidas, checks y artefacto sin fuentes de 323 hashes. La poda
+requiere proceso e I/O disponibles; no se promete eliminación física durante
+una interrupción. Siguen pendientes procedencia por conversación, borrado
+remoto, otros logs y el participante `DIAGNOSTICS`. No se cierra H3.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una
