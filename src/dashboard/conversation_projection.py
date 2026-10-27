@@ -21,7 +21,8 @@ class ConversationProjection:
     def to_dict(self) -> dict | None:
         """Return a bounded snapshot only while every original source is current."""
         event, now = self.event, self.observed_at
-        if not sources_current(event.sources, now) or not event.trigger_phrase:
+        if (type(event.record_id) is not int or event.record_id <= 0
+                or not sources_current(event.sources, now) or not event.trigger_phrase):
             return None
         deadlines = (event.expires_at, event.text_expires_at, *(source.expires_at for source in event.sources))
         if any(type(value) not in (int, float) or not math.isfinite(value) for value in deadlines):
@@ -42,7 +43,7 @@ class ConversationProjection:
                     or type(value) is str and len(value) <= 256):
                 args[key] = value
         return {
-            "id": f"turn_{int(event.timestamp * 1000)}_{event.sources[0].capture_id}",
+            "id": f"turn_{event.record_id}_{event.sources[0].capture_id}",
             "ts": event.datetime.strftime("%H:%M:%S"),
             "user": _text(event.user_name or event.user_id) or "—",
             "zone": _text(context.get("zone") or context.get("room_id")) or "—",

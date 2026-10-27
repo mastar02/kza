@@ -9,7 +9,7 @@ def event(**fields):
     """Create a sourced event without a database or a fabricated authority."""
     source = memory_source(now=1000, ttl=60)
     return Event(timestamp=1000, event_type=EventType.COMMAND, entity_id='light.synthetic', action='turn_on',
-        trigger_phrase='Synthetic private turn', sources=(source,), expires_at=2000, text_expires_at=1060, **fields)
+        trigger_phrase='Synthetic private turn', sources=(source,), expires_at=2000, text_expires_at=1060, record_id=1, **fields)
 
 
 def test_projection_carries_the_earliest_original_deadline_across_multiple_sources():

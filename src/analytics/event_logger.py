@@ -56,6 +56,7 @@ class Event:
     sources: tuple[MemorySource, ...] = ()
     expires_at: float | None = None
     text_expires_at: float | None = None
+    record_id: int | None = None
 
     @property
     def datetime(self) -> datetime:
@@ -341,7 +342,7 @@ class EventLogger:
         self.initialize()
         guard = self.source_policy.admit_source_write(sources) if self.source_policy is not None and sources else nullcontext()
         with guard, self._connect() as conn:
-            conn.execute("""INSERT INTO events_policy_v1 (
+            cursor = conn.execute("""INSERT INTO events_policy_v1 (
                 timestamp, event_type, entity_id, action, user_id, user_name,
                 trigger_phrase, context_json, hour, minute, weekday, is_weekend,
                 time_of_day, sources_json, metrics_json, expires_at, text_expires_at
@@ -350,6 +351,7 @@ class EventLogger:
                 event.user_name, event.trigger_phrase, json.dumps(context, allow_nan=False),
                 event.hour, event.minute, event.weekday, int(event.is_weekend), event.time_of_day,
                 json.dumps([source.to_dict() for source in sources]), json.dumps(metrics), expires_at, text_expiry))
+            event.record_id = cursor.lastrowid
         if self._maintenance_loop is not None:
             self._maintenance_loop.call_soon_threadsafe(self._changed.set)
         if self._retention_notify is not None:
@@ -454,7 +456,7 @@ class EventLogger:
                     trigger_phrase=row["trigger_phrase"],
                     context=json.loads(row["context_json"]) if row["context_json"] else {},
                     sources=tuple(MemorySource.from_dict(item) for item in json.loads(row["sources_json"])),
-                    expires_at=row["expires_at"], text_expires_at=row["text_expires_at"]
+                    expires_at=row["expires_at"], text_expires_at=row["text_expires_at"], record_id=row["id"]
                 )
                 events.append(event)
         

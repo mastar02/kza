@@ -265,6 +265,18 @@ async def test_authenticated_dashboard_cannot_serve_expired_or_revoked_event_tex
             assert (await client.get('/api/ha/actions', headers=dashboard_auth)).json() == []
 
 
+async def test_conversation_snapshot_distinguishes_same_capture_actions_at_the_same_time(tmp_path, dashboard_auth):
+    async with graph(tmp_path) as (events, _, clock):
+        source = memory_source(now=clock.now)
+        for entity in ('light.first', 'light.second', 'light.first'):
+            await events.alog(entity, 'turn_on', trigger_phrase='Synthetic shared capture.', sources=(source,))
+        app = DashboardAPI(event_logger=events, observability_use_mocks=False).app
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver', headers=dashboard_auth) as client:
+            snapshot = (await client.get('/api/conversations')).json()
+            assert len(snapshot) == len({row['id'] for row in snapshot}) == 3
+            assert {row['id'] for row in (await client.get('/api/conversations')).json()} == {row['id'] for row in snapshot}
+
+
 async def test_fresh_logger_initializes_revocations_before_reading_old_policy_rows(tmp_path):
     async with graph(tmp_path) as (events, policy, clock):
         source = memory_source(now=clock.now)
