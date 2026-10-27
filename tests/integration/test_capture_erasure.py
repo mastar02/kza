@@ -70,7 +70,9 @@ async def capture(g):
 
 async def flush(owner):
     await owner.reconcile()
-    await asyncio.gather(*(a.task for a in owner._active.values()))
+    # This helper only observes callbacks already owned by the coordinator.
+    # Source-monitor cancellation must not cancel their real cleanup tasks.
+    await asyncio.gather(*(asyncio.shield(a.task) for a in owner._active.values()))
     await owner.reconcile()
 
 
@@ -561,3 +563,38 @@ async def test_encoder_respects_earlier_store_deadline_before_attachment(tmp_pat
             release.set()
         assert await writing is None
         assert list(Path(g.store.audio_dir).rglob('*.flac')) == []
+
+
+async def test_cancelled_flush_observer_cannot_cancel_owned_capture_cleanup(tmp_path):
+    from dataclasses import replace
+    from src.memory.erasure_journal import ErasureParticipant
+
+    async with graph(tmp_path) as g:
+        source, row = await capture(g)
+        path = await g.archive.write('synthetic-room', row, AUDIO, source=source)
+        await g.store.set_audio_path(row, path)
+        entered, release = asyncio.Event(), asyncio.Event()
+        driver = g.owner._drivers[ErasureParticipant.CAPTURES]
+
+        async def gated(step):
+            entered.set()
+            await release.wait()
+            return await driver.callback(step)
+
+        g.owner._drivers[ErasureParticipant.CAPTURES] = replace(driver, callback=gated)
+        receipt = await g.owner.request(source.conversation_id, ACTOR)
+        observer = asyncio.create_task(flush(g.owner))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            await until(lambda: getattr(observer._fut_waiter, '_children', None) is not None)
+            observer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await observer
+            active = [a.task for a in g.owner._active.values()]
+            assert active and all(not task.done() for task in active)
+        finally:
+            release.set()
+            await asyncio.gather(observer, return_exceptions=True)
+        await flush(g.owner)
+        assert counts(g.store.db_path)['utterances'] == 0 and not Path(path).exists()
+        assert (await status(g, receipt))[0]['state'] == 'complete'
