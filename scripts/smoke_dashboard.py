@@ -70,8 +70,11 @@ def main():
     print("\nGET /obs/src/views/live.jsx (asset routing):")
     r = client.get("/obs/src/views/live.jsx")
     assert r.status_code == 200
-    assert "useLiveStream" in r.text
-    print("  [OK ] 200  → live.jsx served (incluye useLiveStream)")
+    expected_asset = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "src", "dashboard", "frontend", "obs", "src", "views", "live.jsx")
+    with open(expected_asset, "rb") as expected:
+        assert r.content == expected.read()
+    print("  [OK ] 200  → live.jsx served (content verified)")
 
     print("\nWS /ws/live handshake:")
     with client.websocket_connect("/ws/live") as ws:

@@ -377,7 +377,7 @@ async def test_cancelled_observer_and_close_timeout_retain_native_cleanup_and_pr
 
 
 @pytest.mark.parametrize('corruption', ['payload_matching', 'payload_unrelated', 'lineage'])
-async def test_unverified_restored_catalog_is_not_republished_and_receipts_follow_physical_repair(tmp_path, corruption):
+async def test_unverified_restored_catalog_is_not_republished_and_receipts_follow_physical_repair(tmp_path, corruption, monkeypatch):
     async with graph(tmp_path) as (_, _, driver, clock, config):
         source = memory_source(now=clock.now)
         request(driver.emitter, sources=(source,))
@@ -388,14 +388,28 @@ async def test_unverified_restored_catalog_is_not_republished_and_receipts_follo
             db.execute('UPDATE metrics SET payload=?', ('{"event_type":"request","diagnostic_schema":1,"text":"Synthetic private restore"}',))
         else:
             db.execute('UPDATE lineage SET conversation_id=?', ('Synthetic private restore',))
-    async with graph(tmp_path, config=config) as (privacy, owner, driver, _, _):
+    async with graph(tmp_path, config=config) as (privacy, owner, driver, clock, _):
         assert 'Synthetic private restore' not in path.read_text()
         erased = source if corruption == 'payload_matching' else memory_source(now=clock.now)
         receipt = await owner.request(erased.conversation_id, ACTOR)
+        if corruption == 'payload_matching':
+            # Observe actual repair before selecting this exact failed batch.
+            # The retry must use the newly opened authority's clock.
+            if driver.emitter._sweep is not None:
+                await asyncio.shield(driver.emitter._sweep)
+            await driver.emitter.aprune()
+            erase = driver.emitter._store.erase
+            failed = False
+            def fail_once(conversation):
+                nonlocal failed
+                if not failed:
+                    failed = True
+                    raise OSError('synthetic_first_erasure_failure')
+                return erase(conversation)
+            monkeypatch.setattr(driver.emitter._store, 'erase', fail_once)
         await flush(owner)
         if corruption == 'payload_matching':
-            # A startup failure may still be the selected maintenance observer.
-            # Its fixed retry must be allowed before asserting physical repair.
+            assert (await numeric_steps(privacy, receipt))[0]['state'] == 'pending'
             clock.now += 2
             await flush(owner)
         assert ((await numeric_steps(privacy, receipt))[0]['state'] == 'complete') == (corruption == 'payload_matching')
