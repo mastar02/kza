@@ -622,9 +622,26 @@ ejecución manual devuelve `blocked` sin datasets, modelos, callbacks o reportes
 La [validación](../research/2026-10-26-h3-private-training-admission-validation.json)
 del commit `b793903` registra **5050 passed, 1 xfailed**, 16 casos nuevos,
 129 pruebas dirigidas y checks/artefacto sin fuentes aceptados. Los archivos
-legacy permanecen intactos; su migración/retención y los consumidores alternos,
-incluido el CLI nocturno sin autoridad, siguen pendientes. Tampoco cierra
+legacy permanecen intactos; su migración/retención y los consumidores alternos
+siguen pendientes. El CLI nocturno se corrige en el avance siguiente. Tampoco cierra
 `COLLECTORS`, la aceptación integrada de runtime/GC, H3 o H6. Producción no cambia.
+
+El [CLI nocturno y la entrada directa de LoRA](2026-10-26-h3-memory-privacy.md#avance-cli-nocturno-y-entrada-directa-de-lora)
+ya no permiten acceder al entrenamiento o adapters sin una sesión admitida,
+incluso al copiar o enlazar un export fuera de su directorio original. El
+status distingue disponibilidad del CLI de un estado del runtime que no consultó;
+las operaciones bloqueadas salen con código 1. Las estadísticas y exports del
+catálogo siguen disponibles. No se agrega entrenamiento ni se cambian GPUs.
+
+La suite inicial descubrió además un [bucle de cierre de memoria](2026-10-26-h3-memory-privacy.md#avance-cierre-de-memoria-con-callbacks-pendientes)
+que impedía retirar tareas ya terminadas. Una reproducción determinista confirmó
+el cruce de callbacks; la corrección conserva la propiedad de workers nativos
+reales y su lease. La [validación conjunta](../research/2026-10-27-h3-training-cli-validation.json)
+del commit `4f82a85` registra **5073 passed, 1 xfailed**, 23 casos nuevos,
+checks y artefacto sin fuentes aceptados. Conserva la ejecución interrumpida
+como no aceptada. El artefacto verifica 317 hashes, cuatro casos de cierre y
+siete procesos CLI. No cierra la retención de datasets legacy, el journal
+completo, la aceptación integrada de GC/hardware ni los demás hitos de H0–H6.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.

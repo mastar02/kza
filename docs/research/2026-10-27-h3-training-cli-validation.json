@@ -1,0 +1,376 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "4f82a85c34ab9ddad6e4e1a3e41ae38dad638796",
+  "tested_runtime_source_tree": "ccb8ac658849476cc609e67072c5f9e289adbc37",
+  "tested_scripts_source_tree": "b0a7c46a07da08c402dc8a6636dded3ba53c66a2",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3/H6 closes identified unscoped nightly and assistant-LoRA CLI paths and the copied/symlink/hardlink export bypass in direct LoRATrainer. No private training session is admitted. Metadata constructors, existing managed stats/exports and legacy backend source remain; historical datasets are unchanged. Also fixes a reproduced LongTermMemory close spin on completed tasks whose retirement callbacks were still queued, without manipulating GC or widening limits.",
+  "baseline_reproduction": {
+    "baseline_commit": "8a6864d6caeb23c8347f0c546a28a3d4b40538e1",
+    "canonical_export_rejected": true,
+    "copied_export_reached_model_import": true,
+    "nightly_cli_exposed_legacy_history": true,
+    "nightly_cli_exposed_adapter_path": true,
+    "nightly_cli_claimed_available_without_authority": true,
+    "nightly_cli_created_default_model_directory": true,
+    "actual_model_imports_completed": false,
+    "actual_training_performed": false,
+    "production_changed": false
+  },
+  "new_integration_cases": [
+    "test_lora_rejects_actual_managed_export_at_any_path_before_io[canonical]",
+    "test_lora_rejects_actual_managed_export_at_any_path_before_io[copied]",
+    "test_lora_rejects_actual_managed_export_at_any_path_before_io[symlink]",
+    "test_lora_rejects_actual_managed_export_at_any_path_before_io[hardlink]",
+    "test_lora_does_not_read_or_infer_authorization_for_untracked_data[missing.jsonl]",
+    "test_lora_does_not_read_or_infer_authorization_for_untracked_data[arbitrary.jsonl]",
+    "test_nightly_cli_reports_fixed_state_without_constructing_an_unmanaged_trainer[--status]",
+    "test_nightly_cli_reports_fixed_state_without_constructing_an_unmanaged_trainer[--collect]",
+    "test_nightly_cli_reports_fixed_state_without_constructing_an_unmanaged_trainer[--run]",
+    "test_nightly_usage_and_invalid_actions_do_not_open_legacy_data[argv0]",
+    "test_nightly_usage_and_invalid_actions_do_not_open_legacy_data[argv1]",
+    "test_nightly_usage_and_invalid_actions_do_not_open_legacy_data[argv2]",
+    "test_assistant_lora_command_rejects_before_importing_or_echoing_private_arguments[train]",
+    "test_assistant_lora_command_rejects_before_importing_or_echoing_private_arguments[list]",
+    "test_actual_cli_process_preserves_legacy_data_and_propagates_unavailable_exit_code[nightly---status-0]",
+    "test_actual_cli_process_preserves_legacy_data_and_propagates_unavailable_exit_code[nightly---collect-1]",
+    "test_actual_cli_process_preserves_legacy_data_and_propagates_unavailable_exit_code[nightly---run-1]",
+    "test_actual_cli_process_preserves_legacy_data_and_propagates_unavailable_exit_code[assistant-train-1]",
+    "test_actual_cli_process_preserves_legacy_data_and_propagates_unavailable_exit_code[assistant-list-1]",
+    "test_memory_close_retires_ready_callbacks_and_keeps_actual_native_ownership[result]",
+    "test_memory_close_retires_ready_callbacks_and_keeps_actual_native_ownership[error]",
+    "test_memory_close_retires_ready_callbacks_and_keeps_actual_native_ownership[cancel]",
+    "test_memory_close_retires_ready_callbacks_and_keeps_actual_native_ownership[native]"
+  ],
+  "new_cases_total": 23,
+  "new_cli_cases": [
+    "test_lora_rejects_actual_managed_export_at_any_path_before_io[canonical]",
+    "test_lora_rejects_actual_managed_export_at_any_path_before_io[copied]",
+    "test_lora_rejects_actual_managed_export_at_any_path_before_io[symlink]",
+    "test_lora_rejects_actual_managed_export_at_any_path_before_io[hardlink]",
+    "test_lora_does_not_read_or_infer_authorization_for_untracked_data[missing.jsonl]",
+    "test_lora_does_not_read_or_infer_authorization_for_untracked_data[arbitrary.jsonl]",
+    "test_nightly_cli_reports_fixed_state_without_constructing_an_unmanaged_trainer[--status]",
+    "test_nightly_cli_reports_fixed_state_without_constructing_an_unmanaged_trainer[--collect]",
+    "test_nightly_cli_reports_fixed_state_without_constructing_an_unmanaged_trainer[--run]",
+    "test_nightly_usage_and_invalid_actions_do_not_open_legacy_data[argv0]",
+    "test_nightly_usage_and_invalid_actions_do_not_open_legacy_data[argv1]",
+    "test_nightly_usage_and_invalid_actions_do_not_open_legacy_data[argv2]",
+    "test_assistant_lora_command_rejects_before_importing_or_echoing_private_arguments[train]",
+    "test_assistant_lora_command_rejects_before_importing_or_echoing_private_arguments[list]",
+    "test_actual_cli_process_preserves_legacy_data_and_propagates_unavailable_exit_code[nightly---status-0]",
+    "test_actual_cli_process_preserves_legacy_data_and_propagates_unavailable_exit_code[nightly---collect-1]",
+    "test_actual_cli_process_preserves_legacy_data_and_propagates_unavailable_exit_code[nightly---run-1]",
+    "test_actual_cli_process_preserves_legacy_data_and_propagates_unavailable_exit_code[assistant-train-1]",
+    "test_actual_cli_process_preserves_legacy_data_and_propagates_unavailable_exit_code[assistant-list-1]"
+  ],
+  "new_memory_close_cases": [
+    "test_memory_close_retires_ready_callbacks_and_keeps_actual_native_ownership[result]",
+    "test_memory_close_retires_ready_callbacks_and_keeps_actual_native_ownership[error]",
+    "test_memory_close_retires_ready_callbacks_and_keeps_actual_native_ownership[cancel]",
+    "test_memory_close_retires_ready_callbacks_and_keeps_actual_native_ownership[native]"
+  ],
+  "full_suite": {
+    "accepted": true,
+    "collected": 5074,
+    "passed": 5073,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 207.59,
+    "junit_time_s": 207.52,
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-training-cli-full-fixed.xml",
+    "log": "/tmp/kza-training-cli-full-fixed.log",
+    "xml": "/tmp/kza-training-cli-full-fixed.xml"
+  },
+  "focused_suite": {
+    "passed": 177,
+    "runtime_s": 21.23,
+    "log": "/tmp/kza-training-cli-focused.log"
+  },
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "includes_training_cli": true,
+      "log": "/tmp/kza-training-cli-ruff-fixed.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 27,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-training-cli-bandit-fixed.log"
+    },
+    "bandit_training_cli": {
+      "passed": true,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-training-cli-bandit-script.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-training-cli-frontend-fixed.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-training-cli-dashboard-fixed.log"
+    }
+  },
+  "runtime_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.21091499365866184,
+        "max": 1.1059250682592392
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.056605786085128784,
+          "p95": 0.07846904918551445,
+          "max": 0.07846904918551445
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.939454892650247,
+          "p95": 11.091177118942142,
+          "max": 11.091177118942142
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 424,
+        "loop_lag_p95_ms": 0.36466820165514946,
+        "loop_lag_max_ms": 1.0263440199196339,
+        "cancel_cleanup_max_ms": 1.8886930774897337,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2712,
+        "loop_lag_p95_ms": 0.9901089407503604,
+        "loop_lag_max_ms": 3.4917729254812,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6656821351498365,
+        "p95": 5.750773940235376,
+        "max": 5.750773940235376,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "4f82a85c34ab9ddad6e4e1a3e41ae38dad638796",
+    "artifact": "/tmp/kza-training-cli-runtime-5n10pd3f/runtime.tar.gz",
+    "verified_hashes": 317,
+    "runtime_s": 2.0339458209928125,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "stdout": "{\"passed\": true, \"verified_hashes\": 317, \"source_free\": true, \"cli_checks\": [{\"entrypoint\": \"nightly\", \"action\": \"--status\", \"exit_code\": 0}, {\"entrypoint\": \"nightly\", \"action\": \"--collect\", \"exit_code\": 1}, {\"entrypoint\": \"nightly\", \"action\": \"--run\", \"exit_code\": 1}, {\"entrypoint\": \"assistant_lora\", \"action\": \"train\", \"exit_code\": 1}, {\"entrypoint\": \"assistant_lora\", \"action\": \"list\", \"exit_code\": 1}, {\"entrypoint\": \"managed_training_data\", \"action\": \"stats\", \"exit_code\": 0}, {\"entrypoint\": \"managed_training_data\", \"action\": \"export\", \"exit_code\": 0}], \"memory_close_fairness\": [{\"mode\": \"result\", \"passed\": true, \"operations\": 0, \"writer_lease\": false}, {\"mode\": \"error\", \"passed\": true, \"operations\": 0, \"writer_lease\": false}, {\"mode\": \"cancel\", \"passed\": true, \"operations\": 0, \"writer_lease\": false}, {\"mode\": \"native\", \"passed\": true, \"operations\": 0, \"writer_lease\": false}], \"real_authority_and_turn_export\": true, \"copied_linked_exports_blocked\": true, \"native_training_boundary_calls\": 0, \"unavailable_cli_mutated_files\": false, \"legacy_files_preserved\": true, \"managed_stats_and_export_work\": true, \"full_main_startup_exercised\": false, \"physical_hardware_exercised\": false, \"production_changed\": false}\n",
+    "stderr": "",
+    "passed": true,
+    "exercise": {
+      "passed": true,
+      "verified_hashes": 317,
+      "source_free": true,
+      "cli_checks": [
+        {
+          "entrypoint": "nightly",
+          "action": "--status",
+          "exit_code": 0
+        },
+        {
+          "entrypoint": "nightly",
+          "action": "--collect",
+          "exit_code": 1
+        },
+        {
+          "entrypoint": "nightly",
+          "action": "--run",
+          "exit_code": 1
+        },
+        {
+          "entrypoint": "assistant_lora",
+          "action": "train",
+          "exit_code": 1
+        },
+        {
+          "entrypoint": "assistant_lora",
+          "action": "list",
+          "exit_code": 1
+        },
+        {
+          "entrypoint": "managed_training_data",
+          "action": "stats",
+          "exit_code": 0
+        },
+        {
+          "entrypoint": "managed_training_data",
+          "action": "export",
+          "exit_code": 0
+        }
+      ],
+      "memory_close_fairness": [
+        {
+          "mode": "result",
+          "passed": true,
+          "operations": 0,
+          "writer_lease": false
+        },
+        {
+          "mode": "error",
+          "passed": true,
+          "operations": 0,
+          "writer_lease": false
+        },
+        {
+          "mode": "cancel",
+          "passed": true,
+          "operations": 0,
+          "writer_lease": false
+        },
+        {
+          "mode": "native",
+          "passed": true,
+          "operations": 0,
+          "writer_lease": false
+        }
+      ],
+      "real_authority_and_turn_export": true,
+      "copied_linked_exports_blocked": true,
+      "native_training_boundary_calls": 0,
+      "unavailable_cli_mutated_files": false,
+      "legacy_files_preserved": true,
+      "managed_stats_and_export_work": true,
+      "full_main_startup_exercised": false,
+      "physical_hardware_exercised": false,
+      "production_changed": false
+    }
+  },
+  "memory_close_focused_suite": {
+    "passed": 51,
+    "runtime_s": 6.68,
+    "log": "/tmp/kza-memory-close-focused.log"
+  },
+  "diagnostic_history": {
+    "first_full_suite": {
+      "accepted": false,
+      "tested_commit": "0fb14ee39b4bf7ad2af893948a35292b48191b13",
+      "exit_code": 134,
+      "log": "/tmp/kza-training-cli-full-aborted.log",
+      "junit_written": false,
+      "last_progress": "test_transient_privacy.py ..........",
+      "verified_live_observations": "One busy CPU and unchanged case progress over repeated session/process polls; SIGINT did not produce termination.",
+      "debugger_attach": "Denied by existing ptrace policy; no privilege escalation attempted.",
+      "termination": "SIGABRT used to obtain the faulthandler stack after SIGINT; the same session later reported terminal exit 134.",
+      "stack": [
+        "asyncio/tasks.py:765 __init__",
+        "asyncio/tasks.py:907 gather",
+        "src/memory/long_term.py:291 finish"
+      ],
+      "diagnosis": "All completed tasks can make gather return eagerly; the close loop then starves the retirement callbacks that would empty its ownership set."
+    },
+    "deterministic_baseline": {
+      "baseline_commit": "0fb14ee39b4bf7ad2af893948a35292b48191b13",
+      "timed_out": true,
+      "external_watchdog_s": 3,
+      "stdout": "completion queued immediately before memory close\n",
+      "stderr": "",
+      "runtime_s": 3.0050347479991615
+    },
+    "fixed_baseline_log": "/tmp/kza-memory-close-crossing-fixed.log",
+    "fix": "LongTermMemory drain uses asyncio.wait to yield to queued completion callbacks, preserving pending native work and its shared authority lease.",
+    "earlier_cli_only_artifact": {
+      "git_commit": "0fb14ee39b4bf7ad2af893948a35292b48191b13",
+      "artifact": "/tmp/kza-training-cli-runtime-zisvsrjh/runtime.tar.gz",
+      "verified_hashes": 317,
+      "runtime_s": 1.8964112810790539,
+      "tracked_nightly_enabled": false,
+      "config_external": true,
+      "returncode": 0,
+      "stdout": "{\"passed\": true, \"verified_hashes\": 317, \"source_free\": true, \"cli_checks\": [{\"entrypoint\": \"nightly\", \"action\": \"--status\", \"exit_code\": 0}, {\"entrypoint\": \"nightly\", \"action\": \"--collect\", \"exit_code\": 1}, {\"entrypoint\": \"nightly\", \"action\": \"--run\", \"exit_code\": 1}, {\"entrypoint\": \"assistant_lora\", \"action\": \"train\", \"exit_code\": 1}, {\"entrypoint\": \"assistant_lora\", \"action\": \"list\", \"exit_code\": 1}, {\"entrypoint\": \"managed_training_data\", \"action\": \"stats\", \"exit_code\": 0}, {\"entrypoint\": \"managed_training_data\", \"action\": \"export\", \"exit_code\": 0}], \"real_authority_and_turn_export\": true, \"copied_linked_exports_blocked\": true, \"native_training_boundary_calls\": 0, \"unavailable_cli_mutated_files\": false, \"legacy_files_preserved\": true, \"managed_stats_and_export_work\": true, \"full_main_startup_exercised\": false, \"physical_hardware_exercised\": false, \"production_changed\": false}\n",
+      "stderr": "",
+      "passed": true,
+      "accepted_for_integrated_candidate": false,
+      "scope": "Seven CLI checks passed, but this exercise did not cover the memory close ready-queue crossing. A new artifact is required after the fix."
+    }
+  },
+  "behavior": {
+    "nightly_status": {
+      "status": "blocked",
+      "exit_code": 0,
+      "runtime_status_checked": false
+    },
+    "nightly_collect_and_run": {
+      "status": "blocked",
+      "exit_code": 1,
+      "constructs_trainer": false
+    },
+    "assistant_lora_train_and_list": {
+      "exit_code": 1,
+      "constructs_trainer": false,
+      "echoes_private_arguments": false
+    },
+    "direct_lora": {
+      "training_blocked": true,
+      "constructor_creates_directories": false,
+      "canonical_copied_symlink_hardlink_export_training": "rejected_before_io_or_model_imports",
+      "legacy_backend_source_retained": true,
+      "adapters_opened": false
+    },
+    "managed_data_stats_and_export_available": true
+  },
+  "runtime_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancellation_max_ms": 100,
+    "cleanup_ms": 1000,
+    "limits_widened": false,
+    "gc_forced_disabled_or_frozen": false,
+    "integrated_gc_hardware_acceptance": false
+  },
+  "preserved_boundaries": {
+    "tracked_nightly_enabled": false,
+    "installed_configuration_changed": false,
+    "production_modified": false,
+    "production_restarted": false,
+    "real_private_data_read_or_changed": false,
+    "new_private_training": false,
+    "model_downloads_or_gpu_reassignment": false,
+    "historical_files_deleted_or_migrated": false,
+    "global_erasure_claimed": false,
+    "full_main_startup_exercised": false,
+    "hardware_acceptance": false
+  },
+  "remaining_scope": [
+    "Private training remains unavailable. Legacy programmatic trainers/generators without injected authority are retained for synthetic contracts; full consumer audit and managed session/dataset lifetimes remain open. Closing the identified CLI bypasses is not a global COLLECTORS driver.",
+    "Legacy habit profiles, datasets, generated training scripts and adapters still need private inventory, quarantine, physical retention and erasure. Denying reads does not delete these historical artifacts.",
+    "Full PRODUCERS/COLLECTORS journal coverage, other diagnostics/streams/voice copies, pause/mute, acoustic review and calibrated grouping remain pending.",
+    "Real-copy legacy migration, selected HA effects, H4 dependencies/runtime GC acceptance, H5 local functions and one integrated H6 release with compatible rollback remain pending.",
+    "The prior instrumented GC pauses up to 495.68 ms are not remeasured or fixed by this uninstrumented suite. Production and installed private configuration remain unchanged."
+  ]
+}

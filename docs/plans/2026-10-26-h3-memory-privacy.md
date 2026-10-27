@@ -1697,9 +1697,9 @@ de usar incluso ejemplos ya cacheados.
 Este bloqueo conserva los archivos originales y mantiene las pruebas de
 adaptadores sintéticos. No incorpora entrenamiento privado ni sanea los datasets
 anteriores: siguen pendientes su inventario, cuarentena, retención y los otros
-consumidores alternos, incluido el CLI nocturno antiguo sin autoridad. Tampoco
-completa `COLLECTORS`, los demás participantes del journal o H6. La configuración
-instalada y producción permanecen sin cambios.
+consumidores alternos. El CLI nocturno sin autoridad se corrige en el avance
+siguiente. Tampoco completa `COLLECTORS`, los demás participantes del journal
+o H6. La configuración instalada y producción permanecen sin cambios.
 
 La [validación de admisión](../research/2026-10-26-h3-private-training-admission-validation.json)
 del commit `b793903` registra **5050 passed, 1 xfailed**, sin fallos, en 205,88 s.
@@ -1737,18 +1737,22 @@ archivos. El CLI de LoRA rechaza entrenamiento y listado antes de construir un
 trainer o copiar argumentos privados a la salida.
 
 La entrada directa de `LoRATrainer` también queda bloqueada para cualquier path,
-incluidos copias, symlinks y hardlinks de exports reales. El constructor es
-inocuo respecto del filesystem y el listado no abre adapters sin una sesión
+incluidos copias, symlinks y hardlinks de exports reales. El constructor no
+consulta ni crea archivos y el listado no abre adapters sin una sesión
 admitida. Se conserva la implementación antigua para revisión; no se agrega un
 flag para habilitarla, entrenamiento nuevo ni una reasignación de GPUs. El CLI
 de estadísticas y exports temporales del catálogo sigue disponible.
 
 Esto cierra los bypasses identificados de esos accesos, no la retención física
-de datasets y adapters históricos ni el resto de `COLLECTORS`. La suite final
-y el artefacto compilado de este cambio siguen pendientes de validar. Producción
-y configuración instalada permanecen sin cambios.
+de datasets y adapters históricos ni el resto de `COLLECTORS`. La
+[validación conjunta de CLI y cierre](../research/2026-10-27-h3-training-cli-validation.json)
+del commit `4f82a85` registra **5073 passed, 1 xfailed**, sin fallos, en 207,59 s,
+con 19 casos nuevos de CLI y cuatro de cierre. Pasan las 177 pruebas dirigidas
+de entrenamiento, las 51 dirigidas al cierre, Ruff, Bandit incluyendo el CLI
+sin hallazgos medios/altos, 18 tests de frontend y el smoke del dashboard.
+Producción y configuración instalada permanecen sin cambios.
 
-## Avance: cierre de memoria sin hambre de callbacks
+## Avance: cierre de memoria con callbacks pendientes
 
 La primera suite completa del cambio de CLI, sobre `0fb14ee`, se detuvo en
 privacidad transitoria mientras consumía un núcleo. Se conservó como no
@@ -1766,10 +1770,25 @@ error, cancelación y un worker nativo bloqueado: el timeout de observación
 mantiene la lease hasta que termina ese worker. No se fuerzan ni deshabilitan
 GC ni sus pausas, y no se amplían límites de runtime para aceptar el cambio.
 
-Pasan 51 pruebas dirigidas de cierre, privacidad transitoria, servicios de
-memoria y CLI. La suite completa y el artefacto compilado del nuevo commit
-siguen pendientes; la prueba de CLI anterior no cubría este cruce de cierre.
-La aceptación integrada de GC y hardware continúa abierta.
+La suite aceptada del commit `4f82a85` incorpora los cuatro casos y completa
+también privacidad transitoria, donde se detuvo la primera ejecución. La
+evidencia conserva el exit code 134 de la interrupción diagnóstica, su stack y
+la reproducción con watchdog externo; no presenta aquella suite como verde.
+La prueba de CLI anterior no cubría este cruce de cierre.
+
+El nuevo artefacto verifica 317 hashes y ejecuta los cuatro casos de cierre
+desde bytecode, incluida la lease retenida por un worker real. También ejecuta
+siete procesos CLI: los accesos nocturnos y LoRA quedan bloqueados, mientras las
+estadísticas y los exports gestionados siguen funcionando con autoridad SQLite,
+turnos y exports reales sobre texto sintético. Conserva sin cambios los archivos
+legacy. El ejercicio dura 2,03 s fuera del checkout y mantiene configuración,
+datos y modelos fuera del paquete. No ejecuta el arranque completo de `main`
+ni prueba hardware o entrenamiento.
+
+El heartbeat alcanza p95 de 0,21 ms y máximo de 1,11 ms; la cancelación de
+control llega a 0,08 ms y el cleanup a 11,09 ms. Los presupuestos se conservan.
+Corregir este bucle no equivale a resolver las pausas globales de GC observadas
+antes: su aceptación integrada y la del hardware continúan abiertas.
 
 ## Trabajo restante
 
