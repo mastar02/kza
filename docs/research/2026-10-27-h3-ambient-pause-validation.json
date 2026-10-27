@@ -1,0 +1,278 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "46ac2b8e5235f56fffb75f9008c077be3d57d018",
+  "tested_runtime_source_tree": "4fcae041d728789d47e4e8a77c49158cc39be8eb",
+  "tested_scripts_source_tree": "b08e19ac09711a9d58c6c794af52fe47bcd6999e",
+  "tested_frontend_tree": "eab8cb26d4dc1fb2713dbbdb43153bb5222dd4ca",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "goal_turn_classification": "progress",
+  "scope": "Durable authenticated AmbientPath pause/resume, actual native and ingress drain, fresh capture admission and independent dashboard reactivation. Physical total mute remains unavailable.",
+  "new_ambient_cases_total": 21,
+  "new_private_route_cases": 8,
+  "new_collected_python_cases_net": 29,
+  "new_cases": [
+    "tests.integration.test_ambient_pause::test_pause_seals_only_ambient_origin_and_resume_uses_fresh_admission_without_revoking_history",
+    "tests.integration.test_ambient_pause::test_pause_remains_pending_until_actual_native_stage_exits_and_late_text_cannot_persist[stt]",
+    "tests.integration.test_ambient_pause::test_pause_remains_pending_until_actual_native_stage_exits_and_late_text_cannot_persist[profiles]",
+    "tests.integration.test_ambient_pause::test_pause_remains_pending_until_actual_native_stage_exits_and_late_text_cannot_persist[speaker]",
+    "tests.integration.test_ambient_pause::test_pause_remains_pending_until_actual_native_stage_exits_and_late_text_cannot_persist[quality]",
+    "tests.integration.test_ambient_pause::test_pause_remains_pending_until_actual_native_stage_exits_and_late_text_cannot_persist[doa]",
+    "tests.integration.test_ambient_pause::test_paused_policy_survives_restart_and_has_no_dependency_on_voice_reactivation",
+    "tests.integration.test_ambient_pause::test_stale_or_unprivileged_controls_cannot_reactivate_or_change_policy",
+    "tests.integration.test_ambient_pause::test_late_credential_revocation_cannot_commit_a_queued_reactivation",
+    "tests.integration.test_ambient_pause::test_pause_includes_actual_background_ambient_voice_observation_but_keeps_voice_lane_open",
+    "tests.integration.test_ambient_pause::test_pause_keeps_existing_text_and_original_expiry_while_purge_continues",
+    "tests.integration.test_ambient_pause::test_pause_drains_actual_vad_or_reset_and_discards_preroll_before_resuming[factory]",
+    "tests.integration.test_ambient_pause::test_pause_drains_actual_vad_or_reset_and_discards_preroll_before_resuming[vad]",
+    "tests.integration.test_ambient_pause::test_pause_drains_actual_vad_or_reset_and_discards_preroll_before_resuming[reset]",
+    "tests.integration.test_ambient_pause::test_pause_waits_for_an_old_microphone_branch_but_allows_command_capture",
+    "tests.integration.test_ambient_pause::test_native_archive_exit_is_part_of_pause_even_after_segment_observer_is_cancelled",
+    "tests.integration.test_ambient_pause::test_paused_distiller_cannot_start_a_new_cycle_and_active_store_callback_remains_owned",
+    "tests.integration.test_ambient_pause::test_private_control_http_validates_auth_revision_and_body_before_mutation",
+    "tests.integration.test_ambient_pause::test_callback_admitted_while_paused_cannot_acquire_an_ambient_branch_during_resume",
+    "tests.integration.test_ambient_pause::test_failed_native_reset_never_reports_paused_or_allows_reactivation_until_repaired",
+    "tests.integration.test_ambient_pause::test_close_timeout_keeps_real_native_work_and_admission_sealed_until_actual_exit"
+  ],
+  "contracts": {
+    "admission_sealed_synchronously_before_async_transition": true,
+    "pause_persisted_before_actual_native_drain": true,
+    "paused_only_after_real_native_exit_ingress_exit_and_successful_vad_reset": true,
+    "actual_archive_distiller_and_ambient_voice_registry_jobs_included": true,
+    "already_started_atomic_writes_may_finish_during_pausing": true,
+    "command_and_acoustic_wake_lane_preserved": true,
+    "historical_sources_and_original_expiry_preserved": true,
+    "historical_purge_continues_while_paused": true,
+    "resume_discards_preroll_and_uses_fresh_epochs": true,
+    "callback_born_paused_cannot_acquire_ambient_branch_during_resume": true,
+    "old_callback_epoch_checked_before_ambient_copy": true,
+    "policy_loaded_with_admission_sealed_before_producer_start": true,
+    "same_database_restart_preserves_paused_policy": true,
+    "ambient_control_permission_exact_revision_and_current_credential_required": true,
+    "credential_revalidated_inside_native_sql_and_before_unseal": true,
+    "failed_late_resume_reseals_and_attempts_durable_paused_fallback": true,
+    "single_actual_transition_task_no_queued_mode_changes": true,
+    "reset_failure_keeps_admission_sealed_and_phase_failed": true,
+    "one_second_close_observation_timeout_retains_actual_work": true,
+    "metadata_only_get_and_post_responses_use_no_store": true,
+    "frontend_uses_actual_http_no_mock_provider": true,
+    "frontend_session_loss_clears_and_disables_controls": true,
+    "total_mute_supported": false
+  },
+  "focused_suite": {
+    "passed": 761,
+    "failed": 0,
+    "runtime_s": 119.66,
+    "log": "/tmp/kza-ambient-pause-focused.log"
+  },
+  "full_suite": {
+    "log": "/tmp/kza-ambient-pause-full.log",
+    "xml": "/tmp/kza-ambient-pause-full.xml",
+    "application_source_frozen_for_entire_run": true,
+    "accepted": true,
+    "collected": 5625,
+    "passed": 5624,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 423.77,
+    "terminal_exit_code": 0,
+    "numeric_native_timeout_capture": {
+      "terminal_exit_code": 0,
+      "captured": 0,
+      "events": []
+    },
+    "numeric_native_timeout_capture_plugin": {
+      "path": "/tmp/kza_ambient_pause_capture.py",
+      "sha256": "2e1e94af3e606dcaf8d7e2627bd3aa233423262659d22e7927ad86e9bf7a810b"
+    }
+  },
+  "frontend_unit": {
+    "passed": 77,
+    "failed": 0,
+    "runtime_ms": 101.990996,
+    "log": "/tmp/kza-ambient-pause-frontend.log"
+  },
+  "ruff": {
+    "passed": true,
+    "log": "/tmp/kza-ambient-pause-final-ruff.log"
+  },
+  "bandit": {
+    "low": 28,
+    "medium": 0,
+    "high": 0,
+    "log": "/tmp/kza-ambient-pause-bandit.log"
+  },
+  "dashboard_smoke": {
+    "passed": true,
+    "log": "/tmp/kza-ambient-pause-dashboard-smoke.log"
+  },
+  "source_browser": {
+    "checks": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "ui_pause_pending_until_actual_native_asr_exit": true,
+      "late_transcript_not_persisted": true,
+      "reactivation_via_authenticated_ui_without_voice": true,
+      "old_history_preserved": true,
+      "revoked_session_cannot_reactivate": true,
+      "javascript_exceptions": 0,
+      "external_bootstrap_assets_blocked": true,
+      "synthetic_models_and_sources": true,
+      "total_mute_hardware_or_all_producers_acceptance": false
+    },
+    "log": "/tmp/kza-ambient-pause-final-browser.log",
+    "harness": {
+      "path": "/home/yo/projects/kza/tests/frontend/browser_ambient_control.py",
+      "sha256": "b798d71686335129b2a2c1e2d196d451bd7cbf361677da4a25306590d9aed49b"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "46ac2b8e5235f56fffb75f9008c077be3d57d018",
+    "artifact": "/tmp/kza-ambient-pause-runtime-jbbbnuha/runtime.tar.gz",
+    "verified_hashes": 354,
+    "runtime_s": 1.7710226788185537,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 354,
+      "real_http_authenticated_review_and_revision_delete": true,
+      "background_cpu_synthetic_encoder": true,
+      "event_private_pool_closes_while_general_executor_remains_saturated": true,
+      "event_cleanup_releases_caller_context_and_observes_real_thread_exit": true,
+      "authenticated_wav_matches_owned_pcm_and_actual_metadata": true,
+      "preview_bounded_six_seconds_full_segment_transcript_scope_explicit": true,
+      "permanent_profile_does_not_extend_review_audio_or_text": true,
+      "source_expiry_physically_cascades_review_rows_and_denies_http_read": true,
+      "capture_deadline_and_permanent_manual_profile_survive_restart": true,
+      "suggestions_only_never_accounts_or_permissions": true,
+      "old_upload_rejected_before_decode": true,
+      "local_voice_receipt_waits_for_actual_model_exit": true,
+      "legacy_original_untouched_private_accounts_sidecar": true,
+      "unresolved_voice_inventory_blocks_global_erasure": true,
+      "protocol_three_real_http_websocket_handshake_and_separate_channels": true,
+      "permanent_profile_metadata_has_bounded_page_lease_after_raw_expiry": true,
+      "profile_mutation_never_echoes_private_name": true,
+      "actual_ws_exact_ack_retires_local_stream_v4_without_global_false_completion": true,
+      "raw_groups_actual_http_merge_split_and_unknown_with_exact_revisions": true,
+      "automatic_complete_link_group_addition_uses_existing_encoder": true,
+      "group_edits_do_not_change_the_permanent_profile": true,
+      "voice_frontend_assets_packaged": true,
+      "ambient_control_modules_and_privacy_view_packaged": true,
+      "new_ambient_control_behaviour_covered_by_separate_compiled_cases_and_browser": true,
+      "real_models_gpu_full_main_hardware_or_frontend_voice_review": false
+    },
+    "artifact_sha256": "5c1b1ba5e417a6c717dd2c57ab87e25078e0b1564eefe3d1c5397562e8aadd57",
+    "build_script": {
+      "path": "/tmp/kza-build-ambient-pause-runtime.py",
+      "sha256": "2ad99292d6582ab4ae58b3dc5c4e1dd85e8b667ad36a6e9eddba170f611eaecd"
+    },
+    "smoke_script": {
+      "path": "/tmp/kza-ambient-pause-runtime-smoke.py",
+      "sha256": "e2aa837fa832085f4be9111efeba5b5e1deb2d09125ef95c3c9409211d41b716"
+    }
+  },
+  "compiled_ambient_cases": {
+    "passed": true,
+    "returncode": 0,
+    "runtime_s": 8.803287025075406,
+    "git_commit": "46ac2b8e5235f56fffb75f9008c077be3d57d018",
+    "all_loaded_application_modules_from_compiled_root": true,
+    "verified_hashes": 354,
+    "external_test_harness_only": true,
+    "xml": "/tmp/kza-ambient-pause-compiled-cases.xml",
+    "log": "/tmp/kza-ambient-pause-compiled-cases.log",
+    "wrapper": {
+      "path": "/tmp/kza-ambient-pause-compiled-cases.py",
+      "sha256": "ceaa51865a11c696580ea58b7e20364988cef4a2c3823600dec50d0122615888"
+    }
+  },
+  "compiled_browser": {
+    "checks": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "ui_pause_pending_until_actual_native_asr_exit": true,
+      "late_transcript_not_persisted": true,
+      "reactivation_via_authenticated_ui_without_voice": true,
+      "old_history_preserved": true,
+      "revoked_session_cannot_reactivate": true,
+      "javascript_exceptions": 0,
+      "external_bootstrap_assets_blocked": true,
+      "synthetic_models_and_sources": true,
+      "total_mute_hardware_or_all_producers_acceptance": false
+    },
+    "log": "/tmp/kza-ambient-pause-compiled-browser.log",
+    "wrapper": {
+      "path": "/tmp/kza-ambient-pause-compiled-browser.py",
+      "sha256": "d8daea78be1c3a93128db0469f26ab48480108ea375c5199ffd4c48cdcfdb94a"
+    },
+    "external_test_harness_only": true,
+    "src_package_and_control_loaded_from_compiled_root": true,
+    "runtime_has_no_python_sources": true
+  },
+  "voice_browser_regression": {
+    "checks": {
+      "passed": true,
+      "actual_chromium_http_v3_ws_react_and_native_audio": true,
+      "manual_profile_confirmation_and_revision_delete": true,
+      "review_uses_real_transcript_and_room": true,
+      "suggested_group_then_ui_split_merge_and_explicit_unknown": true,
+      "raw_group_corrections_leave_permanent_profile_names_unchanged": true,
+      "permanent_profile_survives_raw_expiry": true,
+      "raw_retirement_waits_for_actual_emptied_callback": true,
+      "urls_cache_dom_and_player_source_retired": true,
+      "idle_expiry_with_frozen_server_clock": true,
+      "navigation_and_session_loss_stop_audio_and_clear_text": true,
+      "external_bootstrap_assets_blocked": true,
+      "javascript_exceptions": 0,
+      "synthetic_encoder_and_sources": true,
+      "browser_binary": "chromium",
+      "grouping_calibration_all_browser_copies_or_hardware_acceptance": false
+    },
+    "log": "/tmp/kza-ambient-pause-voice-browser-regression.log"
+  },
+  "earlier_failures": [
+    {
+      "log": "/tmp/kza-ambient-pause-contracts.log",
+      "failed": 5,
+      "passed": 5,
+      "cause": "Test fixture called nonexistent AmbientStore.recent; corrected to actual SQLite row count. No runtime causal claim."
+    },
+    {
+      "log": "/tmp/kza-ambient-pause-expanded.log",
+      "failed": 4,
+      "passed": 14,
+      "causes": [
+        "Three fixture VAD stages had not started the transcriber; fixture now starts it.",
+        "One real API omission: successful responses lacked no-store; both methods now set it."
+      ]
+    },
+    {
+      "log": "/tmp/kza-ambient-pause-callback-red.log",
+      "failed": 1,
+      "cause": "A callback entering while paused acquired ambient permission during resume and copied twice instead of voice-only once.",
+      "correction": "Capture ambient admission at callback entry and validate captured epoch before copy.",
+      "green_log": "/tmp/kza-ambient-pause-callback-green.log",
+      "green_passed": 19
+    }
+  ],
+  "limits": {
+    "actual_main_full_runtime_executed": false,
+    "physical_driver_close_or_watchdog_reopen_barrier": false,
+    "legacy_single_input_sound_detector_covered": false,
+    "all_global_producers_or_sdk_owned_copies_covered": false,
+    "global_erasure_enabled": false,
+    "older_database_restore_preserves_latest_pause_intent_proven": false,
+    "real_models_gpu_microphone_or_acoustic_grouping_acceptance": false,
+    "full_h4_capacity_gc_and_latency_acceptance": false,
+    "all_historical_timeouts_causally_explained": false,
+    "earlier_loop_92_90_ms_or_gc_495_68_ms_spikes_explained": false,
+    "existing_deadlines_capacities_or_retries_increased_for_green_tests": false,
+    "gc_forced_disabled_or_frozen": false,
+    "new_config_file_or_gpu_assignment_change": false,
+    "production_modified": false,
+    "h3_h4_or_overall_roadmap_complete": false
+  }
+}

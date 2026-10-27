@@ -3385,6 +3385,55 @@ bastaban para probar la garantía de procedencia.
 
 Producción permanece sin cambios.
 
+## Pausa ambiental durable y reactivación autenticada — 27 de octubre
+
+La revisión `46ac2b8` conecta el control real de `AmbientPath` a la pestaña
+Privacidad. Pausar sella inmediatamente la admisión ambiental, retira sus épocas
+y vacía las colas. El estado sigue en `pausing` hasta que salen los trabajos
+nativos de transcripción, VAD/reset, archivado, destilación y observación de voz,
+y las ramas de callbacks ya admitidas. Una escritura atómica iniciada puede
+terminar durante esa espera; el panel no informa `paused` antes de su salida.
+Un reset fallido conserva la admisión cerrada y muestra fallo.
+
+La política se guarda en la autoridad SQLite privada y se carga con admisión
+sellada antes de iniciar productores. El reinicio sobre esa misma base conserva
+la pausa. La reactivación exige sesión actual con `ambient:control` y revisión
+exacta; espera el retiro anterior, crea épocas nuevas y descarta preroll. Un
+actor revocado durante la escritura no puede reactivar. Sólo se admite una
+transición real a la vez, sin cola de cambios. Los endpoints autenticados
+`GET/POST /api/ambient/control` devuelven estado y conteos, con `no-store`.
+
+La pausa conserva los comandos y el wake acústico, las capturas históricas y
+sus plazos originales. La purga sigue activa. No constituye un borrado ni un
+mute físico. Un callback que entró mientras ambient estaba pausado no puede
+obtener esa rama al reactivar: una prueba causal detectó una copia ambiental
+tardía y la corrección fija la admisión al entrar y valida la época antes de
+copiar. La rama independiente de comandos permanece disponible.
+
+La [evidencia de pausa](../research/2026-10-27-h3-ambient-pause-validation.json)
+distingue los casos dirigidos, la suite completa, Chromium y las pruebas del
+artefacto sin fuentes de esa misma revisión. El navegador usa HTTP, WebSocket y
+React reales con ASR sintético retenido; verifica la espera, la ausencia de
+texto tardío, la reactivación sin voz y la pérdida de sesión. El artefacto incluye
+354 hashes; los 21 casos de pausa pasan también cargando exclusivamente módulos
+de aplicación compilados. La suite completa pasó **5.624 pruebas con un xfail
+conocido en 423,77 s**, sin timeouts nativos inesperados capturados. Pasaron
+761 pruebas dirigidas, los 77 casos de frontend, Ruff, Bandit sin hallazgos
+medios o altos, el smoke del dashboard y la regresión de voces en Chromium.
+Esto no explica los picos históricos de GC/latencia. La aplicación permaneció
+sin cambios durante la suite. No se cambian presupuestos, capacidades o reintentos
+del runtime ni se manipula GC para aceptar estas pruebas.
+
+El alcance es el grafo multiroom `AmbientPath`; si no está disponible, la API
+responde 503. El detector alternativo de entrada única y el inventario global
+de productores siguen pendientes. `total_mute_supported` permanece en falso y
+la UI no ofrece un mute ficticio: faltan el cierre real de los drivers y la
+barrera frente a reapertura por watchdog, todas las ramas y copias del SDK, y
+la reactivación independiente del audio. Restaurar una base anterior conservando
+la intención más reciente de pausa todavía requiere aceptación en H6. Tampoco
+se ejecutó el `main` completo ni se aceptó hardware, recursos/GC o precisión
+acústica. H3 y la release continúan abiertos; producción no se modificó.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
@@ -3403,8 +3452,10 @@ Producción permanece sin cambios.
    vivo y la restauración compatible con autoridad vigente. Agregar selección y recibos en el
    dashboard autenticado después de cerrar esas garantías. La limpieza local
    del catálogo y del índice no sustituye la operación completa.
-4. Implementar pausa ambiental y mute total con reactivación independiente del
-   audio; definir qué productores se detienen y qué buffers se descartan.
+4. Completar mute total con cierre real de drivers, barrera de reapertura por
+   watchdog y reactivación independiente del audio; cubrir entrada única y los
+   productores restantes. La pausa durable de `AmbientPath` ya está conectada
+   al panel y descarta sus buffers antes de reactivar.
 5. Extender el registro de voces a los consumidores restantes;
    completar el inventario y migración de vectores legacy. El backend nuevo ya
    aplica el vencimiento original a huellas y conserva perfiles revisados hasta

@@ -230,6 +230,18 @@ regresión de conversaciones. La evidencia conserva la primera suite verde y
 el artefacto anterior como no aceptados, por una pérdida de procedencia que
 las pruebas adversas detectaron después. No cierra H3 ni autoriza la release.
 
+La [pausa ambiental durable](../research/2026-10-27-h3-ambient-pause-validation.json)
+de `46ac2b8` agrega estado visible y reactivación autenticada desde Privacidad,
+sin depender de una orden de voz. Sella la admisión de `AmbientPath` de inmediato
+y espera la salida real del trabajo nativo, los callbacks previos y el reset
+antes de informar pausa completa. Conserva wake, comandos, historia y purga;
+reiniciar sobre la misma autoridad privada conserva la política. La reactivación
+usa revisión exacta, credencial vigente y épocas nuevas. Los 21 casos dirigidos
+pasan también contra bytecode, y Chromium verifica pausa y reactivación reales.
+El artefacto verifica 354 hashes. El mute total, entrada única, inventario global,
+restauración compatible y aceptación física siguen pendientes. Pasaron 5.624
+pruebas con un xfail conocido, 77 de frontend y los checks requeridos. No cierra H3.
+
 Primer avance de H3, 26 de octubre: el store de capturas aplica TTL al leer
 texto, lotes de destilación, estadísticas y clips, sin esperar la purga. Las
 capturas nuevas tienen UUID y vencimiento persistido; ampliar la configuración
