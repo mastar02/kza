@@ -2464,6 +2464,52 @@ no se amplían capacidades o plazos y no se modifica producción. La coordinaci�
 global del journal, los buffers de drivers/SDK, las voces, la aceptación física
 y el resto del roadmap permanecen abiertos.
 
+## Diagnóstico numérico sin payload de voz y con I/O retenido — 27 de octubre
+
+La revisión confirmó transcripciones y nombres sin una política común en
+`MetricsEmitter`, sus copias JSONL/TCP y los mensajes de STT. El emisor hacía
+además escritura y conexión/envío TCP síncronos desde el router. Sus métodos
+podían convertir objetos opacos, y no había un contrato de cierre propio.
+
+El canal de métricas conserva ahora sólo campos numéricos finitos, booleanos y
+códigos cerrados. Excluye transcripciones, identidades, entidades, nombres de
+salas, contexto libre, errores arbitrarios y claves de timing desconocidas.
+Conserva los paths actuales del router y las categorías conocidas; un rechazo
+dinámico sólo puede aportar su categoría cerrada. La misma proyección se aplica
+antes de publicar el trabajo y antes de serializar para archivo y TCP.
+
+Los productores del router y wake ya no copian esos payloads al emisor. El
+monitor de latencia y el log de timings usan el mismo mapa numérico, sin nombres
+copiados. Los mensajes de activación/aceptación en TV-mode y los logs propios de
+Whisper, Parakeet y Moonshine dejan de copiar texto o contexto del llamador.
+Las tres salidas de STT conservan íntegramente la transcripción para el pipeline.
+
+La construcción no hace I/O. Un pool fijo de ocho reservas limita también los
+posts aún no admitidos por el loop; saturación, ausencia de loop y cierre
+descartan la métrica. Los posts, tasks y workers parten de un `Context` vacío,
+para que su transporte no conserve payloads arbitrarios del request. Archivo,
+rotación, conexión, envío y cierre de socket ocurren fuera del loop. El cierre
+espera las reservas y el trabajo nativo real aunque venza o se cancele su
+observador. `main` registra ese cierre antes del primer I/O diagnóstico.
+
+El destino nuevo añade `_policy_v1` al nombre JSONL configurado. Los archivos
+anteriores quedan intactos y no se reenvían; el cambio no migra ni borra las
+copias legacy o remotas. Las métricas dejan de transportar payload privado,
+pero aún faltan la procedencia y los recibos de retención/borrado para todo el
+canal diagnóstico, la retención temporal del JSONL numérico y la configuración
+y verificación de Logstash. `DIAGNOSTICS` sigue sin completarse. También quedan
+otros logs de aplicación/backends por auditar; no se declara aceptación de los
+SDK ni del grafo completo, ni se modifica producción.
+
+La [validación del diagnóstico numérico](../research/2026-10-27-h3-numeric-diagnostics-validation.json)
+de `4806520` registra **5372 passed, 1 xfailed**, sin fallos, en 230,34 s,
+13 casos nuevos y 250 pruebas dirigidas. Pasan Ruff, Bandit sin hallazgos
+medios/altos, los 18 casos de frontend y el smoke del dashboard. El artefacto
+sin fuentes verifica 322 hashes y completa el ejercicio en 0,17 s con archivo,
+TCP, loop, threads y wrappers de STT reales, usando engines sintéticos y una
+escritura nativa detenida. No se fuerza GC ni se amplían los presupuestos
+existentes; la medición instrumentada y la aceptación física siguen pendientes.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

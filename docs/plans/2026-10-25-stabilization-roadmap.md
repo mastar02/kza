@@ -763,6 +763,17 @@ comprueba antes de STT. La validación de `c0f984e` registra **5359 passed,
 hashes. La otra sala conserva su cola válida. No se completa el contrato global
 del journal, los SDK, las voces, la aceptación física ni el resto del roadmap.
 
+El [diagnóstico numérico](../research/2026-10-27-h3-numeric-diagnostics-validation.json)
+ya excluye payloads de voz e identidades en los productores de métricas y en
+sus copias JSONL/TCP. El I/O corre fuera del loop con reservas acotadas y cierre
+retenido; los posts no capturan contexto libre. Los logs propios de los tres
+adapters STT y de esos puntos de latencia/wake conservan sólo diagnóstico
+acotado. La validación de `4806520` registra **5372 passed, 1 xfailed**, 13 casos
+nuevos, 250 pruebas dirigidas, checks y artefacto con 322 hashes. El JSONL nuevo
+usa otro nombre y no reenvía archivos anteriores. Siguen pendientes la
+procedencia/retención completas, las copias legacy y remotas, otros logs y el
+participante `DIAGNOSTICS`; no se cierra H3 ni se modifica producción.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

@@ -1,0 +1,136 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "480652071e0a48b95ff14ac6db58f7fd57427793",
+  "tested_runtime_source_tree": "5eca3fc726fcbe7c3c7702d706528da204b01ac1",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 content-free typed metric projection at JSONL/TCP and router/wake caller boundaries, bounded off-loop ownership from loop/native callers through actual I/O and close, arbitrary ContextVar retirement, and timing-only context-neutral diagnostics for the three STT adapters. Complete diagnostic provenance, numeric retention, legacy/remote deletion and journal participation remain open.",
+  "new_cases_total": 13,
+  "new_integration_cases": [
+    "test_request_wake_and_error_share_private_free_disk_and_tcp_projection",
+    "test_blocked_metric_io_is_off_loop_and_close_retains_actual_worker[loop]",
+    "test_blocked_metric_io_is_off_loop_and_close_retains_actual_worker[native]",
+    "test_metric_transport_cannot_retain_arbitrary_request_context",
+    "test_saturation_drops_metrics_without_unbounded_posted_jobs",
+    "test_unknown_numeric_objects_are_not_formatted_or_converted",
+    "test_close_waits_for_a_reserved_native_post_before_it_reaches_the_loop",
+    "test_no_loop_and_closed_emitters_drop_without_file_or_socket_io",
+    "test_lowest_writer_boundary_filters_private_fields_and_opaque_errors",
+    "test_real_router_and_native_wake_caller_emit_only_numeric_diagnostics",
+    "test_stt_backend_logs_keep_timing_without_transcription[parakeet]",
+    "test_stt_backend_logs_keep_timing_without_transcription[whisper]",
+    "test_stt_backend_logs_keep_timing_without_transcription[moonshine]"
+  ],
+  "initial_red": {
+    "failed": 6,
+    "passed": 0,
+    "runtime_s": 3.54,
+    "log": "/tmp/kza-diagnostics-red.log",
+    "findings": [
+      "The original emitter wrote free text and identities to JSONL and TCP without projection.",
+      "I/O ran synchronously and had no bounded posted-work or owned close contract.",
+      "Opaque numeric inputs were coerced and arbitrary caller context was exposed to the writer."
+    ]
+  },
+  "full_suite": {
+    "accepted": true,
+    "collected": 5373,
+    "passed": 5372,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 230.253,
+    "summary": "========= 5372 passed, 1 xfailed, 31266 warnings in 230.34s (0:03:50) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-diagnostics-accepted-full.xml",
+    "log": "/tmp/kza-diagnostics-accepted-full.log",
+    "xml": "/tmp/kza-diagnostics-accepted-full.xml"
+  },
+  "focused_suite": {
+    "passed": 250,
+    "failed": 0,
+    "runtime_s": 2.44,
+    "summary": "====================== 250 passed, 284 warnings in 2.44s =======================",
+    "log": "/tmp/kza-diagnostics-final-accepted-focused.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-diagnostics-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-diagnostics-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-diagnostics-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-diagnostics-dashboard.log"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "480652071e0a48b95ff14ac6db58f7fd57427793",
+    "artifact": "/tmp/kza-diagnostics-runtime-cgz1kjkw/runtime.tar.gz",
+    "verified_hashes": 322,
+    "runtime_s": 0.16927719302475452,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "hashes": 322,
+      "actual_loop_and_native_thread_emitters_file_and_tcp": true,
+      "legacy_file_unchanged_and_never_replayed": true,
+      "private_free_projection_shared_by_disk_and_tcp": true,
+      "bounded_posts_drop_at_saturation_without_blocking_capture": true,
+      "context_payload_not_retained_by_posts_or_workers": true,
+      "close_retains_actual_blocked_io": true,
+      "actual_stt_wrappers_preserve_text_but_omit_text_and_context_from_diagnostics": true,
+      "synthetic_stt_engines_and_blocked_native_write": true,
+      "gc_forced_disabled_or_frozen": false,
+      "full_main_hardware_diagnostics_journal_or_legacy_cleanup_acceptance": false
+    }
+  },
+  "verified_behaviors": {
+    "file_and_tcp_share_numeric_projection_before_serialization": true,
+    "identities_transcripts_entity_names_arbitrary_errors_context_and_unknown_timing_keys_omitted": true,
+    "all_current_router_path_codes_preserved": true,
+    "router_latency_monitor_and_logs_do_not_copy_private_labels": true,
+    "native_wake_tv_diagnostics_and_metric_calls_omit_private_payloads": true,
+    "three_stt_wrappers_return_original_text_but_log_only_timing_in_empty_context": true,
+    "posted_handles_and_workers_do_not_capture_arbitrary_caller_context": true,
+    "loop_and_native_callers_do_not_perform_file_or_socket_io": true,
+    "finite_capacity_covers_posts_before_loop_admission": true,
+    "saturation_missing_loop_and_closed_owner_drop_without_blocking": true,
+    "close_waits_for_reserved_post_and_actual_blocked_worker": true,
+    "main_registers_close_before_first_diagnostic_io": true,
+    "legacy_unversioned_file_is_not_modified_or_replayed": true
+  },
+  "limits": {
+    "only_new_metric_records_use_policy_v1_path": true,
+    "legacy_logs_jsonl_and_remote_copies_physically_removed": false,
+    "all_diagnostic_rows_have_conversation_provenance_and_retention_receipts": false,
+    "numeric_jsonl_time_based_retention_complete": false,
+    "remote_logstash_retention_and_deletion_verified": false,
+    "all_other_backend_and_application_log_sites_audited": false,
+    "diagnostics_journal_participant_complete": false,
+    "full_producers_or_streams_or_voices_complete": false,
+    "physical_audio_or_sdk_acceptance": false,
+    "instrumented_gc_measurement_replaced_or_accepted": false,
+    "production_modified": false,
+    "gc_forced_disabled_or_frozen": false,
+    "existing_deadlines_or_capacities_widened": false,
+    "overall_h3_or_roadmap_complete": false
+  }
+}
