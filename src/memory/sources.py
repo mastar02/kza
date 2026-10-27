@@ -49,7 +49,12 @@ class CaptureScopes:
         with self._lock:
             self._observe_revocation(key)
             self._buffer_expiry_floor = max(self._buffer_expiry_floor, self.ledger.clock()-48*3600)
-            return CaptureBoundary(self._admission_started_at,
+            starts = [value for value in (self._admission_started_at,) if value is not None]
+            if key in self._scopes:
+                # Raw input older than the current exchange must not acquire
+                # a different conversation ID when it eventually reaches STT.
+                starts.append(self._scopes[key][2])
+            return CaptureBoundary(max(starts, default=None),
                 max(self._buffer_expiry_floor, self._revocation_fences.get(key, float('-inf'))))
 
     def _observe_revocation(self, key):
@@ -61,7 +66,11 @@ class CaptureScopes:
     def source_for_capture(self, capture_id: str, captured_at: float, room_id: str | None,
                            *, conversation_id: str | None = None, expires_at: float | None = None,
                            origin: MemoryOrigin = MemoryOrigin.VOICE) -> MemorySource:
-        """Keep explicit IDs; otherwise split at 120s idle, one hour or revocation."""
+        """Split scopes at 120s idle, one hour or revocation; never move backwards.
+
+        Delayed input within the current exchange keeps its original identity.
+        Older raw input is retired; explicit lineage retains its existing ID.
+        """
         source = MemorySource(capture_id, conversation_id or str(uuid4()), captured_at,
             expires_at if expires_at is not None else min(captured_at, self.ledger.clock())+48*3600, origin)
         if conversation_id is None:
@@ -76,9 +85,13 @@ class CaptureScopes:
                 fence = self._revocation_fences.get(key)
                 if fence is not None and captured_at <= fence:
                     raise PermissionError("capture_precedes_conversation_revocation")
-                if previous is None or self.ledger.conversation_revoked(previous[0]) or not 0 <= captured_at-previous[1] <= 120 or captured_at-previous[2] > 3600:
+                if previous is not None and captured_at < previous[2]:
+                    raise PermissionError('capture_precedes_current_scope')
+                if previous is None or self.ledger.conversation_revoked(previous[0]) or captured_at-previous[1] > 120 or captured_at-previous[2] > 3600:
                     conversation_id, started = source.conversation_id, captured_at
+                    latest = captured_at
                 else:
                     conversation_id, started = previous[0], previous[2]
-                self._scopes[key] = (conversation_id, captured_at, started)
+                    latest = max(captured_at, previous[1])
+                self._scopes[key] = (conversation_id, latest, started)
         return replace(source, conversation_id=conversation_id) if source.conversation_id != conversation_id else source

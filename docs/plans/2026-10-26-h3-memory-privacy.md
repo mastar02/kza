@@ -1905,6 +1905,31 @@ el control tarda como máximo 0,20 ms y limpiar stream/cliente 11,21 ms.
 Los presupuestos no cambian y no se manipula GC. La pausa instrumentada anterior
 de 495,68 ms sigue pendiente de aceptación integrada en H4/H6.
 
+### Avance: impedir que una rotación renombre audio atrasado
+
+La revisión previa al driver de `PRODUCERS` encontró una vía de reintroducción:
+después de rotar por 120 s de inactividad o una hora de duración, el asignador
+conservaba sólo la conversación actual y permitía crear otra con un timestamp
+anterior. Borrar la conversación anterior no impedía ese tercer ID. Una
+reproducción aislada del código de `9e37513`, con autoridad SQLite real y datos
+sintéticos, confirmó que la nueva fuente seguía autorizada aunque la original
+estuviera revocada.
+
+El inicio del intercambio actual ahora limita también la admisión y el retiro
+de buffers sin fuente. Un paquete anterior no puede adquirir otro ID; un paquete
+atrasado dentro del intercambio vigente conserva el ID y no hace retroceder
+la última fecha de actividad. La procedencia explícita conserva su ID original
+y su validez sigue dependiendo de la autoridad. El límite afecta sólo a la
+habitación y origen correspondientes, sin una lista creciente de conversaciones
+históricas ni I/O en el callback.
+
+Se prueba la rotación por inactividad y duración en voz, ambient e interacción,
+con y sin borrado previo. Las colas reales de comandos y tap descartan los
+paquetes anteriores y conservan otra habitación. Un VAD bloqueado retiene el
+array hasta su salida real, sin entregarlo a STT ni persistirlo después de la
+rotación. Esto corrige una condición necesaria para el journal; todavía no
+conecta ni declara completo `PRODUCERS`.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
