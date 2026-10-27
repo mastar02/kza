@@ -8,11 +8,12 @@ const C = '00000000-0000-4000-8000-000000000003';
 const flush = async () => { for (let i=0; i<6; i++) await Promise.resolve(); };
 function fixture(view = false) {
   let finishResponse, finishJSON, latest;
-  const acks = [], timers = new Map(); let next=0, unauthorized=0;
+  const acks = [], states = [], timers = new Map(); let next=0, unauthorized=0;
   const store = createConversationState({ monotonic:()=>0, wall:()=>2000000000000,
     schedule:(f,ms) => { timers.set(++next,{f,ms}); return next; }, cancel:id=>timers.delete(id) });
   const channel = createConversationChannel({ store, hasView:()=>view, monotonic:()=>0, wall:()=>2000000000000,
     onUnauthorized:()=>{unauthorized++;},
+    onState:state=>states.push(state),
     emitAck:message=>{acks.push(message); return true;},
     fetch:(path,options)=>{ latest={path,options}; return new Promise(resolve=>{ finishResponse=resolve; }); } });
   const document = { connection_id:A, snapshot:{ event_id:B, expires_at:2000000060, observed_at:2000000000,
@@ -22,7 +23,7 @@ function fixture(view = false) {
   async function respond(status=200) { finishResponse({ok:status===200,status,json:()=>new Promise(resolve=>{finishJSON=resolve;})}); await flush(); }
   async function body(value=document) { finishJSON(value); await flush(); }
   const retire = () => channel.retire({ type:'rest_retire',payload:{event_ids:[B],receipts:[{event_id:B,ticket:B,nonce:C}]} });
-  return {store,channel,acks,document,respond,body,retire,latest:()=>latest,unauthorized:()=>unauthorized};
+  return {store,channel,acks,states,document,respond,body,retire,latest:()=>latest,unauthorized:()=>unauthorized};
 }
 test('REST starts only after a confirmed connection and uses its exact header', async () => {
   const f=fixture();
@@ -72,4 +73,14 @@ test('disposing a mounted cache clears it but cannot acknowledge a decode still 
 test('an unauthorized REST read clears the cache and requests session retirement', async () => {
   const f=fixture(); f.channel.open(A); await f.respond(401);
   assert.equal(f.unauthorized(),1); assert.deepEqual(f.store.snapshot(),[]); f.channel.dispose();
+});
+test('real source status requires the actual response decoder to settle', async () => {
+  const f=fixture(); f.channel.open(A); await f.respond();
+  assert.deepEqual(f.states,['loading']);
+  await f.body(); assert.equal(f.states.at(-1),'real'); f.channel.dispose();
+});
+test('a stale response cannot publish real source status after reset', async () => {
+  const f=fixture(); f.channel.open(A); await f.respond();
+  const resetting=f.channel.reset(); await f.body(); await resetting;
+  assert.equal(f.states.at(-1),'waiting'); assert(!f.states.includes('real')); f.channel.dispose();
 });

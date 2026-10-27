@@ -16,7 +16,7 @@ import tarfile
 import tempfile
 
 
-ASSET_SUFFIXES = {".html", ".css", ".js", ".jsx", ".json", ".csv", ".svg",
+ASSET_SUFFIXES = {".html", ".css", ".js", ".jsx", ".json", ".csv", ".svg", ".txt",
                   ".png", ".jpg", ".ico", ".woff", ".woff2", ".ttf", ".wav"}
 
 

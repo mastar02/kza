@@ -242,6 +242,8 @@ function mountWsLiveBridge() {
     store:window.__kzaConversationState, fetch:window.fetch.bind(window), emitAck,
     hasView:() => !!document.querySelector('#view-conversations'),
     onUnauthorized:() => window.dispatchEvent(new CustomEvent('kza:auth-required')),
+    onState:state => { window.__kzaSources.CONVERSATIONS = state === 'real' ? 'real' :
+      ({ waiting:'sin confirmar', loading:'consultando', unavailable:'degradada', closed:'sin sesión' })[state]; },
   });
   const live = window.KzaLivePrivacy.createLiveState({
     emitAck,

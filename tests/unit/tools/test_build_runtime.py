@@ -27,6 +27,7 @@ def committed_app(tmp_path):
         "src/main.py": "from src.feature import VALUE\nprint(VALUE)\n",
         "src/feature.py": "VALUE = 'committed-runtime'\n",
         "src/dashboard/frontend/home/index.html": "<h1>Casa</h1>",
+        "src/dashboard/frontend/obs/vendor/library.LICENSE.txt": "Synthetic distribution notice\n",
         "config/settings.yaml": "private: production\n",
         ".env": "SECRET=must-not-ship\n",
         "data/users.json": "[]",
@@ -57,6 +58,7 @@ def test_release_runs_without_sources_and_excludes_private_state(committed_app, 
                        for name in names)
         archive.extractall(runtime, filter="data")
     assert (runtime / "src/dashboard/frontend/home/index.html").read_text() == "<h1>Casa</h1>"
+    assert (runtime / "src/dashboard/frontend/obs/vendor/library.LICENSE.txt").read_text() == "Synthetic distribution notice\n"
     result = subprocess.run(
         [sys.executable, "-E", "-m", "src.main"], cwd=runtime,
         check=True, capture_output=True, text=True,

@@ -1,6 +1,7 @@
 """Chromium live ticker privacy smoke with real HTTP/WebSocket and synthetic input."""
 
 import asyncio
+import argparse
 import json
 import os
 from pathlib import Path
@@ -24,7 +25,7 @@ from tests.frontend.browser_typed_controls import Page
 from tests.mocks.memory_sources import memory_source
 
 
-async def main():
+async def main(*, offline_assets=False):
     """Verify rendered retirement, idle expiry, disconnect and session cleanup."""
     os.environ['KZA_DASHBOARD_TOKEN'] = 'synthetic-live-browser'
     browser_data = Path.home()/'snap/chromium/common'
@@ -75,6 +76,10 @@ async def main():
                 async with connect(target['webSocketDebuggerUrl'],max_size=None) as connection:
                     page = Page(connection)
                     await page.command('Runtime.enable')
+                    if offline_assets:
+                        await page.command('Network.enable')
+                        await page.command('Network.setBlockedURLs',{'urls':[
+                            'https://unpkg.com/*','https://fonts.googleapis.com/*','https://fonts.gstatic.com/*']})
                     await page.command('Page.navigate',{'url':f'http://127.0.0.1:{port}/obs/'})
                     await page.wait_for("document.querySelector('#view-live') && window.__kzaLiveWs?.readyState === 1")
                     async def show(text, ttl=48*3600):
@@ -109,6 +114,9 @@ async def main():
                     await page.evaluate('window.__kzaLiveWs.close()')
                     await page.wait_for("!document.body.textContent.includes('Synthetic disconnect turn')")
                     await page.wait_for('window.__kzaLiveWs?.readyState === 1')
+                    # TCP open precedes reset/ready and the bootstrap HTTP decode.
+                    # Finish that actual read before introducing data for a new page.
+                    await page.wait_for("window.__kzaSources?.CONVERSATIONS === 'real'")
                     rest_text = 'Synthetic expiring REST conversation'
                     rest_source = memory_source(now=time.time(), ttl=5)
                     await events.alog('light.synthetic', 'turn_on', trigger_phrase=rest_text,
@@ -164,6 +172,7 @@ async def main():
                         'session_loss_clears_unmounted_rest_conversation_cache':True,
                         'rest_revocation_clears_before_original_expiry':True,
                         'rest_ack_waits_for_explicit_dom_commit':True,
+                        'external_bootstrap_assets_blocked':offline_assets,
                         'global_streams_acceptance':False}))
         finally:
             if browser is not None:
@@ -178,4 +187,6 @@ async def main():
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--offline-assets',action='store_true')
+    asyncio.run(main(offline_assets=parser.parse_args().offline_assets))

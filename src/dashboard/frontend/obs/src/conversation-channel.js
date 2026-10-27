@@ -2,7 +2,7 @@
   'use strict';
   const livePrivacy = root?.KzaLivePrivacy || require('./live-privacy.js');
   const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-  function createConversationChannel({ store, fetch, emitAck, hasView = () => false, onUnauthorized = () => {},
+  function createConversationChannel({ store, fetch, emitAck, hasView = () => false, onUnauthorized = () => {}, onState = () => {},
       monotonic = () => performance.now(), wall = Date.now }) {
     let connection = null, generation = 0, closed = false, rendered = null, metadata, accepting = false;
     const inflight = new Set(), controllers = new Set(), retired = new Set();
@@ -22,6 +22,7 @@
       token: () => metadata.snapshot()?.event_id ?? null });
     async function reset() {
       const attempt = ++generation;
+      onState('waiting');
       connection = null;
       for (const controller of controllers) controller.abort();
       metadata.clear(); store.clear();
@@ -33,9 +34,11 @@
     function open(identity) {
       if (closed || !ID.test(identity) || connection !== null) return false;
       connection = identity;
+      onState('loading');
       const attempt = generation, controller = new AbortController();
       controllers.add(controller);
       const started = { mono: monotonic(), wall: wall() };
+      let loaded = false;
       const loading = (async () => {
         let response = null, document = null;
         try {
@@ -50,10 +53,10 @@
           document = await response.json();
           if (closed || generation !== attempt || controller.signal.aborted || document?.connection_id !== connection) return;
           const batch = document.snapshot;
-          if (batch === null) { metadata.clear(); return; }
+          if (batch === null) { metadata.clear(); loaded = true; return; }
           if (!batch || !ID.test(batch.event_id) || !Array.isArray(batch.rows)
               || !Number.isFinite(batch.observed_at) || !Number.isFinite(batch.expires_at)) { metadata.clear(); return; }
-          if (retired.has(batch.event_id)) return;
+          if (retired.has(batch.event_id)) { loaded = true; return; }
           // One ticket covers the whole batch, so the earliest source retires it all.
           const expiry = batch.expires_at - Math.max(0,monotonic()-started.mono,wall()-started.wall)/1000;
           accepting = true;
@@ -61,7 +64,8 @@
             if (!metadata.receive({ type:'turn', event_id:batch.event_id, expires_at:expiry,
                 receipt:batch.receipt, ts:'', payload:{} })) return;
             const rows = batch.rows.map(row => ({ ...row, expires_at:Math.min(row.expires_at,batch.expires_at) }));
-            if (!store.receive(rows,started)) metadata.clear();
+            loaded = store.receive(rows,started);
+            if (!loaded) metadata.clear();
           } finally { accepting = false; }
           if (!store.snapshot().length) metadata.clear();
           if (!hasView()) { rendered = null; metadata.committed(null); }
@@ -73,6 +77,7 @@
       loading.finally(() => {
         inflight.delete(loading); controllers.delete(controller);
         if (!closed) metadata.committed(rendered);
+        if (!closed && generation === attempt) onState(loaded ? 'real' : 'unavailable');
       });
       return true;
     }
@@ -86,6 +91,7 @@
     return { open, reset, retire,
       dispose() {
         closed = true; generation++;
+        onState('closed');
         for (const controller of controllers) controller.abort();
         metadata.dispose(); store.clear(); unsubscribe(); store.bindPrivacy(null);
         queueMicrotask(() => { connection = null; });

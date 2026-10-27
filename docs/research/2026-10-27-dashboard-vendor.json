@@ -1,0 +1,44 @@
+{
+  "checked_on": "2026-10-27",
+  "scope": "Exact existing React, ReactDOM and Babel bundles, local with original SRI and license notices. Existing CSS font fallbacks replace external font requests.",
+  "packages": [
+    {
+      "package": "react",
+      "version": "18.3.1",
+      "asset": "src/dashboard/frontend/obs/vendor/react-18.3.1.development.js",
+      "source": "https://unpkg.com/react@18.3.1/umd/react.development.js",
+      "bytes": 109931,
+      "sha384": "hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L",
+      "sha256": "28348fef6cb0ed8b2ceeb22deaf824428fd13875d84c73d38f77dd216fc24e7f",
+      "license": "src/dashboard/frontend/obs/vendor/react-18.3.1.development.js.LICENSE.txt",
+      "license_source": "https://unpkg.com/react@18.3.1/LICENSE",
+      "license_sha256": "52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85"
+    },
+    {
+      "package": "react-dom",
+      "version": "18.3.1",
+      "asset": "src/dashboard/frontend/obs/vendor/react-dom-18.3.1.development.js",
+      "source": "https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js",
+      "bytes": 1080227,
+      "sha384": "u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm",
+      "sha256": "f9044a5e9c39db8bb1a204dff924e526ec0a621e695bb69de1035811be8709e4",
+      "license": "src/dashboard/frontend/obs/vendor/react-dom-18.3.1.development.js.LICENSE.txt",
+      "license_source": "https://unpkg.com/react-dom@18.3.1/LICENSE",
+      "license_sha256": "52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85"
+    },
+    {
+      "package": "@babel/standalone",
+      "version": "7.29.0",
+      "asset": "src/dashboard/frontend/obs/vendor/babel-standalone-7.29.0.min.js",
+      "source": "https://unpkg.com/@babel/standalone@7.29.0/babel.min.js",
+      "bytes": 3137752,
+      "sha384": "m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y",
+      "sha256": "2623a9e22809915ce789b4461154e277ddce520d5a4320c14d44332a5d0dcea0",
+      "license": "src/dashboard/frontend/obs/vendor/babel-standalone-7.29.0.min.js.LICENSE.txt",
+      "license_source": "https://unpkg.com/@babel/standalone@7.29.0/LICENSE",
+      "license_sha256": "117da2af0d4ce0fe1c8e19b5cff9dcd806adf973d328d27b11d4448c4ff24f76"
+    }
+  ],
+  "new_library_or_version_change": false,
+  "runtime_or_build_network_required": false
+}
