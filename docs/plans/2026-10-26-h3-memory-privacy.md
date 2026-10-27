@@ -1676,6 +1676,32 @@ control llega a 0,06 ms y el cleanup a 11,03 ms. No se manipuló GC. Las pausas
 globales anteriores, el hardware y la aceptación integrada siguen pendientes.
 Producción y los datos privados reales permanecen sin cambios.
 
+## Avance: admisión del entrenamiento antiguo
+
+El rechazo de conversaciones privadas ocurría después de construir el generador
+de hábitos y el entrenador. Sus constructores todavía podían cargar perfiles e
+historial legacy y crear directorios antes de llegar a esa comprobación. Una
+reproducción sobre `3c5a934`, con archivos sintéticos, confirma ambas lecturas y
+la creación del directorio de adapters; no inicia scheduler ni carga modelos.
+
+Los constructores que reciben la autoridad privada o dependencias gestionadas
+quedan ahora en estado bloqueado antes de consultar el filesystem. `main`
+inyecta explícitamente la autoridad aunque una dependencia esté deshabilitada.
+Habilitar el flag nocturno no inicia un thread ni anuncia que quedó programado.
+Una ejecución manual devuelve `blocked` con un motivo fijo, sin descargar
+modelos, invocar callbacks, exportar datasets, guardar historial ni generar
+reportes. La consulta de adapters tampoco abre archivos legacy. Los métodos de
+hábitos y los accesos directos de datasets/procesos comprueban la admisión antes
+de usar incluso ejemplos ya cacheados.
+
+Este bloqueo conserva los archivos originales y mantiene las pruebas de
+adaptadores sintéticos. No incorpora entrenamiento privado ni sanea los datasets
+anteriores: siguen pendientes su inventario, cuarentena, retención y los otros
+consumidores alternos, incluido el CLI nocturno antiguo sin autoridad. Tampoco
+completa `COLLECTORS`, los demás participantes del journal o H6. La configuración
+instalada y producción permanecen sin cambios. Validación final pendiente sobre
+el commit y su artefacto compilado.
+
 ## Trabajo restante
 
 1. Cubrir los demás datasets y consumidores de clips/aprendizaje y conectar

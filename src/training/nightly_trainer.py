@@ -60,6 +60,9 @@ from typing import Callable
 from enum import StrEnum
 import threading
 
+from src.memory.fact_ledger import FactLedger
+from src.orchestrator.context_manager import ContextManager
+from src.training.habit_dataset_generator import HabitDatasetGenerator
 from src.training.stt_correction_collector import STTCorrectionCollector
 
 logger = logging.getLogger(__name__)
@@ -74,6 +77,7 @@ class TrainingStatus(StrEnum):
     MERGING = "merging"
     COMPLETED = "completed"
     FAILED = "failed"
+    BLOCKED = "blocked"
 
 
 @dataclass
@@ -184,7 +188,8 @@ class NightlyTrainer:
         unload_callback: Callable[[], None] = None,  # Para descargar modelos de día
         reload_callback: Callable[[], None] = None,  # Para recargar después
         habit_generator = None,  # HabitDatasetGenerator para datos enriquecidos
-        stt_correction_collector = None  # STTCorrectionCollector para whisper fine-tune
+        stt_correction_collector = None,  # STTCorrectionCollector para whisper fine-tune
+        *, source_policy: FactLedger | None = None,
     ):
         self.config = config or NightlyConfig()
         self.alert_callback = alert_callback
@@ -193,6 +198,7 @@ class NightlyTrainer:
         self.reload_callback = reload_callback
         self.habit_generator = habit_generator
         self.stt_collector = stt_correction_collector
+        self._private_training = source_policy is not None
 
         # Estado
         self.current_session: TrainingSession | None = None
@@ -201,6 +207,10 @@ class NightlyTrainer:
         # Scheduler
         self._scheduler_running = False
         self._scheduler_thread: threading.Thread | None = None
+
+        if self.training_blocked:
+            logger.warning("Nightly training blocked: private_training_session_unavailable")
+            return
 
         # Crear directorios
         Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
@@ -214,8 +224,25 @@ class NightlyTrainer:
         logger.info(f"  GPUs: {self.config.gpus}")
         logger.info(f"  Modelo base: {self.config.base_model}")
 
+    @property
+    def training_blocked(self) -> bool:
+        """Whether training needs a private session that is not available."""
+        return (
+            self._private_training
+            or isinstance(self.stt_collector, STTCorrectionCollector)
+            or (isinstance(self.habit_generator, HabitDatasetGenerator)
+                and self.habit_generator.training_blocked)
+            or (isinstance(self.context_manager, ContextManager)
+                and self.context_manager.source_policy is not None)
+        )
+
+    def _require_training_available(self) -> None:
+        if self.training_blocked:
+            raise RuntimeError('private_training_session_unavailable')
+
     def _load_history(self):
         """Cargar historial de entrenamientos"""
+        self._require_training_available()
         history_file = Path(self.config.data_dir) / "training_history.json"
         if history_file.exists():
             try:
@@ -238,6 +265,7 @@ class NightlyTrainer:
 
     def _save_history(self):
         """Guardar historial de entrenamientos"""
+        self._require_training_available()
         history_file = Path(self.config.data_dir) / "training_history.json"
         data = {
             "sessions": [
@@ -261,11 +289,14 @@ class NightlyTrainer:
     # SCHEDULER
     # =========================================================================
 
-    def start_scheduler(self):
+    def start_scheduler(self) -> bool:
         """Iniciar el programador de entrenamiento nocturno"""
+        if self.training_blocked:
+            logger.warning("Nightly scheduler blocked: private_training_session_unavailable")
+            return False
         if self._scheduler_running:
             logger.warning("Scheduler ya está corriendo")
-            return
+            return False
 
         self._scheduler_running = True
         self._scheduler_thread = threading.Thread(
@@ -275,6 +306,7 @@ class NightlyTrainer:
         )
         self._scheduler_thread.start()
         logger.info("Scheduler de entrenamiento nocturno iniciado")
+        return True
 
     def stop_scheduler(self):
         """Detener el programador"""
@@ -331,9 +363,7 @@ class NightlyTrainer:
         Returns:
             Tuple de (lista de ejemplos, estadísticas)
         """
-        from src.training.conversation_collector import ConversationCollector
-        if isinstance(getattr(self.habit_generator, 'conversation_collector', None), ConversationCollector):
-            raise RuntimeError('private_training_session_unavailable')
+        self._require_training_available()
         examples = []
         stats = {
             "contexts_processed": 0,
@@ -476,6 +506,7 @@ class NightlyTrainer:
         Returns:
             Tuple de (lista de ejemplos, estadísticas)
         """
+        self._require_training_available()
         if self.habit_generator is None:
             return [], {}
 
@@ -525,6 +556,7 @@ class NightlyTrainer:
         Returns:
             Path al archivo de dataset
         """
+        self._require_training_available()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dataset_path = Path(self.config.data_dir) / f"dataset_{timestamp}.jsonl"
 
@@ -562,6 +594,11 @@ class NightlyTrainer:
             started_at=time.time(),
             total_epochs=self.config.epochs
         )
+
+        if self.training_blocked:
+            self.current_session.status = TrainingStatus.BLOCKED
+            self.current_session.error_message = 'private_training_session_unavailable'
+            return self.current_session
 
         models_unloaded = False
 
@@ -745,6 +782,7 @@ class NightlyTrainer:
             # until its dataset/session lifetime and release resources are verified.
             raise RuntimeError('private_stt_training_session_unavailable')
 
+        self._require_training_available()
         corrections = self.stt_collector.get_training_pairs()
         if not corrections:
             return {}
@@ -892,6 +930,7 @@ class NightlyTrainer:
 
         Usa accelerate para distribución multi-GPU si hay más de 1 GPU.
         """
+        self._require_training_available()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         adapter_name = f"adapter_{timestamp}"
         adapter_path = Path(self.config.output_dir) / adapter_name
@@ -1191,6 +1230,7 @@ if __name__ == "__main__":
 
     def _generate_report(self) -> str:
         """Generar reporte de la sesión de entrenamiento"""
+        self._require_training_available()
         if not self.current_session:
             return ""
 
@@ -1278,11 +1318,14 @@ if __name__ == "__main__":
     def get_status(self) -> dict:
         """Obtener estado actual del entrenador"""
         return {
+            "training_available": not self.training_blocked,
+            "blocked_reason": 'private_training_session_unavailable' if self.training_blocked else None,
             "scheduler_running": self._scheduler_running,
             "scheduled_time": f"{self.config.training_hour:02d}:{self.config.training_minute:02d}",
             "current_session": {
                 "id": self.current_session.id if self.current_session else None,
-                "status": self.current_session.status.value if self.current_session else "idle",
+                "status": self.current_session.status.value if self.current_session else (
+                    "blocked" if self.training_blocked else "idle"),
                 "samples": self.current_session.samples_collected if self.current_session else 0,
                 "epochs": f"{self.current_session.epochs_completed}/{self.current_session.total_epochs}" if self.current_session else "0/0"
             },
@@ -1301,6 +1344,8 @@ if __name__ == "__main__":
 
     def get_latest_adapter(self) -> str | None:
         """Obtener path del último adapter entrenado exitosamente"""
+        if self.training_blocked:
+            return None
         for session in reversed(self.training_history):
             if session.status == TrainingStatus.COMPLETED and session.adapter_path:
                 return session.adapter_path
@@ -1308,6 +1353,8 @@ if __name__ == "__main__":
 
     def list_adapters(self) -> list[dict]:
         """Listar todos los adapters entrenados"""
+        if self.training_blocked:
+            return []
         adapters = []
         output_dir = Path(self.config.output_dir)
 

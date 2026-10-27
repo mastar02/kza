@@ -24,6 +24,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from src.analytics.event_logger import EventLogger
+from src.memory.fact_ledger import FactLedger
+from src.training.conversation_collector import ConversationCollector
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,6 +115,8 @@ class HabitDatasetGenerator:
         conversation_collector=None,
         min_confidence: float = 0.6,
         synthetic_multiplier: int = 3,
+        *,
+        source_policy: FactLedger | None = None,
     ):
         """
         Args:
@@ -120,15 +126,15 @@ class HabitDatasetGenerator:
             conversation_collector: ConversationCollector instance
             min_confidence: Confianza mínima para incluir ejemplos
             synthetic_multiplier: Variaciones sintéticas por patrón real
+            source_policy: Private authority; legacy training stays unavailable.
         """
         self.data_dir = Path(data_dir)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-
         self.pattern_learner = pattern_learner
         self.event_logger = event_logger
         self.conversation_collector = conversation_collector
         self.min_confidence = min_confidence
         self.synthetic_multiplier = synthetic_multiplier
+        self._private_training = source_policy is not None
 
         # Perfiles de usuario
         self._user_profiles: dict[str, UserProfile] = {}
@@ -137,10 +143,27 @@ class HabitDatasetGenerator:
         self._examples: list[HabitExample] = []
 
         # Cargar perfiles existentes
-        self._load_profiles()
+        if not self.training_blocked:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            self._load_profiles()
+
+    @property
+    def training_blocked(self) -> bool:
+        """Whether these inputs require a managed training session."""
+        return (
+            self._private_training
+            or isinstance(self.conversation_collector, ConversationCollector)
+            or (isinstance(self.event_logger, EventLogger)
+                and self.event_logger.source_policy is not None)
+        )
+
+    def _require_training_available(self) -> None:
+        if self.training_blocked:
+            raise RuntimeError('private_training_session_unavailable')
 
     def _load_profiles(self):
         """Cargar perfiles de usuario persistidos"""
+        self._require_training_available()
         profiles_file = self.data_dir / "user_profiles.json"
         if profiles_file.exists():
             try:
@@ -156,6 +179,7 @@ class HabitDatasetGenerator:
 
     def _save_profiles(self):
         """Persistir perfiles de usuario"""
+        self._require_training_available()
         profiles_file = self.data_dir / "user_profiles.json"
         data = {}
         for user_id, profile in self._user_profiles.items():
@@ -186,6 +210,7 @@ class HabitDatasetGenerator:
         Returns:
             Perfiles de usuario generados
         """
+        self._require_training_available()
         if self.event_logger:
             self._build_profiles_from_events()
 
@@ -197,6 +222,7 @@ class HabitDatasetGenerator:
 
     def _build_profiles_from_events(self):
         """Extraer preferencias de usuario del historial de eventos"""
+        self._require_training_available()
         if not self.event_logger:
             return
 
@@ -336,6 +362,7 @@ class HabitDatasetGenerator:
 
     def _enrich_profiles_from_patterns(self):
         """Enriquecer perfiles con patrones detectados"""
+        self._require_training_available()
         if not self.pattern_learner:
             return
 
@@ -375,6 +402,7 @@ class HabitDatasetGenerator:
         Returns:
             Lista de ejemplos de entrenamiento
         """
+        self._require_training_available()
         self._examples = []
 
         # 1. Ejemplos de patrones temporales
@@ -411,6 +439,7 @@ class HabitDatasetGenerator:
 
     def _generate_from_patterns(self):
         """Generar ejemplos a partir de patrones detectados"""
+        self._require_training_available()
         if not self.pattern_learner:
             return
 
@@ -464,6 +493,7 @@ class HabitDatasetGenerator:
 
     def _generate_from_events(self, days: int = 30):
         """Generar ejemplos a partir de eventos del historial"""
+        self._require_training_available()
         if not self.event_logger:
             return
 
@@ -559,11 +589,9 @@ class HabitDatasetGenerator:
 
     def _generate_from_conversations(self):
         """Generar ejemplos de conversaciones marcadas como buenas"""
+        self._require_training_available()
         if not self.conversation_collector:
             return
-        from src.training.conversation_collector import ConversationCollector
-        if isinstance(self.conversation_collector, ConversationCollector):
-            raise RuntimeError('private_training_session_unavailable')
 
         for conv in self.conversation_collector._conversations:
             for turn in conv.turns:
@@ -588,6 +616,7 @@ class HabitDatasetGenerator:
 
     def _generate_from_profiles(self):
         """Generar ejemplos a partir de perfiles de usuario"""
+        self._require_training_available()
         for user_id, profile in self._user_profiles.items():
             user_name = profile.user_name
 
@@ -653,6 +682,7 @@ class HabitDatasetGenerator:
 
     def _generate_synthetic_variations(self):
         """Generar variaciones sintéticas de los ejemplos reales"""
+        self._require_training_available()
         real_examples = list(self._examples)
 
         # Variaciones de frases para comandos comunes
@@ -706,6 +736,7 @@ class HabitDatasetGenerator:
         Returns:
             Ruta al archivo JSONL generado
         """
+        self._require_training_available()
         if not self._examples:
             self.generate_dataset()
 
@@ -734,6 +765,7 @@ class HabitDatasetGenerator:
 
     def export_with_metadata(self, output_path: str = None) -> str:
         """Exportar dataset con metadata completa (para análisis)"""
+        self._require_training_available()
         if not self._examples:
             self.generate_dataset()
 
@@ -767,6 +799,7 @@ class HabitDatasetGenerator:
         Returns:
             Dict con path al dataset y estadísticas
         """
+        self._require_training_available()
         # Construir perfiles actualizados
         self.build_user_profiles()
 

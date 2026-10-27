@@ -1685,6 +1685,7 @@ async def _run_main(shutdown: AsyncExitStack):
             pattern_learner=None,
             min_confidence=habits_config.get("min_confidence", 0.6),
             synthetic_multiplier=habits_config.get("synthetic_multiplier", 3),
+            source_policy=privacy_services.ledger,
         )
 
         schedule = nightly_config_data.get("schedule", {})
@@ -1718,9 +1719,10 @@ async def _run_main(shutdown: AsyncExitStack):
             alert_callback=_nightly_alert_callback,
             habit_generator=habit_generator,
             stt_correction_collector=stt_correction_collector,
+            source_policy=privacy_services.ledger,
         )
-        nightly_trainer.start_scheduler()
-        logger.info("Nightly trainer scheduled")
+        if nightly_trainer.start_scheduler():
+            logger.info("Nightly trainer scheduled")
 
     # Use MultiRoomAudioLoop if rooms are configured, else fall back to AudioLoop
     active_audio_loop = multi_room_loop if multi_room_loop else audio_loop
