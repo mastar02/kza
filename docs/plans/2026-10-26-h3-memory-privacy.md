@@ -2552,6 +2552,77 @@ completa procedencia por conversación, recibos del journal, borrado remoto,
 otros logs ni aceptación física. Tampoco sustituye la medición instrumentada
 de GC pendiente ni modifica producción.
 
+## Vínculo y borrado de diagnósticos numéricos — 2026-10-27
+
+Cada métrica nueva del router o wake puede llevar fuentes verificadas antes
+de publicarse al loop. El router adjunta su linaje activo, incluidos los
+derivados seleccionados; wake usa el contexto de metadatos del productor
+nativo. El emisor copia sólo el DTO admitido a un contexto vacío, sin heredar
+el contexto libre del llamador. Bajo la autoridad de `main`, una métrica de
+request o wake sin fuentes se descarta. Se comprueba vigencia de la captura al
+admitirla; el plazo propio del diagnóstico numérico sigue siendo el configurado,
+sin renovar ni conservar texto de la captura.
+
+El catálogo v2 conserva una relación privada entre ID de métrica e IDs de
+conversación. No añade esos IDs al JSONL ni al TCP. La eliminación de una fila
+por TTL o rotación elimina también su relación. La migración desde v1 crea la
+tabla vacía: no inventa procedencia para las métricas anteriores. Antes de
+reconstruir archivos se validan la proyección numérica, los IDs y las relaciones
+del catálogo restaurado; una fila ajena no puede convertirse en texto publicado.
+
+El journal registra destinos locales versionados y los conserva al cambiar la
+ruta configurada. Su driver retira las filas vinculadas a conversaciones con
+revocación **confirmada en disco**, reconstruye las dos proyecciones y espera
+las reservas, escrituras y envíos reales de esa conversación. Una reserva aún
+sin metadatos cuenta como pendiente; el trabajo de otra conversación puede
+continuar. Se vuelve a comprobar autoridad antes de escribir y después de
+conectar TCP, por lo que un writer tardío no repone la fila ni envía una métrica
+revocada. Una conexión o envío ya en curso permanece pendiente hasta salir.
+
+Un fence previo al commit impide nuevas admisiones, pero no autoriza borrar
+las filas persistentes. Si el commit falla, éstas se conservan. Un fallo al
+publicar archivos tampoco produce un recibo completo sólo por haber borrado
+el catálogo. Las filas sin linaje y las cuarentenas conocidas o halladas tras
+una restauración parcial mantienen pendiente el destino local. Un arranque
+con lease reabre los recibos de diagnóstico, para volver a comprobar una
+copia restaurada aunque el journal diga que antes estaba limpia.
+
+Los históricos se mantienen incluso con métricas, analytics y memoria semántica
+deshabilitados. Comparten un único worker nativo y un barrido periódico; cada
+operación toma y libera su lease real. No se crea un poller o un lease
+permanente por cada destino histórico. La cancelación de un observador no
+libera el lock ni la autoridad mientras continúa la operación real. El cierre
+sella la emisión y espera tanto el TCP actual como el disco histórico antes de
+liberar la autoridad compartida.
+
+El recibo local no certifica los otros logs, los archivos originales sin
+versión ni el colector remoto. El journal conserva explícitamente un destino
+de inventario diagnóstico aún no resuelto y el driver actual no lo reconoce
+como completado. `DIAGNOSTICS` y el borrado global siguen abiertos; las métricas
+que ya recibió otro proceso requieren su propio protocolo de borrado. Tampoco
+se habilita el dashboard de borrado amplio, ni se declara aceptación completa
+de productores, streams, voces, recursos, SDK o hardware.
+
+La [evidencia del borrado numérico](../research/2026-10-27-h3-diagnostic-erasure-validation.json)
+corresponde al commit `942210f`: **5404 passed, 1 xfailed**, sin fallos en la
+ejecución final de 234,61 s, con 17 casos nuevos y 289 pruebas dirigidas. Pasan
+Ruff, Bandit sin hallazgos medios/altos, los 18 casos de frontend y el smoke del
+dashboard. El artefacto sin fuentes verifica 324 hashes y completa el ejercicio
+en 1,30 s. Incluye catálogo, journal, TCP y propietarios nativos reales con
+relojes y gates sintéticos; no sustituye la medición instrumentada de GC
+pendiente ni las pruebas de release. Producción permanece sin cambios.
+
+El primer ensayo completo queda fuera de aceptación: una respuesta larga
+sintética registró un máximo de pausa del loop de **92,90 ms**, sobre el límite
+existente de 75 ms. La medición posterior del mismo grafo, con GC habilitado,
+registró máximo de 2,67 ms y pausa máxima de GC de 2,16 ms; no establece la causa
+del pico ni prueba que esté corregido. Se conserva la ejecución fallida y se
+repite la suite sobre el mismo código, sin ampliar presupuestos ni manipular GC.
+La aceptación integrada de latencia de H4/H6 continúa pendiente.
+La repetición completa obtuvo p95 de pausa de 0,99 ms y máximo de 1,14 ms en ese
+grafo hijo aislado; no demuestra estabilidad del runtime integrado ni explica
+el ensayo fallido anterior.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

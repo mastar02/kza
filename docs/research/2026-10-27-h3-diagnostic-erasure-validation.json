@@ -1,0 +1,483 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "942210fd306e562b49c8427389c283cb98d58746",
+  "tested_runtime_source_tree": "dd95a0ee2d2471b51d2b7fe279619449a1762701",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 private conversation lineage and durable local numeric diagnostic erasure, actual queued writer/TCP barriers, historical TTL and cleanup while optional emission is disabled, and recovery from restored catalogs. Other diagnostic channels and the complete DIAGNOSTICS/global erasure contract remain blocked.",
+  "new_cases_total": 17,
+  "new_integration_cases": [
+    "test_private_lineage_never_enters_file_or_tcp_and_mixed_sources_erase_together",
+    "test_queued_writer_is_not_acknowledged_until_actual_exit_and_cannot_refill",
+    "test_unattributed_previous_numeric_rows_block_local_completion",
+    "test_historical_path_is_cleaned_with_metrics_and_semantic_memory_disabled",
+    "test_restored_diagnostic_catalog_reopens_previously_completed_receipt",
+    "test_actual_router_and_native_wake_carry_their_sources",
+    "test_revocation_during_tcp_connect_waits_for_actual_exit_without_sending",
+    "test_unrelated_blocked_writer_does_not_delay_matching_receipt",
+    "test_pending_revocation_does_not_irreversibly_delete_before_failed_commit",
+    "test_native_reservation_before_post_is_included_in_erasure_barrier",
+    "test_orphan_quarantine_from_partial_restore_is_not_acknowledged_as_empty",
+    "test_cancelled_observer_and_close_timeout_retain_native_cleanup_and_privacy_lease",
+    "test_unverified_restored_catalog_is_not_republished_and_receipts_follow_physical_repair[payload_matching]",
+    "test_unverified_restored_catalog_is_not_republished_and_receipts_follow_physical_repair[payload_unrelated]",
+    "test_unverified_restored_catalog_is_not_republished_and_receipts_follow_physical_repair[lineage]",
+    "test_failed_physical_publication_cannot_acknowledge_catalog_only_cleanup",
+    "test_many_historical_destinations_share_one_actual_native_worker"
+  ],
+  "initial_red": {
+    "collection_errors": 1,
+    "log": "/tmp/kza-diagnostic-erasure-red.log",
+    "finding": "No local diagnostic erasure service, source relation or durable diagnostic cleanup protocol existed."
+  },
+  "nonaccepted_focused_runs": [
+    {
+      "log": "/tmp/kza-diagnostic-erasure-focused.log",
+      "failed": 6,
+      "passed": 28,
+      "finding": "Test setup used a public content-free receipt as if it exposed private target IDs and omitted required wake words. Helpers now query the private journal for exact local steps and use the real wake constructor."
+    },
+    {
+      "log": "/tmp/kza-diagnostic-erasure-final-focused.log",
+      "failed": 1,
+      "passed": 286,
+      "finding": "A test incorrectly required a corrupted payload matching the erased conversation to remain blocked after actual removal. The repaired test distinguishes matching physical removal from unrelated invalid restored content."
+    },
+    {
+      "log": "/tmp/kza-diagnostic-erasure-bounded-focused.log",
+      "failed": 1,
+      "passed": 287,
+      "finding": "The matching-payload repair test initially assumed the first cleanup observer could not still reference failed startup maintenance. It now checks the existing journal retry after the fixed backoff; deadlines and capacities were not enlarged."
+    }
+  ],
+  "nonaccepted_full_suite": {
+    "log": "/tmp/kza-diagnostic-erasure-accepted-full.log",
+    "xml": "/tmp/kza-diagnostic-erasure-accepted-full.xml",
+    "failed": 1,
+    "passed": 5403,
+    "xfailed": 1,
+    "runtime_s": 237.59,
+    "failed_test": "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times",
+    "failure": "assert (1.0472548939287663 <= 25 and 92.90488192811608 <= 75)",
+    "voice_metrics": {
+      "repetitions": 10,
+      "sentences_per_run": 100,
+      "samples_per_run": 2400000,
+      "provider_wait_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 2974,
+      "loop_lag_p95_ms": 1.0472548939287663,
+      "loop_lag_max_ms": 92.90488192811608,
+      "exact_pcm_runs": 10
+    },
+    "followup_profile": {
+      "metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2734,
+        "loop_lag_p95_ms": 0.9941089712083339,
+        "loop_lag_max_ms": 2.674944819882512,
+        "exact_pcm_runs": 10
+      },
+      "gc_enabled": true,
+      "gc_thresholds": [
+        2000,
+        10,
+        10
+      ],
+      "gc_collections_observed": 42,
+      "gc_max_pause_ms": 2.1617088932543993,
+      "gc_pauses": [
+        {
+          "generation": 0,
+          "duration_ms": 0.38939504884183407,
+          "collected": 10,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.13684900477528572,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.1352562103420496,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.2236620057374239,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.22142799571156502,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.14399993233382702,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.25740195997059345,
+          "collected": 10,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.22650486789643764,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 1,
+          "duration_ms": 2.1617088932543993,
+          "collected": 73,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.20681507885456085,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.29878620989620686,
+          "collected": 10,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.20545418374240398,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.20891916938126087,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.19660010002553463,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.2997980918735266,
+          "collected": 10,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.306698027998209,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.22289995104074478,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.20478293299674988,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.36486703902482986,
+          "collected": 10,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.24327216669917107,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 1,
+          "duration_ms": 1.3393040280789137,
+          "collected": 146,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.23608002811670303,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.4002808127552271,
+          "collected": 10,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.25056186132133007,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.26259105652570724,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.28540496714413166,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.34020887687802315,
+          "collected": 10,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.25533000007271767,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.20974013023078442,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.2554599195718765,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.3547321539372206,
+          "collected": 10,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.2217788714915514,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 1,
+          "duration_ms": 1.4160810969769955,
+          "collected": 146,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.2370320726186037,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.47172000631690025,
+          "collected": 10,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.26750913821160793,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.28359307907521725,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.2652849070727825,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.44901599176228046,
+          "collected": 10,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.2666572108864784,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.23801298812031746,
+          "collected": 0,
+          "uncollectable": 0
+        },
+        {
+          "generation": 0,
+          "duration_ms": 0.31663314439356327,
+          "collected": 0,
+          "uncollectable": 0
+        }
+      ],
+      "voluntary_context_switches": 106600,
+      "involuntary_context_switches": 629,
+      "forced_disabled_or_frozen_gc": false,
+      "source_or_deadline_changes": false,
+      "causal_attribution_of_previous_failure": "Not established by this observation."
+    },
+    "profile_log": "/tmp/kza-diagnostic-erasure-voice-profile.log",
+    "assessment": "Observed loop maximum 92.90 ms exceeded the existing 75 ms gate. Followup measurement did not reproduce it; no cause or fix is established. Preserved as a nonaccepted run; H4/H6 latency and instrumented GC acceptance remain open. No source, deadlines or GC controls changed before the repeat."
+  },
+  "full_suite": {
+    "accepted": true,
+    "collected": 5405,
+    "passed": 5404,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 234.525,
+    "summary": "========= 5404 passed, 1 xfailed, 31389 warnings in 234.61s (0:03:54) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-diagnostic-erasure-final-accepted-full.xml",
+    "log": "/tmp/kza-diagnostic-erasure-final-accepted-full.log",
+    "xml": "/tmp/kza-diagnostic-erasure-final-accepted-full.xml",
+    "long_response_voice_metrics": {
+      "repetitions": 10,
+      "sentences_per_run": 100,
+      "samples_per_run": 2400000,
+      "provider_wait_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 2721,
+      "loop_lag_p95_ms": 0.9944780077785252,
+      "loop_lag_max_ms": 1.1379061080515385,
+      "exact_pcm_runs": 10
+    }
+  },
+  "focused_suite": {
+    "passed": 289,
+    "failed": 0,
+    "runtime_s": 9.18,
+    "summary": "====================== 289 passed, 328 warnings in 9.18s =======================",
+    "log": "/tmp/kza-diagnostic-erasure-final-accepted-focused.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-diagnostic-erasure-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-diagnostic-erasure-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-diagnostic-erasure-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "mocked_dependencies": true,
+      "log": "/tmp/kza-diagnostic-erasure-dashboard.log"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "942210fd306e562b49c8427389c283cb98d58746",
+    "artifact": "/tmp/kza-diagnostic-erasure-runtime-kpxc6uer/runtime.tar.gz",
+    "verified_hashes": 324,
+    "runtime_s": 1.303195599000901,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "private_conversation_lineage_not_in_wire": true,
+      "mixed_sources_physical_cleanup": true,
+      "actual_native_writer_blocks_receipt": true,
+      "revoked_late_writer_cannot_refill_or_send": true,
+      "restored_receipt_reopened": true,
+      "historical_cleanup_and_ttl_with_emission_and_memory_disabled": true,
+      "unaudited_diagnostic_inventory_blocks_global_completion": true,
+      "cancelled_history_observer_retains_actual_lock_and_worker": true,
+      "sourcefree_hashes": 324,
+      "synthetic_clock_and_native_gate": true,
+      "full_main_sdk_hardware_remote_or_total_erasure_acceptance": false
+    }
+  },
+  "verified_behaviors": {
+    "router_passes_active_derived_lineage_and_native_wake_uses_producer_metadata": true,
+    "main_builds_metrics_under_privacy_authority_before_admitting_producers": true,
+    "private_conversation_ids_are_only_in_catalog_relation_not_jsonl_tcp": true,
+    "source_validated_before_post_with_numeric_deadline_unchanged": true,
+    "late_writer_and_post_connect_checks_deny_revocation": true,
+    "unknown_native_post_reservations_count_as_pending": true,
+    "matching_actual_workers_block_receipt_but_unrelated_workers_do_not": true,
+    "committed_tombstone_required_for_irreversible_deletion": true,
+    "pending_failed_commit_preserves_existing_persistent_rows": true,
+    "catalog_only_deletion_after_failed_projection_cannot_complete_receipt": true,
+    "unattributed_v1_rows_and_orphan_quarantines_block_local_receipt": true,
+    "unverified_restored_rows_cannot_be_republished_as_raw_payload": true,
+    "restored_local_steps_reopened_at_leased_startup": true,
+    "historical_paths_remain_known_and_cleaned_when_emission_analytics_memory_disabled": true,
+    "history_uses_one_actual_native_worker_not_one_poller_or_lease_per_target": true,
+    "canceled_observer_cannot_release_history_lock_or_actual_cleanup_ownership": true,
+    "owner_close_timeout_keeps_actual_cleanup_and_privacy_lease": true,
+    "missing_diagnostic_inventory_persists_as_unsupported_target_not_success": true
+  },
+  "limits": {
+    "local_target_protocol": {
+      "version": 2,
+      "kind": "numeric_catalog"
+    },
+    "unresolved_inventory_protocol": {
+      "version": 1,
+      "kind": "unresolved_diagnostic_inventory",
+      "accepted_by_current_driver": false
+    },
+    "provenance": "Persisted links identify conversations. Existing unattributed numeric records are not assigned invented sources; their local cleanup remains pending while present.",
+    "physical_cleanup": "Requires a live process and completed native I/O. File projection repair can defer after faults; no strict physical deadline during stalled I/O or downtime is claimed.",
+    "resource_acceptance": "One historical worker is verified with five destinations. Full H4 capacity, disk/index growth, GC and workload latency acceptance remain open.",
+    "all_diagnostic_channels_audited": false,
+    "remote_logstash_retention_and_deletion_verified": false,
+    "unversioned_legacy_logs_physically_removed": false,
+    "diagnostics_journal_participant_complete": false,
+    "global_conversation_erasure_complete_or_ui_enabled": false,
+    "full_producers_streams_voices_complete": false,
+    "physical_audio_sdk_or_full_main_acceptance": false,
+    "instrumented_gc_measurement_replaced_or_accepted": false,
+    "production_modified": false,
+    "gc_forced_disabled_or_frozen": false,
+    "existing_deadlines_or_capacities_widened": false,
+    "overall_h3_or_roadmap_complete": false
+  }
+}

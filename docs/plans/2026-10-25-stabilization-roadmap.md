@@ -788,6 +788,22 @@ requiere proceso e I/O disponibles; no se promete eliminación física durante
 una interrupción. Siguen pendientes procedencia por conversación, borrado
 remoto, otros logs y el participante `DIAGNOSTICS`. No se cierra H3.
 
+El [borrado del diagnóstico numérico](../research/2026-10-27-h3-diagnostic-erasure-validation.json)
+vincula las métricas nuevas con conversaciones en el catálogo privado, sin
+publicar ese vínculo en JSONL/TCP. El driver del journal limpia archivos activos
+e históricos y espera los escritores reales de la conversación. Los históricos
+comparten un worker; siguen manteniéndose con emisión y memoria deshabilitadas.
+Las filas sin procedencia, cuarentenas y fallos físicos impiden completar el
+recibo local. Un reinicio reabre recibos para comprobar restauraciones. El
+inventario restante de diagnósticos queda explícitamente bloqueado: falta
+resolver otros logs, originales sin versión y copias remotas. La validación
+corresponde a `942210f`: **5404 passed, 1 xfailed** en la suite final, 17 casos
+nuevos, 289 pruebas dirigidas, checks y artefacto con 324 hashes. Conserva un
+ensayo completo anterior no aceptado por pausa del loop de 92,90 ms sobre el
+límite de 75 ms. Las mediciones posteriores pasaron sin cambiar código ni
+límites, pero no explican ese pico. La latencia integrada de H4/H6 sigue abierta;
+este paso no completa `DIAGNOSTICS` ni H3.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una
