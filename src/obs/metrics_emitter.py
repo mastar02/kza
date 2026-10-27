@@ -13,7 +13,7 @@ import threading
 import time
 from typing import Any
 
-from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.core.owned_work import ClosePhase, OwnedBlockingWork, WorkCloseTimeout
 from src.obs.diagnostic_store import DiagnosticRecord, DiagnosticStore
 from src.memory.producer_context import PRODUCER_CONTEXT
 
@@ -137,6 +137,8 @@ class MetricsEmitter:
         self._store = DiagnosticStore(self.path, clock=self._clock,
             retention_days=retention_days, rotate_bytes=rotate_bytes, project=project_diagnostic, policy=policy)
         self._retention_work = OwnedBlockingWork(capacity=1, close_timeout_s=close_timeout_s)
+        self._close_work = OwnedBlockingWork(capacity=1,close_timeout_s=close_timeout_s)
+        self._close_phase = ClosePhase.IDLE
         self._maintenance = None
         self._sweep = None
         self._wake = asyncio.Event()
@@ -297,7 +299,8 @@ class MetricsEmitter:
                 async with asyncio.timeout(self._close_timeout_s):
                     await self.aprune()
             except TimeoutError:
-                raise WorkCloseTimeout('diagnostic_initialization_pending') from None
+                raise WorkCloseTimeout('diagnostic_initialization_pending',phase=ClosePhase.RETENTION,
+                    diagnostics=self.resource_status()) from None
         finally:
             if self._maintenance is None and not self._closed:
                 self._maintenance = asyncio.create_task(self._maintain(), context=Context())
@@ -370,6 +373,8 @@ class MetricsEmitter:
             'pending': self._capacity-len(self._free), 'dropped': self._dropped,
             'failed': self._failed, 'native_operations': self._work.status()['operations'],
             'retention': self._store.status(),
+            'close_phase':self._close_phase.value,'io':self._work.diagnostics(),
+            'retention_io':self._retention_work.diagnostics(),'close_io':self._close_work.diagnostics(),
             'closing': self._closing is not None and not self._closing.done()}
 
     def _close_socket(self):
@@ -387,13 +392,21 @@ class MetricsEmitter:
         self._wake.set()
         if self._closing is None:
             async def finish():
+                self._close_phase = ClosePhase.DRAIN
                 await self.flush()
+                self._close_phase = ClosePhase.MAINTENANCE
                 if self._maintenance is not None:
                     await self._maintenance
+                self._close_phase = ClosePhase.WRITES
                 await self._work.begin_close()
+                self._close_phase = ClosePhase.RETENTION
                 await self._retention_work.begin_close()
-                await asyncio.to_thread(self._close_socket)
-                await asyncio.to_thread(self._store.close)
+                self._close_phase = ClosePhase.SOCKET
+                await self._close_work.run(self._close_socket)
+                self._close_phase = ClosePhase.STORE
+                await self._close_work.run(self._store.close)
+                await self._close_work.begin_close()
+                self._close_phase = ClosePhase.COMPLETE
             self._closing = asyncio.create_task(finish(), context=Context())
         return self._closing
 
@@ -408,7 +421,8 @@ class MetricsEmitter:
             except asyncio.CancelledError:
                 cancelled = True
             except TimeoutError:
-                raise WorkCloseTimeout('diagnostic_io_still_running') from None
+                raise WorkCloseTimeout('diagnostic_io_still_running',phase=self._close_phase,
+                    diagnostics=self.resource_status()) from None
         closing.result()
         if cancelled:
             raise asyncio.CancelledError

@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack
-from contextvars import copy_context
+from contextvars import Context, copy_context
 from functools import partial
 import fcntl
 import logging
@@ -13,7 +13,7 @@ from pathlib import Path
 import threading
 from weakref import WeakMethod
 
-from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.core.owned_work import ClosePhase, OwnedBlockingWork, WorkCloseTimeout, observe_native
 from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource
 from src.memory.sources import CaptureScopes
 
@@ -29,6 +29,8 @@ class PrivacyServices:
         self.scopes = CaptureScopes(self.ledger, admission_started_at=self.ledger.clock())
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kza-privacy")
         self._work = OwnedBlockingWork(worker=self._offload, close_timeout_s=close_timeout_s)
+        self._close_work = OwnedBlockingWork(capacity=1,close_timeout_s=close_timeout_s)
+        self._close_phase = ClosePhase.IDLE
         self._close_timeout_s = close_timeout_s
         self._lease: int | None = None
         self._lock = threading.RLock()
@@ -66,6 +68,9 @@ class PrivacyServices:
 
     def add_borrower(self, begin_close: Callable[[], asyncio.Task]) -> None:
         """Register actual native-user cleanup without retaining its private caches."""
+        # A closing native callback may hold _lock. Closed admission must reject
+        # on the loop before attempting that lock, just as begin_close returns.
+        self.require_available()
         with self._lock:
             self.require_available()
             if any(reference() == begin_close for reference in self._borrowers):
@@ -75,7 +80,7 @@ class PrivacyServices:
     async def _offload(self, function, *args, **kwargs):
         context = copy_context()
         return await asyncio.get_running_loop().run_in_executor(self._executor,
-            context.run, partial(function, *args, **kwargs))
+            context.run, partial(observe_native,function, *args, **kwargs))
 
     async def acall(self, function, *args, **kwargs):
         """Run privacy I/O in its own bounded, retained worker scope."""
@@ -110,40 +115,51 @@ class PrivacyServices:
                     logger.warning("Privacy maintenance deferred: %s", type(error).__name__)
                     delay = 30
                 await asyncio.sleep(min(delay, 30))
-        self.maintenance = asyncio.create_task(maintain())
+        self.maintenance = asyncio.create_task(maintain(),context=Context())
 
     def resource_status(self) -> dict:
         """Report actual ownership, including pending optional-memory shutdown."""
         return {**self._work.status(), "writer_lease": self._lease is not None,
                 "borrowers": sum(reference() is not None for reference in self._borrowers),
-                "closing": self._closing is not None and not self._closing.done()}
+                "closing": self._closing is not None and not self._closing.done(),
+                "close_phase":self._close_phase.value,"io":self._work.diagnostics(),
+                "close_io":self._close_work.diagnostics()}
 
     def _close_resources(self):
         with self._lock:
+            self._close_phase = ClosePhase.LEDGER
             self.ledger.close()
+            self._close_phase = ClosePhase.EXECUTOR
             self._executor.shutdown(wait=True)
+            self._close_phase = ClosePhase.LEASE
             if self._lease is not None:
                 os.close(self._lease)
                 self._lease = None
 
     def begin_close(self) -> asyncio.Task:
         """Close admission and retain the actual drain/SQLite/lease cleanup task."""
-        with self._lock:
-            self._closed = True
-            if self._closing is None:
-                drains = [self._work.begin_close()]
-                for reference in self._borrowers:
-                    begin = reference()
-                    if begin is not None:
-                        drains.append(begin())
-                async def finish():
-                    if self.maintenance is not None:
-                        self.maintenance.cancel()
-                        await asyncio.gather(self.maintenance, return_exceptions=True)
-                    await asyncio.gather(*drains)
-                    await asyncio.to_thread(self._close_resources)
-                self._closing = asyncio.create_task(finish())
-            return self._closing
+        # Admission and the retained task are loop-owned. The native initializer
+        # and close callback may hold _lock; waiting for it here stalls capture.
+        self._closed = True
+        if self._closing is None:
+            drains = [self._work.begin_close()]
+            for reference in self._borrowers:
+                begin = reference()
+                if begin is not None:
+                    drains.append(Context().run(begin))
+            async def finish():
+                self._close_phase = ClosePhase.MAINTENANCE
+                if self.maintenance is not None:
+                    self.maintenance.cancel()
+                    await asyncio.gather(self.maintenance, return_exceptions=True)
+                self._close_phase = ClosePhase.DRAIN
+                await asyncio.gather(*drains)
+                self._close_phase = ClosePhase.RESOURCES
+                await self._close_work.run(self._close_resources)
+                await self._close_work.begin_close()
+                self._close_phase = ClosePhase.COMPLETE
+            self._closing = asyncio.create_task(finish(),context=Context())
+        return self._closing
 
     async def aclose(self) -> None:
         """Bound observation while retaining the shared authority and writer lease."""
@@ -156,7 +172,8 @@ class PrivacyServices:
             except asyncio.CancelledError:
                 cancelled = True
             except TimeoutError as error:
-                raise WorkCloseTimeout("privacy_resources_still_running") from error
+                raise WorkCloseTimeout("privacy_resources_still_running",phase=self._close_phase,
+                    diagnostics=self.resource_status()) from error
         closing.result()
         if cancelled:
             raise asyncio.CancelledError
