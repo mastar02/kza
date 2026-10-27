@@ -1415,10 +1415,45 @@ Esto no vuelve a medir ni corrige las pausas globales de GC observadas antes;
 la aceptación integrada y física de H4/H6 sigue pendiente. No se modificaron
 producción ni los datos privados reales.
 
+## Avance: captura de entrada única y detector ambiental opcional
+
+El camino alternativo `AudioLoop`/`AudioManager` usa ahora el actor de captura
+compartido. El callback sólo copia a la cola acotada; wake, endpoint y reset
+se ejecutan fuera del event loop con comprobaciones de fuente antes y después
+del trabajo real. El timer conserva el momento de adquisición del frame, aunque
+el worker lo procese más tarde. La entrega de comandos y el análisis ambiental
+tienen admisión acotada e independiente de la captura; un consumidor lento no
+detiene la lectura. `main` inyecta la autoridad común y registra el cierre antes
+del warmup.
+
+La construcción, apertura, parada y liberación del driver tienen propietario
+nativo. Cancelar al observador no pierde un handle creado tarde: se retiran sus
+callbacks, se espera la apertura real y se reintenta el cierre sobre ese mismo
+handle. Un error del hook de retiro tampoco omite la liberación. La lease de
+privacidad permanece hasta que terminan driver, modelo y callbacks reales.
+El estado público sólo muestra contadores, sin handles ni contenido privado;
+los errores nuevos registran el tipo, sin copiar el payload de una excepción.
+
+Las ventanas ambientales conservan todas sus fuentes originales y el plazo más
+antiguo. Los parciales vencidos se retiran incluso sin nuevos frames; una pausa
+de entrada no se empalma como audio continuo. El `AudioEventDetector` opcional
+retiene carga, inferencia, features y callbacks síncronos fuera del loop; vuelve
+a comprobar las fuentes antes de cada notificación. La onda se libera al acabar
+la inferencia, aunque una notificación siga pendiente. Los callbacks asíncronos
+no cooperativos conservan su propietario hasta terminar y no permiten una
+entrega posterior desde fuentes revocadas. Un callback puede solicitar su propio
+cierre sin esperarse a sí mismo.
+
+La validación dirigida registra 676 pruebas pasadas, incluidos 32 casos nuevos
+con driver, manager, detector y catálogo reales y fronteras nativas sintéticas.
+La validación completa y del artefacto se registra por separado al finalizarla.
+Esto cubre ambos caminos de captura, pero siguen pendientes los consumidores
+de clips/aprendizaje, la integración completa de productores al journal y el
+ciclo físico del driver multiroom. No completa `PRODUCERS`, `STREAMS` ni H3.
+
 ## Trabajo restante
 
-1. Completar fuentes, buffers y scopes del camino alternativo `AudioLoop` y
-   `AudioManager`; cubrir los consumidores de clips y aprendizaje y conectar
+1. Cubrir los consumidores de clips y aprendizaje y conectar
    todos los productores reales al journal. El procesador y ambient retenidos
    todavía no completan `PRODUCERS`.
 2. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

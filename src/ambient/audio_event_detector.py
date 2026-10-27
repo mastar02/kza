@@ -6,16 +6,26 @@ Utiliza modelos de clasificación de audio (YAMNet o AudioSet) para detectar
 eventos en tiempo real sin necesidad de wake word.
 """
 
+import asyncio
+from contextvars import ContextVar
+import inspect
 import logging
+import threading
 import time
 import numpy as np
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Callable
 from collections import deque
 from pathlib import Path
 
+from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.memory.fact_ledger import MemorySource
+from src.memory.producer_context import PRODUCER_CONTEXT, model_admission
+from src.memory.prompt_context import SourcesInvalidated, run_private
+
 logger = logging.getLogger(__name__)
+_EVENT_OWNER = ContextVar('audio_event_owner', default=None)
 
 
 class AudioEventType(StrEnum):
@@ -55,6 +65,7 @@ class AudioEvent:
     duration_ms: float = 0
     zone_id: str = "default"
     metadata: dict = field(default_factory=dict)
+    sources: tuple[MemorySource, ...] = ()
 
 
 @dataclass
@@ -163,17 +174,26 @@ class AudioEventDetector:
         model_path: str = None,
         sample_rate: int = 16000,
         chunk_duration_ms: int = 1000,
-        use_gpu: bool = False
+        use_gpu: bool = False,
+        *, privacy=None, close_timeout_s: float = 1,
     ):
         self.model_path = model_path
         self.sample_rate = sample_rate
         self.chunk_duration_ms = chunk_duration_ms
         self.use_gpu = use_gpu
+        self._privacy = None
+        self._work = OwnedBlockingWork(capacity=4)
+        self._native_lock = threading.Lock()
+        self._analyses = set()
+        self._closed = False
+        self._closing = None
+        self._initialized = False
+        self._close_timeout_s = close_timeout_s
+        if privacy is not None:
+            self.attach_privacy(privacy)
 
         # Configuraciones de eventos
-        self._event_configs: dict[AudioEventType, EventConfig] = {
-            **self.DEFAULT_CONFIGS
-        }
+        self._event_configs = {kind: replace(config) for kind, config in self.DEFAULT_CONFIGS.items()}
 
         # Estado
         self._running = False
@@ -197,21 +217,62 @@ class AudioEventDetector:
             "events_by_type": {}
         }
 
-    async def initialize(self):
-        """Inicializar el detector y cargar modelo"""
-        logger.info("Inicializando detector de eventos de audio...")
+    def attach_privacy(self, privacy) -> None:
+        """Bind a shared authority before initialization, independently of memory."""
+        if self._initialized or self._work.status()['operations'] or self._closed or self._privacy not in (None, privacy):
+            raise RuntimeError('audio_event_privacy_binding_unavailable')
+        self._privacy = privacy
+        privacy.add_borrower(self.begin_close)
 
+    def _live(self, sources) -> bool:
+        return not self._closed and (self._privacy is None or self._privacy.sources_available(sources))
+
+    def _invoke(self, function, args, private, cancelled):
+        result = None
+        invalidated = False
+        def check():
+            if self._closed or cancelled.is_set() or private and not self._live(PRODUCER_CONTEXT.get().sources):
+                raise SourcesInvalidated('audio_event_sources_invalidated')
         try:
-            # Intentar cargar YAMNet o modelo similar
-            await self._load_model()
-            logger.info(f"Modelo cargado con {len(self._class_names)} clases")
+            with model_admission(self._native_lock, check):
+                result = function(*args)
+                check()
+                return result
+        except SourcesInvalidated:
+            invalidated = True
+        except Exception as error:
+            logger.warning('Audio event native operation failed: %s', type(error).__name__)
+        finally:
+            function = args = result = cancelled = check = None
+        if invalidated:
+            raise SourcesInvalidated('audio_event_sources_invalidated')
+        raise RuntimeError('audio_event_native_failed')
 
-        except Exception as e:
-            logger.warning(f"No se pudo cargar modelo ML: {e}")
-            logger.info("Usando detección basada en reglas como fallback")
+    async def _native(self, function, *args, private=True):
+        cancelled = threading.Event()
+        try:
+            return await self._work.run(self._invoke, function, args, private, cancelled)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        finally:
+            function = args = cancelled = None
+
+    async def initialize(self) -> None:
+        """Load the optional classifier outside the loop and retain native exit."""
+        if self._closed:
+            raise RuntimeError('audio_event_closed')
+        if self._initialized:
+            return
+        try:
+            await self._native(self._load_model_native, private=False)
+        except SourcesInvalidated:
+            raise
+        except Exception:
             self._setup_rule_based_detection()
+        self._initialized = True
 
-    async def _load_model(self):
+    def _load_model_native(self):
         """Cargar modelo de clasificación de audio"""
         # Implementación con TensorFlow Lite / ONNX
         # Por ahora, setup básico
@@ -257,52 +318,99 @@ class AudioEventDetector:
         if self._running:
             return
 
+        if self._closed:
+            raise RuntimeError('audio_event_closed')
         self._running = True
         logger.info("Detector de eventos de audio iniciado")
 
-    async def stop(self):
-        """Detener detección"""
-        self._running = False
-        logger.info("Detector de eventos de audio detenido")
+    def _track(self, task):
+        self._analyses.add(task)
+        def finished(done):
+            self._analyses.discard(done)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished)
+        return task
 
-    async def analyze_chunk(self, audio_data: np.ndarray, zone_id: str = "default") -> list[AudioEvent]:
-        """
-        Analizar chunk de audio y detectar eventos.
-
-        Args:
-            audio_data: Array de audio (float32, normalizado -1 a 1)
-            zone_id: ID de la zona donde se capturó
-
-        Returns:
-            Lista de eventos detectados
-        """
-        if not self._running:
-            return []
-
-        self._stats["total_chunks_analyzed"] += 1
-        events = []
-
+    async def analyze_chunk(self, audio_data: np.ndarray, zone_id: str = 'default') -> list[AudioEvent]:
+        """Retain actual sourced analysis and callbacks through cancellation."""
+        task = None
         try:
-            if self._model is not None:
-                # Clasificación con modelo ML
-                events = await self._classify_with_model(audio_data, zone_id)
-            else:
-                # Detección basada en características
-                events = await self._classify_with_features(audio_data, zone_id)
+            if not self._running or self._closed:
+                return []
+            if len(self._analyses) >= 4:
+                return []
+            task = self._track(asyncio.create_task(self._analyze_owned(audio_data, zone_id)))
+            audio_data = None
+            return await task
+        finally:
+            audio_data = task = None
 
-            # Filtrar por configuración y cooldown
+    async def _analyze_owned(self, audio, zone):
+        token = _EVENT_OWNER.set(asyncio.current_task())
+        sources = PRODUCER_CONTEXT.get().sources
+        try:
+            operation = self._analyze(audio, zone, sources)
+            audio = None
+            return await run_private(operation, lambda: self._live(sources))
+        except SourcesInvalidated:
+            return []
+        finally:
+            _EVENT_OWNER.reset(token)
+            audio = None
+
+    async def _analyze(self, audio, zone, sources):
+        events = event = None
+        try:
+            self._stats['total_chunks_analyzed'] += 1
+            function = self._classify_model if self._model is not None else self._classify_features
+            events = await self._native(function, audio, zone)
+            audio = None  # Notification callbacks never need the original waveform.
+            if not self._live(sources):
+                raise SourcesInvalidated('audio_event_sources_invalidated')
             events = self._filter_events(events)
-
-            # Notificar eventos
             for event in events:
+                event.sources = sources
                 await self._notify_event(event)
+            return events
+        finally:
+            audio = events = event = None
 
-        except Exception as e:
-            logger.error(f"Error analizando audio: {e}")
+    def begin_close(self) -> asyncio.Task:
+        """Retain actual model/callback exit before dropping loaded state."""
+        self._closed = True
+        self._running = False
+        if self._closing is None:
+            tasks = tuple(self._analyses)
+            exempt = _EVENT_OWNER.get()
+            for task in tasks:
+                if task is not exempt:
+                    task.cancel()
+            native = self._work.begin_close()
+            async def finish():
+                await asyncio.gather(*tasks, native, return_exceptions=True)
+                self._audio_buffer.clear()
+                self._last_detections.clear()
+                self._model = None
+            self._closing = asyncio.create_task(finish())
+        return self._closing
 
-        return events
+    async def stop(self) -> None:
+        """Bound close observation while retaining real native cleanup."""
+        closing = self.begin_close()
+        if _EVENT_OWNER.get() in self._analyses:
+            return
+        try:
+            async with asyncio.timeout(self._close_timeout_s):
+                await asyncio.shield(closing)
+        except TimeoutError:
+            raise WorkCloseTimeout('audio_event_still_running') from None
 
-    async def _classify_with_model(self, audio: np.ndarray, zone_id: str) -> list[AudioEvent]:
+    def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
+        """Expose actual finite analyses and native work."""
+        return tuple(self._analyses | self._work._tasks)
+
+    def _classify_model(self, audio: np.ndarray, zone_id: str) -> list[AudioEvent]:
         """Clasificar con modelo YAMNet"""
         events = []
 
@@ -344,11 +452,11 @@ class AudioEventDetector:
                     ))
 
         except Exception as e:
-            logger.error(f"Error en clasificación ML: {e}")
+            logger.warning("Audio event model classification failed: %s", type(e).__name__)
 
         return events
 
-    async def _classify_with_features(self, audio: np.ndarray, zone_id: str) -> list[AudioEvent]:
+    def _classify_features(self, audio: np.ndarray, zone_id: str) -> list[AudioEvent]:
         """Clasificación basada en características de audio (fallback)"""
         events = []
 
@@ -388,7 +496,7 @@ class AudioEventDetector:
                 ))
 
         except Exception as e:
-            logger.error(f"Error en clasificación por características: {e}")
+            logger.warning("Audio event feature classification failed: %s", type(e).__name__)
 
         return events
 
@@ -408,7 +516,7 @@ class AudioEventDetector:
                 if np.std(peak_diffs) / np.mean(peak_diffs) < 0.3:  # Variación < 30%
                     return True
         except Exception as e:
-            logger.debug(f"Beep pattern detection failed: {e}")
+            logger.debug('Audio periodicity check failed: %s', type(e).__name__)
         return False
 
     def _map_class_to_event(self, class_name: str) -> AudioEventType:
@@ -446,27 +554,37 @@ class AudioEventDetector:
 
         return filtered
 
+    def _sync_callback(self, callback, event):
+        try:
+            result = callback(event)
+            if inspect.iscoroutine(result):
+                result.close()
+                raise TypeError('audio_event_callback_must_declare_async')
+        finally:
+            callback = event = None
+
     async def _notify_event(self, event: AudioEvent):
-        """Notificar evento detectado"""
-        self._stats["events_detected"] += 1
-        self._stats["events_by_type"][event.event_type.value] = \
-            self._stats["events_by_type"].get(event.event_type.value, 0) + 1
-
-        config = self._event_configs.get(event.event_type)
-
-        logger.info(
-            f"Evento detectado: {event.event_type.value} "
-            f"(confianza: {event.confidence:.2f}, zona: {event.zone_id})"
-        )
-
-        # Callback general
-        if self._on_event:
-            self._on_event(event)
-
-        # Callback de seguridad para eventos prioritarios
-        if config and config.priority >= 8:
-            if self._on_security_event:
-                self._on_security_event(event)
+        try:
+            if not self._live(event.sources):
+                raise SourcesInvalidated('audio_event_sources_invalidated')
+            self._stats['events_detected'] += 1
+            counts = self._stats['events_by_type']
+            counts[event.event_type.value] = counts.get(event.event_type.value, 0) + 1
+            config = self._event_configs.get(event.event_type)
+            callbacks = [self._on_event]
+            if config and config.priority >= 8:
+                callbacks.append(self._on_security_event)
+            for callback in callbacks:
+                if callback is None:
+                    continue
+                if not self._live(event.sources):
+                    raise SourcesInvalidated('audio_event_sources_invalidated')
+                if inspect.iscoroutinefunction(callback) or inspect.iscoroutinefunction(getattr(type(callback), '__call__', None)):
+                    await callback(event)
+                else:
+                    await self._native(self._sync_callback, callback, event)
+        finally:
+            event = callback = callbacks = None
 
     # ==================== Configuración ====================
 

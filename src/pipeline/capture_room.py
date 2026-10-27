@@ -133,13 +133,14 @@ class CaptureRoom:
         finally:
             self._source = self._oldest = self._last_packet = None
 
-    async def _call_locked(self, function, *args):
+    async def _call_locked(self, function, *args, sources=None):
         task = None
         try:
             if self._pending is not None:
                 await asyncio.gather(asyncio.shield(self._pending), return_exceptions=True)
             source = self._source
-            with producer_context(self.room_id, (source,) if source is not None else ()):
+            lineage = ((source,) if source is not None else ()) if sources is None else sources
+            with producer_context(self.room_id, lineage):
                 task = asyncio.create_task(self._work.run(function, *args))
             self._pending = task
 
@@ -153,13 +154,13 @@ class CaptureRoom:
         finally:
             function = args = task = None
 
-    async def call(self, function: Callable, *args) -> object:
-        """Run one finite state operation after any cancelled observer's worker."""
+    async def call(self, function: Callable, *args, sources: tuple[MemorySource, ...] | None = None) -> object:
+        """Run finite state work; explicit lineage describes retained auxiliary inputs."""
         try:
             async with self._lock:
                 if self._closed:
                     raise SourcesInvalidated('capture_closed')
-                return await self._call_locked(function, *args)
+                return await self._call_locked(function, *args, sources=sources)
         finally:
             function = args = None
 
@@ -173,7 +174,7 @@ class CaptureRoom:
                     continue
                 if self._oldest is not None and packet.timestamp < self._oldest:
                     continue
-                self._process(packet.audio, packet.frames, None, None)
+                self._process(packet.audio, packet.frames, packet.timestamp, None)
                 self.require_live()
                 self._last_packet = packet.timestamp
             if self._oldest is not None:

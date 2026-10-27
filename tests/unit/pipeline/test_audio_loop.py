@@ -69,15 +69,19 @@ def _make_follow_up():
 @pytest.mark.parametrize("silence_endpoint", [True, False])
 async def test_run_preserves_silence_and_reports_capture_finality(monkeypatch, silence_endpoint):
     import numpy as np
+    import time
 
     manager = _make_audio_manager()
     manager.detect_wake_word.return_value = ("nexa", 0.9)
     received = []
     echo = _make_echo_suppressor()
     echo.should_process_audio.side_effect = [(True, "ok"), (True, "ok"), (False, "silence")]
-    loop = AudioLoop(manager, echo, _make_follow_up())
+    now = [time.time()]
+    loop = AudioLoop(manager, echo, _make_follow_up(), clock=lambda: now[0])
 
     def capture(buffer, *_args, **_kwargs):
+        if len(buffer) < 1280 + 4800:
+            return False, 0, None, False
         assert len(buffer) == 1280 + 4800
         assert all(sample == 0 for sample in buffer[-4800:])
         return True, 500, np.asarray(buffer, dtype=np.float32), silence_endpoint
@@ -90,11 +94,14 @@ async def test_run_preserves_silence_and_reports_capture_finality(monkeypatch, s
         def enter():
             callback = options["callback"]
             speech = np.full((1280, 1), 0.1, dtype=np.float32)
+            now[0] += .08
             callback(speech, 1280, None, None)  # Wake.
+            now[0] += .08
             callback(speech, 1280, None, None)
+            now[0] += .3
             callback(np.zeros((4800, 1), dtype=np.float32), 4800, None, None)
 
-        stream.__enter__.side_effect = enter
+        stream.start.side_effect = enter
         return stream
 
     async def on_command(event):
@@ -105,6 +112,7 @@ async def test_run_preserves_silence_and_reports_capture_finality(monkeypatch, s
     monkeypatch.setattr("src.pipeline.audio_loop.sd.InputStream", input_stream)
     loop.on_command(on_command)
     await asyncio.wait_for(loop.run(), 2)
+    await loop.stop()
     assert len(received) == 1
     assert isinstance(received[0], CommandEvent)
     assert received[0].capture_complete is silence_endpoint
@@ -298,7 +306,7 @@ class TestHandleTaskError:
             AudioLoop._handle_task_error(task)
 
         assert "Background audio task failed" in caplog.text
-        assert "boom" in caplog.text
+        assert "RuntimeError" in caplog.text and "boom" not in caplog.text
 
     def test_handle_task_error_ignores_cancelled(self, caplog):
         """No log for cancelled tasks."""

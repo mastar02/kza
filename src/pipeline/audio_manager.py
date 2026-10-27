@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 
 import numpy as np
 
@@ -33,6 +34,7 @@ class AudioManager:
         wake_word_threshold: float = 0.5,
         sample_rate: int = 16000,
         command_duration: float = 2.0,
+        *, clock: Callable[[], float] | None = None, wake_factory: Callable | None = None,
     ):
         """
         Inicializar AudioManager.
@@ -43,27 +45,32 @@ class AudioManager:
             wake_word_threshold: Umbral de confianza para wake word
             sample_rate: Sample rate de audio (Hz)
             command_duration: Duración máxima de comando (segundos)
+            clock: Recording clock shared with the capture owner.
+            wake_factory: Native wake backend constructor, injected for runtime adapters.
         """
         self.zone_manager = zone_manager
         self.wake_word_model = wake_word_model
         self.wake_word_threshold = wake_word_threshold
         self.sample_rate = sample_rate
         self.command_duration = command_duration
+        self._clock = clock or time.time
+        self._wake_factory = wake_factory or WakeWordDetector
 
         self._wake_model: WakeWordDetector | None = None
 
-    def load_wake_word(self):
+    def load_wake_word(self) -> None:
         """
         Cargar modelo de wake word (pre-entrenado o personalizado).
 
-        Soporta múltiples modelos separados por coma.
+        Soporta múltiples modelos separados por coma. Called by the serialized
+        capture worker, never by the device callback or event loop.
         """
         logger.info(f"Cargando wake word: {self.wake_word_model}")
 
         # Soportar múltiples modelos separados por coma
         models = [m.strip() for m in self.wake_word_model.split(",")]
 
-        self._wake_model = WakeWordDetector(
+        self._wake_model = self._wake_factory(
             models=models,
             threshold=self.wake_word_threshold,
             refractory_period=2.0
@@ -92,6 +99,22 @@ class AudioManager:
             return detection
 
         return None
+
+    def reset_wake_word(self) -> None:
+        """Retire recurrent wake history from its serialized capture worker."""
+        if self._wake_model is not None:
+            self._wake_model.reset()
+
+    def close_wake_word(self) -> None:
+        """Release a permanently stopped wake backend after its actual worker exit."""
+        model, self._wake_model = self._wake_model, None
+        if model is not None:
+            try:
+                model.reset()
+            finally:
+                delete = getattr(model, 'delete', None)
+                if callable(delete):
+                    delete()
 
     def detect_source_zone(self, audio: np.ndarray = None) -> str | None:
         """
@@ -136,7 +159,7 @@ class AudioManager:
         Returns:
             Tuple[is_complete, elapsed_ms, audio_data]
         """
-        elapsed = time.time() - command_start_time
+        elapsed = self._clock() - command_start_time
         elapsed_ms = elapsed * 1000
         is_complete = elapsed >= self.command_duration
 
@@ -172,7 +195,7 @@ class AudioManager:
             Tuple[is_complete, elapsed_ms, audio_data, early_exit]
             - early_exit=True si terminó por VAD antes del timeout
         """
-        elapsed = time.time() - command_start_time
+        elapsed = self._clock() - command_start_time
         elapsed_ms = elapsed * 1000
 
         # Mínimo de audio antes de considerar early exit

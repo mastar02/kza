@@ -1,262 +1,388 @@
-"""
-Audio Loop Module
-Main audio capture and wake word detection loop, extracted from VoicePipeline.
-
-Handles:
-- Audio capture via sounddevice InputStream
-- Echo suppression (skip audio while TTS plays)
-- Wake word detection
-- Follow-up mode (accept speech without wake word)
-- VAD-based command capture with early exit
-- Ambient audio detection (fire-and-forget background tasks)
-"""
+"""Single-input capture with the same native ownership and provenance as multiroom."""
 
 import asyncio
+from collections import deque
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 import logging
 import time
-from typing import Callable, Awaitable
 
 import numpy as np
 import sounddevice as sd
 
-from src.pipeline.audio_manager import AudioManager
-from src.pipeline.command_event import CommandEvent
 from src.audio import EchoSuppressor
+from src.audio.owned_input import OwnedInputStream
+from src.ambient.audio_event_detector import AudioEventDetector
 from src.conversation import FollowUpMode
+from src.core.owned_work import WorkCloseTimeout
+from src.memory.fact_ledger import MemoryOrigin, MemorySource
+from src.memory.producer_context import producer_context
+from src.memory.prompt_context import SourcesInvalidated, merge_sources, run_private
+from src.pipeline.audio_manager import AudioManager
+from src.pipeline.capture_room import CaptureRoom
+from src.pipeline.command_event import CommandEvent
 
 logger = logging.getLogger(__name__)
+_CALLBACK_OWNER = ContextVar('single_input_callback_owner', default=None)
+
+
+@dataclass
+class CaptureState:
+    """Native-worker-only command state, independent of response latency."""
+
+    listening: bool = False
+    started_at: float = 0.
+    audio: list = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AmbientBatch:
+    """One analysis window with every original input it includes."""
+
+    audio: np.ndarray
+    sources: tuple[MemorySource, ...]
 
 
 class AudioLoop:
-    """
-    Main audio capture and wake word detection loop.
+    """Own default-device capture, wake, endpointing and optional ambient events."""
 
-    Encapsulates the audio callback closure, sounddevice InputStream,
-    wake word detection, follow-up mode, VAD-based command capture,
-    echo suppression, and ambient audio detection. Designed to be
-    composed into VoicePipeline rather than subclassed.
-
-    Attributes:
-        audio_manager: AudioManager for wake word and VAD.
-        echo_suppressor: EchoSuppressor for echo detection.
-        follow_up: FollowUpMode for conversation continuity.
-        sample_rate: Audio sample rate in Hz.
-        ambient_detector: Optional AudioEventDetector for ambient events.
-    """
-
-    def __init__(
-        self,
-        audio_manager: AudioManager,
-        echo_suppressor: EchoSuppressor,
-        follow_up: FollowUpMode,
-        sample_rate: int = 16000,
-        ambient_detector=None,
-    ):
-        """
-        Initialize AudioLoop.
-
-        Args:
-            audio_manager: AudioManager instance for wake word + VAD.
-            echo_suppressor: EchoSuppressor instance for echo detection.
-            follow_up: FollowUpMode instance for conversation continuity.
-            sample_rate: Audio sample rate in Hz.
-            ambient_detector: Optional AudioEventDetector for ambient events.
-        """
-        self.audio_manager = audio_manager
-        self.echo_suppressor = echo_suppressor
-        self.follow_up = follow_up
-        self.sample_rate = sample_rate
+    def __init__(self, audio_manager: AudioManager, echo_suppressor: EchoSuppressor,
+                 follow_up: FollowUpMode, sample_rate: int = 16000,
+                 ambient_detector=None, *, privacy=None, clock=None,
+                 close_timeout_s: float = 1):
+        if isinstance(audio_manager, AudioManager) and audio_manager.sample_rate != sample_rate:
+            raise ValueError('capture_sample_rate_mismatch')
+        if isinstance(ambient_detector, AudioEventDetector) and ambient_detector.sample_rate != sample_rate:
+            raise ValueError('ambient_sample_rate_mismatch')
+        self.audio_manager, self.echo_suppressor = audio_manager, echo_suppressor
+        self.follow_up, self.sample_rate = follow_up, sample_rate
         self.ambient_detector = ambient_detector
-
-        self._running = False
+        self._privacy, self._clock = privacy, clock or time.time
+        self._close_timeout_s = close_timeout_s
+        self._state = CaptureState()
+        self._ambient_frames = deque()
+        self._ambient_samples = 0
+        self._ambient_end = None
+        self._ambient_ready = deque(maxlen=8)
+        self._running = self._closed = False
+        self._closing = self._controller = self._holder = None
+        self._starting = False
+        self._started = False
+        self._dispatch_drops = self._analysis_drops = 0
+        self._operations: set[asyncio.Task] = set()
+        self._dispatches: set[asyncio.Task] = set()
+        self._analyses: set[asyncio.Task] = set()
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
         self._on_post_command_callback: Callable[[dict, np.ndarray], Awaitable[None]] | None = None
+        self._room = CaptureRoom('', process=self._process_audio, poll=self._poll,
+            clear=self._clear_capture, listening=lambda: self._state.listening, privacy=privacy)
+        self._input = OwnedInputStream(self._make_stream, self._retire_input)
+        if isinstance(ambient_detector, AudioEventDetector) and privacy is not None:
+            ambient_detector.attach_privacy(privacy)
+        if privacy is not None:
+            privacy.add_borrower(self.begin_close)
 
     def on_command(self, callback: Callable[[CommandEvent], Awaitable[dict]]) -> None:
-        """
-        Register callback for when command audio is captured.
-
-        The callback receives a CommandEvent with capture finality
-        and must return a dict with at least 'text', 'success', 'action',
-        and 'response' keys.
-
-        Args:
-            callback: Async function(event: CommandEvent) -> dict.
-        """
+        """Register the sourced command callback."""
         self._on_command_callback = callback
 
-    def on_post_command(self, callback: Callable[[dict, np.ndarray], Awaitable[None]]):
-        """
-        Register callback for post-processing after command result.
-
-        Called after the command callback returns, for learning,
-        follow-up notifications, etc.
-
-        Args:
-            callback: Async function(result: dict, audio_data: np.ndarray) -> None.
-        """
+    def on_post_command(self, callback: Callable[[dict, np.ndarray], Awaitable[None]]) -> None:
+        """Register post-processing; capture lineage is inherited by its actual task."""
         self._on_post_command_callback = callback
 
-    async def start(self):
-        """Initialize audio subsystems (wake word, ambient detector)."""
-        self.audio_manager.load_wake_word()
-        if self.ambient_detector:
-            await self.ambient_detector.initialize()
-            await self.ambient_detector.start()
+    def _track(self, task, tasks):
+        tasks.add(task)
+        def finished(done):
+            tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished)
+        return task
 
-    async def run(self):
-        """
-        Main audio loop. Blocks until stop() is called.
+    def _live(self, sources) -> bool:
+        return not self._closed and (self._privacy is None or self._privacy.sources_available(sources))
 
-        Opens a sounddevice InputStream and continuously:
-        1. Captures audio via callback (runs on C thread)
-        2. Feeds chunks to wake word detector or follow-up mode
-        3. Captures command audio with VAD-based early exit
-        4. Dispatches captured commands via on_command callback
-        5. Runs post-command processing via on_post_command callback
-        6. Analyzes ambient audio in fire-and-forget background tasks
-        """
-        CHUNK_SIZE = 1280
-        audio_buffer = []
-        listening_for_command = False
-        command_start_time = None
-        ambient_buffer = []
+    async def start(self) -> None:
+        """Load wake off loop while retaining actual initialization after cancel."""
+        if self._closed or self._starting or self._started:
+            raise RuntimeError('audio_loop_start_unavailable')
+        self._starting = True
+        try:
+            await self._room.call(self._load_wake)
+            if self._closed:
+                raise RuntimeError('audio_loop_closed')
+            if self.ambient_detector is not None:
+                initializing = self._track(asyncio.create_task(self.ambient_detector.initialize()), self._operations)
+                await initializing
+                await self.ambient_detector.start()
+            if self._closed:
+                raise RuntimeError('audio_loop_closed')
+            self._started = True
+        finally:
+            self._starting = False
 
-        logger.info(
-            f"AudioLoop ready. Wake word: '{self.audio_manager.wake_word_model}'"
-        )
-        logger.info(
-            f"  Follow-up mode: {self.follow_up.follow_up_window}s window"
-        )
-        logger.info(
-            f"  Ambient detection: {'ON' if self.ambient_detector else 'OFF'}"
-        )
-        logger.info(
-            f"  Echo suppression: ON "
-            f"(cooldown={self.echo_suppressor.config.post_speech_buffer_ms}ms)"
-        )
+    def _load_wake(self):
+        if not self._closed:
+            self.audio_manager.load_wake_word()
 
-        self._running = True
+    def _make_stream(self):
+        return sd.InputStream(samplerate=self.sample_rate, channels=1, dtype='float32',
+                              blocksize=1280, callback=self._make_audio_callback())
 
-        def audio_callback(indata, frames, time_info, status):
-            """
-            Sounddevice callback — runs on a C thread.
+    def _make_audio_callback(self):
+        holder = object()
+        self._holder = holder
+        def callback(indata, frames, time_info, status):
+            if self._closed or self._holder is not holder:
+                return
+            timestamp = self._clock() - frames / self.sample_rate
+            if not self._closed and self._holder is holder:
+                self._room.push(timestamp, indata, frames)
+        return callback
 
-            Must NOT contain any async calls. Only manipulates
-            nonlocal buffers and flags.
-            """
-            nonlocal audio_buffer, listening_for_command, command_start_time, ambient_buffer
+    def _retire_input(self):
+        self._room.retire_stream(self._clock())
+        self._holder = None
 
-            audio_chunk = indata[:, 0].copy()
+    def _ambient_sources(self):
+        return merge_sources(*(sources for sources, _ in tuple(self._ambient_frames)),
+                             *(batch.sources for batch in tuple(self._ambient_ready)))
 
-            # === Echo suppression ===
-            # If KZA is speaking, ignore mic audio
+    def _prune_ambient(self):
+        if self._closed:
+            self._ambient_frames.clear()
+            self._ambient_ready.clear()
+            self._ambient_end = None
+        else:
+            self._ambient_frames = deque((sources, audio) for sources, audio in self._ambient_frames if self._live(sources))
+            self._ambient_ready = deque((batch for batch in self._ambient_ready if self._live(batch.sources)), maxlen=8)
+        self._ambient_samples = sum(len(audio) for _, audio in self._ambient_frames)
+
+    def _append_ambient(self, audio, timestamp):
+        self._prune_ambient()
+        if type(timestamp) in (int, float):
+            if self._ambient_end is not None and timestamp - self._ambient_end > .5:
+                self._ambient_frames.clear()
+                self._ambient_samples = 0
+            self._ambient_end = timestamp + len(audio) / self.sample_rate
+        source = self._room.source
+        sources = (source,) if source is not None else ()
+        if not self._live(sources):
+            return
+        self._ambient_frames.append((sources, audio.copy()))
+        self._ambient_samples += len(audio)
+        while self._ambient_samples >= self.sample_rate:
+            parts, groups = [], []
+            remaining = self.sample_rate
+            while remaining:
+                lineage, frame = self._ambient_frames.popleft()
+                count = min(remaining, len(frame))
+                parts.append(frame[:count])
+                groups.append(lineage)
+                if count < len(frame):
+                    self._ambient_frames.appendleft((lineage, frame[count:]))
+                remaining -= count
+            self._ambient_samples -= self.sample_rate
+            self._ambient_ready.append(AmbientBatch(np.concatenate(parts), merge_sources(*groups)))
+
+    def _process_audio(self, indata, frames, time_info, status):
+        audio = None
+        try:
+            self._room.require_live()
+            audio = indata[:, 0].copy()
             if not self.echo_suppressor.is_safe_to_listen:
                 return
-
-            # Check if captured audio is TTS echo
-            should_process, reason = self.echo_suppressor.should_process_audio(audio_chunk)
-            if not should_process and reason != "silence":
-                if reason == "echo_detected":
-                    logger.debug("Echo detected, ignoring audio")
+            allowed, reason = self.echo_suppressor.should_process_audio(audio)
+            self._room.require_live()
+            if not allowed and reason != 'silence':
                 return
-
-            # Accumulate for ambient detection (always active)
-            ambient_buffer.extend(audio_chunk)
-
-            if not listening_for_command:
-                # Detect wake word
-                detection = self.audio_manager.detect_wake_word(audio_chunk)
-
+            if self.ambient_detector is not None:
+                self._append_ambient(audio, time_info)
+            if self._state.listening:
+                self._state.audio.extend(audio)
+                return
+            detection = self.audio_manager.detect_wake_word(audio)
+            self._room.require_live()
+            if detection or self.follow_up.is_active and np.sqrt(np.mean(audio ** 2)) > .02 and self.echo_suppressor.is_human_voice(audio):
+                self._room.require_live()
                 if detection:
-                    listening_for_command = True
-                    command_start_time = time.time()
-                    audio_buffer = []
-                    # Start conversation for follow-up mode
                     self.follow_up.start_conversation()
+                self._state.started_at = (time_info + frames / self.sample_rate
+                    if type(time_info) in (int, float) else self._clock())
+                self._state.audio = []
+                self._state.listening = True
+        finally:
+            indata = audio = None
 
-                # Follow-up mode: accept without wake word if conversation active
-                elif self.follow_up.is_active:
-                    # Simple VAD to detect speech
-                    rms = np.sqrt(np.mean(audio_chunk ** 2))
-                    if rms > 0.02:  # Activity threshold
-                        # Verify it's not KZA's own voice
-                        if self.echo_suppressor.is_human_voice(audio_chunk):
-                            listening_for_command = True
-                            command_start_time = time.time()
-                            audio_buffer = []
-                            logger.debug("Follow-up: capturing without wake word")
+    def _poll(self):
+        self._prune_ambient()
+        if not self._state.listening:
+            return None
+        self._room.require_live()
+        complete, _, audio, early = self.audio_manager.capture_command_with_vad(
+            self._state.audio, self._state.started_at, silence_threshold=.015,
+            silence_duration_ms=300, min_speech_ms=300)
+        self._room.require_live()
+        if complete and audio is not None:
+            return CommandEvent(audio=audio, room_id='', capture_complete=early,
+                                captured_at=self._state.started_at)
+        return None
+
+    def _clear_capture(self):
+        self._state = CaptureState()
+        self._prune_ambient()
+        if self._closed:
+            self.audio_manager.close_wake_word()
+        else:
+            self.audio_manager.reset_wake_word()
+
+    def _take_ambient(self):
+        self._prune_ambient()
+        result = list(self._ambient_ready)
+        self._ambient_ready.clear()
+        return result
+
+    async def _invoke_callbacks(self, event, sources):
+        result = None
+        try:
+            if not self._live(sources):
+                raise SourcesInvalidated('audio_sources_invalidated')
+            if self._on_command_callback is not None:
+                result = await self._on_command_callback(event)
             else:
-                audio_buffer.extend(audio_chunk)
+                result = {}
+            if self._on_post_command_callback is not None:
+                if not self._live(sources):
+                    raise SourcesInvalidated('audio_sources_invalidated')
+                await self._on_post_command_callback(result, event.audio)
+        finally:
+            event = result = None
 
-        stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype='float32',
-            blocksize=CHUNK_SIZE,
-            callback=audio_callback
-        )
+    async def _dispatch(self, event, sources):
+        token = _CALLBACK_OWNER.set(asyncio.current_task())
+        try:
+            await run_private(self._invoke_callbacks(event, sources), lambda: self._live(sources))
+        except SourcesInvalidated:
+            pass
+        except Exception as error:
+            logger.error('Audio command callback failed: %s', type(error).__name__)
+        finally:
+            _CALLBACK_OWNER.reset(token)
+            event = None
 
-        with stream:
-            while self._running:
-                await asyncio.sleep(0.05)
+    async def _analyze(self, batch):
+        token = _CALLBACK_OWNER.set(asyncio.current_task())
+        sources = batch.sources
+        try:
+            operation = self.ambient_detector.analyze_chunk(batch.audio)
+            batch = None
+            await run_private(operation, lambda: self._live(sources))
+        except SourcesInvalidated:
+            pass
+        except Exception as error:
+            logger.warning('Ambient audio callback failed: %s', type(error).__name__)
+        finally:
+            _CALLBACK_OWNER.reset(token)
+            batch = None
 
-                # === Ambient detection (in parallel) ===
-                if self.ambient_detector and len(ambient_buffer) >= self.sample_rate:
-                    # Process 1 second of audio
-                    chunk = np.array(ambient_buffer[:self.sample_rate], dtype=np.float32)
-                    ambient_buffer = ambient_buffer[self.sample_rate:]
-
-                    # Analyze in background (non-blocking)
-                    task = asyncio.create_task(
-                        self.ambient_detector.analyze_chunk(chunk)
-                    )
-                    task.add_done_callback(self._handle_task_error)
-
-                # === Command processing ===
-                if listening_for_command:
-                    # Use early VAD to detect end of speech
-                    is_complete, elapsed_ms, audio_data, early_exit = (
-                        self.audio_manager.capture_command_with_vad(
-                            audio_buffer,
-                            command_start_time,
-                            silence_threshold=0.015,
-                            silence_duration_ms=300,
-                            min_speech_ms=300
-                        )
-                    )
-
-                    if is_complete and audio_data is not None:
-                        if early_exit:
-                            logger.debug(
-                                f"VAD early exit: command captured in {elapsed_ms:.0f}ms"
-                            )
-
-                        # Dispatch command via callback
-                        if self._on_command_callback:
-                            event = CommandEvent(
-                                audio=audio_data, room_id="", capture_complete=early_exit,
-                            )
-                            result = await self._on_command_callback(event)
+    async def _consume(self):
+        event = step = batches = batch = None
+        try:
+            while self._running and not self._closed:
+                step = self._track(asyncio.create_task(self._room.step()), self._operations)
+                event = await step
+                if event is not None and len(self._dispatches) < 8:
+                    sources = ()
+                    if self._privacy is not None:
+                        sources = (MemorySource(event.capture_id, event.conversation_id,
+                            event.captured_at, event.source_expires_at, MemoryOrigin.VOICE),)
+                    with producer_context('', sources):
+                        self._track(asyncio.create_task(self._dispatch(event, sources)), self._dispatches)
+                elif event is not None:
+                    self._dispatch_drops += 1
+                event = step = None
+                if self.ambient_detector is not None:
+                    sources = self._ambient_sources()
+                    batches = await self._room.call(self._take_ambient, sources=sources)
+                    for batch in batches:
+                        if len(self._analyses) < 2 and self._live(batch.sources):
+                            with producer_context('', batch.sources):
+                                self._track(asyncio.create_task(self._analyze(batch)), self._analyses)
                         else:
-                            logger.warning("No on_command callback registered")
-                            result = {}
+                            self._analysis_drops += 1
+                    batches = batch = None
+                await asyncio.sleep(.05)
+        except SourcesInvalidated:
+            pass
+        except Exception as error:
+            logger.error('Audio capture controller stopped: %s', type(error).__name__)
+            self.begin_close()
+        finally:
+            event = step = batches = batch = None
 
-                        # Post-command processing
-                        if self._on_post_command_callback:
-                            await self._on_post_command_callback(result, audio_data)
+    async def run(self) -> None:
+        """Capture independently of response latency, retaining native resources."""
+        if self._closed or self._running:
+            raise RuntimeError('audio_loop_run_unavailable')
+        self._running = True
+        self._controller = asyncio.create_task(self._consume())
+        try:
+            await self._input.open()
+            while self._running:
+                await asyncio.sleep(.05)
+        finally:
+            self.begin_close()
 
-                        listening_for_command = False
-                        audio_buffer = []
-
-    async def stop(self):
-        """Stop the audio loop and ambient detector."""
+    def begin_close(self) -> asyncio.Task:
+        """Reject input and retain all actual driver, model and callback cleanup."""
+        self._closed = True
         self._running = False
-        if self.ambient_detector:
-            await self.ambient_detector.stop()
+        if self._closing is None:
+            exempt = _CALLBACK_OWNER.get()
+            controllers = self._operations | self._dispatches | self._analyses
+            if self._controller is not None:
+                controllers.add(self._controller)
+            for task in controllers:
+                if task is not exempt:
+                    task.cancel()
+            drains = [self._room.begin_close(), self._input.begin_close()]
+            if isinstance(self.ambient_detector, AudioEventDetector):
+                drains.append(self.ambient_detector.begin_close())
+            async def finish():
+                await asyncio.gather(*controllers, *drains, return_exceptions=True)
+                if self.ambient_detector is not None:
+                    await self.ambient_detector.stop()
+            self._closing = asyncio.create_task(finish())
+        return self._closing
+
+    async def stop(self) -> None:
+        """Bound close observation; a callback may signal its own retained close."""
+        closing = self.begin_close()
+        if _CALLBACK_OWNER.get() in self._dispatches | self._analyses:
+            return
+        try:
+            async with asyncio.timeout(self._close_timeout_s):
+                await asyncio.shield(closing)
+        except TimeoutError:
+            raise WorkCloseTimeout('single_input_still_running') from None
+
+    def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
+        """Expose finite capture, analysis, callbacks and actual driver operations."""
+        tasks = self._operations | self._dispatches | self._analyses | set(self._room.snapshot_operations()) | set(self._input.snapshot_operations())
+        if isinstance(self.ambient_detector, AudioEventDetector):
+            tasks |= set(self.ambient_detector.snapshot_operations())
+        return tuple(tasks)
+
+    def resource_status(self) -> dict:
+        """Report bounded ownership without capture identifiers or audio."""
+        return {'closed': self._closed, 'operations': len(self.snapshot_operations()),
+                'capture': self._room.resource_status(), 'input': self._input.resource_status(),
+                'ambient_samples': self._ambient_samples, 'ambient_ready': len(self._ambient_ready),
+                'dispatch_drops': self._dispatch_drops, 'analysis_drops': self._analysis_drops}
 
     @staticmethod
-    def _handle_task_error(task: asyncio.Task):
-        """Log errors from fire-and-forget background tasks."""
+    def _handle_task_error(task: asyncio.Task) -> None:
+        """Report only failure type; never retain a producer's private traceback."""
         if not task.cancelled() and task.exception():
-            logger.error(f"Background audio task failed: {task.exception()}")
+            logger.error('Background audio task failed: %s', type(task.exception()).__name__)

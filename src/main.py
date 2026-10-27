@@ -1294,7 +1294,9 @@ async def _run_main(shutdown: AsyncExitStack):
         echo_suppressor=echo_suppressor,
         follow_up=follow_up,
         sample_rate=16000,
+        privacy=privacy_services,
     )
+    shutdown.push_async_callback(audio_loop.stop)
 
     # === Plan #2 OpenClaw — Compactor + Persister (opcionales) ===
     context_cfg = (config.get("orchestrator", {}) or {}).get("context", {}) or {}
