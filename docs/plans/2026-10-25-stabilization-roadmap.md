@@ -829,6 +829,14 @@ verificados. El inventario restante de `STREAMS` sigue bloqueado: otros
 WebSockets, caches REST, clientes legacy y páginas sin confirmación necesitan
 cobertura. No se cierra H3.
 
+La [vista Conversaciones por REST](../research/2026-10-27-h3-conversation-deadlines-validation.json)
+ya propaga el vencimiento original de todas sus capturas y retira la caché,
+el DOM y el filtro de voz al vencer. Sus textos dejaron de poblar los mocks y
+el estado de React; los IDs provienen del registro persistido y distinguen
+acciones simultáneas de una misma captura. Esta cobertura local de TTL no
+resuelve los recibos REST, la invalidación anticipada por borrado ni las cachés
+de las demás vistas. `STREAMS` y H3 siguen abiertos.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

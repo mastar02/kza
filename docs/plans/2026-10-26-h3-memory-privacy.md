@@ -2760,6 +2760,65 @@ sin afirmar sobreescritura física de RAM ni aceptación de todos los buffers
 inferiores de transporte. No se habilita borrado global ni se cierra H3, H4/H6
 o la release. Producción permanece sin cambios.
 
+## Vencimiento de Conversaciones REST en el navegador — 2026-10-27
+
+La revisión posterior encontró que `/api/conversations` filtraba las fuentes
+al leer, pero no transmitía su vencimiento. El bootstrap copiaba los textos a
+`window.MOCKS.CONVERSATIONS` y la vista los llevaba a props de React. Una
+página abierta podía conservarlos después de las 48 horas originales aunque
+otra lectura del servidor ya no los devolviera.
+
+La proyección ahora incluye la observación de la autoridad y el menor plazo
+entre los metadatos del evento, su texto y todas sus capturas. Se excluyen
+eventos sin procedencia, plazo o ID persistente verificable. Texto y etiquetas
+tienen límites explícitos; el contexto anidado no se propaga y los parámetros
+se limitan a campos escalares conocidos. La ausencia de un recibo de ejecución
+produce un resultado sin confirmar, en lugar de afirmar éxito por defecto.
+
+El navegador conserva como máximo 50 proyecciones separadas de los mocks.
+Cuenta la descarga y decodificación dentro del plazo original; usa reloj
+monotónico y de pared sin permitir que un retroceso o una entrega repetida
+extiendan el vencimiento. Un timer retira las filas aun sin interacción, y las
+comprobaciones de visibilidad/foco cubren la reanudación de la vista. React
+conserva sólo el contenedor: el renderer escribe texto en DOM sin trasladarlo a
+props o estado. Al vencer se limpian también el detalle y el nombre elegido en
+el filtro; al desmontar se descarta la selección. Perder la sesión vacía la
+caché aunque la vista ya esté cerrada. No se presentan una forma de onda,
+latencias por etapa ni una exportación ficticias como evidencia del turno.
+
+La revisión reprodujo además una colisión entre acciones con igual timestamp
+y captura. El DTO de eventos incorpora ahora el ID que SQLite ya había
+persistido, sin cambiar el esquema ni regenerarlo al leer. La proyección usa
+ese ID junto con la captura. Una regresión conectada escribe tres acciones
+con la misma captura y hora, incluidas dos idénticas, y exige IDs distintos y
+estables en las lecturas siguientes.
+
+La [evidencia de Conversaciones REST](../research/2026-10-27-h3-conversation-deadlines-validation.json)
+corresponde a `575a79b`, que incluye la implementación de `cc0620a` y la
+corrección de IDs. Pasaron **5.449 pruebas con 1 xfail en 243,42 s**, incluidas
+5 nuevas de backend; también 435 focalizadas, 39 de frontend (9 nuevas), Ruff,
+Bandit sin hallazgos medios o altos y el smoke del dashboard. Chromium verificó
+el vencimiento visible y la caché al perder sesión, con HTTP real y sin
+excepciones JavaScript. El artefacto sin fuentes verificó 331 hashes y pasó su
+ensayo REST autenticado en 0,98 s. Relojes, fuentes y adaptadores de servicio
+siguen siendo sintéticos; no se sustituye la aceptación de hardware.
+
+La evidencia conserva la prueba roja de la colisión y la suite parcial detenida
+para corregirla, con 1.015 pruebas pasadas y sin aceptación completa. La suite
+final completa se ejecutó después de la corrección. El primer ensayo de
+Chromium llegó a verificar el vencimiento, pero intentó devolver un nodo DOM
+completo por CDP y falló al serializarlo; la secuencia final solicita un
+booleano y comprueba también la pérdida de sesión con la caché cerrada.
+
+Esto completa el vencimiento local de esta vista, no el participante global
+`STREAMS`. Faltan el propietario del cuerpo REST y sus envíos reales, los
+recibos durables del navegador para estas entregas, y la invalidación
+anticipada entre clientes cuando se borra una conversación o una dependencia.
+Un cliente puede conservar la copia hasta su plazo original si el borrado se
+produce antes. Tampoco cubre cachés de acciones HA, recuerdos, alertas u otras
+vistas, ni navegadores legacy. La aceptación integrada de H3/H4/H6 y hardware
+sigue pendiente. Producción permanece sin cambios.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

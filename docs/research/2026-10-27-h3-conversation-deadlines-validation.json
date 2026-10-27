@@ -1,0 +1,185 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "575a79b699682121fea697c8a022358ffc009c25",
+  "implementation_commit": "cc0620ae15723462ef3dfe38030652128deebb25",
+  "tested_runtime_source_tree": "c10ee7770f06558e912539152ac4c7635739e760",
+  "tested_scripts_source_tree": "dbea44016428379ce5f2f970b1d70010641711ce",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "Original-source TTL propagation and browser cache/DOM retirement for REST Conversations. No global erasure completion or durable REST client ACK is claimed.",
+  "baseline_gap": "The authenticated server filtered raw text on read, but the REST projection omitted deadlines and bootstrap retained it in window.MOCKS and React props after source expiry.",
+  "new_backend_cases": [
+    "tests.integration.test_event_privacy::test_conversation_snapshot_distinguishes_same_capture_actions_at_the_same_time",
+    "tests.unit.dashboard.test_conversation_projection::test_projection_carries_the_earliest_original_deadline_across_multiple_sources",
+    "tests.unit.dashboard.test_conversation_projection::test_unsourced_or_missing_nonfinite_deadlines_are_not_projected",
+    "tests.unit.dashboard.test_conversation_projection::test_unknown_context_and_nested_values_never_enter_the_transport_projection",
+    "tests.unit.dashboard.test_conversation_projection::test_text_fields_are_bounded_and_user_names_cannot_override_source_deadlines"
+  ],
+  "new_backend_cases_total": 5,
+  "new_frontend_cases": 9,
+  "collision_regression": {
+    "red_log": "/tmp/kza-conversation-deadlines-id-collision-red.log",
+    "red_failed": 1,
+    "red_runtime_s": 0.91,
+    "finding": "Three actual SQL events shared timestamp and capture ID, including repeated identical actions. The projection emitted duplicate IDs and the bounded client correctly rejected the entire snapshot.",
+    "fix": "Expose the existing SQLite row ID on the Event DTO at insert/read and use it with the original capture ID. No schema migration, new identifier on read, retry or deadline extension.",
+    "green_case": "tests.integration.test_event_privacy::test_conversation_snapshot_distinguishes_same_capture_actions_at_the_same_time"
+  },
+  "nonaccepted_interrupted_full_suite": {
+    "commit": "cc0620ae15723462ef3dfe38030652128deebb25",
+    "log": "/tmp/kza-conversation-deadlines-full.log",
+    "xml": "/tmp/kza-conversation-deadlines-full.xml",
+    "terminal_exit_code": 2,
+    "runtime_s": 82.82,
+    "completed_passed": 1015,
+    "observed_junit_counts": {
+      "tests": 1015,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "reason": "Stopped the verified live pytest process with SIGINT after reproducing a projection ID collision. The final complete suite follows the persistent-ID correction."
+  },
+  "nonaccepted_browser_run": {
+    "log": "/tmp/kza-conversation-deadlines-browser.log",
+    "finding": "TTL/cache/DOM/filter checks had completed; the CDP helper then attempted to serialize a full returned DOM node and failed with Object reference chain is too long. The final sequence asks for a boolean and separately reloads an actual sourced REST snapshot to check session-loss cleanup."
+  },
+  "full_suite": {
+    "accepted": true,
+    "collected": 5450,
+    "passed": 5449,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "summary": "========= 5449 passed, 1 xfailed, 31908 warnings in 243.42s (0:04:03) ==========",
+    "junit_time_s": 243.339,
+    "log": "/tmp/kza-conversation-deadlines-final-full.log",
+    "xml": "/tmp/kza-conversation-deadlines-final-full.xml",
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-conversation-deadlines-final-full.xml",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "isolated_voice_metrics": {
+      "repetitions": 10,
+      "sentences_per_run": 100,
+      "samples_per_run": 2400000,
+      "provider_wait_ms": 200,
+      "heartbeat_interval_ms": 5,
+      "heartbeat_samples": 2722,
+      "loop_lag_p95_ms": 0.9971120208501815,
+      "loop_lag_max_ms": 1.994056049734354,
+      "exact_pcm_runs": 10
+    }
+  },
+  "focused_suite": {
+    "passed": 435,
+    "failed": 0,
+    "runtime_s": 33.46,
+    "summary": "===================== 435 passed, 2155 warnings in 33.46s ======================",
+    "log": "/tmp/kza-conversation-deadlines-final-focused.log"
+  },
+  "other_checks": {
+    "frontend": {
+      "passed": 39,
+      "failed": 0,
+      "log": "/tmp/kza-conversation-deadlines-final-frontend.log"
+    },
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-conversation-deadlines-final-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-conversation-deadlines-final-bandit.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "mocked_services": true,
+      "log": "/tmp/kza-conversation-deadlines-final-dashboard.log"
+    },
+    "chromium": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "rendered_conversation_retirement": true,
+      "rendered_idle_expiry": true,
+      "disconnect_clears_ticker": true,
+      "lost_session_clears_private_dom": true,
+      "javascript_exceptions": 0,
+      "synthetic_sources_and_service_adapters": true,
+      "browser_ack_after_dom_and_cache_clear": true,
+      "browser_ack_waits_for_explicit_dom_commit": true,
+      "pagehide_handler_clears_and_acknowledges_owned_view": true,
+      "rest_conversation_original_deadline_clears_cache_dom_and_voice_filter": true,
+      "rest_conversation_payload_excluded_from_global_mock_cache": true,
+      "session_loss_clears_unmounted_rest_conversation_cache": true,
+      "global_streams_acceptance": false,
+      "log": "/tmp/kza-conversation-deadlines-final-id-browser.log",
+      "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m tests.frontend.browser_live_privacy"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "575a79b699682121fea697c8a022358ffc009c25",
+    "artifact": "/tmp/kza-conversation-deadlines-runtime-xpp7cdd8/runtime.tar.gz",
+    "verified_hashes": 331,
+    "runtime_s": 0.9778253219556063,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 331,
+      "actual_uvicorn_aiohttp_authenticated_rest": true,
+      "original_capture_deadline_and_observation_propagated": true,
+      "expired_and_revoked_rows_absent_on_new_read": true,
+      "unknown_nested_context_excluded": true,
+      "missing_action_receipt_remains_unconfirmed": true,
+      "no_store_response": true,
+      "exact_compiled_frontend_asset_served": true,
+      "actual_dom_expiry_in_separate_chromium_check": true,
+      "synthetic_clock_sources_and_service_adapters": true,
+      "pending_rest_transport_ownership_and_durable_client_ack": true,
+      "global_streams_full_main_or_hardware_acceptance": false
+    }
+  },
+  "verified_behaviors": {
+    "projection_uses_earliest_event_text_and_capture_deadline": true,
+    "missing_sources_deadline_or_persistent_id_cannot_produce_a_live_projection": true,
+    "context_objects_unknown_fields_and_nonfinite_latency_are_excluded": true,
+    "private_text_is_bounded_to_8192_characters_per_field": true,
+    "missing_action_receipt_does_not_fabricate_success": true,
+    "duplicate_timestamp_and_capture_actions_have_distinct_stable_sql_ids": true,
+    "browser_snapshot_limited_to_50_detached_scalar_rows": true,
+    "full_request_and_json_decode_delay_consume_original_ttl": true,
+    "late_responses_never_enter_the_browser_cache": true,
+    "wall_clock_rollback_or_duplicate_delivery_cannot_extend_earliest_local_deadline": true,
+    "idle_timer_and_resume_checks_prune_cache_and_actual_dom": true,
+    "selected_voice_filter_clears_when_its_source_rows_expire": true,
+    "react_component_owns_only_container_and_no_private_row_props_or_state": true,
+    "real_rest_payload_does_not_enter_global_mock_cache": true,
+    "lost_session_clears_even_unmounted_conversation_cache": true,
+    "existing_live_receipt_browser_checks_still_pass": true
+  },
+  "limits": {
+    "early_delete_or_dependency_revocation_invalidates_existing_browser_snapshot": false,
+    "owned_rest_response_body_and_actual_send_callbacks_complete": false,
+    "durable_client_ack_for_rest_deliveries": false,
+    "browser_can_keep_pre_delete_snapshot_until_original_source_deadline": true,
+    "ha_actions_memory_alerts_or_other_view_caches_covered": false,
+    "legacy_or_unknown_browser_copies_resolved": false,
+    "global_streams_participant_complete": false,
+    "global_conversation_erasure_ui_enabled": false,
+    "full_producers_diagnostics_or_voices_complete": false,
+    "full_main_audio_sdk_or_hardware_acceptance": false,
+    "full_h4_capacity_gc_or_latency_acceptance": false,
+    "earlier_92_90_ms_loop_spike_and_495_68_ms_gc_pause_explained_or_fixed": false,
+    "gc_forced_disabled_or_frozen": false,
+    "existing_deadlines_capacities_or_retries_enlarged_for_green_tests": false,
+    "production_modified": false,
+    "overall_h3_or_roadmap_complete": false
+  }
+}
