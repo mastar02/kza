@@ -912,7 +912,6 @@ async def _run_main(shutdown: AsyncExitStack):
                             tv_mode_min_audio_s=room_wake_cfg.get("tv_mode_min_audio_s", 1.0),
                             use_silero_vad=room_wake_cfg.get("use_silero_vad", True),
                         )
-                    wake_detector.load()
                 elif wake_engine == "porcupine":
                     import os as _os
                     from src.wakeword.porcupine_wake import PorcupineWakeDetector
@@ -926,7 +925,6 @@ async def _run_main(shutdown: AsyncExitStack):
                         sensitivity=_pv.get("sensitivity", 0.6),
                         wake_word=(room_wake_cfg.get("words") or ["nexa"])[0],
                     )
-                    wake_detector.load()
                 else:
                     wake_detector = WakeWordDetector(
                         models=[room_wake_cfg.get("model", "hey_jarvis")],
@@ -1069,6 +1067,7 @@ async def _run_main(shutdown: AsyncExitStack):
                     f"max_files={clip_cfg.get('max_files', 2000)}"
                 )
             multi_room_loop = MultiRoomAudioLoop(
+                privacy=privacy_services,
                 room_streams=room_streams,
                 microphone_rooms=build_microphone_rooms(room_context_manager.get_all_rooms()),
                 microphone_interval_s=rooms_config.get("telemetry", {}).get("interval_s", 2.0),
@@ -1118,6 +1117,7 @@ async def _run_main(shutdown: AsyncExitStack):
                     "health_path", "./data/audio_health.json"
                 ),
             )
+            shutdown.push_async_callback(multi_room_loop.stop)
             logger.info(
                 f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "
                 f"{', '.join(room_streams.keys())})"
@@ -1183,6 +1183,7 @@ async def _run_main(shutdown: AsyncExitStack):
         shadow_stt=shadow_stt,
         shadow_veto=bool((config.get("stt", {}) or {}).get("shadow_veto", False)),
         privacy=privacy_services,
+        model_locks=multi_room_loop.native_model_locks if multi_room_loop is not None else None,
     )
     shutdown.push_async_callback(command_processor.aclose)
 

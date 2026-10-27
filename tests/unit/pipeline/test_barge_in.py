@@ -158,7 +158,7 @@ class TestBargeInAccumulator:
         rs = loop.room_streams["escritorio"]
 
         # Primero acumulamos con audio alto
-        callback = loop._make_audio_callback(rs)
+        callback = loop._make_audio_processor(rs)
 
         loud_audio = np.full((320, 1), 0.5, dtype=np.float32)
         callback(loud_audio, frames=320, time_info=None, status=MagicMock(output_underflow=False))
@@ -219,7 +219,7 @@ class TestBargeInTrigger:
         loop._loop = MagicMock()  # cualquier valor no-None basta
 
         try:
-            callback = loop._make_audio_callback(rs)
+            callback = loop._make_audio_processor(rs)
 
             # 5 chunks × 20ms = 100ms → debería disparar barge-in
             loud_audio = np.full((320, 1), 0.5, dtype=np.float32)
@@ -246,7 +246,7 @@ class TestBargeInTrigger:
         )
         rs = loop.room_streams["escritorio"]
 
-        callback = loop._make_audio_callback(rs)
+        callback = loop._make_audio_processor(rs)
         loud_audio = np.full((320, 1), 0.5, dtype=np.float32)
         status = MagicMock(output_underflow=False)
 
@@ -267,7 +267,7 @@ class TestBargeInTrigger:
         )
         rs = loop.room_streams["escritorio"]
 
-        callback = loop._make_audio_callback(rs)
+        callback = loop._make_audio_processor(rs)
         loud_audio = np.full((320, 1), 0.5, dtype=np.float32)
         status = MagicMock(output_underflow=False)
 

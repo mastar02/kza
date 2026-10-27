@@ -94,34 +94,39 @@ async def test_appended_clause_is_not_lost_after_a_ready_prefix(suffix, orchestr
 
 @pytest.mark.asyncio
 async def test_pending_speculative_result_cannot_attach_to_a_new_capture():
-    entered = asyncio.Event()
-    release = asyncio.Event()
+    import threading
+    entered, release = threading.Event(), threading.Event()
     stream = RoomStream("test", 0, MagicMock(), MagicMock())
     stream.listening = True
     stream.audio_buffer = [0.1] * 1280
-    loop = MultiRoomAudioLoop(
-        {"test": stream}, MagicMock(), stt=MagicMock(),
-        early_dispatch_interval_ms=1, early_dispatch_min_audio_s=0.01,
-    )
-    # Control the thread boundary, without blocking a worker or the event loop.
-    async def transcribe(*_, **__):
+    stt = MagicMock()
+
+    def transcribe(*_, **__):
         entered.set()
-        await release.wait()
+        assert release.wait(3)
         return "Apagá la luz", 1
 
+    stt.transcribe.side_effect = transcribe
+    loop = MultiRoomAudioLoop({"test": stream}, MagicMock(), stt=stt,
+        early_dispatch_interval_ms=1, early_dispatch_min_audio_s=0.01)
     loop._running = True
-    with patch("src.pipeline.multi_room_audio_loop.asyncio.to_thread", transcribe):
-        task = asyncio.create_task(loop._early_parse_worker(stream))
-        try:
-            await asyncio.wait_for(entered.wait(), 2)
+    task = asyncio.create_task(loop._early_parse_worker(stream))
+    try:
+        await asyncio.wait_for(_wait_for(entered.is_set), 2)
+
+        def new_capture():
             loop._reset_listening(stream)
             stream.listening = True
             stream.audio_buffer = [0.2] * 1280
-            release.set()
-            await asyncio.wait_for(task, 2)
-            assert stream.early_command is None
-            assert stream.transcript is None
-        finally:
-            loop._running = False
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+
+        await loop._capture_rooms['test'].call(new_capture)
+        release.set()
+        await asyncio.wait_for(task, 2)
+        assert stream.early_command is None
+        assert stream.transcript is None
+    finally:
+        release.set()
+        loop._running = False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await loop.stop()

@@ -50,17 +50,21 @@ async def test_capture_continues_thinking_then_barges_into_actual_stream_and_acc
         await asyncio.wait_for(endpoint.body.waiting.wait(), 1)
         assert owner.is_responding and not owner.is_speaking
         await asyncio.to_thread(feed, 1)
+        wake.detect.assert_not_called()  # PortAudio only queues; actual native owner runs next.
+        await capture._capture_rooms['origin'].step()
         wake.detect.assert_called_once()
         release.set()
         await until(lambda: backend.outputs and backend.outputs[0].delivered.is_set())
         assert owner.is_speaking
         await asyncio.to_thread(feed, 5)
+        await capture._capture_rooms['origin'].step()
         assert (await asyncio.wait_for(speaking, 1)).delivery is DeliveryState.CANCELLED
         await until(lambda: not owner.is_responding and room.listening)
         assert endpoint.body.closed and endpoint.client.is_closed()
         assert backend.outputs[0].closed and backend.outputs[0].aborted.is_set()
         follow_up.start_conversation.assert_called_once()
         await asyncio.to_thread(feed, 1)
+        await capture._capture_rooms['origin'].step()
         assert len(room.audio_buffer) == 320
         assert capture._microphone_captures['origin'].observation.frames_received == 7*320
         cancelled_frames = sum(len(chunk) for chunk in backend.outputs[0].frames)

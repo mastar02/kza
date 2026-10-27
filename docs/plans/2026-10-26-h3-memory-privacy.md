@@ -1342,10 +1342,53 @@ módulo de la aplicación. La evidencia conserva esos fallos y sus correcciones.
 No se han vuelto a medir ni corregido las pausas globales de GC observadas antes.
 La producción y los datos privados reales permanecen sin cambios.
 
+### Captura multiroom antes del procesador
+
+El callback de PortAudio conserva telemetría y tee ambiental, y copia los frames
+a una cola acotada por sala. No ejecuta wake, VAD ni consultas al catálogo.
+Cada sala tiene un propietario que serializa inferencia, buffers, endpoint,
+snapshots de STT temprano, publicación de hints y reset fuera del bucle principal.
+Las otras salas pueden seguir capturando si una inferencia queda bloqueada.
+
+La procedencia se crea antes de entrar a wake, desde el frame más antiguo del
+lote. El evento conserva esos IDs y deadline al pasar al procesador, sin renovar
+el plazo ni atribuir al dispatch el momento de captura. El estado del modelo
+forma parte de esa procedencia: su epoch es conservador y se retira como máximo
+al pasar una hora sin captura activa, o al vencer o revocar su fuente. Por eso
+un comando puede heredar un plazo anterior al de su fragmento final. El preroll,
+las ventanas de Whisper y el estado recurrente se resetean antes de reutilizar
+el modelo bajo otra fuente. Los huecos de entrada largos también retiran el
+estado anterior; un frame previo al epoch no se renombra como entrada nueva.
+
+El callback usa deques desacoplables con hasta 32 frames; el propietario consume
+lotes de hasta ocho cada 50 ms. La publicación del fence precede al cambio de
+cola. Un callback antiguo puede perder su frame, pero no repoblar la cola actual.
+El mantenimiento retira estado incluso sin nuevos frames. Los trabajos nativos
+y resets siguen visibles después de cancelar al observador y retienen la misma
+autoridad de privacidad hasta salir. El handle de Porcupine se elimina, porque
+su API no ofrece un reset del historial interno. El siguiente frame admitido
+lo recrea de forma perezosa.
+
+El STT temprano comparte admisión de modelo con wake y el procesador principal;
+vuelve a comprobar fuente, generación y cancelación al esperar, antes de inferir
+y antes de publicar. Un snapshot anterior no sobrescribe una captura siguiente.
+La apertura por barge-in publica `listening` después de preparar su continuación.
+Los dispatches pendientes se acotan y el seguimiento de sus callbacks conserva
+el cleanup real. `main` registra el cierre al construir el loop; el warmup se
+ejecuta en trabajo nativo retenido y un fallo de wake se limita a esa sala.
+
+Este avance no completa `PRODUCERS`: siguen pendientes el camino alternativo
+`AudioLoop`/`AudioManager`, los consumidores de clips y aprendizaje, la integración
+completa al journal y las garantías de los streams físicos. Tampoco completa
+`DIAGNOSTICS`, `COLLECTORS`, `STREAMS`, `VOICES`, pausa/mute, migración ni la
+aceptación integrada de hardware y runtime/GC. No se anuncia borrado global ni
+se habilita la UI de borrado amplio. La validación completa acompaña al commit
+construido y probado, antes de cualquier release.
+
 ## Trabajo restante
 
-1. Completar fuentes, buffers y scopes de captura previos al procesador de
-   comandos, wake/VAD y STT temprano; cubrir aprendizaje posterior y conectar
+1. Completar fuentes, buffers y scopes del camino alternativo `AudioLoop` y
+   `AudioManager`; cubrir los consumidores de clips y aprendizaje y conectar
    todos los productores reales al journal. El procesador y ambient retenidos
    todavía no completan `PRODUCERS`.
 2. Propagar procedencia y TTL a los demás logs de diagnóstico, colectores,

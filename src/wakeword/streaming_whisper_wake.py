@@ -245,6 +245,9 @@ class StreamingWhisperWakeDetector:
         self, audio: np.ndarray, now_t: float,
     ) -> Optional[str]:
         t0 = time.time()
+        from src.pipeline.capture_room import require_capture_live
+        from src.memory.prompt_context import SourcesInvalidated
+        require_capture_live()
         try:
             model = getattr(self.whisper, "_model", None) or self.whisper
             segments, _ = model.transcribe(
@@ -254,7 +257,11 @@ class StreamingWhisperWakeDetector:
                 word_timestamps=True, vad_filter=False,
                 condition_on_previous_text=False,
             )
+            require_capture_live()
             segs = list(segments)
+            require_capture_live()
+        except SourcesInvalidated:
+            raise
         except Exception as e:
             logger.error(f"StreamingWhisperWake transcribe error: {e}")
             return None
@@ -289,6 +296,16 @@ class StreamingWhisperWakeDetector:
                             self._pending_command_audio = audio.copy()
                         return wake
         return None
+
+    def reset(self) -> None:
+        """Retire rolling audio, pending commands and native recurrent history."""
+        self._buffer.clear()
+        self._buffer_samples = 0
+        self._pending_command_audio = None
+        self._recent_vad_activity_t = 0.0
+        reset = getattr(self._vad, 'reset_states', None)
+        if callable(reset):
+            reset()
 
     def pop_pending_command_audio(self) -> Optional[np.ndarray]:
         audio = self._pending_command_audio

@@ -41,15 +41,17 @@ class CommandProcessor:
     def __init__(self, stt, speaker_identifier=None, user_manager=None,
                  emotion_detector=None, sample_rate: int = 16000, shadow_stt=None,
                  shadow_veto: bool = False, shadow_veto_timeout_s: float = 0.8,
-                 *, privacy=None, close_timeout_s: float = 1):
+                 *, privacy=None, close_timeout_s: float = 1, model_locks=None):
         self.stt, self.speaker_id = stt, speaker_identifier
         self.user_manager, self.emotion_detector = user_manager, emotion_detector
         self.sample_rate, self.shadow_stt = sample_rate, shadow_stt
         self.shadow_veto, self.shadow_veto_timeout_s = shadow_veto, shadow_veto_timeout_s
         self._privacy, self._close_timeout_s = privacy, close_timeout_s
         self._work = OwnedBlockingWork(capacity=8, close_timeout_s=close_timeout_s)
-        self._locks = {id(model): threading.Lock() for model in
-                       (stt, speaker_identifier, emotion_detector, shadow_stt) if model is not None}
+        self._locks = model_locks if model_locks is not None else {}
+        for model in (stt, speaker_identifier, emotion_detector, shadow_stt):
+            if model is not None:
+                self._locks.setdefault(id(model), threading.Lock())
         self._commands: set[asyncio.Task] = set()
         self._shadow_tasks: set[asyncio.Task] = set()
         self._closed = False

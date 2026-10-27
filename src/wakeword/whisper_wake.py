@@ -703,6 +703,8 @@ class WhisperWakeDetector:
         return None
 
     def _process_chunk(self, audio_chunk: np.ndarray) -> Optional[str]:
+        from src.pipeline.capture_room import require_capture_live
+        require_capture_live()
         if not self._loaded:
             self.load()
 
@@ -715,6 +717,7 @@ class WhisperWakeDetector:
             chunk = chunk / 32768.0
 
         is_speech = self._is_speech(chunk)
+        require_capture_live()
 
         if not self._in_speech:
             self._pre_roll.append(chunk)
@@ -753,7 +756,9 @@ class WhisperWakeDetector:
             return None
 
         if self._speaker_filter_active:
+            require_capture_live()
             passed, sim = self._speaker_match(audio)
+            require_capture_live()
             if not passed:
                 logger.info(
                     f"Speaker filter REJECT (sim={sim:.3f} < {self.speaker_threshold}) "
@@ -784,6 +789,19 @@ class WhisperWakeDetector:
                 self._pending_command_audio = audio.copy()
         return match
 
+    def reset(self) -> None:
+        """Discard raw wake state and recurrent history before accepting a new scope."""
+        self._in_speech = False
+        self._utterance = []
+        self._pre_roll.clear()
+        self._silence_run_ms = 0
+        self._utt_start_t = 0.0
+        self._pending_command_audio = self._pending_text = None
+        self._follow_up_until = 0.0
+        reset = getattr(self._vad, 'reset_states', None)
+        if callable(reset):
+            reset()
+
     def pop_pending_text(self) -> Optional[str]:
         """Consumir el texto completo transcrito por el wake detector.
 
@@ -811,6 +829,9 @@ class WhisperWakeDetector:
     def _transcribe_and_match(self, audio: np.ndarray, dur_ms: float) -> tuple[Optional[str], str]:
         """Retorna (wake_word_matched | None, texto_completo_transcripto)."""
         t0 = time.time()
+        from src.pipeline.capture_room import require_capture_live
+        from src.memory.prompt_context import SourcesInvalidated
+        require_capture_live()
         try:
             model = getattr(self.whisper, "_model", None) or self.whisper
             # condition_on_previous_text=False: corta el sesgo del comando
@@ -827,7 +848,9 @@ class WhisperWakeDetector:
                 vad_filter=False,
                 condition_on_previous_text=False,
             )
+            require_capture_live()
             seg_list = list(segments)
+            require_capture_live()
             text = " ".join(s.text for s in seg_list).strip()
             # Acoustic confidence signals to classify hallucination-vs-speech (instrumentation;
             # a future gate will use these). faster-whisper exposes these fields per segment.
@@ -835,6 +858,8 @@ class WhisperWakeDetector:
                               if seg_list else None)
             avg_logprob = (min((s.avg_logprob for s in seg_list), default=None)
                            if seg_list else None)
+        except SourcesInvalidated:
+            raise
         except Exception as e:
             logger.error(f"WhisperWake transcribe error: {e}")
             return (None, "")
@@ -1186,6 +1211,8 @@ class WhisperWakeDetector:
         no_speech_prob: Optional[float] = None,
         avg_logprob: Optional[float] = None,
     ) -> None:
+        from src.pipeline.capture_room import require_capture_live
+        require_capture_live()
         # Telemetría TV-mode: en cada reject acumulamos timestamp; en accept
         # con tv_mode activo agregamos warning para que el operador vea
         # contexto en logs.

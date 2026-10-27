@@ -15,7 +15,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from threading import Lock
+from threading import Event, Lock
 from pathlib import Path
 from typing import Callable, Awaitable, Optional
 
@@ -24,6 +24,10 @@ import sounddevice as sd
 
 from src.pipeline.ambient_guard import AmbientGuard, GuardState, classify_outcome
 from src.pipeline.command_event import CapturedTranscript, CommandEvent, TranscriptSource
+from src.pipeline.capture_room import CaptureRoom
+from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.memory.producer_context import model_admission, producer_context
+from src.memory.prompt_context import SourcesInvalidated, run_private
 from src.wakeword.detector import WakeWordDetector
 from src.wakeword.whisper_wake import _text_likely_truncated
 from src.audio.echo_suppressor import EchoSuppressor
@@ -245,6 +249,8 @@ class MultiRoomAudioLoop:
         microphone_stale_after_s: float = 6.0,
         direction_observation: object = None,
         direction_calibrations: dict | None = None,
+        privacy=None,
+        close_timeout_s: float = 1,
     ):
         if (
             any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
@@ -265,6 +271,16 @@ class MultiRoomAudioLoop:
         self.early_dispatch_interval_ms = early_dispatch_interval_ms
         self.early_dispatch_min_audio_s = early_dispatch_min_audio_s
         self._stt = stt  # FastWhisperSTT — usado por el worker early parse
+        self._privacy = privacy
+        self._closed = False
+        self._closing = None
+        self._close_timeout_s = close_timeout_s
+        self._capture_controllers = {}
+        self._capture_tasks = set()
+        self._dispatch_tasks = set()
+        self._early_tasks = set()
+        self._capture_native = OwnedBlockingWork(capacity=8)
+        self.native_model_locks = {id(stt): Lock()} if stt is not None else {}
 
         # Endpointing adaptativo (S5): usa la señal del parser streaming
         # (`rs.early_command`) para decidir cuánto silencio esperar antes
@@ -422,10 +438,127 @@ class MultiRoomAudioLoop:
         self._direction_started = False
         if self._direction_reason:
             logger.warning('[direction-observation] Pilot disabled: %s', self._direction_reason)
+        self._capture_rooms = {
+            room_id: CaptureRoom(room_id, process=self._make_audio_processor(rs),
+                poll=lambda rs=rs: self._poll_command(rs),
+                clear=lambda rs=rs: self._clear_capture(rs),
+                listening=lambda rs=rs: rs.listening, privacy=privacy)
+            for room_id, rs in room_streams.items()
+        }
+        if privacy is not None:
+            privacy.add_borrower(self.begin_close)
 
     def attach_response_handler(self, response_handler) -> None:
         """Inyectar ResponseHandler post-init (útil por orden de DI en main.py)."""
         self._response_handler = response_handler
+
+    def _clear_capture(self, rs: RoomStream) -> None:
+        self._reset_listening(rs)
+        rs.preroll = None
+        rs.barge_in_accum_ms = 0.0
+        reset = getattr(rs.wake_detector, 'reset', None)
+        if not callable(reset):
+            raise RuntimeError('unsupported_capture_reset')
+        reset()
+        predictor = self._wake_vad_predictors.get(rs.room_id)
+        reset = getattr(predictor, 'reset', None)
+        if callable(reset):
+            reset()
+
+    def _poll_command(self, rs: RoomStream) -> CommandEvent | None:
+        if not rs.listening:
+            return None
+        complete, audio = self._check_vad_completion(rs)
+        if not complete or audio is None:
+            return None
+        if not self._passes_spenergy_gate(rs):
+            self._clear_capture(rs)
+            return None
+        return CommandEvent(audio=audio, room_id=rs.room_id,
+            mic_device_index=rs.device_index, wake_text=rs.wake_text,
+            partial_command=rs.early_command, transcript=rs.transcript,
+            capture_complete=rs.capture_complete,
+            ambient_strict=self._guard is not None and self._guard.state_for(rs.room_id) is GuardState.STRICT,
+            wake_score=rs.wake_score, captured_at=rs.command_start_time)
+
+    def _track_capture(self, task: asyncio.Task, tasks: set) -> asyncio.Task:
+        tasks.add(task)
+        def finished(done):
+            tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished)
+        return task
+
+    def _source_live(self, source) -> bool:
+        return not self._closed and (self._privacy is None or source is not None and
+            self._privacy.sources_available((source,)))
+
+    def _start_dispatch(self, event: CommandEvent) -> None:
+        from src.memory.fact_ledger import MemoryOrigin, MemorySource
+        source = None
+        if self._privacy is not None:
+            source = MemorySource(event.capture_id, event.conversation_id, event.captured_at,
+                                  event.source_expires_at, MemoryOrigin.VOICE)
+        if not self._source_live(source):
+            return
+        if len(self._dispatch_tasks) >= 8:
+            logger.warning('Command dispatch capacity reached')
+            return
+        with producer_context(event.room_id, (source,) if source is not None else ()):
+            self._track_capture(asyncio.create_task(run_private(
+                self._dispatch_command(event), lambda: self._source_live(source))), self._dispatch_tasks)
+
+    async def _consume_room(self, rs: RoomStream) -> None:
+        room = self._capture_rooms[rs.room_id]
+        event = step = None
+        try:
+            while self._running and not self._closed:
+                step = self._track_capture(asyncio.create_task(room.step()), self._capture_tasks)
+                try:
+                    event = await step
+                    if event is not None:
+                        self._start_dispatch(event)
+                    elif rs.listening and self.early_dispatch_enabled and self._stt is not None and rs.early_task is None:
+                        source = room.source
+                        with producer_context(rs.room_id, (source,) if source is not None else ()):
+                            rs.early_task = self._track_capture(asyncio.create_task(run_private(
+                                self._early_parse_worker(rs), lambda source=source: self._source_live(source))), self._early_tasks)
+                finally:
+                    event = step = None
+                await asyncio.sleep(.05)
+        except Exception as error:
+            logger.error('Command capture controller stopped: %s', type(error).__name__)
+            room.begin_close()
+        finally:
+            event = step = None
+
+    def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
+        """Expose finite capture, early STT and dispatch owners without idle loops."""
+        tasks = self._capture_tasks | self._early_tasks | self._dispatch_tasks | self._capture_native._tasks
+        for room in self._capture_rooms.values():
+            tasks |= set(room.snapshot_operations())
+        return tuple(tasks)
+
+    def capture_status(self) -> dict:
+        """Report counts and admission without transcripts or capture identifiers."""
+        return {'closed': self._closed, 'operations': len(self.snapshot_operations()),
+                'rooms': [room.resource_status() for room in self._capture_rooms.values()]}
+
+    def begin_close(self) -> asyncio.Task:
+        """Reject input and retain real native/reset and callback cleanup."""
+        self._closed = True
+        self._running = False
+        if self._closing is None:
+            controllers = set(self._capture_controllers.values()) | self._capture_tasks | self._early_tasks | self._dispatch_tasks
+            for task in controllers:
+                task.cancel()
+            drains = [room.begin_close() for room in self._capture_rooms.values()]
+            drains.append(self._capture_native.begin_close())
+            async def finish():
+                await asyncio.gather(*controllers, *drains, return_exceptions=True)
+            self._closing = asyncio.create_task(finish())
+        return self._closing
 
     def last_command_dispatch_ts(self, room_id: str) -> float:
         """Timestamp monotónico (`time.monotonic()`) del último dispatch
@@ -537,27 +670,17 @@ class MultiRoomAudioLoop:
 
     async def start(self):
         """Initialize wake word detectors for all rooms."""
-        for room_id, rs in self.room_streams.items():
-            rs.wake_detector.load()
-            logger.info(
-                f"Room {room_id}: wake word loaded "
-                f"(device={rs.device_index}, models={rs.wake_detector.get_active_models()})"
-            )
-        # Pre-cargar el predictor Silero para wake_vad FUERA del audio callback
-        # (torch.hub.load hace I/O + init de torch; en el callback C de
-        # sounddevice congelaría el stream en la primera detección). Dedicado:
-        # NO compartir con los predictores del ambient segmenter (Silero es
-        # stateful — GRU — y el segmenter resetea su estado por utterance).
-        from src.ambient.segmenter import make_silero_predictor
-        for room_id in self.room_streams:
-            if room_id in self._wake_vad_predictors:
-                continue
+        if self._closed:
+            raise RuntimeError('capture_closed')
+        for rs in self.room_streams.values():
             try:
-                self._wake_vad_predictors[room_id] = await asyncio.to_thread(make_silero_predictor)
-                logger.info(f"wake_vad: dedicated Silero predictor ready for {room_id}")
-            except Exception as e:
-                logger.warning(f"wake_vad: Silero unavailable for {room_id} ({e}) — fixed threshold")
-                self._wake_vad_predictors[room_id] = False
+                with producer_context(rs.room_id):
+                    await self._capture_native.run(self._load_capture_models, rs)
+            except Exception as error:
+                logger.error('Room wake unavailable: %s', type(error).__name__)
+                await self._capture_rooms[rs.room_id].begin_close()
+        if self._closed:
+            raise RuntimeError('capture_closed')
         # Tuning del DSP ANTES de arrancar el poller (review Fase 1): así los
         # writes corren con USB single-threaded (sin transfers concurrentes
         # sobre el mismo handle), y en to_thread para no bloquear el event
@@ -584,6 +707,25 @@ class MultiRoomAudioLoop:
         # Reuse the handle opened by a configured legacy gate; DoA never enables it.
         self._direction_started = True
         await self._sync_direction_observers()
+
+    def _load_capture_models(self, rs: RoomStream) -> None:
+        from src.ambient.segmenter import make_silero_predictor
+        if self._closed:
+            return
+        rs.wake_detector.load()
+        if self._closed:
+            return
+        if rs.room_id not in self._wake_vad_predictors:
+            try:
+                predictor = make_silero_predictor()
+                if self._closed:
+                    predictor.reset()
+                else:
+                    self._wake_vad_predictors[rs.room_id] = predictor
+            except Exception as error:
+                logger.warning('Wake VAD unavailable: %s', type(error).__name__)
+                if not self._closed:
+                    self._wake_vad_predictors[rs.room_id] = False
 
     def _apply_xvf_tuning(self) -> None:
         """Aplica el tuning configurado al DSP (EN RAM). Fail-open por param.
@@ -1167,6 +1309,8 @@ class MultiRoomAudioLoop:
 
     async def run(self):
         """Start voice after a bounded identity budget and own telemetry tasks."""
+        if self._closed:
+            raise RuntimeError('capture_closed')
         self._running = True
         self._loop = asyncio.get_running_loop()
         self._microphone_inventory_ready.clear()
@@ -1183,7 +1327,7 @@ class MultiRoomAudioLoop:
             if self._running:
                 await self._run_capture()
         finally:
-            self._running = False
+            self.begin_close()
             await self._stop_direction_observers()
             await self._stop_microphone_telemetry()
             if self._watchdog_task is not None:
@@ -1207,8 +1351,14 @@ class MultiRoomAudioLoop:
         Each room's audio callback runs on sounddevice's C thread.
         Command dispatch happens on the asyncio event loop via create_task.
         """
+        for room_id, rs in self.room_streams.items():
+            if self._capture_rooms[room_id].resource_status()['closed']:
+                continue
+            self._capture_controllers[room_id] = asyncio.create_task(self._consume_room(rs))
         self._streams = {}
         for room_id, rs in self.room_streams.items():
+            if self._capture_rooms[room_id].resource_status()['closed']:
+                continue
             stream = await asyncio.to_thread(self._open_stream, rs)
             if stream is not None:
                 self._streams[room_id] = stream
@@ -1234,52 +1384,13 @@ class MultiRoomAudioLoop:
             while self._running:
                 await asyncio.sleep(0.05)
 
-                for room_id, rs in self.room_streams.items():
-                    if not rs.listening:
-                        continue
-
-                    # 1. Start early parse worker si corresponde (una sola vez por captura)
-                    if (
-                        self.early_dispatch_enabled
-                        and self._stt is not None
-                        and rs.early_task is None
-                    ):
-                        rs.early_task = asyncio.create_task(
-                            self._early_parse_worker(rs)
-                        )
-
-                    # Parser readiness is provisional. Wait for the endpoint
-                    # so a later negation or deferred clause cannot be lost.
-                    is_complete, audio_data = self._check_vad_completion(rs)
-                    if is_complete and audio_data is not None:
-                        # Pre-gate SPENERGY: descartar capturas sin voz real
-                        # (secador/silencio) antes de gastar Whisper.
-                        if not self._passes_spenergy_gate(rs):
-                            self._reset_listening(rs)
-                            continue
-                        event = CommandEvent(
-                            audio=audio_data,
-                            room_id=room_id,
-                            mic_device_index=rs.device_index,
-                            wake_text=rs.wake_text,
-                            partial_command=rs.early_command,
-                            transcript=rs.transcript,
-                            capture_complete=rs.capture_complete,
-                            ambient_strict=(
-                                self._guard is not None
-                                and self._guard.state_for(room_id) is GuardState.STRICT
-                            ),
-                            wake_score=rs.wake_score,
-                            captured_at=rs.command_start_time,
-                        )
-                        asyncio.create_task(self._dispatch_command(event))
-                        self._reset_listening(rs)
         finally:
-            parsing = [rs.early_task for rs in self.room_streams.values() if rs.early_task is not None]
-            for rs in self.room_streams.values():
-                self._reset_listening(rs)
-            if parsing:
-                await asyncio.gather(*parsing, return_exceptions=True)
+            self.begin_close()
+            controllers = list(self._capture_controllers.values())
+            for task in controllers:
+                task.cancel()
+            await asyncio.gather(*controllers, return_exceptions=True)
+            self._capture_controllers.clear()
             if self._watchdog_task is not None:
                 self._watchdog_task.cancel()
                 self._watchdog_task = None
@@ -1289,7 +1400,7 @@ class MultiRoomAudioLoop:
 
     async def stop(self):
         """Stop all audio streams."""
-        self._running = False
+        closing = self.begin_close()
         await self._stop_direction_observers()
         await self._stop_microphone_telemetry()
         self._microphone_inventory_ready.set()
@@ -1315,6 +1426,12 @@ class MultiRoomAudioLoop:
                 await asyncio.to_thread(self._wake_clip_writer.stop)
             except Exception:
                 pass
+
+        try:
+            async with asyncio.timeout(self._close_timeout_s):
+                await asyncio.shield(closing)
+        except TimeoutError:
+            raise WorkCloseTimeout('command_capture_still_running') from None
 
     def _make_audio_callback(self, rs: RoomStream, holder: _CaptureHolder | None = None):
         """Create a sounddevice callback closure for one room."""
@@ -1371,6 +1488,15 @@ class MultiRoomAudioLoop:
                 except Exception:
                     pass  # perder un chunk ambiental es aceptable; el stream no
 
+            self._capture_rooms[rs.room_id].push(
+                now_wall - frames / self.sample_rate, indata, frames)
+
+        return audio_callback
+
+    def _make_audio_processor(self, rs: RoomStream):
+        """Build the native, serialized state processor; never a device callback."""
+        def process(indata, frames, time_info, status):
+            self._capture_rooms[rs.room_id].require_live()
             # Canal configurado per-room con fallback seguro: si el device no
             # tiene ese canal (mic mono UAC1.0), usar ch0 y avisar una vez.
             ch = rs.capture_channel
@@ -1407,7 +1533,7 @@ class MultiRoomAudioLoop:
                         # (este callback corre en thread C del sounddevice).
                         if self._loop is not None:
                             asyncio.run_coroutine_threadsafe(
-                                self._trigger_barge_in(rs),
+                                self._tracked_barge_in(rs, self._capture_rooms[rs.room_id].source),
                                 self._loop,
                             )
                         rs.barge_in_accum_ms = 0.0
@@ -1438,11 +1564,21 @@ class MultiRoomAudioLoop:
                     if rs.preroll is None:
                         rs.preroll = deque(maxlen=self._preroll_maxchunks)
                     rs.preroll.append(audio_chunk)
-                detection = rs.wake_detector.detect(audio_chunk)
+                room = self._capture_rooms[rs.room_id]
+                room.require_live()
+                backend = getattr(rs.wake_detector, 'whisper', None)
+                native_lock = self.native_model_locks.get(id(backend))
+                if native_lock is not None:
+                    with model_admission(native_lock, room.require_live):
+                        detection = rs.wake_detector.detect(audio_chunk)
+                else:
+                    detection = rs.wake_detector.detect(audio_chunk)
+                room.require_live()
                 if detection:
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
                     predict = self._wake_vad_predictors.get(rs.room_id) or None
                     wake_vad = compute_wake_vad(audio_chunk, predict)
+                    room.require_live()
                     if self._should_accept_wakeword(
                         rs.room_id, rms, time.time(),
                         wake_score=detection[1], wake_vad=wake_vad,
@@ -1546,7 +1682,7 @@ class MultiRoomAudioLoop:
             else:
                 rs.audio_buffer.extend(audio_chunk)
 
-        return audio_callback
+        return process
 
     def _adaptive_endpoint_threshold(self, rs: RoomStream) -> int:
         """
@@ -1656,56 +1792,87 @@ class MultiRoomAudioLoop:
         rs.capture_complete = False
         rs.capture_generation += 1
         if rs.early_task is not None:
-            rs.early_task.cancel()
-            rs.early_task = None
+            task, rs.early_task = rs.early_task, None
+            if self._loop is not None and self._loop.is_running():
+                self._loop.call_soon_threadsafe(task.cancel)
+            else:
+                task.cancel()
+
+    def _early_snapshot(self, rs: RoomStream, generation: int):
+        room = self._capture_rooms[rs.room_id]
+        room.require_live()
+        if not rs.listening or generation != rs.capture_generation:
+            raise SourcesInvalidated('capture_generation_changed')
+        return np.array(rs.audio_buffer, dtype=np.float32)
+
+    def _require_early(self, rs: RoomStream, generation: int, cancelled=None) -> None:
+        self._capture_rooms[rs.room_id].require_live()
+        if not self._running or not rs.listening or generation != rs.capture_generation:
+            raise SourcesInvalidated('capture_generation_changed')
+        if cancelled is not None and cancelled.is_set():
+            raise SourcesInvalidated('capture_observer_cancelled')
+
+    def _transcribe_early(self, rs: RoomStream, generation: int, audio, cancelled):
+        text = partial = transcript = None
+        invalidated = False
+        try:
+            with model_admission(self.native_model_locks[id(self._stt)],
+                                 lambda: self._require_early(rs, generation, cancelled)):
+                text, _ = self._stt.transcribe(audio, sample_rate=self.sample_rate)
+                self._require_early(rs, generation, cancelled)
+                if text:
+                    partial = parse_partial_command(text)
+                    transcript = CapturedTranscript.from_audio(text, TranscriptSource.PARTIAL, audio)
+                return partial, transcript
+        except SourcesInvalidated:
+            invalidated = True
+        except Exception as error:
+            logger.debug('Early STT unavailable: %s', type(error).__name__)
+        finally:
+            audio = text = partial = transcript = cancelled = None
+        if invalidated:
+            raise SourcesInvalidated('capture_sources_invalidated')
+        return None, None
+
+    async def _owned_early(self, rs: RoomStream, generation: int, audio):
+        cancelled = Event()
+        try:
+            return await self._capture_native.run(self._transcribe_early, rs, generation, audio, cancelled)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        finally:
+            audio = cancelled = None
+
+    def _publish_early(self, rs: RoomStream, generation: int, partial, transcript):
+        try:
+            self._require_early(rs, generation)
+            rs.early_command, rs.transcript = partial, transcript
+        finally:
+            partial = transcript = None
 
     async def _early_parse_worker(self, rs: RoomStream) -> None:
-        """
-        Corre mientras `rs.listening`. Cada `early_dispatch_interval_ms`:
-          1. Snapshot del audio acumulado.
-          2. Transcribe con el STT compartido.
-          3. Parsea con `parse_partial_command`.
-          4. Actualiza el hint del parser y la transcripción de ese snapshot.
-
-        Sigue observando hasta el endpoint; un prefijo completo no es una orden
-        final. La generación evita publicar un resultado sobre otra captura.
-        """
+        """Own speculative native STT and publish only to the same live capture."""
         interval_s = self.early_dispatch_interval_ms / 1000
         min_samples = int(self.early_dispatch_min_audio_s * self.sample_rate)
-        generation = rs.capture_generation
-        last_samples = -1
+        generation, last_samples = rs.capture_generation, -1
+        audio = partial = transcript = None
+        room = self._capture_rooms[rs.room_id]
         try:
-            while rs.listening and self._running:
+            while rs.listening and self._running and not self._closed:
                 await asyncio.sleep(interval_s)
-                if not rs.listening:
-                    return
-                buf_len = len(rs.audio_buffer)
-                if buf_len < min_samples or buf_len == last_samples:
+                audio = await room.call(self._early_snapshot, rs, generation)
+                if len(audio) < min_samples or len(audio) == last_samples:
+                    audio = None
                     continue
-                audio_snapshot = np.array(rs.audio_buffer, dtype=np.float32)
-                last_samples = len(audio_snapshot)
-                try:
-                    text, _ms = await asyncio.to_thread(
-                        self._stt.transcribe, audio_snapshot, sample_rate=self.sample_rate,
-                    )
-                except Exception as e:
-                    logger.debug(f"Early transcribe error in {rs.room_id}: {e}")
-                    continue
-                if not self._running or not rs.listening or generation != rs.capture_generation:
-                    return
-                if not text:
-                    rs.early_command = None
-                    rs.transcript = None
-                    continue
-                pc = parse_partial_command(text)
-                logger.debug(
-                    f"Early parse {rs.room_id}: {text!r} → "
-                    f"intent={pc.intent} entity={pc.entity} room={pc.room}"
-                )
-                rs.early_command = pc
-                rs.transcript = CapturedTranscript.from_audio(text, TranscriptSource.PARTIAL, audio_snapshot)
-        except asyncio.CancelledError:
+                last_samples = len(audio)
+                partial, transcript = await self._owned_early(rs, generation, audio)
+                await room.call(self._publish_early, rs, generation, partial, transcript)
+                audio = partial = transcript = None
+        except SourcesInvalidated:
             return
+        finally:
+            audio = partial = transcript = None
 
     async def _dispatch_command(self, event: CommandEvent):
         """Dispatch a captured command via registered callback."""
@@ -1773,8 +1940,31 @@ class MultiRoomAudioLoop:
 
             if self._on_post_command_callback:
                 await self._on_post_command_callback(result, event)
-        except Exception as e:
-            logger.exception(f"Command dispatch failed for {event.room_id}: {e}")
+        except Exception as error:
+            logger.error('Command dispatch failed: %s', type(error).__name__)
+        finally:
+            event = result = None
+
+    async def _tracked_barge_in(self, rs: RoomStream, source) -> None:
+        task = asyncio.current_task()
+        self._capture_tasks.add(task)
+        try:
+            await run_private(self._trigger_barge_in(rs), lambda: self._source_live(source))
+        except SourcesInvalidated:
+            pass
+        finally:
+            self._capture_tasks.discard(task)
+
+    def _begin_barge_capture(self, rs: RoomStream) -> None:
+        self._capture_rooms[rs.room_id].require_live()
+        self._reset_listening(rs)
+        rs.command_start_time = time.time()
+        try:
+            self.follow_up.start_conversation()
+        except Exception as error:
+            logger.debug('Follow-up unavailable after barge-in: %s', type(error).__name__)
+        self._capture_rooms[rs.room_id].require_live()
+        rs.listening = True
 
     async def _trigger_barge_in(self, rs: RoomStream) -> None:
         """
@@ -1798,11 +1988,4 @@ class MultiRoomAudioLoop:
             return
 
         logger.info(f"⏹  Barge-in detectado en {rs.room_id}")
-        self._reset_listening(rs)
-        rs.listening = True
-        rs.command_start_time = time.time()
-        rs.audio_buffer = []
-        try:
-            self.follow_up.start_conversation()
-        except Exception as e:
-            logger.debug(f"follow_up.start_conversation no-op: {e}")
+        await self._capture_rooms[rs.room_id].call(self._begin_barge_capture, rs)

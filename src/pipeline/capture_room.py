@@ -1,0 +1,254 @@
+"""One serialized native owner for command capture and wake state in one room."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+from collections import deque
+from dataclasses import dataclass
+from contextvars import ContextVar
+import logging
+from uuid import uuid4
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+from src.core.owned_work import OwnedBlockingWork
+from src.memory.fact_ledger import MemoryOrigin, MemorySource
+from src.memory.producer_context import producer_context
+from src.memory.prompt_context import SourcesInvalidated
+from src.memory.sources import CaptureBoundary
+
+if TYPE_CHECKING:
+    from src.memory.privacy_services import PrivacyServices
+    from src.pipeline.command_event import CommandEvent
+
+logger = logging.getLogger(__name__)
+_CAPTURE_CHECK = ContextVar('native_capture_check', default=None)
+
+
+def require_capture_live() -> None:
+    """Guard nested native wake handoffs under the admitted room owner."""
+    check = _CAPTURE_CHECK.get()
+    if check is not None:
+        check()
+
+
+@dataclass(frozen=True)
+class CapturePacket:
+    """A copied input frame with its original acquisition boundary."""
+
+    timestamp: float
+    audio: np.ndarray
+    frames: int
+
+
+class CaptureRoom:
+    """Serialize wake, capture, snapshots and reset without blocking PortAudio.
+
+    The callback only appends to a bounded deque. Boundary publication detaches
+    old deques; native workers recheck authority before and after processing.
+    Actual native completion survives cancellation of a controller or observer.
+    """
+
+    def __init__(self, room_id: str, *, process: Callable, poll: Callable,
+                 clear: Callable, listening: Callable[[], bool],
+                 privacy: PrivacyServices | None = None) -> None:
+        self.room_id = room_id
+        self._process, self._poll, self._clear = process, poll, clear
+        self._privacy = privacy
+        self._listening = listening
+        self._queue = deque(maxlen=32)
+        self._boundary = CaptureBoundary(None, float('-inf'))
+        self._source: MemorySource | None = None
+        self._oldest = None
+        self._work = OwnedBlockingWork(capacity=1)
+        self._lock = asyncio.Lock()
+        self._pending: asyncio.Task | None = None
+        self._closed = False
+        self._closing: asyncio.Task | None = None
+        self._last_packet = None
+        self._failed = False
+        self._input_drops = 0
+
+    @property
+    def source(self) -> MemorySource | None:
+        """Expose metadata for finite capture and early-STT lineage."""
+        return self._source
+
+    def push(self, timestamp: float, audio: np.ndarray, frames: int) -> None:
+        """Copy input without locks, model calls or authority queries on callback."""
+        queue = self._queue  # Snapshot queue before fence; never revive a detached queue.
+        boundary = self._boundary
+        try:
+            if not self._closed and not self._failed and boundary.allows(timestamp):
+                queue.append(CapturePacket(timestamp, audio.copy(), frames))
+        except Exception:
+            self._input_drops += 1
+        finally:
+            audio = queue = None
+
+    def publish_boundary(self) -> None:
+        """Tighten callback admission, then detach retired queued audio."""
+        if self._privacy is None:
+            return
+        boundary = self._privacy.scopes.buffer_boundary(self.room_id, origin=MemoryOrigin.VOICE)
+        self._boundary = self._boundary.tighten(boundary)
+        queue = self._queue
+        if any(not self._boundary.allows(p.timestamp) for p in tuple(queue)):
+            self._queue = deque((p for p in tuple(queue) if self._boundary.allows(p.timestamp)), maxlen=32)
+
+    def _current_boundary(self) -> CaptureBoundary:
+        boundary = self._boundary
+        if self._privacy is not None:
+            boundary = boundary.tighten(self._privacy.scopes.buffer_boundary(self.room_id, origin=MemoryOrigin.VOICE))
+        return boundary
+
+    def available(self) -> bool:
+        return not self._closed and not self._failed and (self._privacy is None or self._source is not None and
+            self._privacy.sources_available((self._source,))) and (
+                self._oldest is None or self._current_boundary().allows(self._oldest))
+
+    def require_live(self) -> None:
+        """Guard native handoffs, including model waiters and later stages."""
+        if not self.available():
+            raise SourcesInvalidated('capture_sources_invalidated')
+
+    def _reset(self):
+        try:
+            self._clear()
+        except Exception as error:
+            self._failed = True
+            self._queue = deque(maxlen=32)
+            logger.warning('Command capture reset failed: %s', type(error).__name__)
+        finally:
+            self._source = self._oldest = self._last_packet = None
+
+    async def _call_locked(self, function, *args):
+        task = None
+        try:
+            if self._pending is not None:
+                await asyncio.gather(asyncio.shield(self._pending), return_exceptions=True)
+            source = self._source
+            with producer_context(self.room_id, (source,) if source is not None else ()):
+                task = asyncio.create_task(self._work.run(function, *args))
+            self._pending = task
+
+            def finished(done):
+                if self._pending is done:
+                    self._pending = None
+                if not done.cancelled():
+                    done.exception()
+            task.add_done_callback(finished)
+            return await asyncio.shield(task)
+        finally:
+            function = args = task = None
+
+    async def call(self, function: Callable, *args) -> object:
+        """Run one finite state operation after any cancelled observer's worker."""
+        try:
+            async with self._lock:
+                if self._closed:
+                    raise SourcesInvalidated('capture_closed')
+                return await self._call_locked(function, *args)
+        finally:
+            function = args = None
+
+    def _advance(self, packets):
+        event = None
+        token = _CAPTURE_CHECK.set(self.require_live)
+        try:
+            for packet in packets:
+                self.require_live()
+                if not self._current_boundary().allows(packet.timestamp):
+                    continue
+                if self._oldest is not None and packet.timestamp < self._oldest:
+                    continue
+                self._process(packet.audio, packet.frames, None, None)
+                self.require_live()
+                self._last_packet = packet.timestamp
+            if self._oldest is not None:
+                self.require_live()
+            event = self._poll()
+            if event is not None:
+                self.require_live()
+                source = self._source
+                if source is not None:
+                    event.capture_id, event.conversation_id = source.capture_id, source.conversation_id
+                    event.captured_at, event.source_expires_at = source.captured_at, source.expires_at
+                self._reset()
+            return event
+        except SourcesInvalidated:
+            self._reset()
+            return None
+        except Exception as error:
+            logger.warning('Command capture reset after native failure: %s', type(error).__name__)
+            self._reset()
+            return None
+        finally:
+            _CAPTURE_CHECK.reset(token)
+            packets = event = packet = None
+
+    async def step(self) -> CommandEvent | None:
+        """Consume bounded input and retire idle state even without fresh frames."""
+        packets = event = None
+        try:
+            async with self._lock:
+                if self._closed or self._failed:
+                    return None
+                if self._pending is not None:
+                    await asyncio.gather(asyncio.shield(self._pending), return_exceptions=True)
+                self.publish_boundary()
+                if self._oldest is not None and not self.available():
+                    await self._call_locked(self._reset)
+                queue = self._queue
+                packets = []
+                while queue and len(packets) < 8:
+                    packet = queue.popleft()
+                    if self._boundary.allows(packet.timestamp):
+                        packets.append(packet)
+                if self._last_packet is not None and packets and packets[0].timestamp - self._last_packet > .5:
+                    await self._call_locked(self._reset)
+                if self._source is not None and self._privacy is not None and not self._listening() and self._privacy.ledger.clock() - self._source.captured_at > 3600:
+                    await self._call_locked(self._reset)
+                if not packets and self._oldest is None and not self._listening():
+                    return None
+                if self._failed:
+                    return None
+                if packets and self._oldest is None:
+                    self._oldest = min(packet.timestamp for packet in packets)
+                    if self._privacy is not None:
+                        try:
+                            self._source = self._privacy.source_for_capture(
+                                str(uuid4()), self._oldest, self.room_id, origin=MemoryOrigin.VOICE)
+                        except (PermissionError, ValueError, RuntimeError):
+                            self._oldest = None
+                            return None
+                event = await self._call_locked(self._advance, packets)
+                return event
+        finally:
+            packets = event = packet = queue = None
+
+    def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
+        """Expose actual finite native scopes, including cancelled observers."""
+        tasks = set(self._work._tasks)
+        if self._pending is not None:
+            tasks.add(self._pending)
+        return tuple(tasks)
+
+    def resource_status(self) -> dict:
+        """Report counts without room, source identifiers, audio or text."""
+        return {'closed': self._closed, 'reset_failed': self._failed, 'queued': len(self._queue), 'input_drops': self._input_drops,
+                'native': self._work.status(), 'has_state': self._oldest is not None}
+
+    def begin_close(self) -> asyncio.Task:
+        """Detach input and retain native reset after the last actual operation."""
+        self._closed = True
+        self._queue = deque(maxlen=32)
+        if self._closing is None:
+            async def finish():
+                async with self._lock:
+                    await self._call_locked(self._reset)
+                    await self._work.begin_close()
+            self._closing = asyncio.create_task(finish())
+        return self._closing

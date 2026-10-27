@@ -136,8 +136,11 @@ class PorcupineWakeDetector:
         return None
 
     def reset(self) -> None:
-        """Limpiar el buffer de alineación de frames."""
+        """Retire aligned samples and native recognition history before reuse."""
         self._buf = np.empty(0, dtype=np.int16)
+        # Porcupine exposes no recurrent-state reset. Delete the handle and
+        # lazily recreate it on the next admitted frame, under its room owner.
+        self.delete()
 
     def delete(self) -> None:
         """Liberar recursos nativos de Porcupine."""

@@ -318,7 +318,7 @@ class TestWakePreroll:
     def test_preroll_seeds_command_buffer_on_wake(self):
         det = _detector_seq([None, None, None, ("nexa", 0.8)])
         loop, rs = self._loop_with_room(det, wake_preroll_s=0.24)  # ~3 chunks @ 80ms
-        cb = loop._make_audio_callback(rs)
+        cb = loop._make_audio_processor(rs)
         for i in range(3):
             cb(np.full((CHUNK_SIZE, 2), 0.01 * (i + 1), dtype=np.float32), CHUNK_SIZE, None, None)
             assert rs.listening is False
@@ -330,7 +330,7 @@ class TestWakePreroll:
     def test_preroll_off_keeps_empty_buffer(self):
         det = _detector_seq([None, None, ("nexa", 0.8)])
         loop, rs = self._loop_with_room(det, wake_preroll_s=0.0)  # default = off
-        cb = loop._make_audio_callback(rs)
+        cb = loop._make_audio_processor(rs)
         for _ in range(2):
             cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
         cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
@@ -358,7 +358,7 @@ class TestWakeClipCapture:
         loop, rs = self._loop_with_room(
             det, wake_preroll_s=0.24, wake_clip_writer=writer,
         )
-        cb = loop._make_audio_callback(rs)
+        cb = loop._make_audio_processor(rs)
         for i in range(3):
             cb(np.full((CHUNK_SIZE, 2), 0.01 * (i + 1), dtype=np.float32), CHUNK_SIZE, None, None)
         cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
@@ -372,7 +372,7 @@ class TestWakeClipCapture:
     def test_no_writer_is_fine(self):
         det = _detector_seq([None, ("nexa", 0.8)])
         loop, rs = self._loop_with_room(det, wake_preroll_s=0.24)
-        cb = loop._make_audio_callback(rs)
+        cb = loop._make_audio_processor(rs)
         cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
         cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
         assert rs.listening is True  # sin writer no rompe nada
@@ -388,7 +388,7 @@ class TestWakeClipCapture:
         loop, rs = self._loop_with_room(
             det, wake_preroll_s=0.24, wake_clip_writer=writer, min_wake_rms=9.9,
         )
-        cb = loop._make_audio_callback(rs)
+        cb = loop._make_audio_processor(rs)
         cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
         cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
         assert rs.listening is False  # rechazado: no entra en captura
@@ -403,7 +403,7 @@ class TestWakeClipCapture:
         loop, rs = self._loop_with_room(
             det, wake_preroll_s=0.24, wake_clip_writer=writer,
         )
-        cb = loop._make_audio_callback(rs)
+        cb = loop._make_audio_processor(rs)
         cb(np.full((CHUNK_SIZE, 2), 0.01, dtype=np.float32), CHUNK_SIZE, None, None)
         cb(np.full((CHUNK_SIZE, 2), 0.05, dtype=np.float32), CHUNK_SIZE, None, None)
         assert rs.listening is True  # fail-open: la captura del comando sigue
@@ -657,7 +657,8 @@ class TestDispatchCommand:
         with caplog.at_level(logging.ERROR):
             await loop._dispatch_command(event)
 
-        assert "Command dispatch failed for cocina" in caplog.text
+        assert "Command dispatch failed: RuntimeError" in caplog.text
+        assert "STT failed" not in caplog.text
 
 
 class TestStart:
@@ -736,7 +737,7 @@ class TestCaptureChannel:
 
     def test_callback_uses_configured_channel(self):
         loop, rs, det = self._loop_with_channel(capture_channel=1)
-        cb = loop._make_audio_callback(rs)
+        cb = loop._make_audio_processor(rs)
         indata = np.zeros((CHUNK_SIZE, 2), dtype=np.float32)
         indata[:, 0] = 0.01
         indata[:, 1] = 0.99
@@ -746,7 +747,7 @@ class TestCaptureChannel:
 
     def test_default_channel_zero_preserved(self):
         loop, rs, det = self._loop_with_channel(capture_channel=0)
-        cb = loop._make_audio_callback(rs)
+        cb = loop._make_audio_processor(rs)
         indata = np.zeros((CHUNK_SIZE, 2), dtype=np.float32)
         indata[:, 0] = 0.01
         indata[:, 1] = 0.99
@@ -757,7 +758,7 @@ class TestCaptureChannel:
     def test_missing_channel_falls_back_to_zero(self):
         # Mic mono (UAC1.0 escritorio): capture_channel=1 NO debe explotar.
         loop, rs, det = self._loop_with_channel(capture_channel=1)
-        cb = loop._make_audio_callback(rs)
+        cb = loop._make_audio_processor(rs)
         indata = np.full((CHUNK_SIZE, 1), 0.07, dtype=np.float32)
         cb(indata, CHUNK_SIZE, None, None)  # sin IndexError
         chunk = det.detect.call_args[0][0]
