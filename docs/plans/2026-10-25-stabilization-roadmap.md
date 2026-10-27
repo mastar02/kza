@@ -705,6 +705,19 @@ checks aceptados y artefacto sin fuentes con 321 hashes verificados. Faltan los
 handoffs de los loops receptores, buffers en reposo, callbacks de entrada y el
 driver completo de `PRODUCERS`. Producción sigue intacta.
 
+Los [receptores de captura](2026-10-26-h3-memory-privacy.md#avance-recibos-de-entrega-a-los-loops-receptores)
+ya conservan la fuente antes de recibir el resultado del kernel y procesan
+ciclos finitos en entrada única y multiroom. También se impide el postprocesado
+tardío tras revocación y se vacían los argumentos auxiliares antes de que el
+executor publique su resultado. La
+[validación](../research/2026-10-27-h3-capture-receiver-scopes-validation.json)
+del commit `3c779e2` registra **5227 passed, 1 xfailed**, 24 casos nuevos,
+checks aceptados y artefacto sin fuentes con 321 hashes verificados. Conserva
+como no aceptada la suite anterior a los dos fallos descubiertos después.
+Faltan buffers en reposo, callbacks de entrada, dependencias semánticas de
+resultados enriquecidos con memoria y el driver completo de `PRODUCERS`.
+No se modifica producción ni se declara aceptación de hardware o de H3–H6.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una

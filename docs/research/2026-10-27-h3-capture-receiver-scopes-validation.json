@@ -1,0 +1,298 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "3c779e262184d4f9801bcdad7458acb171f6569f",
+  "tested_runtime_source_tree": "0c16d4ab18c8c52a13d036fe1dc54b81278c1c01",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 raw capture receiver handoffs. Bind the exclusive consumer receipt before native completion/await delivery. Use finite per-iteration tasks for single/multi input, scoped dispatch/analysis/early/barge work, preserve known epoch affinity during idle reset, recover transient invalidation, guard late post callbacks, and empty auxiliary input boxes before executor transport completion. This is not full PRODUCERS coverage, idle buffer proof, semantic result affinity, physical hardware acceptance or a release.",
+  "new_integration_cases": [
+    "test_receiver_knows_source_while_native_capture_is_still_blocked[single]",
+    "test_receiver_knows_source_while_native_capture_is_still_blocked[multi]",
+    "test_receiver_owns_result_after_kernel_finishes_before_await_returns[single]",
+    "test_receiver_owns_result_after_kernel_finishes_before_await_returns[multi]",
+    "test_noncooperative_result_handoff_keeps_lease_and_cannot_publish_after_close[single]",
+    "test_noncooperative_result_handoff_keeps_lease_and_cannot_publish_after_close[multi]",
+    "test_early_native_parser_keeps_receiver_affinity_after_controller_exit[cancel]",
+    "test_early_native_parser_keeps_receiver_affinity_after_controller_exit[revoke]",
+    "test_noncooperative_callback_keeps_exact_source_scope_until_exit[single]",
+    "test_noncooperative_callback_keeps_exact_source_scope_until_exit[multi]",
+    "test_resetting_known_idle_epoch_does_not_mark_unrelated_work_unknown[single]",
+    "test_resetting_known_idle_epoch_does_not_mark_unrelated_work_unknown[multi]",
+    "test_ambient_native_model_keeps_receiver_scope_after_analysis_exit[cancel]",
+    "test_ambient_native_model_keeps_receiver_scope_after_analysis_exit[revoke]",
+    "test_dispatch_admission_failure_does_not_retain_raw_event[metadata]",
+    "test_dispatch_admission_failure_does_not_retain_raw_event[capacity]",
+    "test_barge_scope_admission_failure_retires_its_task_entry",
+    "test_revoked_result_does_not_stop_receiver_from_accepting_fresh_capture[single]",
+    "test_revoked_result_does_not_stop_receiver_from_accepting_fresh_capture[multi]",
+    "test_revoked_noncooperative_command_cannot_invoke_post_callback[single]",
+    "test_revoked_noncooperative_command_cannot_invoke_post_callback[multi]",
+    "test_completed_transport_arguments_cannot_keep_rejected_raw_input[callback]",
+    "test_completed_transport_arguments_cannot_keep_rejected_raw_input[revoked]",
+    "test_cancel_before_auxiliary_admission_clears_box_without_touching_running_work"
+  ],
+  "new_cases_total": 24,
+  "full_suite": {
+    "accepted": true,
+    "collected": 5228,
+    "passed": 5227,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "runtime_s": 219.87,
+    "junit_time_s": 219.796,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-receiver-scopes-accepted-full.xml",
+    "log": "/tmp/kza-receiver-scopes-accepted-full.log",
+    "xml": "/tmp/kza-receiver-scopes-accepted-full.xml"
+  },
+  "focused_suites": [
+    {
+      "passed": 224,
+      "runtime_s": 14.85,
+      "log": "/tmp/kza-receiver-scopes-initial.log",
+      "note": "Existing capture/single-input/command/capture rotation/handoff and multiroom cases before expanded receiver cases and later fixes."
+    },
+    {
+      "passed": 19,
+      "runtime_s": 2.25,
+      "log": "/tmp/kza-receiver-scopes-expanded.log",
+      "note": "Initial receiver cases before late-post and transport-retention regressions were added."
+    },
+    {
+      "passed": 244,
+      "runtime_s": 16.69,
+      "log": "/tmp/kza-receiver-scopes-focused-final.log",
+      "note": "Initial 19 receiver cases plus existing cases and barge delivery. Not final acceptance: later targeted checks found two more required fixes."
+    },
+    {
+      "passed": 47,
+      "runtime_s": 3.3,
+      "log": "/tmp/kza-receiver-scopes-transport-fixed.log",
+      "note": "23 receiver cases plus the earlier 24 command/capture cases after mutable transport boxes."
+    },
+    {
+      "passed": 249,
+      "runtime_s": 16.91,
+      "log": "/tmp/kza-receiver-scopes-accepted-focused.log",
+      "note": "Final 24 receiver cases and existing capture/command/single-input/handoff/barge/multiroom cases before the final fix commit. Full suite covers the committed code."
+    }
+  ],
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "includes_training_and_migration_clis": true,
+      "log": "/tmp/kza-receiver-scopes-accepted-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "includes_training_and_migration_clis": true,
+      "log": "/tmp/kza-receiver-scopes-accepted-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-receiver-scopes-accepted-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-receiver-scopes-accepted-dashboard.log"
+    }
+  },
+  "runtime_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.2324129454791546,
+        "max": 1.0023831855505705
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.04805298522114754,
+          "p95": 0.07845996879041195,
+          "max": 0.07845996879041195
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.808007093146443,
+          "p95": 10.895641054958105,
+          "max": 10.895641054958105
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 421,
+        "loop_lag_p95_ms": 0.40435511618852615,
+        "loop_lag_max_ms": 0.9927591308951378,
+        "cancel_cleanup_max_ms": 1.7372400034219027,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2712,
+        "loop_lag_p95_ms": 0.9884118381887673,
+        "loop_lag_max_ms": 1.5376970451325178,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6311200559139252,
+        "p95": 0.8582649752497673,
+        "max": 0.8582649752497673,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "3c779e262184d4f9801bcdad7458acb171f6569f",
+    "artifact": "/tmp/kza-receiver-scopes-runtime-7k13ep6i/runtime.tar.gz",
+    "verified_hashes": 321,
+    "runtime_s": 0.6903303910512477,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "stdout": "\u001b[90m03:16:40.874\u001b[0m \u001b[32mINFO    \u001b[0m \u001b[34m...pipeline.audio_manager\u001b[0m Cargando wake word: hey_jarvis \u001b[2m(audio_manager.py:68)\u001b[0m\n\u001b[90m03:16:40.874\u001b[0m \u001b[32mINFO    \u001b[0m \u001b[34m...pipeline.audio_manager\u001b[0m Wake word cargado: ['synthetic'] \u001b[2m(audio_manager.py:80)\u001b[0m\n{\"passed\": true, \"verified_hashes\": 321, \"source_free\": true, \"receiver_observations\": [{\"transport\": \"single\", \"source_known_before_native_exit\": true, \"finished_kernel_result_owned_by_receiver\": true, \"unrelated_source_not_blocked\": true, \"idle_controller_has_no_raw_locals\": true, \"fresh_capture_after_revocation_accepted\": true, \"noncooperative_callback_held_writer_lease\": true, \"late_post_callback_calls\": 0, \"raw_arrays_released\": true}, {\"transport\": \"multi\", \"source_known_before_native_exit\": true, \"finished_kernel_result_owned_by_receiver\": true, \"unrelated_source_not_blocked\": true, \"idle_controller_has_no_raw_locals\": true, \"fresh_capture_after_revocation_accepted\": true, \"noncooperative_callback_held_writer_lease\": true, \"late_post_callback_calls\": 0, \"raw_arrays_released\": true}], \"retained_executor_argument_tuple_contains_no_raw_input\": true, \"real_privacy_sqlite_and_capture_components\": true, \"synthetic_device_wake_and_poll_endpoints\": true, \"producers_journal_complete\": false, \"idle_buffers_and_semantic_result_affinity_proven\": false, \"private_household_data_read_or_packaged\": false, \"production_changed\": false, \"full_main_or_hardware_acceptance\": false}\n",
+    "stderr": "",
+    "passed": true,
+    "exercise": {
+      "passed": true,
+      "verified_hashes": 321,
+      "source_free": true,
+      "receiver_observations": [
+        {
+          "transport": "single",
+          "source_known_before_native_exit": true,
+          "finished_kernel_result_owned_by_receiver": true,
+          "unrelated_source_not_blocked": true,
+          "idle_controller_has_no_raw_locals": true,
+          "fresh_capture_after_revocation_accepted": true,
+          "noncooperative_callback_held_writer_lease": true,
+          "late_post_callback_calls": 0,
+          "raw_arrays_released": true
+        },
+        {
+          "transport": "multi",
+          "source_known_before_native_exit": true,
+          "finished_kernel_result_owned_by_receiver": true,
+          "unrelated_source_not_blocked": true,
+          "idle_controller_has_no_raw_locals": true,
+          "fresh_capture_after_revocation_accepted": true,
+          "noncooperative_callback_held_writer_lease": true,
+          "late_post_callback_calls": 0,
+          "raw_arrays_released": true
+        }
+      ],
+      "retained_executor_argument_tuple_contains_no_raw_input": true,
+      "real_privacy_sqlite_and_capture_components": true,
+      "synthetic_device_wake_and_poll_endpoints": true,
+      "producers_journal_complete": false,
+      "idle_buffers_and_semantic_result_affinity_proven": false,
+      "private_household_data_read_or_packaged": false,
+      "production_changed": false,
+      "full_main_or_hardware_acceptance": false
+    }
+  },
+  "development_findings": {
+    "known_reset_affinity": {
+      "accepted": false,
+      "failed": 2,
+      "passed": 0,
+      "runtime_s": 0.79,
+      "log": "/tmp/kza-receiver-scopes-reset-reproduction.log",
+      "description": "Both transports marked a known idle reset as unknown work, blocking an unrelated conversation.",
+      "correction": "Keep the current epoch metadata during reset; mark provenance unresolved only when acquiring a new packet."
+    },
+    "late_post_callback": {
+      "accepted": false,
+      "failed": 1,
+      "passed": 1,
+      "runtime_s": 0.71,
+      "log": "/tmp/kza-receiver-scopes-post-reproduction.log",
+      "description": "Multiroom invoked post-processing after a command ignored cancellation and returned following source revocation; single input already guarded this boundary.",
+      "correction": "Require live dispatch sources before callback entry and again after it returns, before processing or forwarding its result."
+    },
+    "intermittent_argument_retention": {
+      "accepted": false,
+      "failed": 1,
+      "passed": 245,
+      "runtime_s": 16.76,
+      "log": "/tmp/kza-receiver-scopes-final-focused.log",
+      "description": "An existing rejected auxiliary input remained reachable after observing its error. Fixed native outcomes avoided error tracebacks but executor tuples could still retain direct raw arguments after native return."
+    },
+    "deterministic_transport_retention": {
+      "accepted": false,
+      "failed": 2,
+      "passed": 0,
+      "runtime_s": 0.62,
+      "log": "/tmp/kza-receiver-scopes-transport-reproduction.log",
+      "description": "Retain the worker transport argument tuple deliberately after its normal return. Both callback failure and revoked-input cases kept the raw ndarray before the box fix.",
+      "correction": "Transport only a mutable input box. Native completion empties its callback/argument fields before future publication. A controller clears a box only if no worker admitted it; cancellation cannot mutate another running invocation."
+    },
+    "superseded_full_suite": {
+      "accepted": false,
+      "tested_commit": "7e0dbdc",
+      "passed": 5222,
+      "xfailed": 1,
+      "runtime_s": 219.08,
+      "log": "/tmp/kza-receiver-scopes-initial-full.log",
+      "xml": "/tmp/kza-receiver-scopes-initial-full.xml",
+      "description": "The suite passed its then-collected cases, but later post-callback and transport-retention checks contradicted candidate completeness. This is not the final validation. Rerun the complete suite only after both fixes."
+    }
+  },
+  "runtime_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancellation_max_ms": 100,
+    "cleanup_ms": 1000,
+    "limits_widened": false,
+    "gc_forced_disabled_or_frozen": false,
+    "integrated_gc_hardware_acceptance": false
+  },
+  "preserved_boundaries": {
+    "real_household_data_read_or_modified": false,
+    "prior_private_quarantine_copy_modified": false,
+    "quarantined_unsourced_data_automatically_deleted": false,
+    "unknown_legacy_files_automatically_deleted": false,
+    "config_or_runtime_under_kza_changed": false,
+    "production_restarted": false,
+    "new_training_or_gpu_reassignment": false,
+    "global_erasure_claimed": false,
+    "full_main_or_hardware_acceptance": false,
+    "release_published": false,
+    "producers_journal_complete": false,
+    "idle_buffer_retirement_proven_by_new_scope_api": false,
+    "raw_capture_receiver_handoffs_validated": true,
+    "semantic_result_affinity_proven": false
+  },
+  "remaining_scope": [
+    "PRODUCERS journal remains unconnected. Retire idle tap/VAD/wake/command buffers, track actual input callback lifetimes, propagate semantic fact dependencies in memory-enriched results, and integrate the complete runtime producer contracts with exact journal claims and leased recovery.",
+    "The new receiver contract is for exclusive raw capture/transcription handoffs. Metadata binding itself grants no authority and cannot prove idle buffer retirement or complete semantic derivation affinity.",
+    "Remaining diagnostics, streams/frontend and VOICES journal participants, pause versus total mute, acoustic retention and authenticated grouping review remain open. Broad erasure remains unavailable in the UI.",
+    "Unknown legacy datasets/adapters and quarantine rows/backups remain preserved pending manual review/lifecycle; complete migrations, live-index rebuild and compatible rollback remain open.",
+    "Selected HA effects and kitchen switch mapping, physical audio, remaining H4 runtime/dependency acceptance, H5 voice functions and the one integrated H6 release remain open.",
+    "The earlier instrumented GC pause of 495.68 ms is not remeasured or accepted by this uninstrumented suite. The compiled smoke uses actual components with synthetic device/wake/poll endpoints, not hardware or full main startup."
+  ]
+}

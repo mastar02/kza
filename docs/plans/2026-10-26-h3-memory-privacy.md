@@ -2091,6 +2091,28 @@ los buffers en reposo, callbacks de entrada, afinidad de resultados enriquecidos
 con memoria y el driver completo de `PRODUCERS`. No equivale a borrado global,
 aceptación de hardware o publicación de una release.
 
+La [validación final](../research/2026-10-27-h3-capture-receiver-scopes-validation.json)
+del commit `3c779e2` registra **5227 passed, 1 xfailed**, sin fallos, en 219,87 s,
+incluidos 24 casos nuevos y 249 pruebas dirigidas finales. Pasan Ruff, Bandit
+sin hallazgos medios/altos, 18 tests de frontend y el smoke del dashboard.
+Se conservan la primera suite de 5222 casos aprobados como **no aceptada**,
+porque las pruebas posteriores encontraron el postprocesado tardío y la
+retención de argumentos del transporte, y sus reproducciones deterministas.
+La suite completa se repitió después de corregir ambos fallos.
+
+El artefacto sin fuentes verifica 321 hashes. Con componentes reales y endpoints
+sintéticos de dispositivo, wake y poll, ejercita ambos transports: fuente
+conocida antes de terminar el kernel, resultado terminado todavía retenido por
+el receptor, captura nueva tras revocación, callback no cooperativo que conserva
+el lease y cero postprocesados tardíos. Mantener viva la tupla del executor no
+conserva el argumento crudo después del error. El ejercicio dura 0,69 s; no
+arranca hardware ni `main` completo y no lee datos privados del hogar.
+
+El heartbeat registra p95 de 0,23 ms y máximo de 1,00 ms; cancelar el control
+tarda como máximo 0,08 ms y limpiar stream/cliente 10,90 ms. No se amplían los
+presupuestos ni se manipula GC. La aceptación integrada de GC/hardware de H4/H6
+y la publicación única siguen pendientes.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
