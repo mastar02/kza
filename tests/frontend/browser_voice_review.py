@@ -26,7 +26,7 @@ from src.users.voice_registry import build_voice_registry
 from tests.frontend.browser_typed_controls import Page
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
-from tests.mocks.voice_registry import AUDIO,Encoder,idle
+from tests.mocks.voice_registry import AUDIO,Encoder
 
 
 async def main(*,browser_binary='chromium'):
@@ -51,7 +51,12 @@ async def main(*,browser_binary='chromium'):
             async def sample(text,ttl=60):
                 source = memory_source(now=clock.now,ttl=ttl)
                 assert voices.observe(encoder,np.tile(AUDIO,3),(source,),transcript=text,room_id='Synthetic listening room')
-                await idle(voices)
+                # The locator is a test-only native read. Let the real UI and
+                # model owners finish before consuming a registry I/O slot;
+                # keep the sampler's original three-second observation budget.
+                async with asyncio.timeout(3):
+                    while voices.resource_status()['pending'] or voices.resource_status()['operations']:
+                        await asyncio.sleep(.001)
                 rows = (await voices.acall(voices.ledger.snapshot))['fingerprints']
                 identity = next(row['id'] for row in rows if source.capture_id in row['capture_ids'])
                 return source,identity
@@ -183,7 +188,7 @@ async def main(*,browser_binary='chromium'):
                         await page.evaluate("[...document.querySelectorAll('button')].find(button=>button.textContent==='Actualizar').click()")
                         await page.wait_for("window.__kzaVoiceState.profiles.status()==='real' && window.__kzaVoiceState.captures.status()==='real' && document.body.textContent.includes('Synthetic browser profile') && !document.querySelector('[data-capture-id]')")
                         await page.evaluate("[...document.querySelectorAll('button')].find(button=>button.textContent==='Borrar perfil').click()")
-                        await page.wait_for("!document.body.textContent.includes('Synthetic browser profile') && window.__kzaVoiceState.profiles.status()==='real'")
+                        await page.wait_for("!document.body.textContent.includes('Synthetic browser profile') && window.__kzaVoiceState.profiles.status()==='real' && window.__kzaVoiceState.captures.status()==='real'")
                         assert not (await voices.acall(voices.ledger.snapshot))['profiles']
                         expiring,expiry_id = await sample('Synthetic independent idle expiry',ttl=3)
                         await page.evaluate("[...document.querySelectorAll('button')].find(button=>button.textContent==='Actualizar').click()")
