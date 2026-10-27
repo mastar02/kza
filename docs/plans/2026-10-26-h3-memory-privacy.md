@@ -1819,12 +1819,38 @@ la recrea. Una transacción fallida se revierte completa. También se rechazan
 links en el candidato/lease y orígenes que no son archivos regulares. El CLI
 devuelve contadores o un error fijo, sin documentos ni IDs originales.
 
-Pasan 76 pruebas dirigidas; hay 26 casos nuevos de migración y el scanner de los
-archivos nuevos no encuentra hallazgos de Bandit. Siguen pendientes el ensayo
-con la selección privada real, la suite completa y el artefacto compilado. Este
-paso no publica ni migra producción, no copia todavía los índices HNSW del origen
-y no completa la restauración compatible de H6, la revisión manual o el borrado
-global de snapshots/quarantines y demás colectores.
+El ensayo privado real pasó sobre los 870 IDs, conservando sus 870 documentos
+y vectores; los cuatro registros nuevos no se importaron al catálogo candidato.
+Los hashes de SQLite/WAL observados antes y después coinciden. Reanudar no
+duplica filas y dos arranques del grafo de memoria conservan 870 cuarentenas y
+cero hechos, fuentes, propuestas, resultados de búsqueda y jobs de indexación.
+El directorio es 0700 y snapshot/catálogo son 0600. La validación privada queda
+bajo `data/`, ignorada por Git; no se publican documentos, vectores o IDs
+originales en la evidencia versionada. La copia real tarda 0,21 s.
+
+La [validación del ensayo](../research/2026-10-27-h3-legacy-quarantine-copy-validation.json)
+del commit `b8b3cdd` registra **5099 passed, 1 xfailed**, sin fallos, en 212,56 s.
+Incluye 26 casos nuevos, 76 pruebas dirigidas y 26 casos sobre el commit exacto.
+Pasan Ruff, Bandit incluyendo el CLI sin hallazgos medios/altos, 18 tests de
+frontend y el smoke del dashboard. La evidencia conserva un error del verificador
+privado que intentó abrir una transacción dentro de otra; se corrigió sólo ese
+verificador y se reutilizó la misma copia, sin volver a leer el origen.
+
+El artefacto sin fuentes verifica 319 hashes y ejecuta copia y reanudación por
+el CLI compilado sobre Chroma/SQLite reales y texto sintético. Dos arranques con
+un índice contaminado siguen sin devolver las cuarentenas; retirar una fila
+impide su recreación por retry. El ejercicio dura 0,93 s. No incluye datos
+privados del hogar ni configura modelos o GPUs.
+
+El heartbeat registra p95 de 0,18 ms y máximo de 1,03 ms; la cancelación de
+control llega a 0,07 ms y el cleanup a 10,94 ms, con los presupuestos anteriores.
+La aceptación integrada de GC y hardware sigue abierta.
+
+Este paso no publica ni migra producción, no copia los índices HNSW del origen
+y no completa un conjunto de rollback compatible de H6. Siguen pendientes la
+revisión manual, el corte real, las demás migraciones y el borrado global de
+snapshots/cuarentenas y otros colectores. El catálogo ensayado continúa privado
+y separado de la versión instalada.
 
 ## Trabajo restante
 
@@ -1849,7 +1875,7 @@ global de snapshots/quarantines y demás colectores.
    confirmados manualmente hasta borrado, registrando la revisión verificable.
 6. Construir agrupación y revisión de voces, correcciones de unión/separación y
    abstención. Fijar métricas y corpus de calibración antes de evaluar el resultado.
-7. Probar migración en copia y completar aceptación de runtime, micrófono,
+7. Completar las demás migraciones en copia y la aceptación de runtime, micrófono,
    reproducción, HA y rollback durante H6. La restauración debe conservar la
    intención de borrado y evitar reintroducir datos eliminados. No se ha
    modificado producción.

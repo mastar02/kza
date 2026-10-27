@@ -1,0 +1,274 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "b8b3cdddc07d360de930db17dc9747f13697b67b",
+  "tested_runtime_source_tree": "218d636f1ce2dadcaecdbab3c95da1a659f1255a",
+  "tested_scripts_source_tree": "88c67440ee6b42a86e39f4f97c801aec49a82105",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H0/H3 copy-only rehearsal of the exact 870 previously inventoried legacy IDs. Read-only live SQLite backup, private manifest and isolated leased quarantine tables preserving documents, typed metadata and FLOAT32 vectors. No legacy insertion timestamp is promoted to extraction/source/confirmation authority. No production migration or release.",
+  "new_integration_cases": [
+    "test_copy_preserves_selected_documents_metadata_and_vectors_without_inventing_sources",
+    "test_resume_verifies_exact_copy_without_reopening_source_or_renewing_data",
+    "test_invalid_selection_cannot_silently_import_another_record[duplicate]",
+    "test_invalid_selection_cannot_silently_import_another_record[missing]",
+    "test_invalid_selection_cannot_silently_import_another_record[empty]",
+    "test_new_copy_never_overwrites_original_or_existing_destination[source_child]",
+    "test_new_copy_never_overwrites_original_or_existing_destination[source_parent]",
+    "test_new_copy_never_overwrites_original_or_existing_destination[existing]",
+    "test_retry_rejects_modified_or_removed_quarantine_and_never_recreates_it[snapshot]",
+    "test_retry_rejects_modified_or_removed_quarantine_and_never_recreates_it[selection]",
+    "test_retry_rejects_modified_or_removed_quarantine_and_never_recreates_it[row_removed]",
+    "test_retry_rejects_modified_or_removed_quarantine_and_never_recreates_it[row_changed]",
+    "test_resume_does_not_follow_candidate_or_lease_links_into_original[symlink-candidate.sqlite3]",
+    "test_resume_does_not_follow_candidate_or_lease_links_into_original[symlink-candidate.sqlite3.lock]",
+    "test_resume_does_not_follow_candidate_or_lease_links_into_original[hardlink-candidate.sqlite3]",
+    "test_resume_does_not_follow_candidate_or_lease_links_into_original[hardlink-candidate.sqlite3.lock]",
+    "test_failed_import_rolls_back_whole_batch_and_can_resume_same_snapshot",
+    "test_cancelled_import_keeps_writer_lease_until_actual_transaction_finishes",
+    "test_actual_cli_returns_only_counts_and_fixed_errors",
+    "test_incomplete_legacy_payload_cannot_be_reported_as_a_preserved_record[missing_vector]",
+    "test_incomplete_legacy_payload_cannot_be_reported_as_a_preserved_record[short_vector]",
+    "test_incomplete_legacy_payload_cannot_be_reported_as_a_preserved_record[stale_sequence]",
+    "test_incomplete_legacy_payload_cannot_be_reported_as_a_preserved_record[missing_document]",
+    "test_quarantined_copy_is_ineligible_in_real_runtime_even_with_a_contaminated_index",
+    "test_source_must_be_a_regular_database_before_any_copy_io[directory]",
+    "test_source_must_be_a_regular_database_before_any_copy_io[fifo]"
+  ],
+  "new_cases_total": 26,
+  "full_suite": {
+    "accepted": true,
+    "collected": 5100,
+    "passed": 5099,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "runtime_s": 212.56,
+    "junit_time_s": 212.49,
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --tb=short -o junit_family=xunit1 --junitxml=/tmp/kza-legacy-copy-full.xml",
+    "log": "/tmp/kza-legacy-copy-full.log",
+    "xml": "/tmp/kza-legacy-copy-full.xml"
+  },
+  "focused_suite": {
+    "passed": 76,
+    "runtime_s": 6.93,
+    "log": "/tmp/kza-legacy-copy-focused-final.log",
+    "note": "Before the final equivalent bound-JSON selection query; the committed selection path is covered by the 26-case committed check and full suite."
+  },
+  "committed_new_cases": {
+    "passed": 26,
+    "runtime_s": 2.23,
+    "log": "/tmp/kza-legacy-copy-committed.log"
+  },
+  "checks": {
+    "ruff": {
+      "passed": true,
+      "includes_migration_cli": true,
+      "log": "/tmp/kza-legacy-copy-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 27,
+      "medium": 0,
+      "high": 0,
+      "includes_migration_cli": true,
+      "log": "/tmp/kza-legacy-copy-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-legacy-copy-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-legacy-copy-dashboard.log"
+    }
+  },
+  "runtime_metrics": {
+    "tests.integration.test_async_conversation_generation::test_complete_response_and_context_without_blocking_capture": {
+      "heartbeat_ms": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "interval_ms": 5,
+        "samples": 400,
+        "p95": 0.18310314044356346,
+        "max": 1.0334060061722994
+      }
+    },
+    "tests.integration.test_async_conversation_generation::test_cancellation_latency_and_cleanup_ten_runs": {
+      "cancellation_ms": {
+        "repetitions": 10,
+        "request_control": {
+          "p50": 0.052690040320158005,
+          "p95": 0.06531900726258755,
+          "max": 0.06531900726258755
+        },
+        "stream_and_client_cleanup": {
+          "p50": 10.848339879885316,
+          "p95": 10.93808701261878,
+          "max": 10.93808701261878
+        }
+      }
+    },
+    "tests.integration.test_owned_voice_responses::test_voice_graph_loop_and_cancellation_limits": {
+      "owned_voice_metrics": {
+        "repetitions": 10,
+        "stall_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 427,
+        "loop_lag_p95_ms": 0.3073920961469412,
+        "loop_lag_max_ms": 1.0661161504685879,
+        "cancel_cleanup_max_ms": 1.6409149393439293,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_response_deadlines::test_long_complete_uncached_response_ten_times": {
+      "long_complete_voice_metrics": {
+        "repetitions": 10,
+        "sentences_per_run": 100,
+        "samples_per_run": 2400000,
+        "provider_wait_ms": 200,
+        "heartbeat_interval_ms": 5,
+        "heartbeat_samples": 2734,
+        "loop_lag_p95_ms": 0.9800448361784219,
+        "loop_lag_max_ms": 3.9564621448516846,
+        "exact_pcm_runs": 10
+      }
+    },
+    "tests.integration.test_voice_service_lifecycle::test_application_close_deadline_ten_times": {
+      "voice_application_close_ms": {
+        "repetitions": 10,
+        "p50": 0.6529029924422503,
+        "p95": 5.583159858360887,
+        "max": 5.583159858360887,
+        "cooperative_cleanup_limit_ms": 1000
+      }
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "b8b3cdddc07d360de930db17dc9747f13697b67b",
+    "artifact": "/tmp/kza-legacy-copy-runtime-cfzffbfh/runtime.tar.gz",
+    "verified_hashes": 319,
+    "runtime_s": 0.9329682148527354,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "stdout": "{\"passed\": true, \"verified_hashes\": 319, \"source_free\": true, \"real_chroma_source_and_sqlite_backup\": true, \"selected\": 2, \"unselected\": 1, \"preserved_vectors\": 2, \"source_unchanged\": true, \"replay_verified\": true, \"removed_row_not_recreated\": true, \"runtime_observations\": [{\"boot\": 1, \"search_results\": 0, \"facts\": 0}, {\"boot\": 2, \"search_results\": 0, \"facts\": 0}], \"contaminated_index_ineligible\": true, \"original_records_entered_facts\": 0, \"invented_sources\": 0, \"private_household_data_packaged\": false, \"production_changed\": false, \"compatible_production_rollback_validated\": false}\n",
+    "stderr": "",
+    "passed": true,
+    "exercise": {
+      "passed": true,
+      "verified_hashes": 319,
+      "source_free": true,
+      "real_chroma_source_and_sqlite_backup": true,
+      "selected": 2,
+      "unselected": 1,
+      "preserved_vectors": 2,
+      "source_unchanged": true,
+      "replay_verified": true,
+      "removed_row_not_recreated": true,
+      "runtime_observations": [
+        {
+          "boot": 1,
+          "search_results": 0,
+          "facts": 0
+        },
+        {
+          "boot": 2,
+          "search_results": 0,
+          "facts": 0
+        }
+      ],
+      "contaminated_index_ineligible": true,
+      "original_records_entered_facts": 0,
+      "invented_sources": 0,
+      "private_household_data_packaged": false,
+      "production_changed": false,
+      "compatible_production_rollback_validated": false
+    }
+  },
+  "real_private_copy": {
+    "tested_commit": "b8b3cdddc07d360de930db17dc9747f13697b67b",
+    "selected_records": 870,
+    "quarantined_records": 870,
+    "preserved_vectors": 870,
+    "snapshot_records": 874,
+    "additional_records_not_imported": 4,
+    "source_unchanged_during_copy": true,
+    "read_only_source_connection": true,
+    "replayed_without_duplicates": true,
+    "observations_after_two_boots": [
+      {
+        "boot": 1,
+        "quarantined": 870,
+        "facts": 0,
+        "sources": 0,
+        "prompt_facts": 0,
+        "search_results": 0,
+        "index_jobs": 0
+      },
+      {
+        "boot": 2,
+        "quarantined": 870,
+        "facts": 0,
+        "sources": 0,
+        "prompt_facts": 0,
+        "search_results": 0,
+        "index_jobs": 0
+      }
+    ],
+    "private_root_mode": "0o700",
+    "snapshot_mode": "0o600",
+    "catalog_mode": "0o600",
+    "production_migrated": false,
+    "production_restarted": false,
+    "hnsw_files_copied": false,
+    "compatible_production_rollback_validated": false,
+    "manual_review_implemented": false,
+    "private_validation_file": "data/legacy-quarantine-copy-20261027T032918Z/validation.json",
+    "copy_runtime_s": 0.2138382529374212,
+    "private_contents_committed": false,
+    "original_ids_documents_or_vectors_in_this_report": false,
+    "note": "The SQLite backup contains 874 records in the selected source collection; only the 870 preview IDs enter the candidate quarantine. The four new records remain outside that import. Original HNSW files are not included; this is not a complete production rollback set."
+  },
+  "fixture_history": {
+    "first_private_reader_verification": {
+      "accepted": false,
+      "log": "/tmp/kza-legacy-real-validation-first.log",
+      "error": "SQLite cannot start a transaction within a transaction",
+      "cause": "The verifier called ledger.jobs() from inside its own count transaction.",
+      "correction": "Use the existing count transaction for that count; reuse the same staged copy without resnapshotting or changing application code."
+    }
+  },
+  "runtime_limits": {
+    "heartbeat_p95_ms": 25,
+    "heartbeat_max_ms": 75,
+    "control_cancellation_max_ms": 100,
+    "cleanup_ms": 1000,
+    "limits_widened": false,
+    "gc_forced_disabled_or_frozen": false,
+    "integrated_gc_hardware_acceptance": false
+  },
+  "preserved_boundaries": {
+    "real_private_data_read": true,
+    "real_private_data_changed": false,
+    "private_copy_created": true,
+    "original_runtime_migrated": false,
+    "installed_configuration_changed": false,
+    "production_restarted": false,
+    "new_private_training_or_gpu_reassignment": false,
+    "hnsw_source_files_copied": false,
+    "compatible_production_rollback_validated": false,
+    "manual_quarantine_review_implemented": false,
+    "global_erasure_claimed": false,
+    "full_main_startup_or_hardware_acceptance": false
+  },
+  "remaining_scope": [
+    "This is a private copy rehearsal, not a production migration. H6 must select a compatible runtime/data set, preserve current tombstones, validate rollback and apply the final configuration before publishing. Original HNSW files are not included in this rehearsal.",
+    "Manual quarantine review/promotion remains unimplemented. Legacy insertion metadata establishes neither extraction time, original conversation, identity nor authenticated confirmation.",
+    "Quarantine/snapshot lifecycle, other legacy learning datasets and adapters, complete COLLECTORS/PRODUCERS journal coverage, diagnostics/streams/voices, pause/mute and calibrated speaker review remain pending.",
+    "Selected HA effects, remaining H4 dependency/runtime GC acceptance, H5 local functions and one integrated H6 release remain pending. Prior instrumented GC pauses up to 495.68 ms are not remeasured by this uninstrumented suite."
+  ]
+}

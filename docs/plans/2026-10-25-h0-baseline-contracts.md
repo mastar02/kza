@@ -5,8 +5,9 @@ La referencia inicial es `f56b5ae`, en `recovery/production-2026-10-25`.
 El trabajo se hace como `yo`, desde `/home/yo/projects/kza`. No modifica
 servicios, permisos ni datos de producción. Se recibió el inventario privado de
 HA y se revisó la selección inicial con el usuario. La metadata legacy también
-se inventarió por lectura y tiene vista previa privada; H0 permanece abierto
-hasta resolver su tratamiento y la evidencia faltante del inventario.
+se inventarió por lectura y tiene vista previa privada. La selección autorizada
+de 870 registros ya pasó el ensayo de cuarentena en copia; H0 sigue abierto por
+la restauración compatible y la evidencia faltante del inventario.
 
 ## Baseline de los diez fallos
 
@@ -162,8 +163,12 @@ confirmación autenticada, y no autoriza eliminaciones. El 26 de octubre el
 usuario decidió conservar los 870 hechos sin procedencia verificable en
 cuarentena, fuera de las respuestas automáticas, hasta revisión manual. La
 implementación nueva usa un catálogo e índice separados; no importa ni modifica
-automáticamente esos documentos. Falta probar la migración sobre una copia
-consistente con rollback compatible.
+automáticamente esos documentos. El [ensayo privado en copia](2026-10-26-h3-memory-privacy.md#avance-ensayo-privado-de-la-selección-legacy-en-copia)
+conservó los 870 documentos y vectores en cuarentena; los cuatro registros nuevos
+observados no se importaron. El origen se abrió sólo para lectura y sus hashes
+antes/después coinciden. Dos arranques del candidato no incorporan esos registros
+a hechos, propuestas o búsquedas. No se copiaron los HNSW originales: falta un
+conjunto completo de restauración compatible para H6, además del corte real.
 
 Decisión del usuario del 26 de octubre para H3: huellas y grupos sin confirmar
 vencen a las 48 h; perfiles confirmados manualmente se conservan hasta borrado
@@ -293,10 +298,10 @@ la prueba con audio, HA y unit reales corresponden a la única release de H6.
 - Inventario privado y selección inicial: recibidos y revisados; faltan servicios
   y disponibilidad en vivo, resolución completa de efectos y selección de alertas.
 - Metadata de memoria legacy: inventariada por lectura, con vista previa privada
-  de retención hipotética. Cuarentena autorizada; prueba de migración en copia
-  pendiente.
+  de retención hipotética. Cuarentena autorizada; el ensayo de los 870 IDs en una
+  copia privada pasó. No incluye aún restauración compatible ni despliegue.
 
 H1 puede desarrollar política y pruebas con inventarios sintéticos sin habilitar
-entidades reales. H3 puede concretar interfaces; la migración de registros reales
-requiere el ensayo en copia con la cuarentena elegida. Los gates de H6 siguen
-pendientes: este ensayo no constituye una release validada.
+entidades reales. H3 conserva el ensayo separado de la instalación existente;
+quedan revisión manual, demás migraciones y restauración compatible. Los gates
+de H6 siguen pendientes: este ensayo no constituye una release validada.

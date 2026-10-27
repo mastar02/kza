@@ -60,7 +60,9 @@ conjunta de runtime y datos. Se recibió el inventario privado persistido de HA
 y se registró la selección inicial del usuario fuera de Git. Quedan pendientes
 la evidencia viva y los efectos sin resolver del inventario. Los metadatos
 legacy tienen inventario de sólo lectura y vista previa privada; el usuario eligió
-conservarlos en cuarentena. La prueba de migración en copia sigue pendiente.
+conservarlos en cuarentena. El ensayo privado de los 870 IDs ya pasó, con
+documentos y vectores preservados y fuera de inferencia; faltan el corte real
+y un conjunto completo de restauración compatible.
 H0 todavía no está cerrado.
 
 **Entregables:** clasificación de los diez tests fallidos del rescate, matriz de
@@ -642,6 +644,19 @@ checks y artefacto sin fuentes aceptados. Conserva la ejecución interrumpida
 como no aceptada. El artefacto verifica 317 hashes, cuatro casos de cierre y
 siete procesos CLI. No cierra la retención de datasets legacy, el journal
 completo, la aceptación integrada de GC/hardware ni los demás hitos de H0–H6.
+
+El [ensayo de memoria legacy en copia](2026-10-26-h3-memory-privacy.md#avance-ensayo-privado-de-la-selección-legacy-en-copia)
+ya conserva exactamente los 870 IDs autorizados con documentos, metadata y
+vectores. La colección tiene ahora 874 registros; los cuatro nuevos no entran
+en esa importación. La copia es privada y el origen se abre sólo para lectura.
+Reanudar no duplica ni recrea filas retiradas, y dos arranques del grafo de memoria
+mantienen cero hechos, fuentes, propuestas, búsquedas y jobs a partir de ellos.
+La [validación](../research/2026-10-27-h3-legacy-quarantine-copy-validation.json)
+del commit `b8b3cdd` registra **5099 passed, 1 xfailed**, 26 casos nuevos,
+checks y artefacto sin fuentes aceptados, con 319 hashes verificados. Los datos
+reales quedan fuera de Git y del artefacto. No se migra producción ni se afirma
+un rollback completo: faltan HNSW/restauración compatible, revisión manual,
+demás migraciones, ciclo de vida de snapshots/cuarentenas y los otros entregables.
 
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
