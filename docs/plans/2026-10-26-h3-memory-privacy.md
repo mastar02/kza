@@ -1790,6 +1790,42 @@ control llega a 0,08 ms y el cleanup a 11,09 ms. Los presupuestos se conservan.
 Corregir este bucle no equivale a resolver las pausas globales de GC observadas
 antes: su aceptación integrada y la del hardware continúan abiertas.
 
+## Avance: ensayo privado de la selección legacy en copia
+
+La vista de H0 contenía sólo metadata, sin backup de documentos ni vectores.
+La lectura actual observa 874 registros en la colección seleccionada: siguen
+presentes los 870 IDs de esa vista y hay cuatro nuevos. El ensayo selecciona
+exactamente los 870 originales; no amplía implícitamente la migración.
+
+`scripts/stage_legacy_memory.py` prepara un directorio nuevo y privado. Copia
+SQLite mediante una conexión `mode=ro` y `query_only`, verifica la integridad del
+snapshot y conserva hashes del origen observados antes/después. No abre Chroma
+sobre el origen ni escribe allí. Guarda manifest, snapshot y catálogo candidato
+con permisos restrictivos, sin sobrescribir un destino existente. La selección
+se comprueba en lotes acotados y la copia/importación tiene un presupuesto de
+trabajo; el cierre conserva la propiedad nativa hasta que termina.
+
+El catálogo candidato conserva documentos, metadata tipada y vectores FLOAT32
+en tablas de cuarentena separadas, dentro de una sola transacción con lease.
+No crea hechos, propuestas, fuentes, confirmaciones ni jobs de indexación. Las
+fechas de inserción antiguas siguen siendo metadata legacy, no fechas de
+extracción. No se inventa autor o conversación. Los registros quedan fuera de
+los lectores normales y de la confirmación de propuestas, incluso con un índice
+contaminado que afirma falsamente que fueron confirmados.
+
+Reanudar verifica el mismo snapshot y los mismos registros, sin abrir el origen
+ni renovar la retención. Una fila retirada o cambiada causa rechazo; un retry no
+la recrea. Una transacción fallida se revierte completa. También se rechazan
+links en el candidato/lease y orígenes que no son archivos regulares. El CLI
+devuelve contadores o un error fijo, sin documentos ni IDs originales.
+
+Pasan 76 pruebas dirigidas; hay 26 casos nuevos de migración y el scanner de los
+archivos nuevos no encuentra hallazgos de Bandit. Siguen pendientes el ensayo
+con la selección privada real, la suite completa y el artefacto compilado. Este
+paso no publica ni migra producción, no copia todavía los índices HNSW del origen
+y no completa la restauración compatible de H6, la revisión manual o el borrado
+global de snapshots/quarantines y demás colectores.
+
 ## Trabajo restante
 
 1. Cubrir los demás datasets y consumidores de clips/aprendizaje y conectar
