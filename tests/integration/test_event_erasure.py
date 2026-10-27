@@ -63,6 +63,53 @@ async def flush(owner):
     await owner.reconcile()
 
 
+async def seed_event(events, *args, **kwargs):
+    """Await the actual seed write; erasure setup has no caller-wait assertion."""
+    return await events.acall(events.log, *args, **kwargs)
+
+
+async def test_erasure_seed_waits_for_actual_writer_beyond_caller_observation_deadline(tmp_path):
+    async with graph(tmp_path) as (privacy, owner, _, events, clock, _):
+        source = memory_source(now=clock.now)
+        entered, release = threading.Event(), threading.Event()
+
+        def context():
+            entered.set()
+            assert release.wait(3)
+            return {}
+
+        events.context_provider = context
+        assert events.observation_timeout_s == .1
+        observing = asyncio.create_task(events.alog('light.synthetic', 'turn_on', sources=(source,)))
+        try:
+            await until(entered.is_set)
+            with pytest.raises(TimeoutError):
+                await observing
+            assert events.resource_status()['operations'] == 1
+            assert stored_rows(events.db_path) == []
+        finally:
+            release.set()
+            await until(lambda: events.resource_status()['operations'] == 0)
+        assert len(stored_rows(events.db_path)) == 1
+
+        entered.clear()
+        release.clear()
+        seeding = asyncio.create_task(seed_event(events, 'light.synthetic', 'turn_on', sources=(source,)))
+        try:
+            await until(entered.is_set)
+            await asyncio.sleep(events.observation_timeout_s + .02)
+            assert not seeding.done() and events.resource_status()['operations'] == 1
+        finally:
+            release.set()
+            await seeding
+        assert len(stored_rows(events.db_path)) == 2
+        receipt = await owner.request(source.conversation_id, ACTOR)
+        await flush(owner)
+        assert stored_rows(events.db_path) == []
+        assert (await status(privacy, receipt))[0]['state'] == 'complete'
+        assert events.observation_timeout_s == .1
+
+
 async def status(privacy, receipt):
     value = await privacy.acall(privacy.ledger.erasures.snapshot, receipt["id"])
     return [row for row in value["steps"] if row["participant"] == "events"]
@@ -80,25 +127,25 @@ async def test_real_event_erasure_removes_mixed_sources_and_keeps_unrelated_and_
 ):
     async with graph(tmp_path) as (privacy, owner, _, events, clock, _):
         erased, survivor = memory_source(now=clock.now), memory_source(now=clock.now)
-        await events.alog(
+        await seed_event(events,
             "light.first",
             "turn_on",
             trigger_phrase="synthetic erased",
             sources=(erased,),
         )
-        await events.alog(
+        await seed_event(events,
             "light.mixed",
             "turn_on",
             trigger_phrase="synthetic mixed",
             sources=(erased, survivor),
         )
-        await events.alog(
+        await seed_event(events,
             "light.survives",
             "turn_on",
             trigger_phrase="synthetic survives",
             sources=(survivor,),
         )
-        await events.alog(
+        await seed_event(events,
             "asr_quality:synthetic", "accepted:ok", extra_context={"rms": 0.2}
         )
         with sqlite3.connect(events.db_path) as db:
@@ -137,7 +184,7 @@ async def test_indirect_event_fact_dependency_is_removed_after_source_conversati
                 FactDependency(fact.id, fact.revision, fact.expires_at),
             ),
         )
-        await events.alog(
+        await seed_event(events,
             "light.derived",
             "turn_on",
             trigger_phrase="synthetic fact-derived response",
@@ -155,7 +202,7 @@ async def test_disabled_analytics_cleans_registered_historical_database_after_re
 ):
     async with graph(tmp_path) as (privacy, owner, _, events, clock, _):
         source = memory_source(now=clock.now)
-        await events.alog(
+        await seed_event(events,
             "light.synthetic",
             "turn_on",
             trigger_phrase="synthetic old database",
@@ -174,7 +221,7 @@ async def test_new_location_adds_target_to_prior_operation_and_preserves_unrelat
 ):
     async with graph(tmp_path) as (privacy, owner, _, events, clock, _):
         source = memory_source(now=clock.now)
-        await events.alog("light.synthetic", "turn_on", sources=(source,))
+        await seed_event(events, "light.synthetic", "turn_on", sources=(source,))
         receipt = await owner.request(source.conversation_id, ACTOR)
         await flush(owner)
         other = EventLogger(str(tmp_path / "new.db"), source_policy=privacy.ledger)
@@ -256,7 +303,7 @@ async def test_unknown_or_unattributed_event_sources_remain_pending_without_priv
 ):
     async with graph(tmp_path) as (privacy, owner, _, events, clock, _):
         source = memory_source(now=clock.now)
-        await events.alog(
+        await seed_event(events,
             "light.synthetic",
             "turn_on",
             trigger_phrase="synthetic unknown raw text",
@@ -280,7 +327,7 @@ async def test_partial_event_batch_rolls_back_if_an_unknown_source_is_encountere
     async with graph(tmp_path) as (privacy, owner, _, events, clock, _):
         source = memory_source(now=clock.now)
         for _ in range(2):
-            await events.alog("light.synthetic", "turn_on", sources=(source,))
+            await seed_event(events, "light.synthetic", "turn_on", sources=(source,))
         with sqlite3.connect(events.db_path) as db:
             db.execute("UPDATE events_policy_v1 SET sources_json='[{}]' WHERE id=2")
         receipt = await owner.request(source.conversation_id, ACTOR)
@@ -294,8 +341,8 @@ async def test_batches_scan_at_most_128_metadata_rows_and_cannot_skip_later_matc
 ):
     async with graph(tmp_path) as (privacy, owner, driver, events, clock, _):
         source, live = memory_source(now=clock.now), memory_source(now=clock.now)
-        await events.alog("light.live", "turn_on", sources=(live,))
-        await events.alog("light.erased", "turn_on", sources=(source,))
+        await seed_event(events, "light.live", "turn_on", sources=(live,))
+        await seed_event(events, "light.erased", "turn_on", sources=(source,))
         with sqlite3.connect(events.db_path) as db:
             columns = [
                 row[1]
@@ -335,7 +382,7 @@ async def test_leased_restart_reopens_completed_receipt_for_restored_event_row(
 ):
     async with graph(tmp_path) as (privacy, owner, _, events, clock, _):
         source = memory_source(now=clock.now)
-        await events.alog(
+        await seed_event(events,
             "light.synthetic",
             "turn_on",
             trigger_phrase="synthetic restored row",
@@ -443,7 +490,7 @@ async def test_cancelled_cleanup_observer_retains_actual_sqlite_work_and_close_l
         _,
     ):
         source = memory_source(now=clock.now)
-        await events.alog("light.synthetic", "turn_on", sources=(source,))
+        await seed_event(events, "light.synthetic", "turn_on", sources=(source,))
         entered, release = threading.Event(), threading.Event()
         clean = driver._clean
 
@@ -482,7 +529,7 @@ async def test_failed_historical_database_does_not_prevent_independent_event_cle
             event_descriptor(bad),
         )
         source = memory_source(now=clock.now)
-        await events.alog("light.synthetic", "turn_on", sources=(source,))
+        await seed_event(events, "light.synthetic", "turn_on", sources=(source,))
         receipt = await owner.request(source.conversation_id, ACTOR)
         await flush(owner)
         assert stored_rows(events.db_path) == []
@@ -523,7 +570,7 @@ async def test_cancelled_driver_observer_keeps_native_batch_owned_until_real_clo
         _,
     ):
         source = memory_source(now=clock.now)
-        await events.alog("light.synthetic", "turn_on", sources=(source,))
+        await seed_event(events, "light.synthetic", "turn_on", sources=(source,))
         await owner.request(source.conversation_id, ACTOR)
         row = next(
             row
@@ -650,7 +697,7 @@ async def test_unrecognized_nonpositive_row_id_cannot_be_skipped_by_cursor(
 ):
     async with graph(tmp_path) as (privacy, owner, _, events, clock, _):
         source = memory_source(now=clock.now)
-        await events.alog("light.synthetic", "turn_on", sources=(source,))
+        await seed_event(events, "light.synthetic", "turn_on", sources=(source,))
         with sqlite3.connect(events.db_path) as db:
             db.execute("UPDATE events_policy_v1 SET id=?", (row_id,))
         receipt = await owner.request(source.conversation_id, ACTOR)
