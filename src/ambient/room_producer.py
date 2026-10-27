@@ -1,12 +1,15 @@
 """A serialized native owner for one room's VAD, preroll and pending segments."""
 
 import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass
 from enum import StrEnum
 import logging
 
 from src.core.owned_work import OwnedBlockingWork
 from src.memory.producer_context import producer_context
 from src.memory.sources import CaptureBoundary
+from src.memory.fact_ledger import FactLedger, MemorySource
 
 logger = logging.getLogger(__name__)
 
@@ -14,13 +17,41 @@ logger = logging.getLogger(__name__)
 class RoomProducerError(StrEnum):
     FEED = "ambient_segmentation_failed"
     RESET = "ambient_segmenter_reset_failed"
+    NATIVE = "ambient_room_native_failed"
+
+
+@dataclass
+class _RoomCall:
+    function: Callable | None
+    args: tuple
+    admitted: bool = False
+
+    def clear(self):
+        self.function, self.args = None, ()
+
+
+@dataclass(frozen=True)
+class _RoomOutcome:
+    value: object = None
+    error: RoomProducerError | None = None
+
+
+def _invoke_room(call):
+    try:
+        return _RoomOutcome(call.function(*call.args))
+    except (Exception, asyncio.CancelledError):
+        return _RoomOutcome(error=RoomProducerError.NATIVE)
+    finally:
+        call.clear()
+        call = None
 
 
 class RoomProducer:
     """Serialize actual inference/reset and retain it after observer cancellation."""
 
     def __init__(
-        self, room_id: str, factory, *, require_cleanup: bool = False, boundary_fn=None
+        self, room_id: str, factory, *, require_cleanup: bool = False, boundary_fn=None,
+        source_fn: Callable[[str, float], MemorySource] | None = None,
     ):
         self.room_id, self._factory = room_id, factory
         self._require_cleanup = require_cleanup
@@ -28,7 +59,7 @@ class RoomProducer:
         self._oldest = None
         self._boundary = CaptureBoundary(None, float("-inf"))
         self.ready = []
-        self._work = OwnedBlockingWork(capacity=1)
+        self._work = OwnedBlockingWork(worker=self._offload, capacity=1)
         self._lock = asyncio.Lock()
         self._pending = None
         self._batches = set()
@@ -36,6 +67,9 @@ class RoomProducer:
         self._closed = False
         self._error = None
         self._boundary_fn = boundary_fn
+        self._source_fn = source_fn
+        self._source: MemorySource | None = None
+        self._reset_pending = False
 
     def publish_boundary(self, boundary: CaptureBoundary) -> None:
         """Publish metadata; native work observes it before and after each chunk."""
@@ -47,25 +81,35 @@ class RoomProducer:
 
     def needs_prune(self) -> bool:
         """Report a stale retained native state without reading private arrays."""
-        return self._oldest is not None and not self._boundary.allows(self._oldest)
+        return self._reset_pending or getattr(self._segmenter, 'needs_reset', False) is True or (
+            self._oldest is not None and not self._boundary.allows(self._oldest)) or (
+            self._source is not None and not self._boundary.allows(self._source.captured_at))
 
     def _discard(self):
-        segmenter, self._segmenter = self._segmenter, None
-        self._oldest = None
+        segmenter = self._segmenter
         if segmenter is not None:
             try:
                 reset = getattr(segmenter, "reset", None)
                 if callable(reset):
                     reset()
             except Exception as error:
+                self._reset_pending = True
                 self._error = RoomProducerError.RESET
                 logger.warning("Ambient state reset deferred: %s", type(error).__name__)
+                return False
+        if self._reset_pending:
+            self._error = None
+        self._segmenter = self._oldest = self._source = None
+        self._reset_pending = False
+        return True
 
     def _prune(self):
-        if self._oldest is not None and not self._current_boundary().allows(
-            self._oldest
-        ):
-            self._discard()
+        boundary = self._current_boundary()
+        if self._reset_pending or getattr(self._segmenter, 'needs_reset', False) is True or (
+            self._oldest is not None and not boundary.allows(self._oldest)) or (
+            self._source is not None and not boundary.allows(self._source.captured_at)):
+            return self._discard()
+        return True
 
     def _current_boundary(self):
         if self._boundary_fn is not None:
@@ -74,29 +118,37 @@ class RoomProducer:
 
     def _ensure_segmenter(self):
         if self._segmenter is None:
-            self._segmenter = self._factory()
+            segmenter = self._factory()
             if self._require_cleanup and (
-                not callable(getattr(self._segmenter, "reset", None))
-                or not hasattr(self._segmenter, "oldest_timestamp")
+                not callable(getattr(segmenter, "reset", None))
+                or not hasattr(segmenter, "oldest_timestamp")
             ):
                 raise ValueError("unsupported_segmenter_cleanup")
+            self._segmenter = segmenter
 
     def _feed(self, items):
         segments = []
         try:
             if self._closed:
                 return []
-            self._prune()
+            if not self._prune():
+                return []
             for timestamp, chunk, tts_active in items:
                 if self._closed:
                     segments.clear()
                     self._discard()
                     break
-                self._prune()
+                if not self._prune():
+                    segments.clear()
+                    break
                 if not self._current_boundary().allows(timestamp):
                     continue
+                if self._source is None and self._source_fn is not None:
+                    self._source = self._source_fn(self.room_id, timestamp)
                 self._ensure_segmenter()
-                self._prune()
+                if not self._prune():
+                    segments.clear()
+                    break
                 if self._closed or not self._current_boundary().allows(timestamp):
                     continue
                 if self._segmenter is None:
@@ -104,15 +156,23 @@ class RoomProducer:
                 self._oldest = (
                     timestamp if self._oldest is None else min(timestamp, self._oldest)
                 )
+                input_source = self._source
                 produced = self._segmenter.feed(
                     ts=timestamp, chunk=chunk, tts_active=tts_active
                 )
+                for segment in produced:
+                    segment.input_source = input_source
                 self._oldest = getattr(
                     self._segmenter, "oldest_timestamp", self._oldest
                 )
+                if self._oldest is None:
+                    self._source = None
                 segments.extend(produced)
-                self._prune()
-            self._error = None
+                if not self._prune():
+                    segments.clear()
+                    break
+            if not self._reset_pending:
+                self._error = None
             boundary = self._current_boundary()
             return [
                 segment
@@ -125,8 +185,18 @@ class RoomProducer:
             logger.warning("Ambient segmentation deferred: %s", type(error).__name__)
             return []
 
+    async def _offload(self, function, call):
+        call.admitted = True
+        try:
+            return await asyncio.to_thread(function, call)
+        except Exception:
+            call.clear()
+            return _RoomOutcome(error=RoomProducerError.NATIVE)
+        finally:
+            function = call = None
+
     async def _call(self, function, *args, closing=False):
-        task = None
+        task = call = outcome = None
         try:
             async with self._lock:
                 if self._pending is not None:
@@ -136,7 +206,8 @@ class RoomProducer:
                 if self._closed and not closing:
                     raise RuntimeError("ambient_room_closed")
                 with producer_context(self.room_id):
-                    task = asyncio.create_task(self._work.run(function, *args))
+                    call = _RoomCall(function, args)
+                    task = asyncio.create_task(self._work.run(_invoke_room, call))
                 self._pending = task
 
                 def finished(done):
@@ -146,9 +217,19 @@ class RoomProducer:
                         done.exception()
 
                 task.add_done_callback(finished)
-                return await asyncio.shield(task)
+                outcome = await asyncio.shield(task)
+                if outcome.error is not None:
+                    self._error = outcome.error
+                    self._reset_pending = self._segmenter is not None
+                    raise RuntimeError(outcome.error.value)
+                return outcome.value
         finally:
-            task, function, args = None, None, ()
+            if call is not None and not call.admitted:
+                # A queued owned task may not have started its transport yet.
+                # Its owner, not a cancelled observer, must retire that box.
+                if task is None or task.done():
+                    call.clear()
+            task, function, args, call, outcome = None, None, (), None, None
 
     async def feed(self, items) -> None:
         """Feed one bounded tap batch and publish only currently admissible segments."""
@@ -208,7 +289,20 @@ class RoomProducer:
             "state_retained": self._segmenter is not None,
             "input_state_retained": self._oldest is not None,
             "error": self._error.value if self._error is not None else None,
+            "reset_pending": self._reset_pending,
         }
+
+    def conversation_busy(self, conversation_id: str, ledger: FactLedger) -> bool:
+        """Retain reset failures and known idle VAD inputs until actual cleanup."""
+        if self._reset_pending or getattr(self._segmenter, 'needs_reset', False) is True:
+            return True
+        for segment in self.ready:
+            source = segment.input_source
+            if source is None or source.conversation_id == conversation_id or ledger.dependencies_committed_unavailable(source.fact_dependencies):
+                return True
+        if self._oldest is None:
+            return False
+        return self._source is None or self._source.conversation_id == conversation_id or ledger.dependencies_committed_unavailable(self._source.fact_dependencies)
 
     def begin_close(self) -> asyncio.Task:
         """Detach ready audio and retain the actual native reset before exit."""
@@ -220,7 +314,15 @@ class RoomProducer:
 
             async def finish():
                 await asyncio.gather(*self._batches, return_exceptions=True)
-                await self._call(self._discard, closing=True)
+                delay = .05
+                while True:
+                    try:
+                        if await self._call(self._discard, closing=True):
+                            break
+                    except Exception as error:
+                        logger.warning('Ambient room close deferred: %s', type(error).__name__)
+                    await asyncio.sleep(delay)
+                    delay = min(1., delay * 2)
                 await self._work.begin_close()
 
             self._closing = asyncio.create_task(finish())

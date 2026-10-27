@@ -92,6 +92,12 @@ class UtteranceSegmenter:
         self._speech_ms = 0.0
         self._col_warned = False
         self._state_since: float | None = None
+        self._reset_pending = False
+
+    @property
+    def needs_reset(self) -> bool:
+        """Expose unresolved recurrent-state cleanup without projecting input."""
+        return self._reset_pending
 
     @property
     def oldest_timestamp(self) -> float | None:
@@ -107,8 +113,13 @@ class UtteranceSegmenter:
         self._silence_ms = self._speech_ms = 0.0
         reset_fn = getattr(self._vad_predict, "reset", None)
         if callable(reset_fn):
-            reset_fn()
+            try:
+                reset_fn()
+            except Exception:
+                self._reset_pending = True
+                raise
         self._state_since = None
+        self._reset_pending = False
 
     def _vad_column(self, chunk: np.ndarray) -> np.ndarray:
         col = self.vad_col
@@ -128,6 +139,8 @@ class UtteranceSegmenter:
         self, ts: float, chunk: np.ndarray, tts_active: bool = False
     ) -> list[RawSegment]:
         """Procesar un chunk; devolver los segmentos cerrados (0 o 1)."""
+        if self._reset_pending:
+            raise RuntimeError('ambient_segmenter_reset_pending')
         chunk_ms = (chunk.shape[0] / self.sample_rate) * 1000
         if self._state_since is None:
             self._state_since = ts
@@ -181,6 +194,7 @@ class UtteranceSegmenter:
                 reset_fn()
                 self._state_since = None
             except Exception as e:
+                self._reset_pending = True
                 logger.debug("Silero state reset deferred: %s", type(e).__name__)
         else:
             self._state_since = None

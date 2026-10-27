@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Callable
 
 from src.ambient.types import AmbientUtterance, RawSegment
@@ -103,10 +103,16 @@ class AmbientTranscriber:
         if self._running:
             return
         self._running = True
+        privacy = self._privacy
+        def buffer_source(room_id, timestamp):
+            from uuid import uuid4
+            from src.memory.fact_ledger import MemoryOrigin
+            return privacy.source_for_capture(str(uuid4()), timestamp, room_id, origin=MemoryOrigin.AMBIENT)
         for room_id in self._rooms:
             self._room_states[room_id] = RoomProducer(room_id, self._segmenter_factory,
                 require_cleanup=self._privacy is not None,
-                boundary_fn=self._privacy.scopes.buffer_boundary if self._privacy is not None else None)
+                boundary_fn=self._privacy.scopes.buffer_boundary if self._privacy is not None else None,
+                source_fn=buffer_source if privacy is not None else None)
             self._tap.register_room(room_id)
             with producer_context(room_id):
                 self._tasks.append(asyncio.create_task(self._room_worker(room_id)))
@@ -167,10 +173,11 @@ class AmbientTranscriber:
         return tuple(tasks)
 
     def conversation_busy(self, conversation_id: str) -> bool:
-        """Check finite work; idle tap/VAD buffers need separate retirement proof."""
+        """Include actual finite work, retained VAD inputs and failed native reset."""
         if self._privacy is None:
             raise RuntimeError('privacy_authority_unavailable')
-        return self._scopes.busy(conversation_id, self._privacy.ledger)
+        return self._scopes.busy(conversation_id, self._privacy.ledger) or any(
+            room.conversation_busy(conversation_id, self._privacy.ledger) for room in self._room_states.values())
 
     def resource_status(self) -> dict:
         """Expose counts without projecting capture IDs, room names, text or audio."""
@@ -283,14 +290,24 @@ class AmbientTranscriber:
 
     async def _handle_segment(self, room_id: str, seg: RawSegment) -> None:
         """Own one sourced pipeline even after its observer is cancelled."""
-        task = capture_source = None
+        task = capture_source = input_source = None
         try:
             if self._closed:
                 return
             if self._privacy is not None:
                 from uuid import uuid4
-                from src.memory.fact_ledger import MemoryOrigin
-                capture_source = self._privacy.source_for_capture(str(uuid4()), seg.t0, room_id, origin=MemoryOrigin.AMBIENT)
+                from src.memory.fact_ledger import MemoryOrigin, MemorySource
+                input_source = seg.input_source
+                if input_source is not None and (not isinstance(input_source, MemorySource)
+                    or input_source.origin is not MemoryOrigin.AMBIENT or seg.t0 < input_source.captured_at
+                    or seg.t0 >= input_source.expires_at or not self._privacy.sources_available((input_source,))):
+                    raise PermissionError('ambient_segment_source_conflict')
+                options = {} if input_source is None else {
+                    'conversation_id': input_source.conversation_id,
+                    'expires_at': min(input_source.expires_at, seg.t0+48*3600)}
+                capture_source = self._privacy.source_for_capture(str(uuid4()), seg.t0, room_id, origin=MemoryOrigin.AMBIENT, **options)
+                if input_source is not None:
+                    capture_source = replace(capture_source, fact_dependencies=input_source.fact_dependencies)
             self._require_live(capture_source)
             if len(self._segments) >= max(1, len(self._rooms)):
                 logger.debug("Ambient segment admission deferred: capacity")
@@ -315,7 +332,7 @@ class AmbientTranscriber:
         except (SourcesInvalidated, PermissionError):
             pass
         finally:
-            task = seg = capture_source = None
+            task = seg = capture_source = input_source = None
 
     def _live(self, source) -> bool:
         return not self._closed and (self._privacy is None or self._privacy.sources_available((source,)))

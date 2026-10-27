@@ -7,9 +7,13 @@ segmentador (audio multicanal crudo, aún sin transcribir).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from src.memory.fact_ledger import MemorySource
 
 # Valores cerrados de `source`. 'self' = capturado mientras nuestro TTS
 # hablaba (no se destila a memoria — el asistente no se cita a sí mismo).
@@ -33,6 +37,7 @@ class RawSegment:
     vad_prob: float = 0.0
     # A duration limit may close storage, but cannot finalize a voice command.
     complete: bool = True
+    input_source: MemorySource | None = field(default=None, repr=False)
 
     @property
     def duration_s(self) -> float:
