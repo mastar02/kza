@@ -121,13 +121,31 @@ async def main():
                     await page.evaluate("const filter = document.querySelector('[aria-label=\"Todas las voces\"]'); filter.value = 'Synthetic REST voice'; filter.dispatchEvent(new Event('change'))")
                     await page.wait_for('!document.body.textContent.includes('+json.dumps(rest_text)+')')
                     assert await page.evaluate("window.__kzaConversationState.snapshot().length === 0 && !document.body.textContent.includes('Synthetic REST voice')")
-                    # A fresh request after the source boundary cannot re-admit it.
-                    assert time.time() >= rest_source.expires_at
+                    async with asyncio.timeout(3):
+                        while await receipts.pending(rest_source.conversation_id):
+                            await asyncio.sleep(.01)
+                    retired_source = memory_source(now=time.time(), ttl=60)
+                    retired_text = 'Synthetic revoked REST conversation'
+                    await events.alog('light.synthetic','turn_on',trigger_phrase=retired_text,sources=(retired_source,))
+                    await page.command('Page.navigate',{'url':f'http://127.0.0.1:{port}/obs/'})
+                    await page.wait_for("window.__kzaConversationState?.snapshot().some(row => row.stt === 'Synthetic revoked REST conversation')")
+                    await page.evaluate("[...document.querySelectorAll('.nav-item')].find(node => node.textContent.includes('Conversaciones')).click()")
+                    await page.wait_for('document.body.textContent.includes('+json.dumps(retired_text)+')')
+                    await page.evaluate('window.__restCommit = window.__kzaConversationState.committed; window.__kzaConversationState.committed = () => {};')
+                    await privacy.acall(privacy.ledger.delete_conversation,retired_source.conversation_id,MemoryReviewer('synthetic-admin'))
+                    await page.wait_for('!document.body.textContent.includes('+json.dumps(retired_text)+')')
+                    assert await page.evaluate('window.__kzaConversationState.snapshot().length === 0')
+                    await asyncio.sleep(.05)
+                    assert await receipts.pending(retired_source.conversation_id)==1
+                    await page.evaluate('window.__kzaConversationState.committed = window.__restCommit; delete window.__restCommit; window.__kzaConversationState.committed(null);')
+                    async with asyncio.timeout(3):
+                        while await receipts.pending(retired_source.conversation_id):
+                            await asyncio.sleep(.01)
                     await events.alog('light.synthetic', 'turn_on', trigger_phrase='Synthetic session REST conversation',
                         sources=(memory_source(now=time.time(), ttl=60),))
                     await page.command('Page.navigate',{'url':f'http://127.0.0.1:{port}/obs/'})
                     await page.wait_for("!!document.querySelector('#view-live') && window.__kzaLiveWs?.readyState === 1")
-                    assert await page.evaluate("window.__kzaConversationState.snapshot().some(row => row.stt === 'Synthetic session REST conversation')")
+                    await page.wait_for("window.__kzaConversationState.snapshot().some(row => row.stt === 'Synthetic session REST conversation')")
                     await show('Synthetic session turn')
                     await page.command('Network.clearBrowserCookies')
                     await page.evaluate('window.__kzaLiveWs.close()')
@@ -144,6 +162,8 @@ async def main():
                         'rest_conversation_original_deadline_clears_cache_dom_and_voice_filter':True,
                         'rest_conversation_payload_excluded_from_global_mock_cache':True,
                         'session_loss_clears_unmounted_rest_conversation_cache':True,
+                        'rest_revocation_clears_before_original_expiry':True,
+                        'rest_ack_waits_for_explicit_dom_commit':True,
                         'global_streams_acceptance':False}))
         finally:
             if browser is not None:

@@ -189,6 +189,13 @@ class LiveEventBus:
         """Read local callback ownership for the STREAMS cleanup driver."""
         return self._retention.pending_conversation(conversation_id) if self._retention is not None else 0
 
+    def conversation_response(self, connection, events, filters, guard):
+        """Private REST reads require the owned version-two browser connection."""
+        from src.dashboard.rest_delivery import ConversationResponse
+        if self._retention is None or self._retention.receipts is None:
+            raise RuntimeError('conversation_receipts_unavailable')
+        return ConversationResponse(self._retention.rest,connection,events,filters,guard)
+
     def resource_status(self) -> dict:
         """Read content-free ownership counts."""
         return self._retention.status() if self._retention is not None else {'subscribers':self.subscriber_count,'rejected':self._rejected}

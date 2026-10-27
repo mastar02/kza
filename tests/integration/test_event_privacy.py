@@ -15,9 +15,12 @@ from src.analytics.event_logger import EventLogger
 from src.analytics.services import build_event_logger
 from src.core.owned_work import WorkCloseTimeout
 from src.dashboard.api import DashboardAPI
+from src.dashboard.live_event_bus import LiveEventBus
+from src.dashboard.live_receipts import LiveReceiptStore
 from src.memory.fact_ledger import FactLedger, MemoryReviewer
 from tests.mocks.memory_graph import Clock
 from tests.mocks.memory_sources import memory_source
+from tests.mocks.rest_browser import ready_browser
 
 pytestmark = pytest.mark.asyncio
 
@@ -42,6 +45,20 @@ async def until(predicate):
     async with asyncio.timeout(3):
         while not predicate():
             await asyncio.sleep(.001)
+
+
+@asynccontextmanager
+async def conversation_client(events, policy, clock):
+    bus = LiveEventBus(source_policy=policy,clock=clock,receipts=LiveReceiptStore(policy))
+    bus.start()
+    try:
+        async with ready_browser(bus) as peer:
+            app = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False).app
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
+                    headers={'X-KZA-Live-Connection':peer.connection}) as client:
+                yield client
+    finally:
+        await bus.aclose()
 
 
 async def test_event_text_expires_at_capture_boundary_while_numeric_diagnostics_remain(tmp_path):
@@ -248,33 +265,31 @@ async def test_authenticated_dashboard_cannot_serve_expired_or_revoked_event_tex
     async with graph(tmp_path) as (events, policy, clock):
         source = memory_source(now=clock.now, ttl=60)
         await events.alog('light.synthetic', 'turn_on', trigger_phrase='Texto privado de prueba.', sources=(source,))
-        app = DashboardAPI(event_logger=events, observability_use_mocks=False).app
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
+        async with conversation_client(events,policy,clock) as client:
             denied = await client.get('/api/conversations')
             assert denied.status_code == 401 and denied.headers['cache-control'] == 'no-store'
             live = await client.get('/api/conversations', headers=dashboard_auth)
             assert live.headers['x-kza-source'] == 'real' and 'Texto privado de prueba.' in live.text
-            [projected] = live.json()
+            [projected] = live.json()['snapshot']['rows']
             assert projected['expires_at'] == source.expires_at
             assert projected['observed_at'] == clock.now
             assert projected['success'] is None  # No execution receipt was recorded.
             clock.now += 60
             expired = await client.get('/api/conversations', headers=dashboard_auth)
-            assert expired.json() == [] and expired.headers['cache-control'] == 'no-store'
+            assert expired.json()['snapshot'] is None and expired.headers['cache-control'] == 'no-store'
             await events.acall(policy.delete_conversation, source.conversation_id, MemoryReviewer('test-admin'))
             assert (await client.get('/api/ha/actions', headers=dashboard_auth)).json() == []
 
 
 async def test_conversation_snapshot_distinguishes_same_capture_actions_at_the_same_time(tmp_path, dashboard_auth):
-    async with graph(tmp_path) as (events, _, clock):
+    async with graph(tmp_path) as (events, policy, clock):
         source = memory_source(now=clock.now)
         for entity in ('light.first', 'light.second', 'light.first'):
             await events.alog(entity, 'turn_on', trigger_phrase='Synthetic shared capture.', sources=(source,))
-        app = DashboardAPI(event_logger=events, observability_use_mocks=False).app
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver', headers=dashboard_auth) as client:
-            snapshot = (await client.get('/api/conversations')).json()
+        async with conversation_client(events,policy,clock) as client:
+            snapshot = (await client.get('/api/conversations',headers=dashboard_auth)).json()['snapshot']['rows']
             assert len(snapshot) == len({row['id'] for row in snapshot}) == 3
-            assert {row['id'] for row in (await client.get('/api/conversations')).json()} == {row['id'] for row in snapshot}
+            assert {row['id'] for row in (await client.get('/api/conversations',headers=dashboard_auth)).json()['snapshot']['rows']} == {row['id'] for row in snapshot}
 
 
 async def test_fresh_logger_initializes_revocations_before_reading_old_policy_rows(tmp_path):

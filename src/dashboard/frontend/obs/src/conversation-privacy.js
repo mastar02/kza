@@ -3,7 +3,7 @@
   const TEXT = ['id', 'ts', 'user', 'zone', 'path', 'stt', 'tts', 'intent', 'target'];
   function createConversationState({ monotonic = () => performance.now(), wall = Date.now,
       schedule = setTimeout, cancel = clearTimeout } = {}) {
-    let entries = [], timer = null, revision = 0, disposed = false;
+    let entries = [], timer = null, revision = 0, disposed = false, privacy = null;
     const listeners = new Set();
     function changed() { revision++; for (const listener of listeners) listener(revision); }
     function prune() {
@@ -49,6 +49,9 @@
       receive, clear, check() { prune(); arm(); },
       snapshot() { prune(); return entries.map(entry => entry.row); },
       subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      bindPrivacy(callbacks) { privacy = callbacks; },
+      committed(token) { privacy?.committed(token); },
+      deliveryToken() { return privacy?.token() ?? null; },
       dispose() { clear(); disposed = true; listeners.clear(); },
     };
   }
@@ -67,7 +70,10 @@
       const header = node('div', '', 'page-head');
       header.append(node('h1', 'Conversaciones'), node('p', 'Turnos vigentes · se retiran al vencer la captura original.', 'mute'));
       container.append(header);
-      if (!rows.length) { selected = null; container.append(node('p', 'No hay turnos vigentes disponibles.')); return; }
+      if (!rows.length) {
+        selected = null; container.append(node('p', 'No hay turnos vigentes disponibles.'));
+        store.committed(null); return;
+      }
       const filters = node('div', '', 'card');
       function selectFilter(values, current, change, label) {
         const select = doc.createElement('select'); select.className = 'btn'; select.setAttribute('aria-label', label);
@@ -104,6 +110,7 @@
         }
         container.append(card);
       }
+      store.committed(store.deliveryToken());
     }
     // Notifications carry only a revision. Private rows live in this stack and DOM.
     const unsubscribe = store.subscribe(render);
@@ -113,6 +120,7 @@
     return () => {
       unsubscribe(); doc.removeEventListener('visibilitychange', check); root?.removeEventListener('focus', check);
       selected = null; user = 'all'; path = 'all'; container.replaceChildren();
+      store.committed(null);
     };
   }
   const api = { createConversationState, mountConversations };

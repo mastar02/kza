@@ -29,6 +29,8 @@ class LiveBrowserSession:
         self._tickets = {}
         self._tasks = set()
         self._deadline = asyncio.get_running_loop().time()+5
+        self.protocol = 1
+        self._rest_ready = False
 
     @property
     def ready(self) -> bool:
@@ -46,6 +48,13 @@ class LiveBrowserSession:
             return self._reset.to_frame()
         return None
 
+    def ready_frame(self) -> dict | None:
+        """Advertise REST admission only after the exact reset commit."""
+        if self.ready and self._rest_ready:
+            self._rest_ready = False
+            return {'type':'rest_ready','connection_id':self.connection,'ts':''}
+        return None
+
     @staticmethod
     def _decode(message):
         if type(message) is not dict or message.get('type') != 'websocket.receive':
@@ -58,9 +67,9 @@ class LiveBrowserSession:
             raise ValueError('invalid_live_protocol')
         kind = doc.get('type')
         if kind == 'live_hello' and set(doc) == {'type','version','client_id'}:
-            if type(doc['version']) is not int or doc['version'] != 1:
+            if type(doc['version']) is not int or doc['version'] not in (1,2):
                 raise ValueError('unsupported_live_protocol')
-            return kind,(canonical_id(doc['client_id']),)
+            return kind,(canonical_id(doc['client_id']),doc['version'])
         if kind == 'live_reset_ack' and set(doc) == {'type','id','nonce'}:
             return kind,(canonical_id(doc['id']),canonical_id(doc['nonce']))
         if kind == 'live_ack' and set(doc) == {'type','receipts'}:
@@ -87,6 +96,7 @@ class LiveBrowserSession:
                     raise ValueError('duplicate_live_hello')
                 reset = await self.receipts.hello(args[0],self.connection)
                 if self.phase is not BrowserPhase.CLOSED:
+                    self.protocol = args[1]
                     self._reset, self._reset_sent = reset,False
                     self.phase = BrowserPhase.RESET
             elif kind == 'live_reset_ack':
@@ -99,6 +109,7 @@ class LiveBrowserSession:
                     self._reset = None
                     self.phase = BrowserPhase.READY
                     self._deadline = None
+                    self._rest_ready = self.protocol == 2
             elif kind == 'live_ack':
                 if self.phase not in {BrowserPhase.READY,BrowserPhase.RESET}:
                     raise ValueError('unexpected_live_ack')

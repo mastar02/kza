@@ -12,6 +12,7 @@ from weakref import WeakSet, finalize, ref
 
 from src.core.owned_work import WorkCloseTimeout
 from src.dashboard.live_browser import LiveBrowserSession
+from src.dashboard.rest_delivery import RestDeliveryOwner
 from src.memory.fact_ledger import FactDependency, MemorySource
 
 
@@ -116,6 +117,8 @@ class LiveSubscriber:
     closed: bool = False
     guard: object | None = field(default=None, repr=False)
     browser: LiveBrowserSession | None = field(default=None, repr=False)
+    snapshots: dict = field(default_factory=dict)
+    snapshot_retired: set[str] = field(default_factory=set)
 
 
 class LiveRetention:
@@ -141,6 +144,7 @@ class LiveRetention:
         self._active = self.rejected = 0
         self._close_timeout_s = close_timeout_s
         self._wake = asyncio.Event()
+        self.rest = RestDeliveryOwner(self)
         policy.add_revocation_observer(self._revoke)
 
     def _revoke(self, conversations):
@@ -218,6 +222,12 @@ class LiveRetention:
             if record is not None and record._data is not None and not record.available():
                 record.retire()
         for state in tuple(self._states.values()):
+            if state.browser is not None:
+                for token, snapshot in tuple(state.snapshots.items()):
+                    if token not in state.browser._tickets:
+                        state.snapshots.pop(token,None)
+                    elif not self.policy.sources_available(snapshot.sources):
+                        state.snapshot_retired.add(token)
             if state.browser is not None and state.browser.timed_out():
                 state.closed = True
             if state.guard is not None:
@@ -234,7 +244,7 @@ class LiveRetention:
                 state.retired.add(state.last.event_id)
             if state.active is not None and not state.active.available():
                 state.retired.add(state.active.event_id)
-            if state.retired or state.closed:
+            if state.retired or state.snapshot_retired or state.closed:
                 state.wake.set()
 
     async def _send(self, sender, frame):
@@ -284,6 +294,21 @@ class LiveRetention:
                     if not state.browser.ready:
                         await state.wake.wait()
                         continue
+                    ready = state.browser.ready_frame()
+                    if ready is not None:
+                        await self._send(sender,ready)
+                        ready = None
+                        continue
+                if state.snapshot_retired and state.browser is not None:
+                    tokens = sorted(state.snapshot_retired)[:32]
+                    control = state.browser.retirement_frame(tokens)
+                    control['type'] = 'rest_retire'
+                    await self._send(sender,control)
+                    control = None
+                    state.snapshot_retired.difference_update(tokens)
+                    for token in tokens:
+                        state.snapshots.pop(token,None)
+                    continue
                 if state.retired:
                     tokens = sorted(state.retired)
                     # Remove only the selected controls: revocation may add new
@@ -364,6 +389,8 @@ class LiveRetention:
             state.last = None
             state.guard = None
             state.retired.clear()
+            state.snapshots.clear()
+            state.snapshot_retired.clear()
             if not done.cancelled():
                 done.exception()
         task.add_done_callback(finished, context=Context())
@@ -406,13 +433,14 @@ class LiveRetention:
     def pending_conversation(self, conversation_id: str) -> int:
         """Count actual raw send callbacks, independently of durable client ACKs."""
         self.prune()
-        return sum(state.active is not None and any(source.conversation_id == conversation_id
+        return self.rest.pending(conversation_id)+sum(state.active is not None and any(source.conversation_id == conversation_id
             for source in state.active.sources) for state in self._states.values())
 
     def status(self) -> dict:
         """Expose counts without private payloads, paths, identities or sources."""
         return {'closed':self._closed, 'active_sends':self._active, 'rejected':self.rejected,
             'records':len(self._records), 'senders':len(self._senders),
+            'rest_operations':len(self.rest._tasks)+len(self.rest._scopes),
             'subscribers':len(self._states), 'subscriber_capacity':self.max_subscribers}
 
     def begin_close(self) -> asyncio.Task:
@@ -428,6 +456,7 @@ class LiveRetention:
         if self._closing is None:
             async def finish():
                 await asyncio.gather(*tuple(self._senders.values()), return_exceptions=True)
+                await self.rest.drain()
                 if self._maintenance is not None:
                     await self._maintenance
                 self._states.clear()

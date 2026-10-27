@@ -5,6 +5,7 @@ from src.dashboard.live_receipts import LiveReceiptStore
 from src.memory.erasure_journal import ErasureParticipant, ErasureResult, ErasureStep
 
 LIVE_TARGET = {'kind':'live_browser_receipts','protocol':1}
+REST_TARGET = {'kind':'conversation_rest_and_live_receipts','protocol':2}
 
 
 class LiveStreamEraser:
@@ -15,12 +16,13 @@ class LiveStreamEraser:
 
     async def clean(self, step: ErasureStep) -> ErasureResult:
         """Return progress without holding a coordinator slot for offline pages."""
-        if (step.participant is not ErasureParticipant.STREAMS or step.version != 1
-                or step.descriptor != LIVE_TARGET):
+        descriptor = {1:LIVE_TARGET,3:REST_TARGET}.get(step.version)
+        if (step.participant is not ErasureParticipant.STREAMS or descriptor is None
+                or step.descriptor != descriptor):
             raise ValueError('unsupported_live_stream_target')
         self.privacy.require_available()
         targets = await self.privacy.acall(self.privacy.ledger.erasures.targets,ErasureParticipant.STREAMS)
-        if not any(row['id']==step.target_id and row['version']==1 and row['descriptor']==LIVE_TARGET for row in targets):
+        if not any(row['id']==step.target_id and row['version']==step.version and row['descriptor']==descriptor for row in targets):
             raise ValueError('unregistered_live_stream_target')
         if not self.privacy.ledger.conversation_committed_revoked(step.conversation_id):
             raise RuntimeError('live_erasure_requires_committed_authority')
@@ -40,8 +42,9 @@ async def build_live_services(config: dict, *, privacy, owner, shutdown) -> Live
     privacy.add_borrower(bus.begin_close)
     shutdown.push_async_callback(bus.aclose)
     driver = LiveStreamEraser(privacy,bus,receipts)
-    owner.register(ErasureParticipant.STREAMS,driver.clean,versions=frozenset({1}),begin_close=bus.begin_close)
+    owner.register(ErasureParticipant.STREAMS,driver.clean,versions=frozenset({1,3}),begin_close=bus.begin_close)
     await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.STREAMS,1,LIVE_TARGET)
+    await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.STREAMS,3,REST_TARGET)
     await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.STREAMS,2,
         {'kind':'unresolved_stream_inventory'})
     bus.start()

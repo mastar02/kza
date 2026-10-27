@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Literal, Self
 
 import aiosqlite
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, WebSocketException
+from fastapi import Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, WebSocketException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +28,7 @@ from src.dashboard.home_api import (
 from src.dashboard.home_catalog import HomeCatalogService
 from src.dashboard.live_event_bus import LiveEventBus
 from src.dashboard.memory_api import register_memory_routes
+from src.dashboard.rest_delivery import DashboardApplication
 from src.dashboard.observability import register_observability_routes
 from src.rooms.room_context import RoomConfig
 from src.routines.models import (
@@ -208,13 +209,14 @@ class DashboardAPI:
         self.home_catalog = home_catalog if home_catalog is not None else HomeCatalogService(ha_client, home_rooms or {}, policy=self.home_actions.policy if self.home_actions is not None else None)
 
         # FastAPI app
-        self.app = FastAPI(
+        self.app = DashboardApplication(
             title="KZA Dashboard API",
             description="API para gestión de asistente de voz KZA",
             version="1.0.0",
             dependencies=[Depends(require_dashboard_access)],
             docs_url=None, redoc_url=None, openapi_url=None,
         )
+        self.app.state.rest_delivery_owner = event_bus._retention.rest if event_bus is not None and event_bus._retention is not None else None
 
         # CORS — use explicit config; default to restrictive same-origin
         cors = cors_config or {}

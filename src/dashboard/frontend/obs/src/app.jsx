@@ -170,7 +170,6 @@ const API_BASE = window.location.origin;
 const ENDPOINT_MAP = [
   ['ZONES',         '/api/zones'],
   ['LLM_ENDPOINTS', '/api/llm/endpoints'],
-  ['CONVERSATIONS', '/api/conversations'],
   ['HA_ENTITIES',   '/api/ha/entities'],
   ['HA_ACTIONS',    '/api/ha/actions'],
   ['USERS',         '/api/users'],
@@ -202,7 +201,6 @@ function clearPrivateData() {
 async function hydrateMocks({ signal }) {
   await Promise.all(ENDPOINT_MAP.map(async ([key, path]) => {
     try {
-      const started = { mono: performance.now(), wall: Date.now() };
       const r = await fetch(API_BASE + path, { credentials: 'same-origin', signal });
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
@@ -225,8 +223,7 @@ async function hydrateMocks({ signal }) {
       // el script, capturando la referencia. Reasignar `window.MOCKS[key] = data`
       // dejaría la referencia vieja apuntando al mock. Mutamos el array/objeto
       // existente para que la referencia capturada vea los datos nuevos.
-      if (key === 'CONVERSATIONS') window.__kzaConversationState.receive(data, started);
-      else replaceData(key, data);
+      replaceData(key, data);
     } catch (e) {
       if (signal.aborted || e instanceof window.KzaDashboardSession.SessionRequired) throw e;
       window.__kzaSources[key] = 'degradada';
@@ -237,12 +234,17 @@ async function hydrateMocks({ signal }) {
 
 function mountWsLiveBridge() {
   let retired = false, retry = null, socket = null;
+  function emitAck(message) {
+    if (!socket || socket.readyState !== 1) return false;
+    socket.send(JSON.stringify(message)); return true;
+  }
+  const conversations = window.KzaConversationChannel.createConversationChannel({
+    store:window.__kzaConversationState, fetch:window.fetch.bind(window), emitAck,
+    hasView:() => !!document.querySelector('#view-conversations'),
+    onUnauthorized:() => window.dispatchEvent(new CustomEvent('kza:auth-required')),
+  });
   const live = window.KzaLivePrivacy.createLiveState({
-    emitAck: message => {
-      if (!socket || socket.readyState !== 1) return false;
-      socket.send(JSON.stringify(message));
-      return true;
-    },
+    emitAck,
     onChange: eventId => {
       window.dispatchEvent(new CustomEvent('kza:live', { detail:{ event_id:eventId } }));
       if (!document.querySelector('[data-live-ticker]')) live.committed(null);
@@ -259,18 +261,24 @@ function mountWsLiveBridge() {
     const ws = new WebSocket(`${proto}//${window.location.host}/ws/live`);
     socket = ws;
     ws.onopen = () => {
-      if (!retired && socket === ws) ws.send(JSON.stringify({ type:'live_hello', version:1, client_id:window.KzaLivePrivacy.pageId() }));
+      if (!retired && socket === ws) ws.send(JSON.stringify({ type:'live_hello', version:2, client_id:window.KzaLivePrivacy.pageId() }));
     };
     ws.onmessage = (ev) => {
       if (socket !== ws || retired) return;
       try {
         const frame = JSON.parse(ev.data);
-        live.receive(frame);
+        if (frame.type === 'live_reset') {
+          live.clear();
+          conversations.reset().then(cleared => { if (cleared && socket === ws && !retired) live.receive(frame); });
+        } else if (frame.type === 'rest_ready') conversations.open(frame.connection_id);
+        else if (frame.type === 'rest_retire') conversations.retire(frame);
+        else live.receive(frame);
       } catch {}
     };
     ws.onclose = async (event) => {
       if (socket !== ws) return;
       live.clear();
+      conversations.reset();
       if (retired) return;
       let needsLogin = event.code === 1008;
       try {
@@ -292,6 +300,7 @@ function mountWsLiveBridge() {
     window.removeEventListener('focus', checkExpiry);
     document.removeEventListener('visibilitychange', checkExpiry);
     live.dispose();
+    conversations.dispose();
     queueMicrotask(() => socket?.close());
     if (window.__kzaLiveState === live) window.__kzaLiveState = null;
     if (window.__kzaLiveWs === socket) window.__kzaLiveWs = null;

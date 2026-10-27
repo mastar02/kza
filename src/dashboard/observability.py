@@ -22,13 +22,12 @@ no hay servicio inyectado, falla, o devuelve vacío.
 import logging
 import time
 from datetime import datetime
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect, WebSocketException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, WebSocketException
 
 from src.analytics.event_logger import EventLogger
 from src.dashboard import observability_mocks as mocks
 from src.dashboard import system_monitor
 from src.dashboard.auth import COOKIE_NAME, auth_configured, check_token, require_dashboard_session
-from src.dashboard.conversation_projection import ConversationProjection
 from src.core.owned_work import WorkCloseTimeout
 from src.dashboard.live_event_bus import LiveEventBus
 
@@ -134,47 +133,6 @@ def _alerts_adapter(alert_manager, status: str | None) -> list[dict]:
             "body": a.details.get("body", ""),
             "acked": acked,
         })
-    return out
-
-
-def _conversations_adapter(
-    event_logger,
-    *,
-    user: str | None = None,
-    zone: str | None = None,
-    path: str | None = None,
-    limit: int = 50,
-) -> list[dict] | None:
-    """EventLogger.get_events → shape mocks.CONVERSATIONS.
-
-    Cada Event con `trigger_phrase` no-vacío es un turn de voz: lo proyectamos
-    al shape esperado por la vista Conversaciones del dashboard.
-    """
-    try:
-        events = event_logger.get_events(limit=limit * 3)
-    except Exception as error:
-        logger.warning("Conversation observation unavailable: %s", type(error).__name__)
-        return None
-    out = []
-    observed_at = event_logger._clock() if isinstance(event_logger, EventLogger) else time.time()
-    for ev in events:
-        if not ev.trigger_phrase:
-            continue  # automaciones/sensores no son charlas
-        ctx = ev.context or {}
-        ev_zone = ctx.get("zone") or ctx.get("room_id")
-        ev_path = ctx.get("path", "fast")
-        if user and (ev.user_name or "").lower() != user.lower():
-            continue
-        if zone and ev_zone != zone:
-            continue
-        if path and ev_path != path:
-            continue
-        projected = ConversationProjection(ev, observed_at).to_dict()
-        if projected is None:
-            continue
-        out.append(projected)
-        if len(out) >= limit:
-            break
     return out
 
 
@@ -330,15 +288,23 @@ def register_observability_routes(
     @router.get("/api/conversations")
     async def get_conversations(
         response: Response,
+        request: Request,
         user: str | None = None, zone: str | None = None,
         from_: str | None = None, to: str | None = None, path: str | None = None,
     ):
         if not use_mocks and event_logger is not None:
-            return await _adapt_events(
-                lambda: _conversations_adapter(
-                    event_logger, user=user, zone=zone, path=path),
-                mocks.CONVERSATIONS, response,
-            )
+            if isinstance(event_logger,EventLogger):
+                connection = request.headers.get('x-kza-live-connection')
+                if event_bus is None or connection is None:
+                    raise HTTPException(428,detail='conversation_receipts_required')
+                def available():
+                    return auth_configured() and check_token(request.headers.get('authorization'),request.cookies.get(COOKIE_NAME))
+                try:
+                    return event_bus.conversation_response(connection,event_logger,
+                        {'user':user,'zone':zone,'path':path},available)
+                except RuntimeError:
+                    raise HTTPException(503,detail='conversation_receipts_unavailable') from None
+            raise HTTPException(503,detail='conversation_receipts_unavailable')
         response.headers[SOURCE_HEADER] = "mock"
         items = mocks.CONVERSATIONS
         if user:
