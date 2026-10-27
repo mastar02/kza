@@ -1999,6 +1999,37 @@ El heartbeat registra p95 de 0,33 ms y máximo de 1,09 ms; cancelar el control
 tarda como máximo 0,08 ms y limpiar stream/cliente 10,96 ms. No se manipula GC
 ni se afirma aceptación integrada de GC/hardware o arranque completo de `main`.
 
+### Avance: afinidad finita de comandos y controladores de captura
+
+El procesador de comandos conserva ahora los scopes de sus controladores,
+sombras y llamadas nativas reales. La detección directa de emoción también
+tiene un controlador registrado y comparte el límite de admisión de ocho
+operaciones. La consulta por conversación retira primero las asociaciones
+idle de usuario/emoción que perdieron su fuente; los perfiles de voces siguen
+bajo su política propia. Cancelar al observador no libera la afinidad del
+thread real ni convierte una conversación conocida ajena en trabajo pendiente.
+
+Cada `CaptureRoom` registra las llamadas auxiliares y pasos antes de esperar
+el lock, con ocho controladores como máximo. El cierre cancela a los que esperan
+y conserva el worker que ya entró. Las llamadas auxiliares fijan la procedencia
+explícita o del llamador al admitirse; no la sustituyen por otra al salir de la
+cola. Se comprueba la fuente antes y después del callback, impidiendo devolver
+un resultado que quedó revocado durante su ejecución.
+
+Se reprodujeron tres fallos en el draft: perder la fuente del llamador permitía
+entrar después de revocarla; una excepción retenía argumentos crudos; y el nuevo
+rechazo por capacidad conservaba argumentos si fallaba la entrada al scope.
+Mover el error fuera del handler nativo no bastaba: el transporte del executor
+también conserva sus tuplas de argumentos en el traceback. El callback ahora
+devuelve un DTO con resultado o error fijo; la excepción se crea en el loop,
+sin transportar el traceback original. Los rechazos limpian también los
+argumentos que nunca llegaron a admitirse.
+
+Estos contratos cubren trabajo finito. Falta el retiro verificable de buffers
+en reposo, los handoffs de los loops que reciben los resultados, callbacks de
+entrada y la integración completa con el driver de `PRODUCERS`. No se habilita
+el borrado amplio ni se cambia producción.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from collections import deque
 from dataclasses import dataclass
 from contextvars import ContextVar
+from enum import StrEnum
 import logging
 from uuid import uuid4
 from typing import TYPE_CHECKING
@@ -16,7 +17,8 @@ import numpy as np
 
 from src.core.owned_work import OwnedBlockingWork
 from src.memory.fact_ledger import MemoryOrigin, MemorySource
-from src.memory.producer_context import producer_context
+from src.memory.producer_context import PRODUCER_CONTEXT, producer_context
+from src.memory.producer_scopes import ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated
 from src.memory.sources import CaptureBoundary
 
@@ -44,6 +46,21 @@ class CapturePacket:
     frames: int
 
 
+class _AuxiliaryError(StrEnum):
+    """Fixed outcomes of a private native callback."""
+
+    INVALIDATED = 'capture_auxiliary_invalidated'
+    FAILED = 'capture_auxiliary_failed'
+
+
+@dataclass(frozen=True)
+class _AuxiliaryResult:
+    """Return data or a fixed error without transporting an exception."""
+
+    value: object = None
+    error: _AuxiliaryError | None = None
+
+
 class CaptureRoom:
     """Serialize wake, capture, snapshots and reset without blocking PortAudio.
 
@@ -66,6 +83,8 @@ class CaptureRoom:
         self._work = OwnedBlockingWork(capacity=1)
         self._lock = asyncio.Lock()
         self._pending: asyncio.Task | None = None
+        self._controllers: set[asyncio.Task] = set()
+        self._scopes = ProducerScopes(self.snapshot_operations, capacity=16)
         self._closed = False
         self._closing: asyncio.Task | None = None
         self._last_packet = None
@@ -156,13 +175,66 @@ class CaptureRoom:
 
     async def call(self, function: Callable, *args, sources: tuple[MemorySource, ...] | None = None) -> object:
         """Run finite state work; explicit lineage describes retained auxiliary inputs."""
+        task = None
+        try:
+            lineage = sources if sources is not None else PRODUCER_CONTEXT.get().sources
+            if not lineage and sources is None:
+                lineage = (self._source,) if self._source is not None else None
+            with self._scopes.operation(lineage):
+                task = self._start_controller(self._call_owned(function, args, lineage))
+                return await task
+        finally:
+            function = args = task = None
+
+    def _start_controller(self, operation):
+        if self._closed:
+            operation.close()
+            raise SourcesInvalidated('capture_closed')
+        if len(self._controllers) >= 8:
+            operation.close()
+            raise RuntimeError('capture_controller_capacity')
+        task = asyncio.create_task(operation)
+        self._controllers.add(task)
+        def finished(done):
+            self._controllers.discard(done)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished)
+        return task
+
+    async def _call_owned(self, function, args, sources):
+        outcome = None
         try:
             async with self._lock:
                 if self._closed:
                     raise SourcesInvalidated('capture_closed')
-                return await self._call_locked(function, *args, sources=sources)
+                outcome = await self._call_locked(self._invoke_auxiliary, function, args, sources,
+                                                  sources=sources or ())
+                if outcome.error is _AuxiliaryError.INVALIDATED:
+                    raise SourcesInvalidated(outcome.error.value)
+                if outcome.error is not None:
+                    raise RuntimeError(outcome.error.value)
+                return outcome.value
         finally:
-            function = args = None
+            function = args = outcome = None
+
+    def _invoke_auxiliary(self, function, args, sources):
+        # No exception crosses the executor: its transport frames also own
+        # argument tuples even after the callback's raw locals are cleared.
+        result = None
+        try:
+            if self._closed or sources and self._privacy is not None and not self._privacy.sources_available(sources):
+                raise SourcesInvalidated('capture_auxiliary_invalidated')
+            result = function(*args)
+            if self._closed or sources and self._privacy is not None and not self._privacy.sources_available(sources):
+                raise SourcesInvalidated('capture_auxiliary_invalidated')
+            return _AuxiliaryResult(result)
+        except SourcesInvalidated:
+            return _AuxiliaryResult(error=_AuxiliaryError.INVALIDATED)
+        except Exception:
+            return _AuxiliaryResult(error=_AuxiliaryError.FAILED)
+        finally:
+            function = args = result = None
 
     def _advance(self, packets):
         event = None
@@ -201,6 +273,17 @@ class CaptureRoom:
 
     async def step(self) -> CommandEvent | None:
         """Consume bounded input and retire idle state even without fresh frames."""
+        if self._closed:
+            return None
+        task = None
+        with self._scopes.operation(()):
+            try:
+                task = self._start_controller(self._step_owned())
+                return await task
+            finally:
+                task = None
+
+    async def _step_owned(self):
         packets = event = None
         try:
             async with self._lock:
@@ -208,6 +291,7 @@ class CaptureRoom:
                     return None
                 if self._pending is not None:
                     await asyncio.gather(asyncio.shield(self._pending), return_exceptions=True)
+                self._scopes.replace_sources(None)
                 self.publish_boundary()
                 if self._oldest is not None and not self.available():
                     await self._call_locked(self._reset)
@@ -234,6 +318,7 @@ class CaptureRoom:
                         except (PermissionError, ValueError, RuntimeError):
                             self._oldest = None
                             return None
+                self._scopes.replace_sources((self._source,) if self._source is not None else None)
                 event = await self._call_locked(self._advance, packets)
                 return event
         finally:
@@ -241,22 +326,32 @@ class CaptureRoom:
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Expose actual finite native scopes, including cancelled observers."""
-        tasks = set(self._work._tasks)
+        tasks = self._controllers | set(self._work._tasks)
         if self._pending is not None:
             tasks.add(self._pending)
         return tuple(tasks)
 
+    def conversation_busy(self, conversation_id: str) -> bool:
+        """Check finite work only; idle capture/wake state needs separate proof."""
+        if self._privacy is None:
+            raise RuntimeError('privacy_authority_unavailable')
+        return self._scopes.busy(conversation_id, self._privacy.ledger)
+
     def resource_status(self) -> dict:
         """Report counts without room, source identifiers, audio or text."""
         return {'closed': self._closed, 'reset_failed': self._failed, 'queued': len(self._queue), 'input_drops': self._input_drops,
-                'native': self._work.status(), 'has_state': self._oldest is not None}
+                'native': self._work.status(), 'controllers': len(self._controllers),
+                'source_scopes': self._scopes.resource_status(), 'has_state': self._oldest is not None}
 
     def begin_close(self) -> asyncio.Task:
         """Detach input and retain native reset after the last actual operation."""
         self._closed = True
         self._queue = deque(maxlen=32)
         if self._closing is None:
+            for task in self._controllers:
+                task.cancel()
             async def finish():
+                await asyncio.gather(*self._controllers, return_exceptions=True)
                 async with self._lock:
                     await self._call_locked(self._reset)
                     await self._work.begin_close()

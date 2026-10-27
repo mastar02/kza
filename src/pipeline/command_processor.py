@@ -10,6 +10,7 @@ import numpy as np
 
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.memory.producer_context import PRODUCER_CONTEXT, model_admission
+from src.memory.producer_scopes import ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated, run_private
 from src.stt.whisper_fast import STTResult
 
@@ -54,6 +55,8 @@ class CommandProcessor:
                 self._locks.setdefault(id(model), threading.Lock())
         self._commands: set[asyncio.Task] = set()
         self._shadow_tasks: set[asyncio.Task] = set()
+        self._emotion_tasks: set[asyncio.Task] = set()
+        self._scopes = ProducerScopes(self.snapshot_operations, capacity=32)
         self._closed = False
         self._closing: asyncio.Task | None = None
         self._current_user = self._current_emotion = None
@@ -138,13 +141,14 @@ class CommandProcessor:
         """Process a capture while preserving ownership of cancelled native work."""
         task = None
         try:
-            self._require_live()
-            if len(self._commands) >= 8:
-                raise RuntimeError("command_processor_capacity")
-            task = self._track(asyncio.create_task(run_private(
-                self._process_command(audio, use_parallel, pretranscribed_text),
-                self._available)), self._commands)
-            return await task
+            with self._scopes.operation(PRODUCER_CONTEXT.get().sources):
+                self._require_live()
+                if len(self._commands) + len(self._emotion_tasks) >= 8:
+                    raise RuntimeError("command_processor_capacity")
+                task = self._track(asyncio.create_task(run_private(
+                    self._process_command(audio, use_parallel, pretranscribed_text),
+                    self._available)), self._commands)
+                return await task
         finally:
             audio = pretranscribed_text = task = None
 
@@ -359,25 +363,40 @@ class CommandProcessor:
 
     async def detect_emotion(self, audio: np.ndarray) -> object | None:
         """Detect emotion off loop under the caller's capture lineage."""
+        task = None
         try:
-            return await run_private(self._emotion(audio), self._available)
+            with self._scopes.operation(PRODUCER_CONTEXT.get().sources):
+                self._require_live()
+                if len(self._commands) + len(self._emotion_tasks) >= 8:
+                    raise RuntimeError('command_processor_capacity')
+                task = self._track(asyncio.create_task(run_private(
+                    self._emotion(audio), self._available)), self._emotion_tasks)
+                return await task
         finally:
-            audio = None
+            audio = task = None
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Expose finite controllers and native scopes, including cancelled callers."""
-        return tuple(self._commands | self._shadow_tasks | self._work._tasks)
+        return tuple(self._commands | self._shadow_tasks | self._emotion_tasks | self._work._tasks)
+
+    def conversation_busy(self, conversation_id: str) -> bool:
+        """Prune idle capture associations and query actual finite work affinity."""
+        if self._privacy is None:
+            raise RuntimeError('privacy_authority_unavailable')
+        self.prune_private()
+        return self._scopes.busy(conversation_id, self._privacy.ledger)
 
     def resource_status(self) -> dict:
         """Report ownership counts without capture IDs, text or speaker names."""
         return {"closed": self._closed, "commands": len(self._commands),
-                "shadows": len(self._shadow_tasks), "native": self._work.status()}
+                "shadows": len(self._shadow_tasks), "emotions": len(self._emotion_tasks),
+                "source_scopes": self._scopes.resource_status(), "native": self._work.status()}
 
     def begin_close(self) -> asyncio.Task:
         """Reject admission and retain actual native exit before authority release."""
         self._closed = True
         if self._closing is None:
-            controllers = self._commands | self._shadow_tasks
+            controllers = self._commands | self._shadow_tasks | self._emotion_tasks
             for task in controllers:
                 task.cancel()
             native = self._work.begin_close()
