@@ -1,0 +1,124 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "778c798063f915b4e38ea9c59ed364803d432777",
+  "tested_runtime_source_tree": "2518e52c60bbed90fe9fb5c111600c43cc64fc03",
+  "tested_scripts_source_tree": "e2c8d85e8fd69e49a035ee15d3bbf3c1de845078",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "scope": "H3 shared microphone callback ownership of its ambient branch, tap push retirement, ambient close/store ordering, and rejection after a separately published ambient fence. Voice and ambient conversation grouping stays separate. Complete source attribution across queues, ledger-to-fence publication and producer/journal acceptance remain open.",
+  "new_cases_total": 13,
+  "new_integration_cases": [
+    "test_ambient_unknown_copy_is_pending_even_with_known_unrelated_voice_source",
+    "test_ambient_close_retains_store_until_actual_input_branch_retires[reserved]",
+    "test_ambient_close_retains_store_until_actual_input_branch_retires[any]",
+    "test_ambient_close_retains_store_until_actual_input_branch_retires[copy]",
+    "test_stopping_ambient_does_not_wait_for_the_following_voice_copy",
+    "test_ambient_revocation_rejects_its_old_branch_and_preserves_voice[clock]",
+    "test_ambient_revocation_rejects_its_old_branch_and_preserves_voice[any]",
+    "test_ambient_revocation_rejects_its_old_branch_and_preserves_voice[copy]",
+    "test_replacing_tap_does_not_redirect_an_already_admitted_copy",
+    "test_tap_close_owns_direct_push_arguments_through_a_blocked_clock",
+    "test_buffered_unknown_ambient_input_remains_pending_after_callback_returns",
+    "test_cancelled_stop_observer_cannot_release_ambient_ownership",
+    "test_closed_ambient_skips_its_copy_while_voice_continues"
+  ],
+  "reproduction": {
+    "initial_log": "/tmp/kza-shared-input-red.log",
+    "initial_failed": 4,
+    "initial_passed": 1,
+    "findings": [
+      "An ambient copy was invisible to the ambient busy check when voice already had an unrelated source.",
+      "Ambient shutdown closed SQLite while callback reservation, array inspection or ambient copy remained active."
+    ],
+    "intermediate_focused_not_accepted": {
+      "log": "/tmp/kza-shared-input-focused.log",
+      "failed": 1,
+      "passed": 419,
+      "reason": "The ambient source began after the synthetic frame acquisition date. Its fence correctly skipped the ambient copy, and the test held the following voice copy. Advancing the synthetic clock before callback admission exercised the intended ambient branch; no production clock/deadline/capacity changed."
+    }
+  },
+  "full_suite": {
+    "accepted": true,
+    "collected": 5314,
+    "passed": 5313,
+    "failed": 0,
+    "xfailed": 1,
+    "skipped": 0,
+    "junit_time_s": 227.82,
+    "summary": "========= 5313 passed, 1 xfailed, 30700 warnings in 227.91s (0:03:47) ==========",
+    "xfailed_tests": [
+      "tests.unit.nlu.test_regex_extractor::test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+    ],
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -m pytest tests/ -q --junitxml=/tmp/kza-shared-input-accepted-full.xml",
+    "log": "/tmp/kza-shared-input-accepted-full.log",
+    "xml": "/tmp/kza-shared-input-accepted-full.xml"
+  },
+  "focused_suite": {
+    "passed": 422,
+    "failed": 0,
+    "runtime_s": 14.34,
+    "summary": "===================== 422 passed, 3827 warnings in 14.34s ======================",
+    "log": "/tmp/kza-shared-input-accepted-focused.log"
+  },
+  "other_checks": {
+    "ruff": {
+      "passed": true,
+      "log": "/tmp/kza-shared-input-ruff.log"
+    },
+    "bandit": {
+      "passed": true,
+      "low": 28,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-shared-input-bandit.log"
+    },
+    "frontend": {
+      "passed": 18,
+      "failed": 0,
+      "log": "/tmp/kza-shared-input-frontend.log"
+    },
+    "dashboard_smoke": {
+      "passed": true,
+      "log": "/tmp/kza-shared-input-dashboard.log"
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "778c798063f915b4e38ea9c59ed364803d432777",
+    "artifact": "/tmp/kza-shared-input-runtime-jvu64puk/runtime.tar.gz",
+    "verified_hashes": 322,
+    "runtime_s": 0.6467210100963712,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "hashes": 322,
+      "real_multiroom_callback_tap_ambient_path_and_privacy_sqlite": true,
+      "synthetic_wake_echo_and_array_copy_gate": true,
+      "ambient_and_voice_conversations_remain_separate": true,
+      "unknown_ambient_copy_stays_pending_with_known_voice_source": true,
+      "ambient_store_retained_through_copy_and_cancelled_stop_observer": true,
+      "ambient_stop_does_not_wait_for_independent_voice_copy": true,
+      "published_ambient_fence_rejects_old_copy_without_stopping_voice": true,
+      "writer_lease_retained_until_actual_callback_exit": true,
+      "gc_forced_disabled_or_frozen": false,
+      "full_main_hardware_or_journal_acceptance": false
+    }
+  },
+  "limits": {
+    "unknown_ambient_ingress_and_queued_audio_remain_conservatively_busy": true,
+    "known_voice_source_does_not_establish_ambient_lineage": true,
+    "ambient_rejection_test_requires_published_fence": true,
+    "ledger_revocation_to_control_fence_gap_closed": false,
+    "every_queued_packet_has_verifiable_causal_source": false,
+    "full_producers_journal_contract_complete": false,
+    "physical_microphone_or_external_sdk_buffers_accepted": false,
+    "ambient_pause_and_total_mute_product_flow_complete": false,
+    "instrumented_gc_measurement_replaced_or_accepted": false,
+    "production_modified": false,
+    "gc_forced_disabled_or_frozen": false,
+    "deadlines_or_existing_capacities_widened": false,
+    "overall_h3_or_roadmap_complete": false
+  }
+}

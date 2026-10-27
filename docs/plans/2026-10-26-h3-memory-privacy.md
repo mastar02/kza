@@ -2321,6 +2321,46 @@ los demás consumidores/backends y los participantes pendientes del journal.
 El borrado global, las voces, el resto de H3–H6 y la aceptación física e
 integrada siguen abiertos. Producción permanece intacta.
 
+## Ingreso compartido y cierre independiente de ambient — 27 de octubre
+
+La reproducción del callback multiroom real encontró cuatro fallos: una copia
+ambiental podía quedar invisible cuando la captura de voz tenía otra
+conversación, y el cierre podía retirar el store mientras seguían pendientes
+la reserva del callback, su inspección del array o la copia ambiental.
+
+Cada invocación reserva ahora la identidad de su entrega ambiental antes de
+consultar relojes o arrays. El tap registra los dueños de esos callbacks antes
+de exponerse al micrófono y conserva las reservas sin metadatos publicados.
+La entrega se retira después de soltar la copia local, antes de copiar para
+voz. Cerrar ambient sella las colas y espera esas entregas y los `push` reales;
+cancelar al observador no permite cerrar el store ni liberar anticipadamente
+la autoridad. El camino de voz sigue activo y su copia posterior no prolonga
+el cierre ambiental. Cambiar de tap tampoco redirige una copia ya admitida.
+
+El callback conserva por separado la barrera publicada de ambient y la pasa
+a `push`. Si cambia durante el reloj, la inspección o la copia, se rechaza esa
+entrega ambiental y se conserva la captura de voz que sigue vigente. No se
+mezclan los IDs de conversación de ambos orígenes. Las copias y colas que aún
+no tienen fuente ambiental verificable se consideran pendientes de forma
+conservadora, aunque la fuente conocida de voz pertenezca a otra conversación.
+Los registros contienen metadatos acotados; los callbacks no consultan SQLite,
+la autoridad ni los modelos, y no se amplían las capacidades existentes.
+
+La [validación del ingreso compartido](../research/2026-10-27-h3-shared-input-retirement-validation.json)
+de `778c798` registra **5313 passed, 1 xfailed**, sin fallos, en 227,91 s,
+13 casos nuevos y 422 pruebas dirigidas. Pasan Ruff, Bandit sin hallazgos
+medios/altos, los 18 casos de frontend y el smoke del dashboard. El artefacto
+sin fuentes verifica 322 hashes y reproduce la coordinación en 0,65 s con el
+callback, tap, `AmbientPath` y SQLite reales, usando wake, echo y puertas de
+copia sintéticos. No se fuerza GC ni se cambia su política; esta suite no
+sustituye la medición instrumentada de pausas que sigue sin aceptarse.
+
+Esta garantía depende de la barrera ya publicada. Queda verificar y cerrar el
+intervalo entre la revocación en el ledger y su publicación, conservar una
+procedencia verificable por paquete a través de todas las colas y probar los
+buffers retenidos por drivers y SDK. Este paso no completa el contrato global
+de `PRODUCERS`, la pausa/mute de producto ni la aceptación física de audio.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

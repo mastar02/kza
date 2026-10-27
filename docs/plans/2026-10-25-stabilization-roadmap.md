@@ -732,6 +732,16 @@ Quedan la coordinación entre orígenes, los demás productores, los buffers de
 backends/SDK y el driver completo de `PRODUCERS`, además del resto de H3–H6.
 Producción permanece intacta; la aceptación física e integrada sigue pendiente.
 
+El [ingreso compartido de voz y ambient](../research/2026-10-27-h3-shared-input-retirement-validation.json)
+conserva ahora sus entregas por separado: cerrar ambient espera su copia real
+y sus `push`, sin detener ni esperar la copia posterior de voz. La barrera
+ambiental publicada rechaza entregas anteriores aunque voz tenga otra
+conversación. La validación de `778c798` registra **5313 passed, 1 xfailed**,
+13 casos nuevos, 422 pruebas dirigidas, checks y artefacto con 322 hashes.
+Faltan el intervalo entre revocación y publicación, la procedencia por paquete
+en las demás colas y el contrato completo de `PRODUCERS`. Esto no completa
+la pausa/mute de producto, las pruebas físicas ni el resto del roadmap.
+
 **Entregables de privacidad:** texto y clips con TTL de 48 horas, hechos
 automáticos con TTL de 30 días y recuerdos confirmados sin caducidad automática.
 Registrar procedencia y fechas para poder borrar los derivados de una
