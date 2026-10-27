@@ -74,6 +74,7 @@ class AmbientTranscriber:
             privacy.require_available()
             if store.source_policy is not privacy.ledger:
                 raise ValueError("ambient_authority_mismatch")
+            tap.bind_ingress(privacy.scopes, rooms)
         self._native = OwnedBlockingWork(close_timeout_s=close_timeout_s)
         self._close_timeout_s = close_timeout_s
         self._closed = False
@@ -108,11 +109,15 @@ class AmbientTranscriber:
             from uuid import uuid4
             from src.memory.fact_ledger import MemoryOrigin
             return privacy.source_for_capture(str(uuid4()), timestamp, room_id, origin=MemoryOrigin.AMBIENT)
+        def epoch_available(epoch, room_id):
+            from src.memory.fact_ledger import MemoryOrigin
+            return privacy.scopes.epoch_available(epoch, room_id, origin=MemoryOrigin.AMBIENT)
         for room_id in self._rooms:
             self._room_states[room_id] = RoomProducer(room_id, self._segmenter_factory,
                 require_cleanup=self._privacy is not None,
                 boundary_fn=self._privacy.scopes.buffer_boundary if self._privacy is not None else None,
-                source_fn=buffer_source if privacy is not None else None)
+                source_fn=buffer_source if privacy is not None else None,
+                epoch_available=epoch_available if privacy is not None else None)
             self._tap.register_room(room_id)
             with producer_context(room_id):
                 self._tasks.append(asyncio.create_task(self._room_worker(room_id)))
@@ -279,7 +284,8 @@ class AmbientTranscriber:
         items = seg = None
         with self._scopes.operation():
             try:
-                items = self._tap.drain(room_id)
+                from src.ambient.tap import MultiChannelTap
+                items = self._tap.drain_owned(room_id) if isinstance(self._tap, MultiChannelTap) else self._tap.drain(room_id)
                 if items:
                     await state.feed(items)
                 items = None

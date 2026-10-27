@@ -10,19 +10,30 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from weakref import WeakSet
 
 import numpy as np
 
-from src.memory.sources import CaptureBoundary
+from src.memory.sources import CaptureBoundary, CaptureEpoch
 from src.audio.input_callbacks import InputCallbacks
 
 # ~100s de audio por room @ chunks de 80ms. A 6ch float32: ~12 MB/room.
 DEFAULT_MAXLEN_CHUNKS = 1250
 
 # (timestamp epoch s del chunk, audio multicanal, TTS propio activo)
-_TapEntry = tuple[float, np.ndarray, bool]
+@dataclass(frozen=True)
+class TapPacket:
+    """Copied input with the metadata admission that preceded clocks and arrays."""
+
+    timestamp: float
+    audio: np.ndarray = field(repr=False)
+    tts_active: bool
+    epoch: CaptureEpoch | None = field(default=None, repr=False)
+
+
 _PUSH_BOUNDARY = CaptureBoundary(None, float('-inf'))
+_UNSTAMPED = object()
 
 
 class MultiChannelTap:
@@ -30,7 +41,7 @@ class MultiChannelTap:
 
     def __init__(self, maxlen_chunks: int = DEFAULT_MAXLEN_CHUNKS, *, clock=None):
         self._maxlen = maxlen_chunks
-        self._queues: dict[str, deque[_TapEntry]] = {}
+        self._queues: dict[str, deque[TapPacket]] = {}
         self._boundaries: dict[str, CaptureBoundary] = {}
         self._clock = clock or time.time
         self._closed = False
@@ -38,6 +49,22 @@ class MultiChannelTap:
         self._ingress: WeakSet[InputCallbacks] = WeakSet()
         self._pushes = InputCallbacks()
         self._closing = None
+        self._capture_ingress = {}
+
+    def bind_ingress(self, scopes, room_ids: list[str]) -> None:
+        """Install stable control-owned references before exposing microphone input."""
+        from src.memory.fact_ledger import MemoryOrigin
+        for room_id in room_ids:
+            ingress = scopes.ingress(room_id, origin=MemoryOrigin.AMBIENT)
+            previous = self._capture_ingress.get(room_id)
+            if previous is not None and previous.current.authority is not ingress.current.authority:
+                raise ValueError('ambient_ingress_authority_mismatch')
+            self._capture_ingress[room_id] = ingress
+
+    def input_epoch(self, room_id: str) -> CaptureEpoch | None:
+        """Read admission metadata without clocks, locks or authority queries."""
+        ingress = self._capture_ingress.get(room_id)
+        return ingress.current if ingress is not None else None
 
     @property
     def ingress_token(self) -> object:
@@ -75,6 +102,7 @@ class MultiChannelTap:
         tts_active: bool = False,
         *,
         boundary: CaptureBoundary | None = None,
+        epoch: object = _UNSTAMPED,
     ) -> None:
         """Encolar un chunk. Room no registrada = no-op silencioso (fail-open).
 
@@ -83,6 +111,7 @@ class MultiChannelTap:
         reutiliza el buffer de ``indata`` al retornar del callback; sin copia
         propia el array encolado queda corrupto. Acá NO se copia de nuevo.
         """
+        epoch = self.input_epoch(room_id) if epoch is _UNSTAMPED else epoch
         ticket = self._pushes.enter(_PUSH_BOUNDARY)
         q = None
         try:
@@ -98,7 +127,7 @@ class MultiChannelTap:
             current = self.input_boundary(room_id)
             if (boundary is not None and boundary != current) or not current.allows(timestamp):
                 return
-            q.append((timestamp, chunk, tts_active))
+            q.append(TapPacket(timestamp, chunk, tts_active, epoch))
         finally:
             chunk = q = None
             if ticket is not None:
@@ -107,6 +136,10 @@ class MultiChannelTap:
 
     def drain(self, room_id: str) -> list[tuple[float, np.ndarray, bool]]:
         """Vaciar y devolver los chunks pendientes de una room (orden FIFO)."""
+        return [(item.timestamp, item.audio, item.tts_active) for item in self.drain_owned(room_id)]
+
+    def drain_owned(self, room_id: str) -> list[TapPacket]:
+        """Transfer copied input together with its original metadata admission."""
         q = self._queues.get(room_id)
         if q is None:
             return []
@@ -133,7 +166,7 @@ class MultiChannelTap:
         if queue is None:
             return 0
         items = list(queue)
-        retained = deque((item for item in items if boundary.allows(item[0])), maxlen=self._maxlen)
+        retained = deque((item for item in items if boundary.allows(item.timestamp)), maxlen=self._maxlen)
         self._queues[room_id] = retained
         queue.clear()
         return len(items)-len(retained)

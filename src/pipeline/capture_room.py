@@ -21,7 +21,7 @@ from src.memory.fact_ledger import MemoryOrigin, MemorySource
 from src.memory.producer_context import PRODUCER_CONTEXT, producer_context
 from src.memory.producer_scopes import ProducerScope, ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated
-from src.memory.sources import CaptureBoundary
+from src.memory.sources import CaptureBoundary, CaptureEpoch
 
 if TYPE_CHECKING:
     from src.memory.privacy_services import PrivacyServices
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _CAPTURE_CHECK = ContextVar('native_capture_check', default=None)
+_UNSTAMPED = object()
 
 
 def require_capture_live() -> None:
@@ -45,6 +46,7 @@ class CapturePacket:
     timestamp: float
     audio: np.ndarray
     frames: int
+    epoch: CaptureEpoch | None = None
 
 
 class _AuxiliaryError(StrEnum):
@@ -92,6 +94,7 @@ class CaptureRoom:
         self.room_id = room_id
         self._process, self._poll, self._clear = process, poll, clear
         self._privacy = privacy
+        self._ingress = privacy.scopes.ingress(room_id, origin=MemoryOrigin.VOICE) if privacy is not None else None
         self._listening = listening
         self._queue = deque(maxlen=32)
         self._boundary = CaptureBoundary(None, float('-inf'))
@@ -116,17 +119,24 @@ class CaptureRoom:
         return self._source
 
     @property
+    def input_epoch(self) -> CaptureEpoch | None:
+        """Read control-owned admission metadata without querying authority."""
+        return self._ingress.current if self._ingress is not None else None
+
+    @property
     def input_boundary(self) -> CaptureBoundary:
         """Expose the immutable published admission epoch without authority I/O."""
         return self._boundary
 
-    def push(self, timestamp: float, audio: np.ndarray, frames: int, *, boundary: CaptureBoundary | None = None) -> None:
+    def push(self, timestamp: float, audio: np.ndarray, frames: int, *, boundary: CaptureBoundary | None = None,
+             epoch: object = _UNSTAMPED) -> None:
         """Copy input without locks, model calls or authority queries on callback."""
         queue = self._queue  # Snapshot queue before fence; never revive a detached queue.
         admitted, current = boundary, self._boundary
+        epoch = self.input_epoch if epoch is _UNSTAMPED else epoch
         try:
             if not self._closed and not self._failed and (admitted is None or admitted == current) and current.allows(timestamp):
-                queue.append(CapturePacket(timestamp, audio.copy(), frames))
+                queue.append(CapturePacket(timestamp, audio.copy(), frames, epoch))
         except Exception:
             self._input_drops += 1
         finally:
@@ -281,12 +291,17 @@ class CaptureRoom:
         try:
             for packet in packets:
                 self.require_live()
+                if not self._packet_available(packet):
+                    continue
                 if not self._current_boundary().allows(packet.timestamp):
                     continue
                 if self._oldest is not None and packet.timestamp < self._oldest:
                     continue
                 self._process(packet.audio, packet.frames, packet.timestamp, None)
                 self.require_live()
+                if not self._packet_available(packet):
+                    self._reset()
+                    return None
                 self._last_packet = packet.timestamp
             if self._oldest is not None:
                 self.require_live()
@@ -309,6 +324,10 @@ class CaptureRoom:
         finally:
             _CAPTURE_CHECK.reset(token)
             packets = event = packet = None
+
+    def _packet_available(self, packet):
+        return self._privacy is None or self._privacy.scopes.epoch_available(
+            packet.epoch, self.room_id, origin=MemoryOrigin.VOICE)
 
     async def step(self, *, handoff: ProducerScope | None = None) -> CommandEvent | None:
         """Consume input, binding an exclusive receiver before raw result delivery."""
@@ -375,7 +394,7 @@ class CaptureRoom:
                     # raw packets introduces input whose lineage is unresolved.
                     self._bind_step(None, handoff)
                     packet = queue.popleft()
-                    if self._boundary.allows(packet.timestamp):
+                    if self._boundary.allows(packet.timestamp) and self._packet_available(packet):
                         packets.append(packet)
                 if self._last_packet is not None and packets and packets[0].timestamp - self._last_packet > .5:
                     await self._call_locked(self._reset)
@@ -397,6 +416,11 @@ class CaptureRoom:
                             self._oldest = None
                             self._bind_step((), handoff)
                             return None
+                    packets = [packet for packet in packets if self._packet_available(packet)]
+                    if not packets:
+                        self._source = self._oldest = None
+                        self._bind_step((), handoff)
+                        return None
                 self._bind_step((self._source,) if self._source is not None else None, handoff)
                 event = await self._call_locked(self._advance, packets)
                 return event

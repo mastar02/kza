@@ -10,6 +10,7 @@ from src.core.owned_work import OwnedBlockingWork
 from src.memory.producer_context import producer_context
 from src.memory.sources import CaptureBoundary
 from src.memory.fact_ledger import FactLedger, MemorySource
+from src.ambient.tap import TapPacket
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,10 @@ class RoomProducer:
     def __init__(
         self, room_id: str, factory, *, require_cleanup: bool = False, boundary_fn=None,
         source_fn: Callable[[str, float], MemorySource] | None = None,
+        epoch_available: Callable[[object, str], bool] | None = None,
     ):
+        if source_fn is not None and not callable(epoch_available):
+            raise ValueError('ambient_admission_validator_required')
         self.room_id, self._factory = room_id, factory
         self._require_cleanup = require_cleanup
         self._segmenter = None
@@ -70,6 +74,8 @@ class RoomProducer:
         self._source_fn = source_fn
         self._source: MemorySource | None = None
         self._reset_pending = False
+        self._epoch_available = epoch_available
+        self._epoch = None
 
     def publish_boundary(self, boundary: CaptureBoundary) -> None:
         """Publish metadata; native work observes it before and after each chunk."""
@@ -99,7 +105,7 @@ class RoomProducer:
                 return False
         if self._reset_pending:
             self._error = None
-        self._segmenter = self._oldest = self._source = None
+        self._segmenter = self._oldest = self._source = self._epoch = None
         self._reset_pending = False
         return True
 
@@ -107,9 +113,13 @@ class RoomProducer:
         boundary = self._current_boundary()
         if self._reset_pending or getattr(self._segmenter, 'needs_reset', False) is True or (
             self._oldest is not None and not boundary.allows(self._oldest)) or (
-            self._source is not None and not boundary.allows(self._source.captured_at)):
+            self._source is not None and not boundary.allows(self._source.captured_at)) or (
+            self._epoch is not None and not self._admitted(self._epoch)):
             return self._discard()
         return True
+
+    def _admitted(self, epoch):
+        return self._epoch_available is None or self._epoch_available(epoch, self.room_id)
 
     def _current_boundary(self):
         if self._boundary_fn is not None:
@@ -133,7 +143,12 @@ class RoomProducer:
                 return []
             if not self._prune():
                 return []
-            for timestamp, chunk, tts_active in items:
+            for item in items:
+                if isinstance(item, TapPacket):
+                    timestamp, chunk, tts_active, epoch = item.timestamp, item.audio, item.tts_active, item.epoch
+                else:
+                    timestamp, chunk, tts_active = item
+                    epoch = None
                 if self._closed:
                     segments.clear()
                     self._discard()
@@ -141,10 +156,14 @@ class RoomProducer:
                 if not self._prune():
                     segments.clear()
                     break
-                if not self._current_boundary().allows(timestamp):
+                if not self._admitted(epoch) or not self._current_boundary().allows(timestamp):
                     continue
                 if self._source is None and self._source_fn is not None:
                     self._source = self._source_fn(self.room_id, timestamp)
+                    self._epoch = epoch
+                if not self._admitted(epoch):
+                    self._discard()
+                    continue
                 self._ensure_segmenter()
                 if not self._prune():
                     segments.clear()
@@ -160,13 +179,17 @@ class RoomProducer:
                 produced = self._segmenter.feed(
                     ts=timestamp, chunk=chunk, tts_active=tts_active
                 )
+                if not self._admitted(epoch):
+                    segments.clear()
+                    self._discard()
+                    break
                 for segment in produced:
                     segment.input_source = input_source
                 self._oldest = getattr(
                     self._segmenter, "oldest_timestamp", self._oldest
                 )
                 if self._oldest is None:
-                    self._source = None
+                    self._source = self._epoch = None
                 segments.extend(produced)
                 if not self._prune():
                     segments.clear()

@@ -137,6 +137,7 @@ class AudioLoop:
         holder = object()
         self._holder = holder
         def callback(indata, frames, time_info, status):
+            epoch = self._room.input_epoch
             ticket = self._room.callbacks.enter(self._room.input_boundary)
             try:
                 if ticket is None or not self._room.callbacks.accepting or self._closed or self._holder is not holder:
@@ -144,7 +145,7 @@ class AudioLoop:
                 timestamp = self._clock() - frames / self.sample_rate
                 self._room.callbacks.stamp(ticket, timestamp, self._room.source)
                 if not self._closed and self._holder is holder:
-                    self._room.push(timestamp, indata, frames, boundary=ticket.boundary)
+                    self._room.push(timestamp, indata, frames, boundary=ticket.boundary, epoch=epoch)
             except Exception:
                 self._room.callbacks.failed()
             finally:

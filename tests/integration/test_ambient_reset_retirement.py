@@ -75,12 +75,21 @@ def owned_room(g, factory=None):
     privacy = g.privacy
     def source(room, timestamp):
         return privacy.source_for_capture(str(uuid4()), timestamp, room, origin=MemoryOrigin.AMBIENT)
+    def admitted(epoch, room):
+        return privacy.scopes.epoch_available(epoch, room, origin=MemoryOrigin.AMBIENT)
     room = RoomProducer('synthetic-a', factory or g.transcriber._segmenter_factory, require_cleanup=True,
-        boundary_fn=privacy.scopes.buffer_boundary, source_fn=source)
+        boundary_fn=privacy.scopes.buffer_boundary, source_fn=source, epoch_available=admitted)
     g.transcriber._room_states['synthetic-a'] = room
     g.tap.register_room('synthetic-a')
     room.publish_boundary(privacy.scopes.buffer_boundary('synthetic-a'))
     return room
+
+
+def stamped(g, items):
+    """Use the actual tap's ownership transfer for direct native actor tests."""
+    for timestamp, audio, tts_active in items:
+        g.tap.push('synthetic-a', audio, ts=timestamp, tts_active=tts_active)
+    return g.tap.drain_owned('synthetic-a')
 
 
 @pytest.mark.parametrize('stop', ['expire', 'revoke', 'close'])
@@ -89,7 +98,7 @@ async def test_idle_recurrent_input_has_early_provenance_and_clears_without_new_
         room = owned_room(g)
         raw = chunk(0.)
         reference = ref(raw)
-        await room.feed([(g.clock.now, raw, False)])
+        await room.feed(stamped(g, [(g.clock.now, raw, False)]))
         del raw
         source = room._source
         assert source is not None and reference() is not None
@@ -139,14 +148,14 @@ async def test_utterance_close_reset_failure_is_not_hidden_or_followed_by_more_i
             return model
         room = owned_room(g, factory)
         try:
-            await room.feed([(g.clock.now, chunk(), False), (g.clock.now+.08, chunk(0.), False)])
+            await room.feed(stamped(g, [(g.clock.now, chunk(), False), (g.clock.now+.08, chunk(0.), False)]))
             source = room._source
             raw = ref(predictors[0].raw)
             assert source is not None and models[0]().needs_reset
             assert room.status()['reset_pending'] and room.status()['error'] == 'ambient_segmenter_reset_failed'
             assert not room.ready and g.transcriber.conversation_busy(source.conversation_id)
             before = predictors[0].calls
-            await room.feed([(g.clock.now+.16, chunk(), False)])
+            await room.feed(stamped(g, [(g.clock.now+.16, chunk(), False)]))
             assert predictors[0].calls == before and len(models) == 1
             assert raw() is not None and room._source == source
             failed[0] = False
@@ -154,7 +163,7 @@ async def test_utterance_close_reset_failure_is_not_hidden_or_followed_by_more_i
             assert models[0]() is None and raw() is None and room._source is None
             assert not room.status()['reset_pending']
             g.clock.now += 1
-            await room.feed([(g.clock.now, chunk(0.), False)])
+            await room.feed(stamped(g, [(g.clock.now, chunk(0.), False)]))
             assert len(models) == 2 and room._source.capture_id != source.capture_id
         finally:
             failed[0] = False
@@ -174,7 +183,7 @@ async def test_completed_executor_transport_does_not_retain_feed_inputs(tmp_path
         monkeypatch.setattr(asyncio, 'to_thread', retained)
         items = [(g.clock.now, chunk(), False), (g.clock.now+.08, chunk(0.), False)]
         references = [ref(item[1]) for item in items]
-        observing = asyncio.create_task(room.feed(items))
+        observing = asyncio.create_task(room.feed(stamped(g, items)))
         del items
         await observing
         await until(lambda: not room.snapshot_operations())
@@ -196,7 +205,7 @@ async def test_cancelled_queued_native_call_keeps_inputs_until_admitted_work_act
         monkeypatch.setattr(asyncio, 'to_thread', queued)
         audio = chunk()
         reference = ref(audio)
-        observer = asyncio.create_task(room.feed([(g.clock.now, audio, False)]))
+        observer = asyncio.create_task(room.feed(stamped(g, [(g.clock.now, audio, False)])))
         del audio
         errors = []
         try:
@@ -220,7 +229,7 @@ async def test_cancelled_queued_native_call_keeps_inputs_until_admitted_work_act
 async def test_unexpected_native_prune_error_does_not_export_private_traceback(tmp_path, monkeypatch):
     async with ambient_graph(tmp_path) as g:
         room = owned_room(g)
-        await room.feed([(g.clock.now, chunk(0.), False)])
+        await room.feed(stamped(g, [(g.clock.now, chunk(0.), False)]))
         references, errors = [], []
         class Payload:
             pass
@@ -246,11 +255,11 @@ async def test_unexpected_native_prune_error_does_not_export_private_traceback(t
 async def test_recurrent_context_keeps_original_conversation_and_deadline_across_idle_gap(tmp_path, revoke):
     async with ambient_graph(tmp_path) as g:
         room = owned_room(g)
-        await room.feed([(g.clock.now, chunk(0.), False)])
+        await room.feed(stamped(g, [(g.clock.now, chunk(0.), False)]))
         source = room._source
         g.clock.now += 121
-        await room.feed([(g.clock.now, chunk(0.), False), (g.clock.now+.08, chunk(), False),
-                         (g.clock.now+.16, chunk(0.), False)])
+        await room.feed(stamped(g, [(g.clock.now, chunk(0.), False), (g.clock.now+.08, chunk(), False),
+                         (g.clock.now+.16, chunk(0.), False)]))
         assert len(room.ready) == 1
         segment = room.ready.pop()
         assert segment.t0 > source.captured_at and segment.input_source == source
@@ -289,7 +298,7 @@ async def test_handoff_rejects_conflicting_or_expired_buffer_provenance_before_i
 async def test_cancelled_native_reset_observer_cannot_release_privacy_authority(tmp_path):
     async with ambient_graph(tmp_path) as g:
         room = owned_room(g)
-        await room.feed([(g.clock.now, chunk(0.), False)])
+        await room.feed(stamped(g, [(g.clock.now, chunk(0.), False)]))
         source = room._source
         g.gates['reset'].block()
         await g.privacy.acall(g.privacy.ledger.delete_conversation, source.conversation_id, ACTOR)
@@ -320,7 +329,7 @@ async def test_close_retains_authority_when_native_reset_transport_is_unavailabl
         room = owned_room(g)
         audio = chunk(0.)
         reference = ref(audio)
-        await room.feed([(g.clock.now, audio, False)])
+        await room.feed(stamped(g, [(g.clock.now, audio, False)]))
         del audio
         failed = [True]
         original = asyncio.to_thread

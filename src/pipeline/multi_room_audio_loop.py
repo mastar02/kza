@@ -1486,6 +1486,8 @@ class MultiRoomAudioLoop:
         def audio_callback(indata, frames, time_info, status):
             tap = self._ambient_tap
             ambient_boundary = tap.input_boundary(rs.room_id) if isinstance(tap, MultiChannelTap) else None
+            ambient_epoch = tap.input_epoch(rs.room_id) if isinstance(tap, MultiChannelTap) else None
+            voice_epoch = room.input_epoch
             ticket = room.callbacks.enter(room.input_boundary,
                 branch=tap.ingress_token if isinstance(tap, MultiChannelTap) else None)
             ambient = None
@@ -1548,7 +1550,7 @@ class MultiRoomAudioLoop:
                             return
                         if isinstance(tap, MultiChannelTap):
                             tap.push(rs.room_id, ambient, ts=timestamp, tts_active=tts_now,
-                                boundary=ambient_boundary)
+                                boundary=ambient_boundary, epoch=ambient_epoch)
                         else:
                             tap.push(rs.room_id, ambient, ts=timestamp, tts_active=tts_now)
                         ambient = None
@@ -1562,7 +1564,7 @@ class MultiRoomAudioLoop:
 
                 if self._microphone_captures.get(rs.room_id) is holder:
                     self._capture_rooms[rs.room_id].push(
-                        timestamp, indata, frames, boundary=ticket.boundary)
+                        timestamp, indata, frames, boundary=ticket.boundary, epoch=voice_epoch)
             except Exception:
                 room.callbacks.failed()
             finally:

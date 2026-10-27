@@ -28,6 +28,25 @@ class CaptureBoundary:
                 and timestamp > self.retired_through)
 
 
+@dataclass(eq=False, repr=False)
+class CaptureEpoch:
+    """Metadata admission shared by inputs predating the first native source."""
+
+    room_id: str | None
+    origin: MemoryOrigin
+    expires_at: float
+    conversation_id: str | None = None
+    retired: bool = False
+    authority: object | None = None
+
+
+@dataclass(repr=False)
+class CaptureIngress:
+    """Stable control-owned reference; callbacks only snapshot its current epoch."""
+
+    current: CaptureEpoch
+
+
 class CaptureScopes:
     """Share room/origin scopes across all active capture producers."""
 
@@ -37,7 +56,45 @@ class CaptureScopes:
         self._scopes = {}
         self._revocation_fences = {}
         self._buffer_expiry_floor = float('-inf')
+        self._ingress = {}
+        self._ingress_authority = object()
         self._lock = threading.Lock()
+
+    def _new_epoch(self, key):
+        return CaptureEpoch(key[1], key[0], self.ledger.clock()+48*3600, authority=self._ingress_authority)
+
+    def _ingress_locked(self, key):
+        if key not in self._ingress:
+            epoch = self._new_epoch(key)
+            previous = self._scopes.get(key)
+            if previous is not None:
+                epoch.conversation_id = previous[0]
+                epoch.expires_at = min(epoch.expires_at, previous[2]+48*3600)
+            self._ingress[key] = CaptureIngress(epoch)
+        return self._ingress[key]
+
+    def ingress(self, room_id: str | None, *, origin: MemoryOrigin) -> CaptureIngress:
+        """Register a room on the control path, before exposing its input callback."""
+        with self._lock:
+            self._observe_revocation((origin, room_id))
+            return self._ingress_locked((origin, room_id))
+
+    def epoch_available(self, epoch: object, room_id: str | None, *, origin: MemoryOrigin) -> bool:
+        """Validate native admission against authority, independently of publication."""
+        return (self.ledger.authority_available and isinstance(epoch, CaptureEpoch)
+                and epoch.authority is self._ingress_authority
+                and epoch.room_id == room_id and epoch.origin == origin and not epoch.retired
+                and epoch.expires_at > self.ledger.clock()
+                and (epoch.conversation_id is None or not self.ledger.conversation_revoked(epoch.conversation_id)))
+
+    def _bind_epoch(self, key, source):
+        ingress = self._ingress_locked(key)
+        epoch = ingress.current
+        if epoch.conversation_id is not None and epoch.conversation_id != source.conversation_id:
+            epoch.retired = True
+            ingress.current = epoch = self._new_epoch(key)
+        epoch.expires_at = min(epoch.expires_at, source.expires_at)
+        epoch.conversation_id = source.conversation_id
 
     def buffer_boundary(self, room_id: str | None, *, origin: MemoryOrigin = MemoryOrigin.AMBIENT) -> CaptureBoundary:
         """Publish the same room fence used by source admission for transient buffers.
@@ -62,6 +119,14 @@ class CaptureScopes:
         revoked_at = self.ledger.conversation_deleted_at(previous[0]) if previous is not None else None
         if revoked_at is not None:
             self._revocation_fences[key] = max(revoked_at, self._revocation_fences.get(key, revoked_at))
+        ingress = self._ingress.get(key)
+        if ingress is not None:
+            epoch = ingress.current
+            if epoch.expires_at <= self.ledger.clock() or (
+                epoch.conversation_id is not None and self.ledger.conversation_revoked(epoch.conversation_id)
+            ):
+                epoch.retired = True
+                ingress.current = self._new_epoch(key)
 
     def source_for_capture(self, capture_id: str, captured_at: float, room_id: str | None,
                            *, conversation_id: str | None = None, expires_at: float | None = None,
@@ -94,4 +159,5 @@ class CaptureScopes:
                     conversation_id, started = previous[0], previous[2]
                     latest = max(captured_at, previous[1])
                 self._scopes[key] = (conversation_id, latest, started)
+                self._bind_epoch(key, replace(source, conversation_id=conversation_id))
         return replace(source, conversation_id=conversation_id) if source.conversation_id != conversation_id else source
