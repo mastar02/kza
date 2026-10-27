@@ -147,6 +147,8 @@ class AmbientTranscriber:
             for task in (*self._tasks, *self._segments, *self._batches):
                 task.cancel()
             drains = [room.begin_close() for room in self._room_states.values()]
+            if callable(getattr(type(self._tap), 'begin_close', None)):
+                drains.append(self._tap.begin_close())
             drains.append(self._native.begin_close())
             for adapter in (self._stt, self._tagger, self._archiver):
                 if callable(getattr(type(adapter), "begin_close", None)):
@@ -176,7 +178,8 @@ class AmbientTranscriber:
         """Include actual finite work, retained VAD inputs and failed native reset."""
         if self._privacy is None:
             raise RuntimeError('privacy_authority_unavailable')
-        return self._scopes.busy(conversation_id, self._privacy.ledger) or any(
+        ingress_busy = self._tap is not None and (self._tap.ingress_pending() or self._tap.buffered_count() > 0)
+        return ingress_busy or self._scopes.busy(conversation_id, self._privacy.ledger) or any(
             room.conversation_busy(conversation_id, self._privacy.ledger) for room in self._room_states.values())
 
     def resource_status(self) -> dict:

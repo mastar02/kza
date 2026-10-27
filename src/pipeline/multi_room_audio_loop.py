@@ -22,6 +22,7 @@ from typing import Callable, Awaitable, Optional
 import numpy as np
 import sounddevice as sd
 
+from src.ambient.tap import MultiChannelTap
 from src.pipeline.ambient_guard import AmbientGuard, GuardState, classify_outcome
 from src.pipeline.command_event import CapturedTranscript, CommandEvent, TranscriptSource
 from src.wakeword.wake_clip_writer import WakeClipWriter
@@ -604,6 +605,9 @@ class MultiRoomAudioLoop:
     def attach_ambient(self, tap, transcriber=None) -> None:
         """Inyectar el ambient path post-init (tap obligatorio, transcriber
         opcional — habilita la señal shadow anti-TV en el wake)."""
+        if isinstance(tap, MultiChannelTap):
+            for room in self._capture_rooms.values():
+                tap.register_ingress(room.callbacks)
         self._ambient_tap = tap
         self._ambient_transcriber = transcriber
 
@@ -1480,7 +1484,10 @@ class MultiRoomAudioLoop:
         room = self._capture_rooms[rs.room_id]
 
         def audio_callback(indata, frames, time_info, status):
-            ticket = room.callbacks.enter(room.input_boundary)
+            tap = self._ambient_tap
+            ambient_boundary = tap.input_boundary(rs.room_id) if isinstance(tap, MultiChannelTap) else None
+            ticket = room.callbacks.enter(room.input_boundary,
+                branch=tap.ingress_token if isinstance(tap, MultiChannelTap) else None)
             ambient = None
             try:
                 if ticket is None or not room.callbacks.accepting or self._closed or self._microphone_captures.get(rs.room_id) is not holder:
@@ -1530,7 +1537,7 @@ class MultiRoomAudioLoop:
                 # echo suppressor descartan para el command path. O(1). El
                 # try/except hace el fail-open EXPLÍCITO: una excepción acá
                 # abortaría el stream de audio del command path (thread C).
-                if self._ambient_tap is not None:
+                if tap is not None and (not isinstance(tap, MultiChannelTap) or tap.accepts(rs.room_id, timestamp, ambient_boundary)):
                     try:
                         tts_now = (
                             self._response_handler is not None
@@ -1539,12 +1546,19 @@ class MultiRoomAudioLoop:
                         ambient = indata.copy()
                         if self._closed or self._microphone_captures.get(rs.room_id) is not holder or not room.accepts(timestamp, boundary=ticket.boundary):
                             return
-                        self._ambient_tap.push(
-                            rs.room_id, ambient, ts=timestamp, tts_active=tts_now
-                        )
+                        if isinstance(tap, MultiChannelTap):
+                            tap.push(rs.room_id, ambient, ts=timestamp, tts_active=tts_now,
+                                boundary=ambient_boundary)
+                        else:
+                            tap.push(rs.room_id, ambient, ts=timestamp, tts_active=tts_now)
                         ambient = None
                     except Exception:
                         pass  # perder un chunk ambiental es aceptable; el stream no
+                    finally:
+                        ambient = None
+                        room.callbacks.release_branch(ticket)
+
+                room.callbacks.release_branch(ticket)
 
                 if self._microphone_captures.get(rs.room_id) is holder:
                     self._capture_rooms[rs.room_id].push(

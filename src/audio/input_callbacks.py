@@ -14,6 +14,8 @@ class _CallbackSlot:
     source: MemorySource | None = None
     active: bool = False
     boundary: CaptureBoundary | None = None
+    branch: object | None = None
+    branch_bound: bool = False
 
 
 class InputCallbacks:
@@ -34,7 +36,7 @@ class InputCallbacks:
         self._errors = 0
         self._closing = None
 
-    def enter(self, boundary: CaptureBoundary) -> _CallbackSlot | None:
+    def enter(self, boundary: CaptureBoundary, *, branch: object | None = None) -> _CallbackSlot | None:
         """Reserve before clocks, array methods, copies or any other input work."""
         try:
             slot = self._free.popleft()
@@ -43,7 +45,19 @@ class InputCallbacks:
             return None
         slot.active = True
         slot.boundary = boundary
+        slot.branch = branch
+        slot.branch_bound = True
         return slot
+
+    def release_branch(self, slot: _CallbackSlot) -> None:
+        """Retire a secondary delivery before continuing independent input work."""
+        slot.branch = None
+
+    def branch_pending(self, branch: object) -> bool:
+        """Include the reservation gap before a callback can publish its branch."""
+        free = set(self._free)
+        return any(slot not in free and (not slot.branch_bound or slot.branch is branch)
+                   for slot in self._slots)
 
     @property
     def accepting(self) -> bool:
@@ -60,6 +74,8 @@ class InputCallbacks:
             raise RuntimeError('input_callback_not_owned')
         slot.timestamp = slot.source = None
         slot.boundary = None
+        slot.branch = None
+        slot.branch_bound = False
         slot.active = False
         self._free.append(slot)
 

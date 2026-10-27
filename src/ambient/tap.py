@@ -7,18 +7,22 @@ ambiental es aceptable; bloquear el audio del command path no).
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import deque
+from weakref import WeakSet
 
 import numpy as np
 
 from src.memory.sources import CaptureBoundary
+from src.audio.input_callbacks import InputCallbacks
 
 # ~100s de audio por room @ chunks de 80ms. A 6ch float32: ~12 MB/room.
 DEFAULT_MAXLEN_CHUNKS = 1250
 
 # (timestamp epoch s del chunk, audio multicanal, TTS propio activo)
 _TapEntry = tuple[float, np.ndarray, bool]
+_PUSH_BOUNDARY = CaptureBoundary(None, float('-inf'))
 
 
 class MultiChannelTap:
@@ -30,6 +34,33 @@ class MultiChannelTap:
         self._boundaries: dict[str, CaptureBoundary] = {}
         self._clock = clock or time.time
         self._closed = False
+        self._ingress_token = object()
+        self._ingress: WeakSet[InputCallbacks] = WeakSet()
+        self._pushes = InputCallbacks()
+        self._closing = None
+
+    @property
+    def ingress_token(self) -> object:
+        """Metadata identity for the callback's independent ambient branch."""
+        return self._ingress_token
+
+    def register_ingress(self, callbacks: InputCallbacks) -> None:
+        """Register metadata ownership before exposing this tap to a microphone."""
+        self._ingress.add(callbacks)
+
+    def ingress_pending(self) -> bool:
+        """Unattributed copies remain pending independently of the voice source."""
+        return self._pushes.status()['active'] > 0 or any(
+            callbacks.branch_pending(self._ingress_token) for callbacks in tuple(self._ingress))
+
+    def input_boundary(self, room_id: str) -> CaptureBoundary:
+        """Snapshot control-loop metadata before a microphone touches its input."""
+        return self._boundaries.get(room_id, _PUSH_BOUNDARY)
+
+    def accepts(self, room_id: str, timestamp: float, boundary: CaptureBoundary) -> bool:
+        """Reject a copy admitted before a published ambient boundary changed."""
+        current = self.input_boundary(room_id)
+        return not self._closed and current == boundary and current.allows(timestamp)
 
     def register_room(self, room_id: str) -> None:
         """Registrar una room (idempotente)."""
@@ -42,6 +73,8 @@ class MultiChannelTap:
         chunk: np.ndarray,
         ts: float | None = None,
         tts_active: bool = False,
+        *,
+        boundary: CaptureBoundary | None = None,
     ) -> None:
         """Encolar un chunk. Room no registrada = no-op silencioso (fail-open).
 
@@ -50,19 +83,27 @@ class MultiChannelTap:
         reutiliza el buffer de ``indata`` al retornar del callback; sin copia
         propia el array encolado queda corrupto. Acá NO se copia de nuevo.
         """
-        if self._closed:
-            return
-        timestamp = ts if ts is not None else self._clock()
-        # Snapshot the queue before reading its fence. Publication installs
-        # the stricter fence before replacing the queue, so an old callback
-        # cannot combine an old boundary with the newly published deque.
-        q = self._queues.get(room_id)
-        if q is None:
-            return
-        boundary = self._boundaries.get(room_id)
-        if boundary is not None and not boundary.allows(timestamp):
-            return
-        q.append((timestamp, chunk, tts_active))
+        ticket = self._pushes.enter(_PUSH_BOUNDARY)
+        q = None
+        try:
+            if ticket is None or self._closed:
+                return
+            timestamp = ts if ts is not None else self._clock()
+            # Snapshot the queue before reading its fence. Publication installs
+            # the stricter fence before replacing the queue, so an old callback
+            # cannot combine an old boundary with the newly published deque.
+            q = self._queues.get(room_id)
+            if q is None:
+                return
+            current = self.input_boundary(room_id)
+            if (boundary is not None and boundary != current) or not current.allows(timestamp):
+                return
+            q.append((timestamp, chunk, tts_active))
+        finally:
+            chunk = q = None
+            if ticket is not None:
+                self._pushes.leave(ticket)
+            ticket = None
 
     def drain(self, room_id: str) -> list[tuple[float, np.ndarray, bool]]:
         """Vaciar y devolver los chunks pendientes de una room (orden FIFO)."""
@@ -108,3 +149,17 @@ class MultiChannelTap:
     def buffered_count(self) -> int:
         """Count retained chunks without projecting audio or private timestamps."""
         return sum(map(len, self._queues.values()))
+
+    def begin_close(self) -> asyncio.Task:
+        """Seal queues and wait for actual copies and pushes, without closing voice."""
+        self.close()
+        if self._closing is None:
+            pushes = self._pushes.begin_close()
+
+            async def finish():
+                await pushes
+                while self.ingress_pending():
+                    await asyncio.sleep(.005)
+
+            self._closing = asyncio.create_task(finish())
+        return self._closing
