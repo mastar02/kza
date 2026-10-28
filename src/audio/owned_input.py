@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+from contextvars import Context
 from enum import StrEnum
 import logging
 
@@ -21,8 +22,9 @@ class InputState(StrEnum):
 class OwnedInputStream:
     """Keep even a late-created stream until its native close really succeeds."""
 
-    def __init__(self, factory: Callable, retire: Callable[[], None]) -> None:
+    def __init__(self, factory: Callable, retire: Callable[[], None], *, configure: Callable | None = None) -> None:
         self._factory, self._retire = factory, retire
+        self._configure = configure
         self._work = OwnedBlockingWork(capacity=1)
         self._stream = None
         self._state = InputState.NEW
@@ -37,6 +39,10 @@ class OwnedInputStream:
         self._state = InputState.OPENING
         try:
             self._stream = self._factory()
+            if self._closed or self._stream is None:
+                return False
+            if self._configure is not None:
+                self._configure(self._stream)
             if self._closed:
                 return False
             self._stream.start()
@@ -55,6 +61,11 @@ class OwnedInputStream:
         self._admitted = True
         if not await self._work.run(self._open):
             raise RuntimeError('capture_input_not_open')
+
+    @property
+    def stream(self) -> object | None:
+        """Expose only a successfully opened, still admitted native handle."""
+        return self._stream if self._state is InputState.OPEN and not self._closed else None
 
     def _close(self) -> bool:
         self._state = InputState.CLOSING
@@ -80,20 +91,26 @@ class OwnedInputStream:
     def begin_close(self) -> asyncio.Task:
         """Retire callbacks now; drain open then retry one actual close at a time."""
         self._closed = True
-        try:
-            self._retire()
-        except Exception as error:
-            # Retiring a callback must never prevent releasing its driver.
-            logger.warning('Capture input retirement failed: %s', type(error).__name__)
         if self._closing is None:
+            try:
+                self._retire()
+            except Exception as error:
+                # Retiring a callback must never prevent releasing its driver.
+                logger.warning('Capture input retirement failed: %s', type(error).__name__)
             async def finish():
                 await asyncio.gather(*(asyncio.shield(t) for t in tuple(self._work._tasks)), return_exceptions=True)
                 delay = .05
                 while not await self._work.run(self._close):
                     await asyncio.sleep(delay)
                     delay = min(1., delay * 2)
+                # A constructor can publish a fresh callback holder after the
+                # initial retirement. Retire it again before releasing ownership.
+                try:
+                    self._retire()
+                except Exception as error:
+                    logger.warning('Capture input final retirement failed: %s', type(error).__name__)
                 await self._work.begin_close()
-            self._closing = asyncio.create_task(finish())
+            self._closing = asyncio.create_task(finish(), context=Context())
         return self._closing
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:

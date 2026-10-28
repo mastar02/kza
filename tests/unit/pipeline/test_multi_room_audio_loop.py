@@ -28,6 +28,7 @@ import numpy as np
 import pytest
 
 import src.pipeline.multi_room_audio_loop as mra_mod
+from src.audio.owned_input import OwnedInputStream
 from src.pipeline.multi_room_audio_loop import (
     MultiRoomAudioLoop,
     RoomStream,
@@ -1162,7 +1163,7 @@ class TestFirstFrameGrace:
 
 
 class TestOpenStream:
-    def test_open_stream_returns_started_stream(self):
+    def test_make_stream_returns_an_unstarted_handle_for_its_owner(self):
         loop = _make_multi_room_loop(
             rooms={"escritorio": _make_room_stream("escritorio", device_index=4)}
         )
@@ -1173,11 +1174,11 @@ class TestOpenStream:
         fake_stream = MagicMock()
         mock_sd.InputStream.return_value = fake_stream
         with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd):
-            result = loop._open_stream(rs)
+            result = loop._make_stream(rs)
         assert result is fake_stream
-        fake_stream.start.assert_called_once()
+        fake_stream.start.assert_not_called()
 
-    def test_open_stream_returns_none_on_portaudio_error(self):
+    def test_make_stream_returns_none_on_portaudio_error(self):
         loop = _make_multi_room_loop(
             rooms={"escritorio": _make_room_stream("escritorio", device_index=4)}
         )
@@ -1186,7 +1187,7 @@ class TestOpenStream:
         mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
         mock_sd.query_devices.side_effect = mock_sd.PortAudioError("no device")
         with patch("src.pipeline.multi_room_audio_loop.sd", mock_sd):
-            result = loop._open_stream(rs)
+            result = loop._make_stream(rs)
         assert result is None
 
 
@@ -1334,6 +1335,16 @@ class TestStreamWatchdog:
         assert called["n"] == 0
 
 
+async def _seed_owned_inputs(loop, streams):
+    """Seed pre-existing drivers through actual owners, preserving the mirror."""
+    for key, stream in streams.items():
+        owner = OwnedInputStream(lambda stream=stream: stream,
+                                 lambda key=key: loop._inputs._retire_key(key))
+        loop._inputs._owners[key] = owner
+        await owner.open()
+        loop._streams[key] = stream
+
+
 class TestRecoverStreams:
     @pytest.mark.asyncio
     async def test_recover_reinits_portaudio_and_reopens(self):
@@ -1342,7 +1353,7 @@ class TestRecoverStreams:
         loop = _make_multi_room_loop(rooms={"escritorio": rs})
         loop._running = True
         old_stream = MagicMock()
-        loop._streams = {"escritorio": old_stream}
+        await _seed_owned_inputs(loop, {"escritorio": old_stream})
 
         mock_sd = MagicMock()
         mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
@@ -1410,7 +1421,7 @@ class TestRecoverStreams:
         loop._running = True
         loop._watchdog_backoff_min_s = 0.001
         loop._watchdog_backoff_max_s = 0.002
-        loop._streams = {"cocina": MagicMock(), "escritorio": MagicMock()}
+        await _seed_owned_inputs(loop, {"cocina": MagicMock(), "escritorio": MagicMock()})
 
         mock_sd = MagicMock()
         mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})
@@ -1445,7 +1456,7 @@ class TestRecoverStreams:
         loop._running = True
         loop._watchdog_backoff_min_s = 0.001
         loop._watchdog_backoff_max_s = 0.002
-        loop._streams = {"cocina": MagicMock()}
+        await _seed_owned_inputs(loop, {"cocina": MagicMock()})
 
         mock_sd = MagicMock()
         mock_sd.PortAudioError = type("PortAudioError", (Exception,), {})

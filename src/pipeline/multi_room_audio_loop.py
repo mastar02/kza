@@ -23,6 +23,7 @@ import numpy as np
 import sounddevice as sd
 
 from src.ambient.tap import MultiChannelTap
+from src.audio.input_group import InputGroup
 from src.pipeline.ambient_guard import AmbientGuard, GuardState, classify_outcome
 from src.pipeline.command_event import CapturedTranscript, CommandEvent, TranscriptSource
 from src.wakeword.wake_clip_writer import WakeClipWriter
@@ -450,6 +451,12 @@ class MultiRoomAudioLoop:
                 listening=lambda rs=rs: rs.listening, privacy=privacy)
             for room_id, rs in room_streams.items()
         }
+        self._inputs = InputGroup(room_streams,
+            factory=lambda key: self._make_stream(self.room_streams[key]),
+            configure=lambda key, stream: self._configure_stream(self.room_streams[key], stream),
+            retire=self._retire_microphone_capture,
+            callbacks=lambda key: self._capture_rooms[key].callbacks)
+        self._streams = self._inputs.streams
         if privacy is not None:
             privacy.add_borrower(self.begin_close)
 
@@ -561,6 +568,7 @@ class MultiRoomAudioLoop:
         tasks = self._capture_tasks | self._capture_batches | self._early_tasks | self._dispatch_tasks | self._capture_native._tasks
         for room in self._capture_rooms.values():
             tasks |= set(room.snapshot_operations())
+        tasks |= set(self._inputs.snapshot_operations())
         return tuple(tasks)
 
     def conversation_busy(self, conversation_id: str) -> bool:
@@ -578,7 +586,21 @@ class MultiRoomAudioLoop:
         """Report counts and admission without transcripts or capture identifiers."""
         return {'closed': self._closed, 'operations': len(self.snapshot_operations()),
                 'batches': len(self._capture_batches), 'source_scopes': self._scopes.resource_status(),
+                'inputs': self._inputs.resource_status(),
                 'rooms': [room.resource_status() for room in self._capture_rooms.values()]}
+
+    def begin_pause_inputs(self) -> asyncio.Task:
+        """Seal and close driver inputs; processing retirement is a separate gate."""
+        return self._inputs.begin_pause()
+
+    def resume_inputs(self) -> None:
+        """Reallow driver opening after actual close; never reuse an old handle."""
+        if self._closed:
+            raise RuntimeError('capture_closed')
+        self._inputs.resume()
+        if self._running:
+            for rs in self.room_streams.values():
+                self._schedule_reopen(rs)
 
     def begin_close(self) -> asyncio.Task:
         """Reject input and retain real native/reset and callback cleanup."""
@@ -589,6 +611,7 @@ class MultiRoomAudioLoop:
             for task in controllers:
                 task.cancel()
             drains = [room.begin_close() for room in self._capture_rooms.values()]
+            drains.append(self._inputs.begin_close())
             drains.append(self._capture_native.begin_close())
             if isinstance(self._wake_clip_writer, WakeClipWriter):
                 drains.append(self._wake_clip_writer.begin_close())
@@ -807,17 +830,19 @@ class MultiRoomAudioLoop:
                         f"[XVF-tuning] {room_id}: {name} no aplicado (write fail-open)"
                     )
 
-    def _open_stream(self, rs: "RoomStream"):
-        """Open a resolved microphone; never substitute the system default."""
+    def _make_stream(self, rs: "RoomStream"):
+        """Construct only; its retained owner configures and starts the handle."""
+        if rs.mic_usb_port:
+            rs.device_index = resolve_mic_usb_port(rs.mic_usb_port)
+        if rs.device_index is None or self._closed or not self._inputs.accepting:
+            return None
         with self._direction_lock:
             self._direction_opening.add(rs.room_id)
         self._invalidate_direction(rs.room_id)
-        if rs.device_index is None:
-            with self._direction_lock:
-                self._direction_opening.discard(rs.room_id)
-            return None
         try:
             dev_info = sd.query_devices(rs.device_index)
+            if self._closed or not self._inputs.accepting:
+                return None
             capture_channels = _resolve_capture_channels(
                 int(dev_info.get("max_input_channels", 0))
             )
@@ -835,7 +860,7 @@ class MultiRoomAudioLoop:
                 generation=generation, opened=True,
                 usb_port=identity.usb_port if identity else None,
                 serial=identity.serial if identity else None,
-                alsa_card=card, device_index=rs.device_index,
+                alsa_card=card, device_index=rs.device_index, channels=capture_channels,
             ))
             self._microphone_captures[rs.room_id] = holder
             callback = self._make_audio_callback(rs, holder)
@@ -847,26 +872,6 @@ class MultiRoomAudioLoop:
                 blocksize=CHUNK_SIZE,
                 callback=callback,
             )
-            # These are host stream properties, not claims about ALSA native
-            # format. Configure before start(), which may invoke the callback.
-            rate = getattr(stream, "samplerate", None)
-            channels = getattr(stream, "channels", None)
-            dtype = getattr(stream, "dtype", None)
-            index = getattr(stream, "device", None)
-            actual_channels = channels if isinstance(channels, int) else capture_channels
-            holder.observation = replace(
-                holder.observation,
-                sample_rate_hz=float(rate) if isinstance(rate, (int, float)) else float(self.sample_rate),
-                channels=actual_channels,
-                selected_channel=rs.capture_channel if 0 <= rs.capture_channel < actual_channels else 0,
-                host_dtype=dtype if isinstance(dtype, str) else "float32",
-                device_index=index if isinstance(index, int) else rs.device_index,
-            )
-            stream.start()
-            logger.info(
-                f"Room {rs.room_id}: audio stream started "
-                f"(device={rs.device_index}, channels={capture_channels})"
-            )
             return stream
         except sd.PortAudioError as e:
             self._retire_microphone_capture(rs.room_id)
@@ -877,6 +882,25 @@ class MultiRoomAudioLoop:
         finally:
             with self._direction_lock:
                 self._direction_opening.discard(rs.room_id)
+
+    def _configure_stream(self, rs: RoomStream, stream) -> None:
+        """Read host properties only after the driver owner retains the handle."""
+        holder = self._microphone_captures[rs.room_id]
+        rate = getattr(stream, 'samplerate', None)
+        channels = getattr(stream, 'channels', None)
+        dtype = getattr(stream, 'dtype', None)
+        index = getattr(stream, 'device', None)
+        actual_channels = channels if isinstance(channels, int) else holder.observation.channels
+        holder.observation = replace(holder.observation,
+            sample_rate_hz=float(rate) if isinstance(rate, (int, float)) else float(self.sample_rate),
+            channels=actual_channels,
+            selected_channel=rs.capture_channel if 0 <= rs.capture_channel < actual_channels else 0,
+            host_dtype=dtype if isinstance(dtype, str) else 'float32',
+            device_index=index if isinstance(index, int) else rs.device_index)
+        # Publish within the retained native owner, even when the observer
+        # awaiting open has disappeared. start() may already deliver frames.
+        rs.opened_ts = time.monotonic()
+        rs.last_frame_ts = 0.0
 
     def _reinit_portaudio(self) -> None:
         """Force PortAudio to re-scan the device list (sync; fail-open).
@@ -899,21 +923,11 @@ class MultiRoomAudioLoop:
             True si la room quedó con stream abierto; False si el device no
             está en sysfs o PortAudio no pudo abrirlo. Nunca espera ni raisea.
         """
-        new_index = rs.device_index
-        if rs.mic_usb_port:
-            resolved = await asyncio.to_thread(resolve_mic_usb_port, rs.mic_usb_port)
-            if resolved is None:
-                return False
-            new_index = resolved
-        rs.device_index = new_index
-        stream = await asyncio.to_thread(self._open_stream, rs)
-        if stream is None:
+        if self._closed or not self._inputs.accepting:
             return False
-        self._streams[rs.room_id] = stream
-        # Stream nuevo: todavía no entregó nada. El heartbeat lo estampa el
-        # callback cuando llegue audio real (no la mera invocación).
-        rs.opened_ts = time.monotonic()
-        rs.last_frame_ts = 0.0
+        stream = await self._inputs.open(rs.room_id)
+        if stream is None or not self._inputs.accepting:
+            return False
         await self._sync_direction_observers()
         return True
 
@@ -927,7 +941,7 @@ class MultiRoomAudioLoop:
         `_recover_streams`.
         """
         backoff = self._watchdog_backoff_min_s
-        while self._running:
+        while self._running and self._inputs.accepting:
             if await self._try_reopen_once(rs):
                 logger.info(
                     f"[audio-watchdog] {rs.room_id}: recovered "
@@ -961,7 +975,7 @@ class MultiRoomAudioLoop:
 
     def _schedule_reopen(self, rs: "RoomStream") -> None:
         """Dejar a `rs` esperando su device en una task propia (idempotente)."""
-        if self._is_awaiting_reopen(rs.room_id):
+        if self._closed or not self._inputs.accepting or self._is_awaiting_reopen(rs.room_id):
             return  # ya hay una espera viva para esta room
         logger.warning(
             f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} ausente "
@@ -969,20 +983,14 @@ class MultiRoomAudioLoop:
         )
         self._reopen_tasks[rs.room_id] = asyncio.create_task(self._reopen_room(rs))
 
-    @staticmethod
-    def _close_capture_stream(stream) -> None:
-        """Close native PortAudio resources in a worker, even if stop fails."""
-        try:
-            stream.stop()
-        finally:
-            stream.close()
-
     async def _recover_streams(self, trigger_room_ids: list) -> None:
         """Recover failed rooms without interrupting rooms still receiving audio.
 
         Reinitialize the shared PortAudio catalog only when no other stream is
         healthy. Native stop/open calls must not block the asyncio event loop.
         """
+        if self._closed or not self._inputs.accepting:
+            return
         now = time.monotonic()
         healthy_other = any(
             room_id not in trigger_room_ids and rs.last_frame_ts > 0
@@ -992,16 +1000,14 @@ class MultiRoomAudioLoop:
         affected = trigger_room_ids if healthy_other else list(self.room_streams)
         logger.error(f"[audio-watchdog] streams {trigger_room_ids} stopped delivering audio; recovering {affected}")
         for room_id in affected:
-            self._retire_microphone_capture(room_id)
-            stream = self._streams.pop(room_id, None)
-            if stream is not None:
-                try:
-                    await asyncio.to_thread(self._close_capture_stream, stream)
-                except Exception as exc:
-                    logger.warning(f"[audio-watchdog] Failed to close {room_id}: {exc}")
+            await self._inputs.retire(room_id)
+        if not self._inputs.accepting:
+            return
         if not healthy_other:
-            await asyncio.to_thread(self._reinit_portaudio)
+            await self._inputs.catalog_call(self._reinit_portaudio)
         for room_id in affected:
+            if not self._inputs.accepting:
+                return
             rs = self.room_streams[room_id]
             if await self._try_reopen_once(rs):
                 logger.info(f"[audio-watchdog] {room_id}: stream reopened (device={rs.device_index}); awaiting audio frames")
@@ -1379,13 +1385,7 @@ class MultiRoomAudioLoop:
             pending = self._cancel_reopen_tasks()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
-            for room_id, stream in self._streams.items():
-                self._retire_microphone_capture(room_id)
-                try:
-                    await asyncio.to_thread(self._close_capture_stream, stream)
-                except Exception:
-                    pass
-            self._streams.clear()
+            await asyncio.shield(self._inputs.begin_close())
 
     async def _run_capture(self):
         """
@@ -1398,17 +1398,10 @@ class MultiRoomAudioLoop:
             if self._capture_rooms[room_id].resource_status()['closed']:
                 continue
             self._capture_controllers[room_id] = asyncio.create_task(self._consume_room(rs))
-        self._streams = {}
         for room_id, rs in self.room_streams.items():
             if self._capture_rooms[room_id].resource_status()['closed']:
                 continue
-            stream = await asyncio.to_thread(self._open_stream, rs)
-            if stream is not None:
-                self._streams[room_id] = stream
-                rs.opened_ts = time.monotonic()
-                rs.last_frame_ts = 0.0
-                await self._sync_direction_observers()
-            else:
+            if not await self._try_reopen_once(rs):
                 self._schedule_reopen(rs)
 
         logger.info(
@@ -1493,7 +1486,7 @@ class MultiRoomAudioLoop:
                 branch=tap.ingress_token if isinstance(tap, MultiChannelTap) and ambient_admitted else None)
             ambient = None
             try:
-                if ticket is None or not room.callbacks.accepting or self._closed or self._microphone_captures.get(rs.room_id) is not holder:
+                if ticket is None or not room.callbacks.accepting or self._closed or not self._inputs.accepting or self._microphone_captures.get(rs.room_id) is not holder:
                     return
                 # Sample acquisition time before any array method can stall.
                 now_wall = self._microphone_wall_clock()
