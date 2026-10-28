@@ -1,0 +1,124 @@
+{
+  "checked_on": "2026-10-28",
+  "last_observed_at": "2026-10-28T20:57:35.081361+00:00",
+  "scope": "Identify and contain repeated global journald failures using bounded read-only collection, explicit physical isolation by the user, and passive before/after metrics.",
+  "platform": {
+    "systemd_version": "255.4-1ubuntu8.15",
+    "kernel_version": "6.8.0-110-generic",
+    "journal_watchdog_seconds": 180,
+    "configured_journal_system_max_use_gib": 2,
+    "forward_to_syslog": true
+  },
+  "failure_before_isolation": {
+    "restart_count_at_initial_check": 85,
+    "restart_count_at_isolation_baseline": 88,
+    "automatic_start_timeout_messages_in_bounded_syslog_tail": 20,
+    "watchdog_timeout_messages_in_bounded_syslog_tail": 13,
+    "unclean_or_corrupt_journal_replacement_messages": 12,
+    "rotation_busy_messages": 36,
+    "kernel_journal_receive_lag_s": 38.196738
+  },
+  "kernel_flood": {
+    "driver": "xhci_hcd",
+    "controller": "0000:8c:00.0",
+    "slot": 62,
+    "endpoint_index": 2,
+    "message_type": "WARN: buffer overrun event on endpoint",
+    "identical_records": 1000,
+    "source_time_window_s": 0.137497,
+    "estimated_records_per_second": 7265.613067921481,
+    "rsyslog_repeat_count_over_about_five_seconds": 40007,
+    "capture_urb_suppressed_count_over_about_five_seconds": 120014,
+    "messages_generated_by_kernel_capture_transport": true
+  },
+  "identity": {
+    "slot_to_usb_port_confirmed_by": "operator root read of xHCI debugfs name file",
+    "device_model": "reSpeaker XVF3800 4-Mic Array",
+    "usb_vid_pid": "2886:001a",
+    "matched_to_configured_kza_capture": true,
+    "alsa_capture_owner_matched_to_kza_voice_thread_group": true,
+    "room_serial_and_physical_usb_port_kept_private": true,
+    "identity_file": "data/journal-diagnostic-20261028/device-identity.json",
+    "controller_shared_with_external_storage": true
+  },
+  "intervention": {
+    "performed_by": "user",
+    "action": "Unplug only the identified microphone and leave it disconnected for observation.",
+    "device_absence_first_observed_at": "2026-10-28T20:53:33.040949+00:00",
+    "other_hubs_or_controller_reset": false,
+    "services_restarted_by_agent_or_requested_for_this_isolation": false,
+    "journald_configuration_changed": false,
+    "journal_files_deleted_or_vacuumed": false,
+    "kernel_log_permissions_or_dmesg_restrict_changed": false,
+    "firmware_or_driver_modified": false,
+    "device_left_disconnected_as_containment": true
+  },
+  "before_after": {
+    "present_phase": {
+      "valid_seconds": 74.07108706003055,
+      "journal_cpu_percent_of_one_core": 28.28387273838851,
+      "processed_kernel_sequence_growth_per_second": 2210.0256185970507,
+      "counter_reset_intervals_excluded": 0
+    },
+    "isolated_phase": {
+      "valid_seconds": 190.20195505395532,
+      "journal_cpu_percent_of_one_core": 0.11642099048728742,
+      "processed_kernel_sequence_growth_per_second": 0.19978764145310912,
+      "counter_reset_intervals_excluded": 0
+    },
+    "post_isolation_samples": 96,
+    "post_isolation_sample_interval_s": 2,
+    "observation_since_first_absence_seconds": 242.040412,
+    "post_window_longer_than_watchdog": true,
+    "journal_pid_same_in_entire_post_window": true,
+    "journal_restart_count_start": 88,
+    "journal_restart_count_end": 88,
+    "journal_active_entire_post_window": true,
+    "target_mic_absent_entire_post_window": true
+  },
+  "conclusion": {
+    "operational_trigger_identified": "A USB capture failure associated with a configured KZA microphone generates a kernel xHCI log flood.",
+    "causal_isolation_supported": true,
+    "journal_recovers_without_restart_after_source_removed": true,
+    "journal_problem_contained_for_observed_window": true,
+    "mic_or_firmware_or_cable_or_driver_fault_individually_identified": false,
+    "all_historical_host_io_pressure_attributed": false,
+    "all_kza_health_issues_resolved": false,
+    "reconnection_or_long_term_soak_accepted": false
+  },
+  "remaining_work": [
+    "Controlled capture/transport test to distinguish device, firmware, cable/extender, power and driver before restoring the microphone.",
+    "Repair the separately reproduced KZA watchdog heartbeat coupling in a future tested release.",
+    "Resolve remaining HA rejection and other capture failures."
+  ],
+  "evidence_collection": {
+    "collector_run_by": "kza, member of adm",
+    "root_used_only_by_operator_for_debugfs_name_read": true,
+    "kernel_log_tail_limit_bytes": 4194304,
+    "syslog_tail_limit_bytes": 4194304,
+    "syslog_filtered_to_journald": true,
+    "direct_dev_kmsg_read_as_yo_rejected": true,
+    "journal_restart_query_timed_out": true,
+    "fallback_syslog_read_succeeded": true,
+    "raw_logs_or_household_identifiers_tracked_in_git": false,
+    "private_directory": "data/journal-diagnostic-20261028",
+    "raw_owner_export_sha256": "5e6e1627e9adf797e5305bd99d57246c3dfe35faa5721ec7ba9e4a06cf0b40d8"
+  },
+  "sources": {
+    "linux_xhci": "https://github.com/torvalds/linux/blob/v6.8/drivers/usb/host/xhci-ring.c",
+    "linux_slot_debugfs": "https://github.com/torvalds/linux/blob/v6.8/drivers/usb/host/xhci-debugfs.c",
+    "systemd_kernel_reader": "https://github.com/systemd/systemd/blob/v255/src/journal/journald-kmsg.c"
+  },
+  "runbook": "docs/runbooks/2026-10-28-journald-usb-flood.md",
+  "final_runtime_check": {
+    "checked_at": "2026-10-28T20:58:14.305528+00:00",
+    "voice_service_active": true,
+    "voice_pid_unchanged": true,
+    "dashboard_shell_http_status": 200,
+    "authenticated_health_status": "unhealthy",
+    "isolated_device_physically_absent": true,
+    "external_usb_disk_still_present_and_mounted": true,
+    "journal_pid": "2328684",
+    "journal_restarts": 88
+  }
+}

@@ -62,6 +62,11 @@ ciegas si después se agregaron otras claves.
 
 ## Diagnóstico del 28 de octubre
 
+La investigación posterior identificó la avalancha USB que atascaba journald y
+realizó una prueba de aislamiento. Ver el
+[diagnóstico específico de journald](2026-10-28-journald-usb-flood.md); la lista
+siguiente conserva lo conocido en la primera observación.
+
 La [evidencia resumida](../research/2026-10-28-runtime-diagnostic.json) separa
 hechos observados de causas todavía sin demostrar:
 

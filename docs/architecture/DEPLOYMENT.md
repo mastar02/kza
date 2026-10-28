@@ -57,8 +57,11 @@ real sigue indicando problemas de acceso a HA y de captura en tres entradas.
   KZA. El drop-in dirige ahora la consola al archivo privado
   `state/logs/console.log`. `kza-console-rotate.timer` ejecuta logrotate cada
   hora, con 24 rotaciones, `maxage 1`, compresión y `copytruncate`. El usuario
-  reinició journald; su CPU volvió a subir, por lo que no se declara resuelto
-  el problema global. Esta salida de contingencia evita depender de ese socket.
+  reinició journald y su CPU volvió a subir. El diagnóstico posterior identificó
+  una avalancha de captura USB; retirar sólo el micrófono involucrado recuperó
+  journald sin otro reinicio, con una ventana estable de más de tres minutos.
+  El defecto de la ruta USB sigue pendiente. La salida privada evita depender
+  del socket del journal y se conserva en esta release.
 
 La configuración y los datos originales de `/home/kza/kza` conservan sus hashes.
 El respaldo privado está en
@@ -72,6 +75,9 @@ Ver [operación y rollback](../runbooks/2026-10-28-compiled-runtime.md) y la
 El acceso posterior de consulta desde `yo` usa una clave con comando forzado,
 sin shell ni permisos de operación; ver
 [diagnóstico restringido](../runbooks/2026-10-28-readonly-diagnostics.md).
+La investigación posterior atribuyó el atasco de journald a una avalancha de
+avisos de captura USB; el operador aisló únicamente el micrófono identificado.
+Ver [prueba de aislamiento y límites](../runbooks/2026-10-28-journald-usb-flood.md).
 
 ## Construcción del artefacto
 

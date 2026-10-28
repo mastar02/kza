@@ -1005,8 +1005,11 @@ y deja de publicar el heartbeat, aunque otra captura siga sana. Un probe aislado
 reproduce el fallo y el snapshot real provoca un falso positivo del poller sobre
 la captura sana. Separar publicación y recuperación conservando los drivers
 retenidos y sin reaperturas solapadas. El acceso de diagnóstico restringido ya
-está instalado; no corrige este defecto ni acepta H4. El problema global de
-journald, el rechazo de HA y la validación física siguen abiertos.
+está instalado; no corrige este defecto ni acepta H4. La investigación posterior
+atribuyó la avalancha de journald a una captura USB de KZA y la contuvo retirando
+sólo el micrófono identificado; ver la
+[prueba de aislamiento](../research/2026-10-28-journald-usb-flood.json).
+La reparación de esa ruta USB, el rechazo de HA y la validación física siguen abiertos.
 
 La [corrida de procesamiento](../research/2026-10-27-h3-capture-processing-pause-validation.json)
 detectó acumulación de hilos de Chroma en pytest y clientes creados sin cierre

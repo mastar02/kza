@@ -176,5 +176,12 @@
     "Investigate root journald/kernel problem with the platform operator; current evidence does not identify its producer.",
     "Verify transport and useful selected-channel audio per failed microphone with a controlled physical test.",
     "Resolve HA rejection from KZA without bypassing access controls."
-  ]
+  ],
+  "subsequent_investigation": {
+    "checked_at": "2026-10-28T20:57:35.081361+00:00",
+    "evidence": "docs/research/2026-10-28-journald-usb-flood.json",
+    "kernel_log_flood_subsequently_mapped_to_kza_usb_capture": true,
+    "isolating_only_identified_mic_stabilized_journal": true,
+    "initial_observations_preserved_as_historical": true
+  }
 }
