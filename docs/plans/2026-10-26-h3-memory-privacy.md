@@ -3636,6 +3636,80 @@ congelados durante cada suite completa. La primera corrida de SDK con dos
 fallos y las reproducciones rojas siguen conservadas como no aceptadas para
 la garantía que faltaba. No se ampliaron presupuestos ni se manipuló GC.
 
+## Cierre del índice doméstico ChromaSync — 27 de octubre
+
+La [evidencia del índice doméstico](../research/2026-10-27-ha-vector-sdk-lifetime-validation.json)
+corresponde a `0097881` y `2c5adb4`. `main` registra su cierre inmediatamente después del
+constructor sin I/O y lo agrega como borrower de la autoridad antes de construir
+la memoria opcional. Las operaciones síncronas completas —incluidas carga,
+warmup, consultas y escrituras de rutinas— conservan un contador hasta salir
+del worker real. `asearch_command` retiene su trabajo acotado aunque el
+observador se cancele. El cierre sella admisión antes de programar cleanup,
+espera los usuarios reales y cierra sólo la referencia SDK creada por ese owner.
+Las vistas públicas de colecciones y encoder conservadas por un consumidor
+aplican la misma barrera; no permiten reabrir el índice después del cierre.
+
+El código anterior creaba dos referencias SDK al repetir `initialize()` y
+sobrescribía la primera. La reproducción roja usa el SDK instalado y conserva
+el fallo, cerrando ambos clientes en su `finally`. La inicialización nueva se
+serializa, es idempotente y registra el cliente antes de cargar colecciones y
+modelo. Ante fallo parcial lo cierra y devuelve un código fijo sin el contexto
+privado de la excepción. Construcción y cleanup asíncrono usan contexto vacío.
+Un fallo de `client.close()` sigue siendo un fallo, incluso si el SDK marca su
+handle cerrado: no se reintenta ese no-op como prueba de liberación de recursos,
+y la autoridad conserva su writer lease.
+
+Pasan 20 casos nuevos con Chroma `1.5.5`, 107 regresiones dirigidas y 90 casos
+contra el artefacto compilado de 355 hashes. Las pruebas incluyen una consulta
+retenida después de cancelar su observador, una escritura de rutina con encoder
+retenido, construcción tardía, timeout durante cierre SDK, rechazo de un writer
+competidor y ambos puntos de fallo de construcción de `main`. Otro cliente
+compartido sigue leyendo después del cierre y los documentos persisten al
+reabrir. Pasaron frontend, dashboard, Ruff y Bandit sin hallazgos medios o altos.
+La primera suite completa de `0097881` no se acepta: pasaron 5.695 pruebas,
+con dos fallos y un xfail. Un cierre de métricas retuvo trabajo nativo durante
+más de dos segundos; una aserción de recibos observó cero operaciones donde esperaba
+una. Ambos casos pasaron aislados con los mismos límites; no se interpreta
+esa repetición como prueba de sus causas. La revisión final mantiene fuente y
+tests congelados y terminó el ensayo compilado antes de iniciar la suite
+completa. La corrida final de `2c5adb4` tampoco se acepta: **5.702 passed,
+2 failed, 1 xfailed**, en 608,51 s. Fallaron la observación de borrado de los
+archivos de métricas en tres segundos y el máximo del heartbeat HTTP: 520,45 ms
+frente a 75 ms. Los 20 casos SDK pasaron también dentro de esta corrida. En sus
+5.705 cierres de test no quedaron sistemas SDK registrados ni workers SQLx;
+Tokio se mantuvo en un máximo de 48. No prueba borrado de todas las copias SDK.
+
+La repetición cargó los 5.705 casos y ejecutó sólo los dos cuerpos fallidos,
+que pasaron con los mismos límites. El observador de GC registró un máximo de
+225,46 ms durante carga y ninguna colección superior a 1 ms en esos dos cuerpos.
+No atribuye a GC la pausa de la corrida completa ni reproduce su historial;
+la causa y la aceptación de retención/latencia siguen abiertas. No se desactivó,
+forzó ni congeló GC. El registro conserva ambas suites completas fallidas y
+los probes, sin sustituirlos por los resultados aislados.
+
+La revisión del inventario encontró una incompatibilidad reproducida con el
+SDK: abrir la misma ruta con opciones diferentes rechaza el segundo cliente.
+Los dos checks de salud fallaban junto al cliente doméstico privado. Ahora
+salud, los factories de índice de código y los CLI usan las mismas opciones.
+Salud cierra cada referencia creada, también si falla el listado, y no anuncia
+éxito si falla `close()`. Se verifican aperturas repetidas mientras el índice
+doméstico sigue legible y una referencia compartida del factory de código.
+La prueba de construcción tardía crea el cliente después de sellar admisión y
+comprueba que aun así se recibe y cierra exactamente una vez. El primer probe
+esperaba la creación fría antes de anunciar entrada; su timeout se conserva,
+y el handshake se reubicó antes de la creación sin ampliar su presupuesto.
+
+El scan Bandit requerido sigue con cero medios/altos. El scan adicional de los
+CLI conserva tres avisos de auditoría de esquema URL y uno de SHA1 para una
+cache key, iguales a `f5e455c`; ese scan adicional no se presenta como limpio.
+
+El inventario de constructores conserva pendientes el lifetime del índice de
+código (embedded/HTTP) y tres herramientas CLI. Los checks de salud ya cierran
+sus referencias. `PolicyIndexEraser` ya cierra sus clientes de alcance local;
+esto se registra como lectura del código, sin elevarlo a aceptación de todas
+sus copias internas. El cierre doméstico no completa el inventario SDK, el
+borrado global, el mute persistente, la aceptación del grafo real ni H4.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

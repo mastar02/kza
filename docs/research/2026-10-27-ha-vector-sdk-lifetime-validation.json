@@ -1,0 +1,662 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "2c5adb4f3825e94bff86ef5ccff4e1391a1bc012",
+  "tested_runtime_source_tree": "e7f10430c708a3c2ce5ca4eae4ce8b86fdbe5033",
+  "tested_scripts_tree": "d21cbfc837134e733826d07afede92020d3bb16f",
+  "tested_tests_tree": "0943ef04495b8d3747b7244db4319b56b3bd1e8d",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "previous_goal_turn_classification": "progress",
+  "scope": "HA ChromaSync SDK reference, initialized model, sync and async command/routine operations, retained public collection/encoder views, main shutdown and privacy borrower wiring. Health check SDK references closed on success, failed listing and failed close; shared SDK constructor settings aligned across runtime and CLI factories.",
+  "new_python_cases_total": 20,
+  "new_python_cases": [
+    "tests.integration.test_chroma_health_lifetime::test_repeated_health_checks_close_their_own_handle_and_keep_main_index_readable[full]",
+    "tests.integration.test_chroma_health_lifetime::test_repeated_health_checks_close_their_own_handle_and_keep_main_index_readable[quick]",
+    "tests.integration.test_chroma_health_lifetime::test_failed_collection_listing_still_closes_health_client",
+    "tests.integration.test_chroma_health_lifetime::test_failed_health_sdk_close_never_returns_healthy[full]",
+    "tests.integration.test_chroma_health_lifetime::test_failed_health_sdk_close_never_returns_healthy[quick]",
+    "tests.integration.test_chroma_health_lifetime::test_code_index_embedded_factory_can_share_private_settings_without_resetting_peer",
+    "tests.integration.test_chroma_sync_lifetime::test_initialization_is_idempotent_and_close_preserves_persisted_index",
+    "tests.integration.test_chroma_sync_lifetime::test_cancelled_async_search_retains_real_query_before_sdk_close",
+    "tests.integration.test_chroma_sync_lifetime::test_previously_saved_views_cannot_reopen_or_use_retired_sdk[commands-count-kwargs0]",
+    "tests.integration.test_chroma_sync_lifetime::test_previously_saved_views_cannot_reopen_or_use_retired_sdk[routines-add-kwargs1]",
+    "tests.integration.test_chroma_sync_lifetime::test_previously_saved_views_cannot_reopen_or_use_retired_sdk[embedder-encode-kwargs2]",
+    "tests.integration.test_chroma_sync_lifetime::test_cancelled_sync_routine_write_keeps_encoder_and_client_until_actual_exit",
+    "tests.integration.test_chroma_sync_lifetime::test_encoder_initialization_failure_closes_partial_client_once_with_safe_error",
+    "tests.integration.test_chroma_sync_lifetime::test_close_drains_held_model_constructor_and_releases_created_sdk_handle",
+    "tests.integration.test_chroma_sync_lifetime::test_own_close_does_not_reset_or_stop_another_client_on_same_sdk_system",
+    "tests.integration.test_chroma_sync_lifetime::test_native_sdk_close_timeout_and_observer_cancellation_keep_privacy_writer_lease",
+    "tests.integration.test_chroma_sync_lifetime::test_application_registers_chroma_cleanup_before_later_construction_failure[reasoner]",
+    "tests.integration.test_chroma_sync_lifetime::test_application_registers_chroma_cleanup_before_later_construction_failure[privacy]",
+    "tests.integration.test_chroma_sync_lifetime::test_sdk_close_failure_cannot_be_retried_as_false_completion",
+    "tests.integration.test_chroma_sync_lifetime::test_close_drains_sdk_constructor_even_before_created_handle_is_assigned"
+  ],
+  "contracts": {
+    "constructor_is_io_free_and_main_registers_shutdown_immediately": true,
+    "privacy_registers_native_borrower_before_semantic_memory_construction": true,
+    "initialization_serialized_and_idempotent": true,
+    "partial_initialization_closes_created_client_and_raises_fixed_error_without_private_context": true,
+    "sdk_and_model_construction_use_empty_context": true,
+    "all_public_sync_work_and_retained_collection_encoder_views_use_native_admission_barrier": true,
+    "admitted_nested_encode_query_write_can_finish_after_shutdown_begins": true,
+    "async_search_uses_bounded_retained_owned_work": true,
+    "close_stops_admission_before_scheduling_and_waits_actual_native_exit": true,
+    "cancelled_observer_or_observation_timeout_does_not_release_native_cleanup_or_authority_lease": true,
+    "sdk_handle_closed_once_off_loop_before_lease_release": true,
+    "sdk_close_failure_retained_without_retrying_noop_as_physical_proof": true,
+    "shared_peer_stays_readable_and_persisted_index_survives_close_reopen": true,
+    "client_collection_and_embedder_references_cleared_after_successful_close": true,
+    "diagnostics_have_only_counters_flags_and_phase": true,
+    "sdk_handle_created_after_admission_close_is_still_received_and_closed_once": true,
+    "health_and_domestic_peer_compatible_settings_are_verified_with_actual_sdk": true,
+    "repeated_health_checks_close_each_created_reference_on_success_or_listing_failure": true,
+    "failed_health_client_close_cannot_return_healthy": true,
+    "all_visible_runtime_cli_constructor_sites_use_settings_anonymized_telemetry_false": true
+  },
+  "causal_red": {
+    "collected": 1,
+    "passed": 0,
+    "failed": 1,
+    "errors": 0,
+    "skipped": 0,
+    "runtime_s": 3.792,
+    "xml": "/tmp/kza-chroma-sync-red.xml",
+    "accepted": false,
+    "tested_commit": "f5e455c",
+    "scope": "Repeated initialize() allocates two actual SDK client references and replaces the first handle.",
+    "all_probe_clients_explicitly_closed_in_finally": true,
+    "probe": {
+      "path": "/tmp/test_kza_chroma_sync_red.py",
+      "sha256": "9ae39236a63c5569e0df6ff02694b1b149105791aa9eac590c26cb93dfa64509"
+    },
+    "log": "/tmp/kza-chroma-sync-red.log"
+  },
+  "ruff": {
+    "passed": true,
+    "includes_changed_cli_and_tool_files": true,
+    "log": "/tmp/kza-chroma-sync-final-ruff.log"
+  },
+  "bandit": {
+    "required_scan": {
+      "low": 27,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-chroma-sync-required-bandit.log"
+    },
+    "supplemental_scan": {
+      "low": 27,
+      "medium": 3,
+      "high": 1,
+      "accepted_as_clean": false,
+      "log": "/tmp/kza-chroma-sync-final-bandit.log"
+    },
+    "cli_baseline_comparison": {
+      "same_findings_as_before_this_increment": true,
+      "baseline_commit": "f5e455c",
+      "baseline_json": "/tmp/kza-chroma-cli-bandit-baseline.json",
+      "current_json": "/tmp/kza-chroma-cli-bandit-current.json",
+      "unchanged_findings": {
+        "B310_urllib_scheme_audit": 3,
+        "B324_sha1_cache_key": 1
+      },
+      "new_findings": 0
+    }
+  },
+  "frontend": {
+    "passed": 77,
+    "failed": 0,
+    "runtime_ms": 144.456173,
+    "log": "/tmp/kza-chroma-sync-frontend.log",
+    "tested_commit": "00978815fc785f7726a7e521fe1de82cc7152ae9",
+    "assets_unchanged_in_final_revision": true
+  },
+  "dashboard_smoke": {
+    "passed": true,
+    "log": "/tmp/kza-chroma-sync-dashboard-smoke.log",
+    "tested_commit": "00978815fc785f7726a7e521fe1de82cc7152ae9",
+    "dashboard_modules_unchanged_in_final_revision": true
+  },
+  "constructor_inventory": {
+    "scope": "Read-only source scan of src/, scripts/ and tools/; lifecycle observations are code-reviewed unless separately linked to tests.",
+    "sites": [
+      {
+        "path": "src/vectordb/chroma_sync.py",
+        "call_site": "ChromaSync._construct",
+        "review": "owned and drained by this revision; SDK/model initializer context empty"
+      },
+      {
+        "path": "src/memory/services.py",
+        "call_site": "build_memory_services.construct",
+        "review": "owned and drained; borrowed clients preserved, prior validation"
+      },
+      {
+        "path": "src/memory/index_erasure.py",
+        "call_site": "PolicyIndexEraser._open",
+        "review": "scoped client closed on missing/error collection and finally after deletion"
+      },
+      {
+        "path": "src/health/health_check.py",
+        "call_site": "HealthChecker.check_chromadb",
+        "review": "created reference closed on success/error; matching shared settings; tested against installed SDK"
+      },
+      {
+        "path": "src/health/health_check.py",
+        "call_site": "quick_check",
+        "review": "created reference closed on success/error; matching shared settings; tested against installed SDK"
+      },
+      {
+        "path": "src/code_index/service.py",
+        "call_site": "build_chroma_client embedded",
+        "review": "shared SDK settings aligned; embedded coexistence tested; client ownership still not propagated to indexer lifetime"
+      },
+      {
+        "path": "src/code_index/service.py",
+        "call_site": "build_chroma_client http",
+        "review": "shared SDK settings aligned; embedded coexistence tested; client ownership still not propagated to indexer lifetime"
+      },
+      {
+        "path": "scripts/sync_ha_to_chroma.py",
+        "call_site": "main",
+        "review": "shared settings aligned; no explicit close across exits/errors; lifetime remains pending"
+      },
+      {
+        "path": "scripts/test_voice_command.py",
+        "call_site": "main",
+        "review": "shared settings aligned; no explicit close across exits/errors; lifetime remains pending"
+      },
+      {
+        "path": "tools/clean_contaminated_chroma_docs.py",
+        "call_site": "main",
+        "review": "shared settings aligned; no explicit close across exits/errors; lifetime remains pending"
+      }
+    ],
+    "source_bindings": [
+      {
+        "path": "/home/yo/projects/kza/scripts/sync_ha_to_chroma.py",
+        "sha256": "a39cbe8ddfa0cbb888d97aeb99553b998182fb66499a20e63374bcca152516d7"
+      },
+      {
+        "path": "/home/yo/projects/kza/scripts/test_voice_command.py",
+        "sha256": "b8139922976b1ce985caba221b730889c41b7d30096307637f48d196fb8b7414"
+      },
+      {
+        "path": "/home/yo/projects/kza/src/code_index/service.py",
+        "sha256": "29d315ea25204642b4bf25310af002a10f579decb17a8b9133fbb25a11c5a2a7"
+      },
+      {
+        "path": "/home/yo/projects/kza/src/health/health_check.py",
+        "sha256": "1179ba08b054bdd5cedce65b0be36aeade1f9b703bc3b543e5ae24abd1f3dbb8"
+      },
+      {
+        "path": "/home/yo/projects/kza/src/memory/index_erasure.py",
+        "sha256": "fabce074e0de7c7870480b55238c5bca428b24936fe855f7952d3cc916d0d8de"
+      },
+      {
+        "path": "/home/yo/projects/kza/src/memory/services.py",
+        "sha256": "c7c993c87999be7b4409dc0a6b866d9947e4cea9e5cf390cdb86990ec9a9ed60"
+      },
+      {
+        "path": "/home/yo/projects/kza/src/vectordb/chroma_sync.py",
+        "sha256": "1b8607683e2302c6b886d0eaf0d30f9f92aad9746420a9de1da13921f5e146d1"
+      },
+      {
+        "path": "/home/yo/projects/kza/tools/clean_contaminated_chroma_docs.py",
+        "sha256": "bf0e03b76eec654cd11d01f93e32b0c0eab4c88a90ec372597f5bf4a74129412"
+      }
+    ],
+    "all_sdk_consumers_internal_copies_and_process_global_pool_erasure_proven": false
+  },
+  "prior_sdk_validation": "docs/research/2026-10-27-memory-sdk-lifetime-validation.json",
+  "limits": {
+    "all_internal_sdk_copies_or_global_pools_erased": false,
+    "full_integrated_main_or_microphone_hardware_acceptance": false,
+    "all_h4_io_latency_gc_and_capacity_accepted": false,
+    "authenticated_persistent_total_mute_integrated": false,
+    "global_erasure_enabled": false,
+    "existing_runtime_deadlines_capacities_retries_increased": false,
+    "gc_forced_disabled_or_frozen": false,
+    "production_modified": false,
+    "dependencies_installed": false,
+    "gpu_assignment_changed": false,
+    "roadmap_complete": false,
+    "other_code_index_and_cli_clients_lifetimes_fixed": false,
+    "all_previous_full_suite_timeout_or_observation_failures_causes_proven": false,
+    "supplemental_cli_security_scan_free_of_preexisting_findings": false,
+    "full_suite_accepted": false,
+    "retention_or_heartbeat_full_run_failures_fixed": false
+  },
+  "initial_sdk_commit": "00978815fc785f7726a7e521fe1de82cc7152ae9",
+  "initial_sdk_source_bindings": [
+    {
+      "path": "/home/yo/projects/kza/src/vectordb/chroma_sync.py",
+      "sha256": "1b8607683e2302c6b886d0eaf0d30f9f92aad9746420a9de1da13921f5e146d1"
+    },
+    {
+      "path": "/home/yo/projects/kza/src/main.py",
+      "sha256": "b3d3b79a71238deb909d93fe6465e6e8957113a4d486d7e8bbdc3154ca78c8c2"
+    },
+    {
+      "path": "/home/yo/projects/kza/tests/integration/test_chroma_sync_lifetime.py",
+      "sha256": "c7a094bd84eabf8231ea565c13b7668fc20bb811ebbe0b314c1c5f580da5d487"
+    }
+  ],
+  "initial_sdk_full_suite": {
+    "accepted": false,
+    "status": "failed",
+    "log": "/tmp/kza-chroma-sync-full.log",
+    "xml": "/tmp/kza-chroma-sync-full.xml",
+    "application_and_tests_frozen_for_entire_run": true,
+    "numeric_timeout_capture_plugin": {
+      "path": "/tmp/kza_chroma_sync_capture.py",
+      "sha256": "39d8bec73ebf3c9badfa5b125a69ab6a5028b856bd5fec87d820e28b5e93c946"
+    },
+    "numeric_thread_capture_plugin": {
+      "path": "/tmp/kza_chroma_sync_thread_capture.py",
+      "sha256": "ac9466f8f2c8e0f38b4116088ee9ecbb35820a3df0e0a291f9e72eb6171885f9"
+    },
+    "passed": 5695,
+    "failed": 2,
+    "xfailed": 1,
+    "collected": 5698,
+    "runtime_s": 498.26,
+    "terminal_exit_code": 1,
+    "numeric_native_timeout_capture": {
+      "terminal_exit_code": 1,
+      "captured": 1,
+      "events": [
+        {
+          "case": "tests/integration/test_diagnostic_retention.py::test_second_writer_cannot_reinterpret_or_republish_the_live_catalog",
+          "when": "call",
+          "phase": "maintenance",
+          "diagnostics": {
+            "closed": true,
+            "capacity": 8,
+            "pending": 0,
+            "dropped": 0,
+            "failed": 0,
+            "native_operations": 0,
+            "retention": {
+              "ready": false,
+              "rows": 0,
+              "quarantines": 0,
+              "next_at": null,
+              "writer_lease": true
+            },
+            "close_phase": "maintenance",
+            "io": {
+              "active": [],
+              "recent": []
+            },
+            "retention_io": {
+              "active": [
+                {
+                  "phase": "native",
+                  "age_ms": 2002.8910881374031,
+                  "dispatch_ms": 0.011397060006856918,
+                  "native_queue_ms": 0.14999904669821262,
+                  "native_ms": 2002.729692030698,
+                  "after_native_ms": null
+                }
+              ],
+              "recent": []
+            },
+            "close_io": {
+              "active": [],
+              "recent": []
+            },
+            "closing": true
+          }
+        }
+      ]
+    },
+    "failures": [
+      {
+        "case": "tests.integration.test_diagnostic_retention::test_second_writer_cannot_reinterpret_or_republish_the_live_catalog",
+        "message": "src.core.owned_work.WorkCloseTimeout: diagnostic_io_still_running",
+        "runtime_s": 2.78
+      },
+      {
+        "case": "tests.integration.test_rest_receipts::test_cancelled_observer_keeps_unknown_native_read_in_streams_claim",
+        "message": "assert 0 == 1",
+        "runtime_s": 4.336
+      }
+    ],
+    "thread_observations": {
+      "terminal_exit_code": 1,
+      "maximum_after_teardown_tokio": 48,
+      "maximum_after_teardown_sqlx": 0,
+      "maximum_after_teardown_sdk_systems": 0
+    }
+  },
+  "initial_sdk_compiled_runtime": {
+    "git_commit": "00978815fc785f7726a7e521fe1de82cc7152ae9",
+    "artifact": "/tmp/kza-chroma-sync-runtime-kyxh4gd3/runtime.tar.gz",
+    "verified_hashes": 355,
+    "runtime_s": 1.7667343360371888,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "installed_chromadb_version": "1.5.5",
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 355,
+      "real_http_authenticated_review_and_revision_delete": true,
+      "background_cpu_synthetic_encoder": true,
+      "event_private_pool_closes_while_general_executor_remains_saturated": true,
+      "event_cleanup_releases_caller_context_and_observes_real_thread_exit": true,
+      "authenticated_wav_matches_owned_pcm_and_actual_metadata": true,
+      "preview_bounded_six_seconds_full_segment_transcript_scope_explicit": true,
+      "permanent_profile_does_not_extend_review_audio_or_text": true,
+      "source_expiry_physically_cascades_review_rows_and_denies_http_read": true,
+      "capture_deadline_and_permanent_manual_profile_survive_restart": true,
+      "suggestions_only_never_accounts_or_permissions": true,
+      "old_upload_rejected_before_decode": true,
+      "local_voice_receipt_waits_for_actual_model_exit": true,
+      "legacy_original_untouched_private_accounts_sidecar": true,
+      "unresolved_voice_inventory_blocks_global_erasure": true,
+      "protocol_three_real_http_websocket_handshake_and_separate_channels": true,
+      "permanent_profile_metadata_has_bounded_page_lease_after_raw_expiry": true,
+      "profile_mutation_never_echoes_private_name": true,
+      "actual_ws_exact_ack_retires_local_stream_v4_without_global_false_completion": true,
+      "raw_groups_actual_http_merge_split_and_unknown_with_exact_revisions": true,
+      "automatic_complete_link_group_addition_uses_existing_encoder": true,
+      "group_edits_do_not_change_the_permanent_profile": true,
+      "voice_frontend_assets_packaged": true,
+      "ambient_control_modules_and_privacy_view_packaged": true,
+      "new_ambient_control_behaviour_covered_by_separate_compiled_cases_and_browser": true,
+      "input_driver_group_packaged_behaviour_covered_by_separate_compiled_cases": true,
+      "capture_processing_pause_behaviour_covered_by_separate_compiled_cases": true,
+      "sdk_owned_memory_behaviour_covered_by_separate_compiled_cases": true,
+      "real_models_gpu_full_main_hardware_or_frontend_voice_review": false
+    },
+    "artifact_sha256": "0507ace0a644b8a0046173dcc2946aef18c4590353a7b1613451d809bde31777",
+    "script": {
+      "path": "/tmp/kza-build-chroma-sync-runtime.py",
+      "sha256": "ab3a6cd82c4d25642633a5843a02fc509f845104bda4398d99c2883f0d404ae3"
+    },
+    "smoke_script": {
+      "path": "/tmp/kza-chroma-sync-runtime-smoke.py",
+      "sha256": "3b2cd06d093396f8c31928e8c0258f72bae1ab5835a6ee9fdccec961d90960ac"
+    }
+  },
+  "initial_sdk_compiled_cases": {
+    "passed": true,
+    "returncode": 0,
+    "runtime_s": 39.63617457286455,
+    "git_commit": "00978815fc785f7726a7e521fe1de82cc7152ae9",
+    "all_loaded_application_modules_from_compiled_root": true,
+    "verified_hashes": 355,
+    "external_test_harness_only": true,
+    "xml": "/tmp/kza-chroma-sync-compiled-cases.xml",
+    "cases": {
+      "collected": 71,
+      "passed": 71,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "runtime_s": 37.747,
+      "xml": "/tmp/kza-chroma-sync-compiled-cases.xml"
+    },
+    "script": {
+      "path": "/tmp/kza-chroma-sync-compiled-cases.py",
+      "sha256": "759ffe1f2af70fe8980eb1a7ac4db158d1956148b8c0ccbac0ee550471d656fe"
+    },
+    "log": "/tmp/kza-chroma-sync-compiled-cases.log"
+  },
+  "initial_sdk_focused_suite": {
+    "collected": 70,
+    "passed": 70,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "runtime_s": 19.271,
+    "xml": "/tmp/kza-chroma-sync-regressions.xml",
+    "log": "/tmp/kza-chroma-sync-regressions.log"
+  },
+  "tested_tools_tree": "f615c3d8373b64dab4962096432ee70c0c5cf7ea",
+  "source_bindings": [
+    {
+      "path": "/home/yo/projects/kza/src/vectordb/chroma_sync.py",
+      "sha256": "1b8607683e2302c6b886d0eaf0d30f9f92aad9746420a9de1da13921f5e146d1"
+    },
+    {
+      "path": "/home/yo/projects/kza/src/main.py",
+      "sha256": "b3d3b79a71238deb909d93fe6465e6e8957113a4d486d7e8bbdc3154ca78c8c2"
+    },
+    {
+      "path": "/home/yo/projects/kza/src/health/health_check.py",
+      "sha256": "1179ba08b054bdd5cedce65b0be36aeade1f9b703bc3b543e5ae24abd1f3dbb8"
+    },
+    {
+      "path": "/home/yo/projects/kza/src/code_index/service.py",
+      "sha256": "29d315ea25204642b4bf25310af002a10f579decb17a8b9133fbb25a11c5a2a7"
+    },
+    {
+      "path": "/home/yo/projects/kza/scripts/sync_ha_to_chroma.py",
+      "sha256": "a39cbe8ddfa0cbb888d97aeb99553b998182fb66499a20e63374bcca152516d7"
+    },
+    {
+      "path": "/home/yo/projects/kza/scripts/test_voice_command.py",
+      "sha256": "b8139922976b1ce985caba221b730889c41b7d30096307637f48d196fb8b7414"
+    },
+    {
+      "path": "/home/yo/projects/kza/tools/clean_contaminated_chroma_docs.py",
+      "sha256": "bf0e03b76eec654cd11d01f93e32b0c0eab4c88a90ec372597f5bf4a74129412"
+    },
+    {
+      "path": "/home/yo/projects/kza/tests/integration/test_chroma_sync_lifetime.py",
+      "sha256": "a5b229378bc5055a9721029b97f71d998164f4737bf9705a3e81c2938d717c40"
+    },
+    {
+      "path": "/home/yo/projects/kza/tests/integration/test_chroma_health_lifetime.py",
+      "sha256": "4e1a848694dac7be1727945bb461f3000a99b27fdfe570683031f5e85a44be72"
+    }
+  ],
+  "settings_mismatch_red": {
+    "collected": 2,
+    "passed": 0,
+    "failed": 2,
+    "errors": 0,
+    "skipped": 0,
+    "runtime_s": 1.582,
+    "xml": "/tmp/kza-chroma-settings-red.xml",
+    "accepted": false,
+    "tested_runtime_commit": "00978815fc785f7726a7e521fe1de82cc7152ae9",
+    "log": "/tmp/kza-chroma-settings-red.log",
+    "probe": {
+      "path": "/tmp/test_kza_chroma_settings_red.py",
+      "sha256": "a7f4590587c7d11e06a2e1eb58d1b3c51e48181d33606f077bb42bf023a12525"
+    },
+    "cause": "Both health paths used default settings, incompatible with the same-path ChromaSync client using anonymized_telemetry=False."
+  },
+  "failed_cold_constructor_handshake": {
+    "collected": 107,
+    "passed": 106,
+    "failed": 1,
+    "errors": 0,
+    "skipped": 0,
+    "runtime_s": 47.19,
+    "xml": "/tmp/kza-chroma-sync-final-focused.xml",
+    "accepted": false,
+    "log": "/tmp/kza-chroma-sync-final-focused.log",
+    "cause": "The new probe waited for cold SDK creation before announcing native entry; cold startup exceeded its existing two-second observation window.",
+    "correction": "Move the deterministic constructor-entry barrier before allocation. Creation then happens after close admission, proving late-handle cleanup without extending any guard or runtime deadline."
+  },
+  "initial_full_failure_isolated_recheck": {
+    "collected": 2,
+    "passed": 2,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "runtime_s": 2.445,
+    "xml": "/tmp/kza-chroma-sync-isolated-failures.xml",
+    "log": "/tmp/kza-chroma-sync-isolated-failures.log",
+    "same_runtime_deadlines_and_capacities": true,
+    "all_original_failure_causes_proven": false
+  },
+  "focused_suite": {
+    "collected": 107,
+    "passed": 107,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "runtime_s": 22.333,
+    "xml": "/tmp/kza-chroma-sync-accepted-focused.xml",
+    "log": "/tmp/kza-chroma-sync-accepted-focused.log"
+  },
+  "full_suite": {
+    "accepted": false,
+    "log": "/tmp/kza-chroma-sync-final-full.log",
+    "xml": "/tmp/kza-chroma-sync-final-full.xml",
+    "application_and_tests_frozen_for_entire_run": true,
+    "compiled_verification_finished_before_full_suite_start": true,
+    "numeric_timeout_capture_plugin": {
+      "path": "/tmp/kza_chroma_sync_final_capture.py",
+      "sha256": "35d03801f2e7d80c1a06b060bd6110456c484748e1db542036283bca8259d2cd"
+    },
+    "numeric_thread_capture_plugin": {
+      "path": "/tmp/kza_chroma_sync_final_thread_capture.py",
+      "sha256": "998e996b9c4f1dd2c6cd51be7dcfcfdb6a9fc1f3058336778c141919f9d01de5"
+    },
+    "terminal_exit_code": 1,
+    "collected": 5705,
+    "passed": 5702,
+    "failed": 2,
+    "xfailed": 1,
+    "runtime_s": 608.51,
+    "failures": [
+      {
+        "case": "tests.integration.test_diagnostic_retention::test_active_and_rotated_files_expire_without_another_metric",
+        "message": "TimeoutError",
+        "runtime_s": 3.488
+      },
+      {
+        "case": "tests.unit.llm.test_http_async_stream::test_stalled_network_keeps_five_ms_heartbeat_available",
+        "message": "assert 0.5204542931169271 <= 0.075\n +  where 0.5204542931169271 = max([1.8489081412553787e-05, 2.8314068913459778e-05, 3.85502353310585e-05, 4.628230817615986e-05, 4.662224091589451e-05, 4.8354966565966606e-05, ...])",
+        "runtime_s": 2.615
+      }
+    ],
+    "numeric_native_timeout_capture": {
+      "terminal_exit_code": 1,
+      "captured": 0,
+      "events": []
+    },
+    "thread_observation_samples": 5705,
+    "thread_observations": {
+      "terminal_exit_code": 1,
+      "maximum_after_teardown_tokio": 48,
+      "maximum_after_teardown_sqlx": 0,
+      "maximum_after_teardown_sdk_systems": 0
+    },
+    "thread_observations_log": "/tmp/kza-chroma-sync-final-full-thread-observations.json",
+    "heartbeat_failure": {
+      "observed_max_ms": 520.4542931169271,
+      "required_max_ms": 75,
+      "gc_observed_in_that_full_run": false
+    },
+    "retention_failure": {
+      "observation_window_s": 3,
+      "actual_native_stage_at_failure_captured": false
+    }
+  },
+  "compiled_runtime": {
+    "git_commit": "2c5adb4f3825e94bff86ef5ccff4e1391a1bc012",
+    "artifact": "/tmp/kza-chroma-sync-final-runtime-m1sxnqs2/runtime.tar.gz",
+    "verified_hashes": 355,
+    "runtime_s": 2.729679251788184,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "installed_chromadb_version": "1.5.5",
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 355,
+      "real_http_authenticated_review_and_revision_delete": true,
+      "background_cpu_synthetic_encoder": true,
+      "event_private_pool_closes_while_general_executor_remains_saturated": true,
+      "event_cleanup_releases_caller_context_and_observes_real_thread_exit": true,
+      "authenticated_wav_matches_owned_pcm_and_actual_metadata": true,
+      "preview_bounded_six_seconds_full_segment_transcript_scope_explicit": true,
+      "permanent_profile_does_not_extend_review_audio_or_text": true,
+      "source_expiry_physically_cascades_review_rows_and_denies_http_read": true,
+      "capture_deadline_and_permanent_manual_profile_survive_restart": true,
+      "suggestions_only_never_accounts_or_permissions": true,
+      "old_upload_rejected_before_decode": true,
+      "local_voice_receipt_waits_for_actual_model_exit": true,
+      "legacy_original_untouched_private_accounts_sidecar": true,
+      "unresolved_voice_inventory_blocks_global_erasure": true,
+      "protocol_three_real_http_websocket_handshake_and_separate_channels": true,
+      "permanent_profile_metadata_has_bounded_page_lease_after_raw_expiry": true,
+      "profile_mutation_never_echoes_private_name": true,
+      "actual_ws_exact_ack_retires_local_stream_v4_without_global_false_completion": true,
+      "raw_groups_actual_http_merge_split_and_unknown_with_exact_revisions": true,
+      "automatic_complete_link_group_addition_uses_existing_encoder": true,
+      "group_edits_do_not_change_the_permanent_profile": true,
+      "voice_frontend_assets_packaged": true,
+      "ambient_control_modules_and_privacy_view_packaged": true,
+      "new_ambient_control_behaviour_covered_by_separate_compiled_cases_and_browser": true,
+      "input_driver_group_packaged_behaviour_covered_by_separate_compiled_cases": true,
+      "capture_processing_pause_behaviour_covered_by_separate_compiled_cases": true,
+      "sdk_owned_memory_behaviour_covered_by_separate_compiled_cases": true,
+      "real_models_gpu_full_main_hardware_or_frontend_voice_review": false
+    },
+    "artifact_sha256": "3b74ae0e42e4a8c7a076b8444e83349f8e3d17dc2a670a0963c3673f1fa04087",
+    "script": {
+      "path": "/tmp/kza-build-chroma-sync-final-runtime.py",
+      "sha256": "8b4d86ea3f0e0fe709063642b9f2339ea422a7d0daddf5462caf41f34f5352a5"
+    },
+    "smoke_script": {
+      "path": "/tmp/kza-chroma-sync-final-runtime-smoke.py",
+      "sha256": "3b2cd06d093396f8c31928e8c0258f72bae1ab5835a6ee9fdccec961d90960ac"
+    }
+  },
+  "compiled_cases": {
+    "passed": true,
+    "returncode": 0,
+    "runtime_s": 19.333426936995238,
+    "git_commit": "2c5adb4f3825e94bff86ef5ccff4e1391a1bc012",
+    "all_loaded_application_modules_from_compiled_root": true,
+    "verified_hashes": 355,
+    "external_test_harness_only": true,
+    "xml": "/tmp/kza-chroma-sync-final-compiled-cases.xml",
+    "cases": {
+      "collected": 90,
+      "passed": 90,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "runtime_s": 17.609,
+      "xml": "/tmp/kza-chroma-sync-final-compiled-cases.xml"
+    },
+    "script": {
+      "path": "/tmp/kza-chroma-sync-final-compiled-cases.py",
+      "sha256": "72ad622bd58640d22dede19948a9f8d1ab08a680a6246c78a2ff6a305590511f"
+    },
+    "log": "/tmp/kza-chroma-sync-final-compiled-cases.log",
+    "loaded_source_and_script_file_modules_asserted_from_compiled_root": true
+  },
+  "validation_finished_on": "2026-10-28",
+  "final_full_failure_recheck": {
+    "passed": 2,
+    "failed": 0,
+    "loaded_collection_count": 5705,
+    "deselected_bodies": 5703,
+    "scope": "Load the complete collection, execute only the two final failing bodies with unchanged bounds; not a full-suite acceptance.",
+    "xml": "/tmp/kza-chroma-sync-gc-observed-isolation.xml",
+    "log": "/tmp/kza-chroma-sync-gc-observed-isolation.log",
+    "observer": {
+      "path": "/tmp/kza_chroma_final_gc_observer.py",
+      "sha256": "1cb884dc10b422558822a9a3555f12393588d4fe579b275b5404ca0cf62f2718"
+    },
+    "observations": "/tmp/kza-chroma-sync-gc-observed-isolation.json",
+    "gc_enabled": true,
+    "gc_thresholds_changed": false,
+    "explicit_collection_triggered": false,
+    "gc_events_over_one_ms": 64,
+    "maximum_observed_gc_ms": 225.46234587207437,
+    "test_body_gc_events_over_one_ms": 0,
+    "gc_or_io_cause_of_final_full_failures_proven": false
+  }
+}

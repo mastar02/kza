@@ -454,3 +454,14 @@ medio/alto (30 hallazgos bajos de la línea base), 18 tests Node, el smoke del
 dashboard y el artefacto compilado. Este último comprueba SSE y JSON nativos,
 con métricas del proveedor, fuera del checkout. H2 permanece abierto para la
 validación física y la aceptación del runtime completo; no hubo despliegue.
+
+
+La [validación posterior de clientes SDK](../research/2026-10-27-ha-vector-sdk-lifetime-validation.json)
+de `2c5adb4`, terminada el 28 de octubre, vuelve a dejar abierta la aceptación
+integrada: el heartbeat HTTP registró un máximo de 520,45 ms frente a 75 ms en
+la suite completa. La corrida no observaba GC. Repetir sólo ese cuerpo y el de
+retención de métricas después de cargar toda la colección pasó con los límites
+originales; un callback de observación registró GC de 225,46 ms durante carga
+y ninguna colección de más de 1 ms en esos dos cuerpos. Esa repetición no
+explica el fallo original ni reproduce el historial completo. No se cambiaron
+umbrales de GC, deadlines o capacidad; el grafo real y H4/H6 siguen pendientes.

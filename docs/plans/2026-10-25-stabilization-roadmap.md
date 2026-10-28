@@ -1016,6 +1016,26 @@ Chromium pasó memoria y la regresión de pausa. La medición posterior a cada
 test conserva cero sistemas SDK registrados y workers SQLx, con Tokio acotado
 a 48. No cierra el inventario SDK, latencia/hardware ni H4.
 
+El [índice doméstico ChromaSync](../research/2026-10-27-ha-vector-sdk-lifetime-validation.json)
+de `0097881` y `2c5adb4` retiene operaciones síncronas y búsquedas asíncronas hasta su salida
+nativa, incluidas las vistas de colecciones y encoder guardadas por consumidores.
+`main` registra cierre temprano y un borrower de la autoridad; sólo libera la
+referencia SDK después del drenado real. Corrige la inicialización repetida que
+creaba otro cliente y perdía el primero. La misma revisión detectó y corrigió
+las opciones incompatibles al compartir ruta con salud; ambos checks de salud
+cierran sus referencias, incluso ante error de listado. Pasan 20 casos nuevos,
+107 dirigidos y 90 compilados, incluidos clientes compartidos, construcción
+tardía, cierre retenido y writer lease. La primera suite completa tuvo dos
+fallos de observación que se conservan; ambos pasaron aislados sin ampliar
+límites, sin demostrar todas sus causas. La suite final tampoco se acepta:
+5.702 pruebas pasaron, dos fallaron y hubo un xfail. Fallaron la observación de
+retención de métricas y el máximo de heartbeat (520,45 ms frente a 75 ms).
+En los 5.705 cierres no quedaron sistemas SDK ni workers SQLx; el pool Tokio
+se mantuvo en 48. Los dos fallos pasaron al repetir sólo sus cuerpos después de
+cargar toda la colección, sin demostrar sus causas en la suite completa.
+Siguen pendientes la aceptación de runtime, el índice de código y herramientas CLI; no
+completa el inventario SDK, el mute total ni H4.
+
 La [observación de cierres nativos y arranque local](../research/2026-10-27-runtime-close-offline-validation.json)
 ya distingue fases y esperas sin retener datos privados. Se corrigió una
 adquisición de lock desde el loop al repetir el cierre de la autoridad, y
