@@ -110,11 +110,12 @@ def main() -> int:
 
     try:
         import chromadb
+        from chromadb.config import Settings
     except ImportError:
         print("ERROR: chromadb no está instalado. Activá .venv del proyecto.")
         return 1
 
-    client = chromadb.PersistentClient(path=args.chroma_path)
+    client = chromadb.PersistentClient(path=args.chroma_path, settings=Settings(anonymized_telemetry=False))
     contaminated = find_contaminated(client, args.collection)
 
     if not contaminated:

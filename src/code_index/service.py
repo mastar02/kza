@@ -114,17 +114,18 @@ def build_chroma_client(cfg: dict):
     ``code_index.chroma.url`` (resolved by Podman's internal DNS).
     """
     import chromadb
+    from chromadb.config import Settings
 
     chroma_cfg = cfg.get("chroma") or {}
     mode = chroma_cfg.get("mode", "embedded")
     if mode == "embedded":
-        return chromadb.PersistentClient(path=cfg["chroma_path"])
+        return chromadb.PersistentClient(path=cfg["chroma_path"], settings=Settings(anonymized_telemetry=False))
     if mode == "http":
         url = chroma_cfg.get("url", "")
         parsed = urlparse(url)
         if not parsed.hostname or not parsed.port:
             raise ValueError(f"code_index.chroma.url must be host:port, got: {url!r}")
-        return chromadb.HttpClient(host=parsed.hostname, port=parsed.port)
+        return chromadb.HttpClient(host=parsed.hostname, port=parsed.port, settings=Settings(anonymized_telemetry=False))
     raise ValueError(f"code_index.chroma.mode unknown: {mode!r}")
 
 

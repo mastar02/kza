@@ -568,9 +568,10 @@ def main():
 
     # Chroma
     import chromadb
+    from chromadb.config import Settings
     chroma_path = str(ROOT / "data/chroma_db")
     logger.info(f"Abriendo Chroma en {chroma_path}")
-    client = chromadb.PersistentClient(path=chroma_path)
+    client = chromadb.PersistentClient(path=chroma_path, settings=Settings(anonymized_telemetry=False))
     if args.wipe:
         try:
             client.delete_collection("home_assistant_commands")

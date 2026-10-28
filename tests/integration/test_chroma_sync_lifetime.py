@@ -65,6 +65,9 @@ class Client:
         self.collections.append(collection)
         return collection
 
+    def list_collections(self):
+        return self.sdk.list_collections()
+
     def close(self):
         self.close_calls += 1
         self.close_contexts.append(get_context())
@@ -198,7 +201,7 @@ async def test_encoder_initialization_failure_closes_partial_client_once_with_sa
     assert clients[0].close_calls == 1
 
 
-async def test_close_drains_held_constructor_before_releasing_its_late_sdk_handle(graph, monkeypatch):
+async def test_close_drains_held_model_constructor_and_releases_created_sdk_handle(graph, monkeypatch):
     import src.vectordb.chroma_sync as module
     owner, clients, _ = graph
     entered, release = threading.Event(), threading.Event()
@@ -358,3 +361,30 @@ async def test_sdk_close_failure_cannot_be_retried_as_false_completion(tmp_path)
     assert result.returncode == 0, result.stderr[-2000:]
     report = next(json.loads(line) for line in reversed(result.stdout.splitlines()) if line.startswith('{'))
     assert report['passed'] and report['lease_retained'] and report['sdk_close_called_once']
+
+
+async def test_close_drains_sdk_constructor_even_before_created_handle_is_assigned(graph, monkeypatch):
+    owner, clients, _ = graph
+    factory = chromadb.PersistentClient
+    entered, release = threading.Event(), threading.Event()
+    def held(**kwargs):
+        entered.set()
+        assert release.wait(5)
+        # The SDK reference is created only after admission has closed. The
+        # owner must still wait, receive that handle and close it exactly once.
+        return factory(**kwargs)
+    monkeypatch.setattr(chromadb, 'PersistentClient', held)
+    caller = asyncio.create_task(asyncio.to_thread(owner.initialize))
+    try:
+        await until(entered.is_set)
+        assert owner._client is None and not clients
+        caller.cancel()
+        await asyncio.gather(caller, return_exceptions=True)
+        closing = owner.begin_close()
+        await asyncio.sleep(.02)
+        assert not closing.done() and not clients
+        assert owner.resource_status()['operations'] == 1
+    finally:
+        release.set()
+    await closing
+    assert clients[0].sdk._closed and clients[0].close_calls == 1

@@ -233,15 +233,19 @@ class HealthChecker:
         """Verificar ChromaDB"""
         try:
             import chromadb
+            from chromadb.config import Settings
 
             chroma_path = self.config.get("vector_db", {}).get("path", "./data/chroma_db")
 
             # Try to create/connect to client
-            client = chromadb.PersistentClient(path=chroma_path)
+            client = chromadb.PersistentClient(path=chroma_path, settings=Settings(anonymized_telemetry=False))
 
             # Check collections
-            collections = client.list_collections()
-            collection_names = [c.name for c in collections]
+            try:
+                collections = client.list_collections()
+                collection_names = [c.name for c in collections]
+            finally:
+                client.close()
 
             return ComponentHealth(
                 name="ChromaDB",
@@ -327,6 +331,7 @@ def quick_check() -> bool:
     try:
         # Basic checks without full config
         import chromadb
+        from chromadb.config import Settings
         import torch
 
         # Check CUDA
@@ -336,7 +341,8 @@ def quick_check() -> bool:
 
         # Check ChromaDB
         chroma_path = os.environ.get("CHROMA_PATH", "./data/chroma_db")
-        client = chromadb.PersistentClient(path=chroma_path)
+        client = chromadb.PersistentClient(path=chroma_path, settings=Settings(anonymized_telemetry=False))
+        client.close()
 
         return True
 

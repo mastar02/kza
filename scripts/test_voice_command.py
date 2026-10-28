@@ -106,7 +106,8 @@ def main():
 
     # 3) Chroma
     import chromadb
-    client = chromadb.PersistentClient(path=args.chroma_path)
+    from chromadb.config import Settings
+    client = chromadb.PersistentClient(path=args.chroma_path, settings=Settings(anonymized_telemetry=False))
     col = client.get_collection("home_assistant_commands")
     count = col.count()
     logger.info(f"Chroma: {count} frases indexadas")
@@ -136,7 +137,8 @@ def main():
 
         if not text:
             logger.warning("Transcripción vacía. Reintentá.")
-            if args.once: return 1
+            if args.once:
+                return 1
             continue
 
         # Clasificar intent por léxico (turn_on/turn_off) para filtrar en Chroma.
@@ -159,7 +161,8 @@ def main():
 
         if not res["ids"][0]:
             logger.warning(f"Sin resultados en Chroma [{t_search:.0f}ms]")
-            if args.once: return 1
+            if args.once:
+                return 1
             continue
 
         # Log top-3 para visibilidad
@@ -177,7 +180,8 @@ def main():
 
         if top_sim < args.threshold:
             logger.warning(f"Similitud {top_sim:.3f} < threshold {args.threshold}. No ejecutando.")
-            if args.once: return 1
+            if args.once:
+                return 1
             continue
 
         # Execute
