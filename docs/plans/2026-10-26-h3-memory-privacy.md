@@ -3561,6 +3561,81 @@ El inventario de SDK y copias restantes continúa pendiente. La UI sigue
 ofreciendo sólo la pausa ambiental validada; `total_mute_supported` continúa
 en falso. H3 y la release permanecen abiertos.
 
+## Ownership del cliente Chroma y cierre antes de la autoridad — 27 de octubre
+
+La revisión `78c691d` registra el owner de memoria antes de construir un SDK
+nativo. Conserva la construcción y la inicialización reales si se cancela al
+observador o se inicia el cierre durante una apertura tardía. Si la construcción
+del manager o la inicialización fallan, cierra el cliente ya creado antes de
+propagar el fallo. Las tareas de construcción, inicialización, mantenimiento
+y cierre no heredan el contexto privado del solicitante.
+
+`LongTermMemory` espera sus operaciones y ejecuta el cierre del SDK bajo sus
+locks, antes de cerrar el catálogo o liberar el writer lease. La fábrica
+inyecta ese hook sólo para clientes que ella misma crea. Un cliente prestado
+permanece abierto; al cerrar una referencia propia tampoco se detiene un peer
+externo que comparte el mismo sistema Chroma. Los datos persistidos se conservan:
+se usa `close()`, sin resetear el índice. Un SDK que falla después de marcarse
+cerrado no se reintenta como si ese no-op probara liberación física; el estado
+queda fallido y conserva la autoridad y la exclusión de otro writer.
+
+El helper de tests registra los clientes que crea y los cierra al salir de cada
+scope de test, después del drenaje de sus managers. La prueba de navegador de
+memoria también cierra explícitamente su cliente prestado. No se usa GC como
+cleanup ni se cambia el tamaño de los pools para aceptar la prueba. La fábrica
+usa la misma opción de telemetría deshabilitada que los lectores del índice.
+`requirements.txt` y `requirements-test.txt` fijan Chroma `1.5.5`, la versión
+instalada con cuyo contrato de cierre se verifica el cambio; no se instalaron
+dependencias ni se modificó producción.
+
+La [evidencia de lifecycle](../research/2026-10-27-memory-sdk-lifetime-validation.json)
+conserva la reproducción contra la revisión anterior: el scope terminaba con
+cero llamadas de cierre al cliente creado por la fábrica. Los ensayos nuevos
+usan Chroma real con embeddings deterministas de CPU, peers compartidos,
+persistencia, trabajo retenido, cancelación y fallo de cierre. El fallo del SDK
+se prueba en proceso aislado y verifica también que otro writer no pueda
+adquirir el lock. No certifica el inventario de todas las copias del SDK, los
+otros clientes como `ChromaSync`, el borrado global, hardware o recursos de H4.
+La política autenticada y durable de mute, y el resto de H0–H6, siguen abiertos.
+
+La primera suite de SDK `78c691d` no se acepta como cierre de esta etapa: pasó
+5.677 pruebas, fallaron dos y quedó un xfail en 436,25 s. La expectativa anterior
+de `OSError` se actualiza al error de inicialización fijo, conservando la prueba
+de registro del destino antes de tocar el índice y de no cerrar un cliente
+prestado. El otro fallo detectó una copia ambiental retenida después de retirar
+su segmento; no se trató como un problema de GC ni se aceptó sólo por pasar
+aislada.
+
+La corrección `8134f66` convierte el resultado nativo de `RoomProducer` en un
+carrier vaciable. Antes, un future completado podía seguir reteniendo la lista
+de segmentos, aun después de entregarla a `ready` y retirar esa cola. Cuatro
+reproducciones deterministas fallaron reteniendo explícitamente ese carrier,
+incluido un receptor cancelado con transporte todavía activo. Ahora el owner
+vacía el carrier al entregar o abandonar el receptor; si el worker produce el
+resultado después de la cancelación, lo publica ya retirado. No se pierde la
+lista transferida al consumidor válido. Cinco casos cubren ambos órdenes de
+cancelación, vencimiento, revocación y rotación de época, sin forzar GC. Pasan
+105 regresiones dirigidas con ambos cambios y se repite la suite integrada y
+el artefacto de la revisión final.
+
+La revisión final `8134f66` pasó **5.684 pruebas con un xfail conocido en
+402,81 s**, sin timeouts nativos inesperados capturados. En los 5.685 cierres de
+test observados no quedaron sistemas SDK registrados ni workers SQLx; Tokio
+se mantuvo en un máximo de 48, sin la acumulación anterior. No se interpreta
+ese pool residual como prueba de borrado de todas las copias internas del SDK.
+Los fallos de observación anteriores no reaparecieron, pero esta corrida no
+demuestra todas sus causas ni acepta latencia integrada o hardware.
+
+El artefacto final verificó 355 hashes, el contrato instalado y ambos pins de
+Chroma `1.5.5`. Pasaron 56 casos con todos los módulos de aplicación cargados
+desde bytecode, incluidos los cinco casos del carrier. Chromium pasó la revisión
+de memoria contra fuente y bytecode y la regresión de pausa ambiental contra
+fuente. Pasaron también 77 casos de frontend, Ruff, Bandit sin hallazgos medios
+o altos y el smoke del dashboard. La aplicación y los tests permanecieron
+congelados durante cada suite completa. La primera corrida de SDK con dos
+fallos y las reproducciones rojas siguen conservadas como no aceptadas para
+la garantía que faltaba. No se ampliaron presupuestos ni se manipuló GC.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,

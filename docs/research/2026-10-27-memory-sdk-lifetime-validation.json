@@ -1,0 +1,477 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "8134f66611c41096035ec0964aeca9e1cefbfcc2",
+  "tested_runtime_source_tree": "3c31e6b27034025dd3f3e401f271b7150a632e28",
+  "tested_scripts_source_tree": "b08e19ac09711a9d58c6c794af52fe47bcd6999e",
+  "tested_frontend_tree": "eab8cb26d4dc1fb2713dbbdb43153bb5222dd4ca",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "previous_goal_turn_classification": "progress",
+  "scope": "Explicit app-created Chroma ownership through native construction, initialization and shutdown; preserved borrowed/shared clients; deterministic test SDK cleanup and dependency alignment; ambient result carriers emptied on handoff/abandonment without losing live receiver data.",
+  "new_python_cases_total": 10,
+  "new_python_cases": [
+    "tests.integration.test_memory_sdk_lifetime::test_factory_closes_owned_client_off_loop_once_and_never_resets_persisted_data",
+    "tests.integration.test_memory_sdk_lifetime::test_borrowed_client_remains_open_and_readable_after_memory_services_close",
+    "tests.integration.test_memory_sdk_lifetime::test_closing_owned_reference_preserves_another_real_shared_sdk_client",
+    "tests.integration.test_memory_sdk_lifetime::test_owned_sdk_closes_only_after_actual_memory_work_and_retains_shared_authority",
+    "tests.integration.test_memory_sdk_lifetime::test_standalone_writer_lease_outlives_the_actual_sdk_close",
+    "tests.integration.test_memory_sdk_lifetime::test_late_constructor_remains_owned_when_build_is_cancelled_and_authority_closes",
+    "tests.integration.test_memory_sdk_lifetime::test_manager_construction_failure_closes_already_created_sdk_before_propagating",
+    "tests.integration.test_memory_sdk_lifetime::test_sdk_initialization_failure_closes_owned_client_and_removes_private_error_context",
+    "tests.integration.test_memory_sdk_lifetime::test_native_initialization_is_context_free_and_borrowed_sdk_is_not_closed_on_cancel",
+    "tests.integration.test_memory_sdk_lifetime::test_sdk_close_failure_cannot_be_retried_as_false_physical_completion"
+  ],
+  "sdk": {
+    "installed_and_pinned_runtime_version": "1.5.5",
+    "test_requirement_version": "1.5.5",
+    "previous_runtime_constraint": "chromadb>=0.4.22",
+    "previous_test_pin": "chromadb==1.5.9",
+    "production_dependencies_installed_or_changed": false,
+    "public_close_contract_verified_against_installed_code": true,
+    "release_of_owned_reference_does_not_stop_external_peer": true,
+    "all_sdk_clients_or_internal_copies_inventory_complete": false
+  },
+  "contracts": {
+    "service_borrower_registered_before_native_sdk_constructor": true,
+    "late_construction_and_native_initialization_owned_after_caller_cancel_or_close": true,
+    "constructor_and_initialization_failures_close_created_sdk_before_error_return": true,
+    "construction_initialization_maintenance_and_close_use_empty_caller_context": true,
+    "actual_memory_operations_drain_before_sdk_close": true,
+    "sdk_close_runs_off_loop_under_memory_locks_before_catalog_and_writer_lease_release": true,
+    "borrowed_client_not_closed": true,
+    "shared_peer_remains_readable_after_our_reference_closes": true,
+    "persisted_collection_data_survives_close_and_reopen_without_reset": true,
+    "close_failure_keeps_authority_and_competing_writer_lock_held": true,
+    "sdk_marked_closed_before_exception_is_not_retried_as_physical_proof": true,
+    "private_constructor_initialization_and_sdk_close_error_contexts_not_forwarded": true,
+    "close_phase_published_before_scheduling_native_close": true,
+    "test_helper_clients_explicitly_closed_after_test_scope": true,
+    "browser_caller_explicitly_closes_its_borrowed_client": true,
+    "factory_telemetry_setting_matches_existing_index_readers": true,
+    "existing_native_operation_capacity_unchanged": 8,
+    "service_close_uses_existing_memory_observation_budget_s": 1,
+    "one_constructor_and_one_fallback_close_owner_no_new_request_queue": true,
+    "ownership_is_one_reference_not_claim_of_global_sdk_erasure": true,
+    "native_ambient_result_carrier_empty_after_delivery_or_receiver_abandonment": true,
+    "abandoned_receiver_cannot_receive_or_retain_later_native_output": true,
+    "valid_receiver_payload_preserved_until_its_original_retirement": true
+  },
+  "causal_red": {
+    "tested_commit": "5e623f08a93f4c92f069a06db48d3890612c78e9",
+    "old_runtime_module": {
+      "path": "/tmp/kza-sdk-owner-red-5jberw0l/src/memory/services.py",
+      "sha256": "5835221e54000f9fee7c6c1bf0a54043ec2ebcf75c453893c91bc8153aa7f19a"
+    },
+    "wrapper": {
+      "path": "/tmp/kza-sdk-owner-red.py",
+      "sha256": "58d6d201cefadc157af54a77d35bfe345cff009b0f1c6c948250a6523c5cffaf"
+    },
+    "log": "/tmp/kza-sdk-owner-red.log",
+    "failed": 1,
+    "cause": "After the managed factory scope, the SDK client it created had received zero close calls.",
+    "subject_imported_and_path_asserted_before_conftest": true
+  },
+  "initial_regressions": {
+    "passed": 35,
+    "failed": 0,
+    "runtime_s": 11.11,
+    "log": "/tmp/kza-sdk-memory-initial-regressions.log",
+    "before_later_initialization_error_hardening": true
+  },
+  "initial_sdk_cases": {
+    "passed": 8,
+    "failed": 0,
+    "runtime_s": 4.15,
+    "log": "/tmp/kza-sdk-memory-cases-initial.log"
+  },
+  "expanded_sdk_cases": {
+    "passed": 9,
+    "failed": 0,
+    "runtime_s": 3.25,
+    "log": "/tmp/kza-sdk-memory-cases.log"
+  },
+  "final_sdk_cases": {
+    "passed": 10,
+    "failed": 0,
+    "runtime_s": 3.5,
+    "log": "/tmp/kza-sdk-memory-final-cases.log",
+    "xml": "/tmp/kza-sdk-memory-final-cases.xml"
+  },
+  "focused_suite": {
+    "passed": 161,
+    "failed": 0,
+    "runtime_s": 36.14,
+    "log": "/tmp/kza-sdk-memory-broad.log",
+    "xml": "/tmp/kza-sdk-memory-broad.xml",
+    "before_final_initialization_error_sanitization_and_tenth_case": true,
+    "thread_capture_plugin": {
+      "path": "/tmp/kza_sdk_thread_capture.py",
+      "sha256": "b2e5171daa7b3b4e1301fd49d7b8c3296928845ff10632161a55ca351aa2930d"
+    },
+    "after_teardown_samples": 161,
+    "max_after_teardown_tokio_workers": 48,
+    "max_after_teardown_sqlx_workers": 0,
+    "thread_observations_log": "/tmp/kza-sdk-memory-thread-observations.json"
+  },
+  "full_suite": {
+    "accepted": true,
+    "log": "/tmp/kza-sdk-memory-accepted-full.log",
+    "xml": "/tmp/kza-sdk-memory-accepted-full.xml",
+    "application_and_tests_frozen_for_entire_run": true,
+    "numeric_native_timeout_capture_plugin": {
+      "path": "/tmp/kza_sdk_memory_accepted_capture.py",
+      "sha256": "67948ffd677819baa11342741b32cf89c4941afcdcf1c428551b05d373de60e3"
+    },
+    "numeric_thread_capture_plugin": {
+      "path": "/tmp/kza_sdk_accepted_thread_capture.py",
+      "sha256": "2d96fca43997e6f41ca68201f7ec4684b253033a6fe6cfb19f5a34f3b40c0d75"
+    },
+    "collected": 5685,
+    "passed": 5684,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 402.81,
+    "terminal_exit_code": 0,
+    "numeric_native_timeout_capture": {
+      "terminal_exit_code": 0,
+      "captured": 0,
+      "events": []
+    },
+    "thread_observations": {
+      "terminal_exit_code": 0,
+      "maximum_after_teardown_tokio": 48,
+      "maximum_after_teardown_sqlx": 0,
+      "maximum_after_teardown_sdk_systems": 0
+    },
+    "thread_observation_samples": 5685,
+    "thread_observations_log": "/tmp/kza-sdk-memory-accepted-full-thread-observations.json"
+  },
+  "ruff": {
+    "passed": true,
+    "log": "/tmp/kza-sdk-retirement-final-ruff.log"
+  },
+  "bandit": {
+    "low": 27,
+    "medium": 0,
+    "high": 0,
+    "log": "/tmp/kza-sdk-retirement-final-bandit.log"
+  },
+  "frontend_unit": {
+    "passed": 77,
+    "failed": 0,
+    "runtime_ms": 98.870642,
+    "log": "/tmp/kza-sdk-memory-frontend.log"
+  },
+  "dashboard_smoke": {
+    "passed": true,
+    "log": "/tmp/kza-sdk-memory-dashboard-smoke.log"
+  },
+  "source_memory_browser": {
+    "checks": {
+      "passed": true,
+      "confirmation": true,
+      "stale_rejection_preserved_confirmation": true,
+      "fact_deleted": true,
+      "logout_cleared_private_dom": true,
+      "javascript_exceptions": 0,
+      "screenshots": [
+        "/tmp/kza-memory-review-desktop.png",
+        "/tmp/kza-memory-review-mobile.png"
+      ]
+    },
+    "log": "/tmp/kza-sdk-memory-browser.log",
+    "harness": {
+      "path": "/home/yo/projects/kza/tests/frontend/browser_memory_review.py",
+      "sha256": "461074341aeaddac58c07bcd11ed944f2d23ca4fec8cc9f07ba39accac023338"
+    }
+  },
+  "prior_full_suite_failure_evidence": "docs/research/2026-10-27-h3-capture-processing-pause-validation.json",
+  "limits": {
+    "other_clients_such_as_chroma_sync_or_code_index_lifecycle_inventory_complete": false,
+    "sdk_process_global_pools_or_all_retained_internal_copies_erased": false,
+    "all_previous_full_suite_timeout_causes_proven": false,
+    "all_historical_io_gc_or_capacity_failures_resolved": false,
+    "actual_main_full_runtime_or_microphone_hardware_acceptance": false,
+    "full_h4_capacity_gc_and_latency_acceptance": false,
+    "authenticated_persisted_total_mute_control_or_ui_integrated": false,
+    "global_erasure_enabled": false,
+    "existing_runtime_deadlines_capacities_or_retries_increased_for_green_tests": false,
+    "gc_forced_disabled_or_frozen": false,
+    "gpu_assignment_changed": false,
+    "production_modified": false,
+    "overall_roadmap_complete": false
+  },
+  "initial_sdk_full_suite": {
+    "accepted": false,
+    "log": "/tmp/kza-sdk-memory-full.log",
+    "xml": "/tmp/kza-sdk-memory-full.xml",
+    "application_and_tests_frozen_for_entire_run": true,
+    "numeric_thread_capture_plugin": {
+      "path": "/tmp/kza_sdk_full_thread_capture.py",
+      "sha256": "6b0cb59e5ed6f43e83971186c4d1a82531207f04710b84a969e280470a12b785"
+    },
+    "numeric_native_timeout_capture_plugin": {
+      "path": "/tmp/kza_sdk_memory_capture.py",
+      "sha256": "8609e74f826ef7733306efe4d6e31a42a9db90333c5dc89ef037ec496a2c6e6f"
+    },
+    "collected": 5680,
+    "passed": 5677,
+    "failed": 2,
+    "xfailed": 1,
+    "runtime_s": 436.25,
+    "terminal_exit_code": 1,
+    "numeric_native_timeout_capture": {
+      "terminal_exit_code": 1,
+      "captured": 0,
+      "events": []
+    },
+    "thread_observations": {
+      "terminal_exit_code": 1,
+      "maximum_after_teardown_tokio": 48,
+      "maximum_after_teardown_sqlx": 0,
+      "maximum_after_teardown_sdk_systems": 0,
+      "samples": 5680
+    },
+    "failures": [
+      {
+        "case": "tests.integration.test_erasure_coordinator::test_semantic_factory_registers_target_before_first_index_access_even_if_initialization_fails",
+        "message": "RuntimeError: memory_services_initialization_failed"
+      },
+      {
+        "case": "tests.integration.test_idle_ingress_retirement::test_idle_ready_segment_retires_its_causal_epoch_even_with_a_future_start[expire]",
+        "message": "AssertionError: assert array([[0., 0., 0., 0., 0., 0.],\\n       [0., 0., 0., 0., 0., 0.],\\n       [0., 0., 0., 0., 0., 0.],\\n       ...,\\n       ...0., 0., 0., 0., 0.],\\n       [0., 0., 0., 0., 0., 0."
+      }
+    ]
+  },
+  "initial_sdk_commit": "78c691d5031c3de4baec8f6627f517012f159a32",
+  "initial_sdk_runtime_source_tree": "feab23b2a5ff5a2da6ca525df1da90ad6fba02df",
+  "initial_sdk_compiled_runtime": {
+    "git_commit": "78c691d5031c3de4baec8f6627f517012f159a32",
+    "artifact": "/tmp/kza-sdk-memory-runtime-o6yruoue/runtime.tar.gz",
+    "verified_hashes": 355,
+    "runtime_s": 1.7448752231430262,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "installed_chromadb_version": "1.5.5",
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 355,
+      "real_http_authenticated_review_and_revision_delete": true,
+      "background_cpu_synthetic_encoder": true,
+      "event_private_pool_closes_while_general_executor_remains_saturated": true,
+      "event_cleanup_releases_caller_context_and_observes_real_thread_exit": true,
+      "authenticated_wav_matches_owned_pcm_and_actual_metadata": true,
+      "preview_bounded_six_seconds_full_segment_transcript_scope_explicit": true,
+      "permanent_profile_does_not_extend_review_audio_or_text": true,
+      "source_expiry_physically_cascades_review_rows_and_denies_http_read": true,
+      "capture_deadline_and_permanent_manual_profile_survive_restart": true,
+      "suggestions_only_never_accounts_or_permissions": true,
+      "old_upload_rejected_before_decode": true,
+      "local_voice_receipt_waits_for_actual_model_exit": true,
+      "legacy_original_untouched_private_accounts_sidecar": true,
+      "unresolved_voice_inventory_blocks_global_erasure": true,
+      "protocol_three_real_http_websocket_handshake_and_separate_channels": true,
+      "permanent_profile_metadata_has_bounded_page_lease_after_raw_expiry": true,
+      "profile_mutation_never_echoes_private_name": true,
+      "actual_ws_exact_ack_retires_local_stream_v4_without_global_false_completion": true,
+      "raw_groups_actual_http_merge_split_and_unknown_with_exact_revisions": true,
+      "automatic_complete_link_group_addition_uses_existing_encoder": true,
+      "group_edits_do_not_change_the_permanent_profile": true,
+      "voice_frontend_assets_packaged": true,
+      "ambient_control_modules_and_privacy_view_packaged": true,
+      "new_ambient_control_behaviour_covered_by_separate_compiled_cases_and_browser": true,
+      "input_driver_group_packaged_behaviour_covered_by_separate_compiled_cases": true,
+      "capture_processing_pause_behaviour_covered_by_separate_compiled_cases": true,
+      "sdk_owned_memory_behaviour_covered_by_separate_compiled_cases": true,
+      "real_models_gpu_full_main_hardware_or_frontend_voice_review": false
+    },
+    "artifact_sha256": "6266972726ebb08a96fd447a8184cd16fbace37b7eca4bf008ecfb6c29644cb7",
+    "build_script": {
+      "path": "/tmp/kza-build-sdk-memory-runtime.py",
+      "sha256": "683c99d670d1687417863defd015d1bb5f6609b89dffaac27a2f2e692de29afd"
+    },
+    "smoke_script": {
+      "path": "/tmp/kza-sdk-memory-runtime-smoke.py",
+      "sha256": "3b2cd06d093396f8c31928e8c0258f72bae1ab5835a6ee9fdccec961d90960ac"
+    }
+  },
+  "initial_sdk_compiled_cases": {
+    "passed": true,
+    "returncode": 0,
+    "runtime_s": 15.497481866041198,
+    "git_commit": "78c691d5031c3de4baec8f6627f517012f159a32",
+    "all_loaded_application_modules_from_compiled_root": true,
+    "verified_hashes": 355,
+    "external_test_harness_only": true,
+    "xml": "/tmp/kza-sdk-memory-compiled-cases.xml",
+    "wrapper": {
+      "path": "/tmp/kza-sdk-memory-compiled-cases.py",
+      "sha256": "0264558e457e1c4c38a55825da620770998da5db4ae51422a879a4b85bcbea30"
+    },
+    "log": "/tmp/kza-sdk-memory-compiled-cases.log",
+    "passed_sdk_cases": 10,
+    "passed_capture_processing_cases": 31,
+    "passed_memory_services_regressions": 10
+  },
+  "initial_sdk_compiled_memory_browser": {
+    "checks": {
+      "passed": true,
+      "confirmation": true,
+      "stale_rejection_preserved_confirmation": true,
+      "fact_deleted": true,
+      "logout_cleared_private_dom": true,
+      "javascript_exceptions": 0,
+      "screenshots": [
+        "/tmp/kza-memory-review-desktop.png",
+        "/tmp/kza-memory-review-mobile.png"
+      ]
+    },
+    "log": "/tmp/kza-sdk-memory-compiled-browser.log",
+    "wrapper": {
+      "path": "/tmp/kza-sdk-memory-compiled-browser.py",
+      "sha256": "2f74f08da9cca7bf8809aae9bae42685493a0812d1bc46ecf543e61062cb6f91"
+    },
+    "external_test_harness_only": true,
+    "runtime_has_no_python_sources": true
+  },
+  "result_retirement_commit": "8134f66611c41096035ec0964aeca9e1cefbfcc2",
+  "new_room_result_cases_total": 5,
+  "new_python_cases_net_total": 15,
+  "new_room_result_cases": [
+    "tests.integration.test_room_result_retirement::test_retained_native_outcome_does_not_keep_ready_audio_after_epoch_retirement[revoke]",
+    "tests.integration.test_room_result_retirement::test_retained_native_outcome_does_not_keep_ready_audio_after_epoch_retirement[expire]",
+    "tests.integration.test_room_result_retirement::test_retained_native_outcome_does_not_keep_ready_audio_after_epoch_retirement[rotate]",
+    "tests.integration.test_room_result_retirement::test_cancelled_receiver_retires_result_before_a_held_transport_completes",
+    "tests.integration.test_room_result_retirement::test_abandoned_receiver_retires_a_result_created_later_by_the_actual_native_worker"
+  ],
+  "result_retirement_proof": {
+    "red_log": "/tmp/kza-room-result-retirement-red.log",
+    "red_failed": 4,
+    "tested_app_commit": "78c691d5031c3de4baec8f6627f517012f159a32",
+    "cause": "A completed native result carrier kept a segment list after ready delivery/retirement; cancellation could also leave the list inside the held transport.",
+    "correction": "Publish to an owned mutable carrier, clear it on receiver handoff/abandonment, and clear results produced after abandonment before transport return.",
+    "both_cancellation_orders_covered": true,
+    "native_work_not_released_before_actual_exit": true,
+    "receiver_valid_payload_preserved": true,
+    "gc_manipulated": false
+  },
+  "final_retirement_focused_suite": {
+    "passed": 105,
+    "failed": 0,
+    "runtime_s": 15.26,
+    "log": "/tmp/kza-sdk-retirement-focused.log",
+    "xml": "/tmp/kza-sdk-retirement-focused.xml"
+  },
+  "compiled_runtime": {
+    "git_commit": "8134f66611c41096035ec0964aeca9e1cefbfcc2",
+    "artifact": "/tmp/kza-sdk-memory-accepted-runtime-erxijfmx/runtime.tar.gz",
+    "verified_hashes": 355,
+    "runtime_s": 2.5568402109201998,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "installed_chromadb_version": "1.5.5",
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 355,
+      "real_http_authenticated_review_and_revision_delete": true,
+      "background_cpu_synthetic_encoder": true,
+      "event_private_pool_closes_while_general_executor_remains_saturated": true,
+      "event_cleanup_releases_caller_context_and_observes_real_thread_exit": true,
+      "authenticated_wav_matches_owned_pcm_and_actual_metadata": true,
+      "preview_bounded_six_seconds_full_segment_transcript_scope_explicit": true,
+      "permanent_profile_does_not_extend_review_audio_or_text": true,
+      "source_expiry_physically_cascades_review_rows_and_denies_http_read": true,
+      "capture_deadline_and_permanent_manual_profile_survive_restart": true,
+      "suggestions_only_never_accounts_or_permissions": true,
+      "old_upload_rejected_before_decode": true,
+      "local_voice_receipt_waits_for_actual_model_exit": true,
+      "legacy_original_untouched_private_accounts_sidecar": true,
+      "unresolved_voice_inventory_blocks_global_erasure": true,
+      "protocol_three_real_http_websocket_handshake_and_separate_channels": true,
+      "permanent_profile_metadata_has_bounded_page_lease_after_raw_expiry": true,
+      "profile_mutation_never_echoes_private_name": true,
+      "actual_ws_exact_ack_retires_local_stream_v4_without_global_false_completion": true,
+      "raw_groups_actual_http_merge_split_and_unknown_with_exact_revisions": true,
+      "automatic_complete_link_group_addition_uses_existing_encoder": true,
+      "group_edits_do_not_change_the_permanent_profile": true,
+      "voice_frontend_assets_packaged": true,
+      "ambient_control_modules_and_privacy_view_packaged": true,
+      "new_ambient_control_behaviour_covered_by_separate_compiled_cases_and_browser": true,
+      "input_driver_group_packaged_behaviour_covered_by_separate_compiled_cases": true,
+      "capture_processing_pause_behaviour_covered_by_separate_compiled_cases": true,
+      "sdk_owned_memory_behaviour_covered_by_separate_compiled_cases": true,
+      "real_models_gpu_full_main_hardware_or_frontend_voice_review": false
+    },
+    "artifact_sha256": "116db2d97d110254ce0afee894d7b43ee0573bbc29010f2301c1ceb45747e06a",
+    "build_script": {
+      "path": "/tmp/kza-build-sdk-memory-accepted-runtime.py",
+      "sha256": "fc6445c7c54cd99cb97d51fcb3e8975778459657f7505f68e73165b440a15bdf"
+    },
+    "smoke_script": {
+      "path": "/tmp/kza-sdk-memory-accepted-runtime-smoke.py",
+      "sha256": "3b2cd06d093396f8c31928e8c0258f72bae1ab5835a6ee9fdccec961d90960ac"
+    }
+  },
+  "compiled_cases": {
+    "passed": true,
+    "returncode": 0,
+    "runtime_s": 18.623124805046245,
+    "git_commit": "8134f66611c41096035ec0964aeca9e1cefbfcc2",
+    "all_loaded_application_modules_from_compiled_root": true,
+    "verified_hashes": 355,
+    "external_test_harness_only": true,
+    "xml": "/tmp/kza-sdk-memory-accepted-compiled-cases.xml",
+    "passed_sdk_cases": 10,
+    "passed_room_result_cases": 5,
+    "passed_capture_processing_cases": 31,
+    "passed_memory_services_regressions": 10,
+    "wrapper": {
+      "path": "/tmp/kza-sdk-memory-accepted-compiled-cases.py",
+      "sha256": "ce80ec6a6ed322580b07aebf5a17145d18508bd3e46d6f1c72b4ebc7c0b99292"
+    },
+    "log": "/tmp/kza-sdk-memory-accepted-compiled-cases.log"
+  },
+  "compiled_memory_browser": {
+    "checks": {
+      "passed": true,
+      "confirmation": true,
+      "stale_rejection_preserved_confirmation": true,
+      "fact_deleted": true,
+      "logout_cleared_private_dom": true,
+      "javascript_exceptions": 0,
+      "screenshots": [
+        "/tmp/kza-memory-review-desktop.png",
+        "/tmp/kza-memory-review-mobile.png"
+      ]
+    },
+    "log": "/tmp/kza-sdk-memory-accepted-compiled-browser.log",
+    "wrapper": {
+      "path": "/tmp/kza-sdk-memory-accepted-compiled-browser.py",
+      "sha256": "7c18d64f739e26642e4d4a9f961aff57df497c6bf01309cc49231282bd5bf7f8"
+    },
+    "external_test_harness_only": true,
+    "runtime_has_no_python_sources": true
+  },
+  "final_source_ambient_browser_regression": {
+    "checks": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "ui_pause_pending_until_actual_native_asr_exit": true,
+      "late_transcript_not_persisted": true,
+      "reactivation_via_authenticated_ui_without_voice": true,
+      "old_history_preserved": true,
+      "revoked_session_cannot_reactivate": true,
+      "javascript_exceptions": 0,
+      "external_bootstrap_assets_blocked": true,
+      "synthetic_models_and_sources": true,
+      "total_mute_hardware_or_all_producers_acceptance": false
+    },
+    "log": "/tmp/kza-sdk-retirement-source-browser.log"
+  },
+  "previous_full_timeouts_not_reproduced_in_this_run": true,
+  "all_previous_timeout_causes_proven": false
+}

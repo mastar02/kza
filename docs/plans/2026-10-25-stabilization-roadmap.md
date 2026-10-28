@@ -999,6 +999,23 @@ manipular GC o límites. Dar ownership y cierre a esos clientes es el siguiente
 paso de recursos, respetando los clientes prestados. Aún no demuestra la causa
 de los timeouts de la suite completa ni cierra H4.
 
+El [cierre de clientes de memoria](../research/2026-10-27-memory-sdk-lifetime-validation.json)
+de `78c691d` registra ownership antes de construir el SDK, espera inicialización
+y trabajo nativo, y cierra la referencia creada por KZA antes de liberar el
+writer lease. Los clientes prestados y los peers compartidos siguen disponibles.
+Los fixtures cierran explícitamente sus clientes; el SDK queda fijado en la
+versión instalada y verificada `1.5.5`. La evidencia separa los ensayos reales
+del SDK, la suite completa y las copias o clientes todavía no inventariados.
+La validación detectó además un carrier nativo que conservaba audio ambiental
+después de entregar o abandonar al receptor. `8134f66` lo vacía en ambos casos,
+incluido un resultado producido después de cancelar al consumidor. Cinco casos
+sin GC forzado cubren la retención y se repite la suite de esa revisión final.
+La revisión final pasó 5.684 pruebas con un xfail conocido, 77 de frontend y los
+checks requeridos. El artefacto verificó 355 hashes y 56 casos compilados;
+Chromium pasó memoria y la regresión de pausa. La medición posterior a cada
+test conserva cero sistemas SDK registrados y workers SQLx, con Tokio acotado
+a 48. No cierra el inventario SDK, latencia/hardware ni H4.
+
 La [observación de cierres nativos y arranque local](../research/2026-10-27-runtime-close-offline-validation.json)
 ya distingue fases y esperas sin retener datos privados. Se corrigió una
 adquisición de lock desde el loop al repetir el cierre de la autoridad, y
