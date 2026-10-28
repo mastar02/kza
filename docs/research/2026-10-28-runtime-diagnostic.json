@@ -1,0 +1,180 @@
+{
+  "checked_on": "2026-10-28",
+  "last_runtime_snapshot_at": "2026-10-28T20:39:58.759561+00:00",
+  "scope": "Read-only diagnosis of live KZA, host pressure, microphone transport and diagnostic correctness; no runtime app repair or service restart in this investigation.",
+  "running_application_commit": "b0866e8db01fd934ff3e6c483cca07d94168a9dc",
+  "diagnostic_tool_commit": "ecf4a6ed8cded2dbeafa804bfb3170fce957b138",
+  "access": {
+    "installed_by": "user as kza",
+    "effective_runtime_uid": 1000,
+    "loopback_only": true,
+    "forced_fixed_command": true,
+    "pty_or_forwarding_allowed": false,
+    "shell_or_caller_commands_allowed": false,
+    "arbitrary_echo_request_returned_fixed_snapshot": true,
+    "credentials_returned": false,
+    "credential_fields_and_embedded_known_values_redacted": true,
+    "private_key_kept_for_authorized_future_read_only_diagnosis": true,
+    "runtime_compiled_artifact_sha256": "c9cb1d1431406bb896661205991ab72128fee72d0c424efef8ab2ac050d9cca4",
+    "source_free_operator_installation": true,
+    "operator_install_validates_artifact_hash": true,
+    "guide": "docs/runbooks/2026-10-28-readonly-diagnostics.md"
+  },
+  "host_io_observation": {
+    "started_at": "2026-10-28T20:32:24.388120+00:00",
+    "ended_at": "2026-10-28T20:34:24.442727+00:00",
+    "elapsed_s": 120.13888208591379,
+    "sample_count": 61,
+    "interval_s": 2,
+    "max_host_io_some_avg10_percent": 0.03,
+    "max_host_io_full_avg10_percent": 0.03,
+    "max_voice_cgroup_io_some_avg10_percent": 0.0,
+    "voice_cpu_percent_of_one_core": 22.69927231426891,
+    "cpu_count": 48,
+    "root_filesystem_used_percent": 90,
+    "root_filesystem_available_gib_rounded": 96,
+    "root_inode_used_percent": 18,
+    "historical_io_spikes_attributed": false,
+    "five_percent_guard_is_not_a_postgresql_universal_limit": true,
+    "psi_reference": "https://www.kernel.org/doc/html/latest/accounting/psi.html",
+    "voice_cgroup_io_stat_available": false,
+    "proc_io_requires_owning_account_and_is_available_through_fixed_helper": true,
+    "kernel_task_delay_accounting_enabled": false
+  },
+  "voice_physical_io_second_observation": {
+    "elapsed_s": 42.433479,
+    "same_pid": true,
+    "read_bytes": 0,
+    "write_bytes": 532480,
+    "write_kib_per_second": 12.254474821637887,
+    "all_cumulative_bytes_are_not_assigned_to_this_observation": true
+  },
+  "journald": {
+    "initial_restart_count": 80,
+    "latest_restart_count": 82,
+    "cpu_percent_of_one_core_over_valid_sample_intervals": 100.40716731518681,
+    "counter_reset_intervals_excluded": 1,
+    "valid_intervals": 59,
+    "last_40_unit_messages_categories": {
+      "Missed 1 kernel messages": 40
+    },
+    "watchdog_timeout_and_sigabrt_recorded": true,
+    "kernel_message_loss_messages_observed": true,
+    "kernel_flood_origin_identified": false,
+    "kza_causation_established": false,
+    "shared_services_modified": false
+  },
+  "audio": {
+    "configured_inputs": 4,
+    "callback_absent_inputs_observed": 2,
+    "callbacks_without_nonzero_signal_in_selected_channel_observed": 1,
+    "receiving_nonzero_audio_inputs_observed": 1,
+    "alsa_hardware_pointer_zero_throughout_61_samples_inputs": 2,
+    "alsa_hw_pointer_advanced_inputs": 2,
+    "four_alsa_capture_owners_verified_as_threads_of_kza_voice": true,
+    "usb_enumeration_is_not_capture_proof": true,
+    "selected_channel_in_config": 1,
+    "usb_read_requests_only": true,
+    "usb_parameter_writes": false,
+    "usb_control_parameter_reads_succeeded_with_bounded_retries": true,
+    "one_attempt_status_64_probe_not_treated_as_device_failure": true,
+    "dsp_energy_zero_in_one_quiet_observation_not_treated_as_failure_proof": true,
+    "hardware_or_firmware_root_cause_closed": false,
+    "physical_power_cycle_performed": false
+  },
+  "confirmed_code_finding": {
+    "code": "src/pipeline/multi_room_audio_loop.py:1358",
+    "issue": "Audio heartbeat publication and awaited native recovery share the same watchdog coroutine. Slow recovery suspends the file heartbeat while another capture and the event loop keep advancing.",
+    "snapshot_age_s": 240.01642227172852,
+    "heartbeat_file_unchanged_between_live_queries": true,
+    "in_memory_healthy_capture_falsely_included_in_external_deaf_result_count": 1,
+    "native_recovery_cycles_observed": 4,
+    "error_to_first_reopen_seconds": [
+      318.548,
+      318.348,
+      318.576,
+      318.532
+    ],
+    "causal_red": {
+      "cases": 1,
+      "failures": 1,
+      "errors": 0,
+      "runtime_s": 1.107,
+      "xml": "/tmp/kza-watchdog-heartbeat-diagnostic-red.xml",
+      "sha256": "0974b77e937f50755f88ceda3bcd2bd6e1f851e8d7528401bc86f9c84ffcc01f"
+    },
+    "probe_scope": "Actual watchdog method with a held synthetic recovery and advancing healthy-room timestamp; no physical device opened.",
+    "probe_path": "/tmp/test_kza_watchdog_heartbeat_stall.py",
+    "probe_sha256": "fd68d3b814d266da1d97fa4f961211a2b03da143fcb2508729340f20fc44e49c",
+    "fixed_or_deployed": false,
+    "required_fix": "Publish independently of retained per-room recovery; preserve actual driver ownership, avoid overlapping opens and keep healthy inputs running."
+  },
+  "ha": {
+    "authenticated_health_status": "unhealthy",
+    "detail": "auth_error",
+    "unauthenticated_root_status_from_loopback_and_lan": 403,
+    "authenticated_state_snapshot_status": 403,
+    "token_expiry_or_origin_ban_proven": false,
+    "token_changed_or_rejection_bypassed": false
+  },
+  "other_live_results": {
+    "dashboard_shell_http_status": 200,
+    "private_health_without_auth_http_status": 401,
+    "authenticated_health_http_status": 200,
+    "authenticated_health_status": "unhealthy",
+    "microphone_api_http_status": 200,
+    "alerts_api_http_status": 200,
+    "alerts_source": "real",
+    "alerts_count": 0,
+    "zero_alerts_not_used_as_proof_of_healthy_runtime": true,
+    "command_latency_measured": false,
+    "voice_no_swap_observed": true,
+    "voice_threads_waiting_on_futex_observed": 805,
+    "gpu_memory_used_mib": [
+      1809,
+      7476
+    ],
+    "gpu_assignment_modified": false
+  },
+  "tool_validation": {
+    "source_cases": {
+      "cases": 6,
+      "failures": 0,
+      "errors": 0,
+      "runtime_s": 0.525,
+      "xml": "/tmp/kza-runtime-diagnostics-tests.xml",
+      "sha256": "d6d1f4498b5e6d75c16893bb246838af57f2eb803a97627739e8ce8f06144a97"
+    },
+    "compiled_cases": {
+      "cases": 6,
+      "failures": 0,
+      "errors": 0,
+      "runtime_s": 0.432,
+      "xml": "/tmp/kza-runtime-diagnostics-compiled-tests.xml",
+      "sha256": "2230e5247ae71c19f1f0c9e38df65e82418c542c745447927f419f12fb3e67a2"
+    },
+    "ruff_passed": true,
+    "bandit_severity_counts": {
+      "LOW": 1
+    },
+    "bandit_medium_or_high": 0,
+    "live_read_only_connection_tested": true
+  },
+  "application_validation_limits": {
+    "last_full_suite_source_commit": "2c5adb4f3825e94bff86ef5ccff4e1391a1bc012",
+    "last_full_suite_passed": 5702,
+    "last_full_suite_failed": 2,
+    "last_full_suite_xfailed": 1,
+    "full_suite_rerun_for_this_read_only_investigation": false,
+    "full_suite_accepted": false,
+    "roadmap_complete": false
+  },
+  "private_evidence_directory": "data/diagnostic-20261028T203000Z",
+  "private_snapshot_contents_or_household_identifiers_tracked": false,
+  "remaining_work": [
+    "Correct and validate independent heartbeat publication with retained native recovery.",
+    "Investigate root journald/kernel problem with the platform operator; current evidence does not identify its producer.",
+    "Verify transport and useful selected-channel audio per failed microphone with a controlled physical test.",
+    "Resolve HA rejection from KZA without bypassing access controls."
+  ]
+}

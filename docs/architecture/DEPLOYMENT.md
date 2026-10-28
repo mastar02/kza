@@ -69,6 +69,9 @@ El checkout original y `/home/kza/app` se conservan para rollback y para el
 
 Ver [operación y rollback](../runbooks/2026-10-28-compiled-runtime.md) y la
 [evidencia de instalación](../research/2026-10-28-live-release-validation.json).
+El acceso posterior de consulta desde `yo` usa una clave con comando forzado,
+sin shell ni permisos de operación; ver
+[diagnóstico restringido](../runbooks/2026-10-28-readonly-diagnostics.md).
 
 ## Construcción del artefacto
 

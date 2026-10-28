@@ -999,6 +999,15 @@ nombre nunca otorga permisos ni cambia por sí sola qué se considera voz viva.
 
 ### H4 Recuperar dependencias y mostrar el estado local
 
+El [diagnóstico vivo del 28 de octubre](../research/2026-10-28-runtime-diagnostic.json)
+confirma un defecto pendiente: `_stream_watchdog` espera una recuperación lenta
+y deja de publicar el heartbeat, aunque otra captura siga sana. Un probe aislado
+reproduce el fallo y el snapshot real provoca un falso positivo del poller sobre
+la captura sana. Separar publicación y recuperación conservando los drivers
+retenidos y sin reaperturas solapadas. El acceso de diagnóstico restringido ya
+está instalado; no corrige este defecto ni acepta H4. El problema global de
+journald, el rechazo de HA y la validación física siguen abiertos.
+
 La [corrida de procesamiento](../research/2026-10-27-h3-capture-processing-pause-validation.json)
 detectó acumulación de hilos de Chroma en pytest y clientes creados sin cierre
 explícito en el helper y en la fábrica de memoria. El SDK instalado libera sus
