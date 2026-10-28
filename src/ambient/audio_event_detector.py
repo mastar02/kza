@@ -7,6 +7,7 @@ eventos en tiempo real sin necesidad de wake word.
 """
 
 import asyncio
+from contextvars import Context
 from contextvars import ContextVar
 import inspect
 import logging
@@ -186,6 +187,8 @@ class AudioEventDetector:
         self._native_lock = threading.Lock()
         self._analyses = set()
         self._closed = False
+        self._paused = False
+        self._pausing = None
         self._closing = None
         self._initialized = False
         self._close_timeout_s = close_timeout_s
@@ -225,7 +228,7 @@ class AudioEventDetector:
         privacy.add_borrower(self.begin_close)
 
     def _live(self, sources) -> bool:
-        return not self._closed and (self._privacy is None or self._privacy.sources_available(sources))
+        return not self._closed and not self._paused and (self._privacy is None or self._privacy.sources_available(sources))
 
     def _invoke(self, function, args, private, cancelled):
         result = None
@@ -336,7 +339,7 @@ class AudioEventDetector:
         """Retain actual sourced analysis and callbacks through cancellation."""
         task = None
         try:
-            if not self._running or self._closed:
+            if not self._running or self._closed or self._paused:
                 return []
             if len(self._analyses) >= 4:
                 return []
@@ -389,6 +392,8 @@ class AudioEventDetector:
             native = self._work.begin_close()
             async def finish():
                 await asyncio.gather(*tasks, native, return_exceptions=True)
+                if self._pausing is not None:
+                    await asyncio.gather(asyncio.shield(self._pausing), return_exceptions=True)
                 self._audio_buffer.clear()
                 self._last_detections.clear()
                 self._model = None
@@ -408,7 +413,43 @@ class AudioEventDetector:
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Expose actual finite analyses and native work."""
-        return tuple(self._analyses | self._work._tasks)
+        tasks = self._analyses | self._work._tasks
+        if self._pausing is not None and not self._pausing.done():
+            tasks.add(self._pausing)
+        return tuple(tasks)
+
+    def pause_admission(self) -> None:
+        """Reject classification and notification from pre-pause input."""
+        self._paused = True
+
+    async def drain_pause(self) -> None:
+        """Retain actual classifiers/callbacks, then clear private detector state."""
+        if self._closed or not self._paused:
+            raise RuntimeError('audio_event_pause_unavailable')
+        if self._pausing is None or self._pausing.done():
+            async def finish():
+                tasks = None
+                try:
+                    while True:
+                        tasks = {task for task in self.snapshot_operations()
+                                 if task is not asyncio.current_task() and not task.done()}
+                        if not tasks:
+                            break
+                        await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+                    self._audio_buffer.clear()
+                    self._last_detections.clear()
+                finally:
+                    tasks = None
+            self._pausing = asyncio.create_task(finish(), context=Context())
+        await asyncio.shield(self._pausing)
+
+    def resume_admission(self) -> None:
+        """Allow fresh analysis only after the pre-pause native drain completed."""
+        if self._closed or self._pausing is None or not self._pausing.done() or any(not task.done() for task in self.snapshot_operations()):
+            raise RuntimeError('audio_event_pause_still_owned')
+        self._pausing.result()
+        self._paused = False
+        self._pausing = None
 
     def _classify_model(self, audio: np.ndarray, zone_id: str) -> list[AudioEvent]:
         """Clasificar con modelo YAMNet"""

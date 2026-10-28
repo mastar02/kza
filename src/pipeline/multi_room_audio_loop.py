@@ -13,6 +13,7 @@ import math
 import re
 import time
 from collections import deque
+from contextvars import Context
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from threading import Event, Lock
@@ -391,6 +392,8 @@ class MultiRoomAudioLoop:
         self._room_since_wall: dict[str, float] = {}
 
         self._running = False
+        self._paused = False
+        self._pausing = None
         self._streams: dict = {}
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
         self._on_post_command_callback: Callable[[dict, CommandEvent], Awaitable[None]] | None = None
@@ -503,7 +506,7 @@ class MultiRoomAudioLoop:
         return task
 
     def _source_live(self, source) -> bool:
-        return not self._closed and (self._privacy is None or source is not None and
+        return not self._closed and not self._paused and (self._privacy is None or source is not None and
             self._privacy.sources_available((source,)))
 
     def _start_dispatch(self, event: CommandEvent) -> None:
@@ -530,11 +533,17 @@ class MultiRoomAudioLoop:
         batch = None
         try:
             while self._running and not self._closed:
+                if self._paused:
+                    await asyncio.sleep(.05)
+                    continue
                 batch = self._track_capture(asyncio.create_task(self._consume_once(rs)), self._capture_batches)
                 try:
                     await batch
                 except SourcesInvalidated:
                     if room.resource_status()['closed'] or room.resource_status()['reset_failed']:
+                        raise
+                except asyncio.CancelledError:
+                    if self._closed or not self._paused or asyncio.current_task().cancelling():
                         raise
                 finally:
                     batch = None
@@ -569,6 +578,10 @@ class MultiRoomAudioLoop:
         for room in self._capture_rooms.values():
             tasks |= set(room.snapshot_operations())
         tasks |= set(self._inputs.snapshot_operations())
+        if self._pausing is not None and not self._pausing.done():
+            tasks.add(self._pausing)
+        if isinstance(self._wake_clip_writer, WakeClipWriter):
+            tasks |= set(self._wake_clip_writer.snapshot_operations())
         return tuple(tasks)
 
     def conversation_busy(self, conversation_id: str) -> bool:
@@ -580,11 +593,13 @@ class MultiRoomAudioLoop:
 
     async def prune_private(self) -> None:
         """Retire invalid room buffers without waiting for another input frame."""
+        if self._paused:
+            return
         await asyncio.gather(*(room.prune_private() for room in self._capture_rooms.values()))
 
     def capture_status(self) -> dict:
         """Report counts and admission without transcripts or capture identifiers."""
-        return {'closed': self._closed, 'operations': len(self.snapshot_operations()),
+        return {'closed': self._closed, 'paused': self._paused, 'operations': len(self.snapshot_operations()),
                 'batches': len(self._capture_batches), 'source_scopes': self._scopes.resource_status(),
                 'inputs': self._inputs.resource_status(),
                 'rooms': [room.resource_status() for room in self._capture_rooms.values()]}
@@ -592,6 +607,63 @@ class MultiRoomAudioLoop:
     def begin_pause_inputs(self) -> asyncio.Task:
         """Seal and close driver inputs; processing retirement is a separate gate."""
         return self._inputs.begin_pause()
+
+    def pause_admission(self) -> None:
+        """Seal voice epochs, capture and callbacks before draining actual work."""
+        self._paused = True
+        if self._privacy is not None:
+            from src.memory.fact_ledger import MemoryOrigin
+            self._privacy.scopes.suspend_origin(MemoryOrigin.VOICE)
+        for room in self._capture_rooms.values():
+            room.pause_admission()
+        self._inputs.begin_pause()
+        if isinstance(self._wake_clip_writer, WakeClipWriter):
+            self._wake_clip_writer.pause_admission()
+
+    async def drain_pause(self) -> None:
+        """Retain real drivers, callbacks, native capture and reset until exit."""
+        if not self._paused or self._closed:
+            raise RuntimeError('capture_pause_unavailable')
+        if self._pausing is None or self._pausing.done():
+            async def finish():
+                tasks = None
+                try:
+                    while True:
+                        tasks = {task for task in self.snapshot_operations()
+                                 if task is not asyncio.current_task() and not task.done()}
+                        if not tasks:
+                            break
+                        await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+                    await asyncio.shield(self._inputs.begin_pause())
+                    await asyncio.gather(*(room.drain_pause() for room in self._capture_rooms.values()))
+                    if isinstance(self._wake_clip_writer, WakeClipWriter):
+                        await self._wake_clip_writer.drain_pause()
+                    elif self._wake_clip_writer is not None:
+                        raise RuntimeError('unsupported_capture_pause_writer')
+                    self.follow_up.end_conversation(reason='capture_paused')
+                finally:
+                    tasks = None
+            self._pausing = asyncio.create_task(finish(), context=Context())
+            self._pausing.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
+        await asyncio.shield(self._pausing)
+
+    def resume_admission(self) -> None:
+        """Renew voice epochs and reopen only after all old native work and reset."""
+        if self._closed or self._pausing is None or not self._pausing.done():
+            raise RuntimeError('capture_pause_still_owned')
+        self._pausing.result()
+        if any(not task.done() for task in self.snapshot_operations()):
+            raise RuntimeError('capture_pause_still_owned')
+        if self._privacy is not None:
+            from src.memory.fact_ledger import MemoryOrigin
+            self._privacy.scopes.resume_origin(MemoryOrigin.VOICE)
+        for room in self._capture_rooms.values():
+            room.resume_admission()
+        if isinstance(self._wake_clip_writer, WakeClipWriter):
+            self._wake_clip_writer.resume_admission()
+        self._paused = False
+        self._pausing = None
+        self.resume_inputs()
 
     def resume_inputs(self) -> None:
         """Reallow driver opening after actual close; never reuse an old handle."""
@@ -617,6 +689,8 @@ class MultiRoomAudioLoop:
                 drains.append(self._wake_clip_writer.begin_close())
             async def finish():
                 await asyncio.gather(*controllers, *drains, return_exceptions=True)
+                if self._pausing is not None:
+                    await asyncio.gather(asyncio.shield(self._pausing), return_exceptions=True)
             self._closing = asyncio.create_task(finish())
         return self._closing
 
@@ -2034,7 +2108,7 @@ class MultiRoomAudioLoop:
     def _dispatch_live(self):
         receipt = current_producer_scope()
         sources = receipt.snapshot()[0] if receipt is not None else PRODUCER_CONTEXT.get().sources
-        return not self._closed and (self._privacy is None or self._privacy.sources_available(sources))
+        return not self._closed and not self._paused and (self._privacy is None or self._privacy.sources_available(sources))
 
     async def _tracked_barge_in(self, rs: RoomStream, source) -> None:
         task = asyncio.current_task()

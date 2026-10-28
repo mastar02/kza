@@ -3,7 +3,7 @@
 import asyncio
 from collections import deque
 from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
+from contextvars import Context, ContextVar
 from dataclasses import dataclass, field
 import logging
 import time
@@ -67,6 +67,8 @@ class AudioLoop:
         self._ambient_end = None
         self._ambient_ready = deque(maxlen=8)
         self._running = self._closed = False
+        self._paused = False
+        self._pausing = self._reopening = None
         self._closing = self._controller = self._holder = None
         self._starting = False
         self._started = False
@@ -104,7 +106,7 @@ class AudioLoop:
         return task
 
     def _live(self, sources) -> bool:
-        return not self._closed and (self._privacy is None or self._privacy.sources_available(sources))
+        return not self._closed and not self._paused and (self._privacy is None or self._privacy.sources_available(sources))
 
     async def start(self) -> None:
         """Load wake off loop while retaining actual initialization after cancel."""
@@ -112,7 +114,7 @@ class AudioLoop:
             raise RuntimeError('audio_loop_start_unavailable')
         self._starting = True
         try:
-            await self._room.call(self._load_wake)
+            await self._room.call(self._load_wake, sources=(), private=False)
             if self._closed:
                 raise RuntimeError('audio_loop_closed')
             if self.ambient_detector is not None:
@@ -140,7 +142,7 @@ class AudioLoop:
             epoch = self._room.input_epoch
             ticket = self._room.callbacks.enter(self._room.input_boundary)
             try:
-                if ticket is None or not self._room.callbacks.accepting or self._closed or self._holder is not holder:
+                if ticket is None or not self._room.callbacks.accepting or self._closed or self._paused or self._holder is not holder:
                     return
                 timestamp = self._clock() - frames / self.sample_rate
                 self._room.callbacks.stamp(ticket, timestamp, self._room.source)
@@ -164,7 +166,7 @@ class AudioLoop:
                              *(batch.sources for batch in tuple(self._ambient_ready)))
 
     def _prune_ambient(self):
-        if self._closed:
+        if self._closed or self._paused:
             self._ambient_frames.clear()
             self._ambient_ready.clear()
             self._ambient_end = None
@@ -309,12 +311,18 @@ class AudioLoop:
         batch = None
         try:
             while self._running and not self._closed:
+                if self._paused:
+                    await asyncio.sleep(.05)
+                    continue
                 batch = self._track(asyncio.create_task(self._consume_once()), self._batches)
                 try:
                     await batch
                 except SourcesInvalidated:
                     status = self._room.resource_status()
                     if status['closed'] or status['reset_failed']:
+                        raise
+                except asyncio.CancelledError:
+                    if self._closed or not self._paused or asyncio.current_task().cancelling():
                         raise
                 finally:
                     batch = None
@@ -364,7 +372,12 @@ class AudioLoop:
         self._running = True
         self._controller = asyncio.create_task(self._consume())
         try:
-            await self._input.open()
+            if not self._paused:
+                try:
+                    await self._input.open()
+                except RuntimeError:
+                    if self._closed or not self._paused:
+                        raise
             while self._running:
                 await asyncio.sleep(.05)
         finally:
@@ -379,6 +392,8 @@ class AudioLoop:
             controllers = self._operations | self._dispatches | self._analyses | self._batches
             if self._controller is not None:
                 controllers.add(self._controller)
+            if self._reopening is not None:
+                controllers.add(self._reopening)
             for task in controllers:
                 if task is not exempt:
                     task.cancel()
@@ -387,6 +402,8 @@ class AudioLoop:
                 drains.append(self.ambient_detector.begin_close())
             async def finish():
                 await asyncio.gather(*controllers, *drains, return_exceptions=True)
+                if self._pausing is not None:
+                    await asyncio.gather(asyncio.shield(self._pausing), return_exceptions=True)
                 if self.ambient_detector is not None:
                     await self.ambient_detector.stop()
             self._closing = asyncio.create_task(finish())
@@ -406,9 +423,66 @@ class AudioLoop:
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Expose finite capture, analysis, callbacks and actual driver operations."""
         tasks = self._operations | self._dispatches | self._analyses | self._batches | set(self._room.snapshot_operations()) | set(self._input.snapshot_operations())
+        tasks.update(task for task in (self._pausing, self._reopening) if task is not None and not task.done())
         if isinstance(self.ambient_detector, AudioEventDetector):
             tasks |= set(self.ambient_detector.snapshot_operations())
         return tuple(tasks)
+
+    def pause_admission(self) -> None:
+        """Seal single-device input, voice epochs and optional event processing."""
+        self._paused = True
+        if self._privacy is not None:
+            self._privacy.scopes.suspend_origin(MemoryOrigin.VOICE)
+        self._room.pause_admission()
+        self._input.begin_close()
+        if isinstance(self.ambient_detector, AudioEventDetector):
+            self.ambient_detector.pause_admission()
+
+    async def drain_pause(self) -> None:
+        """Retain driver/model/callback completion, then discard capture history."""
+        if self._closed or not self._paused:
+            raise RuntimeError('single_capture_pause_unavailable')
+        if self._pausing is None or self._pausing.done():
+            async def finish():
+                tasks = None
+                try:
+                    while True:
+                        tasks = {task for task in self.snapshot_operations()
+                                 if task is not asyncio.current_task() and not task.done()}
+                        if not tasks:
+                            break
+                        await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+                    await asyncio.shield(self._input.begin_close())
+                    await self._room.drain_pause()
+                    while self._room.callbacks.status()['active']:
+                        await asyncio.sleep(.005)
+                    if isinstance(self.ambient_detector, AudioEventDetector):
+                        await self.ambient_detector.drain_pause()
+                    elif self.ambient_detector is not None:
+                        raise RuntimeError('unsupported_single_capture_pause_detector')
+                    self.follow_up.end_conversation(reason='capture_paused')
+                finally:
+                    tasks = None
+            self._pausing = asyncio.create_task(finish(), context=Context())
+            self._pausing.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
+        await asyncio.shield(self._pausing)
+
+    def resume_admission(self) -> None:
+        """Renew epochs and construct a fresh driver after every old owner exits."""
+        if self._closed or self._pausing is None or not self._pausing.done() or any(not task.done() for task in self.snapshot_operations()):
+            raise RuntimeError('single_capture_pause_still_owned')
+        self._pausing.result()
+        if self._privacy is not None:
+            self._privacy.scopes.resume_origin(MemoryOrigin.VOICE)
+        self._room.resume_admission()
+        if isinstance(self.ambient_detector, AudioEventDetector):
+            self.ambient_detector.resume_admission()
+        self._input = OwnedInputStream(self._make_stream, self._retire_input)
+        self._paused = False
+        self._pausing = None
+        if self._running:
+            self._reopening = asyncio.create_task(self._input.open(), context=Context())
+            self._reopening.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
 
     def conversation_busy(self, conversation_id: str) -> bool:
         """Include finite work, actual input callbacks and local idle buffers."""
@@ -423,13 +497,15 @@ class AudioLoop:
 
     async def prune_private(self) -> None:
         """Sweep invalid capture and ambient buffers without waiting for input."""
+        if self._paused:
+            return
         await self._room.prune_private()
         if not self._closed:
             await self._room.call(self._prune_ambient, sources=())
 
     def resource_status(self) -> dict:
         """Report bounded ownership without capture identifiers or audio."""
-        return {'closed': self._closed, 'operations': len(self.snapshot_operations()),
+        return {'closed': self._closed, 'paused': self._paused, 'operations': len(self.snapshot_operations()),
                 'batches': len(self._batches), 'source_scopes': self._scopes.resource_status(),
                 'capture': self._room.resource_status(), 'input': self._input.resource_status(),
                 'ambient_samples': self._ambient_samples, 'ambient_ready': len(self._ambient_ready),

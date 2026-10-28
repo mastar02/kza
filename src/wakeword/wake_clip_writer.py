@@ -2,12 +2,14 @@
 
 import asyncio
 from collections import deque
+from contextvars import Context
 from dataclasses import dataclass, field
 from enum import StrEnum
 import logging
 import math
 import os
 import threading
+import time
 from uuid import uuid4
 import wave
 
@@ -88,6 +90,9 @@ class WakeClipWriter:
         self._wake = threading.Event()
         self._busy = None
         self._running = True
+        self._paused = False
+        self._pausing = None
+        self._submissions = deque(object() for _ in range(queue_size))
         self._closing = None
         self._close_timeout_s = close_timeout_s
         self._dropped = self._written = self._errors = 0
@@ -96,7 +101,7 @@ class WakeClipWriter:
         self._worker.start()
 
     def _live(self, sources) -> bool:
-        return self._running and not self._store._closed and self._store.privacy.sources_available(sources)
+        return self._running and not self._paused and not self._store._closed and self._store.privacy.sources_available(sources)
 
     def _job_live(self, job) -> bool:
         if not self._live(job.sources):
@@ -119,8 +124,13 @@ class WakeClipWriter:
 
     def _enqueue(self, room_id, score, audio, bucket, sources):
         clip = None
+        ticket = None
         admitted = False
         try:
+            try:
+                ticket = self._submissions.popleft()
+            except IndexError:
+                return False
             sources = PRODUCER_CONTEXT.get().sources if sources is None else sources
             if type(sources) is not tuple or not 1 <= len(sources) <= 64 or not self._live(sources):
                 return False
@@ -148,6 +158,9 @@ class WakeClipWriter:
             if not admitted:
                 self._dropped += 1
             audio = clip = None
+            if ticket is not None:
+                self._submissions.append(ticket)
+            ticket = None
 
     def prune(self) -> None:
         """Drop expired/revoked queued waves without waiting for a blocked encoder."""
@@ -232,22 +245,69 @@ class WakeClipWriter:
 
     def _retire(self):
         self._running = False
-        self._dropped += len(self._queue)
-        self._queue = deque()
+        # Never replace a queue while the worker holds its pop handoff lock.
+        # If it owns that lock, it will see the seal and clear on actual exit.
+        self.prune()
         self._wake.set()
+
+    def pause_admission(self) -> None:
+        """Reject new copies, cancel queued writes and fence the actual encoder."""
+        self._paused = True
+        self.prune()
+
+    def pause_pending(self) -> bool:
+        """Include copying submitters and the queue-to-worker ownership handoff."""
+        if len(self._submissions) != self._capacity or not self._lock.acquire(blocking=False):
+            return True
+        try:
+            return bool(self._queue) or self._busy is not None
+        finally:
+            self._lock.release()
+
+    async def drain_pause(self) -> None:
+        """Keep the thread reusable; wait for actual copies, writes and cleanup."""
+        if not self._paused or not self._running:
+            raise RuntimeError('wake_clip_pause_unavailable')
+        if self._pausing is None or self._pausing.done():
+            async def finish():
+                while self.pause_pending():
+                    await asyncio.sleep(.005)
+            self._pausing = asyncio.create_task(finish(), context=Context())
+        await asyncio.shield(self._pausing)
+
+    def resume_admission(self) -> None:
+        """Reopen only after all pre-pause native ownership has disappeared."""
+        if not self._running or self._store._closed or self._pausing is None or not self._pausing.done() or self.pause_pending():
+            raise RuntimeError('wake_clip_pause_still_owned')
+        self._pausing.result()
+        self._paused = False
+        self._pausing = None
+
+    def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
+        """Expose retained pause and close observers without raw native jobs."""
+        return tuple(task for task in (self._pausing, self._closing) if task is not None and not task.done())
 
     def stop(self, timeout: float = 2.) -> None:
         """Synchronous adapter for native callers; timeout never means thread exit."""
+        deadline = time.monotonic() + timeout
         self._retire()
         self._worker.join(timeout=timeout)
-        if self._worker.is_alive():
+        while len(self._submissions) != self._capacity and time.monotonic() < deadline:
+            time.sleep(.005)
+        if self._worker.is_alive() or len(self._submissions) != self._capacity:
             raise WorkCloseTimeout('wake_clip_writer_still_running')
 
     def begin_close(self) -> asyncio.Task:
         """Reject input, discard queued waves and retain the actual native join."""
         self._retire()
         if self._closing is None:
-            self._closing = asyncio.create_task(self._store._work.run(self._worker.join))
+            async def finish():
+                await self._store._work.run(self._worker.join)
+                while len(self._submissions) != self._capacity:
+                    await asyncio.sleep(.005)
+                if self._pausing is not None:
+                    await asyncio.shield(self._pausing)
+            self._closing = asyncio.create_task(finish(), context=Context())
         return self._closing
 
     async def aclose(self) -> None:
@@ -260,6 +320,7 @@ class WakeClipWriter:
 
     def resource_status(self) -> dict:
         """Report capacity and ownership without sources, rooms, handles or paths."""
-        return {'closed': not self._running, 'queued': len(self._queue), 'capacity': self._capacity,
+        return {'closed': not self._running, 'paused': self._paused, 'queued': len(self._queue), 'capacity': self._capacity,
+                'submissions': self._capacity-len(self._submissions),
                 'native_running': self._worker.is_alive(), 'busy': self._busy is not None,
                 'written': self._written, 'dropped': self._dropped, 'errors': self._errors}

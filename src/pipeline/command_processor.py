@@ -1,6 +1,7 @@
 """Command transcription and identification with ownership of actual native work."""
 
 import asyncio
+from contextvars import Context
 from dataclasses import dataclass, field
 import logging
 import threading
@@ -60,6 +61,8 @@ class CommandProcessor:
         self._emotion_tasks: set[asyncio.Task] = set()
         self._scopes = ProducerScopes(self.snapshot_operations, capacity=32)
         self._closed = False
+        self._paused = False
+        self._pausing = None
         self._closing: asyncio.Task | None = None
         self._current_user = self._current_emotion = None
         self._current_sources = ()
@@ -71,7 +74,7 @@ class CommandProcessor:
             privacy.add_borrower(self.begin_close)
 
     def _available(self) -> bool:
-        return not self._closed and (self._privacy is None or
+        return not self._closed and not self._paused and (self._privacy is None or
             self._privacy.sources_available(PRODUCER_CONTEXT.get().sources))
 
     def _require_live(self) -> None:
@@ -355,7 +358,7 @@ class CommandProcessor:
 
     def prune_private(self) -> None:
         """Drop idle identification results when their capture becomes unavailable."""
-        if self._closed or self._privacy is not None and not self._privacy.sources_available(self._current_sources):
+        if self._closed or self._paused or self._privacy is not None and not self._privacy.sources_available(self._current_sources):
             self._current_user = self._current_emotion = None
             self._current_sources = ()
 
@@ -385,7 +388,45 @@ class CommandProcessor:
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Expose finite controllers and native scopes, including cancelled callers."""
-        return tuple(self._commands | self._shadow_tasks | self._emotion_tasks | self._work._tasks)
+        tasks = self._commands | self._shadow_tasks | self._emotion_tasks | self._work._tasks
+        if self._pausing is not None and not self._pausing.done():
+            tasks.add(self._pausing)
+        return tuple(tasks)
+
+    def pause_admission(self) -> None:
+        """Reject private model handoffs and retire current identification state."""
+        self._paused = True
+        self.prune_private()
+        self.invalidate_embeddings_cache()
+
+    async def drain_pause(self) -> None:
+        """Wait for actual foreground, shadow and emotion work without unloading."""
+        if self._closed or not self._paused:
+            raise RuntimeError('command_pause_unavailable')
+        if self._pausing is None or self._pausing.done():
+            async def finish():
+                tasks = None
+                try:
+                    while True:
+                        tasks = {task for task in self.snapshot_operations()
+                                 if task is not asyncio.current_task() and not task.done()}
+                        if not tasks:
+                            break
+                        await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+                    self.prune_private()
+                    self.invalidate_embeddings_cache()
+                finally:
+                    tasks = None
+            self._pausing = asyncio.create_task(finish(), context=Context())
+        await asyncio.shield(self._pausing)
+
+    def resume_admission(self) -> None:
+        """Permit new commands only after every pre-pause native call is retired."""
+        if self._closed or self._pausing is None or not self._pausing.done() or any(not task.done() for task in self.snapshot_operations()):
+            raise RuntimeError('command_pause_still_owned')
+        self._pausing.result()
+        self._paused = False
+        self._pausing = None
 
     def conversation_busy(self, conversation_id: str) -> bool:
         """Prune idle capture associations and query actual finite work affinity."""
@@ -396,7 +437,7 @@ class CommandProcessor:
 
     def resource_status(self) -> dict:
         """Report ownership counts without capture IDs, text or speaker names."""
-        return {"closed": self._closed, "commands": len(self._commands),
+        return {"closed": self._closed, "paused": self._paused, "commands": len(self._commands),
                 "shadows": len(self._shadow_tasks), "emotions": len(self._emotion_tasks),
                 "source_scopes": self._scopes.resource_status(), "native": self._work.status()}
 
@@ -411,6 +452,8 @@ class CommandProcessor:
 
             async def finish():
                 await asyncio.gather(*controllers, native, return_exceptions=True)
+                if self._pausing is not None:
+                    await asyncio.gather(asyncio.shield(self._pausing), return_exceptions=True)
                 self.prune_private()
                 self.invalidate_embeddings_cache()
             self._closing = asyncio.create_task(finish())

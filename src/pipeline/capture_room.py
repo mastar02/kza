@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 from collections import deque
 from dataclasses import dataclass
-from contextvars import ContextVar
+from contextvars import Context, ContextVar
 from enum import StrEnum
 import logging
 from uuid import uuid4
@@ -71,6 +71,7 @@ class _AuxiliaryCall:
     function: Callable | None
     args: tuple
     sources: tuple[MemorySource, ...] | None
+    private: bool = True
     admitted: bool = False
 
     def admit(self) -> None:
@@ -107,6 +108,8 @@ class CaptureRoom:
         self._controllers: set[asyncio.Task] = set()
         self._scopes = ProducerScopes(self.snapshot_operations, capacity=16)
         self._closed = False
+        self._paused = False
+        self._pausing: asyncio.Task | None = None
         self._closing: asyncio.Task | None = None
         self._last_packet = None
         self._failed = False
@@ -136,7 +139,7 @@ class CaptureRoom:
         admitted, current = boundary, self._boundary
         epoch = self.input_epoch if epoch is _UNSTAMPED else epoch
         try:
-            if not self._closed and not self._failed and (admitted is None or admitted == current) and current.allows(timestamp):
+            if not self._closed and not self._paused and not self._failed and (admitted is None or admitted == current) and current.allows(timestamp):
                 if self._privacy is not None and (epoch is not self.input_epoch or epoch.retired):
                     return
                 queue.append(CapturePacket(timestamp, audio.copy(), frames, epoch))
@@ -147,7 +150,7 @@ class CaptureRoom:
 
     def accepts(self, timestamp: float, *, boundary: CaptureBoundary | None = None) -> bool:
         """Read only the published fence on the input callback thread."""
-        return not self._closed and not self._failed and (boundary is None or boundary == self._boundary) and self._boundary.allows(timestamp)
+        return not self._closed and not self._paused and not self._failed and (boundary is None or boundary == self._boundary) and self._boundary.allows(timestamp)
 
     def publish_boundary(self) -> None:
         """Tighten callback admission, then detach retired queued audio."""
@@ -182,7 +185,7 @@ class CaptureRoom:
         return self._boundary.tighten(boundary)
 
     def available(self) -> bool:
-        return not self._closed and not self._failed and (self._privacy is None or self._source is not None and
+        return not self._closed and not self._paused and not self._failed and (self._privacy is None or self._source is not None and
             self._privacy.sources_available((self._source,))) and (
                 self._oldest is None or self._current_boundary().allows(self._oldest))
 
@@ -225,7 +228,8 @@ class CaptureRoom:
         finally:
             function = args = task = on_admit = None
 
-    async def call(self, function: Callable, *args, sources: tuple[MemorySource, ...] | None = None) -> object:
+    async def call(self, function: Callable, *args, sources: tuple[MemorySource, ...] | None = None,
+                   private: bool = True) -> object:
         """Run finite state work; explicit lineage describes retained auxiliary inputs."""
         task = None
         try:
@@ -233,7 +237,7 @@ class CaptureRoom:
             if not lineage and sources is None:
                 lineage = (self._source,) if self._source is not None else None
             with self._scopes.operation(lineage):
-                task = self._start_controller(self._call_owned(function, args, lineage))
+                task = self._start_controller(self._call_owned(function, args, lineage, private))
                 return await task
         finally:
             function = args = task = None
@@ -254,13 +258,13 @@ class CaptureRoom:
         task.add_done_callback(finished)
         return task
 
-    async def _call_owned(self, function, args, sources):
+    async def _call_owned(self, function, args, sources, private):
         outcome = job = None
         try:
             async with self._lock:
-                if self._closed:
+                if self._closed or self._paused and private:
                     raise SourcesInvalidated('capture_closed')
-                job = _AuxiliaryCall(function, args, sources)
+                job = _AuxiliaryCall(function, args, sources, private)
                 function = args = None
                 outcome = await self._call_locked(self._invoke_auxiliary, job,
                                                   sources=sources or (), on_admit=job.admit)
@@ -279,10 +283,10 @@ class CaptureRoom:
         # argument tuples even after the callback's raw locals are cleared.
         result = None
         try:
-            if self._closed or job.sources and self._privacy is not None and not self._privacy.sources_available(job.sources):
+            if self._closed or self._paused and job.private or job.sources and self._privacy is not None and not self._privacy.sources_available(job.sources):
                 raise SourcesInvalidated('capture_auxiliary_invalidated')
             result = job.function(*job.args)
-            if self._closed or job.sources and self._privacy is not None and not self._privacy.sources_available(job.sources):
+            if self._closed or self._paused and job.private or job.sources and self._privacy is not None and not self._privacy.sources_available(job.sources):
                 raise SourcesInvalidated('capture_auxiliary_invalidated')
             return _AuxiliaryResult(result)
         except SourcesInvalidated:
@@ -341,7 +345,7 @@ class CaptureRoom:
         """Consume input, binding an exclusive receiver before raw result delivery."""
         if handoff is not None and not isinstance(handoff, ProducerScope):
             raise ValueError('invalid_capture_handoff')
-        if self._closed:
+        if self._closed or self._paused:
             if handoff is not None:
                 handoff.bind(())
             return None
@@ -362,6 +366,8 @@ class CaptureRoom:
         """Retire invalid idle state without consuming input or polling a command."""
         if self._privacy is None:
             raise RuntimeError('privacy_authority_unavailable')
+        if self._paused:
+            return
         self.publish_boundary()
         task = None
         sources = (self._source,) if self._source is not None else ()
@@ -374,7 +380,7 @@ class CaptureRoom:
 
     async def _prune_owned(self):
         async with self._lock:
-            if self._closed:
+            if self._closed or self._paused:
                 return
             if self._pending is not None:
                 await asyncio.gather(asyncio.shield(self._pending), return_exceptions=True)
@@ -386,7 +392,7 @@ class CaptureRoom:
         packets = event = None
         try:
             async with self._lock:
-                if self._closed or self._failed:
+                if self._closed or self._paused or self._failed:
                     self._bind_step((), handoff)
                     return None
                 if self._pending is not None:
@@ -440,6 +446,8 @@ class CaptureRoom:
         tasks = self._controllers | set(self._work._tasks)
         if self._pending is not None:
             tasks.add(self._pending)
+        if self._pausing is not None and not self._pausing.done():
+            tasks.add(self._pausing)
         return tuple(tasks)
 
     def conversation_busy(self, conversation_id: str) -> bool:
@@ -458,10 +466,51 @@ class CaptureRoom:
 
     def resource_status(self) -> dict:
         """Report counts without room, source identifiers, audio or text."""
-        return {'closed': self._closed, 'reset_failed': self._failed, 'queued': len(self._queue), 'input_drops': self._input_drops,
+        return {'closed': self._closed, 'paused': self._paused, 'reset_failed': self._failed, 'queued': len(self._queue), 'input_drops': self._input_drops,
                 'native': self._work.status(), 'controllers': len(self._controllers),
                 'source_scopes': self._scopes.resource_status(), 'has_state': self._oldest is not None,
                 'callbacks': self.callbacks.status()}
+
+    def pause_admission(self) -> None:
+        """Reject raw work synchronously; native workers recheck this fence."""
+        if self._paused:
+            return
+        self._paused = True
+        previous, self._queue = self._queue, deque(maxlen=32)
+        previous.clear()
+        for task in tuple(self._controllers):
+            task.cancel()
+
+    async def drain_pause(self) -> None:
+        """Retain native completion and reset even when this observer is cancelled."""
+        if not self._paused or self._closed:
+            raise RuntimeError('capture_pause_unavailable')
+        if self._pausing is None or self._pausing.done():
+            async def finish():
+                tasks = None
+                try:
+                    tasks = set(self.snapshot_operations()) - {asyncio.current_task()}
+                    await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+                    async with self._lock:
+                        await self._call_locked(self._reset, sources=())
+                        if self._failed:
+                            raise RuntimeError('capture_pause_reset_failed')
+                finally:
+                    tasks = None
+            self._pausing = asyncio.create_task(finish(), context=Context())
+            self._pausing.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
+        await asyncio.shield(self._pausing)
+
+    def resume_admission(self) -> None:
+        """Reopen only after successful native reset; the caller renews source epochs."""
+        if self._closed or self._failed or self._pausing is None or not self._pausing.done():
+            raise RuntimeError('capture_pause_still_owned')
+        self._pausing.result()
+        if any(not task.done() for task in self.snapshot_operations()):
+            raise RuntimeError('capture_pause_still_owned')
+        self.publish_boundary()
+        self._paused = False
+        self._pausing = None
 
     def begin_close(self) -> asyncio.Task:
         """Detach input and retain native reset after the last actual operation."""
@@ -473,6 +522,8 @@ class CaptureRoom:
                 task.cancel()
             async def finish():
                 await asyncio.gather(*self._controllers, return_exceptions=True)
+                if self._pausing is not None:
+                    await asyncio.gather(asyncio.shield(self._pausing), return_exceptions=True)
                 async with self._lock:
                     delay = .05
                     while True:
