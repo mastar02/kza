@@ -1,0 +1,282 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "bcae727effdbf519a96bbb40e8e44500a1bf2988",
+  "tested_runtime_source_tree": "1a58eec28a0e1f3d2af9437e3a823c66abaf26c4",
+  "tested_scripts_source_tree": "b08e19ac09711a9d58c6c794af52fe47bcd6999e",
+  "tested_frontend_tree": "eab8cb26d4dc1fb2713dbbdb43153bb5222dd4ca",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "previous_goal_turn_classification": "progress",
+  "scope": "Retained multiroom native driver lifetimes, shared PortAudio catalog ownership and reusable input admission barrier. Prerequisite for total mute; command processing policy and authenticated product integration remain open.",
+  "new_python_cases_total": 13,
+  "new_python_cases": [
+    "tests.integration.test_input_driver_pause::test_cancelled_open_stays_owned_through_actual_native_exit_and_close[construct]",
+    "tests.integration.test_input_driver_pause::test_cancelled_open_stays_owned_through_actual_native_exit_and_close[configure]",
+    "tests.integration.test_input_driver_pause::test_cancelled_open_stays_owned_through_actual_native_exit_and_close[start]",
+    "tests.integration.test_input_driver_pause::test_failed_configuration_or_start_closes_the_constructed_handle[configure]",
+    "tests.integration.test_input_driver_pause::test_failed_configuration_or_start_closes_the_constructed_handle[start]",
+    "tests.integration.test_input_driver_pause::test_pause_closes_drivers_blocks_watchdog_and_reopens_only_fresh_handles",
+    "tests.integration.test_input_driver_pause::test_pause_retains_failed_native_close_and_refuses_premature_resume",
+    "tests.integration.test_input_driver_pause::test_driver_pause_waits_for_the_actual_callback_after_native_close",
+    "tests.integration.test_input_driver_pause::test_catalog_work_remains_owned_after_observer_cancel_and_blocks_pause",
+    "tests.integration.test_input_driver_pause::test_observer_cancel_cannot_lose_a_successfully_opened_room_or_duplicate_its_open",
+    "tests.integration.test_input_driver_pause::test_driver_native_work_keeps_the_privacy_lease_after_bounded_stop[construct]",
+    "tests.integration.test_input_driver_pause::test_driver_native_work_keeps_the_privacy_lease_after_bounded_stop[close]",
+    "tests.integration.test_input_driver_pause::test_native_driver_and_catalog_calls_do_not_inherit_private_request_context"
+  ],
+  "contracts": {
+    "one_configured_owner_per_room_registered_before_native_open": true,
+    "cancelled_observer_cannot_lose_native_constructor_configuration_or_start": true,
+    "constructed_handle_owned_before_host_property_configuration_or_start": true,
+    "failed_configuration_or_start_closes_actual_handle": true,
+    "deduplicated_concurrent_open_and_cancel_do_not_duplicate_stream": true,
+    "shared_portaudio_catalog_call_retained_after_observer_cancel": true,
+    "driver_and_catalog_tasks_do_not_inherit_private_request_context": true,
+    "pause_seals_before_waiting_and_retires_current_callback_holders_and_queues": true,
+    "late_constructor_holder_retired_again_before_actual_close_completion": true,
+    "repeated_completed_close_does_not_retire_a_new_input_generation": true,
+    "actual_native_close_failure_retries_under_existing_owner_backoff": true,
+    "pause_waits_for_actual_callback_release_even_after_native_close_returns": true,
+    "bounded_stop_does_not_release_privacy_writer_lease_before_actual_driver_exit": true,
+    "watchdog_recovery_and_reopen_scheduling_reject_sealed_admission": true,
+    "resume_refuses_pending_pause_and_uses_new_owners_and_handles": true,
+    "normal_startup_recovery_and_shutdown_share_driver_owners": true,
+    "streams_map_is_projection_of_owned_active_drivers": true,
+    "host_telemetry_timestamps_published_by_native_owner_before_start_callbacks": true,
+    "driver_primitive_is_complete_product_total_mute": false
+  },
+  "causal_red": {
+    "tested_commit": "dd09772653f6954b46b3f65b3f2001998b1ce74c",
+    "isolated_old_runtime_module": {
+      "path": "/tmp/kza-input-driver-red-mxs6f7_h/src/pipeline/multi_room_audio_loop.py",
+      "sha256": "730a6718c080e13d2c428c2baf3cd8f0f0fff64a67fcce7d359513912380060e"
+    },
+    "wrapper": {
+      "path": "/tmp/kza-input-driver-cancellation-red.py",
+      "sha256": "70c33ab2906403c24fe71d9b5a49b6ad1704412144bdcc39675c084f2b96a2fd"
+    },
+    "log": "/tmp/kza-input-driver-cancellation-pinned-red.log",
+    "failed": 1,
+    "failure": "begin_close completed while the cancelled native constructor still held its eventual stream",
+    "subject_imported_and_path_asserted_before_pytest_conftest": true,
+    "first_unpinned_attempt": {
+      "log": "/tmp/kza-input-driver-cancellation-red.log",
+      "passed": 1,
+      "accepted_as_red": false,
+      "reason": "conftest inserted the checkout before the isolated source was imported; fixed wrapper preimports and asserts old module path"
+    }
+  },
+  "focused_suite": {
+    "passed": 382,
+    "failed": 0,
+    "runtime_s": 46.77,
+    "log": "/tmp/kza-input-drivers-broad.log",
+    "xml": "/tmp/kza-input-drivers-broad.xml",
+    "includes_first_ten_new_cases": true,
+    "before_final_three_cases_added": true,
+    "intermediate_before_final_native_timestamp_publication_and_obsolete_close_helper_removal": true
+  },
+  "final_driver_unit_concurrency_cases": {
+    "passed": 126,
+    "failed": 0,
+    "runtime_s": 8.37,
+    "log": "/tmp/kza-input-drivers-final-cases-green.log",
+    "xml": "/tmp/kza-input-drivers-final-cases.xml",
+    "includes_all_thirteen_new_cases": true
+  },
+  "full_suite": {
+    "log": "/tmp/kza-input-drivers-full.log",
+    "xml": "/tmp/kza-input-drivers-full.xml",
+    "application_source_frozen_for_entire_run": true,
+    "accepted": true,
+    "collected": 5638,
+    "passed": 5637,
+    "failed": 0,
+    "xfailed": 1,
+    "runtime_s": 398.07,
+    "terminal_exit_code": 0,
+    "numeric_native_timeout_capture": {
+      "terminal_exit_code": 0,
+      "captured": 0,
+      "events": []
+    },
+    "numeric_native_timeout_capture_plugin": {
+      "path": "/tmp/kza_input_drivers_capture.py",
+      "sha256": "0e2cb845bd54ed91569d1acabc1738d2983fa38c1f00189bc1a1ae33a6cd8325"
+    }
+  },
+  "ruff": {
+    "passed": true,
+    "log": "/tmp/kza-input-drivers-final-ruff.log"
+  },
+  "bandit": {
+    "low": 27,
+    "medium": 0,
+    "high": 0,
+    "log": "/tmp/kza-input-drivers-bandit.log"
+  },
+  "frontend_unit": {
+    "passed": 77,
+    "failed": 0,
+    "runtime_ms": 99.569228,
+    "log": "/tmp/kza-input-drivers-frontend.log"
+  },
+  "dashboard_smoke": {
+    "passed": true,
+    "log": "/tmp/kza-input-drivers-dashboard-smoke.log"
+  },
+  "source_ambient_browser_regression": {
+    "checks": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "ui_pause_pending_until_actual_native_asr_exit": true,
+      "late_transcript_not_persisted": true,
+      "reactivation_via_authenticated_ui_without_voice": true,
+      "old_history_preserved": true,
+      "revoked_session_cannot_reactivate": true,
+      "javascript_exceptions": 0,
+      "external_bootstrap_assets_blocked": true,
+      "synthetic_models_and_sources": true,
+      "total_mute_hardware_or_all_producers_acceptance": false
+    },
+    "log": "/tmp/kza-input-drivers-ambient-browser.log"
+  },
+  "compiled_runtime": {
+    "git_commit": "bcae727effdbf519a96bbb40e8e44500a1bf2988",
+    "artifact": "/tmp/kza-input-drivers-runtime-orhmxd6z/runtime.tar.gz",
+    "verified_hashes": 355,
+    "runtime_s": 1.8489184228237718,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 355,
+      "real_http_authenticated_review_and_revision_delete": true,
+      "background_cpu_synthetic_encoder": true,
+      "event_private_pool_closes_while_general_executor_remains_saturated": true,
+      "event_cleanup_releases_caller_context_and_observes_real_thread_exit": true,
+      "authenticated_wav_matches_owned_pcm_and_actual_metadata": true,
+      "preview_bounded_six_seconds_full_segment_transcript_scope_explicit": true,
+      "permanent_profile_does_not_extend_review_audio_or_text": true,
+      "source_expiry_physically_cascades_review_rows_and_denies_http_read": true,
+      "capture_deadline_and_permanent_manual_profile_survive_restart": true,
+      "suggestions_only_never_accounts_or_permissions": true,
+      "old_upload_rejected_before_decode": true,
+      "local_voice_receipt_waits_for_actual_model_exit": true,
+      "legacy_original_untouched_private_accounts_sidecar": true,
+      "unresolved_voice_inventory_blocks_global_erasure": true,
+      "protocol_three_real_http_websocket_handshake_and_separate_channels": true,
+      "permanent_profile_metadata_has_bounded_page_lease_after_raw_expiry": true,
+      "profile_mutation_never_echoes_private_name": true,
+      "actual_ws_exact_ack_retires_local_stream_v4_without_global_false_completion": true,
+      "raw_groups_actual_http_merge_split_and_unknown_with_exact_revisions": true,
+      "automatic_complete_link_group_addition_uses_existing_encoder": true,
+      "group_edits_do_not_change_the_permanent_profile": true,
+      "voice_frontend_assets_packaged": true,
+      "ambient_control_modules_and_privacy_view_packaged": true,
+      "new_ambient_control_behaviour_covered_by_separate_compiled_cases_and_browser": true,
+      "input_driver_group_packaged_behaviour_covered_by_separate_compiled_cases": true,
+      "real_models_gpu_full_main_hardware_or_frontend_voice_review": false
+    },
+    "artifact_sha256": "0c727ae011f721a918d05d6825d9215fb50fc7018db238456d5e382473ddbaf4",
+    "build_script": {
+      "path": "/tmp/kza-build-input-drivers-runtime.py",
+      "sha256": "397775fb69f1fab55c23231c5982cf52b4b5fd6a813e8d1039d53a3aba5e6f5c"
+    },
+    "smoke_script": {
+      "path": "/tmp/kza-input-drivers-runtime-smoke.py",
+      "sha256": "80e189075458018dae5d4ba42b14eb4c2c79438868204e74871c404c77555bd4"
+    }
+  },
+  "compiled_cases": {
+    "passed": true,
+    "returncode": 0,
+    "runtime_s": 6.91051359497942,
+    "git_commit": "bcae727effdbf519a96bbb40e8e44500a1bf2988",
+    "all_loaded_application_modules_from_compiled_root": true,
+    "verified_hashes": 355,
+    "external_test_harness_only": true,
+    "xml": "/tmp/kza-input-drivers-compiled-cases.xml",
+    "wrapper": {
+      "path": "/tmp/kza-input-drivers-compiled-cases.py",
+      "sha256": "27205bccbba9cd6849613177f9603308ae468ce757b900e3515624c76dd69d3b"
+    },
+    "log": "/tmp/kza-input-drivers-compiled-cases.log",
+    "passed_driver_cases": 13,
+    "passed_ambient_pause_regressions": 21
+  },
+  "compiled_ambient_browser_regression": {
+    "checks": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "ui_pause_pending_until_actual_native_asr_exit": true,
+      "late_transcript_not_persisted": true,
+      "reactivation_via_authenticated_ui_without_voice": true,
+      "old_history_preserved": true,
+      "revoked_session_cannot_reactivate": true,
+      "javascript_exceptions": 0,
+      "external_bootstrap_assets_blocked": true,
+      "synthetic_models_and_sources": true,
+      "total_mute_hardware_or_all_producers_acceptance": false
+    },
+    "log": "/tmp/kza-input-drivers-compiled-browser.log",
+    "wrapper": {
+      "path": "/tmp/kza-input-drivers-compiled-browser.py",
+      "sha256": "c5287d3a1ead5a591ed7c75f99d6d8e23728972a5d5b68dd3edc7eee6bbe10f3"
+    },
+    "external_test_harness_only": true,
+    "runtime_has_no_python_sources": true
+  },
+  "earlier_failures": [
+    {
+      "log": "/tmp/kza-input-drivers-initial.log",
+      "failed": 1,
+      "passed": 9,
+      "cause": "Closing a completed old owner again during reopen advanced the capture fence and rejected the first fresh frame with the frozen test clock.",
+      "correction": "Retirement on close admission is idempotent; an independent final retirement still fences a late constructor before releasing actual close ownership."
+    },
+    {
+      "log": "/tmp/kza-input-drivers-focused-initial.log",
+      "failed": 2,
+      "passed": 107,
+      "cause": "Old unit recovery fixtures replaced the stream mirror directly, bypassing all native owners.",
+      "correction": "Seed pre-existing inputs through real OwnedInputStream owners and retain the shared projection."
+    },
+    {
+      "log": "/tmp/kza-input-drivers-final-cases.log",
+      "failed": 1,
+      "passed": 12,
+      "cause": "Test incorrectly expected ContextVar default None; its actual content-free default is ProducerContext(). Fixed expected value; no application change for this assertion."
+    }
+  ],
+  "limits": {
+    "authenticated_persisted_total_mute_product_control_integrated": false,
+    "all_command_processing_and_models_retired_by_driver_pause_alone": false,
+    "command_model_state_reset_and_fresh_origin_epochs_on_total_mute_resume": false,
+    "single_input_legacy_event_path_reusable_total_mute": false,
+    "wake_clips_and_all_sdk_owned_copies_covered": false,
+    "actual_main_full_runtime_executed": false,
+    "global_erasure_enabled": false,
+    "actual_microphone_driver_or_hardware_acceptance": false,
+    "real_models_gpu_or_acoustic_grouping_acceptance": false,
+    "full_h4_capacity_gc_and_latency_acceptance": false,
+    "all_historical_timeouts_causally_explained": false,
+    "earlier_loop_92_90_ms_or_gc_495_68_ms_spikes_explained": false,
+    "existing_runtime_deadlines_capacities_or_retries_increased_for_green_tests": false,
+    "gc_forced_disabled_or_frozen": false,
+    "new_config_file_or_gpu_assignment_change": false,
+    "production_modified": false,
+    "h3_h4_or_overall_roadmap_complete": false
+  },
+  "new_driver_ownership_bounds": {
+    "one_input_owner_per_configured_room": true,
+    "native_capacity_each_input_owner": 1,
+    "shared_catalog_capacity": 1,
+    "one_retained_open_controller_per_configured_room": true,
+    "native_close_retry_initial_s": 0.05,
+    "native_close_retry_maximum_s": 1,
+    "existing_capture_native_capacity_unchanged": 8
+  }
+}

@@ -3434,6 +3434,53 @@ la intención más reciente de pausa todavía requiere aceptación en H6. Tampoc
 se ejecutó el `main` completo ni se aceptó hardware, recursos/GC o precisión
 acústica. H3 y la release continúan abiertos; producción no se modificó.
 
+## Drivers multiroom retenidos y barrera de reapertura — 27 de octubre
+
+La revisión `bcae727` corrige un prerrequisito del mute total: el camino multiroom
+usaba `to_thread` para abrir PortAudio y sólo guardaba el handle al volver al
+observador. Cancelar esa espera podía dejar una apertura nativa en curso fuera
+del cierre. La reproducción contra la revisión anterior demuestra que el cierre
+terminaba antes de que saliera ese constructor.
+
+`InputGroup` conserva un owner por entrada antes de abrirla. La construcción,
+configuración y arranque ocurren bajo ownership real; un fallo de configuración
+o de `start()` también cierra el handle. Cancelar al observador no cancela ese
+owner ni permite duplicar la apertura. La invalidación del catálogo compartido
+de PortAudio queda retenida igualmente. Las tareas nuevas de drivers y catálogo
+no heredan el contexto privado de quien las solicitó.
+
+La barrera de entradas sella antes de esperar, retira las generaciones y colas,
+cierra incluso los handles que se construyen tarde y espera los callbacks reales.
+No termina mientras un cierre nativo falla o sigue retenido. Conserva los
+reintentos existentes del owner; un timeout del observador no libera el writer
+lease de privacidad. Mientras está sellada, el watchdog y los reintentos no
+pueden abrir entradas. Reanudar exige la salida real anterior y crea owners y
+handles nuevos. El arranque normal, la recuperación y el shutdown usan este
+mismo mecanismo; el mapa de streams es sólo su proyección.
+
+La [validación de drivers](../research/2026-10-27-h3-input-driver-validation.json)
+registra 13 casos nuevos, regresiones, suite completa y el artefacto compilado.
+Los drivers sintéticos retienen hilos reales en constructor, configuración,
+arranque, catálogo, cierre y callback; no se abrieron micrófonos del hogar.
+La suite completa de esa revisión pasó **5.637 pruebas con un xfail conocido
+en 398,07 s**, sin timeouts nativos inesperados capturados. Los 126 casos finales
+de drivers, unidad y concurrencia también pasaron. El artefacto verificó 355
+hashes; sus 34 casos de drivers y pausa ambiental cargaron exclusivamente módulos
+compilados de aplicación. Chromium pasó la regresión de pausa contra fuente y
+bytecode, con cero excepciones JS. Pasaron los 77 casos de frontend, Ruff, Bandit
+sin hallazgos medios o altos y el smoke del dashboard. La evidencia distingue
+las pruebas intermedias y sus fallos de fixture. La aplicación y los casos nuevos
+permanecieron sin cambios durante la suite; no se ampliaron presupuestos ni se
+forzó, congeló o deshabilitó GC. Los picos históricos de latencia siguen sin
+explicarse y no se aceptan aquí como resueltos.
+
+Esta barrera todavía no es el control completo de mute: falta conectarla a la
+política autenticada y persistente, retirar el procesamiento de comandos y sus
+modelos, resetear sus buffers y renovar épocas, cubrir entrada única, wake clips
+y copias del SDK. `total_mute_supported` sigue en falso; la UI conserva sólo la
+pausa ambiental ya validada. No se acepta hardware, GC/recursos ni restauración
+compatible, y producción permanece sin cambios.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
@@ -3452,10 +3499,11 @@ acústica. H3 y la release continúan abiertos; producción no se modificó.
    vivo y la restauración compatible con autoridad vigente. Agregar selección y recibos en el
    dashboard autenticado después de cerrar esas garantías. La limpieza local
    del catálogo y del índice no sustituye la operación completa.
-4. Completar mute total con cierre real de drivers, barrera de reapertura por
-   watchdog y reactivación independiente del audio; cubrir entrada única y los
-   productores restantes. La pausa durable de `AmbientPath` ya está conectada
-   al panel y descarta sus buffers antes de reactivar.
+4. Conectar la barrera de drivers multiroom al mute total autenticado y
+   persistente, al retiro del procesamiento de comandos, resets y épocas nuevas,
+   con reactivación independiente del audio. Cubrir entrada única, wake clips,
+   SDK y productores restantes. La pausa durable de `AmbientPath` ya está
+   conectada al panel y descarta sus buffers antes de reactivar.
 5. Extender el registro de voces a los consumidores restantes;
    completar el inventario y migración de vectores legacy. El backend nuevo ya
    aplica el vencimiento original a huellas y conserva perfiles revisados hasta

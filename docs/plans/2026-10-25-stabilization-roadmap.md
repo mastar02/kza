@@ -242,6 +242,17 @@ El artefacto verifica 354 hashes. El mute total, entrada única, inventario glob
 restauración compatible y aceptación física siguen pendientes. Pasaron 5.624
 pruebas con un xfail conocido, 77 de frontend y los checks requeridos. No cierra H3.
 
+El [ownership de drivers multiroom](../research/2026-10-27-h3-input-driver-validation.json)
+de `bcae727` retiene las aperturas y cierres de PortAudio después de cancelar al
+observador. Su barrera reutilizable espera handles tardíos, cierres y callbacks
+reales, e impide la reapertura por watchdog mientras está sellada. Es un
+prerrequisito del mute total: quedan la política autenticada y persistente, el
+retiro y reset de comandos, entrada única, wake clips y las copias del SDK. La
+UI todavía no ofrece mute total y H3 permanece abierto. Pasaron 5.637 pruebas
+con un xfail conocido, 77 de frontend y los checks requeridos. El artefacto
+verificó 355 hashes y pasó 34 casos de drivers/pausa; Chromium pasó la regresión
+de pausa contra fuente y bytecode. No sustituye la aceptación de hardware o GC.
+
 Primer avance de H3, 26 de octubre: el store de capturas aplica TTL al leer
 texto, lotes de destilación, estadísticas y clips, sin esperar la purga. Las
 capturas nuevas tienen UUID y vencimiento persistido; ampliar la configuración
