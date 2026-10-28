@@ -1,0 +1,316 @@
+{
+  "checked_on": "2026-10-28",
+  "last_check_at": "2026-10-28T16:25:58.281470+00:00",
+  "effective_development_user": "yo",
+  "runtime_user": "kza",
+  "authorization": "User explicitly requested complete installation, service startup and dashboard URL on October 28; operational installation precedes roadmap acceptance.",
+  "release": {
+    "id": "release_20261028T145442Z_b0866e8",
+    "source_commit": "b0866e8db01fd934ff3e6c483cca07d94168a9dc",
+    "artifact": "kza-runtime-b0866e8-cp313.tar.gz",
+    "artifact_sha256": "d8834c6be07315eac017dc2d516f9c7683f34150b862957c42dcff027be7f495",
+    "compiled_python_modules": 319,
+    "manifest_files_verified": 355,
+    "runtime_source_py_files": 0,
+    "dependencies_installed_on_runtime_account": false,
+    "gpu_assignment_changed": false
+  },
+  "ha_startup_change": {
+    "local_startup_continues_on_initial_ha_failure": true,
+    "snapshot_failure_enters_existing_reconnect_loop": true,
+    "existing_retry_backoff_seconds": [
+      5,
+      60
+    ],
+    "failed_rest_preflight_not_reported_as_success": true,
+    "local_http_websocket_server_tests_include_403_and_503_recovery": true
+  },
+  "checks": {
+    "causal_red": {
+      "collected": 4,
+      "failed": 4,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 0,
+      "runtime_s": 11.103,
+      "xml": "/tmp/kza-ha-startup-red.xml",
+      "xml_sha256": "a018973b6601b2f8fa0376ae20de5245c3eac192e9ce850e9afd9ca7dbd63229"
+    },
+    "startup_and_ha_regressions": {
+      "collected": 73,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 73,
+      "runtime_s": 37.894,
+      "xml": "/tmp/kza-ha-startup-green.xml",
+      "xml_sha256": "df5969474c48128cdae8690e03576e602d424119693656a829f2959af9d890ed"
+    },
+    "home_policy_voice_and_dashboard_regressions": {
+      "collected": 621,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 621,
+      "runtime_s": 36.694,
+      "xml": "/tmp/kza-live-ha-control-regressions.xml",
+      "xml_sha256": "e9675226e5074076f613a9a9833ac3699c48b7ec950e6f62098b197d3db3fd7f"
+    },
+    "compiled_runtime_cases": {
+      "collected": 94,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 94,
+      "runtime_s": 32.429,
+      "xml": "/tmp/kza-live-startup-compiled-cases.xml",
+      "xml_sha256": "5cd2de5b5e50e8709543019df9e98b9aedd233d2fe5a26a39c3e34d697d3e3e8"
+    },
+    "all_loaded_application_script_tool_modules_from_compiled_root": true,
+    "ruff_passed": true,
+    "required_bandit": {
+      "low": 27,
+      "medium": 0,
+      "high": 0,
+      "log": "/tmp/kza-live-release-bandit.log"
+    },
+    "frontend_previous_cases": {
+      "passed": 77,
+      "source_commit": "00978815fc785f7726a7e521fe1de82cc7152ae9",
+      "assets_unchanged_in_deployed_revision": true
+    }
+  },
+  "last_full_suite": {
+    "source_commit": "2c5adb4f3825e94bff86ef5ccff4e1391a1bc012",
+    "accepted": false,
+    "log": "/tmp/kza-chroma-sync-final-full.log",
+    "xml": "/tmp/kza-chroma-sync-final-full.xml",
+    "application_and_tests_frozen_for_entire_run": true,
+    "compiled_verification_finished_before_full_suite_start": true,
+    "numeric_timeout_capture_plugin": {
+      "path": "/tmp/kza_chroma_sync_final_capture.py",
+      "sha256": "35d03801f2e7d80c1a06b060bd6110456c484748e1db542036283bca8259d2cd"
+    },
+    "numeric_thread_capture_plugin": {
+      "path": "/tmp/kza_chroma_sync_final_thread_capture.py",
+      "sha256": "998e996b9c4f1dd2c6cd51be7dcfcfdb6a9fc1f3058336778c141919f9d01de5"
+    },
+    "terminal_exit_code": 1,
+    "collected": 5705,
+    "passed": 5702,
+    "failed": 2,
+    "xfailed": 1,
+    "runtime_s": 608.51,
+    "failures": [
+      {
+        "case": "tests.integration.test_diagnostic_retention::test_active_and_rotated_files_expire_without_another_metric",
+        "message": "TimeoutError",
+        "runtime_s": 3.488
+      },
+      {
+        "case": "tests.unit.llm.test_http_async_stream::test_stalled_network_keeps_five_ms_heartbeat_available",
+        "message": "assert 0.5204542931169271 <= 0.075\n +  where 0.5204542931169271 = max([1.8489081412553787e-05, 2.8314068913459778e-05, 3.85502353310585e-05, 4.628230817615986e-05, 4.662224091589451e-05, 4.8354966565966606e-05, ...])",
+        "runtime_s": 2.615
+      }
+    ],
+    "numeric_native_timeout_capture": {
+      "terminal_exit_code": 1,
+      "captured": 0,
+      "events": []
+    },
+    "thread_observation_samples": 5705,
+    "thread_observations": {
+      "terminal_exit_code": 1,
+      "maximum_after_teardown_tokio": 48,
+      "maximum_after_teardown_sqlx": 0,
+      "maximum_after_teardown_sdk_systems": 0
+    },
+    "thread_observations_log": "/tmp/kza-chroma-sync-final-full-thread-observations.json",
+    "heartbeat_failure": {
+      "observed_max_ms": 520.4542931169271,
+      "required_max_ms": 75,
+      "gc_observed_in_that_full_run": false
+    },
+    "retention_failure": {
+      "observation_window_s": 3,
+      "actual_native_stage_at_failure_captured": false
+    },
+    "not_rerun_after_startup_fix": true,
+    "evidence": "docs/research/2026-10-27-ha-vector-sdk-lifetime-validation.json"
+  },
+  "runtime": {
+    "units": {
+      "kza-voice.service": {
+        "MainPID": "2393161",
+        "Result": "success",
+        "NRestarts": "0",
+        "ExecMainStatus": "0",
+        "ActiveState": "active",
+        "SubState": "running",
+        "NeedDaemonReload": "no"
+      },
+      "kza-dashboard-proxy.service": {
+        "MainPID": "1658990",
+        "Result": "success",
+        "NRestarts": "0",
+        "ExecMainStatus": "0",
+        "ActiveState": "active",
+        "SubState": "running",
+        "NeedDaemonReload": "no"
+      },
+      "kza-console-rotate.service": {
+        "MainPID": "0",
+        "Result": "success",
+        "NRestarts": "0",
+        "ExecMainStatus": "0",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "NeedDaemonReload": "no"
+      },
+      "kza-console-rotate.timer": {
+        "Result": "success",
+        "ActiveState": "active",
+        "SubState": "waiting",
+        "NeedDaemonReload": "no"
+      }
+    },
+    "enabled": {
+      "kza-voice.service": "enabled",
+      "kza-dashboard-proxy.service": "enabled",
+      "kza-console-rotate.timer": "enabled"
+    },
+    "linger_marker_present": true,
+    "canonical_state_working_directory_verified": true,
+    "python_flags": [
+      "-B",
+      "-P"
+    ],
+    "code_selection": "PYTHONPATH=/home/kza/releases/current",
+    "external_venv_and_models_retained": true,
+    "nightly_training_enabled": false
+  },
+  "state_and_rollback": {
+    "original_backup_id": "release_20261028T144002Z_2c5adb4",
+    "backup_id_is_not_the_original_production_commit": true,
+    "snapshot_files": 6554,
+    "snapshot_sqlite_quick_checks": 8,
+    "post_forced_stop_state_sqlite_quick_checks": 10,
+    "original_state_unchanged": {
+      "config": true,
+      "data": true
+    },
+    "configured_absolute_original_data_paths": [],
+    "old_checkout_and_app_symlink_retained": true,
+    "code_index_source_migration_completed": false,
+    "new_state_kept_separate": true,
+    "unverified_home_effects_kept_unverified": true,
+    "runbook": "docs/runbooks/2026-10-28-compiled-runtime.md"
+  },
+  "dashboard": {
+    "url": "https://192.168.1.2:9540/obs/",
+    "backend": "127.0.0.1:9500",
+    "proxy": "project-owned nginx user service",
+    "shared_nginx_modified": false,
+    "tls_certificate": "local-self-signed",
+    "tls_certificate_sha256": "b05e58f5c3b577fa22393de9e3a67866bf3c972a70ac9ee7d44a0190083deaa0",
+    "host_scheme_websocket_forwarding_verified": true,
+    "secure_httponly_session_cookie_verified": true,
+    "browser": {
+      "url": "https://192.168.1.2:9540/obs/",
+      "tls_certificate_fingerprint_verified": true,
+      "real_login_form_rendered": true,
+      "real_login_submitted_and_dashboard_rendered": true,
+      "live_websocket_connected": true,
+      "authenticated_health_status": "unhealthy",
+      "javascript_exceptions": 0,
+      "passed": true
+    },
+    "two_minute_http_observation": {
+      "passed": true,
+      "samples": 13,
+      "interval_s": 10,
+      "max_pair_elapsed_ms": 7.220719940960407,
+      "scope": "Two-minute live HTTP liveness and access-control observation, not voice latency acceptance."
+    },
+    "after_access_revocation": {
+      "checked_at": "2026-10-28T16:25:58.281470+00:00",
+      "after_temporary_ssh_revocation": true,
+      "http_statuses": {
+        "/obs/": 200,
+        "/api/health": 401
+      },
+      "tls_verified_with_deployment_certificate": true,
+      "voice_process_alive_as_kza": true,
+      "proxy_process_alive_as_kza": true
+    }
+  },
+  "journal_incident": {
+    "observed_original_voice_block": "stdout socket to global journald; sock_alloc_send_pskb; Send-Q 425984 bytes",
+    "journal_cpu_before_intervention": "approximately one full core",
+    "original_stop": "90-second timeout followed by SIGKILL, not accepted graceful shutdown",
+    "mitigation": "voice stdout/stderr redirected to private regular file; restart same compiled artifact",
+    "voice_stdout_regular_file_verified": true,
+    "rotation": {
+      "interval": "hourly",
+      "rotate": 24,
+      "maxage_days": 1,
+      "copytruncate": true
+    },
+    "rotation_oneshot_result": "success",
+    "copytruncate_open_append_descriptor_rehearsal_passed": true,
+    "global_journal_restarted_by": "user, after agent requested manual administrative action",
+    "agent_modified_global_journal": false,
+    "journal_cpu_high_again_after_user_restart": true,
+    "global_incident_resolved": false,
+    "global_erasure_acceptance": false
+  },
+  "temporary_access": {
+    "removed_temporary_entries": 1,
+    "other_entries_preserved": true,
+    "authorized_keys_mode": "0600",
+    "checked_at": "2026-10-28T16:25:38.946911+00:00",
+    "new_ssh_authentication_rejected": true,
+    "local_temporary_key_material_removed": true
+  },
+  "known_limits": {
+    "authenticated_health_status": "unhealthy",
+    "subsystem_statuses": [
+      {
+        "name": "home_assistant",
+        "status": "unhealthy"
+      },
+      {
+        "name": "latency_monitor",
+        "status": "degraded"
+      },
+      {
+        "name": "priority_queue",
+        "status": "healthy"
+      },
+      {
+        "name": "reminders",
+        "status": "healthy"
+      },
+      {
+        "name": "audio_capture",
+        "status": "unhealthy"
+      }
+    ],
+    "ha_from_kza": "HTTP 403 on configured endpoint; household HA may remain available to other clients",
+    "configured_audio_inputs": 4,
+    "audio_inputs_with_frames": 1,
+    "audio_inputs_without_frames": 3,
+    "watchdog_check_interval_s": 2.0,
+    "spoken_commands_and_physical_effects_accepted": false,
+    "host_reboot_tested": false,
+    "roadmap_h0_through_h6_complete": false,
+    "full_suite_accepted": false,
+    "source_cleanup_completed": false
+  },
+  "shared_server_local_deviations": {
+    "R6": "Project-owned native TLS proxy at LAN :9540 pending platform proxy integration; recorded locally, canonical Notion not updated.",
+    "R9": "Private rotating console file as journal-block contingency; not global deletion proof."
+  },
+  "private_evidence_directory": "data/deploy-20261028T144002Z",
+  "private_evidence_tracked_in_git": false
+}

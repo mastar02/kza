@@ -12,11 +12,19 @@ se concretan en su plan de implementación al empezar el hito. Las fechas se
 estiman después de cerrar el inventario y los contratos de H0; la secuencia no
 supone una duración medida que todavía no tenemos.
 
+El 28 de octubre el usuario pidió instalar lo nuevo y dejar servicio y dashboard
+disponibles. Se publicó la release operativa compilada `b0866e8`, con respaldo
+y estado separado, antes de completar la aceptación prevista. El login y el
+canal en vivo funcionan; HA devuelve 403 desde KZA y tres entradas de audio no
+reciben frames. La última suite completa conserva dos fallos. Esta instalación
+no cierra ningún hito ni sustituye las verificaciones pendientes de H6.
+Ver [evidencia operativa](../research/2026-10-28-live-release-validation.json).
+
 ## Decisiones acordadas
 
 | Tema | Decisión |
 |---|---|
-| Publicación | Una sola release al completar todos los frentes incluidos. |
+| Publicación | Objetivo de aceptación integrada al completar los frentes; el usuario adelantó una instalación operativa el 28 de octubre, con limitaciones registradas. |
 | Voz sin identidad verificada | Control de luces, escenas, interruptores, clima y persianas elegidos. |
 | Acciones sensibles | Cerraduras y alarmas bloqueadas; la similitud de voz no eleva permisos. |
 | Dashboard | Acceso desde la red de casa mediante el proxy del servidor, siempre autenticado. |

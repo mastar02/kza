@@ -15,35 +15,76 @@ versión que está funcionando en producción, incluidos los archivos que necesi
 para ejecutarse. La retirada del checkout y de las copias de desarrollo se
 coordina con la sustitución de esa versión en la próxima release.
 
-El próximo modelo de despliegue transferirá a `kza` únicamente el artefacto
+La release operativa del 2026-10-28 transfirió a `kza` únicamente el artefacto
 compilado y sus recursos de ejecución, construidos y probados bajo `yo`.
 Secretos y datos persistentes permanecen fuera del artefacto y de Git. El
 proyecto es Python: `scripts/build_runtime.py` construye un paquete de bytecode
 CPython 3.13 sin fuentes `.py`. El ensayo offline de instalación, promoción y
 rollback está en `scripts/stage_runtime.py` y el
-[plan de H0](../plans/2026-10-25-h0-baseline-contracts.md). Su validación usa
-staging bajo `yo`; la integración de dependencias, modelos, units y estado real
-se completa para la release. No se cambió el servicio durante el rescate.
+[plan de H0](../plans/2026-10-25-h0-baseline-contracts.md). El rescate no cambió
+el servicio; la instalación posterior fue solicitada expresamente por el usuario.
 
-La sección siguiente describe el despliegue existente. El flujo histórico de
-edición en producción y puente desde la laptop queda retirado para trabajo
-nuevo. Consultar `AGENTS.md` en la raíz para las instrucciones operativas.
+El flujo histórico de edición en producción y puente desde la laptop queda
+retirado para trabajo nuevo. Consultar `AGENTS.md` en la raíz para las
+instrucciones operativas.
+
+## Release operativa instalada — 2026-10-28
+
+Está activo `release_20261028T145442Z_b0866e8`, construido desde
+`b0866e8db01fd934ff3e6c483cca07d94168a9dc`. Esta instalación adelanta la
+disponibilidad solicitada del servicio y dashboard; no acepta H6 ni cierra el
+roadmap. La última suite completa mantiene dos fallos conocidos, y la salud
+real sigue indicando problemas de acceso a HA y de captura en tres entradas.
+
+- Runtime: `/home/kza/releases/current` apunta al subdirectorio `runtime` del
+  slot instalado. Se verificaron los 355 archivos del manifiesto, sin `.py`.
+- Estado: `state`, hermano de `runtime`, contiene configuración privada, datos
+  copiados y logs. El directorio de trabajo de systemd es su ruta canónica.
+  `runtime/config`, `runtime/data` y `runtime/.env` enlazan a ese estado.
+- `kza-voice.service` conserva su unit original y usa el drop-in `release.conf`.
+  Ejecuta `/home/kza/kza/.venv/bin/python -B -P -m src.main`, con
+  `PYTHONPATH=/home/kza/releases/current`. El venv y los modelos existentes
+  permanecen externos; no se instalaron dependencias ni se reasignaron GPUs.
+- Dashboard: **https://192.168.1.2:9540/obs/**. NGINX del proyecto, bajo
+  `kza-dashboard-proxy.service`, termina TLS y reenvía a `127.0.0.1:9500`.
+  Conserva Host, esquema y WebSocket. No modifica el NGINX compartido.
+- El certificado es local y autofirmado. El login usa el
+  `KZA_DASHBOARD_TOKEN` existente de `/home/kza/secrets/.env`; no copiarlo a Git
+  ni al chat. El acceso privado sin sesión devuelve 401.
+- Voz, proxy y timer de rotación están habilitados; `kza` tiene linger
+  configurado. Se verificó su estado actual, sin ensayo de reinicio del host.
+- Durante la instalación, el journal global bloqueó la escritura de stdout de
+  KZA. El drop-in dirige ahora la consola al archivo privado
+  `state/logs/console.log`. `kza-console-rotate.timer` ejecuta logrotate cada
+  hora, con 24 rotaciones, `maxage 1`, compresión y `copytruncate`. El usuario
+  reinició journald; su CPU volvió a subir, por lo que no se declara resuelto
+  el problema global. Esta salida de contingencia evita depender de ese socket.
+
+La configuración y los datos originales de `/home/kza/kza` conservan sus hashes.
+El respaldo privado está en
+`/home/kza/releases/backups/release_20261028T144002Z_2c5adb4/`; ese identificador
+nombra la operación de respaldo, no la versión original de producción.
+El checkout original y `/home/kza/app` se conservan para rollback y para el
+índice de código existente. La limpieza de fuentes sigue pendiente.
+
+Ver [operación y rollback](../runbooks/2026-10-28-compiled-runtime.md) y la
+[evidencia de instalación](../research/2026-10-28-live-release-validation.json).
 
 ## Construcción del artefacto
 
-El candidato de estabilización liga el dashboard a `127.0.0.1:9500` detrás del
-proxy del servidor. Todo endpoint HTTP/WS privado requiere `KZA_DASHBOARD_TOKEN`,
+La release liga el dashboard a `127.0.0.1:9500` detrás del proxy del proyecto.
+Todo endpoint HTTP/WS privado requiere `KZA_DASHBOARD_TOKEN`,
 incluidos health y observabilidad. La variable de ejemplo está vacía; el valor
 real permanece en el entorno privado de ejecución. La shell de login y los
 assets son públicos, sin datos del hogar. No se expone OpenAPI por una ruta
 automática. Los clientes de diagnóstico deben enviar Bearer o sesión válida.
 
-En la única release, el proxy debe preservar Host y establecer correctamente el
+El proxy debe preservar Host y establecer correctamente el
 esquema externo para que se validen Origin y la cookie Secure en HTTPS. Sólo se
 confía en forwarding desde el proxy local; no se toman headers de cualquier
 cliente como prueba de identidad. Las pruebas ASGI comprueban la frontera, pero
-la configuración instalada del proxy y la unit se validan en H6 antes de
-promover. Este cambio de configuración versionada no altera el servicio actual.
+la instalación del 28 de octubre verificó el login, la cookie Secure y el canal
+en vivo en navegador. Esa comprobación no sustituye la aceptación de H6.
 
 Desde el checkout de `yo`, con CPython 3.13:
 
@@ -63,7 +104,7 @@ descompilación. Requiere el intérprete y las dependencias del entorno de
 ejecución. Ver [py_compile](https://docs.python.org/3.13/library/py_compile.html)
 y [SourcelessFileLoader](https://docs.python.org/3.13/library/importlib.html#importlib.machinery.SourcelessFileLoader).
 
-## Limpieza del checkout de desarrollo — con la próxima release
+## Limpieza del checkout anterior — pendiente
 
 La inspección del 2026-10-25 encontró:
 
@@ -78,28 +119,26 @@ La inspección del 2026-10-25 encontró:
   `kza`; `sudo` sin contraseña y SSH con la clave actual tampoco están
   disponibles. La instalación requiere una sesión administrativa autorizada.
 
-Secuencia para la próxima publicación, manteniendo el servidor bajo `kza`:
+La publicación del 28 de octubre completó la instalación separada y el cambio
+de unit, conservando las rutas antiguas. Para retirar material de desarrollo,
+manteniendo el servidor bajo `kza`, quedan estos pasos:
 
 1. Inspeccionar las units, timers y montajes reales desde la sesión de `kza`.
    Registrar todas las referencias a `/home/kza/app`, `/home/kza/kza` y scripts
    `.py`, incluidos los jobs de entrenamiento y watchdog.
-2. Instalar el artefacto en una release separada, sin Git ni fuentes `.py`.
-   Conectar sus rutas de configuración, datos, modelos, logs y dependencias
-   con las ubicaciones persistentes existentes.
-3. Migrar el índice de código para que lea el repositorio de `yo`, y actualizar
+2. Migrar el índice de código para que lea el repositorio de `yo`, y actualizar
    las invocaciones de scripts que necesiten su variante `.pyc`.
-4. Cambiar la unit de voz a la release y comprobar voz, frontend, micrófonos,
-   rutinas e índice. Mantener el checkout original para rollback mientras se
-   valida. Los diez tests fallidos del rescate todavía requieren revisión.
-5. Retirar únicamente los fuentes y material de desarrollo del checkout
+3. Completar la aceptación de voz, micrófonos, efectos HA, rutinas, privacidad
+   e índice. Mantener el checkout original para rollback mientras se valida.
+4. Retirar únicamente los fuentes y material de desarrollo del checkout
    anterior, después de comprobar su respaldo bajo `yo` y en GitHub. También
    inventariar `/home/kza/bench-ambient`, `.claude/worktrees` y
    `src.bak-20260424-1741`, que contienen copias históricas de código.
 
-Esta secuencia todavía no se ejecutó: los servicios siguen usando el checkout
-original. Los permisos administrativos se necesitarán al publicar esa release;
-el desarrollo actual continúa bajo `yo`. Conservar los archivos de ejecución y
-el estado persistente de `/home/kza/kza` hasta completar esa sustitución.
+Esta limpieza todavía no se ejecutó. El pipeline principal usa bytecode del
+slot; el índice y los recursos externos todavía dependen de rutas antiguas.
+Conservar `/home/kza/kza` y `/home/kza/app` hasta cerrar esas dependencias y la
+ventana de rollback. El desarrollo continúa bajo `yo`.
 
 ## Cómo corre producción (server `192.168.1.2`, usuario `kza`)
 
@@ -117,7 +156,7 @@ el estado persistente de `/home/kza/kza` hasta completar esa sustitución.
 - Secrets en `/home/kza/secrets/` (`.env`, `*-api-key.env`), inyectados vía
   `EnvironmentFile=` del unit.
 
-## Cómo se deployaba — pendiente de reemplazo por artefactos
+## Cómo se deployaba — histórico, sustituido por artefactos
 
 Flujo git local ↔ server ↔ GitHub histórico documentado en
 [`ECOSISTEMA_LOCAL_SERVER.md`](ECOSISTEMA_LOCAL_SERVER.md): el server es repo git y

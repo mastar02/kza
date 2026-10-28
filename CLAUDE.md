@@ -9,10 +9,13 @@ en su despliegue. El servidor permanece bajo `kza`; las versiones se publican
 allí al hacer una release. Los archivos de la versión instalada se conservan
 hasta su reemplazo por esa release. El destino acordado es transferirle únicamente artefactos
 compilados y recursos de ejecución construidos bajo `yo`. El mecanismo de
-construcción de bytecode está en `scripts/build_runtime.py`; la instalación y
-promoción siguen pendientes, y el servicio existente sigue ejecutando su
-checkout. Las instrucciones históricas de desarrollo en el server
-o de puente desde una laptop quedan reemplazadas por este acuerdo.
+construcción de bytecode está en `scripts/build_runtime.py`. La release operativa
+del 2026-10-28 ejecuta el slot compilado `b0866e8`, con estado privado separado;
+el checkout anterior se conserva para rollback, dependencias e índice de código.
+Ver `docs/architecture/DEPLOYMENT.md` para el estado y las limitaciones reales.
+La instalación no cierra la aceptación de H6. Las instrucciones históricas de
+desarrollo en el server o de puente desde una laptop quedan reemplazadas por
+este acuerdo.
 
 Sistema de control por voz local para Home Assistant. Latencia <300ms para domótica (fast path 100% local); razonamiento complejo delegado al gateway LLM `:8200` (MiniMax cloud, decisión 2026-05-30 con `cloud.consent`). **2x RTX 3070 hoy** (cuda:1 audio completo + TTS + llama-server 7B fast-path NLU `:8101`; cuda:0 casi libre — Emotion deshabilitado; BGE-M3 vive en CPU, no en GPU) — se irán conectando más GPUs; cualquier reasignación se discute primero. Python 3.13, async/await, ~38K líneas, 2740+ tests.
 

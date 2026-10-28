@@ -7,6 +7,23 @@
 
 ---
 
+## Nota operativa local — 2026-10-28
+
+La release compilada de KZA, instalada por pedido del usuario, usa
+`kza-dashboard-proxy.service` con NGINX nativo bajo `kza`, TLS local en
+`192.168.1.2:9540` y backend en `127.0.0.1:9500`. El puerto 9540 pertenece al
+sub-rango KZA 9500–9599 y se comprobó libre antes de instalar. No se cambió el
+NGINX compartido. Esta exposición directa por el proxy del proyecto se registra
+como desviación operativa local de R6; queda pendiente integrarla con el proxy
+de plataforma. No implica una actualización de la página canónica de Notion.
+
+La consola de voz usa temporalmente archivo privado y rotación horaria, como
+desviación local de R9: el socket del journal global bloqueó el event loop. El
+usuario reinició journald; después volvió a observarse CPU alta. No se declara
+resuelto ese incidente ni se alteró el journal global desde el agente. La
+rotación no prueba el borrado global requerido por privacidad. Ver
+[despliegue y limitaciones](architecture/DEPLOYMENT.md).
+
 ## Pág. 8 — Convenciones del servidor compartido
 
 ### Propósito
