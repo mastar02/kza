@@ -8,11 +8,70 @@ import json
 import logging
 import re
 import time
+from contextlib import contextmanager
+from contextvars import Context
 from datetime import datetime
+from functools import wraps
+import threading
+
 import chromadb
+from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
+from src.core.owned_work import ClosePhase, OwnedBlockingWork, WorkCloseTimeout
+
 logger = logging.getLogger(__name__)
+
+
+def _owned_operation(function):
+    @wraps(function)
+    def invoke(self, *args, **kwargs):
+        with self._operation():
+            return function(self, *args, **kwargs)
+    return invoke
+
+
+class _CollectionView:
+    """Expose operations through the owner, never an unleased SDK collection."""
+
+    def __init__(self, owner, attribute):
+        self._owner, self._attribute = owner, attribute
+
+    def _call(self, method, *args, **kwargs):
+        with self._owner._operation():
+            collection = getattr(self._owner, self._attribute)
+            if collection is None or not self._owner._ready:
+                self._owner.initialize()
+                collection = getattr(self._owner, self._attribute)
+            return getattr(collection, method)(*args, **kwargs)
+
+    def query(self, *args, **kwargs):
+        return self._call('query', *args, **kwargs)
+
+    def get(self, *args, **kwargs):
+        return self._call('get', *args, **kwargs)
+
+    def add(self, *args, **kwargs):
+        return self._call('add', *args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        return self._call('delete', *args, **kwargs)
+
+    def count(self):
+        return self._call('count')
+
+
+class _EmbedderView:
+    """Keep encoding inside the same native lifetime as the SDK."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    def encode(self, *args, **kwargs):
+        with self._owner._operation():
+            if self._owner._embedder is None or not self._owner._ready:
+                self._owner.initialize()
+            return self._owner._embedder.encode(*args, **kwargs)
 
 
 class ChromaSync:
@@ -68,6 +127,21 @@ class ChromaSync:
         self._commands_collection = None
         self._routines_collection = None
         self._embedder = None
+        self._ready = False
+        self._admission_closed = False
+        self._active = 0
+        self._condition = threading.Condition()
+        self._local = threading.local()
+        self._initialize_lock = threading.Lock()
+        self._close_lock = threading.Lock()
+        self._client_closed = False
+        self._client_failed = False
+        self._closing = None
+        self._phase = ClosePhase.IDLE
+        self._async_work = OwnedBlockingWork()
+        self._commands_view = _CollectionView(self, '_commands_collection')
+        self._routines_view = _CollectionView(self, '_routines_collection')
+        self._embedder_view = _EmbedderView(self)
 
     def _is_excluded(self, entity_id: str) -> bool:
         """True si la entidad no debe indexarse en el vector search (lista
@@ -76,54 +150,140 @@ class ChromaSync:
             return True
         return any(p.search(entity_id) for p in self._excluded_patterns)
 
-    def initialize(self):
-        """Inicializar ChromaDB y embedder"""
-        logger.info("Inicializando ChromaDB...")
-        
-        # Cliente persistente
-        self._client = chromadb.PersistentClient(path=self.chroma_path)
-        
-        # Colecciones
+    @contextmanager
+    def _operation(self):
+        # The condition guards only counters; no SDK, encoder or I/O holds it.
+        depth = getattr(self._local, 'depth', 0)
+        with self._condition:
+            if depth == 0:
+                if self._admission_closed:
+                    raise RuntimeError('chroma_sync_closed')
+                self._active += 1
+            self._local.depth = depth + 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._local.depth = depth
+                if depth == 0:
+                    self._active -= 1
+                    self._condition.notify_all()
+
+    @_owned_operation
+    def initialize(self) -> None:
+        """Initialize once, closing our client on a partial construction failure."""
+        failed = False
+        with self._initialize_lock:
+            if self._ready:
+                return
+            # An admitted operation can still finish while shutdown waits for it.
+            # A failed initializer must never overwrite its surviving SDK handle.
+            if self._admission_closed:
+                raise RuntimeError('chroma_sync_closed')
+            try:
+                Context().run(self._construct)
+                self._ready = True
+            except Exception:
+                failed = True
+                self._admission_closed = True
+            if failed:
+                # Still inside the initializer's native ownership. Other admitted
+                # initializers wait on this lock and cannot acquire a second SDK.
+                self._close_client()
+        if failed:
+            raise RuntimeError('chroma_sync_initialization_failed') from None
+
+    def _construct(self) -> None:
+        self._client = chromadb.PersistentClient(path=self.chroma_path,
+            settings=Settings(anonymized_telemetry=False))
         self._commands_collection = self._client.get_or_create_collection(
-            name=self.commands_collection_name,
-            metadata={"hnsw:space": "cosine"}
-        )
-        
+            name=self.commands_collection_name, metadata={"hnsw:space": "cosine"})
         self._routines_collection = self._client.get_or_create_collection(
-            name=self.routines_collection_name,
-            metadata={"hnsw:space": "cosine"}
-        )
-        
-        # Embedder
-        logger.info(f"Cargando embedder: {self.embedder_model}")
-        self._embedder = SentenceTransformer(
-            self.embedder_model,
-            device=self.embedder_device
-        )
-        
-        logger.info("ChromaDB inicializado")
-    
+            name=self.routines_collection_name, metadata={"hnsw:space": "cosine"})
+        self._embedder = SentenceTransformer(self.embedder_model, device=self.embedder_device)
+
     @property
     def commands(self):
-        """Colección de comandos"""
-        if self._commands_collection is None:
-            self.initialize()
-        return self._commands_collection
-    
+        """Command operations retained through actual native completion."""
+        return self._commands_view
+
     @property
     def routines(self):
-        """Colección de rutinas"""
-        if self._routines_collection is None:
-            self.initialize()
-        return self._routines_collection
-    
+        """Routine operations retained through actual native completion."""
+        return self._routines_view
+
     @property
     def embedder(self):
-        """Modelo de embeddings"""
-        if self._embedder is None:
-            self.initialize()
-        return self._embedder
+        """Encoding operations retained through actual native completion."""
+        return self._embedder_view
 
+    def _close_client(self) -> None:
+        failed = False
+        if self._client_failed:
+            raise RuntimeError('chroma_sync_sdk_close_failed')
+        if self._client is not None and not self._client_closed:
+            try:
+                self._client.close()
+            except Exception:
+                self._client_failed = failed = True
+            if failed:
+                raise RuntimeError('chroma_sync_sdk_close_failed') from None
+            self._client_closed = True
+        self._client = self._commands_collection = self._routines_collection = self._embedder = None
+        self._ready = False
+
+    def close(self) -> None:
+        """Drain real native users and close our SDK reference on a worker thread."""
+        if getattr(self._local, 'depth', 0):
+            raise RuntimeError('chroma_sync_close_inside_operation')
+        self._admission_closed = True
+        with self._close_lock:
+            with self._condition:
+                while self._active:
+                    self._condition.wait()
+            self._phase = ClosePhase.RESOURCES
+            self._close_client()
+            self._phase = ClosePhase.COMPLETE
+
+    def begin_close(self) -> asyncio.Task:
+        """Close admission now and retain actual cleanup independently of callers."""
+        self._admission_closed = True
+        if self._closing is None:
+            draining = self._async_work.begin_close()
+            self._phase = ClosePhase.DRAIN
+            async def finish():
+                await draining
+                await asyncio.to_thread(self.close)
+            self._closing = asyncio.create_task(finish(), context=Context())
+            self._closing.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception(), context=Context())
+        return self._closing
+
+    async def aclose(self) -> None:
+        """Bound observation while keeping actual SDK shutdown owned."""
+        closing = self.begin_close()
+        cancelled = False
+        while not closing.done():
+            try:
+                async with asyncio.timeout(1):
+                    await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                cancelled = True
+            except TimeoutError as error:
+                raise WorkCloseTimeout('chroma_sync_still_running', phase=self._phase,
+                    diagnostics=self.resource_status()) from error
+        closing.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def resource_status(self) -> dict:
+        """Report counters and phases without private paths, queries or SDK reprs."""
+        return {'closed': self._admission_closed, 'operations': self._active,
+            'async_operations': self._async_work.status()['operations'],
+            'client_closed': self._client_closed, 'client_close_failed': self._client_failed,
+            'close_phase': self._phase.value}
+
+    @_owned_operation
     def warmup_embedder(self) -> float:
         """Forzar la inicialización lazy del embedder y compilar kernels.
 
@@ -141,6 +301,7 @@ class ChromaSync:
 
     # ==================== Sincronización de Comandos ====================
     
+    @_owned_operation
     def sync_commands(
         self,
         ha_client,
@@ -295,6 +456,7 @@ Solo JSON, sin explicaciones:"""
     
     # ==================== Búsqueda de Comandos ====================
     
+    @_owned_operation
     def search_command(
         self,
         query: str,
@@ -520,11 +682,11 @@ Solo JSON, sin explicaciones:"""
         """Variante async de search_command para el fast path.
 
         Delega el trabajo síncrono (encode BGE-M3 en CPU + query a Chroma) a un
-        thread vía asyncio.to_thread para no bloquear el event loop. Misma
+        thread con ownership retenido para no bloquear el event loop. Misma
         firma y retorno que search_command. Usar en contextos async calientes
         (dispatcher fast path); los callers sync siguen usando search_command.
         """
-        return await asyncio.to_thread(
+        return await self._async_work.run(
             self.search_command,
             query,
             threshold,
@@ -536,6 +698,7 @@ Solo JSON, sin explicaciones:"""
 
     # ==================== Rutinas ====================
     
+    @_owned_operation
     def save_routine(self, routine: dict):
         """Guardar rutina en ChromaDB"""
         routine_id = routine["id"]
@@ -571,6 +734,7 @@ Solo JSON, sin explicaciones:"""
                 }]
             )
     
+    @_owned_operation
     def search_routine(
         self,
         query: str,
@@ -603,6 +767,7 @@ Solo JSON, sin explicaciones:"""
         
         return None
     
+    @_owned_operation
     def delete_routine(self, routine_id: str):
         """Eliminar rutina de ChromaDB"""
         existing = self.routines.get(where={"routine_id": routine_id})
@@ -610,6 +775,7 @@ Solo JSON, sin explicaciones:"""
             self.routines.delete(ids=existing["ids"])
             logger.info(f"Rutina eliminada de ChromaDB: {routine_id}")
     
+    @_owned_operation
     def list_routines(self) -> list[dict]:
         """Listar todas las rutinas"""
         all_data = self.routines.get(include=["metadatas"])
@@ -632,6 +798,7 @@ Solo JSON, sin explicaciones:"""
     
     # ==================== Estadísticas ====================
     
+    @_owned_operation
     def get_stats(self) -> dict:
         """Obtener estadísticas de la base de datos"""
         commands_count = self.commands.count()

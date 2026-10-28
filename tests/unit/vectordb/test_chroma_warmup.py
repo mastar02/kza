@@ -24,8 +24,8 @@ def test_warmup_embedder_forces_lazy_init_and_encodes(monkeypatch):
     first command paid ~48ms cold start. The fix uses the `embedder` property
     (which calls initialize() if needed) instead of checking _embedder directly.
     """
-    # Create a ChromaSync without calling __init__ (to avoid real chroma setup)
-    chroma = ChromaSync.__new__(ChromaSync)
+    # Construction is I/O free; preserve real lifecycle state around the mock.
+    chroma = ChromaSync("unused-synthetic-index", "synthetic", "cpu")
     chroma._embedder = None
 
     # Mock embedder and track if initialize was called

@@ -26,8 +26,9 @@ def _fake_query_result(rows):
 def _make_chroma(rows, excluded=None):
     from src.vectordb.chroma_sync import ChromaSync
 
-    cs = ChromaSync.__new__(ChromaSync)
+    cs = ChromaSync("unused-synthetic-index", "synthetic", "cpu")
     # `commands` es @property sin setter → setear el atributo interno real
+    cs._ready = True
     cs._commands_collection = MagicMock()
     cs._commands_collection.query = MagicMock(return_value=_fake_query_result(rows))
     cs._embedder = MagicMock()

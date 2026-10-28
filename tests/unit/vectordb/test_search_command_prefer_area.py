@@ -32,14 +32,15 @@ def _make_chroma_with_results(rows):
     """Build a ChromaSync-compatible mock; rows is list of (distance, meta, doc)."""
     from src.vectordb.chroma_sync import ChromaSync
 
-    cs = ChromaSync.__new__(ChromaSync)
+    cs = ChromaSync("unused-synthetic-index", "synthetic", "cpu")
     # `commands` es @property sin setter → setear el atributo interno real
+    cs._ready = True
     cs._commands_collection = MagicMock()
     cs._commands_collection.query = MagicMock(return_value=_fake_query_result(rows))
     cs._embedder = MagicMock()
     cs._embedder.encode = MagicMock(return_value=MagicMock(tolist=lambda: [0.0] * 8))
     # search_command filtra excluidos en query-time (2026-06-04) — el mock
-    # bypasea __init__, así que hay que poblar el estado de exclusiones.
+    # conserva el estado de exclusiones junto al lifecycle del constructor.
     cs._excluded_entities = {"light.hogar"}
     cs._excluded_patterns = []
     return cs
@@ -221,7 +222,8 @@ def _make_chroma_two_pass(area_rows, global_rows):
     global_rows si no — simula el filtrado real de ChromaDB."""
     from src.vectordb.chroma_sync import ChromaSync
 
-    cs = ChromaSync.__new__(ChromaSync)
+    cs = ChromaSync("unused-synthetic-index", "synthetic", "cpu")
+    cs._ready = True
     cs._commands_collection = MagicMock()
 
     def _query(**kwargs):

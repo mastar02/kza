@@ -14,7 +14,7 @@ class _SlowSyncChroma(ChromaSync):
     """Override search_command con un sleep síncrono para probar el offload."""
 
     def __init__(self):
-        # No llamamos super().__init__ — no necesitamos chroma real para este test.
+        super().__init__("unused-synthetic-index", "synthetic", "cpu")
         self._search_calls = []
 
     def search_command(self, query, threshold=0.65, **kwargs):

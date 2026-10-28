@@ -394,6 +394,7 @@ async def _run_main(shutdown: AsyncExitStack):
         excluded_entities=vectordb_config.get("exclude_entities"),
         excluded_patterns=vectordb_config.get("exclude_patterns"),
     )
+    shutdown.push_async_callback(chroma.aclose)
 
     # LLM Reasoner — HTTP al kza-72b.service (default) o local GGUF (fallback)
     from src.llm import HttpReasoner
@@ -553,6 +554,7 @@ async def _run_main(shutdown: AsyncExitStack):
 
     # Privacy authority always exists; semantic recall remains optional.
     privacy_services = await build_privacy_services(config, shutdown=shutdown)
+    privacy_services.add_borrower(chroma.begin_close)
     memory_services = await build_memory_services(config, shutdown=shutdown, privacy=privacy_services)
     memory_manager = memory_services.manager if memory_services is not None else None
     erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
