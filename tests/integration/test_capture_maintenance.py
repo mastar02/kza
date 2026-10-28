@@ -103,18 +103,35 @@ async def test_disabled_features_purge_expired_text_and_unattached_clip_at_start
         assert not g.config['ambient']['enabled'] and not g.config['memory']['enabled']
 
 
-async def test_new_earlier_deadline_wakes_sleeping_maintenance_without_transcriber(tmp_path):
+@pytest.mark.parametrize('already_due', [False, True])
+async def test_new_earlier_deadline_wakes_sleeping_maintenance_without_transcriber(tmp_path, monkeypatch, already_due):
     async with graph(tmp_path, clock=time.time) as g:
         store, archive = await g.make_store(retention_hours=.1/3600)
         retention = await g.start()
         await settle(retention)
         source, row = await add_capture(g, store)
+        deadline = min(source.expires_at, source.captured_at + .1)
+        encoded = []
+        write = archive._write_sync
+        def observed(*args, **kwargs):
+            encoded.append(True)
+            return write(*args, **kwargs)
+        monkeypatch.setattr(archive, '_write_sync', observed)
+        if already_due:
+            async with asyncio.timeout(2):
+                while time.time() < deadline:
+                    await asyncio.sleep(.001)
         clip = await archive.write('synthetic-room', row, AUDIO, source=source)
-        assert clip is not None
+        if clip is None:
+            assert time.time() >= deadline and archive.stats['written'] == 0
+        else:
+            assert archive.stats['written'] == 1
+        if already_due:
+            assert clip is None and not encoded
+        assert archive.stats['failed'] == 0
         async with asyncio.timeout(2):
-            while rows(store.db_path) or Path(clip).exists():
+            while rows(store.db_path) or clip is not None and Path(clip).exists():
                 await asyncio.sleep(.01)
-        assert archive.stats['written'] == 1
 
 
 async def test_deadlines_survive_restart_and_reads_do_not_renew_them(tmp_path):
