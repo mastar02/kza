@@ -26,25 +26,45 @@ class _RoomCall:
     function: Callable | None
     args: tuple
     admitted: bool = False
+    outcome: object = None
+    receiver_retired: bool = False
 
     def clear(self):
         self.function, self.args = None, ()
 
+    def publish(self, outcome):
+        self.outcome = outcome
+        if self.receiver_retired:
+            outcome.clear()
 
-@dataclass(frozen=True)
+    def retire_receiver(self):
+        self.receiver_retired = True
+        if self.outcome is not None:
+            self.outcome.clear()
+            self.outcome = None
+
+
+@dataclass
 class _RoomOutcome:
     value: object = None
     error: RoomProducerError | None = None
 
+    def clear(self):
+        self.value = None
+
 
 def _invoke_room(call):
+    outcome = None
     try:
-        return _RoomOutcome(call.function(*call.args))
-    except (Exception, asyncio.CancelledError):
-        return _RoomOutcome(error=RoomProducerError.NATIVE)
+        try:
+            outcome = _RoomOutcome(call.function(*call.args))
+        except (Exception, asyncio.CancelledError):
+            outcome = _RoomOutcome(error=RoomProducerError.NATIVE)
+        call.publish(outcome)
+        return outcome
     finally:
         call.clear()
-        call = None
+        call = outcome = None
 
 
 class RoomProducer:
@@ -250,6 +270,10 @@ class RoomProducer:
                     raise RuntimeError(outcome.error.value)
                 return outcome.value
         finally:
+            if call is not None:
+                # The transport may keep its future/result after actual native
+                # exit. Its carrier must become empty on handoff or abandonment.
+                call.retire_receiver()
             if call is not None and not call.admitted:
                 # A queued owned task may not have started its transport yet.
                 # Its owner, not a cancelled observer, must retire that box.

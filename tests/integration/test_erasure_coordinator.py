@@ -598,8 +598,10 @@ async def test_semantic_factory_registers_target_before_first_index_access_even_
             raise OSError('synthetic crash during index initialization')
         client = MagicMock()
         client.get_or_create_collection.side_effect = first_index_access
-        with pytest.raises(OSError):
+        with pytest.raises(RuntimeError, match='^memory_services_initialization_failed$') as failure:
             await build_memory_services(config, shutdown=stack, privacy=privacy, chroma_client=client)
+        assert failure.value.__context__ is None
+        client.close.assert_not_called()  # The factory borrowed this client.
         assert observed == [{'path': str(tmp_path/'chroma'), 'collection': 'user_memories_policy_v1'}]
 
 
