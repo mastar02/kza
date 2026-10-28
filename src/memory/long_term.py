@@ -1,6 +1,7 @@
 """Policy-owned long-term memory, with a rebuildable local vector index."""
 
 import asyncio
+from contextvars import Context
 from collections.abc import Callable
 from dataclasses import dataclass
 import fcntl
@@ -72,10 +73,12 @@ class LongTermMemory:
 
     def __init__(self, chroma_client, collection_name: str = "user_memories", *,
                  ledger_path: str = ":memory:", clock=None, automatic_days: float = 30,
-                 shutdown_timeout_s: float = 1, privacy: PrivacyServices | None = None, index_descriptor: dict | None = None):
+                 shutdown_timeout_s: float = 1, privacy: PrivacyServices | None = None, index_descriptor: dict | None = None,
+                 close_client: Callable[[], None] | None = None):
         if type(shutdown_timeout_s) not in (int, float) or not math.isfinite(shutdown_timeout_s) or shutdown_timeout_s <= 0:
             raise ValueError("invalid_memory_shutdown_timeout")
         self._client, self._collection_name = chroma_client, collection_name
+        self._close_client = close_client
         self._collection = None
         self.index_collection_name = collection_name + "_policy_v1"
         self.index_descriptor = index_descriptor
@@ -357,6 +360,10 @@ class LongTermMemory:
 
     def _close_resources(self):
         with self._index_lock, self._query_lock, self._initializing:
+            # Keep authority and writer lease until the owned SDK really stops.
+            if self._close_client is not None:
+                self._close_client()
+                self._close_client = None
             if self._privacy is None:
                 self.ledger.close()
             if self._lease is not None:
@@ -381,7 +388,7 @@ class LongTermMemory:
                     # ownership again, without releasing live native work.
                     await asyncio.wait(tasks)
                 await asyncio.to_thread(self._close_resources)
-            self._close_task = asyncio.create_task(finish())
+            self._close_task = asyncio.create_task(finish(), context=Context())
         return self._close_task
 
     async def aclose(self) -> None:

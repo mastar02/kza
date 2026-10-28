@@ -68,10 +68,29 @@ class ObservedIndex:
 
 
 class MemoryClient:
+    _created = []
+
     def __init__(self, path):
         self.client = chromadb.PersistentClient(path=str(path), settings=Settings(anonymized_telemetry=False))
         self.collections = {}
         self.requested = []
+        self._closed = False
+        self._created.append(self)
+
+    def close(self):
+        """Release this test-owned SDK reference after its managers have drained."""
+        if not self._closed:
+            self.client.close()
+            self.collections.clear()
+            self._closed = True
+
+    @classmethod
+    def close_since(cls, marker):
+        """Close only clients allocated within the caller's explicit test scope."""
+        clients = cls._created[marker:]
+        for client in reversed(clients):
+            client.close()
+        del cls._created[marker:]
 
     def get_or_create_collection(self, name, **kwargs):
         self.requested.append(name)

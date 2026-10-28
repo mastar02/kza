@@ -31,10 +31,12 @@ async def main():
     with tempfile.TemporaryDirectory(prefix='kza-memory-browser-', dir=browser_data) as work:
         directory = Path(work)
         async with AsyncExitStack() as stack:
+            client = MemoryClient(directory/'chroma')
+            stack.push_async_callback(asyncio.to_thread, client.close)
             services = await build_memory_services({'memory': {
                 'privacy_db_path': str(directory/'privacy.db'),
                 'preferences_path': str(directory/'preferences.json'),
-            }}, shutdown=stack, chroma_client=MemoryClient(directory/'chroma'))
+            }}, shutdown=stack, chroma_client=client)
             memory = services.manager.long_term
 
             def source():

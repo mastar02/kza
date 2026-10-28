@@ -65,6 +65,16 @@ del _module_name
 # ==================== Pytest Configuration ====================
 
 @pytest.fixture(autouse=True)
+def _close_test_owned_memory_clients():
+    """Give SDK clients created by the helper a real lifetime, independent of GC."""
+    from tests.mocks.memory_graph import MemoryClient
+    marker = len(MemoryClient._created)
+    try:
+        yield
+    finally:
+        MemoryClient.close_since(marker)
+
+@pytest.fixture(autouse=True)
 def _deny_real_async_http_transport(monkeypatch):
     """Require synthetic HTTPX transports; stale SDK mocks must not reach services."""
     import httpx
