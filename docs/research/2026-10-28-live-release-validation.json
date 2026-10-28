@@ -312,5 +312,25 @@
     "R9": "Private rotating console file as journal-block contingency; not global deletion proof."
   },
   "private_evidence_directory": "data/deploy-20261028T144002Z",
-  "private_evidence_tracked_in_git": false
+  "private_evidence_tracked_in_git": false,
+  "diagnostic_read_access": {
+    "checked_at": "2026-10-28T20:28:53.356174+00:00",
+    "effective_user": "yo",
+    "console_readable": true,
+    "console_writable": false,
+    "log_directory_listable": false,
+    "bytes_read_without_printing_content": 4096,
+    "state_env_readable": false,
+    "runtime_secrets_env_readable": false,
+    "state_settings_readable": false,
+    "state_data_listable": false,
+    "applied_by": "user from kza session",
+    "mechanism": "named user ACL on console.log and traversal-only ACL on its ancestors",
+    "existing_rotation_preserves_current_inode": true,
+    "future_release_reapplication_required": true,
+    "service_restart_required": false,
+    "new_ssh_key_required": false,
+    "alert_api_access_granted": false,
+    "log_contents_tracked_in_git": false
+  }
 }

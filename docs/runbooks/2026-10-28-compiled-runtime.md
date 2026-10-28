@@ -56,6 +56,43 @@ de volver a iniciar. El usuario reinició journald, pero luego volvió a observa
 CPU alta; el incidente global sigue sin diagnóstico cerrado. No hay evidencia
 de apagado gradual aceptado ni de borrado global por este procedimiento.
 
+## Lectura de consola desde `yo`
+
+El 28 de octubre el usuario aplicó una ACL desde su sesión `kza`. `yo` tiene
+lectura de `console.log` y sólo tránsito por los directorios necesarios. Se
+comprobó una lectura real de 4096 bytes, sin imprimir contenido privado, y se
+verificó que no puede escribir en el archivo ni listar el directorio de logs.
+Tampoco puede leer el `.env` del estado, `/home/kza/secrets/.env`, la
+configuración privada ni listar el directorio de datos.
+
+Desde `yo`, para seguir la consola de la release actual:
+
+```sh
+runtime_path="$(readlink -f /home/kza/releases/current)"
+tail -n 100 -F "$(dirname "$runtime_path")/state/logs/console.log"
+```
+
+No usar `current/../state` desde `yo`: ese recorrido exige atravesar el
+directorio `runtime`, que conserva sus permisos privados. La ACL no habilita
+otros logs, archivos rotados, alertas por API ni operaciones de systemd.
+`copytruncate` conserva el inode de la consola y su permiso de lectura. Una
+release futura necesita reaplicar el permiso sobre su nuevo slot.
+
+Para reaplicarlo, desde una sesión de `kza`, respaldar primero las ACL de los
+directorios afectados y del archivo con `getfacl -p`, y luego ejecutar:
+
+```sh
+slot="$(dirname "$(readlink -f /home/kza/releases/current)")"
+setfacl -m u:yo:r-- "$slot/state/logs/console.log"
+setfacl -m u:yo:--x /home/kza/releases /home/kza/releases/slots \
+  "$slot" "$slot/state" "$slot/state/logs"
+```
+
+El respaldo de esta operación quedó en
+`/home/kza/.local/state/kza-log-read/20261028T202838023713Z/before.acl`.
+`kza` puede restaurarlo con `setfacl --restore=RUTA_DEL_RESPALDO`. El permiso no
+requirió reiniciar el servicio ni crear otra clave SSH.
+
 ## Rollback conservando ambos estados
 
 El respaldo original es
