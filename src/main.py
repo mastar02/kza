@@ -355,10 +355,10 @@ async def _run_main(shutdown: AsyncExitStack):
     shutdown.push_async_callback(home_action_service.close)
 
     # Verificar conexión (async)
-    if not await ha_client.test_connection():
-        logger.error(f"No se puede conectar a Home Assistant: {ha_url}")
-        sys.exit(1)
-    logger.info(f"Conectado a Home Assistant: {ha_url}")
+    if await ha_client.test_connection():
+        logger.info("Home Assistant connected")
+    else:
+        logger.warning("Home Assistant unavailable at startup; continuing local voice and dashboard")
 
 
     # Preflight de VRAM antes de cargar modelos pesados (aviso, no bloquea).

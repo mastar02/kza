@@ -12,6 +12,7 @@ import re
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from contextvars import Context
 from enum import StrEnum
 from time import monotonic
 
@@ -673,7 +674,10 @@ class HomeAssistantClient:
 
     async def _fetch_all_states_rest(self) -> list[dict]:
         """Wrapper sobre get_all_entities para claridad en el sync loop."""
-        return await self.get_all_entities()
+        snapshot = await self.get_state_snapshot()
+        if not snapshot.available:
+            raise RuntimeError("ha_state_snapshot_unavailable")
+        return list(snapshot.states)
 
     async def call_service_once(
         self, domain: str, service: str, entity_id: str, data: dict | None = None,
@@ -1284,24 +1288,24 @@ class HomeAssistantClient:
             logger.debug("State sync ya está corriendo")
             return
 
-        # Pre-condición: confirmar que el canal WS events handshake-ea OK
-        # antes de marcar el servicio como ready. Mata el ruido de "auth
-        # timeout" en logs cuando el primer ws_connect es lento (HA digiriendo
-        # el snapshot REST recién hecho). Si todos los reintentos fallan,
-        # propaga RuntimeError para que main.py decida (sigue/fail).
-        await self._wait_for_ws_ready(max_attempts=3, backoff_s=2.0)
-
-        # Pre-conectar canal [calls] al startup. Sin esto, el primer comando
-        # del usuario paga ~90ms de SSL+auth handshake por el lazy connect.
-        # Heartbeat=30s mantiene viva la conexión.
-        try:
-            await self.connect_websocket()
-        except Exception as e:
-            logger.warning(f"WS calls warmup falló (seguirá lazy): {e}")
+        # Keep failed startup authentication visible, without a new burst of
+        # handshakes. The existing bounded reconnect loop owns future attempts.
+        ready = False
+        if not self._has_auth_error:
+            try:
+                await self._wait_for_ws_ready(max_attempts=3, backoff_s=2.0)
+                ready = True
+            except RuntimeError:
+                logger.warning("HA events warmup deferred; background reconnection remains active")
+        if ready:
+            try:
+                await self.connect_websocket()
+            except Exception:
+                logger.warning("HA calls warmup deferred")
 
         self._state_full_refresh_interval_s = full_refresh_interval_s
         self._state_sync_running = True
-        self._state_subscribe_task = asyncio.create_task(self._state_sync_loop())
+        self._state_subscribe_task = asyncio.create_task(self._state_sync_loop(), context=Context())
         logger.info("HA state prefetch cache: sync loop arrancado")
 
     async def _wait_for_ws_ready(
@@ -1594,16 +1598,14 @@ class HomeAssistantClient:
                 if response.status == 200:
                     self._record_success(elapsed)
                     return True
-                if response.status in (401, 403):
-                    self._has_auth_error = True
-                    self._record_error(
-                        aiohttp.ClientResponseError(
-                            request_info=response.request_info,
-                            history=response.history,
-                            status=response.status,
-                        ),
-                        "test_connection",
-                    )
+                self._record_error(
+                    aiohttp.ClientResponseError(
+                        request_info=response.request_info,
+                        history=response.history,
+                        status=response.status,
+                    ),
+                    "test_connection",
+                )
                 return False
         except asyncio.TimeoutError:
             elapsed = (time.perf_counter() - t_start) * 1000
