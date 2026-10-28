@@ -1,0 +1,612 @@
+{
+  "checked_on": "2026-10-27",
+  "tested_commit": "79c5952b12eda57d62838dd6b82731ae5fefefff",
+  "tested_runtime_source_tree": "d480519f87046462134b91d2a2751cbd241b1781",
+  "tested_scripts_source_tree": "b08e19ac09711a9d58c6c794af52fe47bcd6999e",
+  "tested_frontend_tree": "eab8cb26d4dc1fb2713dbbdb43153bb5222dd4ca",
+  "effective_user": "yo",
+  "development_checkout": "/home/yo/projects/kza",
+  "previous_goal_turn_classification": "progress",
+  "scope": "Reusable actual native capture/command/event/wake-writer processing pause and reset, fresh origin epochs and input owners in multiroom and single-input paths. No authenticated persistent full-mute product integration yet.",
+  "new_python_cases_total": 31,
+  "new_python_cases": [
+    "tests.integration.test_capture_processing_pause::test_multi_pause_drains_native_work_discards_state_and_preserves_reusable_controllers[wake]",
+    "tests.integration.test_capture_processing_pause::test_multi_pause_drains_native_work_discards_state_and_preserves_reusable_controllers[vad]",
+    "tests.integration.test_capture_processing_pause::test_multi_pause_drains_native_work_discards_state_and_preserves_reusable_controllers[early]",
+    "tests.integration.test_capture_processing_pause::test_reset_failure_keeps_capture_sealed_and_can_be_repaired_without_restarting",
+    "tests.integration.test_capture_processing_pause::test_multi_pause_retains_noncooperative_command_cleanup_and_denies_post_callback",
+    "tests.integration.test_capture_processing_pause::test_single_pause_waits_for_actual_models_callbacks_and_driver_close[wake]",
+    "tests.integration.test_capture_processing_pause::test_single_pause_waits_for_actual_models_callbacks_and_driver_close[endpoint]",
+    "tests.integration.test_capture_processing_pause::test_single_pause_waits_for_actual_models_callbacks_and_driver_close[model]",
+    "tests.integration.test_capture_processing_pause::test_single_pause_waits_for_actual_models_callbacks_and_driver_close[callback]",
+    "tests.integration.test_capture_processing_pause::test_single_pause_waits_for_actual_models_callbacks_and_driver_close[stop]",
+    "tests.integration.test_capture_processing_pause::test_single_pause_waits_for_actual_models_callbacks_and_driver_close[close]",
+    "tests.integration.test_capture_processing_pause::test_single_resume_uses_fresh_driver_and_epochs_without_restoring_old_preroll",
+    "tests.integration.test_capture_processing_pause::test_single_can_load_models_and_start_while_capture_is_already_paused[False]",
+    "tests.integration.test_capture_processing_pause::test_single_can_load_models_and_start_while_capture_is_already_paused[True]",
+    "tests.integration.test_capture_processing_pause::test_pausing_during_single_initial_open_does_not_permanently_stop_the_runtime[constructor]",
+    "tests.integration.test_capture_processing_pause::test_pausing_during_single_initial_open_does_not_permanently_stop_the_runtime[start]",
+    "tests.integration.test_capture_processing_pause::test_processor_pause_retains_each_real_model_and_denies_late_identity_or_transcript[primary]",
+    "tests.integration.test_capture_processing_pause::test_processor_pause_retains_each_real_model_and_denies_late_identity_or_transcript[shadow]",
+    "tests.integration.test_capture_processing_pause::test_processor_pause_retains_each_real_model_and_denies_late_identity_or_transcript[profiles]",
+    "tests.integration.test_capture_processing_pause::test_processor_pause_retains_each_real_model_and_denies_late_identity_or_transcript[speaker]",
+    "tests.integration.test_capture_processing_pause::test_processor_pause_retains_each_real_model_and_denies_late_identity_or_transcript[emotion]",
+    "tests.integration.test_capture_processing_pause::test_wake_pause_waits_for_real_encoder_then_reuses_the_same_thread_and_original_ttls",
+    "tests.integration.test_capture_processing_pause::test_wake_pause_keeps_existing_history_until_its_original_deadline_and_purge_continues",
+    "tests.integration.test_capture_processing_pause::test_wake_pause_and_close_wait_for_a_submitter_still_copying_input",
+    "tests.integration.test_capture_processing_pause::test_wake_close_alone_retains_the_lease_until_the_actual_input_copy_exits",
+    "tests.integration.test_capture_processing_pause::test_multi_pause_includes_the_actual_attached_wake_encoder",
+    "tests.integration.test_capture_processing_pause::test_processor_pause_includes_background_shadow_after_primary_command_has_returned",
+    "tests.integration.test_capture_processing_pause::test_cancelled_processor_pause_observer_cannot_release_native_work_or_privacy_lease",
+    "tests.integration.test_capture_processing_pause::test_cancelled_loop_pause_observer_still_retains_close_and_shared_lease[multi]",
+    "tests.integration.test_capture_processing_pause::test_cancelled_loop_pause_observer_still_retains_close_and_shared_lease[single]",
+    "tests.integration.test_capture_processing_pause::test_wake_close_cannot_replace_a_queue_during_the_actual_worker_pop_handoff"
+  ],
+  "contracts": {
+    "voice_origin_sealed_before_wait_and_original_epochs_retired": true,
+    "native_wake_vad_early_stt_foreground_models_shadow_emotion_and_classifier_drained": true,
+    "background_shadow_after_primary_result_is_included": true,
+    "actual_notification_and_noncooperative_dispatch_cleanup_waited": true,
+    "post_command_callback_denied_after_pause": true,
+    "original_model_buffers_preroll_command_state_and_event_state_reset_before_resume": true,
+    "reset_failure_keeps_gate_sealed_and_can_be_retried_after_backend_repair": true,
+    "capture_controllers_reusable_after_cancelled_active_batch": true,
+    "single_initial_open_pause_does_not_terminally_close_runtime": true,
+    "single_model_loading_and_runtime_start_supported_while_already_paused": true,
+    "single_legacy_event_detector_included_when_present": true,
+    "paused_private_auxiliary_calls_denied_maintenance_loads_explicitly_marked": true,
+    "current_identity_emotion_and_local_profile_cache_retired_without_erasing_manual_profiles": true,
+    "resume_renews_voice_epochs_and_uses_new_driver_owners": true,
+    "wake_encoder_actual_exit_cleanup_and_attached_multiroom_writer_included": true,
+    "wake_submitter_reserves_slot_before_pcm_copy_and_retires_local_arguments_before_slot_release": true,
+    "wake_close_waits_submitters_even_after_writer_thread_exit": true,
+    "wake_queue_not_replaced_during_locked_worker_pop_handoff": true,
+    "observer_cancellation_or_bounded_close_never_releases_actual_native_ownership_or_authority_lease": true,
+    "historical_sources_and_original_deadlines_preserved": true,
+    "historical_clip_purge_continues_while_writer_paused": true,
+    "unsupported_legacy_writer_or_detector_cannot_succeed_as_a_completed_pause": true,
+    "total_mute_supported": false
+  },
+  "causal_red": [
+    {
+      "tested_commit": "ae852f4cb56adc33c41965f3279f5ceb52bd28bd",
+      "old_runtime_module": {
+        "path": "/tmp/kza-wake-submission-red-avml8v11/src/wakeword/wake_clip_writer.py",
+        "sha256": "4ed1fd3ddeaeee95198e36edfb70979221e95babd29e7d4b2769e7beeaa3a089"
+      },
+      "wrapper": {
+        "path": "/tmp/kza-wake-submission-close-red.py",
+        "sha256": "9b0180b5e588f98584803f2571847df2ed4b38155397219a7315e3e19a15c71b"
+      },
+      "log": "/tmp/kza-wake-submission-close-red.log",
+      "failed": 1,
+      "cause": "Writer join and authority close could complete while a synchronous submitter still copied raw PCM.",
+      "subject_imported_and_path_asserted_before_conftest": true
+    },
+    {
+      "tested_commit": "ae852f4cb56adc33c41965f3279f5ceb52bd28bd",
+      "wrapper": {
+        "path": "/tmp/kza-wake-pop-handoff-close-red.py",
+        "sha256": "09fa8467e3df8add4f4d766c4d1a4a31544cdedd401d51ea06a2340f8cbc8508"
+      },
+      "log": "/tmp/kza-wake-pop-handoff-close-red.log",
+      "failed": 1,
+      "cause": "Retirement could replace the queue between its bool check and worker popleft, producing IndexError.",
+      "subject_imported_and_path_asserted_before_conftest": true
+    }
+  ],
+  "intermediate_case_suites": [
+    {
+      "passed": 21,
+      "failed": 0,
+      "runtime_s": 8.36,
+      "log": "/tmp/kza-capture-processing-pause-initial.log"
+    },
+    {
+      "passed": 25,
+      "failed": 0,
+      "runtime_s": 3.65,
+      "log": "/tmp/kza-capture-processing-pause-expanded.log"
+    },
+    {
+      "passed": 27,
+      "failed": 0,
+      "runtime_s": 4.81,
+      "log": "/tmp/kza-capture-processing-pause-final-cases.log"
+    },
+    {
+      "passed": 28,
+      "failed": 0,
+      "runtime_s": 4.3,
+      "log": "/tmp/kza-capture-processing-pause-accepted-cases.log"
+    },
+    {
+      "passed": 31,
+      "failed": 0,
+      "runtime_s": 8.96,
+      "log": "/tmp/kza-capture-processing-pause-final.log",
+      "before_explicit_driver_pause_failure_propagation": true
+    }
+  ],
+  "intermediate_baseline_regressions": {
+    "passed": 171,
+    "failed": 0,
+    "runtime_s": 59.34,
+    "log": "/tmp/kza-capture-pause-baseline-regressions.log"
+  },
+  "intermediate_focused_suite": {
+    "passed": 353,
+    "failed": 0,
+    "runtime_s": 74.38,
+    "log": "/tmp/kza-capture-processing-pause-broad.log",
+    "xml": "/tmp/kza-capture-processing-pause-broad.xml",
+    "before_final_two_variants_maintenance_skip_and_explicit_driver_error_propagation": true
+  },
+  "final_processing_cases": {
+    "passed": 31,
+    "failed": 0,
+    "runtime_s": 8.03,
+    "log": "/tmp/kza-capture-processing-pause-accepted.log",
+    "xml": "/tmp/kza-capture-processing-pause-accepted.xml"
+  },
+  "full_suite": {
+    "accepted": false,
+    "log": "/tmp/kza-capture-processing-pause-full.log",
+    "xml": "/tmp/kza-capture-processing-pause-full.xml",
+    "application_and_tests_frozen_for_entire_run": true,
+    "collected": 5669,
+    "passed": 5665,
+    "failed": 3,
+    "xfailed": 1,
+    "runtime_s": 867.88,
+    "terminal_exit_code": 1,
+    "numeric_native_timeout_capture": {
+      "terminal_exit_code": 1,
+      "captured": 2,
+      "events": [
+        {
+          "case": "tests/integration/test_collector_erasure.py::test_journal_removes_each_managed_dataset_and_keeps_unrelated_sources[exports]",
+          "when": "call",
+          "phase": "drain",
+          "diagnostics": {
+            "closed": true,
+            "operations": 1,
+            "capacity": 8,
+            "writer_lease": true,
+            "borrowers": 3,
+            "closing": true,
+            "close_phase": "drain",
+            "io": {
+              "active": [
+                {
+                  "phase": "native",
+                  "age_ms": 71.4911229442805,
+                  "dispatch_ms": 0.02337503246963024,
+                  "native_queue_ms": 0.057308003306388855,
+                  "native_ms": 71.41043990850449,
+                  "after_native_ms": null
+                }
+              ],
+              "recent": [
+                {
+                  "phase": "complete",
+                  "age_ms": 121.00132391788065,
+                  "dispatch_ms": 0.025938963517546654,
+                  "native_queue_ms": 0.05267094820737839,
+                  "native_ms": 120.77902513556182,
+                  "after_native_ms": 0.14368887059390545
+                },
+                {
+                  "phase": "complete",
+                  "age_ms": 374.07424999400973,
+                  "dispatch_ms": 0.022524967789649963,
+                  "native_queue_ms": 0.04490814171731472,
+                  "native_ms": 373.8566180691123,
+                  "after_native_ms": 0.15019881539046764
+                },
+                {
+                  "phase": "complete",
+                  "age_ms": 0.5903199780732393,
+                  "dispatch_ms": 0.04017096944153309,
+                  "native_queue_ms": 0.048734014853835106,
+                  "native_ms": 0.38891308940947056,
+                  "after_native_ms": 0.11250190436840057
+                },
+                {
+                  "phase": "complete",
+                  "age_ms": 0.22598495706915855,
+                  "dispatch_ms": 0.0093141570687294,
+                  "native_queue_ms": 0.0384089071303606,
+                  "native_ms": 0.10191509500145912,
+                  "after_native_ms": 0.07634679786860943
+                },
+                {
+                  "phase": "complete",
+                  "age_ms": 159.66917295008898,
+                  "dispatch_ms": 0.018428079783916473,
+                  "native_queue_ms": 0.04031183198094368,
+                  "native_ms": 159.48037500493228,
+                  "after_native_ms": 0.1300580333918333
+                },
+                {
+                  "phase": "complete",
+                  "age_ms": 134.5621319487691,
+                  "dispatch_ms": 0.021663028746843338,
+                  "native_queue_ms": 0.12943800538778305,
+                  "native_ms": 134.2620230279863,
+                  "after_native_ms": 0.1490078866481781
+                },
+                {
+                  "phase": "complete",
+                  "age_ms": 543.4796449262649,
+                  "dispatch_ms": 0.02373591996729374,
+                  "native_queue_ms": 0.18126703798770905,
+                  "native_ms": 543.1422700639814,
+                  "after_native_ms": 0.13237190432846546
+                },
+                {
+                  "phase": "complete",
+                  "age_ms": 207.41804596036673,
+                  "dispatch_ms": 0.027843052521348,
+                  "native_queue_ms": 0.08923583664000034,
+                  "native_ms": 207.14457798749208,
+                  "after_native_ms": 0.15638908371329308
+                }
+              ]
+            },
+            "close_io": {
+              "active": [],
+              "recent": []
+            }
+          }
+        },
+        {
+          "case": "tests/integration/test_rest_receipts.py::test_cancelled_observer_keeps_unknown_native_read_in_streams_claim",
+          "when": "call",
+          "phase": "event_observation_timeout",
+          "diagnostics": {
+            "closed": true,
+            "operations": 0,
+            "capacity": 8,
+            "close_phase": "complete",
+            "io": {
+              "active": [],
+              "recent": [
+                {
+                  "phase": "complete",
+                  "age_ms": 779.9201519228518,
+                  "dispatch_ms": 0.046940986067056656,
+                  "native_queue_ms": 0.14509097672998905,
+                  "native_ms": 779.5774999540299,
+                  "after_native_ms": 0.1506200060248375
+                },
+                {
+                  "phase": "complete",
+                  "age_ms": 117.14357999153435,
+                  "dispatch_ms": 0.025659101083874702,
+                  "native_queue_ms": 0.03763684071600437,
+                  "native_ms": 116.9655891135335,
+                  "after_native_ms": 0.11469493620097637
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "numeric_native_timeout_capture_plugin": {
+      "path": "/tmp/kza_capture_processing_pause_capture.py",
+      "sha256": "5f20d4db0b7f4041cfa5fd3eef730e96f8c2e3db36d2293bdf8a031d07d843ba"
+    },
+    "failures": [
+      {
+        "case": "tests.integration.test_capture_maintenance::test_new_earlier_deadline_wakes_sleeping_maintenance_without_transcriber",
+        "message": "assert None is not None"
+      },
+      {
+        "case": "tests.integration.test_collector_erasure::test_journal_removes_each_managed_dataset_and_keeps_unrelated_sources[exports]",
+        "message": "src.core.owned_work.WorkCloseTimeout: privacy_resources_still_running"
+      },
+      {
+        "case": "tests.integration.test_rest_receipts::test_cancelled_observer_keeps_unknown_native_read_in_streams_claim",
+        "message": "TimeoutError"
+      }
+    ],
+    "failure_analysis": [
+      {
+        "case": "capture_maintenance::test_new_earlier_deadline_wakes_sleeping_maintenance_without_transcriber",
+        "result": "clip None",
+        "capture_at": 1793147343.9006615,
+        "effective_expires_at": 1793147344.0006614,
+        "reserve_row_query_local_timestamp": "21:29:04.026",
+        "inference": "The row was already expired when archive reservation queried it; expecting successful publication was invalid. The fixture now verifies expired rejection without extending retention."
+      },
+      {
+        "case": "collector_erasure::test_journal_removes_each_managed_dataset_and_keeps_unrelated_sources[exports]",
+        "result": "privacy_resources_still_running during fixture teardown",
+        "phase": "drain",
+        "writer_lease_retained": true,
+        "active_native_ms_at_snapshot": 71.41043990850449,
+        "fixture_close_observation_s": 0.03,
+        "causal_resource_fix_verified": false
+      },
+      {
+        "case": "rest_receipts::test_cancelled_observer_keeps_unknown_native_read_in_streams_claim",
+        "result": "event alog observation timeout before the intended held read",
+        "observation_s": 0.1,
+        "recent_native_ms": 779.5774999540299,
+        "native_queue_ms": 0.14509097672998905,
+        "causal_resource_fix_verified": false
+      }
+    ]
+  },
+  "ruff": {
+    "passed": true,
+    "log": "/tmp/kza-capture-processing-pause-accepted-ruff.log"
+  },
+  "bandit": {
+    "low": 27,
+    "medium": 0,
+    "high": 0,
+    "log": "/tmp/kza-capture-processing-pause-accepted-bandit.log"
+  },
+  "frontend_unit": {
+    "passed": 77,
+    "failed": 0,
+    "runtime_ms": 108.491247,
+    "log": "/tmp/kza-capture-processing-pause-frontend.log"
+  },
+  "dashboard_smoke": {
+    "passed": true,
+    "log": "/tmp/kza-capture-processing-pause-accepted-dashboard.log"
+  },
+  "source_ambient_browser_regression": {
+    "checks": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "ui_pause_pending_until_actual_native_asr_exit": true,
+      "late_transcript_not_persisted": true,
+      "reactivation_via_authenticated_ui_without_voice": true,
+      "old_history_preserved": true,
+      "revoked_session_cannot_reactivate": true,
+      "javascript_exceptions": 0,
+      "external_bootstrap_assets_blocked": true,
+      "synthetic_models_and_sources": true,
+      "total_mute_hardware_or_all_producers_acceptance": false
+    },
+    "log": "/tmp/kza-capture-processing-pause-source-browser.log"
+  },
+  "compiled_runtime": {
+    "git_commit": "79c5952b12eda57d62838dd6b82731ae5fefefff",
+    "artifact": "/tmp/kza-capture-processing-pause-runtime-rspsocnz/runtime.tar.gz",
+    "verified_hashes": 355,
+    "runtime_s": 14.294179152930155,
+    "tracked_nightly_enabled": false,
+    "config_external": true,
+    "returncode": 0,
+    "passed": true,
+    "checks": {
+      "passed": true,
+      "sourcefree_hashes": 355,
+      "real_http_authenticated_review_and_revision_delete": true,
+      "background_cpu_synthetic_encoder": true,
+      "event_private_pool_closes_while_general_executor_remains_saturated": true,
+      "event_cleanup_releases_caller_context_and_observes_real_thread_exit": true,
+      "authenticated_wav_matches_owned_pcm_and_actual_metadata": true,
+      "preview_bounded_six_seconds_full_segment_transcript_scope_explicit": true,
+      "permanent_profile_does_not_extend_review_audio_or_text": true,
+      "source_expiry_physically_cascades_review_rows_and_denies_http_read": true,
+      "capture_deadline_and_permanent_manual_profile_survive_restart": true,
+      "suggestions_only_never_accounts_or_permissions": true,
+      "old_upload_rejected_before_decode": true,
+      "local_voice_receipt_waits_for_actual_model_exit": true,
+      "legacy_original_untouched_private_accounts_sidecar": true,
+      "unresolved_voice_inventory_blocks_global_erasure": true,
+      "protocol_three_real_http_websocket_handshake_and_separate_channels": true,
+      "permanent_profile_metadata_has_bounded_page_lease_after_raw_expiry": true,
+      "profile_mutation_never_echoes_private_name": true,
+      "actual_ws_exact_ack_retires_local_stream_v4_without_global_false_completion": true,
+      "raw_groups_actual_http_merge_split_and_unknown_with_exact_revisions": true,
+      "automatic_complete_link_group_addition_uses_existing_encoder": true,
+      "group_edits_do_not_change_the_permanent_profile": true,
+      "voice_frontend_assets_packaged": true,
+      "ambient_control_modules_and_privacy_view_packaged": true,
+      "new_ambient_control_behaviour_covered_by_separate_compiled_cases_and_browser": true,
+      "input_driver_group_packaged_behaviour_covered_by_separate_compiled_cases": true,
+      "capture_processing_pause_behaviour_covered_by_separate_compiled_cases": true,
+      "real_models_gpu_full_main_hardware_or_frontend_voice_review": false
+    },
+    "artifact_sha256": "b891f4c2160891369ad46b619d1b07be0bc944bf5ab82851027985355ba72653",
+    "build_script": {
+      "path": "/tmp/kza-build-capture-processing-pause-runtime.py",
+      "sha256": "ec6894a919d50bd6277c6443c4fbef57d54f3780964cf1fbc3e807477f4089ad"
+    },
+    "smoke_script": {
+      "path": "/tmp/kza-capture-processing-pause-runtime-smoke.py",
+      "sha256": "2119081e117eabf021a57da9ded4ff5117f891035e90c0c162134e5a0b90c891"
+    }
+  },
+  "compiled_cases": {
+    "passed": true,
+    "returncode": 0,
+    "runtime_s": 52.84842400695197,
+    "git_commit": "79c5952b12eda57d62838dd6b82731ae5fefefff",
+    "all_loaded_application_modules_from_compiled_root": true,
+    "verified_hashes": 355,
+    "external_test_harness_only": true,
+    "xml": "/tmp/kza-capture-processing-pause-compiled-cases.xml",
+    "wrapper": {
+      "path": "/tmp/kza-capture-processing-pause-compiled-cases.py",
+      "sha256": "9bf527e2bbf644c0ab9f97f2636e571f0ebfb041f67d36dc3b736ef17547f713"
+    },
+    "log": "/tmp/kza-capture-processing-pause-compiled-cases.log",
+    "passed_processing_cases": 31,
+    "passed_input_driver_cases": 13,
+    "passed_ambient_pause_regressions": 21
+  },
+  "compiled_ambient_browser_regression": {
+    "checks": {
+      "passed": true,
+      "actual_chromium_http_ws_and_react": true,
+      "ui_pause_pending_until_actual_native_asr_exit": true,
+      "late_transcript_not_persisted": true,
+      "reactivation_via_authenticated_ui_without_voice": true,
+      "old_history_preserved": true,
+      "revoked_session_cannot_reactivate": true,
+      "javascript_exceptions": 0,
+      "external_bootstrap_assets_blocked": true,
+      "synthetic_models_and_sources": true,
+      "total_mute_hardware_or_all_producers_acceptance": false
+    },
+    "log": "/tmp/kza-capture-processing-pause-compiled-browser.log",
+    "wrapper": {
+      "path": "/tmp/kza-capture-processing-pause-compiled-browser.py",
+      "sha256": "e772c327c420c4b7d72cb7fb990730c0933e781524ce3619d5a7409a66fae906"
+    },
+    "external_test_harness_only": true,
+    "runtime_has_no_python_sources": true
+  },
+  "shared_host_observation": {
+    "captured_at_utc": "2026-10-28 00:32:50 UTC",
+    "io_pressure_full_avg10": 10.02,
+    "io_pressure_full_avg60": 12.31,
+    "io_pressure_full_avg300": 14.09,
+    "io_pressure_some_avg10": 18.45,
+    "causal_explanation_of_full_failures_proven": false,
+    "additional_wait_channel_samples": "/tmp/kza-capture-processing-pause-host-observations.json",
+    "pytest_native_thread_sample": {
+      "threads": 9718,
+      "tokio_runtime_workers": 9216,
+      "sqlx_sqlite_workers": 405,
+      "python_threads": 96,
+      "resident_kib": 1986320,
+      "sample_timestamp_not_captured": true,
+      "chromadb_version": "1.5.5"
+    },
+    "sdk_client_lifecycle_gap_observed": {
+      "test_helper": "tests/mocks/memory_graph.py: MemoryClient creates PersistentClient without explicit close",
+      "runtime_factory": "src/memory/services.py: build_memory_services creates a client but registers only manager cleanup",
+      "installed_sdk": "Client.close releases shared-system references; RustBindingsAPI.stop removes its bindings",
+      "causes_of_full_failures_proven": false,
+      "application_not_changed_during_live_full_suite": true
+    }
+  },
+  "limits": {
+    "coordinated_ambient_voice_registry_and_all_decoupled_runtime_jobs": false,
+    "authenticated_persisted_total_mute_control_or_ui_integrated": false,
+    "all_sdk_owned_copies_or_all_global_producers_covered": false,
+    "actual_main_full_runtime_executed": false,
+    "global_erasure_enabled": false,
+    "actual_microphone_driver_hardware_real_models_gpu_or_acoustic_grouping_acceptance": false,
+    "full_h4_capacity_gc_and_latency_acceptance": false,
+    "all_historical_timeouts_causally_explained": false,
+    "earlier_loop_92_90_ms_or_gc_495_68_ms_spikes_explained": false,
+    "existing_runtime_deadlines_capacities_or_retries_increased_for_green_tests": false,
+    "gc_forced_disabled_or_frozen": false,
+    "new_config_file_or_gpu_assignment_change": false,
+    "production_modified": false,
+    "h3_h4_or_overall_roadmap_complete": false
+  },
+  "bounds": {
+    "capture_room_queue_unchanged": 32,
+    "native_capacity_per_capture_room_unchanged": 1,
+    "command_model_native_capacity_unchanged": 8,
+    "event_native_capacity_unchanged": 4,
+    "wake_queue_capacity_unchanged": 8,
+    "wake_submitter_slots_equal_existing_queue_capacity": true,
+    "async_pause_is_one_retained_task_per_component": true,
+    "actual_pending_work_never_released_for_a_close_deadline": true
+  },
+  "isolated_failed_cases_before_harness_fix": {
+    "passed": 2,
+    "failed": 1,
+    "runtime_s": 3.85,
+    "log": "/tmp/kza-capture-processing-pause-isolated.log",
+    "xml": "/tmp/kza-capture-processing-pause-isolated.xml",
+    "runtime_limits_unchanged": true,
+    "explains_full_timeouts": false
+  },
+  "post_full_harness_fix": {
+    "commit": "7eec35de5219cca5ed70de0ae979a0f56344d2aa",
+    "file": {
+      "path": "tests/integration/test_capture_maintenance.py",
+      "sha256": "f7ee7306e80b99030cbbb8078b3787a70bf0bfa59af0961cc9d4adba77664160"
+    },
+    "application_tree_unchanged_from_tested_candidate": true,
+    "scope": "Retain the original 0.1-second clip deadline and 2-second scheduler observation. Accept None only after the original deadline and with zero archive failures; explicitly prove already-expired input never reaches encoding. Both paths must still purge the row and any published clip.",
+    "expiry_ttl_s_unchanged": 0.1,
+    "scheduler_observation_s_unchanged": 2,
+    "native_log_observation_s_unchanged": 0.1,
+    "collector_fixture_privacy_close_observation_s_unchanged": 0.03,
+    "source_passed": 4,
+    "source_failed": 0,
+    "runtime_s": 2.1,
+    "log": "/tmp/kza-capture-processing-pause-harness-fixed.log",
+    "xml": "/tmp/kza-capture-processing-pause-harness-fixed.xml",
+    "native_timeout_capture": {
+      "terminal_exit_code": 0,
+      "captured": 0,
+      "events": []
+    },
+    "initial_fixture_helper_error": {
+      "passed": 2,
+      "failed": 2,
+      "runtime_s": 3.65,
+      "log": "/tmp/kza-capture-processing-pause-harness-helper-error.log",
+      "cause": "Test initially referenced nonexistent _write_partial; corrected to actual _write_sync."
+    },
+    "full_suite_rerun_after_fixture_fix": false,
+    "full_timeout_causes_resolved": false,
+    "compiled": {
+      "passed": true,
+      "returncode": 0,
+      "runtime_s": 2.9321248959749937,
+      "git_commit": "79c5952b12eda57d62838dd6b82731ae5fefefff",
+      "all_loaded_application_modules_from_compiled_root": true,
+      "verified_hashes": 355,
+      "external_test_harness_only": true,
+      "xml": "/tmp/kza-capture-processing-pause-harness-compiled.xml",
+      "passed_cases": 2,
+      "log": "/tmp/kza-capture-processing-pause-harness-compiled.log",
+      "wrapper": {
+        "path": "/tmp/kza-capture-processing-pause-harness-compiled.py",
+        "sha256": "99a9f874118897b0209b02bd1e24ae46ffbac222dc45c959ccde5ade7012c15d"
+      }
+    }
+  },
+  "sdk_lifetime_probe": {
+    "passed": true,
+    "before": {
+      "total": 48,
+      "tokio_runtime_workers": 0,
+      "sqlx_workers": 0
+    },
+    "after_two_clients_same_path": {
+      "total": 99,
+      "tokio_runtime_workers": 49,
+      "sqlx_workers": 2
+    },
+    "after_first_close_peer_still_readable": {
+      "total": 99,
+      "tokio_runtime_workers": 49,
+      "sqlx_workers": 2
+    },
+    "after_last_close": {
+      "total": 48,
+      "tokio_runtime_workers": 0,
+      "sqlx_workers": 0
+    },
+    "first_close_s": 5.527865141630173e-06,
+    "last_close_s": 0.0008420587982982397,
+    "explicit_installed_sdk_close_only": true,
+    "gc_forced_disabled_or_frozen": false,
+    "runtime_thread_limits_or_deadlines_changed": false,
+    "full_suite_failure_cause_proven": false,
+    "script": {
+      "path": "/tmp/kza-chroma-lifetime-probe.py",
+      "sha256": "c7d8270eb09a50620087a4476a0dcd183bf115044623f862425efb773d9b6279"
+    },
+    "log": "/tmp/kza-chroma-lifetime-probe.log",
+    "next_action": "Close app-created SDK clients only after their actual borrowers exit, preserve external client ownership, and give test-created clients explicit cleanup. Audit the other SDK clients separately."
+  }
+}

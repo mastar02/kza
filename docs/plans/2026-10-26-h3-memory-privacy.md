@@ -3481,6 +3481,86 @@ y copias del SDK. `total_mute_supported` sigue en falso; la UI conserva sólo la
 pausa ambiental ya validada. No se acepta hardware, GC/recursos ni restauración
 compatible, y producción permanece sin cambios.
 
+## Retiro y reset reutilizable del procesamiento — 27 de octubre
+
+La revisión `79c5952` agrega pausa y reactivación internas para ambos caminos
+de captura, el procesador de comandos, el detector de eventos y el colector de
+clips de wake. La admisión se sella antes de esperar; se retiran las épocas de
+voz, se descartan colas y se espera la salida real de modelos, drivers,
+callbacks y copias en curso. Los controladores de captura siguen disponibles
+para reactivar. Un reset fallido conserva la entrada bloqueada y puede
+reintentarse después de reparar el backend.
+
+La reactivación exige el retiro anterior, resetea wake/VAD, preroll, captura y
+estado de eventos, renueva épocas y crea drivers nuevos. No reutiliza la
+asociación actual de usuario/emoción ni la caché local de embeddings. Los
+perfiles permanentes y las fuentes históricas conservan sus propias políticas.
+El procesador espera también el shadow STT que continúa después de entregar el
+resultado principal. Los callbacks ya iniciados pueden terminar durante la
+espera; no se informa retiro completo antes de su salida.
+
+La entrada única permite cargar modelos y arrancar con la captura ya pausada.
+Pausar mientras se abre su primer driver no convierte esa pausa en un cierre
+permanente del runtime. El retiro se conserva después de cancelar al observador
+y durante el shutdown; los timeouts de observación no liberan el writer lease
+antes del trabajo real. Los workers de retención siguen limpiando los datos
+históricos según sus vencimientos originales.
+
+Dos reproducciones contra la revisión anterior muestran brechas concretas en
+el colector de wake. El hilo escritor podía terminar y liberar la autoridad
+mientras un submitter todavía copiaba PCM. Ahora esa copia reserva un slot
+antes de operar y lo libera al retirar sus argumentos. Además, el cierre
+podía reemplazar la cola entre la comprobación de contenido y el `popleft` del
+worker, causando `IndexError`. El retiro usa ahora el mismo lock de handoff sin
+bloquear el loop y conserva la cola hasta que el owner pueda descartarla. Se
+mantienen la capacidad existente y los plazos y reintentos del runtime.
+
+La [evidencia de procesamiento](../research/2026-10-27-h3-capture-processing-pause-validation.json)
+distingue los casos nuevos, las regresiones, el resultado de la suite completa
+y las pruebas contra bytecode de esta revisión. Los modelos, micrófonos y
+capturas son sintéticos; los hilos, SQLite, archivos y transporte de revisión
+son reales. No sustituye la aceptación de hardware, recursos/GC o precisión
+acústica, y no se modifica producción.
+
+La suite completa de `79c5952` **no se acepta**: pasaron 5.665 pruebas, fallaron
+tres y quedó un xfail conocido en 867,88 s. Un test suponía que siempre se
+publicaba un clip con retención de 0,1 s; su consulta de reserva ocurrió después
+del vencimiento original y el archivo fue rechazado. El fixture `7eec35d`
+conserva ese TTL y la observación de dos segundos, acepta el rechazo sólo si ya
+venció y no hubo error de archivo, y agrega el caso explícito de no iniciar
+encoding vencido. No cambia la aplicación. Pasan los cuatro casos aislados
+correspondientes y sus dos variantes de mantenimiento contra bytecode; esto
+no resuelve los otros dos fallos de la corrida completa.
+
+Los otros fallos fueron observaciones de E/S: el teardown del colector conservó
+el writer lease con trabajo nativo todavía activo tras su límite de 0,03 s; el
+logger agotó su observación de 0,1 s antes del read retenido del test REST.
+Su muestra registra 779,58 ms en nativo y 0,15 ms de cola, con cierre final
+completo. Los dos casos pasaron aislados sin cambiar límites, pero eso no
+explica sus fallos completos ni cierra H4. Pasan los 31 casos finales nuevos,
+los 65 casos compilados de procesamiento/drivers/ambient, Chromium contra fuente
+y bytecode, 77 casos de frontend, Ruff, Bandit sin hallazgos medios o altos y
+el smoke. Las regresiones intermedias y los dos ensayos rojos del colector se
+conservan separados de esa aceptación pendiente.
+
+Durante la corrida se observaron 9.718 hilos en pytest, incluidos 9.216 de Tokio
+y 405 de SQLx. La inspección identifica clientes persistentes de Chroma creados
+sin cierre explícito en el helper de memoria y en la fábrica de runtime. Un
+ensayo independiente del SDK instalado conserva al segundo cliente compartido
+después de cerrar el primero y vuelve de 49 workers Tokio a cero al cerrar el
+último, sin manipular GC ni límites. El siguiente trabajo debe dar ownership
+y cierre explícitos a los clientes creados por la aplicación y los tests,
+respetando los clientes prestados por un caller. Todavía no demuestra que esa
+omisión cause todos los timeouts; la presión de E/S observada y la aceptación
+de recursos continúan documentadas como pendientes.
+
+Todavía falta coordinar estos componentes con ambient, el registro de voces y
+las otras tareas desacopladas del grafo, y conectarlos a una política durable
+y un control autenticado de mute con reactivación independiente del audio.
+El inventario de SDK y copias restantes continúa pendiente. La UI sigue
+ofreciendo sólo la pausa ambiental validada; `total_mute_supported` continúa
+en falso. H3 y la release permanecen abiertos.
+
 ## Trabajo restante
 
 1. Resolver el ciclo de vida y revisión de datasets legacy, snapshots y adapters,
@@ -3499,11 +3579,12 @@ compatible, y producción permanece sin cambios.
    vivo y la restauración compatible con autoridad vigente. Agregar selección y recibos en el
    dashboard autenticado después de cerrar esas garantías. La limpieza local
    del catálogo y del índice no sustituye la operación completa.
-4. Conectar la barrera de drivers multiroom al mute total autenticado y
-   persistente, al retiro del procesamiento de comandos, resets y épocas nuevas,
-   con reactivación independiente del audio. Cubrir entrada única, wake clips,
-   SDK y productores restantes. La pausa durable de `AmbientPath` ya está
-   conectada al panel y descarta sus buffers antes de reactivar.
+4. Coordinar la pausa/reset de ambos caminos de captura, drivers, procesador,
+   wake clips y detector de eventos con ambient, voces y demás tareas
+   desacopladas, en un control de mute autenticado y persistente con
+   reactivación independiente del audio. Completar inventario de SDK y
+   productores restantes. La pausa durable de `AmbientPath` ya está conectada
+   al panel y descarta sus buffers antes de reactivar.
 5. Extender el registro de voces a los consumidores restantes;
    completar el inventario y migración de vectores legacy. El backend nuevo ya
    aplica el vencimiento original a huellas y conserva perfiles revisados hasta

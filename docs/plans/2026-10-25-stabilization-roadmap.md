@@ -253,6 +253,20 @@ con un xfail conocido, 77 de frontend y los checks requeridos. El artefacto
 verificó 355 hashes y pasó 34 casos de drivers/pausa; Chromium pasó la regresión
 de pausa contra fuente y bytecode. No sustituye la aceptación de hardware o GC.
 
+El [retiro del procesamiento](../research/2026-10-27-h3-capture-processing-pause-validation.json)
+de `79c5952` agrega pausa/reset reutilizable de captura en ambos caminos,
+comandos, shadow STT, eventos y clips de wake. Espera las operaciones nativas y
+los callbacks reales; después renueva épocas y drivers sin restaurar preroll o
+identificaciones actuales. La retención histórica continúa. Corrige además dos
+brechas de cierre del colector: un submitter copiando PCM fuera del join del
+worker y un reemplazo de cola durante su pop. Falta coordinar el grafo completo
+y conectar la política de mute durable y autenticada. No habilita el mute total
+de la UI ni cierra H3; la evidencia distingue la suite completa del resto de
+las comprobaciones. Esa suite no se acepta: 5.665 pruebas pasaron, tres fallaron
+y quedó un xfail. El fixture de retención se corrigió conservando su plazo de
+0,1 s y verificando el rechazo vencido; los dos timeouts nativos restantes
+pasaron aislados pero siguen sin aceptación integrada.
+
 Primer avance de H3, 26 de octubre: el store de capturas aplica TTL al leer
 texto, lotes de destilación, estadísticas y clips, sin esperar la purga. Las
 capturas nuevas tienen UUID y vencimiento persistido; ampliar la configuración
@@ -976,6 +990,14 @@ no bastan para declarar correcta la agrupación acústica. Una asociación con u
 nombre nunca otorga permisos ni cambia por sí sola qué se considera voz viva.
 
 ### H4 Recuperar dependencias y mostrar el estado local
+
+La [corrida de procesamiento](../research/2026-10-27-h3-capture-processing-pause-validation.json)
+detectó acumulación de hilos de Chroma en pytest y clientes creados sin cierre
+explícito en el helper y en la fábrica de memoria. El SDK instalado libera sus
+workers al cerrar el último cliente compartido; un ensayo real lo confirma sin
+manipular GC o límites. Dar ownership y cierre a esos clientes es el siguiente
+paso de recursos, respetando los clientes prestados. Aún no demuestra la causa
+de los timeouts de la suite completa ni cierra H4.
 
 La [observación de cierres nativos y arranque local](../research/2026-10-27-runtime-close-offline-validation.json)
 ya distingue fases y esperas sin retener datos privados. Se corrigió una
