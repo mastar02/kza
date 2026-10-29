@@ -98,6 +98,15 @@ Ver [prueba de aislamiento y límites](../runbooks/2026-10-28-journald-usb-flood
 
 ## Construcción del artefacto
 
+Está preparada, aún sin instalar, la mejora de carga de muestras de Voces desde
+`e9669ec1edb101ca6b190ef8df09314e1ac63562`. Cambia únicamente dos assets de la
+aplicación: hace visible el reproductor al seleccionar una muestra, muestra el
+progreso y conserva el audio seleccionado al repetir la selección. El diagnóstico
+por HTTPS desde el servidor midió 5–11 ms para ocho muestras; no reproduce la red
+ni Chrome en Windows del usuario. Ver la
+[evidencia y límites](../research/2026-10-29-voice-loading.json) y el
+[comando de publicación](../runbooks/2026-10-28-compiled-runtime.md#mejora-de-carga-de-muestras--preparada-2026-10-29).
+
 La release liga el dashboard a `127.0.0.1:9500` detrás del proxy del proyecto.
 Todo endpoint HTTP/WS privado requiere `KZA_DASHBOARD_TOKEN`,
 incluidos health y observabilidad. La variable de ejemplo está vacía; el valor

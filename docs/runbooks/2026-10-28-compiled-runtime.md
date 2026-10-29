@@ -44,6 +44,38 @@ Si hay que reconstruirlo, hacerlo bajo `yo` y transferir sólo el bytecode y sus
 recursos verificados. El rollback histórico al checkout original, al final de
 este documento, corresponde a la instalación del 28.
 
+## Mejora de carga de muestras — preparada 2026-10-29
+
+La mejora está construida y probada, pendiente de ejecución por el operador.
+El runtime activo sigue siendo `63ea8d3`. El nuevo artefacto corresponde a
+`e9669ec1edb101ca6b190ef8df09314e1ac63562`; cambia sólo `voice-view.js` y
+`voice-channel.js` dentro de la aplicación. El reproductor queda antes de la
+lista, se desplaza a la vista al seleccionar audio y muestra «Cargando audio…»
+durante la preparación. Repetir la selección conserva el reproductor vivo.
+No se midió todavía la demora real en Chrome de Windows del usuario.
+
+Desde la terminal de `kza`, sin sudo:
+
+```sh
+/home/kza/kza/.venv/bin/python -B /tmp/kza-publish-voice-loading-20261029-az2igu_2/publish_voice_loading.pyc --apply
+```
+
+El publicador exige exactamente el artefacto y la versión previa previstos.
+Respalda las bases, conserva las rutas privadas canónicas, reinicia sólo voz y
+repone el perfil de Hall (`PP_MIN_NN=0.51`). El stop existente puede demorar
+90 segundos. Comprueba ambos assets servidos por HTTPS, la autenticación y el
+orden descendente de las primeras dos páginas; espera a los micrófonos que
+recibían antes del reinicio. Una falla posterior intenta restaurar el código y
+el drop-in anteriores, conservando los datos actuales.
+
+La misma orden con `--rollback` revierte esta actualización, después de aplicarla.
+El registro será `/home/kza/releases/deployments/voice-loading-e9669ec.json`.
+No usar el rollback de la actualización de orden para revertir esta mejora.
+El bundle temporal sólo contiene bytecode, el artefacto y el certificado público;
+si se elimina de `/tmp`, reconstruirlo y probarlo bajo `yo` desde las fuentes
+versionadas `tools/publish_voice_loading.py` y `tools/publish_voice_order.py`.
+Ver [evidencia, hashes y límites](../research/2026-10-29-voice-loading.json).
+
 ## Acceso y comprobación
 
 Abrir **https://192.168.1.2:9540/obs/** desde la red de casa. El certificado es

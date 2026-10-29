@@ -115,5 +115,73 @@
     "A delayed HTTP response was injected to verify immediate loading feedback, not to simulate every source of the reported delay.",
     "This is not an audio quality change or a general service health acceptance."
   ],
-  "deployment_status": "prepared_in_development_not_yet_published"
+  "deployment_status": "compiled_release_ready_waiting_for_runtime_operator_execution",
+  "runtime_artifact": {
+    "source_commit": "e9669ec1edb101ca6b190ef8df09314e1ac63562",
+    "path": "dist/kza-runtime-e9669ec-cp313.tar.gz",
+    "sha256": "e4fd2fb871c11fd17671b0e68329c2ccaf46dbf6ea289057ca6a57b38b2d08e5",
+    "files": 362,
+    "compiled_modules": 326,
+    "python_sources": false
+  },
+  "publication": {
+    "previous_commit": "63ea8d319b50506cc37ba73df1e41c87a41054cf",
+    "operator_bundle": {
+      "directory": "/tmp/kza-publish-voice-loading-20261029-az2igu_2",
+      "python": "CPython 3.13",
+      "sources_in_bundle": false,
+      "files": {
+        "dashboard-public.crt": "fc3b9cf89d232841a89b6d40183562166d6ca19aa90d5c9c86ae0701910c0be4",
+        "kza-runtime.tar.gz": "e4fd2fb871c11fd17671b0e68329c2ccaf46dbf6ea289057ca6a57b38b2d08e5",
+        "publish_voice_loading.pyc": "31a77d6fc81408eddc0ea0183c366f5f798b6581b6bb193b1ca4e30db74822d0",
+        "publish_voice_order.pyc": "fbb6b167c898768e73a976fc6edf4dbdfa9ac8196e0cc5a6109129b27075eb2f",
+        "stage_runtime.pyc": "de949cf104d90f9fab6588699fd308bca3e59c3ede8ed6648799a0d87510807c",
+        "xvf_controller.pyc": "96651808ec76d3d82175917605a96daedd2d4d907f480732e48a27aafa7c2c8f",
+        "xvf_noise_trial.pyc": "988f58749e0e3b45a2457c3d21417bd4867c247ce9ae31cf8bd5c46b0728cbbd"
+      }
+    },
+    "source_publisher_tests": {
+      "passed": 30,
+      "junit": "/tmp/kza-publish-voice-loading-tests.xml",
+      "log": "data/voice-loading-20261029/publisher-tests.log"
+    },
+    "compiled_publisher_tests": {
+      "passed": 30,
+      "junit": "/tmp/kza-publish-voice-loading-compiled-tests.xml",
+      "log": "data/voice-loading-20261029/compiled-publisher-tests.log"
+    },
+    "actual_archive_rehearsal": {
+      "passed": true,
+      "source_commit": "e9669ec1edb101ca6b190ef8df09314e1ac63562",
+      "previous_commit": "63ea8d319b50506cc37ba73df1e41c87a41054cf",
+      "app_changes": [
+        "src/dashboard/frontend/obs/src/voice-channel.js",
+        "src/dashboard/frontend/obs/src/voice-view.js"
+      ],
+      "manifest_files": 362,
+      "compiled_modules": 326,
+      "sources_in_artifact": false,
+      "current_selector_unchanged": true,
+      "canonical_state_preserved": true,
+      "previous_runtime_intact": true,
+      "synthetic_database_backup": true,
+      "archive_sha256": "e4fd2fb871c11fd17671b0e68329c2ccaf46dbf6ea289057ca6a57b38b2d08e5"
+    },
+    "yo_execution_refused_without_mutation": "runtime_operator_required",
+    "access": "Existing diagnostics-only SSH access cannot publish; the user must execute the compiled command in their kza session.",
+    "apply_command": "/home/kza/kza/.venv/bin/python -B /tmp/kza-publish-voice-loading-20261029-az2igu_2/publish_voice_loading.pyc --apply",
+    "rollback_command": "/home/kza/kza/.venv/bin/python -B /tmp/kza-publish-voice-loading-20261029-az2igu_2/publish_voice_loading.pyc --rollback",
+    "restart_scope": [
+      "kza-voice"
+    ],
+    "persistent_resources": "Existing canonical resources retained; SQLite backup, no database restoration over newer activity.",
+    "hall_profile": "Preserve PP_MIN_NN=0.51 and every other static parameter.",
+    "postchecks": [
+      "Both changed JS asset hashes over HTTPS",
+      "Unauthenticated private API returns 401",
+      "Descending order on up to two current pages",
+      "Previously receiving microphones resumed"
+    ],
+    "live_result": null
+  }
 }

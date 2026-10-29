@@ -44,6 +44,8 @@ def layout(tmp_path,request,monkeypatch):
            'src/dashboard/voice_api.pyc': pyc('CURSOR=85'),
            'src/dashboard/frontend/obs/src/voice-view.js': b'new order'}
     if request.param=='loading':
+        from tools.publish_voice_loading import configure_release
+
         canonical=root/'canonical-state'
         state.rename(canonical)
         state.mkdir()
@@ -51,11 +53,9 @@ def layout(tmp_path,request,monkeypatch):
             (state/name).symlink_to(canonical/name)
         with sqlite3.connect(state/'data/state.db') as db:
             db.execute('UPDATE locations SET root=?',(str((state/'data').resolve()),))
-        monkeypatch.setattr(release,'RELEASE_TAG','voice-loading')
-        monkeypatch.setattr(release,'COMMIT','c'*40)
-        monkeypatch.setattr(release,'PREVIOUS_COMMIT','d'*40)
-        monkeypatch.setattr(release,'APP_CHANGES',{'src/dashboard/frontend/obs/src/voice-view.js',
-                                                 'src/dashboard/frontend/obs/src/voice-channel.js'})
+        for name in ('RELEASE_TAG','COMMIT','PREVIOUS_COMMIT','ARCHIVE_SHA256','APP_CHANGES'):
+            monkeypatch.setattr(release,name,getattr(release,name))
+        configure_release()
         new={**old,'src/dashboard/frontend/obs/src/voice-view.js':b'visible player',
              'src/dashboard/frontend/obs/src/voice-channel.js':b'loading status'}
     def manifest(commit, files):
