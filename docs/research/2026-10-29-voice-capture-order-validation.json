@@ -93,5 +93,29 @@
   "production_restarted_or_modified": false,
   "active_Hall_RAM_trial_changed": false,
   "audio_transcripts_credentials_or_household_recordings_added_to_git": false,
-  "private_evidence_directory": "data/voice-order-20261029"
+  "private_evidence_directory": "data/voice-order-20261029",
+  "artifact_validation": {
+    "archive": "dist/kza-runtime-63ea8d3-cp313.tar.gz",
+    "sha256": "ea81e3c07d787cf92a307bdcb1e28246c889f5eb117e7c0e80ab7629c44ac19c",
+    "git_commit": "63ea8d319b50506cc37ba73df1e41c87a41054cf",
+    "source_files_in_artifact": false,
+    "frontend_matches_committed_checkout": true,
+    "installed": false,
+    "compiled_modules": 324,
+    "files": 360,
+    "new_pagination_tests": {
+      "tests": 8,
+      "passed": 8,
+      "failures": 0,
+      "errors": 0,
+      "runtime_s": 1.548,
+      "junit_xml": "/tmp/kza-voice-order-compiled-tests.xml",
+      "log": "data/voice-order-20261029/compiled-tests.log",
+      "imports_verified_from_artifact": [
+        "src",
+        "src.users.voice_ledger",
+        "src.dashboard.voice_api"
+      ]
+    }
+  }
 }
