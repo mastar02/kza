@@ -1,0 +1,97 @@
+{
+  "checked_on": "2026-10-29",
+  "purpose": "Controlled temporary Hall noise-suppression trial after static and metallic preview investigation.",
+  "authorization": "User requested changing the parameter to perform the tests. The runtime operator executed the compiled --apply command and returned the verified result.",
+  "status": "applied_pending_subjective_comparison",
+  "room": "hall",
+  "parameter": "PP_MIN_NN",
+  "baseline": 0.4,
+  "trial": 0.51,
+  "application": {
+    "source": "tools/xvf_noise_trial.py",
+    "execution_account": "kza",
+    "development_build_test_git_account": "yo",
+    "compiled_bundle": {
+      "directory": "/tmp/kza-noise-trial-20261029-a65p17c8",
+      "python": "CPython 3.13",
+      "contains_sources": false,
+      "files": {
+        "xvf_noise_trial.pyc": "b0cdbd9d698a4636a6bde7edeaf12417e65afc65070d0e76f6f60bd69196d5ae",
+        "xvf_controller.pyc": "455890493ff4218bc9d9cefe17bc82d724c879938055c0436d9cb9f8c6b8e9bc"
+      }
+    },
+    "command": "/home/kza/kza/.venv/bin/python -B /tmp/kza-noise-trial-20261029-a65p17c8/xvf_noise_trial.pyc --apply",
+    "operator_result": {
+      "status": "applied",
+      "room": "hall",
+      "parameter": "PP_MIN_NN",
+      "before": 0.4000000059604645,
+      "after": 0.5099999904632568,
+      "verified_at": "2026-10-29T16:47:59.629777+00:00",
+      "other_static_parameters_unchanged": true,
+      "capture_continues": true,
+      "frames_advanced": 8960,
+      "service_restarted": false,
+      "persistent_config_changed": false,
+      "flash_written": false,
+      "note": "Wait 35 seconds quietly, then record a fresh, identifiable phrase in Hall. Old previews do not change."
+    }
+  },
+  "guards": [
+    "Verify the active voice unit, its actual working directory and effective CONFIG_PATH; do not export the process environment.",
+    "Require the selected startup config to predate the active service start and explicitly disable SPENERGY and direction pollers.",
+    "Require a fresh, identity-matched Hall capture and compare the USB device serial before any write.",
+    "Read all selected static parameters, require the expected conversation/ASR mux routing, and retain a private baseline before attempting the transfer.",
+    "Write only PP_MIN_NN; verify its readback and all other selected static parameters. No SAVE_CONFIGURATION, reset, routing or gain write.",
+    "Require the release, process and capture generation to stay stable; verify that received frames advance after applying the trial.",
+    "Restore can verify device identity without requiring a healthy capture, so a stopped capture does not prevent restoring the saved baseline."
+  ],
+  "verification": {
+    "source_and_compiled_tests": {
+      "source": {
+        "passed": 16,
+        "failed": 0,
+        "errors": 0,
+        "runtime_s": 0.887,
+        "junit_xml": "/tmp/kza-noise-trial-tests.xml",
+        "log": "data/audio-quality-20261029/noise-trial/source-tests.log"
+      },
+      "compiled": {
+        "passed": 16,
+        "failed": 0,
+        "errors": 0,
+        "runtime_s": 0.985,
+        "junit_xml": "/tmp/kza-noise-trial-compiled-tests.xml",
+        "log": "data/audio-quality-20261029/noise-trial/compiled-tests.log"
+      }
+    },
+    "ruff_passed": true,
+    "cases_cover": "Fresh identity, unsafe pollers, stale inventory or signal, config modified since startup, duplicate room, absent reads, unexpected routing/value, write failure, unrelated changes, full apply/restore flow and a baseline saved before the write.",
+    "live_parameter_readback_verified": true,
+    "live_other_static_values_unchanged": true,
+    "live_frames_advanced": 8960,
+    "subjective_quality_improvement_confirmed": false
+  },
+  "comparison": {
+    "trial_verified_at_utc": "2026-10-29T16:47:59.629777+00:00",
+    "fresh_test_phrase_after_local": "2026-10-29T13:48:34.629777-03:00",
+    "method": "Wait 35 seconds quietly to let an in-flight segment finish, then say the same short identifiable phrase five times in Hall with two seconds between repetitions. Keep microphone distance, voice level, room noise and playback volume constant. Review the new timestamped previews in Users / Voices. For the A comparison, restore 0.4 and repeat under the same conditions.",
+    "phrase_example_es": "Prueba de audio: uno, dos, tres. Estoy comparando la claridad de mi voz.",
+    "old_recordings_reprocessed": false,
+    "channel_limit": "The parameter affects the conversation post-processor; the ASR output bypasses it. Current preview metadata does not identify the originating lane. Compare identifiable ambient samples and watch that recognition continues normally.",
+    "success_criteria": "Listen for a reduction in metallic speech artifacts without unacceptable background noise or degraded recognition. Do not infer improvement from a successful parameter write alone."
+  },
+  "rollback": {
+    "command": "/home/kza/kza/.venv/bin/python -B /tmp/kza-noise-trial-20261029-a65p17c8/xvf_noise_trial.pyc --restore",
+    "saved_state": "/home/kza/.local/state/kza-audio-quality/hall-pp-min-nn.json",
+    "private_state_tracked": false,
+    "persistent_config_still_uses": 0.4,
+    "lifetime": "RAM trial only. Application startup tuning still requests 0.4, so a service restart can undo the trial. A USB power cycle may restore a different device flash preset; it is not used as the rollback method.",
+    "configuration_or_release_update": "Defer permanent tuning until the comparison supports it; use the agreed release workflow for a persistent application change."
+  },
+  "other_rooms_modified": false,
+  "services_restarted": false,
+  "release_installed_or_promoted": false,
+  "private_evidence_directory": "data/audio-quality-20261029/noise-trial",
+  "audio_transcripts_serials_credentials_or_process_environment_in_git": false
+}

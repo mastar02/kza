@@ -533,5 +533,12 @@
   "manufacturer_gain_check": {
     "url": "https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/host_control/README.md",
     "finding": "The Seeed host-control README lists AUDIO_MGR_MIC_GAIN 90 among its tuned defaults, matching the connected devices. The value 90 is not treated as proof of an excessive gain fault."
+  },
+  "subsequent_controlled_trial": {
+    "report": "docs/research/2026-10-29-hall-noise-trial.json",
+    "status": "applied_pending_subjective_comparison",
+    "room": "hall",
+    "PP_MIN_NN": 0.51,
+    "verified_at": "2026-10-29T16:47:59.629777+00:00"
   }
 }
