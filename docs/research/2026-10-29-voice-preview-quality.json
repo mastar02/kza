@@ -1,0 +1,112 @@
+{
+  "checked_on": "2026-10-29",
+  "scope": "Read-only investigation of static and metallic sound reported in Dashboard Users / Voices listening samples across all rooms. No production configuration, DSP parameters, firmware, capture ownership or services changed.",
+  "running_application_commit": "b0866e8db01fd934ff3e6c483cca07d94168a9dc",
+  "reviewed_source_commit": "0d0b400ab59ab5434845c20a7213b87339075088",
+  "reviewed_audio_path_matches_running_commit": true,
+  "conclusion": {
+    "root_cause_confirmed": false,
+    "leading_hypothesis": "The common DSP post-processing is a plausible contributor to metallic ambient listening samples: all three connected devices have PP_MIN_NN approximately 0.4, below the manufacturer's speech-quality tuning recommendation of 0.51 or higher.",
+    "causal_limit": "The actual offending clip has not been obtained or analyzed. The shared parameter and manufacturer warning do not prove that this setting caused the reported sound. Static may have a separate cause.",
+    "preview_encoder_result": "Four synthetic PCM round trips preserved sample count, rate, duration and amplitude within PCM16 rounding error. This does not measure the microphones, browser playback device or an actual household recording.",
+    "capture_health_is_a_separate_issue": true
+  },
+  "source_trace": {
+    "ambient_preview": [
+      "src/pipeline/multi_room_audio_loop.py:_make_audio_callback copies the multichannel input into the ambient tap before command-path selection.",
+      "src/ambient/transcriber.py:_process_segment selects channel 0 for SpeakerTagger and therefore the voice registry's listening sample.",
+      "src/ambient/speaker_tagger.py:SpeakerTagger.tag submits that mono signal to VoiceRegistry.observe.",
+      "src/users/voice_registry.py:_observe_native builds the listening WAV from its owned audio copy."
+    ],
+    "command_preview": [
+      "src/pipeline/multi_room_audio_loop.py:_make_audio_processor selects rooms.<room>.capture_channel, currently 1 in the observed runtime.",
+      "src/pipeline/command_processor.py:_process_command submits the command audio to VoiceRegistry.observe."
+    ],
+    "encoding": "src/users/voice_capture.py:build_review_capture encodes the first six seconds as mono 16000 Hz little-endian PCM16 WAV. It clips float32 input to [-1,1], multiplies by 32767 and rounds. No lossy codec, resampling, denoiser or normalization is applied here. Input already outside full scale would be clipped; actual capture peaks have not been measured.",
+    "browser": "src/dashboard/frontend/obs/src/voice-privacy.js validates the WAV and creates a Blob URL from its decoded bytes. voice-view.js plays that URL through a native audio element. No custom playback rate or audio DSP was found in this path.",
+    "interpretation": "Users / Voices contains previews from different source channels. The configured command capture_channel does not determine the channel of an ambient preview. Channel 0 is processed conversation output with the measured mux; channel 1 is the ASR beam with the measured mux and ASR enable flag."
+  },
+  "live_observations": {
+    "runtime_snapshot_at": "2026-10-29T16:04:12.111552+00:00",
+    "configured_inputs": 4,
+    "connected_inputs": 3,
+    "capture_states": {
+      "receiving": 1,
+      "waiting": 1,
+      "closed": 2
+    },
+    "disconnected_inputs": 1,
+    "receiving_is_not_proof_of_speech_quality": true,
+    "historical_samples_are_not_proof_all_inputs_are_currently_capturing": true,
+    "voice_unit_active": true,
+    "voice_unit_restarts": 0,
+    "journald_restarts": 88,
+    "shared_connected_device_values": {
+      "VERSION": [2, 0, 6],
+      "AUDIO_MGR_OP_L": [8, 0],
+      "AUDIO_MGR_OP_R": [7, 3],
+      "AEC_ASROUTONOFF": 1,
+      "AEC_ASROUTGAIN": 1.0,
+      "AUDIO_MGR_MIC_GAIN": 90.0,
+      "PP_AGCONOFF": 1,
+      "PP_AGCMAXGAIN": 16.0,
+      "PP_MIN_NS_rounded": 0.15,
+      "PP_MIN_NN_rounded": 0.4,
+      "PP_ATTNS_MODE": 1
+    },
+    "instantaneous_PP_AGCGAIN_sorted": [3.0479538440704346, 16.0, 16.0],
+    "gain_interpretation": "Instantaneous AGC readings do not establish clipping or noise level. AUDIO_MGR_MIC_GAIN is recorded in device units without assuming a dB conversion or declaring it excessive.",
+    "dsp_read_method": "Run as yo with the existing interpreter in read-only mode. Bound each read to 100 ms and initially three attempts, then repeat selected reads with twenty attempts to resolve device status 64. No writes, interface claims, resets, stream opens or firmware operations were requested.",
+    "read_retry_limit": "Initial retries_exhausted results were not interpreted as parameter values or proof of device failure. All listed common values were subsequently read successfully on all three connected devices.",
+    "console_observation": "A 47188-byte console tail covering approximately 13:00:50 through 13:04:45 local time contained 25 audio-watchdog lines and no text matching overflow, overrun, underflow or underrun.",
+    "console_observation_limit": "The native input callback ignores its PortAudio status argument, and capture metadata exposes no overflow counter. Absence of an overflow log does not rule out dropped input or discontinuities."
+  },
+  "manufacturer_evidence": {
+    "noise_suppression": {
+      "url": "https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/user_guide/04_tuning_the_application.html",
+      "section": "Noise Suppression and ATTNS",
+      "paraphrase": "The guide recommends PP_MIN_NN of 0.51 or higher as a starting point to preserve near-end speech quality. Lowering it can distort speech, particularly with reverberation; values at or below 0.5 activate additional non-stationary suppression. ATTNS addresses AGC amplification of background noise between speech periods.",
+      "limit": "Manufacturer guidance describes the DSP mechanism; it is not a measurement of the installed devices or the user's clip."
+    },
+    "asr_output": {
+      "url": "https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/user_guide/08_automatic_speech_recognition.html",
+      "paraphrase": "ASR output leaves the beamformer before the post-processor, avoiding its nonlinear noise suppression and using an optional fixed gain. It is intended for recognition rather than voice communication."
+    },
+    "routing": {
+      "url": "https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/host_control/README.md",
+      "paraphrase": "The documented default left channel is the processed conversation output; the right channel is the auto-selected ASR beam. The observed mux values agree with this routing."
+    }
+  },
+  "synthetic_validation": {
+    "function": "src.users.voice_capture.build_review_capture",
+    "signal": "997 Hz sine, one second, float32, 16000 samples per second",
+    "assertions": "Mono PCM16 WAV at 16000 Hz, 16000 decoded samples and maximum error no greater than 0.501/32767 after decoding by 32767.",
+    "encoder_snr_db_by_peak_amplitude": {
+      "0.8": 96.072,
+      "0.1": 78.038,
+      "0.01": 58.004,
+      "0.001": 37.953
+    },
+    "maximum_absolute_error_across_cases": 0.000015271528743587837,
+    "household_audio_used": false,
+    "limit": "Quantization becomes more significant for very quiet input. These synthetic cases neither establish actual microphone levels nor reproduce the reported metallic speech."
+  },
+  "existing_tests": {
+    "command": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -B -m pytest tests/integration/test_voice_capture_review.py -q --junitxml=/tmp/kza-audio-quality-20261029-review.xml",
+    "effective_user": "yo",
+    "cwd": "/home/yo/projects/kza",
+    "passed": 22,
+    "failed": 0,
+    "runtime_s": 3.30,
+    "scope": "Existing listening-sample ownership, WAV content, delivery and retention tests; no physical microphone or subjective audio-quality acceptance."
+  },
+  "next_discriminating_steps": [
+    "Obtain one affected sample through the authorized dashboard review flow, with its room and capture time, and listen to the same WAV on a second output device. Do not read runtime secrets or bypass capture retention to obtain it.",
+    "Measure the actual sample's peak level, clipping, quiet-frame noise and abrupt discontinuities before selecting a remedy. The current snapshot cannot reconstruct the conditions of an older capture.",
+    "After capture is stable, compare simultaneous conversation and ASR channels of one known phrase. A subsequent operator-controlled A/B of PP_MIN_NN 0.4 versus 0.51, holding all other parameters fixed, can test the leading hypothesis. This session did not authorize or perform that production intervention.",
+    "If a DSP or monitoring change is justified, implement and validate it under yo and publish the runtime only through the agreed release flow."
+  ],
+  "private_evidence_directory": "data/audio-quality-20261029",
+  "raw_snapshots_household_identifiers_audio_or_secrets_tracked": false,
+  "production_changes_performed": false
+}
