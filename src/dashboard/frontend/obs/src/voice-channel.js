@@ -61,7 +61,7 @@
         await state.retired(); return done.every(Boolean);
       },
       retire(frame) { for (const channel of Object.values(channels)) channel.retire(frame); },
-      review(identity) { if (/^vf_[0-9a-f]{64}$/.test(identity)) channels.review.refresh(PATHS.review+identity+'/review'); },
+      review(identity) { return /^vf_[0-9a-f]{64}$/.test(identity) && channels.review.refresh(PATHS.review+identity+'/review'); },
       next(kind) { const cursor = pages[kind]; if (cursor && kind!=='review') channels[kind].refresh(PATHS[kind]+'?cursor='+encodeURIComponent(cursor)); },
       hasNext:kind => !!pages[kind],
       confirm(identities,name,requestId) { return mutate('/api/voices/profiles',

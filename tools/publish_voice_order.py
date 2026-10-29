@@ -30,14 +30,15 @@ from uuid import uuid4
 import aiohttp
 
 try:
-    from scripts.stage_runtime import _read_archive
-    from tools import xvf_noise_trial as noise
-except ModuleNotFoundError:
     from stage_runtime import _read_archive
     import xvf_noise_trial as noise
+except ModuleNotFoundError:
+    from scripts.stage_runtime import _read_archive
+    from tools import xvf_noise_trial as noise
 
 
 COMMIT = '63ea8d319b50506cc37ba73df1e41c87a41054cf'
+RELEASE_TAG = 'voice-order'
 PREVIOUS_COMMIT = 'b0866e8db01fd934ff3e6c483cca07d94168a9dc'
 ARCHIVE_SHA256 = 'ea81e3c07d787cf92a307bdcb1e28246c889f5eb117e7c0e80ab7629c44ac19c'
 CERTIFICATE_SHA256 = 'b05e58f5c3b577fa22393de9e3a67866bf3c972a70ac9ee7d44a0190083deaa0'
@@ -99,7 +100,7 @@ def prepare_code_slot(archive: Path, root: Path, previous: Path, name: str,
     old_app = {name: value for name, value in old['files'].items() if name.startswith('src/')}
     new_app = {name: value for name, value in manifest['files'].items() if name.startswith('src/')}
     if old_app.keys() != new_app.keys() or {name for name in old_app if old_app[name] != new_app[name]} != APP_CHANGES:
-        raise ReleaseError('application_diff_exceeds_voice_order_change')
+        raise ReleaseError('application_diff_exceeds_authorized_change')
     if not 1 <= len(name) <= 80 or any(char not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for char in name):
         raise ReleaseError('invalid_slot_name')
     state = previous.parent / 'state'
@@ -109,7 +110,7 @@ def prepare_code_slot(archive: Path, root: Path, previous: Path, name: str,
     target = root / 'slots' / name
     if target.exists() or target.is_symlink():
         raise ReleaseError('slot_already_exists')
-    with tempfile.TemporaryDirectory(prefix='.voice-order-', dir=root / 'slots') as temporary:
+    with tempfile.TemporaryDirectory(prefix='.' + RELEASE_TAG + '-', dir=root / 'slots') as temporary:
         staged = Path(temporary)
         runtime = staged / 'runtime'
         runtime.mkdir(mode=0o700)
@@ -219,7 +220,7 @@ def _wait_ready(token: str, required: set[str], seconds: float = 300) -> dict:
 
 
 async def check_dashboard(token: str, asset_sha: str, *, base_url: str = BASE,
-                          tls_context=True) -> dict:
+                          tls_context=True, assets: dict[str, str] | None = None) -> dict:
     """Verify the served asset and two authenticated chronological REST pages."""
     headers = {'Authorization': 'Bearer ' + token}
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20), trust_env=False) as session:
@@ -227,11 +228,13 @@ async def check_dashboard(token: str, asset_sha: str, *, base_url: str = BASE,
             await response.read()
             if response.status != 401:
                 raise ReleaseError('private_api_access_boundary_failed')
-        async with session.get(base_url + '/obs/src/voice-view.js', headers=headers, ssl=tls_context,
-                               allow_redirects=False) as response:
-            content = await response.read()
-            if response.status != 200 or hashlib.sha256(content).hexdigest() != asset_sha:
-                raise ReleaseError('served_frontend_hash_mismatch')
+        expected_assets = {'/obs/src/voice-view.js': asset_sha, **(assets or {})}
+        for path, expected_sha in expected_assets.items():
+            async with session.get(base_url + path, headers=headers, ssl=tls_context,
+                                   allow_redirects=False) as response:
+                content = await response.read()
+                if response.status != 200 or hashlib.sha256(content).hexdigest() != expected_sha:
+                    raise ReleaseError('served_frontend_hash_mismatch')
         async with session.ws_connect(base_url + '/ws/live', headers=headers, ssl=tls_context,
                                       max_msg_size=1_048_576) as socket:
             async def consume(frame):
@@ -292,7 +295,8 @@ async def check_dashboard(token: str, asset_sha: str, *, base_url: str = BASE,
             if not rows_checked:
                 raise ReleaseError('no_voice_rows_to_verify')
     return {'rows_checked': rows_checked, 'pages_checked': pages, 'descending': True,
-            'frontend_hash_matches': True, 'unauthenticated_private_api_status': 401}
+            'frontend_hash_matches': True, 'frontend_assets_checked': len(expected_assets),
+            'unauthenticated_private_api_status': 401}
 
 
 def _hall_profile(runtime: Path) -> tuple[dict, dict]:
@@ -337,7 +341,9 @@ def _https_check(bundle: Path, token: str, manifest: dict) -> dict:
         raise ReleaseError('tls_certificate_mismatch')
     context = ssl.create_default_context(cafile=str(certificate))
     return asyncio.run(check_dashboard(token, manifest['files']['src/dashboard/frontend/obs/src/voice-view.js'],
-        base_url='https://192.168.1.2:9540', tls_context=context))
+        base_url='https://192.168.1.2:9540', tls_context=context,
+        assets={name.removeprefix('src/dashboard/frontend'): manifest['files'][name]
+                for name in APP_CHANGES if name.endswith('.js')}))
 
 
 def publish(bundle: Path, rollback: bool = False) -> dict:
@@ -348,7 +354,7 @@ def publish(bundle: Path, rollback: bool = False) -> dict:
         raise ReleaseError('runtime_operator_required')
     root = Path('/home/kza/releases')
     override = Path('/home/kza/.config/systemd/user/kza-voice.service.d/release.conf')
-    journal = root / 'deployments/voice-order-63ea8d3.json'
+    journal = root / ('deployments/' + RELEASE_TAG + '-' + COMMIT[:7] + '.json')
     token = dotenv_values('/home/kza/secrets/.env').get('KZA_DASHBOARD_TOKEN')
     if not token:
         raise ReleaseError('dashboard_credential_missing')
@@ -387,7 +393,7 @@ def publish(bundle: Path, rollback: bool = False) -> dict:
             raise ReleaseError('unexpected_active_release')
         profile, snapshot = _hall_profile(previous)
         required = set(_receiving(snapshot))
-        name = 'release_' + datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ') + '_63ea8d3'
+        name = 'release_' + datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ') + '_' + COMMIT[:7]
         target, candidate, resources = prepare_code_slot(bundle / 'kza-runtime.tar.gz', root, previous,
                                                         name, COMMIT, ARCHIVE_SHA256)
         original = override.read_bytes()

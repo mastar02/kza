@@ -38,7 +38,8 @@ def test_preview_metrics_export_no_audio_transcript_or_identity():
 
 
 @pytest.mark.asyncio
-async def test_live_client_paginates_handles_expiry_and_waits_to_ack_a_held_body():
+@pytest.mark.parametrize('limit',[None,1])
+async def test_live_client_paginates_handles_expiry_and_waits_to_ack_a_held_body(limit):
     connection, reset, nonce = str(uuid4()), str(uuid4()), str(uuid4())
     first, second = 'vf_' + 'a' * 64, 'vf_' + 'b' * 64
     requests, acknowledgements, sockets = [], [], []
@@ -104,17 +105,30 @@ async def test_live_client_paginates_handles_expiry_and_waits_to_ack_a_held_body
     await listener.start()
     port = listener._server.sockets[0].getsockname()[1]
     try:
-        report = await analyze_dashboard('synthetic-diagnostic', base_url=f'http://127.0.0.1:{port}')
-        assert report['listed_captures'] == 2
-        assert report['outcomes'] == {'analyzed': 1, 'unavailable_or_expired': 1}
+        report = await analyze_dashboard('synthetic-diagnostic', base_url=f'http://127.0.0.1:{port}',
+                                         max_captures=limit, timings=True)
+        assert report['listed_captures'] == (1 if limit else 2)
+        assert report['outcomes'] == ({'analyzed': 1} if limit else {'analyzed': 1, 'unavailable_or_expired': 1})
         assert report['summary']['decoded_files'] == 1
         encoded = json.dumps(report)
         assert 'private synthetic transcript' not in encoded and 'audio_base64' not in encoded
         assert first not in encoded and second not in encoded
-        assert '/api/voices?cursor=' + first in requests
+        assert ('/api/voices?cursor=' + first in requests) == (limit is None)
         assert any(item['ticket'] == held_ticket for item in acknowledgements)
+        timing = next(row for row in report['request_timings'] if row['kind']=='review')
+        assert timing['headers_ms'] >= 40 and timing['body_ms'] >= 5
+        assert timing['total_ms'] >= timing['headers_ms'] + timing['body_ms']
+        assert timing['bytes'] > 32000
+        assert 'synthetic-diagnostic' not in encoded
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('limit',[0,-1,4097,True])
+async def test_invalid_sample_limit_is_rejected_before_network_access(limit):
+    with pytest.raises(ValueError,match='invalid_capture_limit'):
+        await analyze_dashboard('synthetic-diagnostic',max_captures=limit)
 
 
 @pytest.mark.asyncio

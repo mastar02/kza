@@ -24,9 +24,9 @@ import soundfile as sf
 
 # A compiled operator bundle places both modules next to one another.
 try:
-    from tools.analyze_audio_quality import measure_channel, summarize
-except ModuleNotFoundError:
     from analyze_audio_quality import measure_channel, summarize
+except ModuleNotFoundError:
+    from tools.analyze_audio_quality import measure_channel, summarize
 
 
 BASE_URL = 'http://127.0.0.1:9500'
@@ -60,11 +60,16 @@ async def _ack(socket, receipts: list[dict]) -> None:
         await socket.send_json({'type': 'live_ack', 'receipts': receipts[start:start + 16]})
 
 
-async def analyze_dashboard(credential: str, *, base_url: str = BASE_URL) -> dict:
+async def analyze_dashboard(credential: str, *, base_url: str = BASE_URL,
+                            max_captures: int | None = None, timings: bool = False,
+                            tls_context=True) -> dict:
     """Read every available page and preview, acknowledging only released bodies."""
-    rows, outcomes, cursors, identities = [], Counter(), set(), set()
+    if max_captures is not None and (type(max_captures) is not int or not 1 <= max_captures <= 4096):
+        raise ValueError('invalid_capture_limit')
+    rows, outcomes, cursors, identities, measurements = [], Counter(), set(), set(), []
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(headers={'Authorization': 'Bearer ' + credential}, timeout=timeout,
+                                     connector=aiohttp.TCPConnector(ssl=tls_context),
                                      trust_env=False) as session:
         async with session.ws_connect(base_url + '/ws/live', max_msg_size=1_048_576) as socket:
             await socket.send_json({'type': 'live_hello', 'version': 3, 'client_id': str(uuid4())})
@@ -120,7 +125,9 @@ async def analyze_dashboard(credential: str, *, base_url: str = BASE_URL) -> dic
                 headers = {'X-KZA-Live-Connection': identity}
 
                 async def get(path):
+                    started = time.perf_counter()
                     async with session.get(base_url + path, headers=headers, allow_redirects=False) as response:
+                        headers_at = time.perf_counter()
                         body = bytearray()
                         async for chunk in response.content.iter_chunked(65536):
                             body.extend(chunk)
@@ -130,7 +137,16 @@ async def analyze_dashboard(credential: str, *, base_url: str = BASE_URL) -> dic
                             return None
                         if response.status != 200:
                             raise RuntimeError('dashboard_http_' + str(response.status))
-                        return json.loads(body)
+                        body_at = time.perf_counter()
+                        document = json.loads(body)
+                        if timings:
+                            finished = time.perf_counter()
+                            measurements.append({'kind': 'review' if path.endswith('/review') else 'captures',
+                                'headers_ms': (headers_at-started)*1000,
+                                'body_ms': (body_at-headers_at)*1000,
+                                'json_ms': (finished-body_at)*1000,
+                                'total_ms': (finished-started)*1000, 'bytes': len(body)})
+                        return document
 
                 cursor = None
                 while True:
@@ -152,6 +168,8 @@ async def analyze_dashboard(credential: str, *, base_url: str = BASE_URL) -> dic
                         busy = False
                         await acknowledge([receipt] if receipt else [])
                     for capture, available in candidates:
+                        if max_captures is not None and len(identities) >= max_captures:
+                            break
                         if capture in identities:
                             continue
                         identities.add(capture)
@@ -178,7 +196,7 @@ async def analyze_dashboard(credential: str, *, base_url: str = BASE_URL) -> dic
                             preview = document = batch = None
                             busy = False
                             await acknowledge([receipt] if receipt else [])
-                    if not cursor:
+                    if not cursor or max_captures is not None and len(identities) >= max_captures:
                         break
                     if cursor in cursors:
                         raise RuntimeError('repeated_capture_cursor')
@@ -186,10 +204,13 @@ async def analyze_dashboard(credential: str, *, base_url: str = BASE_URL) -> dic
             finally:
                 receiver.cancel()
                 await asyncio.gather(receiver, return_exceptions=True)
-    return {'checked_at': datetime.now(UTC).isoformat(), 'source': 'authenticated_dashboard_v3',
+    result = {'checked_at': datetime.now(UTC).isoformat(), 'source': 'authenticated_dashboard_v3',
             'listed_captures': len(identities), 'outcomes': dict(outcomes), 'summary': summarize(rows),
             'raw_audio_transcripts_credentials_or_capture_ids_exported': False,
             'scope': 'Only previews currently authorized by the running dashboard; expired captures are not recovered.'}
+    if timings:
+        result['request_timings'] = measurements
+    return result
 
 
 def main() -> None:

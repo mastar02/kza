@@ -22,8 +22,8 @@ def pyc(source):
     return importlib.util.MAGIC_NUMBER + b'\0' * 12 + marshal.dumps(compile(source, 'synthetic.py', 'exec'))
 
 
-@pytest.fixture
-def layout(tmp_path):
+@pytest.fixture(params=['order','loading'])
+def layout(tmp_path,request,monkeypatch):
     root = tmp_path / 'releases'
     previous = root / 'slots/previous/runtime'
     state = previous.parent / 'state'
@@ -34,14 +34,30 @@ def layout(tmp_path):
     (state / '.env').write_text('SYNTHETIC_SETTING=private\n')
     with sqlite3.connect(state / 'data/state.db') as db:
         db.execute('CREATE TABLE locations (root TEXT)')
-        db.execute('INSERT INTO locations VALUES (?)', (str(state / 'data'),))
+        db.execute('INSERT INTO locations VALUES (?)', (str((state / 'data').resolve()),))
     old = {'src/__init__.pyc': pyc(''), 'src/main.pyc': pyc('READY=True'),
            'src/users/voice_ledger.pyc': pyc('ORDER="old"'),
            'src/dashboard/voice_api.pyc': pyc('CURSOR=67'),
-           'src/dashboard/frontend/obs/src/voice-view.js': b'old order'}
+           'src/dashboard/frontend/obs/src/voice-view.js': b'old order',
+           'src/dashboard/frontend/obs/src/voice-channel.js': b'old channel'}
     new = {**old, 'src/users/voice_ledger.pyc': pyc('ORDER="date"'),
            'src/dashboard/voice_api.pyc': pyc('CURSOR=85'),
            'src/dashboard/frontend/obs/src/voice-view.js': b'new order'}
+    if request.param=='loading':
+        canonical=root/'canonical-state'
+        state.rename(canonical)
+        state.mkdir()
+        for name in release.RESOURCES:
+            (state/name).symlink_to(canonical/name)
+        with sqlite3.connect(state/'data/state.db') as db:
+            db.execute('UPDATE locations SET root=?',(str((state/'data').resolve()),))
+        monkeypatch.setattr(release,'RELEASE_TAG','voice-loading')
+        monkeypatch.setattr(release,'COMMIT','c'*40)
+        monkeypatch.setattr(release,'PREVIOUS_COMMIT','d'*40)
+        monkeypatch.setattr(release,'APP_CHANGES',{'src/dashboard/frontend/obs/src/voice-view.js',
+                                                 'src/dashboard/frontend/obs/src/voice-channel.js'})
+        new={**old,'src/dashboard/frontend/obs/src/voice-view.js':b'visible player',
+             'src/dashboard/frontend/obs/src/voice-channel.js':b'loading status'}
     def manifest(commit, files):
         return {'format':'kza-cpython-bytecode-v1','python':'3.13',
                 'python_magic':importlib.util.MAGIC_NUMBER.hex(),'git_commit':commit,
@@ -74,9 +90,9 @@ def test_staged_code_keeps_all_canonical_state_locations(layout):
     assert (layout.root/'current').resolve()==layout.previous
     for resource in release.RESOURCES:
         assert (target/'state'/resource).resolve()==(layout.state/resource).resolve()==resources[resource]
-    assert (target/'runtime/data').resolve()==layout.state/'data'
+    assert (target/'runtime/data').resolve()==(layout.state/'data').resolve()
     with sqlite3.connect(target/'runtime/data/state.db') as db:
-        assert db.execute('SELECT root FROM locations').fetchone()[0]==str(layout.state/'data')
+        assert db.execute('SELECT root FROM locations').fetchone()[0]==str((layout.state/'data').resolve())
     assert release.verify_runtime(target/'runtime')['git_commit']==release.COMMIT
 
 
@@ -169,7 +185,7 @@ def test_operator_publication_and_automatic_code_rollback_preserve_current_data(
         assert result['status']=='active' and result['hall_PP_MIN_NN']==.51
         assert result['database_backups']==1
         assert (layout.root/'current').resolve()!=layout.previous
-        assert (layout.root/'current/data').resolve()==layout.state/'data'
+        assert (layout.root/'current/data').resolve()==(layout.state/'data').resolve()
         assert result['receiving_rooms']==['escritorio','hall']
         restored=release.publish(layout.bundle,rollback=True)
         assert restored['status']=='rolled_back'
@@ -222,9 +238,15 @@ async def test_postcheck_uses_real_authenticated_voice_pagination(tmp_path,dashb
                 with pytest.raises(release.ReleaseError,match='not_descending'):
                     await release.check_dashboard(token,hashlib.sha256(asset).hexdigest(),base_url=f'http://127.0.0.1:{port}')
             else:
-                result=await release.check_dashboard(token,hashlib.sha256(asset).hexdigest(),base_url=f'http://127.0.0.1:{port}')
+                channel=Path('src/dashboard/frontend/obs/src/voice-channel.js').read_bytes()
+                assets={'/obs/src/voice-channel.js':hashlib.sha256(channel).hexdigest()}
+                result=await release.check_dashboard(token,hashlib.sha256(asset).hexdigest(),base_url=f'http://127.0.0.1:{port}',assets=assets)
                 assert result['descending'] and result['rows_checked']==70 and result['pages_checked']==2
                 assert result['unauthenticated_private_api_status']==401
+                assert result['frontend_assets_checked']==2
+                with pytest.raises(release.ReleaseError,match='frontend_hash'):
+                    await release.check_dashboard(token,hashlib.sha256(asset).hexdigest(),base_url=f'http://127.0.0.1:{port}',
+                                                  assets={'/obs/src/voice-channel.js':'0'*64})
         finally:
             server.should_exit=True
             async with asyncio.timeout(5):

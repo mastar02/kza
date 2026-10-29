@@ -68,6 +68,8 @@ async def main(*,browser_binary='chromium'):
             system_monitor.gpu_snapshot,system_monitor.services_snapshot = lambda:None,lambda:None
             @dashboard.app.middleware('http')
             async def cookie(request,call_next):
+                if request.url.path.startswith('/api/voices/captures/') and request.url.path.endswith('/review'):
+                    await asyncio.sleep(.25)  # Expose loading feedback before the real response.
                 response = await call_next(request)
                 requests.append({'method':request.method,'path':request.url.path,'status':response.status_code})
                 if request.url.path=='/':
@@ -117,6 +119,18 @@ async def main(*,browser_binary='chromium'):
                         assert not await page.evaluate("document.querySelector('#view-users').textContent.includes('Embedding space')")
                         await page.evaluate('''(() => {
                           window.__voicePlayers=[]; window.__voiceEmptyCallbacks=[]; window.__holdVoiceEmpty=false;
+                          window.__voiceMeasurement=null;
+                          const createElement=document.createElement.bind(document);
+                          document.createElement=(...args)=>{
+                            const element=createElement(...args);
+                            if(String(args[0]).toLowerCase()==='audio' && window.__voiceMeasurement){
+                              const timing=window.__voiceMeasurement;timing.created=performance.now();
+                              timing.placeholderCreated??=timing.created;
+                              element.addEventListener('loadedmetadata',()=>{timing.metadata??=performance.now();});
+                              element.addEventListener('canplay',()=>{timing.ready??=performance.now();});
+                            }
+                            return element;
+                          };
                           window.__voiceUrls=new Set(); const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL);
                           URL.createObjectURL=b=>{const value=create(b);window.__voiceUrls.add(value);return value;};
                           URL.revokeObjectURL=value=>{window.__voiceUrls.delete(value);return revoke(value);};
@@ -148,6 +162,7 @@ async def main(*,browser_binary='chromium'):
                         assert corrected[identities[2]]['group_reason']=='manual_unknown'
                         assert corrected[identities[0]]['group_state']=='manual'
                         assert await page.evaluate("document.body.textContent.includes('Synthetic browser profile')")
+                        loading_timings = []
                         async def listen(identity,text):
                             try:
                                 await page.wait_for('!!document.querySelector('+json.dumps('[data-capture-id="'+identity+'"] button')+')')
@@ -155,14 +170,39 @@ async def main(*,browser_binary='chromium'):
                                 print(json.dumps({'diagnostic':'voice_view_capture_read','requests':requests[-12:],
                                     'expected':identity,'client':await page.evaluate("({status:window.__kzaVoiceState.captures.status(),ids:window.__kzaVoiceState.captures.snapshot().map(row=>row.id),dom:[...document.querySelectorAll('[data-capture-id]')].map(row=>({id:row.dataset.captureId,buttons:row.querySelectorAll('button').length})),profiles:window.__kzaVoiceState.profiles.snapshot().length})")}))
                                 raise
-                            await page.evaluate('document.querySelector('+json.dumps('[data-capture-id="'+identity+'"] button')+').click()')
+                            feedback = await page.evaluate('''(() => {
+                              window.scrollTo(0,document.body.scrollHeight);
+                              window.__voiceMeasurement={clicked:performance.now()};
+                              document.querySelector(%s).click();
+                              const card=document.querySelector('[aria-label="Escuchar muestra"]'),audio=card.querySelector('audio');
+                              const box=card.getBoundingClientRect();
+                              return {busy:card.getAttribute('aria-busy'),loading:card.textContent.includes('Cargando audio…'),
+                                emptyPlayer:!!audio&&!audio.hasAttribute('src')&&audio.srcObject===null,
+                                visible:box.top>=0&&box.bottom<=innerHeight};
+                            })()'''%json.dumps('[data-capture-id="'+identity+'"] button'))
+                            assert feedback=={'busy':'true','loading':True,'emptyPlayer':True,'visible':True},feedback
                             await page.wait_for('document.querySelector(\'[aria-label="Escuchar muestra"]\').textContent.includes('+json.dumps(text)+') && !!document.querySelector("audio")')
+                            try:
+                                async with asyncio.timeout(2):
+                                    while not await page.evaluate("document.querySelector('audio')?.readyState>=3 && Number.isFinite(window.__voiceMeasurement?.ready)"):
+                                        await asyncio.sleep(.02)
+                            except TimeoutError:
+                                print(json.dumps({'diagnostic':'voice_audio_not_prepared',
+                                    'media':await page.evaluate("(()=>{const audio=document.querySelector('audio');return {preload:audio?.preload,ready:audio?.readyState,network:audio?.networkState,durationKnown:Number.isFinite(audio?.duration),timing:window.__voiceMeasurement};})()") }))
+                                raise
+                            assert await page.evaluate("document.querySelector('audio').paused")
+                            loading_timings.append(await page.evaluate("(()=>{const m=window.__voiceMeasurement;return {click_to_placeholder_ms:m.placeholderCreated-m.clicked,click_to_player_ms:m.created-m.clicked,player_to_ready_ms:m.ready-m.created,click_to_ready_ms:m.ready-m.clicked};})()"))
                             played = await page.command('Runtime.evaluate',{'expression':"(async()=>{const audio=document.querySelector('audio');audio.muted=true;window.__voicePlayers.push(audio);window.__lastPreviewUrl=audio.src;await audio.play();})()",
                                 'awaitPromise':True,'returnByValue':True,'userGesture':True})
                             assert 'exceptionDetails' not in played,played
                             await page.wait_for("document.querySelector('audio')?.readyState>=2")
                             assert await page.evaluate("document.querySelector('[aria-label=\"Escuchar muestra\"]').textContent.includes('Synthetic listening room')")
                             assert await page.evaluate("(()=>{const element=document.querySelector('audio');window.__kzaVoiceState.review.setStatus('real');return document.querySelector('audio')===element;})()")
+                            review_requests = sum(item['path'].endswith('/review') for item in requests)
+                            assert await page.evaluate('''(() => {const audio=document.querySelector('audio');
+                              document.querySelector(%s).click();return document.querySelector('audio')===audio&&!audio.paused;
+                            })()'''%json.dumps('[data-capture-id="'+identity+'"] button'))
+                            assert sum(item['path'].endswith('/review') for item in requests)==review_requests
                         await listen(extra_id,'Synthetic audio retirement phrase')
                         await page.evaluate('window.__holdVoiceEmpty=true')
                         await owner.request(extra.conversation_id,MemoryReviewer('synthetic-admin'))
@@ -225,6 +265,8 @@ async def main(*,browser_binary='chromium'):
                             'urls_cache_dom_and_player_source_retired':True,'idle_expiry_with_frozen_server_clock':True,
                             'navigation_and_session_loss_stop_audio_and_clear_text':True,'external_bootstrap_assets_blocked':True,
                             'javascript_exceptions':len(page.errors),'synthetic_encoder_and_sources':True,
+                            'selected_audio_ready_before_play':True,'audio_loading_timings':loading_timings,
+                            'immediate_visible_loading_player_with_delayed_http':True,'reselect_keeps_current_playing_sample':True,
                             'browser_binary':browser_binary,
                             'grouping_calibration_all_browser_copies_or_hardware_acceptance':False}))
             finally:

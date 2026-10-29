@@ -2,7 +2,8 @@
   'use strict';
   function mountVoices(container,controller) {
     const state = controller.state, doc = container.ownerDocument, selected = new Set();
-    let active = true, renderedReview = null;
+    const listeningButtons = new Map();
+    let active = true, renderedReview = null, requestedReview = null;
     function node(tag,text='',className='') { const element = doc.createElement(tag); element.textContent = text; element.className = className; return element; }
     function button(text,action) { const value = node('button',text,'btn'); value.type = 'button'; value.addEventListener('click',action); return value; }
     function message(store,empty) {
@@ -14,7 +15,22 @@
       button('Actualizar',() => controller.refresh()));
     const profiles = node('section','','card'), captures = node('section','','card'), review = node('section','','card');
     profiles.setAttribute('aria-label','Perfiles confirmados'); captures.setAttribute('aria-label','Muestras de voz'); review.setAttribute('aria-label','Escuchar muestra');
-    container.replaceChildren(heading,profiles,captures,review);
+    container.replaceChildren(heading,review,profiles,captures);
+    function updateListeningButtons() {
+      const loading = state.review.status()==='loading';
+      for (const [id,entry] of listeningButtons) {
+        entry.button.disabled = !entry.available || loading;
+        entry.button.textContent = loading && requestedReview===id ? 'Cargando audio…' : 'Escuchar';
+      }
+    }
+    function openReview(id) {
+      if (state.review.snapshot()[0]?.id!==id) {
+        requestedReview = id;
+        if (!controller.review(id)) requestedReview = null;
+        updateListeningButtons();
+      }
+      review.scrollIntoView({block:'nearest',behavior:'auto'});
+    }
     function drawProfiles() {
       const rows = state.profiles.snapshot(); profiles.replaceChildren(node('h2','Perfiles confirmados'));
       profiles.append(node('p','Se conservan hasta que los borres. No habilitan acciones ni permisos.','mute'));
@@ -36,6 +52,7 @@
       const rows = state.captures.snapshot().slice().sort((left,right) =>
         right.created_at-left.created_at || (left.id<right.id ? 1 : left.id>right.id ? -1 : 0));
       for (const id of selected) if (!rows.some(row => row.id===id)) selected.delete(id);
+      listeningButtons.clear();
       captures.replaceChildren(node('h2','Muestras de voz'));
       captures.append(node('p','Audio y transcripción vencen con la captura original, como máximo a las 48 horas.','mute'));
       captures.append(node('p','Los grupos sugieren una misma voz. La similitud no verifica identidad. Las correcciones manuales conservan el vencimiento de sus fuentes.','mute'));
@@ -97,7 +114,8 @@
         choice.addEventListener('change',() => { if (choice.checked && selected.size<32) selected.add(id); else { selected.delete(id); choice.checked = false; } update(); });
         const cell = doc.createElement('td'); cell.append(choice); tr.append(cell);
         tr.append(node('td',new Date(row.created_at*1000).toLocaleString()),node('td',`${row.duration_s.toFixed(1)} s`));
-        const listen = button('Escuchar',() => controller.review(id)); listen.disabled = !row.review_available;
+        const listen = button('Escuchar',() => openReview(id));
+        listeningButtons.set(id,{button:listen,available:row.review_available});
         const action = doc.createElement('td'); action.append(listen); tr.append(action);
         tr.append(node('td',`Grupo ${groupId.slice(0,8)} · ${row.suggested_profile ? `Sugerencia · similitud ${row.similarity.toFixed(2)}` : 'Sin asociación revisada'}`));
         body.append(tr);
@@ -105,20 +123,31 @@
       table.append(body); captures.append(table,count,
         node('p','Unir incluye todas las muestras de los grupos elegidos, aunque algunas estén en otra página. Separar forma otro grupo con las muestras seleccionadas; dejar como desconocido las separa individualmente.','mute'),
         merge,split,unknown,input,confirm); update();
+      updateListeningButtons();
       if (controller.hasNext('captures')) captures.append(button('Más muestras',() => controller.next('captures')));
       state.captures.committed(state.captures.deliveryToken());
     }
     function drawReview() {
       const [row] = state.review.snapshot();
+      const loading = state.review.status()==='loading';
+      if (row || ['unavailable','expired','closed','waiting'].includes(state.review.status())) requestedReview = null;
+      review.setAttribute('aria-busy',String(loading));
+      updateListeningButtons();
       if (row && row.audio_url===renderedReview) {
         state.review.committed(state.review.deliveryToken());
         return;
       }
       renderedReview = row?.audio_url ?? null;
       state.review.detachMedia(); review.replaceChildren(node('h2','Escuchar muestra'));
-      if (!row) review.append(node('p',message(state.review,'Elegí una muestra para escucharla y revisar su transcripción.')));
+      if (!row) {
+        if (loading) {
+          const audio = doc.createElement('audio'); audio.controls = true;
+          audio.setAttribute('aria-label','Preparando muestra de audio');
+          review.append(node('p','Cargando audio…'),audio);
+        } else review.append(node('p',message(state.review,'Elegí una muestra para escucharla y revisar su transcripción.')));
+      }
       else {
-        const audio = doc.createElement('audio'); audio.controls = true; audio.preload = 'none'; audio.src = row.audio_url;
+        const audio = doc.createElement('audio'); audio.controls = true; audio.preload = 'auto'; audio.src = row.audio_url;
         review.append(node('p',row.room_id ? `Habitación: ${row.room_id}` : 'Habitación sin registrar'),audio,
           node('p',row.clip_truncated ? `Primeros ${row.clip_duration_s} segundos de un segmento de ${row.duration_s} segundos.` : `Fragmento de ${row.clip_duration_s} segundos.`, 'mute'),
           node('h3','Transcripción del segmento'),node('p',row.transcript || 'Sin transcripción disponible.'));
@@ -131,7 +160,7 @@
     doc.addEventListener('visibilitychange',check); root.addEventListener('focus',check);
     drawProfiles(); drawCaptures(); drawReview(); controller.refresh();
     return () => {
-      active = false; renderedReview = null;
+      active = false; renderedReview = requestedReview = null; listeningButtons.clear();
       for (const stop of unsubscribe) stop(); selected.clear(); controller.leave();
       doc.removeEventListener('visibilitychange',check); root.removeEventListener('focus',check);
       container.replaceChildren();

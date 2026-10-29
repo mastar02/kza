@@ -1,0 +1,119 @@
+{
+  "date": "2026-10-29",
+  "complaint": {
+    "view": "Usuarios / Voces",
+    "browser": "Chrome on Windows",
+    "symptom": "Player takes a long time to appear on first and subsequent selections."
+  },
+  "runtime_measurement": {
+    "checked_at": "2026-10-29T18:31:08.208333+00:00",
+    "outcomes": {
+      "analyzed": 8
+    },
+    "scope": "HTTPS reads from runtime host; excludes user device network, browser decode and native player retirement.",
+    "captures": {
+      "requests": 1,
+      "total_ms": 22.976913955062628,
+      "bytes": 29878
+    },
+    "review": {
+      "requests": 8,
+      "total_ms": {
+        "min": 5.100145936012268,
+        "p50": 6.425607018172741,
+        "p95": 11.093562003225088,
+        "max": 11.093562003225088
+      },
+      "bytes": {
+        "min": 65630,
+        "p50": 106601.5,
+        "max": 232949
+      }
+    },
+    "provenance": "User supplied aggregate output from compiled diagnose_voice_loading.pyc; no private audio or credential exported."
+  },
+  "findings": [
+    "The server responded quickly for these eight samples. This does not time the user PC connection.",
+    "The original review card followed profiles and the entire recordings table, with no scroll or selected-button loading feedback.",
+    "Local Chromium prepared the original selected Blob quickly even with preload=none; preload is not established as the cause."
+  ],
+  "changes": [
+    "Place the review card before the list and scroll it into view when a recording is selected.",
+    "Show an immediate empty native player with Cargando audio… while the authenticated sample is prepared; disable listen buttons during the admitted request.",
+    "Explicitly preload only the selected authorized Blob; keep the same live player on reselection.",
+    "Preserve body release, native emptied acknowledgement and expiry/session retirement contracts."
+  ],
+  "validation": {
+    "node": {
+      "passed": 31,
+      "log": "data/voice-loading-20261029/frontend-tests.log"
+    },
+    "python": {
+      "passed": 39,
+      "junit": "/tmp/kza-voice-loading-source-tests.xml",
+      "log": "data/voice-loading-20261029/source-tests.log"
+    },
+    "chromium": {
+      "passed": true,
+      "actual_chromium_http_v3_ws_react_and_native_audio": true,
+      "manual_profile_confirmation_and_revision_delete": true,
+      "review_uses_real_transcript_and_room": true,
+      "suggested_group_then_ui_split_merge_and_explicit_unknown": true,
+      "raw_group_corrections_leave_permanent_profile_names_unchanged": true,
+      "permanent_profile_survives_raw_expiry": true,
+      "raw_retirement_waits_for_actual_emptied_callback": true,
+      "urls_cache_dom_and_player_source_retired": true,
+      "idle_expiry_with_frozen_server_clock": true,
+      "navigation_and_session_loss_stop_audio_and_clear_text": true,
+      "external_bootstrap_assets_blocked": true,
+      "javascript_exceptions": 0,
+      "synthetic_encoder_and_sources": true,
+      "selected_audio_ready_before_play": true,
+      "audio_loading_timings": [
+        {
+          "click_to_placeholder_ms": 0.2999999523162842,
+          "click_to_player_ms": 265.2999999523163,
+          "player_to_ready_ms": 52.89999985694885,
+          "click_to_ready_ms": 318.19999980926514
+        },
+        {
+          "click_to_placeholder_ms": 0,
+          "click_to_player_ms": 303.40000009536743,
+          "player_to_ready_ms": 4.5,
+          "click_to_ready_ms": 307.90000009536743
+        },
+        {
+          "click_to_placeholder_ms": 0.09999990463256836,
+          "click_to_player_ms": 304.09999990463257,
+          "player_to_ready_ms": 5.400000095367432,
+          "click_to_ready_ms": 309.5
+        },
+        {
+          "click_to_placeholder_ms": 0.20000004768371582,
+          "click_to_player_ms": 306.10000014305115,
+          "player_to_ready_ms": 5.3999998569488525,
+          "click_to_ready_ms": 311.5
+        }
+      ],
+      "immediate_visible_loading_player_with_delayed_http": true,
+      "reselect_keeps_current_playing_sample": true,
+      "browser_binary": "/snap/bin/chromium",
+      "grouping_calibration_all_browser_copies_or_hardware_acceptance": false
+    },
+    "chromium_log": "data/voice-loading-20261029/chromium-loading.log",
+    "chromium_artificial_review_delay_ms": 250,
+    "baseline_click_to_ready_ms": [
+      68.90000009536743,
+      58.09999990463257,
+      55.5,
+      56.40000009536743
+    ],
+    "ruff": "passed"
+  },
+  "limits": [
+    "Actual Chrome on Windows and the user LAN have not been timed or reproduced.",
+    "A delayed HTTP response was injected to verify immediate loading feedback, not to simulate every source of the reported delay.",
+    "This is not an audio quality change or a general service health acceptance."
+  ],
+  "deployment_status": "prepared_in_development_not_yet_published"
+}
