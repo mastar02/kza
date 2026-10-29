@@ -108,5 +108,14 @@
   ],
   "private_evidence_directory": "data/audio-quality-20261029",
   "raw_snapshots_household_identifiers_audio_or_secrets_tracked": false,
-  "production_changes_performed": false
+  "production_changes_performed": false,
+  "subsequent_corpus_analysis": {
+    "report": "docs/research/2026-10-29-all-accessible-audio-quality.json",
+    "distinct_WAV_files_measured": 6254,
+    "current_dashboard_preview_access_pending": false,
+    "current_dashboard_previews_measured": 1915,
+    "current_preview_room_labels": ["hall"],
+    "all_current_previews_decoded": true,
+    "DSP_causation_remains_unconfirmed": true
+  }
 }

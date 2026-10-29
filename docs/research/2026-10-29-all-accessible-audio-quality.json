@@ -1,0 +1,537 @@
+{
+  "checked_on": "2026-10-29",
+  "user_request": "Find and analyze all available recordings after the user reported static and metallic playback in Users / Voices across all rooms.",
+  "scope": "All discoverable audio files accessible to yo in the historical KZA data aliases and development data were decoded and measured. The operator then ran the compiled diagnostic against the authenticated current dashboard API and supplied its aggregate result. No source recording, production setting, service or firmware was modified; historical gt storage remains inaccessible.",
+  "coverage": {
+    "matched_audio_paths_before_inode_deduplication": 12507,
+    "distinct_audio_files": 6254,
+    "file_bytes": 218209256,
+    "decoded_files": 6254,
+    "decode_errors": {},
+    "historical_wake_captures": 6115,
+    "manual_training_recordings": 137,
+    "notification_files": 2,
+    "total_duration_s": 6810.24,
+    "historical_wake_duration_s": 6535.84,
+    "historical_wake_buckets": {
+      "accepted": 2000,
+      "rejected": 4000,
+      "missed": 115
+    },
+    "duplicate_waveform_contents": 1,
+    "duplicate_content_is_notification_copy": true,
+    "accessible_databases_inspected_read_only": 11,
+    "accessible_databases_with_audio_wav_column": 0,
+    "historical_ambient_rows": 10536,
+    "historical_ambient_audio_paths": 0
+  },
+  "method": {
+    "analyzer": "tools/analyze_audio_quality.py",
+    "command": "PYTHONDONTWRITEBYTECODE=1 /home/kza/kza/.venv/bin/python -B tools/analyze_audio_quality.py data/audio-quality-20261029/all-samples/inventory.json data/audio-quality-20261029/all-samples/results",
+    "effective_user": "yo",
+    "cwd": "/home/yo/projects/kza",
+    "source_files_read_only": true,
+    "separate_channels": true,
+    "metrics": [
+      "sample rate, subtype, duration, channel count",
+      "RMS, peak, crest factor, DC mean",
+      "fraction and consecutive runs at or above 0.9999 full scale",
+      "exact-zero runs excluding leading and trailing padding",
+      "identical adjacent nonzero 80 ms blocks",
+      "adjacent-sample jumps",
+      "20 ms frame level percentiles",
+      "averaged windowed power spectrum and frequency-band energy"
+    ],
+    "speech_transcription_performed": false,
+    "subjective_listening_performed": false,
+    "limit": "These objective waveform measurements do not establish perceptual metallicness or acoustic signal-to-noise ratio. Captures include false wakes and television; a quiet recording is not necessarily a quiet spoken command."
+  },
+  "historical_capture_findings": {
+    "format": "All 6115 automatic captures decode as mono 16000 Hz PCM16 WAV.",
+    "files_with_any_near_full_scale_sample": 73,
+    "files_with_at_least_three_consecutive_near_full_scale_samples": 52,
+    "consecutive_near_full_scale_file_fraction": 0.008503679476696648,
+    "files_with_at_least_one_percent_near_full_scale_samples": 9,
+    "largest_near_full_scale_sample_fraction": 0.04375,
+    "files_with_rms_below_minus_50_dbfs": 547,
+    "files_with_peak_below_minus_40_dbfs": 242,
+    "files_with_internal_exact_zero_run_at_least_5ms": 0,
+    "files_with_identical_adjacent_nonzero_80ms_block": 0,
+    "all_zero_files": 0,
+    "interpretation": "Some actual recordings exhibit near-full-scale plateaus consistent with clipping, especially Cocina and Hall. This is not widespread enough to establish a common saturation cause across every room. No selected digital-silence or repeated-block signature was found in these saved clips; that does not exclude lost packets, nonzero corruption, DSP artifacts or unsaved capture failures.",
+    "level_interpretation": "Recorded levels vary substantially, and some recordings are very quiet. Increasing playback gain also makes existing background noise and quantization more audible; this corpus does not isolate either noise contribution."
+  },
+  "groups": [
+    {
+      "kind": "historical_wake_capture",
+      "room": "cocina",
+      "files": 1222,
+      "duration_s": 1378.08,
+      "sample_rates": {
+        "16000": 1222
+      },
+      "channels": {
+        "1": 1222
+      },
+      "subtypes": {
+        "PCM_16": 1222
+      },
+      "channel_count": 1222,
+      "rms_dbfs_p10_p50_p90": [
+        -44.948609640524495,
+        -34.88109950850139,
+        -20.36925628003722
+      ],
+      "peak_dbfs_p10_p50_p90": [
+        -30.980548147929085,
+        -18.82374210505382,
+        -3.4876427529909546
+      ],
+      "crest_db_p10_p50_p90": [
+        12.216657631060363,
+        15.377844393727507,
+        20.013465077476347
+      ],
+      "frame_level_span_db_p10_p50_p90": [
+        4.2406508545580115,
+        12.490254692673126,
+        24.100970928485864
+      ],
+      "channels_with_near_full_scale_samples": 39,
+      "channels_with_3_consecutive_near_full_scale_samples": 27,
+      "all_zero_channels": 0,
+      "channels_with_internal_exact_zero_run_at_least_5ms": 0,
+      "channels_with_repeated_nonzero_80ms_block": 0,
+      "channels_with_adjacent_jump_over_025": 176,
+      "above_6000_hz_energy_fraction_p10_p50_p90": [
+        6.813720319696071e-05,
+        0.0007207912269179186,
+        0.01724254770407961
+      ],
+      "filename_date_range": [
+        "20260819",
+        "20261027"
+      ]
+    },
+    {
+      "kind": "historical_wake_capture",
+      "room": "escritorio",
+      "files": 1265,
+      "duration_s": 1516.3999999999999,
+      "sample_rates": {
+        "16000": 1265
+      },
+      "channels": {
+        "1": 1265
+      },
+      "subtypes": {
+        "PCM_16": 1265
+      },
+      "channel_count": 1265,
+      "rms_dbfs_p10_p50_p90": [
+        -59.86245746982611,
+        -37.30652479527342,
+        -26.361587706900607
+      ],
+      "peak_dbfs_p10_p50_p90": [
+        -44.96556413113409,
+        -22.123865658416165,
+        -9.774110404791196
+      ],
+      "crest_db_p10_p50_p90": [
+        11.667055030882375,
+        15.100092944064682,
+        18.540321779340047
+      ],
+      "frame_level_span_db_p10_p50_p90": [
+        3.8931475377486997,
+        12.941980476726599,
+        24.161211875783646
+      ],
+      "channels_with_near_full_scale_samples": 1,
+      "channels_with_3_consecutive_near_full_scale_samples": 1,
+      "all_zero_channels": 0,
+      "channels_with_internal_exact_zero_run_at_least_5ms": 0,
+      "channels_with_repeated_nonzero_80ms_block": 0,
+      "channels_with_adjacent_jump_over_025": 24,
+      "above_6000_hz_energy_fraction_p10_p50_p90": [
+        5.171050621690008e-05,
+        0.0004001365487900493,
+        0.003759260158007126
+      ],
+      "filename_date_range": [
+        "20260810",
+        "20261027"
+      ]
+    },
+    {
+      "kind": "historical_wake_capture",
+      "room": "hall",
+      "files": 1932,
+      "duration_s": 1953.04,
+      "sample_rates": {
+        "16000": 1932
+      },
+      "channels": {
+        "1": 1932
+      },
+      "subtypes": {
+        "PCM_16": 1932
+      },
+      "channel_count": 1932,
+      "rms_dbfs_p10_p50_p90": [
+        -46.65595741309617,
+        -37.89930015620504,
+        -26.649170844948646
+      ],
+      "peak_dbfs_p10_p50_p90": [
+        -31.224148510407865,
+        -22.23801791365336,
+        -9.767411022770743
+      ],
+      "crest_db_p10_p50_p90": [
+        12.425457965834212,
+        15.432733911142268,
+        19.96846924908653
+      ],
+      "frame_level_span_db_p10_p50_p90": [
+        6.126056592868897,
+        12.954750971439369,
+        23.912692352130154
+      ],
+      "channels_with_near_full_scale_samples": 25,
+      "channels_with_3_consecutive_near_full_scale_samples": 17,
+      "all_zero_channels": 0,
+      "channels_with_internal_exact_zero_run_at_least_5ms": 0,
+      "channels_with_repeated_nonzero_80ms_block": 0,
+      "channels_with_adjacent_jump_over_025": 94,
+      "above_6000_hz_energy_fraction_p10_p50_p90": [
+        7.005245479330046e-05,
+        0.0005711791386452598,
+        0.010476707784434469
+      ],
+      "filename_date_range": [
+        "20261009",
+        "20261027"
+      ]
+    },
+    {
+      "kind": "historical_wake_capture",
+      "room": "living",
+      "files": 1696,
+      "duration_s": 1688.32,
+      "sample_rates": {
+        "16000": 1696
+      },
+      "channels": {
+        "1": 1696
+      },
+      "subtypes": {
+        "PCM_16": 1696
+      },
+      "channel_count": 1696,
+      "rms_dbfs_p10_p50_p90": [
+        -49.89103288174702,
+        -40.38646211429269,
+        -27.22083677757795
+      ],
+      "peak_dbfs_p10_p50_p90": [
+        -35.438803404625766,
+        -24.9327618837897,
+        -11.401596809388284
+      ],
+      "crest_db_p10_p50_p90": [
+        11.915477733914054,
+        14.926040821437098,
+        19.05226828167646
+      ],
+      "frame_level_span_db_p10_p50_p90": [
+        5.26051516367497,
+        10.123929135989737,
+        20.157474000045767
+      ],
+      "channels_with_near_full_scale_samples": 8,
+      "channels_with_3_consecutive_near_full_scale_samples": 7,
+      "all_zero_channels": 0,
+      "channels_with_internal_exact_zero_run_at_least_5ms": 0,
+      "channels_with_repeated_nonzero_80ms_block": 0,
+      "channels_with_adjacent_jump_over_025": 44,
+      "above_6000_hz_energy_fraction_p10_p50_p90": [
+        9.245641575261756e-05,
+        0.0007011633357197374,
+        0.009355142890262045
+      ],
+      "filename_date_range": [
+        "20261009",
+        "20261027"
+      ]
+    },
+    {
+      "kind": "manual_training",
+      "room": null,
+      "files": 137,
+      "duration_s": 274.0,
+      "sample_rates": {
+        "16000": 137
+      },
+      "channels": {
+        "1": 137
+      },
+      "subtypes": {
+        "PCM_16": 137
+      },
+      "channel_count": 137,
+      "rms_dbfs_p10_p50_p90": [
+        -31.790603590274028,
+        -26.086772079528853,
+        -19.895624792009567
+      ],
+      "peak_dbfs_p10_p50_p90": [
+        -14.741453783274876,
+        -9.572430031652095,
+        -3.076860625975067
+      ],
+      "crest_db_p10_p50_p90": [
+        12.972616210926272,
+        16.580297717055736,
+        19.792398933273958
+      ],
+      "frame_level_span_db_p10_p50_p90": [
+        10.649111973076174,
+        19.608422678978723,
+        30.42255491646416
+      ],
+      "channels_with_near_full_scale_samples": 3,
+      "channels_with_3_consecutive_near_full_scale_samples": 1,
+      "all_zero_channels": 0,
+      "channels_with_internal_exact_zero_run_at_least_5ms": 0,
+      "channels_with_repeated_nonzero_80ms_block": 0,
+      "channels_with_adjacent_jump_over_025": 20,
+      "above_6000_hz_energy_fraction_p10_p50_p90": [
+        2.060555136471667e-05,
+        0.00022090064242539644,
+        0.0012404447303664037
+      ],
+      "filename_date_range": null
+    },
+    {
+      "kind": "notification",
+      "room": null,
+      "files": 2,
+      "duration_s": 0.4,
+      "sample_rates": {
+        "24000": 2
+      },
+      "channels": {
+        "1": 2
+      },
+      "subtypes": {
+        "PCM_16": 2
+      },
+      "channel_count": 2,
+      "rms_dbfs_p10_p50_p90": [
+        -11.458747746287488,
+        -11.458747746287488,
+        -11.458747746287488
+      ],
+      "peak_dbfs_p10_p50_p90": [
+        -7.959595426791961,
+        -7.959595426791961,
+        -7.959595426791961
+      ],
+      "crest_db_p10_p50_p90": [
+        3.4991523194955265,
+        3.4991523194955265,
+        3.4991523194955265
+      ],
+      "frame_level_span_db_p10_p50_p90": [
+        1.5579771811205192,
+        1.5579771811205192,
+        1.5579771811205192
+      ],
+      "channels_with_near_full_scale_samples": 0,
+      "channels_with_3_consecutive_near_full_scale_samples": 0,
+      "all_zero_channels": 0,
+      "channels_with_internal_exact_zero_run_at_least_5ms": 0,
+      "channels_with_repeated_nonzero_80ms_block": 0,
+      "channels_with_adjacent_jump_over_025": 0,
+      "above_6000_hz_energy_fraction_p10_p50_p90": [
+        2.8797311136774706e-09,
+        2.8797311136774706e-09,
+        2.8797311136774706e-09
+      ],
+      "filename_date_range": null
+    }
+  ],
+  "recent_historical_subset": {
+    "filename_dates": "2026-10-25 through 2026-10-27",
+    "files": 3247,
+    "groups": [
+      {
+        "room": "cocina",
+        "files": 736,
+        "median_rms_dbfs": -35.14966318542214,
+        "three_consecutive_near_full_scale_samples": 12
+      },
+      {
+        "room": "escritorio",
+        "files": 429,
+        "median_rms_dbfs": -35.951401063639125,
+        "three_consecutive_near_full_scale_samples": 0
+      },
+      {
+        "room": "hall",
+        "files": 1077,
+        "median_rms_dbfs": -37.82285940864981,
+        "three_consecutive_near_full_scale_samples": 6
+      },
+      {
+        "room": "living",
+        "files": 1005,
+        "median_rms_dbfs": -40.45641340990409,
+        "three_consecutive_near_full_scale_samples": 0
+      }
+    ]
+  },
+  "relationship_to_dashboard": {
+    "exact_current_dashboard_previews_analyzed": true,
+    "history_not_equivalent_to_current_previews": true,
+    "channel_limit": "These legacy mono wake clips contain the recognition signal, whereas ambient-origin dashboard previews use the conversation channel. Historical clips have no independent multichannel reference with which to test the live PP_MIN_NN hypothesis.",
+    "current_storage_readable_by_yo": false,
+    "dashboard_credential_configured_for_yo": false,
+    "forced_diagnostic_ssh_exports_audio": false,
+    "leading_DSP_hypothesis_confirmed_by_this_corpus": false,
+    "live_diagnostic": "tools/analyze_dashboard_audio.py",
+    "live_diagnostic_behavior": "Use authenticated GETs and the actual version-three WebSocket receipt protocol to paginate all currently reviewable captures, measure each WAV in memory, release bodies before ACK and export only aggregate metrics. No raw audio, transcript, token or capture ID is exported. Expired or denied captures are not bypassed.",
+    "live_diagnostic_operator_execution_pending": false,
+    "compiled_bundle": {
+      "directory": "/tmp/kza-audio-quality-20261029-j_4gq0j5",
+      "python": "CPython 3.13",
+      "files": {
+        "analyze_dashboard_audio.pyc": "40d940ad9cb8cfb435241a079788080b910e376cd9b2d2b1ee986b2027ca68ee",
+        "analyze_audio_quality.pyc": "d73c0c6be024fc18a53bf24e5d8a4e6272372c9d1b4a91d13acd9ef273788dd8"
+      },
+      "contains_source_files": false,
+      "role": "Exact bundle executed by the operator for the current-preview result; subsequent source change only corrects context-specific summary limit text."
+    },
+    "live_diagnostic_operator_completed_at": "2026-10-29T16:21:20.580916+00:00"
+  },
+  "validation": {
+    "source_tests": {
+      "passed": 7,
+      "failed": 0,
+      "xml": "/tmp/kza-all-audio-quality-tests.xml"
+    },
+    "coverage": "Clean waveform, saturation, internal dropout, nonzero replay, per-channel silence, expired preview rejection, authenticated pagination, split HTTP body, retirement during body delivery and the actual DashboardAPI with its native v3 receipt services.",
+    "compiled_bundle_tests": {
+      "passed": 7,
+      "failed": 0,
+      "xml": "/tmp/kza-all-audio-quality-compiled-tests.xml",
+      "note": "Seven cases passed against the final compiled modules, including the actual DashboardAPI. The operator used the earlier recorded bundle with identical waveform metrics; only context-specific summary limit text changed.",
+      "bundle": "data/audio-quality-20261029/all-samples/compiled-current",
+      "files": {
+        "analyze_dashboard_audio.pyc": "40d940ad9cb8cfb435241a079788080b910e376cd9b2d2b1ee986b2027ca68ee",
+        "analyze_audio_quality.pyc": "257980c7e9a98befc022225665e9ab05f12a837c9bb420fa4f70f37288df5f90"
+      }
+    },
+    "ruff_passed": true
+  },
+  "private_evidence_directory": "data/audio-quality-20261029/all-samples",
+  "raw_audio_private_paths_transcripts_credentials_in_git": false,
+  "production_service_DSP_or_firmware_changes": false,
+  "root_cause_confirmed": false,
+  "current_dashboard_analysis": {
+    "checked_at": "2026-10-29T16:21:20.580916+00:00",
+    "execution": "Operator as kza ran the compiled diagnostic; the user returned this aggregate JSON in the conversation.",
+    "listed_captures": 1915,
+    "outcomes": {
+      "analyzed": 1915
+    },
+    "summary": {
+      "attempted_files": 1915,
+      "decoded_files": 1915,
+      "decode_errors": {},
+      "groups": [
+        {
+          "kind": "current_dashboard_preview",
+          "room": "hall",
+          "files": 1915,
+          "duration_s": 5999.28,
+          "sample_rates": {
+            "16000": 1915
+          },
+          "channels": {
+            "1": 1915
+          },
+          "subtypes": {
+            "PCM_16": 1915
+          },
+          "filename_dates": [],
+          "channel_count": 1915,
+          "rms_dbfs_p10_p50_p90": [
+            -49.09356363666197,
+            -37.97541544176316,
+            -23.620545890182846
+          ],
+          "peak_dbfs_p10_p50_p90": [
+            -31.534603785487125,
+            -19.132428202854125,
+            -1.8795550431911212
+          ],
+          "crest_db_p10_p50_p90": [
+            14.981868919770719,
+            19.223347013401643,
+            22.91310029642025
+          ],
+          "frame_level_span_db_p10_p50_p90": [
+            10.464021990683378,
+            22.87516446322428,
+            42.09501828029623
+          ],
+          "channels_with_near_full_scale_samples": 110,
+          "channels_with_3_consecutive_near_full_scale_samples": 60,
+          "all_zero_channels": 0,
+          "channels_with_internal_exact_zero_run_at_least_5ms": 1,
+          "channels_with_repeated_nonzero_80ms_block": 0,
+          "channels_with_adjacent_jump_over_025": 410,
+          "above_6000_hz_energy_fraction_p10_p50_p90": [
+            4.142711985607238e-05,
+            0.00024442139645952475,
+            0.0035605333021492213
+          ]
+        }
+      ],
+      "limits": [
+        "No acoustic SNR or perceptual quality score is inferred.",
+        "Near-full-scale runs, sample jumps and exact-zero gaps are indicators that need context, not standalone proofs of a defect.",
+        "Current room labels come from the authenticated API; physical microphone binding was not independently verified.",
+        "The API preview does not identify whether a sample came from the ambient conversation channel or the command ASR channel."
+      ]
+    },
+    "near_full_scale_three_run_file_fraction": 0.031331592689295036,
+    "any_near_full_scale_file_fraction": 0.057441253263707574,
+    "all_current_previews_labelled_hall": true,
+    "other_room_current_preview_count": 0,
+    "near_full_scale_interpretation": "60 previews (3.13%) contain at least three consecutive samples at or above 0.9999 full scale, consistent with clipping or limiting. This indicator alone does not locate saturation in the microphone, DSP, input signal or WAV conversion.",
+    "gap_interpretation": "One preview contains an internal exact-zero run of at least 5 ms. No all-zero preview or identical adjacent nonzero 80 ms block was found. A single exact-zero gap does not prove a USB dropout.",
+    "jump_interpretation": "410 previews have at least one adjacent-sample jump greater than 0.25. Natural transients can trigger this measure, so these are not labelled 410 clicks or transport faults.",
+    "level_interpretation": "Median clip RMS is -37.98 dBFS and median peak -19.13 dBFS, with large variation across clips. No clean-speech reference was captured; these values do not measure background noise or justify a global gain increase.",
+    "coverage_limit": "The API is paginated over a changing dataset, not a frozen database snapshot. All 1915 reviewable captures returned in this run were successfully analyzed; expired or denied data were not recovered.",
+    "private_result_path": "data/audio-quality-20261029/all-samples/current-dashboard-operator-report.json",
+    "raw_audio_transcripts_credentials_or_capture_ids_exported": false,
+    "initial_export_limit_text_correction": "The operator bundle inherited generic historical-corpus limit text in summarize(). The actual current room field was taken from each API preview. Source summary text now distinguishes current API labels from historical filenames; waveform metrics were not changed."
+  },
+  "conclusion": {
+    "current_and_historical_analysis_completed": true,
+    "general_metallic_or_static_root_cause_confirmed": false,
+    "findings": "A minority of both current and historical recordings have near-full-scale plateaus. All current previews decode as the expected WAV format. The saved corpora do not show widespread exact-zero gaps or repeated blocks. These results do not support assigning a general failure to WAV encoding or to every microphone.",
+    "DSP_hypothesis": "Measured PP_MIN_NN around 0.4 remains a plausible cause of metallic ambient conversation-channel audio under the manufacturer warning documented in the prior report; no paired-channel or controlled parameter A/B has established causation.",
+    "room_scope": "All 1915 current API previews are labelled Hall, consistent with only one currently advancing capture in the runtime snapshot. Historical recordings cover all four room labels; current-preview results cannot validate present capture quality in the other three rooms.",
+    "next_discriminating_step": "After stable capture is established, perform a separately coordinated single-device comparison of the same speech on conversation and ASR outputs, then A/B PP_MIN_NN 0.4 versus 0.51 with all other parameters held fixed. Select gain changes from measured actual peaks and quiet speech; do not increase gain globally from clip RMS alone.",
+    "production_changes_performed": false
+  },
+  "manufacturer_gain_check": {
+    "url": "https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/host_control/README.md",
+    "finding": "The Seeed host-control README lists AUDIO_MGR_MIC_GAIN 90 among its tuned defaults, matching the connected devices. The value 90 is not treated as proof of an excessive gain fault."
+  }
+}
