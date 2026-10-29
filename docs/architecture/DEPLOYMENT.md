@@ -28,23 +28,38 @@ El flujo histórico de edición en producción y puente desde la laptop queda
 retirado para trabajo nuevo. Consultar `AGENTS.md` en la raíz para las
 instrucciones operativas.
 
-## Release operativa instalada — 2026-10-28
+## Release operativa instalada — 2026-10-29
 
-Está activo `release_20261028T145442Z_b0866e8`, construido desde
-`b0866e8db01fd934ff3e6c483cca07d94168a9dc`. Esta instalación adelanta la
-disponibilidad solicitada del servicio y dashboard; no acepta H6 ni cierra el
-roadmap. La última suite completa mantiene dos fallos conocidos, y la salud
-real sigue indicando problemas de acceso a HA y de captura en tres entradas.
+Está activo `release_20261029T174830709997Z_63ea8d3`, construido desde
+`63ea8d319b50506cc37ba73df1e41c87a41054cf`. La actualización del 29 de octubre
+ordena las muestras de Usuarios / Voces por fecha descendente y verifica la
+paginación. El operador publicó el artefacto compilado solicitado por el usuario;
+`yo` conserva acceso de diagnóstico, sin shell operativa en `kza`.
+Esta instalación no acepta H6 ni cierra el roadmap. La última suite completa
+mantiene dos fallos conocidos. La observación posterior confirma captura en Hall
+y Escritorio; Living y Cocina siguen sin captura útil. HA conserva `auth_error`.
 
 - Runtime: `/home/kza/releases/current` apunta al subdirectorio `runtime` del
-  slot instalado. Se verificaron los 355 archivos del manifiesto, sin `.py`.
-- Estado: `state`, hermano de `runtime`, contiene configuración privada, datos
-  copiados y logs. El directorio de trabajo de systemd es su ruta canónica.
-  `runtime/config`, `runtime/data` y `runtime/.env` enlazan a ese estado.
+  slot instalado. Se verificaron los 360 archivos del manifiesto, con 324 módulos
+  compilados y sin fuentes `.py`.
+- Estado: `state`, hermano de `runtime`, es un contenedor privado cuyos enlaces
+  conservan las rutas canónicas de configuración, datos, entorno, modelos y logs
+  del slot `release_20261028T145442Z_b0866e8`. No se movieron ni reemplazaron datos:
+  los registros de retención conservan sus localizadores absolutos. El directorio
+  de trabajo es el nuevo contenedor; `runtime/config`, `runtime/data` y
+  `runtime/.env` enlazan a él. No retirar el estado del slot anterior.
 - `kza-voice.service` conserva su unit original y usa el drop-in `release.conf`.
   Ejecuta `/home/kza/kza/.venv/bin/python -B -P -m src.main`, con
   `PYTHONPATH=/home/kza/releases/current`. El venv y los modelos existentes
   permanecen externos; no se instalaron dependencias ni se reasignaron GPUs.
+- Actualización: sólo cambió `WorkingDirectory` en el drop-in existente; el
+  selector de código continúa siendo `PYTHONPATH=/home/kza/releases/current`.
+  Se reinició únicamente voz. El proxy y la rotación de consola conservaron su
+  ejecución. Diez bases SQLite tienen respaldo consistente en
+  `releases/backups/release_20261029T174830709997Z_63ea8d3/`.
+- Prueba de Hall: el parámetro RAM `PP_MIN_NN=0.51` fue repuesto y verificado tras
+  el arranque, con los demás parámetros estáticos iguales. La configuración
+  persistente sigue en `0.4`; la mejora subjetiva continúa pendiente de comparar.
 - Dashboard: **https://192.168.1.2:9540/obs/**. NGINX del proyecto, bajo
   `kza-dashboard-proxy.service`, termina TLS y reenvía a `127.0.0.1:9500`.
   Conserva Host, esquema y WebSocket. No modifica el NGINX compartido.
@@ -71,7 +86,9 @@ El checkout original y `/home/kza/app` se conservan para rollback y para el
 índice de código existente. La limpieza de fuentes sigue pendiente.
 
 Ver [operación y rollback](../runbooks/2026-10-28-compiled-runtime.md) y la
-[evidencia de instalación](../research/2026-10-28-live-release-validation.json).
+[evidencia de actualización del 29](../research/2026-10-29-voice-order-publication.json).
+La [instalación original del 28](../research/2026-10-28-live-release-validation.json)
+se conserva como antecedente y como versión de código para rollback.
 El acceso posterior de consulta desde `yo` usa una clave con comando forzado,
 sin shell ni permisos de operación; ver
 [diagnóstico restringido](../runbooks/2026-10-28-readonly-diagnostics.md).

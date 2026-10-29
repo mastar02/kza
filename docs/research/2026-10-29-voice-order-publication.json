@@ -1,0 +1,153 @@
+{
+  "checked_on": "2026-10-29",
+  "last_independent_check_at": "2026-10-29T17:50:29.784670+00:00",
+  "authorization": "User explicitly requested publishing the prepared newest-first dashboard release.",
+  "status": "active",
+  "runtime_account": "kza",
+  "development_build_test_git_account": "yo",
+  "access": "Existing yo SSH key remains fixed read-only diagnostics. The user executed the compiled publication command from their kza terminal without sudo; no general operational SSH access was added.",
+  "operator_result": {
+    "status": "active",
+    "source_commit": "63ea8d319b50506cc37ba73df1e41c87a41054cf",
+    "release_id": "release_20261029T174830709997Z_63ea8d3",
+    "previous_release_id": "release_20261028T145442Z_b0866e8",
+    "database_backups": 10,
+    "canonical_private_resources_preserved": true,
+    "hall_PP_MIN_NN": 0.5099999904632568,
+    "other_hall_static_parameters_preserved": true,
+    "proxy_restarted": false,
+    "dependencies_installed": false,
+    "manifest_files": 360,
+    "compiled_modules": 324,
+    "health_status": "unhealthy",
+    "receiving_rooms": [
+      "escritorio",
+      "hall"
+    ],
+    "rows_checked": 100,
+    "pages_checked": 2,
+    "descending": true,
+    "frontend_hash_matches": true,
+    "unauthenticated_private_api_status": 401
+  },
+  "artifact": {
+    "source_commit": "63ea8d319b50506cc37ba73df1e41c87a41054cf",
+    "archive": "dist/kza-runtime-63ea8d3-cp313.tar.gz",
+    "sha256": "ea81e3c07d787cf92a307bdcb1e28246c889f5eb117e7c0e80ab7629c44ac19c",
+    "manifest_files": 360,
+    "compiled_modules": 324,
+    "python_sources_in_runtime": false,
+    "application_files_changed": [
+      "src/users/voice_ledger.pyc",
+      "src/dashboard/voice_api.pyc",
+      "src/dashboard/frontend/obs/src/voice-view.js"
+    ]
+  },
+  "operator_bundle": {
+    "directory": "/tmp/kza-publish-voice-order-20261029-1xge67qw",
+    "python": "CPython 3.13",
+    "sources_in_bundle": false,
+    "files": {
+      "publish_voice_order.pyc": "6e5adb75ed8f1d28eac6364999c832732e113111041e6502653687b510af41bb",
+      "kza-runtime.tar.gz": "ea81e3c07d787cf92a307bdcb1e28246c889f5eb117e7c0e80ab7629c44ac19c",
+      "stage_runtime.pyc": "67a733a4c9270465727435b236995b637b923b579dfbc7469d64169adfe14255",
+      "dashboard-public.crt": "fc3b9cf89d232841a89b6d40183562166d6ca19aa90d5c9c86ae0701910c0be4",
+      "xvf_noise_trial.pyc": "b0cdbd9d698a4636a6bde7edeaf12417e65afc65070d0e76f6f60bd69196d5ae",
+      "xvf_controller.pyc": "455890493ff4218bc9d9cefe17bc82d724c879938055c0436d9cb9f8c6b8e9bc"
+    }
+  },
+  "validation": {
+    "publication_and_trial_tests": {
+      "source": {
+        "passed": 24,
+        "failed": 0,
+        "errors": 0,
+        "runtime_s": 2.328,
+        "junit_xml": "/tmp/kza-publish-voice-order-tests.xml",
+        "log": "data/publish-voice-order-20261029/source-tests.log"
+      },
+      "compiled": {
+        "passed": 24,
+        "failed": 0,
+        "errors": 0,
+        "runtime_s": 2.633,
+        "junit_xml": "/tmp/kza-publish-voice-order-compiled-tests.xml",
+        "log": "data/publish-voice-order-20261029/compiled-tests.log"
+      }
+    },
+    "ruff_passed": true,
+    "offline_rehearsal": {
+      "actual_release_archives_used": true,
+      "new_commit": "63ea8d319b50506cc37ba73df1e41c87a41054cf",
+      "new_manifest_files": 360,
+      "canonical_locator_preserved": true,
+      "sqlite_backups_checked": 1,
+      "current_data_preserved_on_rollback": true,
+      "previous_runtime_intact": true,
+      "live_service_operations": false
+    },
+    "application_regressions_report": "docs/research/2026-10-29-voice-capture-order-validation.json",
+    "independent_https": {
+      "https_asset_status": 200,
+      "served_asset_sha256": "b4e5db93e4483a938e20495d294c30bb7b8154ebf0437a6f530f4fd08517d420",
+      "matches_release": true,
+      "unauthenticated_private_api_status": 401
+    },
+    "independent_snapshot_commit_and_release_match": true,
+    "voice_PID_changed": true,
+    "proxy_PID_unchanged": true,
+    "yo_console_read_still_works": true,
+    "yo_console_write_access": false
+  },
+  "state_layout": {
+    "current": "/home/kza/releases/current",
+    "selected_runtime": "/home/kza/releases/slots/release_20261029T174830709997Z_63ea8d3/runtime",
+    "working_directory": "/home/kza/releases/slots/release_20261029T174830709997Z_63ea8d3/state",
+    "resource_strategy": "The new regular state container links config, data, .env, models and logs to their previous canonical resources. runtime links config/data/.env to the new container. Database files and registered absolute collector paths were not moved or rewritten.",
+    "persistent_state_from": "/home/kza/releases/slots/release_20261028T145442Z_b0866e8/state",
+    "old_state_must_be_retained": true,
+    "data_copied_or_replaced_during_promotion": false,
+    "private_config_changed": false,
+    "environment_changed": false,
+    "model_paths_changed": false,
+    "unit_override_change": "Only WorkingDirectory in release.conf; the current-code selector, CONFIG_PATH and console destinations remain unchanged.",
+    "narrow_console_traversal_ACL_on_new_slot": true
+  },
+  "backups": {
+    "directory": "/home/kza/releases/backups/release_20261029T174830709997Z_63ea8d3",
+    "sqlite_snapshots": 10,
+    "source_and_backup_quick_checks_passed": true,
+    "original_config_environment_and_service_override_preserved_privately": true,
+    "restore_old_databases_automatically": false
+  },
+  "rollback": {
+    "command": "/home/kza/kza/.venv/bin/python -B /tmp/kza-publish-voice-order-20261029-1xge67qw/publish_voice_order.pyc --rollback",
+    "record": "/home/kza/releases/deployments/voice-order-63ea8d3.json",
+    "target_source_commit": "b0866e8db01fd934ff3e6c483cca07d94168a9dc",
+    "behavior": "Stop voice, restore the previous current-code link and override, start voice and restore the saved Hall profile. Keep current persistent user data. Automatic rollback was rehearsed, not triggered in production.",
+    "runtime_rollback_performed": false,
+    "temporary_bundle_lifetime": "May be removed by /tmp cleanup; rebuild and test under yo using versioned sources if needed."
+  },
+  "audio_trial": {
+    "room": "hall",
+    "PP_MIN_NN": 0.5099999904632568,
+    "all_other_selected_static_parameters_preserved": true,
+    "persistent_startup_value": 0.4,
+    "quality_improvement_accepted": false
+  },
+  "remaining_limits": {
+    "health_status": "unhealthy",
+    "home_assistant_auth_error_before_and_after": true,
+    "receiving_after": [
+      "hall",
+      "escritorio"
+    ],
+    "living_capture": "waiting",
+    "cocina_capture": "unavailable",
+    "prior_full_suite_failures_or_H6_acceptance_closed": false,
+    "voice_commands_or_Home_Assistant_effects_exercised": false,
+    "purpose": "This publication validates recording ordering and deployment, not general system health or microphone quality."
+  },
+  "private_evidence_directory": "data/publish-voice-order-20261029",
+  "audio_transcripts_credentials_household_serials_or_process_environment_in_git": false
+}

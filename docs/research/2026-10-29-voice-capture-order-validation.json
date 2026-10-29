@@ -117,5 +117,10 @@
         "src.dashboard.voice_api"
       ]
     }
+  },
+  "publication": {
+    "status": "active",
+    "release_id": "release_20261029T174830709997Z_63ea8d3",
+    "report": "docs/research/2026-10-29-voice-order-publication.json"
   }
 }

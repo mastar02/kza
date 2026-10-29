@@ -1,9 +1,48 @@
-# Runtime compilado instalado el 28 de octubre
+# Runtime compilado y actualizaciones de código
 
-El servicio y el dashboard ejecutan `release_20261028T145442Z_b0866e8` bajo
-`kza`. El artefacto se construyó y probó como `yo`; no se desarrolló, compiló ni
-instalaron dependencias en producción. La instalación fue solicitada por el
-usuario antes de completar el roadmap.
+El servicio y el dashboard ejecutan `release_20261029T174830709997Z_63ea8d3` bajo
+`kza`. Los artefactos se construyen y prueban como `yo`; no se desarrolla, compila
+ni instalan dependencias en producción. La instalación original del 28 y la
+actualización del 29 fueron solicitadas por el usuario antes de completar el
+roadmap.
+
+## Actualización de orden de voces — 2026-10-29
+
+La release del 29 modifica tres archivos de la aplicación y conserva los mismos
+recursos privados canónicos. El nuevo `state` contiene enlaces a configuración,
+datos, entorno, modelos y logs del slot anterior. Esto mantiene los localizadores
+absolutos que ya registra la autoridad de retención. No eliminar ese estado al
+retirar versiones de código.
+
+La publicación verificó 100 filas de dos páginas por la API autenticada y el
+hash del frontend servido por HTTPS. Hall y Escritorio entregan cuadros; Hall
+conserva `PP_MIN_NN=0.51` en RAM y el resto del perfil estático previo. HA sigue
+en `auth_error`, Living espera cuadros y Cocina está ausente. Estos límites
+siguen abiertos y no son una aceptación de salud general.
+
+La herramienta se construyó y probó bajo `yo`, y el operador ejecutó únicamente
+su bytecode. Guarda el registro privado en
+`/home/kza/releases/deployments/voice-order-63ea8d3.json` y diez respaldos SQLite
+consistentes en
+`/home/kza/releases/backups/release_20261029T174830709997Z_63ea8d3/`.
+La actualización modifica sólo `WorkingDirectory` en `release.conf`, selecciona
+el runtime nuevo y reinicia `kza-voice`; no reinicia el proxy ni cambia modelos,
+credenciales o dependencias.
+
+Para revertir **esta actualización de código**, desde `kza`, sin sudo:
+
+```sh
+/home/kza/kza/.venv/bin/python -B /tmp/kza-publish-voice-order-20261029-1xge67qw/publish_voice_order.pyc --rollback
+```
+
+La herramienta restaura el selector y el drop-in anteriores, reinicia voz y
+repone el perfil de Hall. Mantiene los datos actuales: no copia un respaldo viejo
+sobre actividad posterior. El bundle temporal puede desaparecer al limpiar
+`/tmp`; su fuente está en `tools/publish_voice_order.py` y sus hashes en la
+[evidencia de publicación](../research/2026-10-29-voice-order-publication.json).
+Si hay que reconstruirlo, hacerlo bajo `yo` y transferir sólo el bytecode y sus
+recursos verificados. El rollback histórico al checkout original, al final de
+este documento, corresponde a la instalación del 28.
 
 ## Acceso y comprobación
 
@@ -35,11 +74,12 @@ continúa y HA conserva su reconexión acotada existente. No se verificaron
 
 ## Archivos y logs
 
-- Slot: `/home/kza/releases/slots/release_20261028T145442Z_b0866e8/`.
+- Slot activo: `/home/kza/releases/slots/release_20261029T174830709997Z_63ea8d3/`.
 - `runtime`: bytecode y assets verificados; `release.json` contiene el commit y
   los hashes. Los enlaces `config`, `data` y `.env` apuntan al estado del slot.
-- `state`: configuración y datos privados copiados antes del arranque. Su ruta
-  canónica es el `WorkingDirectory`; `models` enlaza al directorio existente.
+- `state`: contenedor de enlaces a los recursos privados canónicos del slot del
+  28. El contenedor es el `WorkingDirectory`; los datos siguen en sus rutas
+  originales y `models` conserva el directorio existente.
 - El drop-in `~/.config/systemd/user/kza-voice.service.d/release.conf` selecciona
   el runtime con `PYTHONPATH`, `CONFIG_PATH`, `-B` y `-P`. Las credenciales siguen
   entrando por los EnvironmentFiles originales.
