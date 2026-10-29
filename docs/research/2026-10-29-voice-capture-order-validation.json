@@ -1,0 +1,97 @@
+{
+  "checked_on": "2026-10-29",
+  "request": "Show Users / Voices recordings in descending creation-date order, newest first.",
+  "behavior": [
+    "The capture API orders by created_at DESC and id DESC, preserving a deterministic tie-breaker.",
+    "A bounded versioned cursor carries the exact float timestamp and fingerprint suffix. Later pages continue without duplicates if newer captures arrive or the boundary capture expires.",
+    "Legacy ID cursor syntax remains accepted when its boundary record still exists. New cursors do not require that record to remain stored.",
+    "REST capture limits and source/dependency budgets continue to use the last included chronological position when a page is cut short.",
+    "The view sorts recording rows globally by the same key. Voice groups no longer pull older member rows above newer recordings in another group.",
+    "Each visible group keeps its existing selection/correction controls, and each capture row identifies its group. Profiles and listening samples keep their existing retention flow."
+  ],
+  "changed_runtime_files": [
+    "src/users/voice_ledger.py",
+    "src/dashboard/voice_api.py",
+    "src/dashboard/frontend/obs/src/voice-view.js"
+  ],
+  "cursor": {
+    "format": "vc1_<16 lowercase hexadecimal IEEE754 float64 timestamp characters>_<64 lowercase fingerprint hex characters>",
+    "length": 85,
+    "api_capture_cursor_max_length": 85,
+    "profile_pagination_changed": false,
+    "cursor_is_authority": false
+  },
+  "source_validation": {
+    "tests": 104,
+    "failures": 0,
+    "errors": 0,
+    "runtime_s": 55.775,
+    "junit_xml": "/tmp/kza-voice-order-tests.xml",
+    "log": "data/voice-order-20261029/python-tests.log",
+    "includes": "New chronological API pagination, tied dates, a new arrival between pages, expired boundary records, invalid cursor payloads and existing voice grouping, review, registry, receipts and diagnostic-client regression cases."
+  },
+  "frontend_validation": {
+    "tests": 30,
+    "passed": 30,
+    "failed": 0,
+    "log": "data/voice-order-20261029/frontend-tests.log",
+    "includes": "Interleaved groups stay in chronological row order, tied dates match the server order, group selection still selects nonadjacent members, and existing voice privacy/retirement/controller tests pass."
+  },
+  "chromium_validation": {
+    "completed_runs": [
+      {
+        "run": "baseline",
+        "passed": true,
+        "actual_chromium_http_v3_ws_react_and_native_audio": true,
+        "manual_profile_confirmation_and_revision_delete": true,
+        "review_uses_real_transcript_and_room": true,
+        "suggested_group_then_ui_split_merge_and_explicit_unknown": true,
+        "raw_group_corrections_leave_permanent_profile_names_unchanged": true,
+        "permanent_profile_survives_raw_expiry": true,
+        "raw_retirement_waits_for_actual_emptied_callback": true,
+        "urls_cache_dom_and_player_source_retired": true,
+        "idle_expiry_with_frozen_server_clock": true,
+        "navigation_and_session_loss_stop_audio_and_clear_text": true,
+        "external_bootstrap_assets_blocked": true,
+        "javascript_exceptions": 0,
+        "synthetic_encoder_and_sources": true,
+        "browser_binary": "/snap/bin/chromium",
+        "grouping_calibration_all_browser_copies_or_hardware_acceptance": false,
+        "log": "data/voice-order-20261029/chromium-baseline.log"
+      },
+      {
+        "run": "current_isolated",
+        "passed": true,
+        "actual_chromium_http_v3_ws_react_and_native_audio": true,
+        "manual_profile_confirmation_and_revision_delete": true,
+        "review_uses_real_transcript_and_room": true,
+        "suggested_group_then_ui_split_merge_and_explicit_unknown": true,
+        "raw_group_corrections_leave_permanent_profile_names_unchanged": true,
+        "permanent_profile_survives_raw_expiry": true,
+        "raw_retirement_waits_for_actual_emptied_callback": true,
+        "urls_cache_dom_and_player_source_retired": true,
+        "idle_expiry_with_frozen_server_clock": true,
+        "navigation_and_session_loss_stop_audio_and_clear_text": true,
+        "external_bootstrap_assets_blocked": true,
+        "javascript_exceptions": 0,
+        "synthetic_encoder_and_sources": true,
+        "browser_binary": "/snap/bin/chromium",
+        "grouping_calibration_all_browser_copies_or_hardware_acceptance": false,
+        "log": "data/voice-order-20261029/chromium-isolated.log"
+      }
+    ],
+    "first_current_attempt": {
+      "passed": false,
+      "failure": "Timeout at the existing three-second independent idle-expiry ACK wait while source integration tests were also running.",
+      "log": "data/voice-order-20261029/chromium.log"
+    },
+    "interpretation": "The committed baseline and changed checkout both passed the complete existing Chromium test when run in isolation. The initial timeout was not reproduced; its precise cause has not been established."
+  },
+  "ruff_passed": true,
+  "javascript_syntax_passed": true,
+  "release_status": "Prepared in the development checkout; publication requires the agreed compiled-release flow.",
+  "production_restarted_or_modified": false,
+  "active_Hall_RAM_trial_changed": false,
+  "audio_transcripts_credentials_or_household_recordings_added_to_git": false,
+  "private_evidence_directory": "data/voice-order-20261029"
+}

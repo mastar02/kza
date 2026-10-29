@@ -59,7 +59,7 @@ def register_voice_routes(app, *, voices=None) -> None:
         except RuntimeError:
             raise HTTPException(503,detail='voices_unavailable') from None
     @router.get('')
-    async def snapshot(request: Request,cursor: str | None = Query(None,max_length=67),actor: VoiceReviewer = Depends(reviewer)):
+    async def snapshot(request: Request,cursor: str | None = Query(None,max_length=85),actor: VoiceReviewer = Depends(reviewer)):
         return response(request,'captures',cursor,actor)
     @router.get('/profiles')
     async def profiles(request: Request,cursor: str | None = Query(None,max_length=36),actor: VoiceReviewer = Depends(reviewer)):

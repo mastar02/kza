@@ -6,6 +6,7 @@ from dataclasses import dataclass,field
 import hashlib
 import json
 import math
+import struct
 from uuid import UUID,uuid4
 from weakref import ref
 
@@ -74,6 +75,28 @@ class VoiceLedger:
         if type(model_key) is not str or not 1<=len(model_key)<=256:
             raise ValueError('invalid_voice_encoder')
 
+    @staticmethod
+    def _capture_cursor(row) -> str:
+        """Retain the sort position even when its capture expires between pages."""
+        return 'vc1_' + struct.pack('>d', row['created_at']).hex() + '_' + row['id'][3:]
+
+    @staticmethod
+    def _capture_position(cursor):
+        if cursor is None:
+            return None
+        if type(cursor) is not str:
+            raise ValueError('invalid_voice_cursor')
+        if (len(cursor) == 67 and cursor.startswith('vf_')
+                and all(char in '0123456789abcdef' for char in cursor[3:])):
+            return cursor  # Accept legacy ID cursors while their anchor exists.
+        if (len(cursor) != 85 or not cursor.startswith('vc1_') or cursor[20] != '_'
+                or any(char not in '0123456789abcdef' for char in cursor[4:20] + cursor[21:])):
+            raise ValueError('invalid_voice_cursor')
+        created_at = struct.unpack('>d', bytes.fromhex(cursor[4:20]))[0]
+        if not math.isfinite(created_at) or created_at < 0:
+            raise ValueError('invalid_voice_cursor')
+        return created_at, 'vf_' + cursor[21:]
+
     def _live(self, row, *, confirmed=False):
         try:
             sources = self._sources(row['sources_json'])
@@ -134,19 +157,27 @@ class VoiceLedger:
             embedding = raw = review = None
 
     def snapshot(self, cursor: str | None = None) -> dict:
-        """Return bounded review metadata, never vectors, transcripts or audio."""
-        if cursor is not None and (type(cursor) is not str or len(cursor)!=67 or not cursor.startswith('vf_')
-                or any(char not in '0123456789abcdef' for char in cursor[3:])):
-            raise ValueError('invalid_voice_cursor')
+        """Return newest-first bounded metadata, never vectors, transcripts or audio."""
+        position = self._capture_position(cursor)
         with self.ledger._transaction() as db:
+            if isinstance(position, str):
+                anchor = db.execute('SELECT created_at FROM voice_fingerprints WHERE id=?', (position,)).fetchone()
+                if anchor is None:
+                    raise ValueError('invalid_voice_cursor')
+                position = anchor['created_at'], position
             profiles = {row['id']:row for row in db.execute('SELECT id,name,revision,sources_json,confirmed_at,confirmed_by,deleted_at FROM voice_profiles WHERE deleted_at IS NULL')
                 if self._live(row,confirmed=True)}
             captures = []
             group_cache = {}
-            page = db.execute('''SELECT v.id,v.model_key,v.created_at,v.expires_at,v.duration_s,v.sources_json,
+            query = '''SELECT v.id,v.model_key,v.created_at,v.expires_at,v.duration_s,v.sources_json,
                 v.suggested_profile,v.suggested_revision,v.similarity,
                 EXISTS(SELECT 1 FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id) AS review_available
-                FROM voice_fingerprints v WHERE v.id>? ORDER BY v.id LIMIT 101''',(cursor or '',)).fetchall()
+                FROM voice_fingerprints v'''
+            params = ()
+            if position is not None:
+                query += ' WHERE v.created_at<? OR (v.created_at=? AND v.id<?)'
+                params = position[0], position[0], position[1]
+            page = db.execute(query + ' ORDER BY v.created_at DESC,v.id DESC LIMIT 101', params).fetchall()
             for row in page[:100]:
                 if not self._live(row):
                     continue
@@ -167,7 +198,7 @@ class VoiceLedger:
                 'profiles':[self._profile(row) for row in profiles.values()],
                 'automatic_grouping_accepted':False,'legacy_policy':'excluded_pending_inventory',
                 'recognition_grants_permissions':False,'similarity_metric':'cosine_not_identity_probability',
-                'next_cursor':page[99]['id'] if len(page)>100 else None}
+                'next_cursor':self._capture_cursor(page[99]) if len(page)>100 else None}
 
     def review_capture(self, identity: str, actor: VoiceReviewer) -> dict:
         """Return one listening sample only while its original raw sources live."""
@@ -268,7 +299,7 @@ class VoiceLedger:
                     next_cursor = snapshot['next_cursor']
                     for index,item in enumerate(snapshot['fingerprints']):
                         if index==50:
-                            next_cursor = rows[-1]['id']
+                            next_cursor = self._capture_cursor(rows[-1])
                             break
                         original = self._sources(db.execute('SELECT sources_json FROM voice_fingerprints WHERE id=?',(item['id'],)).fetchone()[0])
                         parent = None
@@ -287,7 +318,7 @@ class VoiceLedger:
                         candidate = sources | extra | set(original) | set(related)
                         if len(candidate)>256 or sum(len(source.fact_dependencies) for source in candidate)>256:
                             if rows:
-                                next_cursor = rows[-1]['id']
+                                next_cursor = self._capture_cursor(rows[-1])
                                 break
                             # An unrepresentable hint is an abstention, never
                             # an association with silently dropped parents.

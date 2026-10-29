@@ -33,12 +33,14 @@
       state.profiles.committed(state.profiles.deliveryToken());
     }
     function drawCaptures() {
-      const rows = state.captures.snapshot();
+      const rows = state.captures.snapshot().slice().sort((left,right) =>
+        right.created_at-left.created_at || (left.id<right.id ? 1 : left.id>right.id ? -1 : 0));
       for (const id of selected) if (!rows.some(row => row.id===id)) selected.delete(id);
       captures.replaceChildren(node('h2','Muestras de voz'));
       captures.append(node('p','Audio y transcripción vencen con la captura original, como máximo a las 48 horas.','mute'));
       captures.append(node('p','Los grupos sugieren una misma voz. La similitud no verifica identidad. Las correcciones manuales conservan el vencimiento de sus fuentes.','mute'));
       captures.append(node('p','Estas correcciones organizan las muestras; los perfiles guardados se revisan por separado.','mute'));
+      captures.append(node('p','Más recientes primero.','mute'));
       if (!rows.length) captures.append(node('p',message(state.captures,'No hay muestras vigentes disponibles.')));
       const count = node('p'), input = doc.createElement('input');
       input.type = 'text'; input.maxLength = 64; input.setAttribute('aria-label','Nombre del perfil'); input.autocomplete = 'off';
@@ -73,17 +75,21 @@
         if (!groups.has(row.group_id)) groups.set(row.group_id,[]);
         groups.get(row.group_id).push(row);
       }
-      for (const [groupId,members] of groups) {
-        const group = members[0], title = doc.createElement('tr'), cell = doc.createElement('td');
-        title.dataset.voiceGroupId = groupId; cell.colSpan = 5;
-        const label = {suggested:'Grupo sugerido',manual:'Agrupación manual',unknown:'Desconocido'}[group.group_state];
-        const reasons = {short_audio:'Audio corto',ambiguous:'Similitud ambigua',manual_unknown:'Separado manualmente',unreviewed:'Sin revisión',prior_group_expired:'Venció el grupo anterior'};
-        cell.append(node('strong',`${label} · ${groupId}`),node('p',`${members.length} de ${group.group_size} muestras en esta página${group.group_similarity===null?'':` · similitud mínima ${group.group_similarity.toFixed(2)}`}${reasons[group.group_reason]?` · ${reasons[group.group_reason]}`:''}`,'mute'),
-          button('Seleccionar grupo visible',() => {
-            for (const member of members) if (member.review_available && selected.size<32) selected.add(member.id);
-            drawCaptures();
-          })); title.append(cell); body.append(title);
-        for (const row of members) {
+      const shownGroups = new Set();
+      for (const row of rows) {
+        const groupId = row.group_id, members = groups.get(groupId);
+        if (!shownGroups.has(groupId)) {
+          shownGroups.add(groupId);
+          const group = members[0], title = doc.createElement('tr'), cell = doc.createElement('td');
+          title.dataset.voiceGroupId = groupId; cell.colSpan = 5;
+          const label = {suggested:'Grupo sugerido',manual:'Agrupación manual',unknown:'Desconocido'}[group.group_state];
+          const reasons = {short_audio:'Audio corto',ambiguous:'Similitud ambigua',manual_unknown:'Separado manualmente',unreviewed:'Sin revisión',prior_group_expired:'Venció el grupo anterior'};
+          cell.append(node('strong',`${label} · ${groupId}`),node('p',`${members.length} de ${group.group_size} muestras en esta página${group.group_similarity===null?'':` · similitud mínima ${group.group_similarity.toFixed(2)}`}${reasons[group.group_reason]?` · ${reasons[group.group_reason]}`:''}`,'mute'),
+            button('Seleccionar grupo visible',() => {
+              for (const member of members) if (member.review_available && selected.size<32) selected.add(member.id);
+              drawCaptures();
+            })); title.append(cell); body.append(title);
+        }
         const id = row.id, tr = doc.createElement('tr'), choice = doc.createElement('input');
         tr.dataset.captureId = id;
         choice.type = 'checkbox'; choice.checked = selected.has(id); choice.disabled = !row.review_available;
@@ -93,9 +99,8 @@
         tr.append(node('td',new Date(row.created_at*1000).toLocaleString()),node('td',`${row.duration_s.toFixed(1)} s`));
         const listen = button('Escuchar',() => controller.review(id)); listen.disabled = !row.review_available;
         const action = doc.createElement('td'); action.append(listen); tr.append(action);
-        tr.append(node('td',row.suggested_profile ? `Sugerencia · similitud ${row.similarity.toFixed(2)}` : 'Sin asociación revisada'));
+        tr.append(node('td',`Grupo ${groupId.slice(0,8)} · ${row.suggested_profile ? `Sugerencia · similitud ${row.similarity.toFixed(2)}` : 'Sin asociación revisada'}`));
         body.append(tr);
-        }
       }
       table.append(body); captures.append(table,count,
         node('p','Unir incluye todas las muestras de los grupos elegidos, aunque algunas estén en otra página. Separar forma otro grupo con las muestras seleccionadas; dejar como desconocido las separa individualmente.','mute'),

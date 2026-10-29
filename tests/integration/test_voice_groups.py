@@ -169,7 +169,7 @@ async def test_group_expiry_never_renews_raw_samples_and_survivors_do_not_rejoin
 async def test_partial_page_group_receipt_includes_members_not_visible_on_that_page(tmp_path,dashboard_auth):
     async with web_graph(tmp_path) as (_,_,voices,clock,bus):
         samples = [await sample(voices,clock) for _ in range(3)]
-        ordered = sorted(identity for _,identity in samples)
+        ordered = sorted((identity for _,identity in samples), reverse=True)
         hidden = next(source for source,identity in samples if identity==ordered[0])
         async with ready_browser(bus,version=3) as peer:
             app = DashboardAPI(voice_registry=voices,event_bus=bus).app
