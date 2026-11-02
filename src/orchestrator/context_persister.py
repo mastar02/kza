@@ -136,6 +136,8 @@ class ContextPersister:
         need to build a snapshot under lock and then call save_payload
         outside the lock. Keep in sync with the load() reader contract.
         """
+        if ctx.ephemeral:
+            raise ValueError("household_context_is_not_persistent")
         ctx.prune()
         return {
             "version": PERSISTED_VERSION,

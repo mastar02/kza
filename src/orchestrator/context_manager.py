@@ -165,6 +165,7 @@ class UserContext:
     summary_sources: tuple[MemorySource, ...] = ()
     privacy_revision: int = 0
     activity_revision: int = 0
+    ephemeral: bool = field(default=False, repr=False)
     _compaction_token: object | None = field(default=None, repr=False)
     _clock: Callable[[], float] | None = field(default=None, repr=False)
     _source_policy: FactLedger | None = field(default=None, repr=False)
@@ -176,6 +177,21 @@ class UserContext:
 
     def prune(self) -> None:
         """Remove expired/revoked text and summaries before any projection."""
+        if self.ephemeral:
+            changed = bool(self.conversation_history or self.compacted_summary or self.preserved_ids
+                           or self.summary_sources or self.preferences or self.pending_confirmation)
+            self.conversation_history = []
+            self.compacted_summary = None
+            self.preserved_ids = []
+            self.summary_sources = ()
+            self.preferences = {}
+            self.pending_confirmation = None
+            self.user_name = "Hogar"
+            self.permission_level = 0
+            self.music_preferences = MusicPreferences()
+            if changed:
+                self.privacy_revision += 1
+            return
         self.conversation_history = [t for t in self.conversation_history if self.sources_available(t.sources)]
         if not self.sources_available(self.summary_sources):
             self.compacted_summary = None
@@ -185,6 +201,12 @@ class UserContext:
     def add_turn(self, role: str, content: str, intent: str = None, entities: list = None,
                  *, sources: tuple[MemorySource, ...] | None = None):
         """Agregar turno al historial"""
+        if self.ephemeral:
+            self.prune()
+            self.last_active = time.time()
+            self.activity_revision += 1
+            self.turns_count += 1
+            return
         now = time.time() if self._clock is None else self._clock()
         if sources is None:
             sources = (MemorySource(str(uuid4()), str(uuid4()), now, now+48*3600, MemoryOrigin.INTERACTION),)
@@ -359,6 +381,7 @@ class ContextManager:
         self._io_closed = False
 
         self._contexts: dict[str, UserContext] = {}
+        self._household_prefix = "household_" + uuid4().hex + ":"
         self._lock = threading.RLock()
 
         self._cleanup_running = False
@@ -450,6 +473,8 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         Returns:
             UserContext del usuario
         """
+        if isinstance(user_id, str) and user_id.startswith(self._household_prefix):
+            raise PermissionError("household_context_cannot_be_persistent")
         with self._lock:
             if self._io_closed:
                 raise RuntimeError("context_io_closed")
@@ -492,6 +517,28 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
                 self.retention_notify()
 
             logger.debug(f"Contexto creado: {user_id} ({ctx.user_name})")
+            return ctx
+
+    def get_household(self, zone_id: str | None = None) -> UserContext:
+        """Mint an instance-local room context without reading a user snapshot."""
+        if zone_id is not None and (not isinstance(zone_id, str) or len(zone_id) > 128):
+            raise ValueError("invalid_household_context_room")
+        key = self._household_prefix + ("none" if zone_id is None else "room:" + zone_id)
+        with self._lock:
+            if self._io_closed:
+                raise RuntimeError("context_io_closed")
+            ctx = self._contexts.get(key)
+            if ctx is not None and not ctx.ephemeral:
+                raise PermissionError("household_context_collision")
+            if ctx is None or not ctx.is_active(self.inactive_timeout):
+                ctx = UserContext(user_id=key, user_name="Hogar", zone_id=zone_id,
+                    max_history=0, permission_level=0, ephemeral=True,
+                    _clock=self._clock, _source_policy=self.source_policy)
+                self._contexts[key] = ctx
+                self._total_contexts_created += 1
+            ctx.prune()
+            ctx.last_active = time.time()
+            ctx.activity_revision += 1
             return ctx
 
     async def _native_io(self, function, *args, **kwargs):
@@ -644,7 +691,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         content: str,
         intent: str = None,
         entities: list = None,
-        *, sources: tuple[MemorySource, ...] | None = None,
+        *, sources: tuple[MemorySource, ...] | None = None, household_only: bool = False,
     ):
         """Agregar turno al historial. Si hay compactor y se alcanza el
         umbral, lanza compactación en background fire-and-forget.
@@ -664,10 +711,13 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             if not ctx:
                 logger.warning(f"Contexto no encontrado: {user_id}")
                 return
+            if household_only and (not ctx.ephemeral or not user_id.startswith(self._household_prefix)):
+                return
             ctx.add_turn(role, content, intent, entities, sources=sources)
 
             if (
                 self.compactor is not None
+                and not ctx.ephemeral
                 and not ctx.compaction_inflight
                 and len(ctx.conversation_history) >= self.compaction_threshold
             ):
@@ -703,7 +753,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         """Publish a summary only while its original context and sources survive."""
         with self._lock:
             ctx = self._contexts.get(user_id)
-            if self._io_closed or ctx is None:
+            if self._io_closed or ctx is None or ctx.ephemeral:
                 if ctx is not None:
                     ctx.compaction_inflight = False
                 return
@@ -760,12 +810,22 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             text = self.build_prompt(user_id, user_input)
             ctx = self._contexts.get(user_id)
             groups = []
-            if ctx is not None:
+            if ctx is not None and not ctx.ephemeral:
                 if ctx.compacted_summary or ctx.preserved_ids:
                     groups.append(ctx.summary_sources)
                 groups.extend(t.sources for t in ctx.conversation_history if t.role != "system")
             return ContextPrompt(PromptContext(text, merge_sources(*groups)), ctx,
                                  ctx.privacy_revision if ctx is not None else 0)
+
+    def build_household_prompt_context(self, context_key: str | None, user_input: str) -> ContextPrompt:
+        """A voice key can select only this owner's ephemeral room context."""
+        with self._lock:
+            ctx = self._contexts.get(context_key)
+            if (ctx is None or not ctx.ephemeral or not isinstance(context_key, str)
+                    or not context_key.startswith(self._household_prefix)):
+                system = self.system_prompt.replace("{user_name}", "Hogar")
+                return ContextPrompt(PromptContext(self._simple_prompt(user_input, system), ()), None, 0)
+            return self.build_prompt_context(context_key, user_input)
 
     def prompt_available(self, user_id: str, snapshot: ContextPrompt) -> bool:
         """Reject a prompt after clear/replacement as well as source invalidation."""
@@ -799,6 +859,9 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             ctx = self._contexts.get(user_id)
             if ctx:
                 ctx.prune()
+            if ctx is not None and ctx.ephemeral:
+                system = (custom_system_prompt or self.system_prompt).replace("{user_name}", "Hogar")
+                return self._simple_prompt(user_input, system)
             if not ctx:
                 # Sin contexto, prompt simple
                 return self._simple_prompt(user_input, custom_system_prompt)
@@ -874,6 +937,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             ctx = self._contexts.get(user_id)
             if ctx:
                 ctx.prune()
+            if ctx and not ctx.ephemeral:
                 # Plan #2 OpenClaw — surface compacted summary as system-side context
                 # before conversation_history. Without this, compaction removes memory
                 # instead of compressing it.
@@ -902,6 +966,8 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         with self._lock:
             ctx = self._contexts.get(user_id)
             if ctx:
+                if ctx.ephemeral:
+                    raise PermissionError("household_confirmation_requires_bounded_structure")
                 ctx.pending_confirmation = confirmation_data
 
     def get_pending_confirmation(self, user_id: str) -> dict | None:
@@ -1034,7 +1100,14 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         """
         with self._lock:
             original = self._contexts.get(user_id)
-            if self._io_closed or original is None or original.compaction_inflight:
+            if self._io_closed or original is None:
+                return False
+            if original.ephemeral:
+                original.prune()
+                del self._contexts[user_id]
+                self._total_contexts_cleaned += 1
+                return True
+            if original.compaction_inflight:
                 return False
             original.prune()
             revision = original.privacy_revision
@@ -1098,7 +1171,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         with self._lock:
             return [
                 uid for uid, ctx in self._contexts.items()
-                if ctx.is_active(self.inactive_timeout)
+                if not ctx.ephemeral and ctx.is_active(self.inactive_timeout)
             ]
 
     def get_stats(self) -> dict:
@@ -1130,7 +1203,7 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
         """Obtener estadisticas de un usuario"""
         with self._lock:
             ctx = self._contexts.get(user_id)
-            if not ctx:
+            if not ctx or ctx.ephemeral:
                 return None
 
             return {

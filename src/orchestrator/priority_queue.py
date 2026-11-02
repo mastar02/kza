@@ -84,6 +84,7 @@ class Request:
     user_id: str = field(compare=False, default="")
     user_name: str = field(compare=False, default="")
     zone_id: str = field(compare=False, default=None)
+    context_key: str | None = field(compare=False, default=None, repr=False)
     text: str = field(compare=False, default="")
     intent: str = field(compare=False, default=None)
     memory_sources: tuple[MemorySource, ...] | None = field(compare=False, default=None)
@@ -303,8 +304,8 @@ class PriorityRequestQueue:
         self._not_empty = threading.Condition(self._lock)
         self._async_event = asyncio.Event()
 
-        # Tracking por usuario
-        self._user_requests: dict[str, Request] = {}  # user_id -> request activo
+        # Internal room scopes never collide with trusted backend user scopes.
+        self._user_requests: dict[tuple[str, str], Request] = {}
 
         # Peticion actualmente en proceso
         self._current: Request | None = None
@@ -331,6 +332,7 @@ class PriorityRequestQueue:
         on_fail: Callable = None,
         memory_sources: tuple[MemorySource, ...] | None = None,
         producer_receiver: ProducerScope | None = None,
+        context_key: str | None = None,
     ) -> Request:
         """
         Agregar peticion a la cola.
@@ -361,6 +363,7 @@ class PriorityRequestQueue:
             on_fail=on_fail,
             memory_sources=memory_sources,
             producer_receiver=producer_receiver,
+            context_key=context_key,
         )
 
         self.prune_private()
@@ -373,9 +376,9 @@ class PriorityRequestQueue:
                 if priority == Priority.LOW:
                     raise QueueFullError("Cola llena, intente más tarde")
 
-            # Cancelar peticion anterior del mismo usuario
-            if self.auto_cancel and user_id in self._user_requests:
-                old_request = self._user_requests[user_id]
+            owner_key = ('household', context_key) if context_key is not None else ('backend', user_id)
+            if self.auto_cancel and owner_key in self._user_requests:
+                old_request = self._user_requests[owner_key]
                 if old_request.status in {RequestStatus.PENDING, RequestStatus.PROCESSING}:
                     old_request.cancel(CancellationReason.USER_NEW_REQUEST)
                     self._stats["total_cancelled"] += 1
@@ -383,7 +386,7 @@ class PriorityRequestQueue:
 
             # Agregar a la cola
             heapq.heappush(self._queue, request)
-            self._user_requests[user_id] = request
+            self._user_requests[owner_key] = request
 
             # Estadisticas
             self._stats["total_enqueued"] += 1
@@ -515,7 +518,7 @@ class PriorityRequestQueue:
                     return True
             return False
 
-    def cancel_user_request(self, user_id: str) -> bool:
+    def cancel_user_request(self, user_id: str, *, context_key: str | None = None) -> bool:
         """
         Cancelar peticion de un usuario.
 
@@ -523,7 +526,8 @@ class PriorityRequestQueue:
             True si se cancelo alguna peticion
         """
         with self._lock:
-            request = self._user_requests.get(user_id)
+            owner_key = ('household', context_key) if context_key is not None else ('backend', user_id)
+            request = self._user_requests.get(owner_key)
             if request and not request.is_cancelled:
                 request.cancel(CancellationReason.USER_EXPLICIT)
                 self._stats["total_cancelled"] += 1
@@ -711,10 +715,7 @@ class RequestProcessor:
 
         try:
             # Construir prompt con contexto
-            prompt = self.context_manager.build_prompt(
-                request.user_id,
-                request.text
-            )
+            prompt = self.context_manager.build_household_prompt_context(request.context_key, request.text).prompt.text
 
             # Generar respuesta con verificacion de cancelacion
             response = await self._generate_with_cancellation(
@@ -729,10 +730,10 @@ class RequestProcessor:
 
             # Agregar al contexto
             self.context_manager.add_turn(
-                request.user_id, "user", request.text
+                request.context_key, "user", request.text, household_only=True,
             )
             self.context_manager.add_turn(
-                request.user_id, "assistant", response
+                request.context_key, "assistant", response, household_only=True,
             )
 
             # Completar peticion

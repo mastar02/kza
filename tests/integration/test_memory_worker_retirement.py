@@ -310,7 +310,7 @@ async def test_concurrent_native_selections_merge_dependencies_without_renewing_
         assert scopes.resource_status()['scopes'] == 0
 
 
-async def test_actual_legacy_voice_route_enriches_its_capture_receiver_scope(tmp_path, monkeypatch):
+async def test_actual_legacy_voice_route_does_not_borrow_an_unread_private_fact(tmp_path, monkeypatch):
     async with owner_graph(tmp_path, monkeypatch, spoken=True) as (_, manager, memory, clock, _, handler, _, _):
         origin, fact = await stored(memory, clock)
         event = command_event(clock)
@@ -323,10 +323,11 @@ async def test_actual_legacy_voice_route_enriches_its_capture_receiver_scope(tmp
             with scopes.operation((capture,)) as scope:
                 result = await router.process_command(event)
                 assert result['success'] and result['response'] == 'Una respuesta completa.'
-                assert reference(fact) in scope.sources[0].fact_dependencies
+                assert reference(fact) not in scope.sources[0].fact_dependencies
                 assert not scopes.busy(str(uuid4()), memory.ledger)
                 await memory.acall(memory.ledger.delete_conversation, origin.conversation_id, REVIEWER)
-                assert scopes.busy(origin.conversation_id, memory.ledger)
+                assert not scopes.busy(origin.conversation_id, memory.ledger)
+                assert scopes.busy(capture.conversation_id, memory.ledger)
         finally:
             await router.aclose()
         assert scopes.resource_status()['scopes'] == 0

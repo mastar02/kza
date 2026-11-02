@@ -669,6 +669,7 @@ class RequestDispatcher:
         query_slots: dict | None = None,
         target_entity_id: str | None = None,
         memory_sources: tuple[MemorySource, ...] | None = None,
+        context_room_id: str | None = None,
     ) -> DispatchResult:
         """
         Procesar una peticion, enrutando al path correcto.
@@ -692,6 +693,7 @@ class RequestDispatcher:
         """
         start_time = time.perf_counter()
         self._stats["total_requests"] += 1
+        permission_level = 0
 
         # Normalizar texto
         text = text.strip()
@@ -700,13 +702,8 @@ class RequestDispatcher:
         if memory_sources is None:
             memory_sources = self.context_manager.interaction_sources()
 
-        # Obtener/crear contexto del usuario
-        ctx = await self.context_manager.aget_or_create(
-            user_id=user_id,
-            user_name=user_name,
-            zone_id=zone_id,
-            permission_level=permission_level
-        )
+        # Acoustic identity and caller-supplied IDs do not confer personal scope.
+        ctx = self.context_manager.get_household(context_room_id if context_room_id is not None else zone_id)
 
         # 1. Detectar comandos especiales
         special_result = await self._check_special_commands(text_lower, user_id, ctx)
@@ -741,6 +738,7 @@ class RequestDispatcher:
                 service_filter=service_filter,
                 query_slots=query_slots,
             target_entity_id=target_entity_id,
+                context_key=ctx.user_id,
             )
             self._stats["fast_path"] += 1
 
@@ -761,12 +759,13 @@ class RequestDispatcher:
             result = await self._slow_path(
                 text=text,
                 user_id=user_id,
-                user_name=user_name or ctx.user_name,
+                user_name=ctx.user_name,
                 zone_id=zone_id,
                 priority=priority,
                 on_response=on_response,
                 timeout=timeout,
                 memory_sources=memory_sources,
+                context_key=ctx.user_id,
             )
             self._stats["slow_path"] += 1
 
@@ -913,7 +912,7 @@ class RequestDispatcher:
             if any(word in text_lower for word in ["si", "confirma", "acepto", "ok"]):
                 # Procesar confirmacion
                 confirmation = ctx.pending_confirmation
-                self.context_manager.clear_pending_confirmation(user_id)
+                self.context_manager.clear_pending_confirmation(ctx.user_id)
                 return DispatchResult(
                     path=PathType.FAST_ROUTINE,
                     priority=Priority.MEDIUM,
@@ -925,7 +924,7 @@ class RequestDispatcher:
                                         effect=EffectState.NOT_OBSERVED),
                 )
             elif any(word in text_lower for word in ["no", "cancela", "rechaza"]):
-                self.context_manager.clear_pending_confirmation(user_id)
+                self.context_manager.clear_pending_confirmation(ctx.user_id)
                 return DispatchResult(
                     path=PathType.FAST_ROUTINE,
                     priority=Priority.MEDIUM,
@@ -936,10 +935,21 @@ class RequestDispatcher:
                                         effect=EffectState.OBSERVED, observation_scope="software_state"),
                 )
 
+        if ctx.ephemeral and text_lower.strip() in {
+            "si", "sí", "si confirmo", "sí confirmo", "confirmo", "confirma", "acepto", "ok",
+            "no", "no cancela", "no confirmo", "rechazo",
+        }:
+            return DispatchResult(
+                path=PathType.FAST_ROUTINE, priority=Priority.MEDIUM, success=False,
+                response="No hay una confirmación del hogar pendiente. Indicá qué querés hacer.",
+                intent="clarification", outcome=TaskOutcome(TaskStatus.NEEDS_INPUT,
+                    dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED),
+            )
+
         # Comando de cancelacion
         for keyword in self.CANCEL_KEYWORDS:
             if not object_request and _kw_match(keyword, text_lower):
-                cancelled = self.queue.cancel_user_request(user_id)
+                cancelled = self.queue.cancel_user_request(user_id, context_key=ctx.user_id)
                 return DispatchResult(
                     path=PathType.FAST_ROUTER,
                     priority=Priority.HIGH,
@@ -986,6 +996,7 @@ class RequestDispatcher:
         service_filter: str | None = None,
         query_slots: dict | None = None,
         target_entity_id: str | None = None,
+        context_key: str | None = None,
     ) -> DispatchResult:
         """
         Procesar peticion por fast path (paralelo, sin cola).
@@ -1155,11 +1166,12 @@ class RequestDispatcher:
         return await self._slow_path(
             text=text,
             user_id=user_id,
-            user_name=None,
+            user_name="Hogar",
             zone_id=zone_id,
             priority=Priority.LOW,
             on_response=None,
-            timeout=self.response_timeout_s
+            timeout=self.response_timeout_s,
+            context_key=context_key,
         )
 
     async def _slow_path(
@@ -1172,6 +1184,7 @@ class RequestDispatcher:
         on_response: Callable,
         timeout: float,
         memory_sources: tuple[MemorySource, ...] | None = None,
+        context_key: str | None = None,
     ) -> DispatchResult:
         """
         Procesar peticion por slow path (cola priorizada).
@@ -1221,6 +1234,7 @@ class RequestDispatcher:
             on_fail=on_fail,
             memory_sources=memory_sources,
             producer_receiver=current_producer_scope(),
+            context_key=context_key,
         )
         request.response_deadline = response_loop.time() + timeout
         timings["queue"] = (time.perf_counter() - t0) * 1000
@@ -1340,11 +1354,8 @@ class RequestDispatcher:
 
         t0 = time.perf_counter()
 
-        # Obtener preferencias del usuario si existen
+        # A voice turn has no authenticated personal preference scope.
         user_prefs = None
-        ctx = self.context_manager.get(user_id)
-        if ctx and hasattr(ctx, 'music_preferences'):
-            user_prefs = ctx.music_preferences
 
         # Procesar comando de música
         result = await self.music.process(text, user_preferences=user_prefs)
@@ -1379,11 +1390,8 @@ class RequestDispatcher:
 
         t0 = time.perf_counter()
 
-        # Obtener preferencias del usuario
+        # A voice turn has no authenticated personal preference scope.
         user_prefs = None
-        ctx = self.context_manager.get(user_id)
-        if ctx and hasattr(ctx, 'music_preferences'):
-            user_prefs = ctx.music_preferences
 
         # Procesar - el MusicDispatcher usará LLM internamente si es necesario
         result = await self.music.process(text, user_preferences=user_prefs)
@@ -1938,62 +1946,18 @@ class MultiUserOrchestrator:
         logger.info("MultiUserOrchestrator detenido")
 
     async def process(
-        self,
-        user_id: str,
-        text: str,
-        audio: any = None,
-        zone_id: str = None,
-        on_response: Callable = None,
-        service_filter: str | None = None,
-        query_slots: dict | None = None,
-        target_entity_id: str | None = None,
+        self, user_id: str, text: str, audio: any = None, zone_id: str = None,
+        on_response: Callable = None, service_filter: str | None = None,
+        query_slots: dict | None = None, target_entity_id: str | None = None,
         memory_sources: tuple[MemorySource, ...] | None = None,
+        context_room_id: str | None = None,
     ) -> DispatchResult:
-        """
-        Procesar una peticion de usuario.
-
-        Args:
-            user_id: ID del usuario (o None para identificar por voz)
-            text: Texto transcrito
-            audio: Audio original (para speaker ID si user_id es None)
-            zone_id: Zona de origen
-            on_response: Callback para respuestas
-            service_filter: Service HA del intent clasificado por el
-                LLMRouter (turn_on, turn_off, set_brightness, etc.).
-                Se propaga al dispatcher para filtrar el vector search.
-            query_slots: Slots NLU del LLMRouter (brightness_pct,
-                rgb_color, color_temp_kelvin). Sobrescriben preset.
-        """
-        # Identificar usuario si no se proporciono
-        if user_id is None and audio is not None and self.speaker_id:
-            user_id, user_name = await self._identify_speaker(audio,sources=memory_sources or (),transcript=text[:8192],room_id=zone_id)
-        else:
-            user_name = None
-            if self.user_manager and user_id:
-                user = self.user_manager.get_user(user_id)
-                if user:
-                    user_name = user.name
-
-        user_id = user_id or "unknown"
-        permission_level = 0
-
-        if self.user_manager and user_id != "unknown":
-            user = self.user_manager.get_user(user_id)
-            if user:
-                permission_level = user.permission_level.value
-
-        # Dispatch
+        """Dispatch household voice without deriving account authority from acoustics."""
         return await self.dispatcher.dispatch(
-            user_id=user_id,
-            text=text,
-            user_name=user_name,
-            zone_id=zone_id,
-            permission_level=permission_level,
-            on_response=on_response,
-            service_filter=service_filter,
-            query_slots=query_slots,
-            target_entity_id=target_entity_id,
-            memory_sources=memory_sources,
+            user_id=user_id or "unknown", text=text, user_name="Hogar", zone_id=zone_id,
+            permission_level=0, on_response=on_response, service_filter=service_filter,
+            query_slots=query_slots, target_entity_id=target_entity_id, memory_sources=memory_sources,
+            context_room_id=context_room_id,
         )
 
     async def _identify_speaker(self, audio, *, sources=(), transcript='', room_id=None) -> tuple[str, str]:
@@ -2084,8 +2048,7 @@ class MultiUserOrchestrator:
         for queued in queue_status:
             if queued["user_id"] != current_request.user_id:
                 # Notificar que debe esperar
-                ctx = self.context_manager.get(queued["user_id"])
-                if ctx and ctx.zone_id and self.tts:
+                if queued.get("zone_id") and self.tts:
                     message = f"Un momento, estoy con {current_request.user_name}"
                     # TODO: Enviar a zona especifica
                     logger.debug(f"Notificando a {queued['user_id']}: {message}")
@@ -2106,7 +2069,7 @@ class MultiUserOrchestrator:
             def available() -> bool:
                 if request is None:
                     return False
-                if snapshot is not None and not self.context_manager.prompt_available(request.user_id, snapshot):
+                if snapshot is not None and not self.context_manager.prompt_available(request.context_key, snapshot):
                     request.prune_private(force=True)
                     return False
                 return not request.prune_private()
@@ -2114,13 +2077,6 @@ class MultiUserOrchestrator:
             async def generate() -> str:
                 try:
                     effective_prompt = snapshot.prompt.text
-                    if self.memory_manager is not None:
-                        memory_context = await self.memory_manager.aprompt_context(request.text)
-                        request.memory_sources = memory_context.bind_sources(request.memory_sources)
-                        if not available():
-                            return ""
-                        if memory_context.text:
-                            effective_prompt = memory_context.text + "\n\n" + effective_prompt
                     guarded = GuardedGeneration(self._generation, available)
                     if self.response_handler is not None:
                         def owned():
@@ -2154,7 +2110,7 @@ class MultiUserOrchestrator:
                     # Provider exceptions can retain this coroutine's traceback.
                     # Retire selected DTOs and partial responses before its owner
                     # releases the finished task and its source receipt.
-                    effective_prompt = memory_context = guarded = delivered = None
+                    effective_prompt = guarded = delivered = None
                     parts = chunk = token = source = owned = None
 
             async def watch_cancellation() -> None:
@@ -2174,7 +2130,7 @@ class MultiUserOrchestrator:
                     request.cancel(request.cancellation_token.reason or CancellationReason.USER_EXPLICIT)
                     return
                 # Construir prompt con contexto
-                snapshot = self.context_manager.build_prompt_context(request.user_id, request.text)
+                snapshot = self.context_manager.build_household_prompt_context(request.context_key, request.text)
                 request.memory_sources = snapshot.prompt.bind_sources(request.memory_sources)
                 scope.include_prompt(snapshot.prompt)
                 if not available():
@@ -2231,8 +2187,10 @@ class MultiUserOrchestrator:
                 try:
                     if request.memory_sources is None:
                         request.memory_sources = self.context_manager.interaction_sources(request.timestamp)
-                    self.context_manager.add_turn(request.user_id, "user", request.text, sources=request.memory_sources)
-                    self.context_manager.add_turn(request.user_id, "assistant", response, sources=request.memory_sources)
+                    self.context_manager.add_turn(request.context_key, "user", request.text,
+                        sources=request.memory_sources, household_only=True)
+                    self.context_manager.add_turn(request.context_key, "assistant", response,
+                        sources=request.memory_sources, household_only=True)
                 except Exception as error:
                     logger.warning("Completed response context skipped: %s", type(error).__name__)
         finally:

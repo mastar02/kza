@@ -662,8 +662,8 @@ class TestBuildPrompt:
         assert "Usuario:" in prompt
 
     @pytest.mark.asyncio
-    async def test_build_prompt_with_memory(self):
-        """Prompt includes memory context when available."""
+    async def test_build_prompt_does_not_read_private_memory_without_personal_session(self):
+        """Available private memory is not authority to retrieve it for a microphone."""
         ha = MagicMock()
         ha.get_domotics_entities = AsyncMock(return_value=[])
 
@@ -675,7 +675,9 @@ class TestBuildPrompt:
         router = _build_router(ha_client=ha, memory_manager=memory)
         prompt = await router._build_prompt("que hora es")
 
-        assert "User likes warm lights" in prompt
+        assert "User likes warm lights" not in prompt
+        memory.prompt_context.assert_not_called()
+        ha.get_domotics_entities.assert_not_awaited()
 
 
 class TestCapturedTranscript:

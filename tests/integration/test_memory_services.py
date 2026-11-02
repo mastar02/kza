@@ -2,7 +2,6 @@
 
 import asyncio
 from contextlib import AsyncExitStack
-from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -209,7 +208,7 @@ async def test_legacy_explicit_preferences_stay_unchanged_and_out_of_prompts(tmp
 
 
 @pytest.mark.parametrize('orchestrated', [True, False])
-async def test_both_voice_routes_retrieve_policy_memory_and_record_actual_capture_once(tmp_path, monkeypatch, orchestrated):
+async def test_both_voice_routes_skip_private_memory_and_record_actual_capture_once(tmp_path, monkeypatch, orchestrated):
     from uuid import uuid4
     clock = Clock()
     owner, engine, _, endpoint, _ = voice_graph(monkeypatch)
@@ -222,11 +221,15 @@ async def test_both_voice_routes_retrieve_policy_memory_and_record_actual_captur
         source = services.manager.source_for_capture(str(uuid4()), clock.now, 'origin')
         await services.manager.long_term.astore_fact('Dato sintético verificable.', 'fact', sources=(source,))
         processor = SimpleNamespace(process_command=AsyncMock(return_value=SimpleNamespace(
-            text='Nexa explicame el cielo', user=None, emotion=None,
+            text='Nexa explicame el cielo', user=SimpleNamespace(
+                user_id='known-profile', name='PRIVATE_PROFILE_NAME_572', permission_level=100), emotion=None,
             timings={}, stt_confidence=None)))
         audio = MagicMock(); audio.detect_source_zone.return_value = 'zone_origin'
         orchestrator = MultiUserOrchestrator(None, None, None, llm=owner.llm,
             response_handler=owner, memory_manager=services.manager) if orchestrated else None
+        if orchestrator:
+            orchestrator.speaker_identifier = SimpleNamespace(identify=MagicMock())
+            orchestrator.user_manager = SimpleNamespace(get_user=MagicMock())
         router = RequestRouter(processor, owner, audio, orchestrator=orchestrator,
             orchestrator_enabled=orchestrated, memory_manager=services.manager, llm_reasoner=owner.llm,
             event_logger=events, asr_event_logger=events,
@@ -241,21 +244,23 @@ async def test_both_voice_routes_retrieve_policy_memory_and_record_actual_captur
             result = await router.process_command(event)
             assert result['success'] and result['intent'] == 'conversation'
             posts = [request for request in endpoint.requests if request.method == 'POST']
-            assert len(posts) == 1 and 'Dato sintético verificable.' in posts[0].content.decode('utf-8')
+            assert len(posts) == 1 and 'Dato sintético verificable.' not in posts[0].content.decode('utf-8')
+            assert 'PRIVATE_PROFILE_NAME_572' not in posts[0].content.decode('utf-8')
             assert len(engine.calls) == 1
             turns = services.manager.short_term.get_recent()
             assert len(turns) == 1 and turns[0].sources[0].capture_id == event.capture_id
             assert result['capture_id'] == event.capture_id and turns[0].sources[0].conversation_id == result['conversation_id']
             if orchestrator:
-                history = orchestrator.context_manager.get('unknown').conversation_history
-                assert len(history) == 2 and all(t.sources[0] == turns[0].sources[0] for t in history)
-                assert all(t.timestamp == event.captured_at for t in history)
+                orchestrator.speaker_identifier.identify.assert_not_called()
+                orchestrator.user_manager.get_user.assert_not_called()
+                assert orchestrator.context_manager.get('unknown') is None
+                context = orchestrator.context_manager.get_household('origin')
+                assert context.ephemeral and context.conversation_history == []
+                assert len(orchestrator.context_manager._contexts) == 1
             recorded = await events.acall(events.get_events)
             assert len(recorded) == 1
-            # ASR acceptance precedes memory selection; only the generated
-            # interaction carries the subsequently recalled semantic receipt.
-            assert recorded[0].sources[0] == replace(turns[0].sources[0], fact_dependencies=())
-            assert turns[0].sources[0].fact_dependencies
+            assert recorded[0].sources[0] == turns[0].sources[0]
+            assert turns[0].sources[0].fact_dependencies == ()
             assert recorded[0].trigger_phrase == 'Nexa explicame el cielo'
             clock.now += 48*3600
             assert (await events.acall(events.get_events))[0].trigger_phrase is None

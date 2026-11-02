@@ -30,7 +30,7 @@ from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
 from src.analytics.asr_quality import alog_asr_outcome
 from src.memory.transient import TransientCache
-from src.memory.prompt_context import PromptContext, SourcesInvalidated, run_private
+from src.memory.prompt_context import SourcesInvalidated, run_private
 from src.llm.generation_stream import GuardedGeneration
 from src.core.owned_work import OwnedBlockingWork
 from src.core.task_outcome import (
@@ -941,8 +941,8 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
-        # 2. Get user info
-        user = cmd.user
+        # Speaker metadata does not bind this microphone turn to an account.
+        user = None
         emotion = cmd.emotion
         user_id = user.user_id if user else None
         user_name = user.name if user else None
@@ -1035,6 +1035,7 @@ class RequestRouter:
             text=text,
             audio=audio if not user_id else None,
             zone_id=zone_id,
+            context_room_id=room_id,
             on_response=on_response,
             service_filter=_service_filter,
             query_slots=_query_slots,
@@ -1202,7 +1203,7 @@ class RequestRouter:
         ):
             return result
 
-        user = cmd.user
+        user = None
         emotion = cmd.emotion
         user_id = user.user_id if user else None
 
@@ -1953,7 +1954,7 @@ class RequestRouter:
             return
 
         from src.analytics.event_logger import EventType
-        user = self.command_processor.get_current_user()
+        user = None
         arguments = dict(entity_id=entity_id, action=action, event_type=EventType.COMMAND,
             user_id=user.user_id if user else None, user_name=user.name if user else None,
             trigger_phrase=trigger_phrase)
@@ -2011,66 +2012,24 @@ class RequestRouter:
                 Context().run(logger.warning, "Diagnostic request metric deferred")
 
     async def _get_conversation_context(self) -> str:
-        """Select recent text and its sources off-loop for the fast reasoner."""
-        if self.memory is None:
-            return ""
-        try:
-            selected = await self._memory_call("recent_prompt_context", limit=3)
-            if not isinstance(selected, PromptContext):
-                raise TypeError("memory_prompt_provenance_required")
-            self._response_sources.set(selected.bind_sources(self._active_sources()))
-            return selected.text
-        except Exception as error:
-            logger.debug("Recent prompt context unavailable: %s", type(error).__name__)
-            return ""
+        """Microphone provenance does not authorize reading personal conversation history."""
+        return ""
 
     async def _build_prompt(self, user_text: str) -> str:
-        """Build prompt with context for LLM reasoning."""
+        """Reason over the current microphone turn without personal or unscoped cached data."""
         from datetime import datetime
 
-        now = datetime.now()
-        time_context = now.strftime("%H:%M del %A")
-
-        memory_context = ""
-        if self.memory:
-            try:
-                selected = await self._memory_call("prompt_context", user_text)
-                if not isinstance(selected, PromptContext):
-                    raise TypeError("memory_prompt_provenance_required")
-                self._response_sources.set(selected.bind_sources(self._active_sources()))
-                if selected.text:
-                    memory_context = f"\n{selected.text}\n"
-            except Exception as e:
-                logger.debug(f"Error getting memory context: {e}")
-
-        home_context = ""
-        try:
-            important_domains = ["climate", "light", "binary_sensor"]
-            entities = await self.ha.get_domotics_entities()
-
-            relevant_states = []
-            for entity in entities[:10]:
-                domain = entity["entity_id"].split(".")[0]
-                if domain in important_domains:
-                    name = entity.get("attributes", {}).get("friendly_name", entity["entity_id"])
-                    state = entity.get("state", "unknown")
-                    relevant_states.append(f"- {name}: {state}")
-
-            if relevant_states:
-                home_context = "\nEstado del hogar:\n" + "\n".join(relevant_states[:5])
-        except Exception as e:
-            logger.debug(f"Failed to get HA entity states for prompt: {e}")
-
-        system_prompt = f"""Eres un asistente de hogar inteligente. Responde de forma concisa y natural en español.
-Hora actual: {time_context}{home_context}{memory_context}
+        time_context = datetime.now().strftime("%H:%M del %A")
+        # Explicit household state queries use the current typed capability path.
+        # A raw HA cache and global memory are not authority for a generic prompt.
+        return f"""Eres un asistente de hogar inteligente. Responde de forma concisa y natural en español.
+Hora actual: {time_context}
 Puedes ayudar con:
-- Consultas sobre el hogar y dispositivos
+- Consultas sobre el hogar y dispositivos cuando hay datos actuales disponibles
 - Preguntas generales
 - Conversacion casual
 
-Usa el contexto de memoria para dar respuestas personalizadas. Se breve y util."""
-
-        return f"""{system_prompt}
+Se breve y util.
 
 Usuario: {user_text}
 

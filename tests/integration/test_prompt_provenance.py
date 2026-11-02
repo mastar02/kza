@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from src.memory.fact_ledger import FactDependency, FactLedger, MemoryReviewer, MemorySource
+from src.memory.fact_ledger import FactDependency, FactLedger, MemoryOrigin, MemoryReviewer, MemorySource
 from src.memory.prompt_context import PromptContext
 from src.memory.transient import TransientCache
 from src.orchestrator.cancellation import CancellationReason
@@ -32,11 +32,22 @@ async def owner_graph(tmp_path, monkeypatch, *, parts=None, spoken=False):
         owner = MultiUserOrchestrator(None, None, None, llm=handler.llm, memory_manager=manager,
                                      response_handler=handler if spoken else None)
         stack.push_async_callback(owner.stop)
-        owner.context_manager.get_or_create('household')
         owner._running = True
         worker = asyncio.create_task(owner._process_queue())
         owner._processor_task = worker
         yield owner, manager, memory, clock, endpoint, handler, engine, backend
+
+
+async def enqueue_backend(owner, manager, clock, query, *, capture=None):
+    """A trusted backend consumer selects text and receipts before handing off generation.
+
+    This fixture exercises provenance, not permission for any microphone turn.
+    """
+    selected = await manager.aprompt_context(query)
+    capture = capture if capture is not None else memory_source(now=clock.now)
+    capture = replace(capture, origin=MemoryOrigin.INTERACTION)
+    return owner.queue.enqueue('backend', selected.text + '\n\n' + query, Priority.LOW,
+                               memory_sources=selected.bind_sources((capture,)))
 
 
 def reference(fact):
@@ -172,13 +183,12 @@ async def test_receipts_are_denied_during_the_durable_commit_publication_window(
 
 @pytest.mark.parametrize('change', ['delete_fact', 'delete_conversation', 'expire'])
 async def test_recalled_fact_invalidation_cancels_real_queued_generation(tmp_path, monkeypatch, change):
-    async with owner_graph(tmp_path, monkeypatch, parts=[event('Respuesta parcial'), asyncio.Event()]) as (owner, _, memory, clock, endpoint, _, _, _):
+    async with owner_graph(tmp_path, monkeypatch, parts=[event('Respuesta parcial'), asyncio.Event()]) as (owner, manager, memory, clock, endpoint, _, _, _):
         source, fact = await stored(memory, clock)
         if change == 'expire':
             clock.now = fact.expires_at-60
         capture = memory_source(now=clock.now)
-        receipt = owner.queue.enqueue('household', 'Consulta privada.', Priority.LOW,
-                                      memory_sources=(capture,))
+        receipt = await enqueue_backend(owner, manager, clock, 'Consulta privada.', capture=capture)
         await asyncio.wait_for(endpoint.body.waiting.wait(), 2)
         assert fact.content in endpoint.requests[-1].content.decode()
         assert any(reference(fact) in s.fact_dependencies for s in receipt.memory_sources)
@@ -192,7 +202,7 @@ async def test_recalled_fact_invalidation_cancels_real_queued_generation(tmp_pat
         await until(lambda: receipt.status is RequestStatus.CANCELLED and endpoint.body.closed)
         assert receipt.cancellation_token.reason is CancellationReason.PRIVACY
         assert receipt.result is receipt.error_response is None
-        assert owner.context_manager.get('household').conversation_history == []
+        assert owner.context_manager.get('backend') is None
         await until(lambda: owner.queue._current is None)
         assert not owner._processor_task.done()
 
@@ -207,59 +217,63 @@ async def test_late_memory_snapshot_cannot_send_a_retracted_fact_to_http(tmp_pat
             await release.wait()
             return selected
         monkeypatch.setattr(manager, 'aprompt_context', delayed)
-        receipt = owner.queue.enqueue('household', 'Consulta nueva.', Priority.LOW,
-                                      memory_sources=(memory_source(now=clock.now),))
+        pending = asyncio.create_task(enqueue_backend(owner, manager, clock, 'Consulta nueva.'))
         await asyncio.wait_for(ready.wait(), 1)
         await memory.acall(memory.ledger.delete_fact, fact.id, REVIEWER)
         release.set()
+        receipt = await pending
         await until(lambda: receipt.status is RequestStatus.CANCELLED and owner.queue._current is None)
         assert endpoint.requests == [] and endpoint.client is None
         assert receipt.result is None and not owner._processor_task.done()
 
 
 @pytest.mark.parametrize('change', ['clear', 'replace', 'revoke'])
-async def test_included_history_and_context_epoch_guard_active_generation(tmp_path, monkeypatch, change):
+async def test_household_context_epoch_and_current_capture_guard_active_generation(tmp_path, monkeypatch, change):
     async with owner_graph(tmp_path, monkeypatch, parts=[event(''), asyncio.Event()]) as (owner, _, memory, clock, endpoint, _, _, _):
+        private = owner.context_manager.get_or_create('private_backend')
         old = memory_source(now=clock.now)
-        ctx = owner.context_manager.get('household')
-        ctx.add_turn('user', 'Historial privado.', sources=(old,))
+        private.add_turn('user', 'Historial privado.', sources=(old,))
+        ctx = owner.context_manager.get_household('synthetic-room')
+        current = memory_source(now=clock.now)
         receipt = owner.queue.enqueue('household', 'Consulta reciente.', Priority.LOW,
-                                      memory_sources=(memory_source(now=clock.now),))
+                                      memory_sources=(current,), context_key=ctx.user_id)
         await asyncio.wait_for(endpoint.body.waiting.wait(), 2)
-        assert old in receipt.memory_sources
+        assert old not in receipt.memory_sources and current in receipt.memory_sources
+        assert 'Historial privado.' not in endpoint.requests[-1].content.decode()
         if change == 'clear':
             ctx.clear_history()
         elif change == 'replace':
-            owner.context_manager.remove_context('household')
-            owner.context_manager.get_or_create('household')
+            owner.context_manager.remove_context(ctx.user_id)
+            owner.context_manager.get_household('synthetic-room')
         else:
-            await memory.acall(memory.ledger.delete_conversation, old.conversation_id, REVIEWER)
+            await memory.acall(memory.ledger.delete_conversation, current.conversation_id, REVIEWER)
         await until(lambda: receipt.status is RequestStatus.CANCELLED and endpoint.body.closed)
         assert receipt.cancellation_token.reason is CancellationReason.PRIVACY
         assert not owner._processor_task.done()
 
 
 async def test_success_keeps_fact_receipts_in_context_snapshot_and_cache(tmp_path, monkeypatch):
-    async with owner_graph(tmp_path, monkeypatch) as (owner, _, memory, clock, _, _, _, _):
+    async with owner_graph(tmp_path, monkeypatch) as (owner, manager, memory, clock, _, _, _, _):
         _, fact = await stored(memory, clock)
         capture = memory_source(now=clock.now)
-        result = asyncio.create_task(owner.dispatcher._slow_path('Consulta.', 'household', None, None,
-            Priority.LOW, None, 2, memory_sources=(capture,)))
-        delivered = await result
-        assert delivered.success and delivered.memory_sources
-        ctx = owner.context_manager.get('household')
+        delivered = await enqueue_backend(owner, manager, clock, 'Consulta.', capture=capture)
+        await until(lambda: delivered.status is RequestStatus.COMPLETED)
+        assert delivered.result and delivered.memory_sources
+        ctx = owner.context_manager.get_or_create('backend')
+        owner.context_manager.add_turn('backend', 'user', 'Consulta.', sources=delivered.memory_sources)
+        owner.context_manager.add_turn('backend', 'assistant', delivered.result, sources=delivered.memory_sources)
         assert all(any(reference(fact) in s.fact_dependencies for s in t.sources) for t in ctx.conversation_history)
         ctx.compacted_summary = 'Resumen privado.'
         ctx.summary_sources = delivered.memory_sources
         cache = TransientCache(4, source_policy=memory.ledger)
-        cache.put('consulta', {'text': delivered.response}, delivered.memory_sources)
+        cache.put('consulta', {'text': delivered.result}, delivered.memory_sources)
         persister = ContextPersister(tmp_path/'contexts', source_policy=memory.ledger, clock=clock)
         await memory.acall(persister.save, ctx)
-        assert await memory.acall(persister.load, 'household')
+        assert await memory.acall(persister.load, 'backend')
         await memory.acall(memory.ledger.delete_fact, fact.id, REVIEWER)
         assert ctx.get_history_for_prompt() == []
         assert ctx.compacted_summary is None and len(cache) == 0
-        assert await memory.acall(persister.load, 'household') is None
+        assert await memory.acall(persister.load, 'backend') is None
         assert await memory.acall(persister.purge_expired) == 1
 
 
@@ -307,7 +321,7 @@ async def test_serialization_roundtrip_and_missing_authority_fail_closed(tmp_pat
 
 
 async def test_retraction_during_discovery_never_posts_the_prompt(tmp_path, monkeypatch):
-    async with owner_graph(tmp_path, monkeypatch) as (owner, _, memory, clock, endpoint, _, _, _):
+    async with owner_graph(tmp_path, monkeypatch) as (owner, manager, memory, clock, endpoint, _, _, _):
         _, fact = await stored(memory, clock)
         handle = endpoint.handle
         async def retracted(request):
@@ -316,8 +330,7 @@ async def test_retraction_during_discovery_never_posts_the_prompt(tmp_path, monk
                 await memory.acall(memory.ledger.delete_fact, fact.id, REVIEWER)
             return response
         monkeypatch.setattr(endpoint, 'handle', retracted)
-        receipt = owner.queue.enqueue('household', 'Consulta.', Priority.LOW,
-                                      memory_sources=(memory_source(now=clock.now),))
+        receipt = await enqueue_backend(owner, manager, clock, 'Consulta.')
         await until(lambda: receipt.status is RequestStatus.CANCELLED and owner.queue._current is None)
         assert [request.method for request in endpoint.requests] == ['GET']
         assert endpoint.client.is_closed() and not owner._processor_task.done()
@@ -349,45 +362,70 @@ def request_router(manager, handler, *, owner=None, fast=None, privacy=None):
 
 
 @pytest.mark.parametrize('orchestrated', [False, True])
-async def test_real_voice_routes_record_full_lineage_and_forget_derived_interactions(tmp_path, monkeypatch, orchestrated):
-    async with owner_graph(tmp_path, monkeypatch, spoken=True) as (owner, manager, memory, clock, _, handler, _, _):
+async def test_real_voice_routes_do_not_read_private_facts_and_keep_independent_capture_lineage(tmp_path, monkeypatch, orchestrated):
+    async with owner_graph(tmp_path, monkeypatch, spoken=True) as (owner, manager, memory, clock, endpoint, handler, _, _):
         _, fact = await stored(memory, clock)
         router = request_router(manager, handler, owner=owner if orchestrated else None)
+        current = command_event(clock)
         try:
-            result = await router.process_command(command_event(clock))
+            result = await router.process_command(current)
             assert result['success'] and result['response'] == 'Una respuesta completa.'
             recent = manager.short_term.get_recent()
             assert len(recent) == 1
-            assert any(reference(fact) in s.fact_dependencies for s in recent[0].sources)
+            assert all(reference(fact) not in source.fact_dependencies for source in recent[0].sources)
+            assert fact.content not in endpoint.requests[-1].content.decode()
             await memory.acall(memory.ledger.delete_fact, fact.id, REVIEWER)
+            assert len(manager.short_term.get_recent()) == 1
+            await memory.acall(memory.ledger.delete_conversation, current.conversation_id, REVIEWER)
             assert manager.short_term.get_recent() == []
             if orchestrated:
-                assert owner.context_manager.get('household') is not None
-                assert all(not ctx.get_history_for_prompt() for ctx in owner.context_manager._contexts.values())
+                assert owner.context_manager.get('unknown') is None
+                assert owner.context_manager._contexts
+                assert all(ctx.ephemeral and not ctx.get_history_for_prompt()
+                           for ctx in owner.context_manager._contexts.values())
         finally:
             await router.aclose()
 
 
 @pytest.mark.parametrize('orchestrated', [False, True])
-async def test_real_voice_routes_cancel_retracted_prompt_without_error_audio(tmp_path, monkeypatch, orchestrated):
-    async with owner_graph(tmp_path, monkeypatch, spoken=True, parts=[event(''), asyncio.Event()]) as (owner, manager, memory, clock, endpoint, handler, engine, _):
+@pytest.mark.parametrize('withdrawal', ['fact', 'capture'])
+async def test_real_voice_routes_only_cancel_for_consumed_sources_without_error_audio(
+    tmp_path, monkeypatch, orchestrated, withdrawal,
+):
+    release = asyncio.Event()
+    async with owner_graph(tmp_path, monkeypatch, spoken=True,
+            parts=[event(''), release, event('Una respuesta completa.'), event(finish='stop')]) as (
+            owner, manager, memory, clock, endpoint, handler, engine, _):
         _, fact = await stored(memory, clock)
         router = request_router(manager, handler, owner=owner if orchestrated else None)
+        current = command_event(clock)
+        pending = asyncio.create_task(router.process_command(current))
         try:
-            pending = asyncio.create_task(router.process_command(command_event(clock)))
             await asyncio.wait_for(endpoint.body.waiting.wait(), 2)
-            await memory.acall(memory.ledger.delete_fact, fact.id, REVIEWER)
-            result = await asyncio.wait_for(pending, 2)
-            assert not result['success'] and result['intent'] == 'cancelled'
-            assert result['text'] == result['response'] == ''
-            assert manager.short_term.get_recent() == []
+            assert fact.content not in endpoint.requests[-1].content.decode()
+            if withdrawal == 'capture':
+                await memory.acall(memory.ledger.delete_conversation, current.conversation_id, REVIEWER)
+                result = await asyncio.wait_for(pending, 2)
+                assert not result['success'] and result['intent'] == 'cancelled'
+                assert result['text'] == result['response'] == ''
+                assert manager.short_term.get_recent() == [] and not engine.calls
+            else:
+                await memory.acall(memory.ledger.delete_fact, fact.id, REVIEWER)
+                assert not pending.done()
+                release.set()
+                result = await asyncio.wait_for(pending, 2)
+                assert result['success'] and result['response'] == 'Una respuesta completa.'
+                assert len(engine.calls) == 1 and len(manager.short_term.get_recent()) == 1
             await until(lambda: endpoint.body.closed and endpoint.client.is_closed())
-            assert not engine.calls and not owner._processor_task.done()
+            assert not owner._processor_task.done()
         finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
             await router.aclose()
 
 
-async def test_legacy_fast_reply_rejects_late_native_result_after_history_fact_retraction(tmp_path, monkeypatch):
+@pytest.mark.parametrize('withdrawal', ['fact', 'capture'])
+async def test_legacy_fast_reply_skips_private_history_and_retains_actual_capture_work(tmp_path, monkeypatch, withdrawal):
     async with owner_graph(tmp_path, monkeypatch) as (_, manager, memory, clock, _, handler, engine, _):
         _, fact = await stored(memory, clock)
         old_sources = PromptContext('', facts=(reference(fact),)).bind_sources((memory_source(now=clock.now),))
@@ -399,20 +437,32 @@ async def test_legacy_fast_reply_rejects_late_native_result_after_history_fact_r
                 self.context = context
                 entered.set()
                 assert release.wait(3)
-                return False, 'Respuesta privada tardía.'
+                return False, 'Respuesta sintética tardía.'
         native = NativeRouter()
         router = request_router(manager, handler, fast=native)
-        pending = asyncio.create_task(router.process_command(command_event(clock)))
+        current = command_event(clock)
+        pending = asyncio.create_task(router.process_command(current))
         try:
             assert await asyncio.to_thread(entered.wait, 2)
-            assert 'Respuesta previa privada.' in native.context
-            await memory.acall(memory.ledger.delete_fact, fact.id, REVIEWER)
-            result = await asyncio.wait_for(pending, 1)
-            assert result['intent'] == 'cancelled' and result['response'] == ''
-            assert router.resource_status()['queries']['operations'] == 1
+            assert native.context == ''
+            if withdrawal == 'capture':
+                await memory.acall(memory.ledger.delete_conversation, current.conversation_id, REVIEWER)
+                result = await asyncio.wait_for(pending, 1)
+                assert result['intent'] == 'cancelled' and result['response'] == ''
+                assert router.resource_status()['queries']['operations'] == 1
+                assert not engine.calls
+            else:
+                await memory.acall(memory.ledger.delete_fact, fact.id, REVIEWER)
+                assert not pending.done()
+                release.set()
+                result = await asyncio.wait_for(pending, 2)
+                assert result['success'] and result['response'] == 'Respuesta sintética tardía.'
+                assert len(engine.calls) == 1
             release.set()
             await until(lambda: router.resource_status()['queries']['operations'] == 0)
-            assert manager.short_term.get_recent() == [] and not engine.calls
+            if withdrawal == 'capture':
+                assert all(source.capture_id != current.capture_id for turn in manager.short_term.get_recent()
+                           for source in turn.sources)
         finally:
             release.set()
             await asyncio.gather(pending, return_exceptions=True)

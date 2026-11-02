@@ -287,7 +287,8 @@ class TestDispatchSpecialCommands:
     @pytest.mark.asyncio
     async def test_dispatch_cancel(self, dispatcher):
         # First enqueue something
-        dispatcher.queue.enqueue("user_1", "Test request", Priority.LOW)
+        context = dispatcher.context_manager.get_household("living")
+        dispatcher.queue.enqueue("user_1", "Test request", Priority.LOW, context_key=context.user_id)
 
         result = await dispatcher.dispatch(
             user_id="user_1",
@@ -326,7 +327,9 @@ class TestDispatchSpecialCommands:
         )
 
         assert result.path == PathType.FAST_ROUTINE
-        assert result.intent == "confirmation"
+        assert result.intent == "clarification"
+        assert result.action is None
+        assert dispatcher.context_manager.get_pending_confirmation("user_1") is not None
 
     @pytest.mark.asyncio
     async def test_dispatch_confirmation_no(self, dispatcher):
@@ -342,8 +345,9 @@ class TestDispatchSpecialCommands:
         )
 
         assert result.path == PathType.FAST_ROUTINE
-        # Confirmation should be cleared
-        assert dispatcher.context_manager.get_pending_confirmation("user_1") is None
+        assert result.intent == "clarification" and result.action is None
+        # This microphone turn cannot reject another account's private confirmation.
+        assert dispatcher.context_manager.get_pending_confirmation("user_1") is not None
 
 
 class TestDispatchContext:
@@ -358,9 +362,10 @@ class TestDispatchContext:
             zone_id="living"
         )
 
-        ctx = dispatcher.context_manager.get("new_user")
+        assert dispatcher.context_manager.get("new_user") is None
+        ctx = dispatcher.context_manager.get_household("living")
         assert ctx is not None
-        assert ctx.user_name == "Juan"
+        assert ctx.user_name == "Hogar" and ctx.ephemeral
         assert ctx.zone_id == "living"
 
     @pytest.mark.asyncio
@@ -379,8 +384,11 @@ class TestDispatchContext:
             zone_id="kitchen"
         )
 
-        ctx = dispatcher.context_manager.get("user_1")
-        assert ctx.zone_id == "kitchen"
+        assert dispatcher.context_manager.get("user_1") is None
+        living = dispatcher.context_manager.get_household("living")
+        kitchen = dispatcher.context_manager.get_household("kitchen")
+        assert living is not kitchen
+        assert living.zone_id == "living" and kitchen.zone_id == "kitchen"
 
 
 class TestDispatchStats:
