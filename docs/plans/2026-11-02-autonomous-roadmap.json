@@ -921,9 +921,13 @@
       "optional": false,
       "inclusion": "required",
       "status": "in_progress",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": "Implement shared observation/capability/expiry service for voice and Casa, owned refresh/close, and explicit observability provenance; retain T040/T046 presentation and renewal obligations."
+      "implementation_commits": [
+        "67b6774c8bcf7b4485ff839b61c21b7429605dc0"
+      ],
+      "evidence": [
+        "data/autonomous-roadmap-20261102/t012/foundation-evidence.json"
+      ],
+      "next_action": "Shared voice/Casa foundation pushed; migrate observability endpoint source/expiry metadata and remove operational fallback confusion, verify actual empty/timeout cases, then run complete suite. T040/T046 presentation and renewal still pending."
     },
     {
       "id": "T013",
