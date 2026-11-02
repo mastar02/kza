@@ -32,6 +32,15 @@ class TestValidateSettings:
         with pytest.raises(ValueError, match="destination"):
             validate_settings(real_config)
 
+    @pytest.mark.parametrize("auth", [
+        {"db_path": ""}, {"db_path": True}, {"session_ttl_s": True},
+        {"session_ttl_s": 0}, {"session_ttl_s": 30 * 86400 + 1}, {"session_ttl_s": 1.5},
+    ])
+    def test_dashboard_authority_configuration_is_bounded(self, real_config, auth):
+        real_config["dashboard"]["auth"] = auth
+        with pytest.raises(ValueError, match="dashboard.auth"):
+            validate_settings(real_config)
+
     def test_real_settings_yaml_validates(self, real_config):
         """El settings.yaml versionado en el repo debe pasar el schema."""
         result = validate_settings(real_config)

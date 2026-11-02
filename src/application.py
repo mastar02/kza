@@ -16,6 +16,7 @@ from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.dashboard.api import DashboardAPI
+    from src.dashboard.authority import DashboardAuthority
     from src.home_assistant.ha_client import HomeAssistantClient
     from src.home_assistant.home_actions import HomeActionService
     from src.lists.list_manager import ListManager
@@ -82,6 +83,7 @@ class ApplicationGraph:
     dashboard: DashboardAPI | None
     models: ApplicationModels
     warmup_models: Callable[..., Awaitable[None]] = field(repr=False)
+    dashboard_authority: DashboardAuthority | None = None
     presence_detector: Any = None
     ambient_path: Any = None
     nightly_trainer: Any = None

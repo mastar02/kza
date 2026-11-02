@@ -53,6 +53,9 @@ async def test_real_factory_shares_household_output_privacy_and_managers(leaves,
             assert router.home_actions is orchestrator.home_actions is orchestrator.dispatcher.home_actions is actions
             assert graph.reminder_manager.home_actions is graph.routine_scheduler.executor.home_actions is actions
             assert graph.dashboard.home_actions is actions
+            assert graph.dashboard.authority is graph.dashboard_authority
+            assert graph.dashboard.app.state.dashboard_authority is graph.dashboard_authority
+            assert graph.dashboard_authority._lease_fd is not None
             assert graph.dashboard.home_catalog._policy is actions.policy
             assert actions.ha is router.ha is orchestrator.ha is graph.dashboard.ha is graph.ha_client
             assert graph.list_manager is graph.dashboard.list_manager is orchestrator.dispatcher.list_manager
@@ -77,10 +80,40 @@ async def test_real_factory_shares_household_output_privacy_and_managers(leaves,
                 assert reminders._tts is graph.voice_services.features.voice_delivery
                 assert graph.voice_services.reminder_task is None
         assert graph.ha_client._session.closed
+        assert graph.dashboard_authority._lease_fd is None
         assert not graph.privacy.resource_status()["writer_lease"]
         assert graph.voice_services.responses.get_delivery_status()["closed"]
         assert router._closed and pipeline.command_processor._closed
         assert pipeline.audio_loop._closed
+
+
+async def test_factory_keeps_authority_open_until_all_consumers_have_closed(leaves, tmp_path, monkeypatch):
+    from src.dashboard.authority import DashboardAuthority
+
+    observations = []
+    original = DashboardAuthority.aclose
+    async def close(authority):
+        observations.append((graph.ha_client._session.closed,
+                             not graph.privacy.resource_status()["writer_lease"]))
+        await original(authority)
+    monkeypatch.setattr(DashboardAuthority, "aclose", close)
+    async with offline_home() as (url, _):
+        async with AsyncExitStack() as stack:
+            graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=leaves)
+            await graph.dashboard.stop()
+            assert graph.dashboard_authority._lease_fd is not None
+        assert observations == [(True, True)]
+        assert graph.dashboard_authority._lease_fd is None
+
+
+async def test_disabled_dashboard_opens_no_auth_database(leaves, tmp_path):
+    async with offline_home() as (url, _):
+        config = offline_config(tmp_path, url)
+        config["dashboard"]["enabled"] = False
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            assert graph.dashboard is None and graph.dashboard_authority is None
+        assert not (tmp_path / "dashboard-auth.db").exists()
 
 
 async def test_phrase_reaches_actual_main_feature_and_shared_pcm_output(leaves, monkeypatch, tmp_path):

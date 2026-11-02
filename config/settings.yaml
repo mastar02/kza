@@ -1034,6 +1034,9 @@ orchestrator:
 # =============================================================================
 dashboard:
   enabled: true
+  auth:
+    db_path: "./data/dashboard_auth.db"  # Hashes y sesiones privadas; fuera de Git.
+    session_ttl_s: 2592000              # El servidor también comprueba vencimiento.
   home:
     enabled: true       # Activación local; desplegar requiere la puerta operativa.
   host: "127.0.0.1"     # Acceso doméstico autenticado mediante el proxy local.

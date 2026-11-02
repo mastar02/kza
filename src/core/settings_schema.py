@@ -150,7 +150,15 @@ class DashboardHomeSettings(_Section):
     enabled: bool = Field(default=False, strict=True)
 
 
+class DashboardAuthSettings(_Section):
+    """Private authority metadata, with no raw credentials in configuration."""
+
+    db_path: str = Field(default="./data/dashboard_auth.db", min_length=1)
+    session_ttl_s: int = Field(default=30 * 86400, ge=1, le=30 * 86400, strict=True)
+
+
 class DashboardSettings(_Section):
+    auth: DashboardAuthSettings = Field(default_factory=DashboardAuthSettings)
     home: DashboardHomeSettings = Field(default_factory=DashboardHomeSettings)
 
 

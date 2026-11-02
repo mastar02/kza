@@ -77,6 +77,7 @@ from src.lists.list_manager import ListManager
 from src.reminders.reminder_store import ReminderStore
 from src.reminders.reminder_manager import ReminderManager
 from src.dashboard.api import DashboardAPI
+from src.dashboard.authority import DashboardAuthority
 from src.dashboard.home_api import build_home_services, build_microphone_rooms
 from src.dashboard.live_erasure import build_live_services
 from src.monitoring.health_aggregator import HealthAggregator
@@ -371,6 +372,17 @@ async def build_application(
 
     # Crear componentes
     logger.info("Inicializando componentes...")
+
+    # Register authority ownership before every consumer. Opening the private
+    # database is deferred until construction reaches the dashboard boundary.
+    dashboard_authority = None
+    if config.get("dashboard", {}).get("enabled", True):
+        auth_config = config.get("dashboard", {}).get("auth", {})
+        dashboard_authority = DashboardAuthority(
+            auth_config.get("db_path", "./data/dashboard_auth.db"),
+            session_ttl_s=auth_config.get("session_ttl_s", 30 * 86400),
+        )
+        shutdown.push_async_callback(dashboard_authority.aclose)
 
     # Home Assistant Client
     ha_client = (factories.ha_client or HomeAssistantClient)(
@@ -1658,6 +1670,9 @@ async def build_application(
         config, ha_client=ha_client, home_actions=home_action_service, shutdown=shutdown, start=False,
     )
 
+    if dashboard_authority is not None:
+        await dashboard_authority.initialize()
+
     live_event_bus = await build_live_services(config,privacy=privacy_services,
         owner=erasure_services,shutdown=shutdown)
 
@@ -1677,6 +1692,7 @@ async def build_application(
         )
 
         dashboard = DashboardAPI(
+            authority=dashboard_authority,
             routine_scheduler=routine_scheduler,
             presence_detector=presence_detector,
             ha_client=ha_client,
@@ -1785,7 +1801,7 @@ async def build_application(
         voice_registry=voice_registry, voice_services=voice_services,
         home_services=home_services, home_capabilities=home_capabilities, list_manager=list_manager,
         reminder_manager=reminder_manager, routine_scheduler=routine_scheduler,
-        dashboard=dashboard,
+        dashboard=dashboard, dashboard_authority=dashboard_authority,
         models=ApplicationModels(stt, tts, chroma, speaker_identifier, emotion_detector),
         warmup_models=_warmup_models, presence_detector=presence_detector,
         ambient_path=ambient_path, nightly_trainer=nightly_trainer,

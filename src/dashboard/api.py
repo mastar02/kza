@@ -24,6 +24,7 @@ from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, Ta
 from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
 from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session
+from src.dashboard.authority import DashboardAuthority
 from src.dashboard.home_api import (
     LegacyHomeActionBody, execute_home_action, register_home_frontend, register_home_routes,
 )
@@ -178,6 +179,7 @@ class DashboardAPI:
         llm_metrics=None,
         observability_use_mocks: bool = False,
         *,
+        authority: DashboardAuthority | None = None,
         home_rooms: Mapping[str, RoomConfig] | None = None,
         home_actions: HomeActionService | None = None,
         microphone_snapshot_provider: Callable[[], MicrophonesSnapshot | None] | None = None,
@@ -188,6 +190,7 @@ class DashboardAPI:
         ambient_control=None,
     ):
         self.scheduler = routine_scheduler
+        self.authority = authority
         self.executor = routine_executor
         self.presence = presence_detector
         self.ha = ha_client
@@ -227,6 +230,7 @@ class DashboardAPI:
             dependencies=[Depends(require_dashboard_access)],
             docs_url=None, redoc_url=None, openapi_url=None,
         )
+        self.app.state.dashboard_authority = authority
         self.app.state.rest_delivery_owner = event_bus._retention.rest if event_bus is not None and event_bus._retention is not None else None
 
         # CORS — use explicit config; default to restrictive same-origin

@@ -85,6 +85,12 @@ def _deny_real_async_http_transport(monkeypatch):
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", denied)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_dashboard_credential(monkeypatch):
+    """Never resolve an inherited host credential in an offline test graph."""
+    monkeypatch.delenv("KZA_DASHBOARD_TOKEN", raising=False)
+
+
 @pytest.fixture
 def dashboard_auth(monkeypatch):
     """Configure a test-only dashboard credential and return its Bearer header."""
