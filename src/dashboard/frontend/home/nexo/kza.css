@@ -93,6 +93,9 @@ main{padding:34px;max-width:1800px;margin:0 auto;min-width:0}
 .advanced-control summary{font-size:11px;color:#a9bbcb;cursor:pointer;min-height:32px;line-height:1.7}
 .advanced-control .operation-form{border:0;padding-top:5px}
 .control-field input[type=range]{min-height:30px;padding:0;accent-color:var(--mint);background:transparent;border:0}
+.control-field input[type=range]::-webkit-slider-runnable-track{height:3px;border-radius:3px;background:#304b51}
+.control-field input[type=range]::-webkit-slider-thumb{margin-top:-4px}
+.control-field input[type=range]::-moz-range-track{height:3px;border-radius:3px;background:#304b51}
 .range-output{color:var(--mint);font-size:18px;margin-top:3px}
 .device-card[data-domain=climate] .device-value{width:152px;min-height:152px;margin:18px auto 24px;border:3px solid #71bdff66;border-radius:50%;background:radial-gradient(circle,#71bdff0b,transparent 70%);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;font-size:15px;line-height:1.6;padding:9px;box-shadow:0 0 22px #71bdff0a}
 .device-card[data-domain=climate] .device-value strong{font-size:31px;letter-spacing:-1px;font-weight:500}
