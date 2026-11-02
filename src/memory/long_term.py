@@ -152,6 +152,7 @@ class LongTermMemory:
 
     def confirm(self, fact_id: str, actor: MemoryReviewer) -> dict:
         """Apply an authenticated review and queue its durable index update."""
+        self.ledger._reviewer(actor)
         self.initialize()
         fact = self.ledger.confirm(fact_id, actor)
         self._notify()
@@ -160,6 +161,7 @@ class LongTermMemory:
 
     def delete_fact(self, fact_id: str, actor: MemoryReviewer) -> bool:
         """Scrub a reviewed fact immediately, even if vector cleanup is delayed."""
+        self.ledger._reviewer(actor)
         self.initialize()
         deleted = self.ledger.delete_fact(fact_id, actor)
         self._notify()
@@ -168,6 +170,7 @@ class LongTermMemory:
 
     def reject_proposal(self, fact_id: str, actor: MemoryReviewer) -> bool:
         """Reject only a proposal, with durable cleanup and no silent downgrade."""
+        self.ledger._reviewer(actor)
         self.initialize()
         deleted = self.ledger.reject_proposal(fact_id, actor)
         self._notify()
@@ -176,6 +179,7 @@ class LongTermMemory:
 
     def delete_conversation(self, conversation_id: str, actor: MemoryReviewer) -> int:
         """Block future derivations before removing current conversation facts."""
+        self.ledger._reviewer(actor)
         self.initialize()
         deleted = self.ledger.delete_conversation(conversation_id, actor)
         self._notify()

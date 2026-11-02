@@ -2,9 +2,9 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 
-from src.dashboard.auth import DashboardPrincipal, require_dashboard_session
+from src.dashboard.auth import DashboardPrincipal, require_dashboard_session, session_guard
 from src.memory.fact_ledger import MemoryReviewer
 
 FactId = Annotated[str, Path(pattern=r"^fact_[a-f0-9]{64}$")]
@@ -14,9 +14,10 @@ def register_memory_routes(app, *, manager=None) -> None:
     """Register session-bound reads and explicit confirmation/rejection."""
     router = APIRouter(prefix="/api/memory")
 
-    async def review(principal: DashboardPrincipal = Depends(require_dashboard_session)) -> MemoryReviewer:
+    async def review(request: Request, principal: DashboardPrincipal = Depends(require_dashboard_session)) -> MemoryReviewer:
         try:
-            return MemoryReviewer.from_dashboard(principal)
+            return MemoryReviewer.from_dashboard(principal,
+                session_guard(request, frozenset({'memory:review'}), principal))
         except PermissionError as error:
             raise HTTPException(403, detail="memory_review_denied") from error
 
@@ -26,18 +27,18 @@ def register_memory_routes(app, *, manager=None) -> None:
         return manager.long_term
 
     @router.get("")
-    async def snapshot(_reviewer: MemoryReviewer = Depends(review)):
+    async def snapshot(_principal: DashboardPrincipal = Depends(require_dashboard_session)):
         service = memory()
         return await service.acall(service.ledger.snapshot)
 
     @router.get("/facts")
-    async def facts(_reviewer: MemoryReviewer = Depends(review)):
+    async def facts(_principal: DashboardPrincipal = Depends(require_dashboard_session)):
         service = memory()
         rows = await service.acall(service.ledger.list, limit=100)
         return {"facts": [fact.to_dict() for fact in rows], "status": await service.acall(service.get_stats)}
 
     @router.get("/proposals")
-    async def proposals(_reviewer: MemoryReviewer = Depends(review)):
+    async def proposals(_principal: DashboardPrincipal = Depends(require_dashboard_session)):
         service = memory()
         return {"proposals": await service.acall(service.proposals)}
 
@@ -46,6 +47,8 @@ def register_memory_routes(app, *, manager=None) -> None:
         service = memory()
         try:
             fact = await service.acall(service.confirm, fact_id, actor)
+        except PermissionError as error:
+            raise HTTPException(403, detail="memory_review_denied") from error
         except LookupError as error:
             raise HTTPException(404, detail="memory_proposal_unavailable") from error
         except ValueError as error:
@@ -57,6 +60,8 @@ def register_memory_routes(app, *, manager=None) -> None:
         service = memory()
         try:
             deleted = await service.acall(service.reject_proposal, fact_id, actor)
+        except PermissionError as error:
+            raise HTTPException(403, detail="memory_review_denied") from error
         except ValueError as error:
             raise HTTPException(409, detail=str(error)) from error
         return {"deleted": deleted, "status": await service.acall(service.get_stats)}
@@ -64,7 +69,10 @@ def register_memory_routes(app, *, manager=None) -> None:
     @router.delete("/facts/{fact_id}")
     async def remove(fact_id: FactId, actor: MemoryReviewer = Depends(review)):
         service = memory()
-        deleted = await service.acall(service.delete_fact, fact_id, actor)
+        try:
+            deleted = await service.acall(service.delete_fact, fact_id, actor)
+        except PermissionError as error:
+            raise HTTPException(403, detail="memory_review_denied") from error
         return {"deleted": deleted, "status": await service.acall(service.get_stats)}
 
     app.include_router(router)

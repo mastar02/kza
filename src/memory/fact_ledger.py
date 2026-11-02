@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from uuid import UUID
@@ -128,14 +128,25 @@ class MemoryReviewer:
     """Server-minted capability for an authenticated dashboard review."""
 
     subject: str
+    _current: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
 
     @classmethod
-    def from_dashboard(cls, principal) -> "MemoryReviewer":
+    def from_dashboard(cls, principal: object, current: Callable[[], bool] | None = None) -> "MemoryReviewer":
         """Mint review authority from the dashboard's actual session DTO."""
         from src.dashboard.auth import DashboardPrincipal
         if not isinstance(principal, DashboardPrincipal) or "memory:review" not in principal.permissions:
             raise PermissionError("memory_review_requires_dashboard_session")
-        return cls(principal.subject)
+        return cls(principal.subject, current)
+
+    def require_current(self) -> None:
+        """A queued native review cannot outlive its original session."""
+        if self._current is not None:
+            try:
+                allowed = self._current()
+            except Exception:
+                raise PermissionError("memory_review_session_unavailable") from None
+            if allowed is not True:
+                raise PermissionError("memory_review_denied")
 
 
 @dataclass(frozen=True)
@@ -388,15 +399,21 @@ class FactLedger:
                 self._db = None
 
     @contextmanager
-    def _transaction(self):
+    def _transaction(self, guard: Callable[[], None] | None = None):
         with self._lock:
+            if guard is not None:
+                guard()
             self.initialize()
+            if guard is not None:
+                guard()
             self._db.execute("BEGIN IMMEDIATE")
             changes = self._authority_version
             recovering = bool(self._pending_fact_ids or self._pending_conversations)
             clear_pending = True
             try:
                 yield self._db
+                if guard is not None:
+                    guard()
                 changed = self._authority_version != changes or recovering
                 if changed:
                     receipts = self._read_fact_receipts(self._db)
@@ -409,6 +426,8 @@ class FactLedger:
                     self._pending_conversations = deleted - self._deleted_conversations
                     self._pending_deleted_times = {key: deleted_times[key] for key in self._pending_conversations}
                     self._publish_revocation_admission()
+                if guard is not None:
+                    guard()
                 self._db.commit()
                 if changed:
                     self._fact_receipts = receipts
@@ -552,11 +571,12 @@ class FactLedger:
     def _reviewer(self, actor: MemoryReviewer) -> None:
         if not isinstance(actor, MemoryReviewer) or not actor.subject:
             raise PermissionError("memory_review_requires_dashboard_session")
+        actor.require_current()
 
     def confirm(self, fact_id: str, actor: MemoryReviewer) -> StoredFact:
         """Confirm a live proposal with explicit authenticated provenance."""
         self._reviewer(actor)
-        with self._transaction() as db:
+        with self._transaction(actor.require_current) as db:
             fact = self._fact(db, fact_id)
             if not self._eligible(db, fact, review=True):
                 raise LookupError("memory_proposal_unavailable")
@@ -589,13 +609,13 @@ class FactLedger:
     def delete_fact(self, fact_id: str, actor: MemoryReviewer) -> bool:
         """Reject/delete a fact through the authenticated review boundary."""
         self._reviewer(actor)
-        with self._transaction() as db:
+        with self._transaction(actor.require_current) as db:
             return bool(self._delete(db, fact_id))
 
     def reject_proposal(self, fact_id: str, actor: MemoryReviewer) -> bool:
         """A stale rejection must not delete a proposal confirmed elsewhere."""
         self._reviewer(actor)
-        with self._transaction() as db:
+        with self._transaction(actor.require_current) as db:
             fact = self._fact(db, fact_id)
             if fact is None:
                 return False
@@ -624,7 +644,7 @@ class FactLedger:
         self._reviewer(actor)
         conversation_id = str(UUID(conversation_id))
         with self._lock:
-            with self._transaction() as db:
+            with self._transaction(actor.require_current) as db:
                 db.execute("INSERT OR IGNORE INTO conversation_tombstones VALUES (?,?,?)",
                            (conversation_id, self.clock(), actor.subject))
                 self._authority_version += 1
