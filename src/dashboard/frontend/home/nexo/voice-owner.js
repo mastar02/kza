@@ -5,6 +5,7 @@
   const voiceAPI = root.KzaVoicePrivacy || require('../../obs/src/voice-privacy.js');
   const channelAPI = root.KzaVoiceChannel || require('../../obs/src/voice-channel.js');
   const requestAPI = root.HomeRequestIdentity || require('../request-id.js');
+  const peopleAPI = root.NexoPeople || require('./people.js');
   const CHANNELS = ['voices:captures', 'voices:profiles', 'voices:review'];
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
   function confirmationId(seed, identities, name) {
@@ -20,14 +21,20 @@
     const hex = bytes.map(byte => byte.toString(16).padStart(2, '0')).join('');
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
-  function permittedPath(path, method) {
-    if (typeof path !== 'string' || path.length > 8192) return false;
-    const [pathname, query] = path.split('?');
-    if (path.split('?').length > 2 || query !== undefined && !/^cursor=[A-Za-z0-9%_.~-]+$/.test(query)) return false;
-    return method === 'GET' && (['/api/voices', '/api/voices/profiles'].includes(pathname)
-      || query === undefined && /^\/api\/voices\/captures\/vf_[a-f0-9]{64}\/review$/.test(pathname))
-      || query === undefined && method === 'POST' && ['/api/voices/profiles', '/api/voices/groups/corrections'].includes(pathname)
-      || query === undefined && method === 'DELETE' && pathname.startsWith('/api/voices/profiles/') && UUID.test(pathname.slice('/api/voices/profiles/'.length));
+  function permittedPath(path, method, includePerson = false) {
+    if (typeof path !== 'string' || path.length > 8192 || path.split('?').length > 2) return false;
+    const [pathname, query] = path.split('?'), params = new URLSearchParams(query || '');
+    if (query !== undefined && !query || [...params.keys()].some(key => !['cursor','include_person'].includes(key))
+        || [...params.keys()].some(key => params.getAll(key).length !== 1)
+        || params.has('cursor') && !/(?:^|&)cursor=[A-Za-z0-9%_.~-]+(?:&|$)/.test(query)
+        || params.has('include_person') && (!includePerson || pathname !== '/api/voices/profiles' || params.get('include_person') !== 'true')) return false;
+    if (method === 'GET') return ['/api/voices', '/api/voices/profiles'].includes(pathname)
+      || query === undefined && /^\/api\/voices\/captures\/vf_[a-f0-9]{64}\/review$/.test(pathname);
+    if (query !== undefined) return false;
+    return method === 'POST' && ['/api/voices/profiles', '/api/voices/groups/corrections'].includes(pathname)
+      || method === 'DELETE' && pathname.startsWith('/api/voices/profiles/') && UUID.test(pathname.slice('/api/voices/profiles/'.length))
+      || includePerson && method === 'PUT' && /^\/api\/voices\/profiles\/([a-f0-9-]+)\/person$/.test(pathname)
+        && UUID.test(pathname.split('/')[4]);
   }
   function createVoiceOwner({ session, mount, fetch: rawFetch, connect, socketUrl,
       onStatus = () => {}, onUnauthorized = () => {}, verifyIdentity = async () => true,
@@ -47,6 +54,7 @@
     function seal(context) {
       if (context.sealed) return;
       context.sealed = true; context.phase = 'closed';
+      for (const abort of context.auxAborts || []) abort.abort();
       unmount(context); context.controller?.leave();
       context.socket?.close();
     }
@@ -88,19 +96,34 @@
       if (closing && !await closing) return false;
       if (blocked || !wanted || !allowed() || session.generation() !== attempt || generation !== attempt) return false;
       if (current) return true;
-      const context = { generation: attempt, sealed: false, phase: 'hello', frames: Promise.resolve(), unmount: null };
+      const context = { generation: attempt, sealed: false, phase: 'hello', frames: Promise.resolve(), unmount: null,
+        checks:new Set(), auxAborts:new Set(), includePerson:session.can('admin:manage') };
       current = context;
       try {
-      context.state = createState();
+      context.state = createState({includePerson:context.includePerson});
+      function track(work) {
+        const task = Promise.resolve().then(work);
+        context.checks.add(task);
+        const finish = () => { context.checks.delete(task); context.controller?.flush(); };
+        task.then(finish,finish); return task;
+      }
+      function verifyOriginal() {
+        if (!owns(context) || context.phase !== 'ready') return;
+        track(async () => {
+          if (!owns(context) || context.phase !== 'ready') return;
+          try { const valid = await verifyIdentity(); if (owns(context) && context.phase === 'ready' && !valid) onUnauthorized(); }
+          catch { if (owns(context)) onStatus('No se pudo verificar la sesión.'); }
+        });
+      }
       function emitAck(message) {
-        if (!owns(context) || context.socket.readyState !== 1) return false;
+        if (!owns(context) || context.socket.readyState !== 1 || context.checks.size) return false;
         if (message.type === 'live_reset_ack' ? context.phase !== 'waiting_ready' : context.phase !== 'ready') return false;
         context.socket.send(JSON.stringify(message));
         if (message.type === 'live_reset_ack') context.resetAcknowledged = true;
         return true;
       }
       async function boundFetch(path, options = {}) {
-        if (!owns(context) || context.phase !== 'ready' || !permittedPath(path, options.method || 'GET')) throw Error('voice_reader_retired');
+        if (!owns(context) || context.phase !== 'ready' || !permittedPath(path, options.method || 'GET', context.includePerson && session.can('admin:manage'))) throw Error('voice_reader_retired');
         const response = await rawFetch(path, { ...options, credentials: 'same-origin', cache: 'no-store' });
         if (!owns(context) || context.phase !== 'ready') {
           // The channel still owns this fetch until cancellation of its body settles.
@@ -117,17 +140,37 @@
           json: () => read('json'), arrayBuffer: () => read('arrayBuffer') };
       }
       context.live = createLive({ onChange() {}, emitAck });
-      context.controller = createController({ state: context.state, fetch: boundFetch, emitAck,
+      context.controller = createController({ state: context.state, fetch: boundFetch, emitAck, includePerson:context.includePerson,
         hasView: () => owns(context) && context.phase === 'ready' && !!context.unmount,
-        onUnauthorized() {
-          if (!owns(context)) return;
-          // A functional 403 does not prove that the browser session expired.
-          const check = Promise.resolve().then(() => owns(context) ? verifyIdentity() : true).then(valid => {
-            if (owns(context) && !valid) onUnauthorized();
-          }).catch(() => { if (owns(context)) onStatus('No se pudo verificar la sesión.'); });
-          context.checks.add(check); check.finally(() => context.checks.delete(check));
-        }, onStatus() {} });
-      context.checks = new Set();
+        onUnauthorized:verifyOriginal, onStatus() {} });
+      context.controller.loadPeople = accept => {
+        const valid = () => owns(context) && context.phase === 'ready' && context.includePerson && session.can('admin:manage');
+        if (!valid() || context.auxAborts.size || typeof accept !== 'function') return Promise.resolve(false);
+        const abort = new AbortController(); context.auxAborts.add(abort);
+        let consumer = accept; accept = null;
+        return track(async () => {
+          let response = null, document = null, accounts = null;
+          try {
+            if (!valid() || abort.signal.aborted) return false;
+            response = await rawFetch('/api/admin/users', {credentials:'same-origin',cache:'no-store',signal:abort.signal});
+            if (!valid() || abort.signal.aborted) { await response.body?.cancel(); return false; }
+            if (!response.ok) {
+              await response.body?.cancel();
+              if (response.status === 401 || response.status === 403) verifyOriginal();
+              return false;
+            }
+            document = await response.json();
+            if (!valid() || abort.signal.aborted || !Array.isArray(document) || document.length > 256) return false;
+            accounts = peopleAPI.parseAccounts(document).map(row => {
+              if (row.id.length > 128 || /[\x00-\x1f\x7f]/.test(row.id) || !row.name.trim() || row.name.length > 128) throw Error('invalid person catalogue');
+              return Object.freeze({id:row.id,name:row.name,is_active:row.is_active});
+            });
+            await consumer(Object.freeze(accounts));
+            return valid() && !abort.signal.aborted;
+          } catch { return false; }
+          finally { response = document = accounts = consumer = null; context.auxAborts.delete(abort); }
+        });
+      };
       const confirm = context.controller.confirm.bind(context.controller);
       context.controller.confirm = async (identities, name) => {
         if (!owns(context) || context.phase !== 'ready') return false;
@@ -153,7 +196,10 @@
         context.frames = context.frames.then(async () => {
           if (!owns(context)) return;
           if (frame?.type === 'live_reset' && UUID.test(frame.payload?.id) && UUID.test(frame.payload?.nonce)) {
-            context.phase = 'resetting'; context.resetAcknowledged = false; unmount(context);
+            context.phase = 'resetting'; context.resetAcknowledged = false;
+            for (const abort of context.auxAborts) abort.abort();
+            unmount(context);
+            await Promise.allSettled([...context.checks]);
             if (!await context.controller.reset()) throw Error('voice_reset_incomplete');
             await context.state.retired();
             if (!owns(context)) return;

@@ -2,7 +2,10 @@
   'use strict';
   const channelsAPI = root?.KzaConversationChannel || require('./conversation-channel.js');
   const PATHS = { profiles:'/api/voices/profiles', captures:'/api/voices', review:'/api/voices/captures/' };
-  function createVoiceController({ state, fetch, emitAck, hasView = () => false, onUnauthorized = () => {}, onStatus = () => {} }) {
+  function createVoiceController({ state, fetch, emitAck, hasView = () => false, onUnauthorized = () => {}, onStatus = () => {}, includePerson = false }) {
+    if (typeof includePerson !== 'boolean') throw Error('invalid voice person scope');
+    const profilePath = cursor => PATHS.profiles + (includePerson ? '?include_person=true' : '')
+      + (cursor ? (includePerson ? '&' : '?') + 'cursor=' + encodeURIComponent(cursor) : '');
     let closed = false, sequence = 0;
     const pages = {}, actions = new Set(), aborts = new Set();
     const channels = Object.fromEntries(Object.keys(PATHS).map(kind => [kind,channelsAPI.createConversationChannel({
@@ -17,7 +20,7 @@
       for (const kind of Object.keys(channels)) channels[kind].clearView();
       await Promise.all(Object.values(channels).map(channel => channel.settled()));
       if (closed || attempt!==sequence) return;
-      if (!channels.profiles.refresh()) return;
+      if (!channels.profiles.refresh(profilePath())) return;
       await channels.profiles.settled();
       if (closed || attempt!==sequence) return;
       channels.captures.refresh();
@@ -43,7 +46,7 @@
       try { accepted = await task; }
       finally {
         actions.delete(task); aborts.delete(abort);
-        for (const kind of Object.keys(channels)) state[kind].committed(state[kind].deliveryToken());
+        for (const channel of Object.values(channels)) channel.flush();
       }
       if (!closed && accepted) await refresh();
       return accepted;
@@ -56,7 +59,8 @@
       state.clear();
     }
     return {
-      state,refresh,leave,
+      state,refresh,leave,includePerson,
+      flush() { for (const channel of Object.values(channels)) channel.flush(); },
       settled:() => Promise.allSettled([...actions,...Object.values(channels).map(channel => channel.settled())]),
       open(identity) { for (const channel of Object.values(channels)) channel.open(identity); if (hasView()) refresh(); },
       async reset() {
@@ -69,7 +73,7 @@
       retire(frame) { for (const channel of Object.values(channels)) channel.retire(frame); },
       review(identity) { return /^vf_[0-9a-f]{64}$/.test(identity) && channels.review.refresh(PATHS.review+identity+'/review'); },
       closeReview() { channels.review.clearView(); state.review.setStatus('waiting'); },
-      next(kind) { const cursor = pages[kind]; if (cursor && kind!=='review') channels[kind].refresh(PATHS[kind]+'?cursor='+encodeURIComponent(cursor)); },
+      next(kind) { const cursor = pages[kind]; if (cursor && kind!=='review') channels[kind].refresh(kind==='profiles' ? profilePath(cursor) : PATHS[kind]+'?cursor='+encodeURIComponent(cursor)); },
       hasNext:kind => !!pages[kind],
       confirm(identities,name,requestId) { return mutate('/api/voices/profiles',
         { fingerprint_ids:identities, name, request_id:requestId },'POST'); },
@@ -78,6 +82,13 @@
         if (!identities.length || rows.length!==identities.length || new Set(identities).size!==identities.length) return Promise.resolve(false);
         return mutate('/api/voices/groups/corrections',{fingerprint_ids:identities,
           expected_revisions:Object.fromEntries(rows.map(row => [row.group_id,row.group_revision])),action,request_id:requestId},'POST');
+      },
+      setPerson(identity,userId,profileRevision,linkRevision) {
+        if (!includePerson || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(identity)
+            || userId !== null && (typeof userId !== 'string' || !userId.length || userId.length > 128 || /[\x00-\x1f\x7f]/.test(userId))
+            || !Number.isInteger(profileRevision) || profileRevision < 1 || !Number.isInteger(linkRevision) || linkRevision < 0) return Promise.resolve(false);
+        return mutate('/api/voices/profiles/'+identity+'/person', {user_id:userId,
+          expected_profile_revision:profileRevision,expected_link_revision:linkRevision},'PUT');
       },
       deleteProfile(identity,revision) { return mutate('/api/voices/profiles/'+identity,{expected_revision:revision},'DELETE'); },
       dispose() { closed = true; leave(); for (const channel of Object.values(channels)) channel.dispose(); },

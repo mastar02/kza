@@ -198,3 +198,89 @@ test('uncertain command identities are bounded and clear with the browser sessio
   await g.owner.clear(); await ready(g); await g.controllers.at(-1).confirm(['a', 'b', 'c'], 'Synthetic overflow'); assert.equal(commands.length, 66);
   await g.owner.clear();
 });
+
+const adminIdentity = { ok:true,role:'operator',expires_at:1e12,permissions:['voices:read','voices:review','admin:manage'] };
+const personRows = [{id:'null',name:'Synthetic person',permission_level:'adult',is_active:true}];
+const voiceEnvelope = (path,snapshot=null) => ({connection_id:UUID,channel:path.includes('/profiles')?'voices:profiles':'voices:captures',snapshot});
+const profileBatch = () => ({channel:'voices:profiles',event_id:'30000000-0000-4000-8000-000000000003',observed_at:Date.now()/1000,expires_at:Date.now()/1000+60,
+  receipt:{ticket:'40000000-0000-4000-8000-000000000004',nonce:'50000000-0000-4000-8000-000000000005'},rows:[{id:UUID,name:'Synthetic profile',revision:1,confirmed_at:Date.now()/1000,person_link:{user_id:'null',revision:1}}]});
+
+test('person metadata uses explicit admin capability and closed query combinations', () => {
+  const person = '/api/voices/profiles/'+UUID+'/person';
+  assert.equal(permittedPath(person,'PUT'),false); assert.equal(permittedPath(person,'PUT',true),true);
+  assert.equal(permittedPath('/api/voices/profiles?include_person=true','GET'),false);
+  assert.equal(permittedPath('/api/voices/profiles?include_person=true&cursor=opaque%2Fcursor','GET',true),true);
+  for (const path of ['/api/admin/users','/api/voices?include_person=true','/api/voices/profiles?include_person=false','/api/voices/profiles?include_person=true&include_person=true','/api/voices/profiles?cursor=a&cursor=b','/api/voices/profiles?include_person=true&other=1']) assert.equal(permittedPath(path,'GET',true),false);
+});
+
+test('fixed people lookup requires admin and returns only a boolean after its consumer', async () => {
+  let peopleCalls=0;
+  const g=setup({fetch:async path=>{ if(path==='/api/admin/users'){peopleCalls++;return{ok:true,status:200,json:async()=>personRows};} return{ok:true,status:200,json:async()=>voiceEnvelope(path)}; }});
+  await ready(g);assert.equal(await g.controllers.at(-1).loadPeople(()=>assert.fail('no admin consumer')),false);assert.equal(peopleCalls,0);await g.owner.leave();
+  g.session.accept(adminIdentity);await ready(g);let accepted;
+  assert.equal(await g.controllers.at(-1).loadPeople(rows=>{accepted=rows;}),true);
+  assert.deepEqual(accepted,[{id:'null',name:'Synthetic person',is_active:true}]);assert(Object.isFrozen(accepted));assert(Object.isFrozen(accepted[0]));assert.equal(peopleCalls,1);
+  assert(g.requests.every(([path])=>!path.includes('include_person')||path.includes('include_person=true')));await g.owner.leave();
+});
+
+test('late people decoder holds close and login B, then rejects its old consumer', async () => {
+  const body=deferred(),entered=deferred();let accepted=0;
+  const g=setup({fetch:async path=>path==='/api/admin/users'?{ok:true,status:200,json:()=>{entered.resolve();return body.promise;}}:{ok:true,status:200,json:async()=>voiceEnvelope(path)}});
+  g.session.accept(adminIdentity);const socket=await ready(g), before=socket.sent.length;
+  const loading=g.controllers[0].loadPeople(()=>accepted++);await entered.promise;
+  let closed=false;const closing=g.owner.leave().then(value=>{closed=true;return value;});g.session.clear();g.session.accept(adminIdentity);const reentry=g.owner.open();await turn();
+  assert.equal(closed,false);assert.equal(g.sockets.length,1);body.resolve(personRows);
+  assert.equal(await loading,false);assert.equal(await closing,true);assert.equal(await reentry,true);assert.equal(g.sockets.length,2);assert.equal(accepted,0);assert.equal(socket.sent.length,before);await g.owner.leave();
+});
+
+test('reset aborts auxiliary admission and waits for an actual async consumer', async () => {
+  const consumer=deferred(),entered=deferred();let signal;
+  const g=setup({fetch:async(path,options)=>{if(path==='/api/admin/users'){signal=options.signal;return{ok:true,status:200,json:async()=>personRows};}return{ok:true,status:200,json:async()=>voiceEnvelope(path)};}});
+  g.session.accept(adminIdentity);const socket=await ready(g), before=socket.sent.filter(row=>row.type==='live_reset_ack').length;
+  const loading=g.controllers[0].loadPeople(async()=>{entered.resolve();await consumer.promise;});await entered.promise;socket.event('message',RESET);await turn();
+  assert.equal(signal.aborted,true);assert.equal(socket.sent.filter(row=>row.type==='live_reset_ack').length,before);consumer.resolve();assert.equal(await loading,false);await turn();assert.equal(socket.sent.filter(row=>row.type==='live_reset_ack').length,before+1);await g.owner.leave();
+});
+
+for(const domClearedFirst of [false,true])test('auxiliary completion flush preserves actual DOM commit: '+domClearedFirst,async()=>{
+  const body=deferred(),entered=deferred(),batch=profileBatch();
+  const g=setup({fetch:async path=>path==='/api/admin/users'?{ok:true,status:200,json:()=>{entered.resolve();return body.promise;}}:{ok:true,status:200,json:async()=>voiceEnvelope(path,path.includes('/profiles')?batch:null)}});
+  g.session.accept(adminIdentity);const socket=await ready(g),controller=g.controllers[0],store=controller.state.profiles;
+  store.committed(batch.event_id);const loading=controller.loadPeople(()=>{});await entered.promise;
+  socket.event('message',{type:'rest_retire',channel:'voices:profiles',payload:{event_ids:[batch.event_id],receipts:[{event_id:batch.event_id,...batch.receipt}]}});await turn();
+  if(domClearedFirst)store.committed(null);
+  assert.equal(socket.sent.filter(row=>row.type==='live_ack').length,0);body.resolve(personRows);assert.equal(await loading,true);await turn();
+  assert.equal(socket.sent.filter(row=>row.type==='live_ack').length,domClearedFirst?1:0);
+  if(!domClearedFirst){store.committed(null);await turn();}
+  assert.equal(socket.sent.filter(row=>row.type==='live_ack').length,1);await g.owner.leave();
+});
+
+test('failed people consumer drains admission and permits an explicit next lookup',async()=>{
+  const g=setup({fetch:async path=>({ok:true,status:200,json:async()=>path==='/api/admin/users'?personRows:voiceEnvelope(path)})});g.session.accept(adminIdentity);await ready(g);
+  assert.equal(await g.controllers[0].loadPeople(()=>{throw Error('synthetic callback failure');}),false);
+  assert.equal(await g.controllers[0].loadPeople(()=>{}),true);await g.owner.leave();
+});
+
+test('catalogue, mutation body and native audio are independent retirement barriers',async()=>{
+  const {Media,review}=require('../mocks/voice_browser.cjs'), personBody=deferred(),mutationBody=deferred(),personEntered=deferred(),mutationEntered=deferred();
+  const now=Date.now()/1000,batch={...profileBatch(),channel:'voices:review',rows:[{...review(),observed_at:now,expires_at:now+60}]};
+  const g=setup({fetch:async(path,options)=>{
+    if(path==='/api/admin/users')return{ok:true,status:200,json:()=>{personEntered.resolve();return personBody.promise;}};
+    if(options.method==='PUT')return{ok:true,status:200,arrayBuffer:()=>{mutationEntered.resolve();return mutationBody.promise;}};
+    if(path.endsWith('/review'))return{ok:true,status:200,json:async()=>({connection_id:UUID,channel:'voices:review',snapshot:batch})};
+    return{ok:true,status:200,json:async()=>voiceEnvelope(path)};
+  }});
+  g.session.accept(adminIdentity);const socket=await ready(g),controller=g.controllers[0];assert(controller.review(review().id));await controller.settled();
+  const media=new Media();controller.state.review.attachMedia(media);controller.state.review.committed(batch.event_id);
+  const loading=controller.loadPeople(()=>{}),saving=controller.setPerson(UUID,'null',1,0);await personEntered.promise;await mutationEntered.promise;
+  socket.event('message',{type:'rest_retire',channel:'voices:review',payload:{event_ids:[batch.event_id],receipts:[{event_id:batch.event_id,...batch.receipt}]}});await turn();controller.state.review.committed(null);
+  personBody.resolve(personRows);assert.equal(await loading,true);await turn();assert.equal(socket.sent.filter(row=>row.type==='live_ack').length,0);
+  mutationBody.resolve(new ArrayBuffer(0));assert.equal(await saving,true);await turn();assert.equal(socket.sent.filter(row=>row.type==='live_ack').length,0);
+  media.emptied();await controller.state.retired();await turn();assert.equal(socket.sent.filter(row=>row.type==='live_ack').length,1);await g.owner.leave();
+});
+
+test('a deferred identity check cannot start under the next login',async()=>{
+  let verify=0, unauthorized;
+  const {createVoiceController}=require('../../src/dashboard/frontend/obs/src/voice-channel.js');
+  const g=setup({verifyIdentity:async()=>{verify++;return false;},createController:options=>{unauthorized=options.onUnauthorized;return createVoiceController(options);}});
+  await ready(g);unauthorized();const closing=g.owner.leave();g.session.clear();g.session.accept(adminIdentity);await turn();assert.equal(verify,0);assert.equal(await closing,true);
+});

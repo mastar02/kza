@@ -141,3 +141,14 @@ test('manual corrections carry only selected IDs and their current group revisio
   assert.equal(await controller.correctGroups([row.id],'unknown',C),false);assert.equal(requests.length,1);
   controller.dispose();
 });
+
+test('enriched profile links are required, copied and deeply immutable',()=>{
+  const {createVoiceStore}=require('../../src/dashboard/frontend/obs/src/voice-privacy.js');
+  const options={includePerson:true,monotonic:()=>0,wall:()=>2000000000000,schedule:()=>1,cancel:()=>{}};
+  const store=createVoiceStore('profiles',options), row={...profile(),person_link:{user_id:'null',revision:2}};
+  assert(store.receive([row],{mono:0,wall:2000000000000}));row.person_link.user_id='changed';
+  const link=store.snapshot()[0].person_link;assert.deepEqual(link,{user_id:'null',revision:2});assert(Object.isFrozen(link));Reflect.set(link,'user_id','other');assert.equal(link.user_id,'null');store.clear();
+  assert.equal(store.receive([profile()],{mono:0,wall:2000000000000}),false);
+  assert.equal(store.receive([{...profile(),person_link:{user_id:'null',revision:0}}],{mono:0,wall:2000000000000}),false);
+  assert(store.receive([{...profile(),person_link:{user_id:null,revision:0}}],{mono:0,wall:2000000000000}));store.clear();
+});

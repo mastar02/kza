@@ -40,7 +40,7 @@ const people = window.NexoPeople.createPeople({ container: byId('people-view'), 
 const voices = window.NexoVoiceOwner.createVoiceOwner({ session,
   fetch: window.fetch.bind(window), connect: url => new WebSocket(url),
   socketUrl: () => `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/voices`,
-  mount: controller => window.NexoVoices.mountVoices({ container: byId('voices-content'), dialog: byId('voice-dialog'), controller, icon }),
+  mount: controller => window.NexoVoices.mountVoices({ container: byId('voices-content'), dialog: byId('voice-dialog'), linkDialog: byId('voice-link-dialog'), controller, icon }),
   onStatus: message => { byId('voice-connection').textContent = message; },
   verifyIdentity: async () => { const identity = await api('/api/admin/auth/whoami'); return identity?.ok === true && ['voices:read', 'voices:review'].every(permission => identity.permissions?.includes(permission)); },
   onUnauthorized: () => retire('Tu acceso a Voces dejó de estar vigente. Iniciá sesión nuevamente.')

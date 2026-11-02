@@ -117,7 +117,7 @@
       generation++; for (const controller of controllers) controller.abort();
       metadata.clear(); store.clear();
     }
-    return { open, refresh, reset, retire, clearView, settled:() => Promise.allSettled([...inflight]),
+    return { open, refresh, reset, retire, clearView, flush() { if (!closed) commit(rendered); }, settled:() => Promise.allSettled([...inflight]),
       dispose() {
         closed = true; generation++;
         onState('closed');

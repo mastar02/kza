@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import AsyncExitStack
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import socket
 import subprocess
 import tempfile
 import time
+from unittest.mock import patch
 
 import aiohttp
 import numpy as np
@@ -20,6 +22,7 @@ from src.dashboard.authority import DashboardAuthority, DashboardRole
 from src.dashboard.live_erasure import build_live_services
 from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.privacy_services import PrivacyServices
+from src.users.user_manager import PermissionLevel
 from src.users.voice_registry import build_voice_registry
 from tests.frontend.browser_nexo_home import login, screenshot
 from tests.frontend.browser_typed_controls import Page
@@ -40,13 +43,36 @@ INSTRUMENT = r"""(() => {
   HTMLMediaElement.prototype.removeEventListener=function(type,callback,options){return remove.call(this,type,wrappers.get(callback)||callback,options);};
   const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL);
   URL.createObjectURL=blob=>{const value=create(blob);window.__urls.add(value);return value;};URL.revokeObjectURL=value=>{window.__urls.delete(value);return revoke(value);};
-  const fetch=window.fetch.bind(window);window.__confirmationIds=[];
+  const fetch=window.fetch.bind(window);window.__confirmationIds=[];window.__personWrites=[];window.__holdPeople=false;window.__peopleCallbacks=[];
   window.fetch=async(path,options={})=>{const response=await fetch(path,options);
+    if(path==='/api/admin/users' && !options.method)return new Proxy(response,{get(target,key){if(key==='json')return async()=>{const value=await target.json();if(window.__holdPeople)await new Promise(resolve=>window.__peopleCallbacks.push(resolve));return value;};const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});
+    if(options.method==='PUT' && path.endsWith('/person'))window.__personWrites.push({body:JSON.parse(options.body),status:response.status});
     if(path==='/api/voices/profiles' && options.method==='POST'){
       window.__confirmationIds.push(JSON.parse(options.body).request_id);
       if(window.__loseConfirmReceipt){window.__loseConfirmReceipt=false;return new Proxy(response,{get(target,key){if(key==='arrayBuffer')return async()=>{await target.arrayBuffer();throw Error('synthetic lost confirmation receipt');};const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});}
     }return response;};
 })()"""
+
+
+def person_link(voices,profile_id):
+    with voices.ledger.ledger._transaction() as db:
+        return tuple(db.execute('SELECT user_id,revision FROM voice_profile_people WHERE profile_id=?',(profile_id,)).fetchone())
+
+
+async def editable_person(page):
+    await page.wait_for("document.querySelector('#voice-person-edit') && !document.querySelector('#voice-person-edit').disabled")
+
+
+async def choose_person(page, identity):
+    await editable_person(page)
+    await page.evaluate("document.querySelector('#voice-person-edit').click()")
+    await page.wait_for("document.querySelector('#voice-link-dialog').open")
+    value = json.dumps(identity)
+    await page.evaluate("(()=>{const select=document.querySelector('#voice-person-choice'),identity="+value+";select.value=identity===null?'unlink':[...select.options].find(option=>option.textContent.includes(identity)).value;document.querySelector('#voice-link-dialog form').requestSubmit()})()")
+
+
+async def refresh_voices(page):
+    await page.evaluate("[...document.querySelectorAll('#voices-content .identity-heading button')].find(button=>button.textContent==='Actualizar').click()")
 
 
 async def main() -> None:
@@ -67,7 +93,9 @@ async def main() -> None:
     with tempfile.TemporaryDirectory(prefix='kza-nexo-voices-', dir=browser_data) as temporary:
         directory = Path(temporary)
         async with AsyncExitStack() as stack:
-            authority = DashboardAuthority(directory / 'auth.db', session_ttl_s=180)
+            users = None
+            authority = DashboardAuthority(directory / 'auth.db', session_ttl_s=180,
+                account_provider=lambda: users.active_accounts() if users is not None else None)
             stack.push_async_callback(authority.aclose)
             await authority.initialize()
             root = authority.resolve('synthetic-nexo-voice-root')
@@ -81,6 +109,14 @@ async def main() -> None:
             stack.push_async_callback(owner.aclose)
             bus = await build_live_services({}, privacy=privacy, owner=owner, shutdown=stack)
             voices = await build_voice_registry(privacy=privacy, owner=owner, shutdown=stack)
+            users = await voices.load_accounts(str(directory/'legacy-users.json'),
+                retirement_proof=lambda identities: authority.users_retired(identities)
+                    and voices.ledger.people.user_links_cleared(identities))
+            person_a,_ = await voices.acall(users.add_user,'Synthetic homonym',PermissionLevel.ADMIN)
+            person_b,_ = await voices.acall(users.add_user,'Synthetic other person',PermissionLevel.ADMIN)
+            assert person_a is not None and person_b is not None
+            renamed,_ = await voices.acall(partial(users.update_user,person_b.user_id,name='Synthetic homonym'))
+            assert renamed
             encoder = Encoder(); voices.register_encoder(encoder)
             for index in range(4):
                 source = memory_source(now=clock.now, ttl=180)
@@ -90,7 +126,7 @@ async def main() -> None:
                         await asyncio.sleep(.001)
             captures = (await voices.acall(voices.ledger.snapshot))['fingerprints']
             identities = [row['id'] for row in captures]
-            dashboard = DashboardAPI(authority=authority, event_bus=bus, voice_registry=voices)
+            dashboard = DashboardAPI(authority=authority, event_bus=bus, voice_registry=voices, user_manager=users)
             requests = []
             @dashboard.app.middleware('http')
             async def record(request, call_next):
@@ -151,6 +187,63 @@ async def main() -> None:
                         assert len((await voices.acall(voices.ledger.snapshot))['profiles']) == 1
                         await page.wait_for("document.querySelectorAll('[data-capture-id]').length===4")
                         await page.evaluate("document.querySelector('#voice-dialog>button').click()")
+                        await editable_person(page)
+                        profile_id = (await voices.acall(voices.ledger.snapshot))['profiles'][0]['id']
+                        await choose_person(page,person_a.user_id)
+                        await editable_person(page)
+                        assert await voices.acall(person_link,voices,profile_id) == (person_a.user_id,1)
+                        assert await page.evaluate("document.querySelector('#voice-linked-person').textContent==='Synthetic homonym'")
+                        await screenshot(page,evidence/'voices-person-linked.png')
+                        await page.evaluate("document.querySelector('#voice-person-edit').click()")
+                        await page.wait_for("document.querySelector('#voice-link-dialog').open")
+                        await screenshot(page,evidence/'voices-person-dialog.png')
+                        await page.evaluate("document.querySelector('#voice-link-dialog>button').click()")
+                        await choose_person(page,None)
+                        await page.wait_for("document.querySelector('#voice-linked-person')?.textContent==='Sin persona asignada'")
+                        assert await voices.acall(person_link,voices,profile_id) == (None,2)
+                        await choose_person(page,person_b.user_id)
+                        await editable_person(page)
+                        assert await voices.acall(person_link,voices,profile_id) == (person_b.user_id,3)
+                        original_set = voices.ledger.people.set_person
+                        def raced_set(identity,user_id,profile_revision,link_revision,actor):
+                            original_set(identity,person_a.user_id,profile_revision,link_revision,actor)
+                            return original_set(identity,user_id,profile_revision,link_revision,actor)
+                        with patch.object(voices.ledger.people,'set_person',raced_set):
+                            await choose_person(page,None)
+                            await page.wait_for("document.querySelector('#voices-content .identity-form-error').textContent.includes('Actualizá')")
+                        assert await page.evaluate("window.__personWrites.length===4 && window.__personWrites.at(-1).status===409")
+                        assert await voices.acall(person_link,voices,profile_id) == (person_a.user_id,4)
+                        await refresh_voices(page); await editable_person(page)
+                        with patch.object(voices.ledger.people,'set_person',side_effect=RuntimeError('synthetic_unavailable')):
+                            await choose_person(page,person_b.user_id)
+                            await page.wait_for("document.querySelector('#voices-content .identity-form-error').textContent.includes('Actualizá')")
+                        assert await page.evaluate("window.__personWrites.length===5 && window.__personWrites.at(-1).status===503")
+                        assert await voices.acall(person_link,voices,profile_id) == (person_a.user_id,4)
+                        await refresh_voices(page); await editable_person(page)
+                        await page.evaluate('window.__holdPeople=true')
+                        await refresh_voices(page)
+                        await page.wait_for('window.__peopleCallbacks.length===1')
+                        changed,_ = await voices.acall(partial(users.update_user,person_a.user_id,name='Synthetic updated person'))
+                        assert changed
+                        await refresh_voices(page)
+                        await page.wait_for("document.querySelector('#voice-person-load')?.textContent==='Consultar personas' && !document.querySelector('#voice-person-load').disabled")
+                        await page.evaluate('window.__holdPeople=false;window.__peopleCallbacks.splice(0).forEach(resolve=>resolve())')
+                        assert await page.evaluate("!document.querySelector('#voices-content').textContent.includes('Synthetic homonym')")
+                        await page.evaluate("document.querySelector('#voice-person-load').click()")
+                        await page.wait_for("document.querySelector('#voice-linked-person')?.textContent==='Synthetic updated person'")
+                        before_profile = (await voices.acall(voices.ledger.snapshot))['profiles'][0]
+                        async with aiohttp.ClientSession() as client:
+                            async with client.delete(f'http://127.0.0.1:{port}/api/admin/users/{person_a.user_id}',headers={'Authorization':'Bearer synthetic-nexo-voice-root'}) as response:
+                                assert response.status == 200
+                                await response.read()
+                        await refresh_voices(page)
+                        await page.wait_for("document.querySelector('#voice-linked-person')?.textContent==='Sin persona asignada'")
+                        assert await voices.acall(person_link,voices,profile_id) == (None,5)
+                        after_profile = (await voices.acall(voices.ledger.snapshot))['profiles'][0]
+                        assert all(after_profile[key] == before_profile[key] for key in ['id','revision','name'])
+                        assert users.get_user(person_a.user_id) is None
+                        assert users.get_user(person_b.user_id).permission_level is PermissionLevel.ADMIN
+                        await editable_person(page)
                         await screenshot(page, evidence/'voices-profile.png')
                         await page.evaluate("[...document.querySelectorAll('#voices-content button')].find(button=>button.textContent==='Revisar muestras').click()")
                         await page.evaluate("document.querySelector('[data-capture-id] button').click()")
@@ -188,14 +281,20 @@ async def main() -> None:
                         await page.wait_for("document.querySelector('[aria-label=\"Perfiles confirmados\"]').textContent.includes('Synthetic NEXO profile')")
                         assert len((await voices.acall(voices.ledger.snapshot))['profiles']) == 1
                         await page.evaluate("document.querySelector('#voice-dialog>button').click()")
+                        await editable_person(page)
+                        await page.evaluate('window.__holdPeople=true')
+                        await refresh_voices(page)
+                        await page.wait_for('window.__peopleCallbacks.length===1')
                         await page.evaluate("document.querySelector('#logout').click()")
                         await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
                         marker = len(requests)
                         await login(page, home.token, 'Acceso de hogar')
                         assert await page.evaluate("!document.querySelector('#app-nav [data-view=voices]') && !document.querySelector('#voices-content').children.length && !document.querySelector('#voice-dialog').children.length && window.__urls.size===0")
                         assert not any(row['path'].startswith('/api/voices') for row in requests[marker:])
+                        await page.evaluate('window.__holdPeople=false;window.__peopleCallbacks.splice(0).forEach(resolve=>resolve())')
+                        assert await page.evaluate("!document.querySelector('#voice-link-dialog').children.length && !document.querySelector('#voices-content').children.length")
                         assert not page.errors, page.errors
-                        result = {'passed':True, 'individual_http_login':True, 'synthetic_pcm_only':True, 'native_media_drain':True, 'voice_control_only':True, 'lost_receipt_single_profile':True, 'explicit_recreation_after_delete':True, 'requests':requests, 'screenshots':['voices-desktop.png','voices-profile.png','voices-review.png','voices-390.png','voices-320.png']}
+                        result = {'passed':True, 'individual_http_login':True, 'synthetic_pcm_only':True, 'native_media_drain':True, 'voice_control_only':True, 'lost_receipt_single_profile':True, 'explicit_recreation_after_delete':True, 'manual_person_link':True, 'homonyms_by_canonical_id':True, 'independent_acoustic_revision':True, 'conflict_unavailable_no_retry':True, 'old_catalogue_new_token_rejected':True, 'account_delete_unlinks':True, 'people_decoder_across_logout':True, 'requests':requests, 'screenshots':['voices-desktop.png','voices-profile.png','voices-person-linked.png','voices-person-dialog.png','voices-review.png','voices-390.png','voices-320.png']}
                         (evidence/'result.json').write_text(json.dumps(result, indent=2)+'\n')
                         print(json.dumps(result))
             finally:

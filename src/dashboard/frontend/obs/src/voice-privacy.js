@@ -3,7 +3,8 @@
   const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
   const VF = /^vf_[0-9a-f]{64}$/;
   function createVoiceStore(kind, { monotonic = () => performance.now(), wall = Date.now,
-      schedule = setTimeout, cancel = clearTimeout, url = root?.URL || URL } = {}) {
+      schedule = setTimeout, cancel = clearTimeout, url = root?.URL || URL, includePerson = false } = {}) {
+    if (typeof includePerson !== 'boolean') throw Error('invalid voice person scope');
     let entries = [], timer = null, privacy = null, media = null, status = 'waiting';
     const listeners = new Set(), retiring = new Map();
     function notify() { for (const listener of listeners) listener(); }
@@ -63,7 +64,16 @@
       if (kind === 'profiles') {
         if (!ID.test(value.id) || typeof value.name !== 'string' || !value.name.trim() || value.name.length>64
             || !Number.isInteger(value.revision) || value.revision<1 || !Number.isFinite(value.confirmed_at)) throw Error('invalid voice profile');
-        return { id:value.id, name:value.name, revision:value.revision, confirmed_at:value.confirmed_at };
+        const row = { id:value.id, name:value.name, revision:value.revision, confirmed_at:value.confirmed_at };
+        if (includePerson) {
+          const link = value.person_link;
+          if (!link || Object.keys(link).sort().join(',') !== 'revision,user_id'
+              || !Number.isInteger(link.revision) || link.revision < (link.user_id === null ? 0 : 1)
+              || link.user_id !== null && (typeof link.user_id !== 'string' || !link.user_id.length
+                || link.user_id.length > 128 || /[\x00-\x1f\x7f]/.test(link.user_id))) throw Error('invalid voice person link');
+          row.person_link = Object.freeze({ user_id:link.user_id, revision:link.revision });
+        }
+        return row;
       }
       if (!VF.test(value.id)) throw Error('invalid voice capture');
       if (kind === 'captures') {
