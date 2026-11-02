@@ -1406,6 +1406,66 @@
       "next_action": null
     },
     {
+      "id": "T047",
+      "phase": "P4",
+      "title": "Integrar referencia visual NEXO en el frontend con backend real y autoridades separadas",
+      "criteria": [
+        "C02",
+        "C04",
+        "C06",
+        "C07",
+        "C08",
+        "C18"
+      ],
+      "findings": [
+        "WEB-01",
+        "WEB-02",
+        "WEB-05",
+        "ACCESS-01"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": "Tras cerrar y subir la unidad native-admin-and-catalog de T013, inspeccionar site/ y previews/ de la referencia aprobada, conservar su estética y conectar Hogar/Voces/Personas/Acciones a contratos reales. Revisar contrato manual perfil vocal-persona sin autenticar por voz ni conceder permisos. Coordinar contratos pendientes T013 y checks T040-T046; sin despliegue de producción.",
+      "design_reference": {
+        "path": "/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd",
+        "source_commit": "d686fcde52a34c3b786decf167eebdb91dceb6d6",
+        "instructions": [
+          "LEEME.txt",
+          "HANDOFF.json"
+        ],
+        "code": "site/",
+        "previews": "previews/",
+        "approved_on": "2026-11-02",
+        "illustrative_data_only": true
+      },
+      "integration_contract": [
+        "Conservar estética oscura, cian/violeta, tipografía, casa 3D y navegación Hogar/Voces/Personas/Acciones; adaptación responsiva y accesible.",
+        "Sustituir datos y efectos simulados por lecturas y operaciones autenticadas del backend real, mostrando errores, desconocidos, frescura y efectos inciertos.",
+        "Mantener clima e iluminación independientes por ambiente; conciliar IDs del catálogo real sin inferir asociaciones por nombre.",
+        "Revisar e implementar contrato explícito de vínculo manual perfil vocal-persona si falta; vínculo/confirmación/nombre no autentican ni conceden roles, consentimiento o acceso personal.",
+        "Validar separación de permisos, ausencia de datos personales entre roles, flujos completos del backend y fidelidad visual escritorio/móvil."
+      ],
+      "sequencing": {
+        "authorized_by": "user_2026-11-02_current_goal",
+        "start_after_unit": "T013/native-admin-and-catalog committed, verified and pushed",
+        "coordinates_with": [
+          "T013",
+          "T040",
+          "T041",
+          "T042",
+          "T043",
+          "T044",
+          "T045",
+          "T046"
+        ],
+        "phase_acceptance_dependencies_unchanged": true
+      }
+    },
+    {
       "id": "T050",
       "phase": "P5",
       "title": "Integrar energía/potencia con fuentes y unidades verificables",
@@ -2132,7 +2192,9 @@
     "https://www.home-assistant.io/integrations/todo/",
     "https://www.home-assistant.io/integrations/calendar/",
     "https://www.home-assistant.io/integrations/media_player/",
-    "https://www.home-assistant.io/docs/energy/"
+    "https://www.home-assistant.io/docs/energy/",
+    "../kza-design-reference/nexo-2026-11-02-d686fcd/LEEME.txt",
+    "../kza-design-reference/nexo-2026-11-02-d686fcd/HANDOFF.json"
   ],
   "execution": {
     "activated_at_utc": "2026-11-02T04:39:19.880680+00:00",
@@ -2144,6 +2206,8 @@
     "field_authorized": false,
     "next_task": "T013",
     "last_verified_phase": "P0",
-    "last_verified_task": "T012"
+    "last_verified_task": "T012",
+    "next_after_current_unit": "T047",
+    "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions."
   }
 }
