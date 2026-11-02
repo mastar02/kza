@@ -66,10 +66,41 @@ class RevisionStamp:
 
 
 @dataclass(frozen=True)
-class RevisionSet:
-    """Combine independent content-free producer revision fences."""
+class VoicePersonFence:
+    """Only canonical account availability can keep manual person metadata live."""
 
-    stamps: tuple[RevisionStamp,...]
+    authority: ref = field(repr=False)
+    identities: tuple[str, ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        from src.dashboard.authority import DashboardAuthority
+
+        if (type(self.authority) is not ref or type(self.authority()) is not DashboardAuthority
+                or type(self.identities) is not tuple or not 1 <= len(self.identities) <= 50
+                or any(type(identity) is not str or not 1 <= len(identity) <= 128
+                       or any(ord(char) < 32 or ord(char) == 127 for char in identity)
+                       for identity in self.identities)
+                or tuple(sorted(set(self.identities))) != self.identities):
+            raise ValueError('invalid_voice_person_fence')
+
+    def current(self) -> bool:
+        """Pending retirement, unknown membership or a lost owner retires the view."""
+        owner = self.authority()
+        try:
+            return owner is not None and owner.users_linkable(frozenset(self.identities)) is True
+        except Exception:
+            return False
+
+
+@dataclass(frozen=True)
+class RevisionSet:
+    """Combine closed, content-free revision and canonical availability fences."""
+
+    stamps: tuple[RevisionStamp | VoicePersonFence, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.stamps) is not tuple or any(type(stamp) not in (RevisionStamp, VoicePersonFence) for stamp in self.stamps):
+            raise ValueError('invalid_revision_set')
 
     def current(self) -> bool:
         """Every producer must still authorize the delivered metadata."""

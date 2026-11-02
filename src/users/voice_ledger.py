@@ -13,10 +13,12 @@ from weakref import ref
 import numpy as np
 
 from src.dashboard.auth import DashboardPrincipal
+from src.dashboard.authority import DashboardAuthority
 from src.memory.fact_ledger import MemorySource
 from src.users.voice_capture import VoiceCaptureReview
 from src.users.voice_groups import VoiceGroups
 from src.users.voice_projection import VoiceProjection
+from src.users.voice_people import VoicePersonLinks
 from src.dashboard.live_retention_types import RevisionSet,RevisionStamp
 
 
@@ -26,18 +28,39 @@ class VoiceReviewer:
 
     subject: str
     _current: Callable[[],bool] | None = field(default=None,repr=False,compare=False)
+    _person_authority: ref | None = field(default=None,repr=False,compare=False)
 
     @classmethod
-    def from_dashboard(cls, principal: DashboardPrincipal, current: Callable[[],bool] | None = None) -> 'VoiceReviewer':
-        """Require server-owned review permission, independently of voice matches."""
+    def from_dashboard(cls, principal: DashboardPrincipal, current: Callable[[],bool] | None = None,
+                       *, person_authority: DashboardAuthority | None = None) -> 'VoiceReviewer':
+        """Require independent server review and, when requested, account metadata scope."""
         if type(principal) is not DashboardPrincipal or 'voices:review' not in principal.permissions:
             raise PermissionError('voice_review_denied')
-        return cls(principal.subject,current)
+        if person_authority is not None and (type(person_authority) is not DashboardAuthority
+                or 'admin:manage' not in principal.permissions or not callable(current)):
+            raise PermissionError('voice_person_review_denied')
+        return cls(principal.subject,current,ref(person_authority) if person_authority is not None else None)
 
     def require_current(self) -> None:
         """A queued native mutation cannot outlive credential revocation."""
         if self._current is not None and self._current() is not True:
             raise PermissionError('voice_review_denied')
+
+    def require_people(self, identities: frozenset[str] = frozenset()) -> DashboardAuthority:
+        """Authorize metadata linking without selecting identity, roles or consent."""
+        if (not callable(self._current) or type(self._person_authority) is not ref
+                or type(self.subject) is not str or not 1 <= len(self.subject) <= 256
+                or any(ord(char) < 32 or ord(char) == 127 for char in self.subject)):
+            raise PermissionError('voice_person_review_denied')
+        self.require_current()
+        authority = self._person_authority()
+        if type(authority) is not DashboardAuthority or not authority.available:
+            raise PermissionError('voice_person_review_denied')
+        if type(identities) is not frozenset:
+            raise ValueError('invalid_voice_person_targets')
+        if identities and not authority.users_linkable(identities):
+            raise LookupError('voice_person_unavailable')
+        return authority
 
 
 def vector_bytes(vector: np.ndarray) -> tuple[bytes,int]:
@@ -57,6 +80,7 @@ class VoiceLedger:
     def __init__(self, ledger):
         self.ledger = ledger
         self.groups = VoiceGroups(self)
+        self.people = VoicePersonLinks(self)
 
     @property
     def projection_revision(self) -> int:
@@ -244,12 +268,16 @@ class VoiceLedger:
         return {'id':row['id'],'name':row['name'],'revision':row['revision'],
             'confirmed_at':row['confirmed_at'],'confirmed_by':row['confirmed_by'],'expires_at':None}
 
-    def project(self, kind: str, cursor: str | None, actor: VoiceReviewer) -> VoiceProjection:
+    def project(self, kind: str, cursor: str | None, actor: VoiceReviewer, include_person: bool = False) -> VoiceProjection:
         """Separate raw capture lists from source-linked permanent profile labels."""
         if type(actor) is not VoiceReviewer:
             raise PermissionError('voice_review_denied')
         actor.require_current()
-        rows = sources = snapshot = data = result = page = row = original = None
+        if type(include_person) is not bool or include_person and kind != 'profiles':
+            raise ValueError('invalid_voice_person_projection')
+        if include_person:
+            actor.require_people()
+        rows = sources = snapshot = data = result = page = row = original = person_fence = person_links = link = None
         try:
             if kind=='review':
                 data = self.review_capture(cursor,actor)
@@ -288,11 +316,17 @@ class VoiceLedger:
                         sources.update(original)
                         rows.append(self._profile(row))
                         refs.append((row['id'],row['revision']))
+                    person_fence = None
+                    if include_person:
+                        person_links,person_fence = self.people.project_rows(db,tuple(row['id'] for row in rows),actor)
+                        for row,link in zip(rows,person_links,strict=True):
+                            row['person_link'] = link
                     observed = self.ledger.clock()
                     expiry = min([observed+300,*[dep.expires_at for source in sources
                         for dep in source.fact_dependencies if dep.expires_at is not None]])
                     result = VoiceProjection(rows,tuple(sources),observed,expiry,'voices:profiles',next_cursor,tuple(refs),
-                        RevisionStamp(ref(self),self.projection_revision))
+                        RevisionSet((RevisionStamp(ref(self),self.projection_revision),person_fence)) if person_fence is not None
+                        else RevisionStamp(ref(self),self.projection_revision))
                 else:
                     rows,sources,extra,associated = [],set(),set(),set()
                     group_cache = {}
@@ -341,7 +375,7 @@ class VoiceLedger:
                 actor.require_current()
                 return result
         finally:
-            rows = sources = snapshot = data = result = page = row = original = None
+            rows = sources = snapshot = data = result = page = row = original = person_fence = person_links = link = None
 
     def confirm(self, identities: tuple[str,...], name: str, request_id: str, actor: VoiceReviewer) -> dict:
         """Permanently retain a reviewed centroid; no account or permission changes."""
@@ -407,6 +441,7 @@ class VoiceLedger:
 
     def _delete(self, db, identity):
         self.ledger._voice_projection_revision+=1
+        self.people.unlink_profile(db,identity)
         db.execute('UPDATE voice_profiles SET name=NULL,embedding=NULL,deleted_at=?,revision=revision+1 WHERE id=? AND deleted_at IS NULL',
             (self.ledger.clock(),identity))
         db.execute('UPDATE voice_fingerprints SET suggested_profile=NULL,suggested_revision=NULL,similarity=NULL WHERE suggested_profile=?',(identity,))
@@ -423,6 +458,7 @@ class VoiceLedger:
             for row in db.execute('SELECT * FROM voice_profiles WHERE deleted_at IS NULL').fetchall():
                 if self.ledger.sources_committed_unavailable(self._sources(row['sources_json'])):
                     self._delete(db,row['id'])
+        self.people.reconcile()
 
     def pending(self, conversation: str) -> int:
         """Count actual retained vectors linked to a committed deletion."""
@@ -440,6 +476,9 @@ class VoiceLedger:
             # A damaged partial restore cannot certify unindexed or orphaned PCM.
             pending+=db.execute('''SELECT COUNT(*) FROM voice_capture_reviews r LEFT JOIN voice_fingerprints v
                 ON v.id=r.fingerprint_id WHERE v.id IS NULL''').fetchone()[0]
+            pending+=db.execute('''SELECT COUNT(*) FROM voice_profile_people p LEFT JOIN voice_profiles v
+                ON v.id=p.profile_id WHERE p.user_id IS NOT NULL
+                AND (v.id IS NULL OR v.deleted_at IS NOT NULL OR v.embedding IS NULL)''').fetchone()[0]
             pending+=db.execute('''SELECT COUNT(*) FROM voice_group_members m LEFT JOIN voice_groups g ON g.id=m.group_id
                 LEFT JOIN voice_fingerprints v ON v.id=m.fingerprint_id WHERE g.id IS NULL OR v.id IS NULL''').fetchone()[0]
             pending+=db.execute('''SELECT COUNT(*) FROM voice_fingerprints v LEFT JOIN voice_group_members m

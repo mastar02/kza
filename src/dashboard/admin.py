@@ -42,7 +42,7 @@ from src.dashboard.auth import (
 logger = logging.getLogger(__name__)
 
 
-async def _delete_account(work, current, authority, actor, user_manager, user_id):
+async def _delete_account(work, current, authority, actor, user_manager, user_id, voice_registry):
     """Retain retirement and catalog commit together through observer cancellation."""
     retired: bool | None = False
     validator = partial(require_current, current)
@@ -58,6 +58,9 @@ async def _delete_account(work, current, authority, actor, user_manager, user_id
             retired = False
             raise NativeAuthorityRetired('dashboard_authority_retired') from error
         retired = True
+        if voice_registry is not None:
+            await voice_registry.acall(voice_registry.ledger.people.clear_user_links,
+                                      frozenset({user_id}),authority.users_retired)
         deleted, message = await work.native_step(user_manager.remove_user, user_id, before_save=validator)
         if not deleted:
             raise HTTPException(409, {"code": "user_catalog_changed", "credentials_retired": True})
@@ -69,7 +72,7 @@ async def _delete_account(work, current, authority, actor, user_manager, user_id
         raise HTTPException(503, {"code": "user_catalog_unavailable",
                                   "credentials_retired": retired}) from error
     finally:
-        work = current = authority = actor = user_manager = validator = None
+        work = current = authority = actor = user_manager = voice_registry = validator = None
         user_id = None
 
 
@@ -202,7 +205,7 @@ def register_admin_routes(
         current = session_guard(request, frozenset({'admin:manage', 'auth:manage'}))
         try:
             return await run_admin_sequence(work, current, _delete_account,
-                                            work, current, authority, actor, user_manager, user_id)
+                                            work, current, authority, actor, user_manager, user_id, voice_registry)
         except NativeAuthorityRetired as error:
             raise HTTPException(403, {"code": "dashboard_authority_retired", "credentials_retired": False}) from error
         except RuntimeError as error:

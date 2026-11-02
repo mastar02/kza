@@ -653,7 +653,8 @@ async def build_application(
     speaker_identifier = None
     user_manager = await voice_registry.load_accounts(
         speaker_config.get('users_path', './data/users.json'),
-        retirement_proof=dashboard_authority.users_retired if dashboard_authority is not None else None,
+        retirement_proof=(lambda identities: dashboard_authority.users_retired(identities)
+            and voice_registry.ledger.people.user_links_cleared(identities)) if dashboard_authority is not None else None,
     )
     voice_enrollment = None
 

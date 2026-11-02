@@ -21,10 +21,11 @@ from pathlib import Path
 from uuid import UUID
 from weakref import WeakMethod
 
+from src.core.voice_person_index import VoicePersonIndex
 from src.memory.erasure_journal import ERASURE_SCHEMA, ErasureJournal
 from src.dashboard.live_receipts import LIVE_RECEIPT_SCHEMA
 from src.memory.index_deletions import INDEX_DELETION_SCHEMA, IndexDeletionQueue
-from src.memory.voice_schema import VOICE_SCHEMA
+from src.memory.voice_schema import VOICE_SCHEMA, initialize_voice_people_schema
 
 
 class FactState(StrEnum):
@@ -228,6 +229,7 @@ class FactLedger:
         self._pending_conversations: frozenset[str] = frozenset()
         self._authority_version = 0
         self._voice_projection_revision = 0
+        self._voice_person_proof = VoicePersonIndex()
         self._voice_group_revision = 0
         self._revocation_observers: list[WeakMethod] = []
         self.erasures = ErasureJournal(self)
@@ -252,40 +254,51 @@ class FactLedger:
         with self._lock:
             if self._db is not None:
                 return
-            if self.path != ":memory:":
-                Path(self.path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
-                os.close(descriptor)
-                os.chmod(self.path, 0o600)
-            self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
-            self._db.row_factory = sqlite3.Row
-            self._db.execute("PRAGMA foreign_keys=ON")
-            self._db.execute("PRAGMA secure_delete=ON")
-            self._db.executescript(_SCHEMA + ERASURE_SCHEMA + INDEX_DELETION_SCHEMA + LIVE_RECEIPT_SCHEMA + VOICE_SCHEMA)
-            if "dependencies" not in {r[1] for r in self._db.execute("PRAGMA table_info(fact_sources)")}:
-                try:
-                    self._db.execute("BEGIN IMMEDIATE")
-                    self._db.execute("ALTER TABLE fact_sources ADD COLUMN dependencies TEXT NOT NULL DEFAULT '[]'")
-                    # Previous automatic derivations did not record prompt
-                    # parents. Preserve their content privately, but do not
-                    # invent independence or let old index rows authorize use.
-                    for row in list(self._db.execute("SELECT id, revision FROM facts WHERE state=?", (FactState.AUTOMATIC.value,))):
-                        revision = row["revision"]+1
-                        self._db.execute("UPDATE facts SET state=?, revision=? WHERE id=?",
-                            (FactState.QUARANTINED.value, revision, row["id"]))
-                        self._queue(self._db, row["id"], revision, "delete")
-                    self._db.commit()
-                except BaseException:
+            self._authority_available = False
+            self._voice_person_proof.invalidate()
+            db = None
+            try:
+                if self.path != ":memory:":
+                    Path(self.path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+                    os.close(descriptor)
+                    os.chmod(self.path, 0o600)
+                db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+                db.row_factory = sqlite3.Row
+                db.execute("PRAGMA foreign_keys=ON")
+                db.execute("PRAGMA secure_delete=ON")
+                initialize_voice_people_schema(db)
+                db.executescript(_SCHEMA + ERASURE_SCHEMA + INDEX_DELETION_SCHEMA + LIVE_RECEIPT_SCHEMA + VOICE_SCHEMA)
+                if "dependencies" not in {r[1] for r in db.execute("PRAGMA table_info(fact_sources)")}:
                     try:
-                        self._db.rollback()
-                    finally:
-                        self._db.close()
-                        self._db = None
-                    raise
-            self._fact_receipts = self._read_fact_receipts(self._db)
-            self._deleted_times = dict(self._db.execute("SELECT conversation_id, deleted_at FROM conversation_tombstones"))
-            self._deleted_conversations = frozenset(self._deleted_times)
-            self._authority_available = True
+                        db.execute("BEGIN IMMEDIATE")
+                        db.execute("ALTER TABLE fact_sources ADD COLUMN dependencies TEXT NOT NULL DEFAULT '[]'")
+                        # Old derivations have no recorded prompt parents.
+                        # Quarantine them without inventing independence.
+                        for row in list(db.execute("SELECT id, revision FROM facts WHERE state=?", (FactState.AUTOMATIC.value,))):
+                            revision = row["revision"]+1
+                            db.execute("UPDATE facts SET state=?, revision=? WHERE id=?",
+                                (FactState.QUARANTINED.value, revision, row["id"]))
+                            self._queue(db, row["id"], revision, "delete")
+                        db.commit()
+                    except BaseException:
+                        db.rollback()
+                        raise
+                receipts = self._read_fact_receipts(db)
+                deleted_times = dict(db.execute("SELECT conversation_id, deleted_at FROM conversation_tombstones"))
+                self._fact_receipts = receipts
+                self._deleted_times = deleted_times
+                self._deleted_conversations = frozenset(deleted_times)
+                self._db = db
+                self._authority_available = True
+            except BaseException:
+                # No failed initializer may publish a connection that lets a
+                # retry skip validation, even if native close itself fails.
+                self._db = None
+                self._authority_available = False
+                if db is not None:
+                    db.close()
+                raise
 
     @property
     def authority_available(self) -> bool:
@@ -394,6 +407,7 @@ class FactLedger:
         """Release the connection after all owning worker operations finish."""
         with self._lock:
             self._authority_available = False
+            self._voice_person_proof.invalidate()
             if self._db is not None:
                 self._db.close()
                 self._db = None

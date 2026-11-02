@@ -266,6 +266,13 @@ class UserManager:
                 self._check_authority(before_save)
                 if retired and (self._retirement_proof is None or self._retirement_proof(retired) is not True):
                     raise PermissionError("account_retirement_required")
+                if retired and self.voice_registry is not None:
+                    try:
+                        cleared = self.voice_registry.ledger.people.user_links_cleared(retired)
+                    except Exception:
+                        cleared = False
+                    if cleared is not True:
+                        raise PermissionError("account_voice_links_retirement_required")
                 self._check_authority(before_save)
                 os.replace(temporary, self.data_path)
                 # Approved replacement must publish without another fallible check.

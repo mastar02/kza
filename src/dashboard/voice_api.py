@@ -1,10 +1,14 @@
 """Explicit dashboard-only voice review; vectors never cross the HTTP boundary."""
 
+import sqlite3
+
 from fastapi import APIRouter,Depends,HTTPException,Query,Request
 from pydantic import BaseModel,ConfigDict,Field
 
-from src.dashboard.auth import DashboardPrincipal, require_dashboard_session, session_guard, session_reader
+from src.dashboard.auth import DashboardPrincipal, require_dashboard_session, session_guard, session_reader, voice_person_scope_requested
+from src.dashboard.authority import DashboardAuthority
 from src.users.voice_ledger import VoiceReviewer
+from src.users.voice_people import VoicePersonReceipt
 from src.dashboard.voice_delivery import VoiceResponse
 
 
@@ -24,6 +28,15 @@ class DeleteVoiceBody(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class SetVoicePersonBody(BaseModel):
+    """Compare both metadata revisions; the body cannot choose roles or consent."""
+
+    model_config = ConfigDict(extra='forbid',strict=True)
+    user_id: str | None = Field(max_length=128)
+    expected_profile_revision: int = Field(ge=1)
+    expected_link_revision: int = Field(ge=0)
+
+
 class CorrectVoiceGroupsBody(BaseModel):
     """Exact group revisions make a human merge/split atomic and retryable."""
 
@@ -39,8 +52,17 @@ def register_voice_routes(app, *, voices=None) -> None:
     router = APIRouter(prefix='/api/voices')
     async def reviewer(request: Request,principal: DashboardPrincipal = Depends(require_dashboard_session)):
         try:
+            person = voice_person_scope_requested(request)
+            authority = getattr(app.state,'dashboard_authority',None) if person else None
+            if person and type(authority) is not DashboardAuthority:
+                raise PermissionError('voice_person_authority_required')
+            permissions = {'voices:review'}
+            if person:
+                permissions.add('admin:manage')
+                if request.method in {'GET','HEAD','OPTIONS'}:
+                    permissions.add('voices:read')
             return VoiceReviewer.from_dashboard(principal,
-                session_guard(request, frozenset({'voices:review'}), principal))
+                session_guard(request,frozenset(permissions),principal),person_authority=authority)
         except PermissionError:
             raise HTTPException(403,detail='voice_review_denied') from None
     def service():
@@ -56,24 +78,37 @@ def register_voice_routes(app, *, voices=None) -> None:
             raise HTTPException(404,detail='voice_data_unavailable') from None
         except ValueError as error:
             raise HTTPException(409,detail=str(error)) from None
-        except RuntimeError:
+        except (RuntimeError,OSError,sqlite3.Error):
             raise HTTPException(503,detail='voices_unavailable') from None
     @router.get('')
     async def snapshot(request: Request,cursor: str | None = Query(None,max_length=85),actor: VoiceReviewer = Depends(reviewer)):
         return response(request,'captures',cursor,actor)
     @router.get('/profiles')
-    async def profiles(request: Request,cursor: str | None = Query(None,max_length=36),actor: VoiceReviewer = Depends(reviewer)):
-        return response(request,'profiles',cursor,actor)
-    def response(request,kind,cursor,actor):
+    async def profiles(request: Request,cursor: str | None = Query(None,max_length=36),
+                       include_person: bool = Query(False),actor: VoiceReviewer = Depends(reviewer)):
+        return response(request,'profiles',cursor,actor,include_person=include_person)
+    def response(request,kind,cursor,actor,*,include_person=False):
         owner = getattr(app.state,'rest_delivery_owner',None)
         if owner is None:
             raise HTTPException(503,detail='voice_delivery_unavailable')
+        permissions = {'voices:read','voices:review'}
+        if include_person:
+            permissions.add('admin:manage')
         return VoiceResponse(owner,service(),request.headers.get('x-kza-live-connection'),kind,cursor,actor,
-            reader=session_reader(request,frozenset({'voices:read','voices:review'})))
+            reader=session_reader(request,frozenset(permissions)),include_person=include_person)
     @router.post('/profiles')
     async def confirm(body: ConfirmVoiceBody,actor: VoiceReviewer = Depends(reviewer)):
         profile = await call(service().ledger.confirm,tuple(body.fingerprint_ids),body.name,body.request_id,actor)
         return {'profile_id':profile['id'],'revision':profile['revision']}
+
+
+    @router.put('/profiles/{profile_id}/person')
+    async def set_person(profile_id: str,body: SetVoicePersonBody,actor: VoiceReviewer = Depends(reviewer)):
+        receipt = await call(service().ledger.people.set_person,profile_id,body.user_id,
+            body.expected_profile_revision,body.expected_link_revision,actor)
+        if type(receipt) is not VoicePersonReceipt:
+            raise HTTPException(503,detail='voice_person_receipt_unavailable')
+        return {'ok':True,'profile_id':receipt.profile_id,'link_revision':receipt.link_revision}
     @router.post('/groups/corrections')
     async def correct_groups(body: CorrectVoiceGroupsBody,actor: VoiceReviewer = Depends(reviewer)):
         return {'updated':await call(service().ledger.groups.correct,tuple(body.fingerprint_ids),

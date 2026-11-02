@@ -16,23 +16,29 @@ from src.orchestrator.context_manager import ContextManager, UserContext
 from src.orchestrator.context_persister import ContextPersister
 from src.orchestrator.priority_queue import Priority, PriorityRequestQueue, RequestStatus
 from src.pipeline.command_event import CommandEvent
+from src.users.user_manager import PermissionLevel
+from src.users.voice_ledger import VoiceReviewer
 from tests.mocks.application_graph import OfflineEncoder, OfflineSTT, OfflineTTS, offline_config, offline_home
 from tests.mocks.audio_output import AudioBackend
 from tests.mocks.llm_http import Endpoint, SSEBody, event
 from tests.mocks.memory_graph import MemoryClient
 from tests.mocks.memory_sources import memory_source
+from tests.mocks.voice_registry import AUDIO, Encoder, idle
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest.mark.parametrize('orchestrated', [True, False])
-async def test_actual_factory_anonymous_voice_cannot_read_eligible_personal_data(tmp_path, monkeypatch, orchestrated):
+@pytest.mark.parametrize('linked', [False, True])
+async def test_actual_factory_anonymous_voice_cannot_read_eligible_personal_data(tmp_path, monkeypatch, orchestrated, linked, dashboard_auth):
     import src.main as main_module
     import src.tts.piper_tts as output_module
     import src.vectordb.chroma_sync as index_module
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(index_module, 'SentenceTransformer', lambda *a, **kw: OfflineEncoder())
+    encoder = Encoder()
+    monkeypatch.setattr(main_module, 'SpeakerIdentifier', lambda *a, **kw: encoder)
     backend = AudioBackend()
     monkeypatch.setattr(output_module, 'sd', backend)
     endpoint = Endpoint(SSEBody([event('Respuesta sintética sobre el cielo.'), event(finish='stop')]))
@@ -73,6 +79,7 @@ async def test_actual_factory_anonymous_voice_cannot_read_eligible_personal_data
             config['reasoner'].update(destination='local', http_base_url='http://127.0.0.1:1/v1',
                 http_model='configured-model', api_style='chat')
             config['memory'].update(enabled=True, preferences_path=str(tmp_path / 'preferences.json'))
+            config['speaker_id'].update(enabled=linked, model='synthetic-model', device='cpu')
             config['orchestrator'].update(enabled=orchestrated, context={
                 'compaction': {'enabled': True, 'model': 'configured-model'},
                 'persistence': {'enabled': True, 'base_path': str(tmp_path / 'contexts')}})
@@ -83,7 +90,33 @@ async def test_actual_factory_anonymous_voice_cannot_read_eligible_personal_data
                 manager = router.memory
                 source = manager.source_for_capture(str(uuid4()), time.time(), 'private-fixture')
                 markers = ('PERSONAL_FACT_572', 'PERSONAL_PREFERENCE_638', 'PERSONAL_HISTORY_391',
-                           'PERSONAL_SUMMARY_824', 'PERSONAL_NAME_739')
+                           'PERSONAL_SUMMARY_824', 'PERSONAL_NAME_739', 'PERSONAL_PROFILE_826')
+                linked_ids = ()
+                linked_profile = None
+                if linked:
+                    processor = graph.pipeline.command_processor
+                    voices = graph.voice_registry
+                    account,_ = await voices.acall(processor.user_manager.add_user,markers[4],PermissionLevel.ADMIN)
+                    for _ in range(3):
+                        origin = memory_source(now=time.time(),ttl=60)
+                        assert voices.observe(encoder,np.tile(AUDIO,3),(origin,),room_id=None)
+                        await idle(voices)
+                    fingerprints = (await voices.acall(voices.ledger.snapshot))['fingerprints']
+                    lease = graph.dashboard_authority.resolve(dashboard_auth['Authorization'])
+                    reviewer = VoiceReviewer.from_dashboard(lease.principal,
+                        lambda: lease.current(frozenset({'voices:review','admin:manage'})),
+                        person_authority=graph.dashboard_authority)
+                    linked_profile = await voices.acall(voices.ledger.confirm,tuple(row['id'] for row in fingerprints),
+                        markers[5],str(uuid4()),reviewer)
+                    await voices.acall(voices.ledger.people.set_person,linked_profile['id'],account.user_id,1,0,reviewer)
+                    linked_ids = (account.user_id,linked_profile['id'])
+                    original_process = processor.process_command
+                    async def process(*args,**kwargs):
+                        result = await original_process(*args,**kwargs)
+                        assert result.user is None
+                        return result
+                    monkeypatch.setattr(processor,'process_command',process)
+                grants_before = (len(graph.dashboard_authority._credentials),len(graph.dashboard_authority._sessions))
                 await manager.long_term.astore_fact(markers[0], 'fact', sources=(source,))
                 proposal = await manager.long_term.acall(manager.long_term.propose, markers[1], (source,), category='preference')
                 await manager.long_term.acall(manager.long_term.confirm, proposal['id'], MemoryReviewer('fixture-owner'))
@@ -94,12 +127,12 @@ async def test_actual_factory_anonymous_voice_cannot_read_eligible_personal_data
                 persister = orchestrator._persister if orchestrator else ContextPersister(
                     tmp_path / 'contexts', source_policy=manager.long_term.ledger)
                 assert persister is not None
-                for user_id in ('unknown', 'known-profile'):
+                for user_id in ('unknown', 'known-profile', *linked_ids):
                     persister.save(UserContext(user_id, markers[4], compacted_summary=markers[3],
                         summary_sources=(source,), _source_policy=manager.long_term.ledger))
                     assert persister.load(user_id) is not None
                 before = {p.name: p.read_bytes() for p in persister.base_path.glob('*.json')}
-                assert len(before) == 2
+                assert len(before) == 2+len(linked_ids)
                 recalls = AsyncMock(wraps=manager.aprompt_context)
                 monkeypatch.setattr(manager, 'aprompt_context', recalls)
                 loads, saves = [], []
@@ -117,13 +150,19 @@ async def test_actual_factory_anonymous_voice_cannot_read_eligible_personal_data
                 monkeypatch.setattr(persister, 'save_payload', save)
                 if orchestrator:
                     await orchestrator.start()
-                capture = CommandEvent(np.full(16000, .1, dtype=np.float32), room_id='')
+                capture = CommandEvent(np.tile(AUDIO,3) if linked else np.full(16000,.1,dtype=np.float32),room_id='')
                 result = await graph.pipeline.process_command(capture)
                 assert result['success'] and result['intent'] == 'conversation'
+                if linked:
+                    await idle(graph.voice_registry)
+                    fingerprints = (await graph.voice_registry.acall(graph.voice_registry.ledger.snapshot))['fingerprints']
+                    observed = next(row for row in fingerprints if capture.capture_id in row['capture_ids'])
+                    assert observed['suggested_profile']==linked_profile['id'] and observed['association']=='suggested'
+                assert (len(graph.dashboard_authority._credentials),len(graph.dashboard_authority._sessions))==grants_before
                 posts = [request for request in endpoint.requests if request.method == 'POST']
                 assert len(posts) == 1
-                assert all(marker not in posts[0].content.decode() for marker in markers)
-                assert tts.texts and all(marker not in ' '.join(tts.texts) for marker in markers)
+                assert all(marker not in posts[0].content.decode() for marker in (*markers,*linked_ids))
+                assert tts.texts and all(marker not in ' '.join(tts.texts) for marker in (*markers,*linked_ids))
                 assert len(backend.heard()) > 0 and observations['service_calls'] == 0
                 recalls.assert_not_awaited()
                 assert loads == [] and saves == []
@@ -134,6 +173,8 @@ async def test_actual_factory_anonymous_voice_cannot_read_eligible_personal_data
                 if orchestrator:
                     ctx = orchestrator.context_manager.get_household('')
                     assert ctx.ephemeral and ctx.conversation_history == []
+                    assert ctx.user_name=='Hogar' and ctx.preferences=={} and ctx.permission_level==0
+                    assert all(orchestrator.context_manager.get(identity) is None for identity in linked_ids)
                     assert orchestrator.context_manager.get('unknown') is None
             assert saves == []
             assert {p.name: p.read_bytes() for p in persister.base_path.glob('*.json')} == before

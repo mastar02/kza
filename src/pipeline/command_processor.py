@@ -234,7 +234,7 @@ class CommandProcessor:
             if (self.speaker_id is not None and getattr(self.user_manager,'voice_review_managed',False) is True):
                 context = PRODUCER_CONTEXT.get()
                 self.user_manager.voice_registry.observe(self.speaker_id,audio,context.sources,
-                    sample_rate=self.sample_rate,transcript=text[:8192],room_id=context.room_id)
+                    sample_rate=self.sample_rate,transcript=text[:8192],room_id=context.room_id or None)
             if result.success:
                 self._current_user, self._current_emotion = result.user, result.emotion
                 self._current_sources = PRODUCER_CONTEXT.get().sources

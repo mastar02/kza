@@ -28,11 +28,13 @@ async def test_privacy_timeout_records_actual_cleanup_phase_and_live_lease(tmp_p
         assert release.wait(3)
         return original(*args,**kwargs)
     monkeypatch.setattr(owner,method,held)
-    observing = asyncio.create_task(privacy.aclose())
+    # Admit cleanup first: this test's deadline observes the held phase,
+    # rather than assuming earlier native phases always finish within 20 ms.
+    privacy.begin_close()
     try:
         await until(entered.is_set)
         with pytest.raises(WorkCloseTimeout) as result:
-            await observing
+            await privacy.aclose()
         assert result.value.phase is phase
         status = result.value.diagnostics
         assert status['close_phase']==phase.value and status['writer_lease']

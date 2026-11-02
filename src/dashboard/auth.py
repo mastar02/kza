@@ -122,6 +122,18 @@ def session_guard(request: HTTPConnection, permissions: frozenset[str] = frozens
     return lambda: lease.current(permissions)
 
 
+def voice_person_scope_requested(request: HTTPConnection) -> bool:
+    """Recognize the closed metadata surface that requires extra server permission."""
+    path,method = request.url.path,request.scope.get('method','GET')
+    if (method == 'PUT' and path.startswith('/api/voices/profiles/')
+            and path.endswith('/person') and path.count('/') == 5):
+        return True
+    if path == '/api/voices/profiles' and method in {'GET','HEAD','OPTIONS'}:
+        value = request.query_params.get('include_person')
+        return value is not None and value.lower() not in {'false','f','0','off','no','n'}
+    return False
+
+
 def _route_permissions(request: HTTPConnection) -> frozenset[str]:
     path, method = request.url.path, request.scope.get("method", "GET")
     if path in {"/api/admin/auth/whoami", "/api/admin/auth/logout"}:
@@ -142,6 +154,9 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
             return frozenset({DashboardPermission.ROUTINES_MANAGE})
         return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.ROUTINES_MANAGE})
     if path == "/api/voices" or path.startswith("/api/voices/"):
+        if voice_person_scope_requested(request):
+            return frozenset({DashboardPermission.VOICES_REVIEW,DashboardPermission.ADMIN_MANAGE,
+                              *({DashboardPermission.VOICES_READ} if read else set())})
         return frozenset({DashboardPermission.VOICES_READ if read else DashboardPermission.VOICES_REVIEW})
     if path == "/api/memory" or path.startswith("/api/memory/"):
         return frozenset({DashboardPermission.MEMORY_READ if read else DashboardPermission.MEMORY_REVIEW})

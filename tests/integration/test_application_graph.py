@@ -108,7 +108,7 @@ async def test_factory_keeps_authority_open_until_all_consumers_have_closed(leav
 
 @pytest.mark.parametrize("dashboard_enabled", [False, True])
 async def test_factory_loads_canonical_accounts_without_constructing_biometric_models(
-    leaves, tmp_path, monkeypatch, dashboard_enabled,
+    leaves, tmp_path, monkeypatch, dashboard_enabled, dashboard_auth,
 ):
     import src.main as module
     from src.users.user_manager import PermissionLevel, UserManager
@@ -138,7 +138,12 @@ async def test_factory_loads_canonical_accounts_without_constructing_biometric_m
             if dashboard_enabled:
                 assert graph.dashboard.user_manager is users
                 assert graph.dashboard_authority._account_provider() is users.active_accounts()
-                assert users._retirement_proof == graph.dashboard_authority.users_retired
+                targets = frozenset({account.user_id})
+                assert not users._retirement_proof(targets)
+                root = graph.dashboard_authority.resolve(dashboard_auth['Authorization'].split(' ', 1)[1])
+                assert await graph.dashboard_authority.retire_user(root, account.user_id)
+                await graph.voice_registry.acall(graph.voice_registry.ledger.people.reconcile)
+                assert users._retirement_proof(targets)
             else:
                 assert graph.dashboard is None
                 assert users._retirement_proof is None

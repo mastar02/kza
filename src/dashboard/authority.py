@@ -440,6 +440,26 @@ class DashboardAuthority:
             return bool(type(identities) is frozenset and self._usable()
                         and identities <= self._retired_users)
 
+    def users_linkable(self, identities: frozenset[str]) -> bool:
+        """Check a bounded set against one canonical snapshot, without account IO/locks."""
+        if type(identities) is not frozenset or not 1 <= len(identities) <= 256:
+            return False
+        try:
+            for identity in identities:
+                _identifier(identity)
+        except ValueError:
+            return False
+        with self._state_lock:
+            if (not self._usable() or self._account_provider is None
+                    or identities & (self._retiring_users | self._retired_users)):
+                return False
+            try:
+                snapshot = self._account_provider()
+            except Exception:
+                return False
+            return (type(snapshot) is ActiveAccounts and snapshot.available
+                    and identities <= snapshot.active_ids)
+
     def _current(self, digest: str, original: DashboardPrincipal, session: bool, *, allow_revoking: str | None = None) -> bool:
         self._observe_legacy()
         with self._state_lock:
