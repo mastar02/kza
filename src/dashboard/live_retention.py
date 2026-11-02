@@ -14,6 +14,7 @@ from src.core.owned_work import WorkCloseTimeout
 from src.core.reader_binding import ReaderBinding
 from src.core.task_outcome import project_turn_outcome
 from src.dashboard.live_browser import LiveBrowserSession
+from src.dashboard.live_retention_types import LiveSubscriptionMode
 from src.dashboard.rest_delivery import RestDeliveryOwner
 from src.memory.fact_ledger import FactDependency, MemorySource
 
@@ -120,6 +121,7 @@ class LiveSubscriber:
     closed: bool = False
     guard: object | None = field(default=None, repr=False)
     reader: ReaderBinding | None = field(default=None, repr=False)
+    mode: LiveSubscriptionMode = LiveSubscriptionMode.TECHNICAL
     browser: LiveBrowserSession | None = field(default=None, repr=False)
     snapshots: dict = field(default_factory=dict)
     snapshot_retired: set[str] = field(default_factory=set)
@@ -192,10 +194,12 @@ class LiveRetention:
             if not any(index.get(conversation, ())):
                 index.pop(conversation, None)
 
-    def attach(self, sub_id, queue, *, reader=None):
+    def attach(self, sub_id, queue, *, reader=None, mode=LiveSubscriptionMode.TECHNICAL):
         if self._closed or len(self._states) >= self.max_subscribers:
             raise RuntimeError('live_subscriber_capacity')
-        self._states[sub_id] = LiveSubscriber(queue,reader=reader)
+        if type(mode) is not LiveSubscriptionMode:
+            raise ValueError('invalid_live_subscription_mode')
+        self._states[sub_id] = LiveSubscriber(queue,reader=reader,mode=mode)
 
     def notify(self, sub_id):
         state = self._states.get(sub_id)
@@ -228,6 +232,9 @@ class LiveRetention:
         for state in tuple(self._states.values()):
             if state.browser is not None:
                 for token, snapshot in tuple(state.snapshots.items()):
+                    if not state.mode.permits_channel(snapshot.channel):
+                        state.closed = True
+                        continue
                     if token not in state.browser._tickets:
                         state.snapshots.pop(token,None)
                         state.snapshot_retired.discard(token)
@@ -245,7 +252,7 @@ class LiveRetention:
             if state.reader is not None and not state.reader.current():
                 state.closed = True
             for record in self._drain(state.queue):
-                if not state.closed and record._data is not None:
+                if not state.closed and state.mode is LiveSubscriptionMode.TECHNICAL and record._data is not None:
                     state.queue.put_nowait(record)
             if state.last is not None and not self.policy.sources_available(state.last.sources):
                 state.retired.add(state.last.event_id)
@@ -261,6 +268,8 @@ class LiveRetention:
                 raise PermissionError('dashboard_reader_retired')
             if state.reader is not None:
                 state.reader.require_current()
+            if not state.mode.permits_frame(frame):
+                raise PermissionError('live_channel_denied')
             await sender(frame)
         finally:
             frame = None
@@ -344,6 +353,9 @@ class LiveRetention:
                 if state.queue.empty():
                     await state.wake.wait()
                     continue
+                if state.mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY:
+                    self._drain(state.queue)
+                    raise PermissionError('live_control_queue_not_empty')
                 record = state.queue.get_nowait()
                 state.queue.task_done()
                 state.active = record
@@ -408,7 +420,7 @@ class LiveRetention:
             if self.receipts is None or receiver is None or type(reader) is not ReaderBinding:
                 raise RuntimeError('live_browser_receipts_unavailable')
             reader.require_current()
-            state.browser = LiveBrowserSession(self.receipts,state.wake,reader)
+            state.browser = LiveBrowserSession(self.receipts,state.wake,reader,state.mode)
         task = asyncio.create_task(self._dispatch(state, sender, close, receiver), context=Context())
         self._senders[sub_id] = task
         def finished(done):

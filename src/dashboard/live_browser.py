@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from src.dashboard.live_receipts import canonical_id
 from src.core.reader_binding import ReaderBinding
+from src.dashboard.live_retention_types import LiveSubscriptionMode,VOICE_CHANNELS
 
 
 class BrowserPhase(StrEnum):
@@ -20,11 +21,14 @@ class BrowserPhase(StrEnum):
 class LiveBrowserSession:
     """Keep metadata work owned after a socket observer or receive loop exits."""
 
-    def __init__(self, receipts, wake, reader: ReaderBinding):
+    def __init__(self, receipts, wake, reader: ReaderBinding, mode: LiveSubscriptionMode):
         if type(reader) is not ReaderBinding:
             raise ValueError('live_reader_required')
         self.receipts = receipts
         self.reader = reader
+        if type(mode) is not LiveSubscriptionMode:
+            raise ValueError('invalid_live_subscription_mode')
+        self.mode = mode
         self.connection = str(uuid4())
         self.phase = BrowserPhase.HELLO
         self._wake = wake
@@ -56,6 +60,8 @@ class LiveBrowserSession:
         """Advertise REST admission only after the exact reset commit."""
         if self.ready and self._rest_ready:
             self._rest_ready = False
+            if self.mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY:
+                return {'type':'rest_ready','connection_id':self.connection,'channels':sorted(VOICE_CHANNELS),'ts':''}
             return {'type':'rest_ready','connection_id':self.connection,'ts':''}
         return None
 
@@ -93,6 +99,8 @@ class LiveBrowserSession:
         self.reader.require_current()
         kind,args = self._decode(message)
         message = None
+        if kind=='live_hello' and self.mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY and args[1]!=3:
+            raise ValueError('voices_protocol_three_required')
         async def execute():
             if self.phase is BrowserPhase.CLOSED:
                 return
@@ -100,7 +108,7 @@ class LiveBrowserSession:
             if kind == 'live_hello':
                 if self.phase is not BrowserPhase.HELLO:
                     raise ValueError('duplicate_live_hello')
-                reset = await self.receipts.hello(args[0],self.connection,reader=self.reader)
+                reset = await self.receipts.hello(args[0],self.connection,reader=self.reader,mode=self.mode)
                 self.reader.require_current()
                 if self.phase is not BrowserPhase.CLOSED:
                     self.protocol = args[1]
@@ -140,6 +148,8 @@ class LiveBrowserSession:
         """Persist lineage before private bytes, retaining no payload in SQLite."""
         if not self.ready:
             return None
+        if not self.mode.permits_channel(getattr(record,'channel','conversations')):
+            raise PermissionError('live_channel_denied')
         profiles = getattr(record,'profile_refs',())
         associated = getattr(record,'associated_profiles',())
         if profiles:

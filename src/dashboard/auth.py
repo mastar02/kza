@@ -147,6 +147,8 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
         return frozenset({DashboardPermission.MEMORY_READ if read else DashboardPermission.MEMORY_REVIEW})
     if path == "/api/ambient" or path.startswith("/api/ambient/"):
         return frozenset({DashboardPermission.AMBIENT_CONTROL})
+    if path == "/ws/voices":
+        return frozenset({DashboardPermission.VOICES_READ, DashboardPermission.VOICES_REVIEW})
     if path == "/api/conversations" or path == "/ws/live":
         return frozenset({DashboardPermission.CONVERSATIONS_READ})
     if path == "/ws":

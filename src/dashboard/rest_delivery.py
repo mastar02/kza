@@ -164,7 +164,7 @@ class RestDeliveryOwner:
         async def transmit(message):
             try:
                 if (message.get('type')=='http.response.body' and message.get('body') and operation.private_envelope
-                        and (self.connection(operation.connection,reader=operation.reader) is None
+                        and (self.connection(operation.connection,reader=operation.reader,channel=operation.channel) is None
                             or operation.guard is None or operation.guard() is not True
                             or operation.sources and not operation.metadata().available(self.retention.policy,self.retention.clock()))):
                     message = {'type':'http.response.body','body':b'{"snapshot":null}'}
@@ -178,7 +178,7 @@ class RestDeliveryOwner:
             if len(transmissions)>=2:
                 raise RuntimeError('rest_transport_capacity')
             if (message.get('type')=='http.response.body' and message.get('body') and operation.private_envelope
-                    and (self.connection(operation.connection,reader=operation.reader) is None
+                    and (self.connection(operation.connection,reader=operation.reader,channel=operation.channel) is None
                         or operation.guard is None or operation.guard() is not True
                         or operation.sources and not operation.metadata().available(self.retention.policy,self.retention.clock()))):
                 message = {'type':'http.response.body','body':b'{"snapshot":null}'}
@@ -206,14 +206,15 @@ class RestDeliveryOwner:
             operation.reader = None
             app = scope = receive = send = None
 
-    def connection(self, identity: str | None, *, reader: ReaderBinding | None, minimum_protocol: int = 2) -> LiveSubscriber | None:
+    def connection(self, identity: str | None, *, reader: ReaderBinding | None, minimum_protocol: int = 2,
+                   channel: str = 'conversations') -> LiveSubscriber | None:
         """A transport UUID never selects a different original authorization."""
         if self.retention._closed or type(reader) is not ReaderBinding or not reader.current():
             return None
         for state in self.retention._states.values():
             browser = state.browser
             if (not state.closed and browser is not None and browser.ready and browser.protocol>=minimum_protocol
-                    and browser.connection == identity and type(state.reader) is ReaderBinding
+                    and browser.connection == identity and state.mode.permits_channel(channel) and type(state.reader) is ReaderBinding
                     and state.reader.namespace == reader.namespace and state.reader.current()
                     and (state.guard is None or state.guard() is True)):
                 return state

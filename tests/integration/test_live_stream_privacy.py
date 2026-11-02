@@ -181,7 +181,8 @@ async def asgi_socket(bus, authorization):
             await task
 
 
-async def test_reader_retired_during_accept_closes_before_hello_or_native_receipt(tmp_path,dashboard_auth,monkeypatch):
+@pytest.mark.parametrize('path',['/ws/live','/ws/voices'])
+async def test_reader_retired_during_accept_closes_before_hello_or_native_receipt(tmp_path,dashboard_auth,monkeypatch,path):
     from fastapi import FastAPI
     from src.dashboard.observability import register_observability_routes
 
@@ -198,7 +199,7 @@ async def test_reader_retired_during_accept_closes_before_hello_or_native_receip
                 await release.wait()
             await outgoing.put(message)
 
-        scope = {'type':'websocket','path':'/ws/live','raw_path':b'/ws/live','root_path':'',
+        scope = {'type':'websocket','path':path,'raw_path':path.encode(),'root_path':'',
             'scheme':'ws','query_string':b'','server':('localhost',80),'client':('127.0.0.1',12345),
             'headers':[(b'authorization',dashboard_auth['Authorization'].encode())],'subprotocols':[],'state':{}}
         await incoming.put({'type':'websocket.connect'})

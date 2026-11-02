@@ -33,6 +33,7 @@ from src.core.observation import Observation, ObservationSource, ObservationReas
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
 from src.dashboard.auth import COOKIE_NAME, require_dashboard_session, session_guard, session_reader
+from src.dashboard.live_retention_types import LiveSubscriptionMode
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.dashboard.native_work import NativeAuthorityRetired, ensure_admin_work, require_current, run_admin_work
 from src.dashboard.live_event_bus import LiveEventBus
@@ -461,15 +462,17 @@ def register_observability_routes(
         return data if data is not None else []
 
     if event_bus is not None:
-        @router.websocket("/ws/live")
-        async def ws_live(ws: WebSocket):
-            bound_guard = session_guard(ws, frozenset({'conversations:read'}))
-            reader = session_reader(ws, frozenset({'conversations:read'}))
+        async def private_socket(ws: WebSocket, permissions: frozenset[str], mode: LiveSubscriptionMode):
+            bound_guard = session_guard(ws, permissions)
+            reader = session_reader(ws, permissions)
             if reader is None:
                 await ws.close(code=1008)
                 return
             try:
-                sub_id, _ = await event_bus.subscribe(reader=reader)
+                sub_id, _ = await event_bus.subscribe(reader=reader,mode=mode)
+            except PermissionError:
+                await ws.close(code=1008)
+                return
             except RuntimeError:
                 await ws.close(code=1013)
                 return
@@ -479,9 +482,12 @@ def register_observability_routes(
                 except WebSocketException:
                     await ws.close(code=1008)
                     raise
+                reader.require_current()
+                if not mode.permits_frame(frame):
+                    raise PermissionError('live_channel_denied')
                 await ws.send_json(frame)
             def available():
-                return bound_guard()
+                return bound_guard() and reader.current()
             async def close():
                 await ws.close(code=1000 if available() else 1008)
             try:
@@ -500,5 +506,13 @@ def register_observability_routes(
                     await event_bus.unsubscribe(sub_id)
                 except WorkCloseTimeout:
                     logger.warning('Live subscriber cleanup pending')
+
+        @router.websocket('/ws/live')
+        async def ws_live(ws: WebSocket):
+            await private_socket(ws,frozenset({'conversations:read'}),LiveSubscriptionMode.TECHNICAL)
+
+        @router.websocket('/ws/voices')
+        async def ws_voices(ws: WebSocket):
+            await private_socket(ws,frozenset({'voices:read','voices:review'}),LiveSubscriptionMode.VOICES_CONTROL_ONLY)
 
     app.include_router(router)

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
 from uuid import uuid4
+from src.dashboard.live_retention_types import LiveSubscriptionMode
 
 
 @dataclass
@@ -15,6 +16,7 @@ class RestBrowser:
     incoming: asyncio.Queue
     outgoing: asyncio.Queue
     reader: object
+    ready_frame: dict | None = None
 
     async def message(self, document):
         """Deliver an actual decoded ASGI receive message to the protocol owner."""
@@ -22,10 +24,10 @@ class RestBrowser:
 
 
 @asynccontextmanager
-async def ready_browser(bus, *, version=2, reader=None, client_id=None):
+async def ready_browser(bus, *, version=2, reader=None, client_id=None, mode=LiveSubscriptionMode.TECHNICAL):
     """Complete hello/reset and wait for the persisted REST-ready control."""
     reader = bus.test_reader if reader is None else reader
-    subscription,_ = await bus.subscribe(reader=reader)
+    subscription,_ = await bus.subscribe(reader=reader,mode=mode)
     incoming,outgoing = asyncio.Queue(),asyncio.Queue()
     async def send(frame):
         await outgoing.put(frame)
@@ -41,6 +43,7 @@ async def ready_browser(bus, *, version=2, reader=None, client_id=None):
             ready = await outgoing.get()
         assert ready['type']=='rest_ready'
         peer.connection = ready['connection_id']
+        peer.ready_frame = ready
         yield peer
     finally:
         await incoming.put({'type':'websocket.disconnect','code':1000})

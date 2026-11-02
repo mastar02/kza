@@ -12,6 +12,7 @@ from weakref import WeakKeyDictionary, ref
 
 from src.core.owned_work import OwnedBlockingWork
 from src.core.reader_binding import ReaderBinding
+from src.dashboard.live_retention_types import LiveSubscriptionMode
 
 _CONNECTION_SCHEMA = '''CREATE TABLE IF NOT EXISTS live_connections (
  connection_id TEXT PRIMARY KEY, client_id TEXT NOT NULL, runtime_id TEXT NOT NULL,
@@ -171,8 +172,11 @@ class LiveReceiptStore:
             raise ValueError('unknown_live_connection')
         return row[0]
 
-    def _hello(self, db, namespace, client, connection):
+    def _hello(self, db, namespace, client, connection, mode):
         client, connection = canonical_id(client), canonical_id(connection)
+        if type(mode) is not LiveSubscriptionMode:
+            raise ValueError('invalid_live_subscription_mode')
+        client = mode.value + ':' + client
         existing = db.execute('SELECT connection_id FROM live_connections WHERE owner_namespace=? AND client_id=?',(namespace,client)).fetchone()
         if existing is not None:
             if (namespace,existing[0]) not in self._departed:
@@ -184,9 +188,10 @@ class LiveReceiptStore:
         db.execute('INSERT INTO live_connections VALUES (?,?,?,?)',(connection,client,self.runtime_id,namespace))
         return self._reset(db,namespace,connection)
 
-    async def hello(self, client: str, connection: str, *, reader: ReaderBinding) -> LiveReset:
+    async def hello(self, client: str, connection: str, *, reader: ReaderBinding,
+                    mode: LiveSubscriptionMode = LiveSubscriptionMode.TECHNICAL) -> LiveReset:
         """Bind one page instance and request a clear before any private bytes."""
-        return await self._call(self._hello,client,connection,reader=reader)
+        return await self._call(self._hello,client,connection,mode,reader=reader)
 
     def _reset(self, db, namespace, connection):
         client = self._connection(db,namespace,connection)

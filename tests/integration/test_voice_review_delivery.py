@@ -12,6 +12,7 @@ import pytest
 from src.dashboard.api import DashboardAPI
 from src.dashboard.auth import COOKIE_NAME
 from src.dashboard.authority import DashboardRole
+from src.dashboard.live_retention_types import LiveSubscriptionMode
 from src.memory.fact_ledger import MemoryReviewer
 from src.users.voice_projection import VoiceProjection
 from src.users.voice_ledger import VoiceLedger
@@ -152,11 +153,12 @@ async def test_confirmed_name_survives_raw_ttl_but_cannot_authorize_a_new_raw_ti
                 assert await receipts.issue_profiles(peer.connection,str(uuid4()),clock.now+300,tuple(sources),((profile['id'],2),),reader=peer.reader) is None
 
 
-async def test_deleted_profile_retires_only_its_metadata_channel(tmp_path,dashboard_auth):
+@pytest.mark.parametrize('mode',list(LiveSubscriptionMode))
+async def test_deleted_profile_retires_only_its_metadata_channel(tmp_path,dashboard_auth,mode):
     async with web_graph(tmp_path) as (_,_,voices,clock,bus):
         _,identities = await seed(voices,clock)
         profile = await voices.acall(voices.ledger.confirm,identities,'Synthetic profile',str(uuid4()),ACTOR)
-        async with ready_browser(bus,version=3) as peer:
+        async with ready_browser(bus,version=3,mode=mode) as peer:
             app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:

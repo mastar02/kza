@@ -10,6 +10,7 @@ import pytest
 from src.dashboard.live_erasure import build_live_services
 from src.dashboard.live_event_bus import LiveEvent, LiveEventType
 from src.core.reader_binding import ReaderBinding
+from src.dashboard.live_retention_types import LiveSubscriptionMode
 from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.fact_ledger import MemoryReviewer
 from src.memory.privacy_services import PrivacyServices
@@ -22,12 +23,13 @@ pytestmark=pytest.mark.asyncio
 ACTOR=MemoryReviewer('synthetic-admin')
 
 
-async def test_idle_reader_without_redundant_guard_closes_without_acknowledging_tickets(tmp_path):
+@pytest.mark.parametrize('mode',list(LiveSubscriptionMode))
+async def test_idle_reader_without_redundant_guard_closes_without_acknowledging_tickets(tmp_path,mode):
     from tests.mocks.rest_browser import ready_browser
     active = [True]
     reader = ReaderBinding('e'*64,lambda:active[0])
     async with graph(tmp_path) as (_,_,bus,store,clock):
-        async with ready_browser(bus,reader=reader) as peer:
+        async with ready_browser(bus,reader=reader,version=3,mode=mode) as peer:
             source = memory_source(now=clock.now)
             ticket = await store.issue(peer.connection,str(uuid4()),source.expires_at,(source,),reader=reader)
             assert ticket is not None
@@ -268,7 +270,7 @@ async def test_cancelled_ack_observer_and_close_retain_actual_sqlite_commit_and_
 
 async def test_restored_ticket_reopens_previously_completed_local_step(tmp_path):
     async with graph(tmp_path) as (privacy,owner,bus,store,clock):
-        async with browser(bus) as (message,outgoing,_):
+        async with browser(bus) as (message,outgoing,wire_page):
             source=memory_source(now=clock.now)
             await publish(bus,source)
             async with asyncio.timeout(3):
@@ -294,7 +296,7 @@ async def test_restored_ticket_reopens_previously_completed_local_step(tmp_path)
         assert (await local_step(privacy,operation))['state']=='pending'
         await flush(owner)
         assert (await local_step(privacy,operation))['state']=='pending'
-        async with browser(bus,client=ticket['client_id']):
+        async with browser(bus,client=wire_page):
             clock.now+=2
             await flush(owner)
             assert (await local_step(privacy,operation))['state']=='complete'

@@ -21,6 +21,7 @@ from typing import Awaitable, Callable
 
 from src.dashboard.live_retention import LiveRetention, RetainedLiveEvent
 from src.core.reader_binding import ReaderBinding
+from src.dashboard.live_retention_types import LiveSubscriptionMode
 
 from src.memory.fact_ledger import MemorySource
 
@@ -110,6 +111,8 @@ class LiveEventBus:
             if type(event) is not LiveEvent or type(event.type) is not LiveEventType:
                 self._retention.rejected += 1
                 return
+            if not self._subscribers:
+                return
             event = self._retention.admit(event)
             if event is None:
                 return
@@ -123,7 +126,7 @@ class LiveEventBus:
     ) -> None:
         if self._retention is not None:
             state = self._retention._states.get(sub_id)
-            if state is None or state.closed:
+            if state is None or state.closed or state.mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY:
                 return
             if state.reader is not None and not state.reader.current():
                 state.closed = True
@@ -150,7 +153,14 @@ class LiveEventBus:
             Context().run(logger.warning, 'Live subscriber %s dropped %s events (policy=%s)',
                 sub_id, n, self._overflow_policy.value)
 
-    async def subscribe(self, *, reader: ReaderBinding | None = None) -> tuple[int, asyncio.Queue[RetainedLiveEvent]]:
+    async def subscribe(self, *, reader: ReaderBinding | None = None,
+            mode: LiveSubscriptionMode = LiveSubscriptionMode.TECHNICAL) -> tuple[int, asyncio.Queue[RetainedLiveEvent]]:
+        if type(mode) is not LiveSubscriptionMode:
+            raise ValueError('invalid_live_subscription_mode')
+        if mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY and reader is None:
+            raise ValueError('live_voice_reader_required')
+        if mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY and self._retention is None:
+            raise RuntimeError('live_voice_retention_unavailable')
         if reader is not None:
             if type(reader) is not ReaderBinding:
                 raise ValueError('invalid_live_reader')
@@ -159,8 +169,9 @@ class LiveEventBus:
         self._next_id += 1
         queue: asyncio.Queue[RetainedLiveEvent] = asyncio.Queue(maxsize=self._queue_size)
         if self._retention is not None:
-            self._retention.attach(sub_id, queue, reader=reader)
-        self._subscribers[sub_id] = queue
+            self._retention.attach(sub_id, queue, reader=reader,mode=mode)
+        if mode is LiveSubscriptionMode.TECHNICAL:
+            self._subscribers[sub_id] = queue
         Context().run(logger.debug, 'Live subscriber %s attached', sub_id)
         return sub_id, queue
 
@@ -173,7 +184,10 @@ class LiveEventBus:
 
     @property
     def subscriber_count(self) -> int:
-        return len(self._subscribers)
+        """Count admitted event and control connections without closing owners."""
+        if self._retention is None:
+            return len(self._subscribers)
+        return sum(not state.closed for state in self._retention._states.values())
 
     def dropped_count(self, sub_id: int) -> int:
         return self._dropped.get(sub_id, 0)

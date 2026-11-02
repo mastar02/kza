@@ -15,6 +15,7 @@ from src.core.owned_work import WorkCloseTimeout
 from src.core.reader_binding import ReaderBinding
 from src.dashboard.api import DashboardAPI
 from src.dashboard.rest_delivery import RestOperation
+from src.dashboard.live_retention_types import LiveSubscriptionMode
 from tests.integration.test_live_stream_receipts import graph,flush
 from tests.integration.test_capture_producer_privacy import until
 from tests.mocks.memory_sources import memory_source
@@ -26,16 +27,19 @@ PRIVATE = 'Synthetic private REST receipt turn'
 
 @pytest.mark.parametrize('empty',[False,True])
 @pytest.mark.parametrize('change',['reader','connection','retention'])
-async def test_reader_retired_between_send_admission_and_actual_callback_cannot_publish_body(tmp_path,empty,change):
+@pytest.mark.parametrize('mode',list(LiveSubscriptionMode))
+async def test_reader_retired_between_send_admission_and_actual_callback_cannot_publish_body(tmp_path,empty,change,mode):
     active = [True]
     reader = ReaderBinding('f'*64,lambda:active[0])
     async with graph(tmp_path) as (_,_,bus,_,clock):
-        async with ready_browser(bus,reader=reader) as peer:
+        async with ready_browser(bus,reader=reader,version=3,mode=mode) as peer:
             source = memory_source(now=clock.now)
+            channel = 'voices:review' if mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY else 'conversations'
             operation = RestOperation(sources=() if empty else (source,),connection=peer.connection,
-                reader=reader,guard=reader.current,expires_at=source.expires_at,private_envelope=True)
+                reader=reader,guard=reader.current,expires_at=source.expires_at,private_envelope=True,channel=channel)
             messages = []
-            state = bus._retention.rest.connection(peer.connection,reader=reader)
+            state = bus._retention.rest.connection(peer.connection,reader=reader,channel=channel)
+            assert state is not None
 
             def retire():
                 if change=='reader':
