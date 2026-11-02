@@ -221,7 +221,8 @@ async def test_postcheck_uses_real_authenticated_voice_pagination(tmp_path,dashb
                 result.rows.reverse()
                 return result
             monkeypatch.setattr(voices.ledger,'project',reversed_page)
-        dashboard=DashboardAPI(voice_registry=voices,event_bus=bus,observability_use_mocks=False)
+        dashboard=DashboardAPI(voice_registry=voices,event_bus=bus,observability_use_mocks=False,
+                               authority=bus.test_authority)
         listener=socket.socket()
         listener.bind(('127.0.0.1',0))
         port=listener.getsockname()[1]

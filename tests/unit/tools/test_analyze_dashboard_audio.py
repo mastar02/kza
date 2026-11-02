@@ -149,7 +149,8 @@ async def test_live_client_reads_actual_dashboard_voice_api_and_receipt_protocol
             assert voices.observe(encoder, AUDIO, (memory_source(now=clock.now, ttl=60),),
                                   transcript='Private real-api synthetic phrase', room_id='synthetic-room')
         await idle(voices)
-        dashboard = DashboardAPI(event_bus=bus, voice_registry=voices, observability_use_mocks=False)
+        dashboard = DashboardAPI(event_bus=bus, voice_registry=voices, observability_use_mocks=False,
+                                 authority=bus.test_authority)
         listener = socket.socket()
         listener.bind(('127.0.0.1', 0))
         port = listener.getsockname()[1]
