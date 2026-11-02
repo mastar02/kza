@@ -2,6 +2,7 @@ import '../request-id.js';
 import '../home.js';
 import './state.js';
 import './people.js';
+import './person-voices.js';
 import '../../obs/src/live-privacy.js';
 import '../../obs/src/conversation-channel.js';
 import '../../obs/src/voice-privacy.js';
@@ -36,7 +37,24 @@ function button(text, callback, className = 'text-button') {
 const transport = core.createApi({ onDemo() { byId('demo-banner').hidden = false; } });
 const api = state.createScopedApi({ session, transport, onRetired() { retire('Iniciá sesión para consultar tu hogar.'); } });
 const actions = core.createActionController({ api, onChange: updateReceipts });
-const people = window.NexoPeople.createPeople({ container: byId('people-view'), dialog: byId('person-dialog'), api, session, icon });
+let voiceDetailSerial=0;
+const people = window.NexoPeople.createPeople({ container: byId('people-view'), dialog: byId('person-dialog'), api, session, icon,
+  voiceDetails({personId,container,current}) {
+    let active=true;
+    const valid=()=>active&&current()===true;
+    if(!['voices:read','voices:review'].every(permission=>session.can(permission))) {
+      container.replaceChildren(node('p','person-voice-status','Tu acceso permite gestionar la cuenta. La revisión de voces requiere permisos adicionales.'));
+      return ()=>{active=false;container.replaceChildren();};
+    }
+    const connection=node('p','person-voice-status','Preparando consulta privada…');connection.dataset.voiceConnection='';container.replaceChildren(connection);
+    const config=Object.freeze({scopeKey:'person-detail:'+ ++voiceDetailSerial,personId,profilesOnly:true,current:valid,
+      mount:controller=>window.NexoPersonVoices.mountPersonVoices({container,controller,personId,current:valid,icon,onManage:()=>activate('voices')}),
+      onStatus:message=>{if(valid()){const label=container.querySelector('[data-voice-connection]');if(label)label.textContent=message;}}
+    });
+    voices.open(config).then(opened=>{if(!opened&&valid())container.replaceChildren(node('p','person-voice-status','No se pudo abrir la consulta de perfiles. Actualizá la persona.'));});
+    return ()=>{active=false;voices.leave();container.replaceChildren();};
+  }
+});
 const voices = window.NexoVoiceOwner.createVoiceOwner({ session,
   fetch: window.fetch.bind(window), connect: url => new WebSocket(url),
   socketUrl: () => `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/voices`,

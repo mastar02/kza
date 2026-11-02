@@ -54,8 +54,9 @@ async def login(page: Page, token: str, label: str) -> None:
     assert await page.evaluate("document.querySelector('#token').value==='' && document.cookie===''")
 
 
-async def screenshot(page: Page, path: Path, *, full: bool = True) -> None:
-    await page.evaluate('window.scrollTo(0,0)')
+async def screenshot(page: Page, path: Path, *, full: bool = True, scroll_top: bool = True) -> None:
+    if scroll_top:
+        await page.evaluate('window.scrollTo(0,0)')
     await page.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
     if await page.evaluate("!!document.querySelector('#house-canvas canvas')"):
         assert await page.evaluate("(()=>{const canvas=document.querySelector('#house-canvas canvas'),gl=canvas.getContext('webgl2'),pixel=new Uint8Array(4);gl.readPixels(Math.floor(canvas.width/2),Math.floor(canvas.height/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);return pixel[3]>0})()"), 'Illustration must remain visible between renders'

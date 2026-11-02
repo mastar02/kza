@@ -21,13 +21,16 @@
     const hex = bytes.map(byte => byte.toString(16).padStart(2, '0')).join('');
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
-  function permittedPath(path, method, includePerson = false) {
+  function permittedPath(path, method, includePerson = false, scope = null) {
     if (typeof path !== 'string' || path.length > 8192 || path.split('?').length > 2) return false;
     const [pathname, query] = path.split('?'), params = new URLSearchParams(query || '');
-    if (query !== undefined && !query || [...params.keys()].some(key => !['cursor','include_person'].includes(key))
+    if (query !== undefined && !query || [...params.keys()].some(key => !['cursor','include_person','person_id'].includes(key))
         || [...params.keys()].some(key => params.getAll(key).length !== 1)
         || params.has('cursor') && !/(?:^|&)cursor=[A-Za-z0-9%_.~-]+(?:&|$)/.test(query)
         || params.has('include_person') && (!includePerson || pathname !== '/api/voices/profiles' || params.get('include_person') !== 'true')) return false;
+    if (scope?.profilesOnly) return method === 'GET' && pathname === '/api/voices/profiles' && includePerson
+      && params.get('include_person') === 'true' && params.get('person_id') === scope.personId;
+    if (params.has('person_id')) return false;
     if (method === 'GET') return ['/api/voices', '/api/voices/profiles'].includes(pathname)
       || query === undefined && /^\/api\/voices\/captures\/vf_[a-f0-9]{64}\/review$/.test(pathname);
     if (query !== undefined) return false;
@@ -42,10 +45,28 @@
       createState = voiceAPI.createVoiceState, createController = channelAPI.createVoiceController,
       createLive = liveAPI.createLiveState, pageId = liveAPI.pageId }) {
     let wanted = false, generation = null, current = null, closing = null, retry = null, blocked = null;
-    let intentGeneration = null, intentSeed = null;
+    let intentGeneration = null, intentSeed = null, request = null;
+    const captured = new WeakMap();
+    const defaultRequest = Object.freeze({scopeKey:'voices',personId:null,profilesOnly:false,mount,onStatus,current:()=>true});
+    function capture(value) {
+      if (value === undefined) return defaultRequest;
+      if (!value || typeof value !== 'object') throw Error('invalid voice view');
+      if (captured.has(value)) return captured.get(value);
+      const {scopeKey,personId,profilesOnly,mount:render,current:valid = () => true,onStatus:status = () => {}} = value;
+      if (typeof scopeKey !== 'string' || !scopeKey.length || scopeKey.length>256 || typeof profilesOnly !== 'boolean'
+          || profilesOnly && (typeof personId !== 'string' || !personId.length || personId.length>128 || /[\x00-\x1f\x7f]/.test(personId))
+          || !profilesOnly && personId !== null || typeof render !== 'function' || typeof valid !== 'function' || typeof status !== 'function') throw Error('invalid voice view');
+      const result = Object.freeze({scopeKey,personId,profilesOnly,mount:render,current:valid,onStatus:status});
+      captured.set(value,result); return result;
+    }
+    function viewCurrent(value) { try { return value?.current() === true; } catch { return false; } }
+    function report(context,message) {
+      if (request === context.request && wanted && generation === context.generation && session.generation() === generation && viewCurrent(request)) request.onStatus(message);
+    }
     const uncertainConfirmations = new Map();
-    const allowed = () => session.can('voices:read') && session.can('voices:review');
-    const owns = context => current === context && !context.sealed && wanted && allowed()
+    const allowed = () => session.can('voices:read') && session.can('voices:review')
+      && (!request?.profilesOnly || session.can('admin:manage'));
+    const owns = context => current === context && request === context.request && viewCurrent(request) && !context.sealed && wanted && allowed()
       && session.generation() === context.generation && generation === context.generation;
     function unmount(context) {
       const stop = context.unmount; context.unmount = null;
@@ -73,7 +94,7 @@
           return true;
         } catch {
           // Retain the actual owner if withdrawal could not be established.
-          blocked = context; onStatus('No se pudo confirmar la retirada de la vista anterior.');
+          blocked = context; report(context,'No se pudo confirmar la retirada de la vista anterior.');
           return false;
         }
       })();
@@ -83,24 +104,26 @@
     }
     function retryAfter(context) {
       if (!owns(context)) return;
-      const originalGeneration = context.generation;
-      onStatus('Se perdió la conexión. Retirando la vista…');
+      const originalGeneration = context.generation, originalRequest = context.request;
+      report(context,'Se perdió la conexión. Retirando la vista…');
       drain(context).then(done => {
-        if (!done || !wanted || !allowed() || session.generation() !== originalGeneration) return;
-        retry = schedule(() => { retry = null; start(); }, retryMs);
+        if (!done || !wanted || !allowed() || session.generation() !== originalGeneration || generation !== originalGeneration || request !== originalRequest || !viewCurrent(originalRequest)) return;
+        const timer = {handle:null}; retry=timer;
+        timer.handle=schedule(() => { if(retry!==timer)return;retry=null;start(originalRequest,originalGeneration); },retryMs);
       });
     }
-    async function start() {
-      if (retry !== null) { cancel(retry); retry = null; }
-      const attempt = generation;
+    async function start(expectedRequest = request, expectedGeneration = generation) {
+      if (expectedRequest !== request || expectedGeneration !== generation || !wanted) return false;
+      if (retry !== null) { cancel(retry.handle); retry = null; }
+      const attempt = expectedGeneration, requested = expectedRequest;
       if (closing && !await closing) return false;
-      if (blocked || !wanted || !allowed() || session.generation() !== attempt || generation !== attempt) return false;
+      if (blocked || !wanted || !allowed() || session.generation() !== attempt || generation !== attempt || request !== requested || !viewCurrent(requested)) return false;
       if (current) return true;
-      const context = { generation: attempt, sealed: false, phase: 'hello', frames: Promise.resolve(), unmount: null,
+      const context = { generation: attempt, request:requested, sealed: false, phase: 'hello', frames: Promise.resolve(), unmount: null,
         checks:new Set(), auxAborts:new Set(), includePerson:session.can('admin:manage') };
       current = context;
       try {
-      context.state = createState({includePerson:context.includePerson});
+      context.state = createState({includePerson:context.includePerson,personId:context.request.personId});
       function track(work) {
         const task = Promise.resolve().then(work);
         context.checks.add(task);
@@ -112,7 +135,7 @@
         track(async () => {
           if (!owns(context) || context.phase !== 'ready') return;
           try { const valid = await verifyIdentity(); if (owns(context) && context.phase === 'ready' && !valid) onUnauthorized(); }
-          catch { if (owns(context)) onStatus('No se pudo verificar la sesión.'); }
+          catch { if (owns(context)) report(context,'No se pudo verificar la sesión.'); }
         });
       }
       function emitAck(message) {
@@ -123,7 +146,7 @@
         return true;
       }
       async function boundFetch(path, options = {}) {
-        if (!owns(context) || context.phase !== 'ready' || !permittedPath(path, options.method || 'GET', context.includePerson && session.can('admin:manage'))) throw Error('voice_reader_retired');
+        if (!owns(context) || context.phase !== 'ready' || !permittedPath(path, options.method || 'GET', context.includePerson && session.can('admin:manage'),context.request)) throw Error('voice_reader_retired');
         const response = await rawFetch(path, { ...options, credentials: 'same-origin', cache: 'no-store' });
         if (!owns(context) || context.phase !== 'ready') {
           // The channel still owns this fetch until cancellation of its body settles.
@@ -140,11 +163,11 @@
           json: () => read('json'), arrayBuffer: () => read('arrayBuffer') };
       }
       context.live = createLive({ onChange() {}, emitAck });
-      context.controller = createController({ state: context.state, fetch: boundFetch, emitAck, includePerson:context.includePerson,
+      context.controller = createController({ state: context.state, fetch: boundFetch, emitAck, includePerson:context.includePerson,profilesOnly:context.request.profilesOnly,personId:context.request.personId,
         hasView: () => owns(context) && context.phase === 'ready' && !!context.unmount,
         onUnauthorized:verifyOriginal, onStatus() {} });
       context.controller.loadPeople = accept => {
-        const valid = () => owns(context) && context.phase === 'ready' && context.includePerson && session.can('admin:manage');
+        const valid = () => owns(context) && context.phase === 'ready' && context.includePerson && !context.request.profilesOnly && session.can('admin:manage');
         if (!valid() || context.auxAborts.size || typeof accept !== 'function') return Promise.resolve(false);
         const abort = new AbortController(); context.auxAborts.add(abort);
         let consumer = accept; accept = null;
@@ -173,11 +196,11 @@
       };
       const confirm = context.controller.confirm.bind(context.controller);
       context.controller.confirm = async (identities, name) => {
-        if (!owns(context) || context.phase !== 'ready') return false;
+        if (!owns(context) || context.phase !== 'ready' || context.request.profilesOnly) return false;
         const key = confirmationId(intentSeed, identities, name);
         let requestId = uncertainConfirmations.get(key);
         if (!requestId) {
-          if (uncertainConfirmations.size >= 64) { onStatus('Volvé a iniciar sesión para revisar las operaciones pendientes.'); return false; }
+          if (uncertainConfirmations.size >= 64) { report(context,'Volvé a iniciar sesión para revisar las operaciones pendientes.'); return false; }
           requestId = requestAPI.newRequestId(); uncertainConfirmations.set(key, requestId);
         }
         const accepted = await confirm(identities, name, requestId);
@@ -188,7 +211,7 @@
       context.socket.addEventListener('open', () => {
         if (!owns(context)) return;
         context.socket.send(JSON.stringify({ type: 'live_hello', version: 3, client_id: pageId() }));
-        onStatus('Preparando la consulta privada…');
+        report(context,'Preparando la consulta privada…');
       });
       context.socket.addEventListener('message', event => {
         if (!owns(context) || typeof event.data !== 'string' || event.data.length > 16384) return;
@@ -203,13 +226,13 @@
             if (!await context.controller.reset()) throw Error('voice_reset_incomplete');
             await context.state.retired();
             if (!owns(context)) return;
-            context.unmount = mount(context.controller);
+            context.unmount = context.request.mount(context.controller);
             context.phase = 'waiting_ready';
             context.live.receive(frame); context.live.committed(null);
           } else if (frame?.type === 'rest_ready' && context.phase === 'waiting_ready' && context.resetAcknowledged && UUID.test(frame.connection_id)
               && Array.isArray(frame.channels) && frame.channels.length === 3
               && [...frame.channels].sort().every((channel, index) => channel === CHANNELS[index])) {
-            context.phase = 'ready'; onStatus('Conexión privada vigente.'); context.controller.open(frame.connection_id);
+            context.phase = 'ready'; report(context,'Conexión privada vigente.'); context.controller.open(frame.connection_id);
           } else if (frame?.type === 'rest_retire' && context.phase === 'ready' && CHANNELS.includes(frame.channel)) {
             context.controller.retire(frame);
           }
@@ -219,24 +242,26 @@
       context.socket.addEventListener('error', () => retryAfter(context));
       return true;
       } catch {
-        await drain(context); onStatus('No se pudo abrir la conexión de Voces.'); return false;
+        await drain(context); report(context,'No se pudo abrir la conexión de Voces.'); return false;
       }
     }
     function leave() {
-      wanted = false; generation = null;
-      if (retry !== null) { cancel(retry); retry = null; }
+      wanted = false; generation = null; request = null;
+      if (retry !== null) { cancel(retry.handle); retry = null; }
       if (current) return drain(current);
       return closing || Promise.resolve(blocked === null);
     }
     return {
-      open() {
+      open(config) {
+        let next; try { next = capture(config); } catch { return Promise.resolve(false); }
+        request = next;
         wanted = true; generation = session.generation();
         if (intentGeneration !== generation) {
           uncertainConfirmations.clear();
           intentGeneration = generation; intentSeed = [...root.crypto.getRandomValues(new Uint32Array(4))];
         }
-        if (current && (current.generation !== generation || !allowed())) drain(current);
-        return start();
+        if (current && (current.generation !== generation || current.request !== request || !allowed() || !viewCurrent(request))) drain(current);
+        return start(request,generation);
       }, leave,
       clear() { uncertainConfirmations.clear(); intentGeneration = intentSeed = null; return leave(); },
       settled: () => closing || Promise.resolve(blocked === null),

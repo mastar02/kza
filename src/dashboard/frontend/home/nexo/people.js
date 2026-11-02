@@ -26,11 +26,17 @@
     if (error?.status === 422) return 'Revisá el nombre y el nivel de cuenta.';
     return 'No se confirmó el resultado. Puede haberse aplicado. Actualizá el catálogo antes de repetirlo.';
   }
-  function createPeople({ container, dialog, api, session, icon }) {
+  function createPeople({ container, dialog, api, session, icon, voiceDetails = () => () => {} }) {
     const doc = container.ownerDocument;
     let lifecycle = 0, readVersion = 0, generation = -1, visible = false, busy = false, known = false;
     let rows = [], selected = null, readController, mutationController, grid, detail, status, refresh, add;
-    let notice = '', noticeError = false;
+    let notice = '', noticeError = false, voiceRetire = null, detailSerial = 0;
+    function retireVoices() { const stop = voiceRetire; voiceRetire = null; if (stop) stop(); }
+    function mountVoices(personId,host) {
+      const started=lifecycle,login=generation,version=readVersion,serial=detailSerial;
+      voiceRetire=voiceDetails({personId,container:host,current:()=>current(started,login) && visible && known && !busy
+        && version===readVersion && serial===detailSerial && selected===personId && host.isConnected && detail?.contains(host)});
+    }
     function node(tag, classes, text) {
       const element = doc.createElement(tag);
       if (classes) element.className = classes;
@@ -62,11 +68,11 @@
     function updateBusy() {
       if (!visible) return;
       add.disabled = busy || !known; refresh.disabled = busy;
-      for (const button of detail.querySelectorAll('button')) button.disabled = busy || !known;
+      for (const button of detail.querySelectorAll('[data-person-admin]')) button.disabled = busy || !known;
       for (const button of dialog.querySelectorAll('button[type=submit],#confirm-person-removal')) button.disabled = busy || !known;
     }
     function renderDetail() {
-      detail.replaceChildren();
+      retireVoices(); detailSerial++; detail.replaceChildren();
       const person = rows.find(row => row.id === selected);
       if (!person) { detail.append(node('p', 'identity-empty', 'Elegí una persona para ver su cuenta.')); return; }
       const header = node('div', 'person-detail-header');
@@ -75,13 +81,15 @@
       const level = node('div', 'person-role-info');
       level.append(node('p', 'eyebrow', 'NIVEL DE CUENTA'), node('p', '', LEVELS[person.permission_level]));
       const change = control('Cambiar nivel', () => openForm(person), 'identity-text-link');
-      level.append(change); detail.append(level);
+      change.dataset.personAdmin='';level.append(change); detail.append(level);
       detail.append(node('p', 'person-authority-note', 'El nivel de cuenta se administra aparte del acceso al dashboard y de los perfiles de voz.'));
-      if (session.can('auth:manage')) detail.append(control('Retirar persona', () => openRemoval(person), 'identity-danger full'));
+      if (session.can('auth:manage')) { const remove=control('Retirar persona', () => openRemoval(person), 'identity-danger full');remove.dataset.personAdmin='';detail.append(remove); }
+      const voiceHost=node('section','person-voice-details');voiceHost.setAttribute('aria-label','Perfiles de la persona');detail.append(voiceHost);
+      if(person.is_active)mountVoices(person.id,voiceHost);else voiceHost.append(node('p','person-voice-status','La cuenta inactiva no tiene una consulta vocal disponible.'));
       updateBusy();
     }
     function select(id) {
-      selected = id;
+      retireVoices(); selected = id;
       for (const card of grid.querySelectorAll('[data-person]')) {
         const active = card.dataset.person === id;
         card.classList.toggle('selected', active); card.setAttribute('aria-pressed', String(active));
@@ -90,7 +98,7 @@
     }
     function renderRows() {
       if (!visible) return;
-      grid.replaceChildren();
+      retireVoices(); grid.replaceChildren();
       for (const person of rows) {
         const card = control('', () => select(person.id), 'person-card panel'); card.dataset.person = person.id;
         card.setAttribute('aria-pressed', String(person.id === selected)); card.classList.toggle('selected', person.id === selected);
@@ -103,6 +111,7 @@
     }
     async function load({ confirmed = '', focusSelected = false } = {}) {
       if (!visible || !current() || busy) return;
+      retireVoices();
       const started = lifecycle, login = generation, version = ++readVersion;
       readController?.abort(); readController = new AbortController(); known = false;
       const priorSelection = selected; rows = []; renderRows(); report(confirmed ? `${confirmed} Actualizando el catálogo…` : 'Consultando personas…');
@@ -123,7 +132,7 @@
       }
     }
     function shell() {
-      container.replaceChildren();
+      retireVoices(); container.replaceChildren();
       const heading = node('div', 'identity-heading'), copy = node('div');
       const title = node('h2', '', 'Tu hogar tiene su gente.'); title.id = 'people-title';
       copy.append(node('p', 'eyebrow', 'CADA PERSONA, SU ESPACIO'), title, node('p', '', 'Personas y niveles de cuenta, desde el catálogo de KZA.'));
@@ -150,6 +159,7 @@
     }
     async function mutate(path, method, body, confirmation) {
       if (!current() || busy || !known) return;
+      retireVoices();
       const started = lifecycle, login = generation;
       busy = true; mutationController = new AbortController(); readController?.abort(); readVersion++;
       closeDialog(); updateBusy(); report('Operación enviada. Esperando el resultado…');
@@ -199,7 +209,7 @@
     }
     function openRemoval(person) {
       if (!current() || busy || !known || !visible || !session.can('auth:manage')) return;
-      modal(`Retirar a ${person.name}`, 'Se retirarán sus credenciales vinculadas y luego su cuenta del catálogo. Los perfiles de voz se administran por separado.');
+      modal(`Retirar a ${person.name}`, 'Se retirarán sus credenciales y vínculos vocales antes de borrar la cuenta. Los perfiles de voz se conservan sin persona asignada.');
       const actions = node('div', 'modal-actions');
       actions.append(control('Conservar persona', closeDialog), control('Retirar persona', () => {
         void mutate(`/api/admin/users/${encodeURIComponent(person.id)}`, 'DELETE', undefined, 'Persona retirada.');
@@ -207,7 +217,7 @@
       actions.lastChild.id = 'confirm-person-removal'; dialog.append(actions); dialog.showModal();
     }
     function leave() {
-      visible = false; readVersion++; readController?.abort(); readController = null;
+      retireVoices(); visible = false; readVersion++; readController?.abort(); readController = null;
       rows = []; selected = null; known = false; closeDialog(); container.replaceChildren();
       grid = detail = status = refresh = add = null;
     }

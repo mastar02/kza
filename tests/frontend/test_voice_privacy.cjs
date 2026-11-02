@@ -152,3 +152,10 @@ test('enriched profile links are required, copied and deeply immutable',()=>{
   assert.equal(store.receive([{...profile(),person_link:{user_id:'null',revision:0}}],{mono:0,wall:2000000000000}),false);
   assert(store.receive([{...profile(),person_link:{user_id:null,revision:0}}],{mono:0,wall:2000000000000}));store.clear();
 });
+
+test('a person-scoped profile store rejects another target before caching names',()=>{
+  const {createVoiceStore}=require('../../src/dashboard/frontend/obs/src/voice-privacy.js');
+  const store=createVoiceStore('profiles',{includePerson:true,personId:'person-A',monotonic:()=>0,wall:()=>2000000000000,schedule:()=>1,cancel:()=>{}});
+  assert.equal(store.receive([{...profile(),person_link:{user_id:'person-B',revision:1}}],{mono:0,wall:2000000000000}),false);assert.deepEqual(store.snapshot(),[]);
+  assert(store.receive([{...profile(),person_link:{user_id:'person-A',revision:1}}],{mono:0,wall:2000000000000}));assert.equal(store.snapshot()[0].person_link.user_id,'person-A');store.clear();
+});

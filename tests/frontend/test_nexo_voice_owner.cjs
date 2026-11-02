@@ -284,3 +284,54 @@ test('a deferred identity check cannot start under the next login',async()=>{
   const g=setup({verifyIdentity:async()=>{verify++;return false;},createController:options=>{unauthorized=options.onUnauthorized;return createVoiceController(options);}});
   await ready(g);unauthorized();const closing=g.owner.leave();g.session.clear();g.session.accept(adminIdentity);await turn();assert.equal(verify,0);assert.equal(await closing,true);
 });
+
+function personScope(g,id,key,mounts=[],valid=()=>true){return Object.freeze({scopeKey:key,personId:id,profilesOnly:true,current:valid,onStatus:()=>{},mount(controller){mounts.push(key);g.controllers.push(controller);g.mounted.add(controller);return()=>{g.mounted.delete(controller);controller.leave();for(const kind of ['profiles','captures','review'])controller.state[kind].committed(null);};}});}
+async function readyScope(g,config){await g.owner.open(config);const socket=g.sockets.at(-1);socket.open();socket.event('message',RESET);await turn();assert.equal(socket.sent.at(-1).type,'live_reset_ack');socket.event('message',READY);await turn();return socket;}
+
+test('person profiles-only capability preserves its exact filter and admits no audio or mutations',async()=>{
+  const calls=[];let reads=0;
+  const g=setup({fetch:async(path,options)=>{calls.push([path,options]);const batch=profileBatch();batch.rows[0].person_link.user_id='person-A';batch.event_id=++reads===1?'30000000-0000-4000-8000-000000000003':'60000000-0000-4000-8000-000000000006';batch.next_cursor=reads===1?UUID:null;return{ok:true,status:200,json:async()=>voiceEnvelope(path,batch)};}});
+  g.session.accept(adminIdentity);const scope=personScope(g,'person-A','A:1');await readyScope(g,scope);const controller=g.controllers[0];
+  assert.equal(calls.length,1);assert.equal(controller.profilesOnly,true);assert.equal(controller.personId,'person-A');
+  assert.equal(controller.review('vf_'+'a'.repeat(64)),false);assert.equal(await controller.confirm([], 'Synthetic',UUID),false);assert.equal(await controller.deleteProfile(UUID,1),false);assert.equal(await controller.setPerson(UUID,'person-A',1,1),false);assert.equal(await controller.loadPeople(()=>assert.fail('auxiliary consumer')),false);assert.equal(await controller.correctGroups([],'unknown',UUID),false);assert.equal(calls.length,1);
+  controller.next('profiles');await controller.settled();assert.equal(calls.length,2);
+  for(const [path]of calls){const url=new URL(path,'http://synthetic');assert.equal(url.pathname,'/api/voices/profiles');assert.equal(url.searchParams.get('person_id'),'person-A');assert.equal(url.searchParams.get('include_person'),'true');}
+  assert.equal(new URL(calls[1][0],'http://synthetic').searchParams.get('cursor'),UUID);
+  for(const path of ['/api/voices','/api/admin/users','/api/voices/profiles?include_person=true','/api/voices/profiles?include_person=true&person_id=person-B'])assert.equal(permittedPath(path,'GET',true,scope),false);
+  assert.equal(permittedPath('/api/voices/profiles?include_person=true&person_id=person-A','GET',true,scope),true);await g.owner.leave();
+});
+
+test('A decoder held through B, C and Voces can mount only the final requested scope',async()=>{
+  const body=deferred(),entered=deferred(),mounts=[];let first=true;
+  const g=setup({fetch:async path=>{if(first){first=false;return{ok:true,status:200,json:()=>{entered.resolve();return body.promise;}};}return{ok:true,status:200,json:async()=>voiceEnvelope(path)};}});
+  g.session.accept(adminIdentity);const socket=await readyScope(g,personScope(g,'A','A:1',mounts));await entered.promise;const sent=socket.sent.length;
+  const b=g.owner.open(personScope(g,'B','B:1',mounts)),c=g.owner.open(personScope(g,'C','C:1',mounts)),last=g.owner.open();await turn();assert.equal(g.sockets.length,1);assert.deepEqual(mounts,['A:1']);
+  const batch=profileBatch();batch.rows[0].person_link.user_id='A';body.resolve(voiceEnvelope('/api/voices/profiles',batch));assert.equal(await b,false);assert.equal(await c,false);assert.equal(await last,true);assert.equal(g.sockets.length,2);assert.equal(socket.sent.length,sent);assert.deepEqual(g.controllers[0].state.profiles.snapshot(),[]);
+  const next=g.sockets.at(-1);next.open();next.event('message',RESET);await turn();next.event('message',READY);await turn();assert.deepEqual(mounts,['A:1']);assert.equal(g.controllers.length,2);await g.owner.leave();
+});
+
+test('refreshing the same person with a new host waits for the old host decoder',async()=>{
+  const body=deferred(),entered=deferred(),mounts=[];let first=true,oldHost=true;
+  const g=setup({fetch:async path=>{if(first){first=false;return{ok:true,status:200,json:()=>{entered.resolve();return body.promise;}};}const batch=profileBatch();batch.rows[0].person_link.user_id='A';batch.rows[0].name='Synthetic host two';return{ok:true,status:200,json:async()=>voiceEnvelope(path,batch)};}});
+  g.session.accept(adminIdentity);await readyScope(g,personScope(g,'A','A:1',mounts,()=>oldHost));await entered.promise;oldHost=false;const replacing=g.owner.open(personScope(g,'A','A:2',mounts));await turn();assert.equal(g.sockets.length,1);
+  const old=profileBatch();old.rows[0].person_link.user_id='A';old.rows[0].name='Synthetic old host';body.resolve(voiceEnvelope('/api/voices/profiles',old));assert.equal(await replacing,true);const socket=g.sockets.at(-1);socket.open();socket.event('message',RESET);await turn();socket.event('message',READY);await turn();
+  assert.deepEqual(mounts,['A:1','A:2']);assert.deepEqual(g.controllers[0].state.profiles.snapshot(),[]);assert.equal(g.controllers[1].state.profiles.snapshot()[0].name,'Synthetic host two');await g.owner.leave();
+});
+
+test('a queued retry from another scope cannot consume or cancel the new retry',async()=>{
+  const timers=[],cancelled=[];const g=setup({schedule:fn=>{timers.push(fn);return timers.length;},cancel:id=>cancelled.push(id)});g.session.accept(adminIdentity);
+  const a=await readyScope(g,personScope(g,'A','A:1'));a.close();await turn();assert.equal(timers.length,1);
+  const b=await readyScope(g,personScope(g,'B','B:1'));b.close();await turn();assert.equal(timers.length,2);timers[0]();await turn();assert.equal(g.sockets.length,2);assert(!cancelled.includes(2));timers[1]();await turn();assert.equal(g.sockets.length,3);await g.owner.leave();
+});
+
+test('account administration does not admit a voice connection without voice permissions',async()=>{
+  const g=setup();g.session.accept({ok:true,role:'operator',expires_at:1e12,permissions:['admin:manage']});
+  assert(g.session.views().includes('people'));assert(!g.session.views().includes('voices'));
+  assert.equal(await g.owner.open(personScope(g,'A','A:1')),false);assert.equal(g.sockets.length,0);assert.equal(g.requests.length,0);await g.owner.leave();
+});
+
+test('captured person scope cannot adopt mutations to its caller configuration',async()=>{
+  const calls=[],g=setup({fetch:async path=>{calls.push(path);return{ok:true,status:200,json:async()=>voiceEnvelope(path)};}});g.session.accept(adminIdentity);
+  const raw={...personScope(g,'A','A:1')};await readyScope(g,raw);raw.personId='B';raw.scopeKey='B:2';assert.equal(await g.owner.open(raw),true);assert.equal(g.sockets.length,1);assert.equal(g.controllers[0].personId,'A');
+  await g.controllers[0].refresh();await g.controllers[0].settled();assert(calls.every(path=>new URL(path,'http://synthetic').searchParams.get('person_id')==='A'));await g.owner.leave();
+});

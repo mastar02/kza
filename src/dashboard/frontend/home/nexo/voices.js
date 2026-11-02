@@ -104,7 +104,7 @@
       let chosen = row.person_link.user_id === null ? 'unlink' : '';
       accounts.forEach((account,index) => {
         const value = String(index+1), option = node('option',account.name + (names.get(account.name.toLocaleLowerCase())>1 ? ' · '+account.id : ''));
-        option.value = value; choices.set(value,account.id); select.append(option);
+        option.value = value; option.dataset.personId=account.id; choices.set(value,account.id); select.append(option);
         if (account.id === row.person_link.user_id) chosen = value;
       });
       select.value = chosen; linkDraft = {binding,choices};

@@ -2,9 +2,12 @@
   'use strict';
   const channelsAPI = root?.KzaConversationChannel || require('./conversation-channel.js');
   const PATHS = { profiles:'/api/voices/profiles', captures:'/api/voices', review:'/api/voices/captures/' };
-  function createVoiceController({ state, fetch, emitAck, hasView = () => false, onUnauthorized = () => {}, onStatus = () => {}, includePerson = false }) {
+  function createVoiceController({ state, fetch, emitAck, hasView = () => false, onUnauthorized = () => {}, onStatus = () => {}, includePerson = false, profilesOnly = false, personId = null }) {
     if (typeof includePerson !== 'boolean') throw Error('invalid voice person scope');
+    if (typeof profilesOnly !== 'boolean' || profilesOnly && (!includePerson || typeof personId !== 'string' || !personId.length || personId.length > 128)
+        || !profilesOnly && personId !== null) throw Error('invalid voice profile scope');
     const profilePath = cursor => PATHS.profiles + (includePerson ? '?include_person=true' : '')
+      + (personId !== null ? '&person_id='+encodeURIComponent(personId) : '')
       + (cursor ? (includePerson ? '&' : '?') + 'cursor=' + encodeURIComponent(cursor) : '');
     let closed = false, sequence = 0;
     const pages = {}, actions = new Set(), aborts = new Set();
@@ -23,10 +26,10 @@
       if (!channels.profiles.refresh(profilePath())) return;
       await channels.profiles.settled();
       if (closed || attempt!==sequence) return;
-      channels.captures.refresh();
+      if (!profilesOnly) channels.captures.refresh();
     }
     async function mutate(path,body,method) {
-      if (closed || actions.size) return false;
+      if (closed || profilesOnly || actions.size) return false;
       const abort = new AbortController(); aborts.add(abort);
       let encoded = JSON.stringify(body), response = null;
       const task = (async () => {
@@ -59,7 +62,7 @@
       state.clear();
     }
     return {
-      state,refresh,leave,includePerson,
+      state,refresh,leave,includePerson,profilesOnly,personId,
       flush() { for (const channel of Object.values(channels)) channel.flush(); },
       settled:() => Promise.allSettled([...actions,...Object.values(channels).map(channel => channel.settled())]),
       open(identity) { for (const channel of Object.values(channels)) channel.open(identity); if (hasView()) refresh(); },
@@ -71,9 +74,9 @@
         await state.retired(); return done.every(Boolean);
       },
       retire(frame) { for (const channel of Object.values(channels)) channel.retire(frame); },
-      review(identity) { return /^vf_[0-9a-f]{64}$/.test(identity) && channels.review.refresh(PATHS.review+identity+'/review'); },
+      review(identity) { return !profilesOnly && /^vf_[0-9a-f]{64}$/.test(identity) && channels.review.refresh(PATHS.review+identity+'/review'); },
       closeReview() { channels.review.clearView(); state.review.setStatus('waiting'); },
-      next(kind) { const cursor = pages[kind]; if (cursor && kind!=='review') channels[kind].refresh(kind==='profiles' ? profilePath(cursor) : PATHS[kind]+'?cursor='+encodeURIComponent(cursor)); },
+      next(kind) { const cursor = pages[kind]; if (cursor && kind!=='review' && (!profilesOnly || kind==='profiles')) channels[kind].refresh(kind==='profiles' ? profilePath(cursor) : PATHS[kind]+'?cursor='+encodeURIComponent(cursor)); },
       hasNext:kind => !!pages[kind],
       confirm(identities,name,requestId) { return mutate('/api/voices/profiles',
         { fingerprint_ids:identities, name, request_id:requestId },'POST'); },
