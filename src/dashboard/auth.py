@@ -124,6 +124,8 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
         return frozenset({DashboardPermission.DIAGNOSTICS_READ})
     if path.startswith("/api/home/"):
         return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.HOME_CONTROL})
+    if not read and path.startswith("/api/entities/") and path.endswith("/call") and path.count("/") == 4:
+        return frozenset({DashboardPermission.HOME_CONTROL})
     if path == "/api/routines" or path.startswith("/api/routines/"):
         if read and ("/runs/" in path or path.endswith("/attempts")):
             return frozenset({DashboardPermission.ROUTINES_MANAGE})

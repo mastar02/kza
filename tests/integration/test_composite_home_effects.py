@@ -51,10 +51,10 @@ class CompositeHA(TypedHA):
         self.states[GROUP]["attributes"]["entity_id"] = list(LEAVES)
         self.states[SCENE] = {"entity_id": SCENE, "state": "unknown", "attributes": {"entity_id": [GROUP], "friendly_name": "Synthetic evening"}}
 
-    async def call_service_once(self, domain, service, entity_id, data):
+    async def call_service_once(self, domain, service, entity_id, data, *, guard=None, on_dispatch=None):
         assert entity_id in (*LEAVES, "climate.test_ac", "cover.test_blind"), "Only explicit selected leaves may reach transport"
-        outcome = await super().call_service_once(domain, service, entity_id, data)
-        if self.observe_effect and data and "brightness" in data:
+        outcome = await super().call_service_once(domain, service, entity_id, data, guard=guard, on_dispatch=on_dispatch)
+        if outcome.status is ServiceCallStatus.ACCEPTED and self.observe_effect and data and "brightness" in data:
             self.states[entity_id]["attributes"]["brightness"] = data["brightness"]
         return outcome
 

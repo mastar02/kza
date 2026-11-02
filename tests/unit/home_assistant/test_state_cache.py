@@ -27,9 +27,14 @@ from src.home_assistant.ha_client import HomeAssistantClient
 
 
 @pytest.fixture
-def ha():
-    """Cliente HA con URL dummy (no hace conexiones reales en estos tests)."""
-    return HomeAssistantClient(url="http://mock.local", token="fake-token")
+async def ha():
+    """Own the dummy client and keep the unrelated call channel offline."""
+    client = HomeAssistantClient(url="http://mock.local", token="fake-token")
+    client.connect_websocket = AsyncMock(return_value=False)
+    try:
+        yield client
+    finally:
+        await client.close()
 
 
 # ---------------------------------------------------------------------------

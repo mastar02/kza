@@ -144,10 +144,10 @@ async def main():
                     assert [send[3] for send in ha.sends[-2:]] == [{"color_temp_kelvin": 2700, "brightness": 179}] * 2
                     original_send = ha.call_service_once
 
-                    async def partially_observed(domain, service, entity_id, data):
+                    async def partially_observed(domain, service, entity_id, data, *, guard=None, on_dispatch=None):
                         if data and data.get("color_temp_kelvin") == 4000:
                             ha.observe_effect = entity_id == "light.test_lamp"
-                        return await original_send(domain, service, entity_id, data)
+                        return await original_send(domain, service, entity_id, data, guard=guard, on_dispatch=on_dispatch)
 
                     ha.call_service_once = partially_observed
                     await page.evaluate("""(() => {

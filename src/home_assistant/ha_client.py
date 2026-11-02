@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from contextvars import Context
 from enum import StrEnum
 from time import monotonic
+from typing import Callable
 
 import aiohttp
 
@@ -24,6 +25,7 @@ from src.home_assistant.operations import ActionIntent, DOMAIN_OPERATIONS, actio
 class ServiceCallStatus(StrEnum):
     """Certainty of a single REST service attempt, independent of state."""
 
+    NOT_SENT = "not_sent"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     UNCERTAIN = "uncertain"
@@ -693,6 +695,7 @@ class HomeAssistantClient:
 
     async def call_service_once(
         self, domain: str, service: str, entity_id: str, data: dict | None = None,
+        *, guard: Callable[[], bool] | None = None, on_dispatch: Callable[[], None] | None = None,
     ) -> ServiceCallOutcome:
         """Send one REST POST without redirect, fallback, or automatic retry.
 
@@ -701,9 +704,11 @@ class HomeAssistantClient:
             service: Service name in that domain.
             entity_id: Exact target; data cannot replace it.
             data: Additional service fields, excluding target selectors.
+            guard: Original authority, rechecked after waiting for the session.
+            on_dispatch: Synchronous notification immediately before POST begins.
 
         Returns:
-            Explicit rejection, HTTP acceptance, or transport uncertainty.
+            Local non-dispatch, explicit rejection, acceptance or uncertainty.
         """
         if (
             not isinstance(domain, str) or re.fullmatch(r"[a-z_]+", domain) is None
@@ -716,9 +721,22 @@ class HomeAssistantClient:
         ):
             return ServiceCallOutcome(ServiceCallStatus.REJECTED, "invalid_service_target")
         payload = {**(data or {}), "entity_id": entity_id}
-        started = time.perf_counter()
+        started, attempted = time.perf_counter(), False
         try:
             session = await self._ensure_session()
+            if guard is not None:
+                try:
+                    allowed = guard()
+                except Exception:
+                    return ServiceCallOutcome(ServiceCallStatus.NOT_SENT, "service_authority_unavailable")
+                if allowed is not True:
+                    return ServiceCallOutcome(ServiceCallStatus.NOT_SENT, "service_authority_denied")
+            if on_dispatch is not None:
+                try:
+                    on_dispatch()
+                except Exception:
+                    return ServiceCallOutcome(ServiceCallStatus.NOT_SENT, "service_dispatch_unavailable")
+            attempted = True
             async with session.post(
                 f"{self.url}/api/services/{domain}/{service}", json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.timeout), allow_redirects=False,
@@ -731,7 +749,8 @@ class HomeAssistantClient:
                 status = ServiceCallStatus.REJECTED if 400 <= response.status < 500 else ServiceCallStatus.UNCERTAIN
                 return ServiceCallOutcome(status, f"ha_http_{response.status}")
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
-            return ServiceCallOutcome(ServiceCallStatus.UNCERTAIN, "ha_transport_uncertain")
+            return ServiceCallOutcome(ServiceCallStatus.UNCERTAIN if attempted else ServiceCallStatus.NOT_SENT,
+                                      "ha_transport_uncertain" if attempted else "ha_session_unavailable")
 
     async def call_service(
         self,

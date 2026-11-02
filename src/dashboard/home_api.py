@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.middleware.base import RequestResponseEndpoint
 
-from src.dashboard.auth import DashboardPrincipal, require_dashboard_session
+from src.dashboard.auth import DashboardPrincipal, require_dashboard_session, session_guard
 from src.audio.microphone_status import MicrophoneRoom, MicrophonesSnapshot
 from src.dashboard.home_catalog import HomeCatalogService, HomeCatalogSnapshot
 from src.home_assistant.home_actions import (
@@ -112,7 +112,7 @@ class LegacyHomeActionBody(BaseModel):
 
 async def execute_home_action(
     actions: HomeActionService | None, request: HomeActionRequest,
-    principal: DashboardPrincipal,
+    principal: DashboardPrincipal, *, current: Callable[[], bool] | None = None,
 ) -> HomeActionResult:
     """Enforce session permissions and translate intent conflicts to HTTP."""
     if "home:control" not in principal.permissions:
@@ -124,14 +124,14 @@ async def execute_home_action(
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     try:
-        return await actions.execute(request, actor=home_actor(principal))
+        return await actions.execute(request, actor=home_actor(principal, current))
     except HomeActionConflict as error:
         raise HTTPException(status_code=409, detail="request_id_body_conflict") from error
 
 
-def home_actor(principal: DashboardPrincipal) -> HomeActor:
+def home_actor(principal: DashboardPrincipal, current: Callable[[], bool] | None = None) -> HomeActor:
     """Adapt a validated dashboard session without accepting identity in JSON."""
-    return HomeActor(ActorKind.DASHBOARD, principal.subject, principal.permissions)
+    return HomeActor(ActorKind.DASHBOARD, principal.subject, principal.permissions, current)
 
 
 def register_home_routes(
@@ -191,9 +191,11 @@ def register_home_routes(
     @app.post("/api/home/actions", response_model=HomeActionResult)
     async def home_action(
         body: HomeActionBody,
+        request: Request,
         principal: DashboardPrincipal = Depends(require_dashboard_session),
     ) -> HomeActionResult:
-        return await execute_home_action(actions, HomeActionRequest(**body.model_dump()), principal)
+        return await execute_home_action(actions, HomeActionRequest(**body.model_dump()), principal,
+            current=session_guard(request, frozenset({'home:control'}), principal))
 
     @app.get("/api/home/actions", response_model=HomeActionResult)
     async def home_action_receipt(

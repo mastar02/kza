@@ -49,7 +49,11 @@ class ObservedHA:
         self.reads.append(entity_id)
         return self.states.get(entity_id)
 
-    async def call_service_once(self, domain, service, entity_id, data):
+    async def call_service_once(self, domain, service, entity_id, data, *, guard=None, on_dispatch=None):
+        if guard is not None and guard() is not True:
+            return ServiceCallOutcome(ServiceCallStatus.NOT_SENT, "service_authority_denied")
+        if on_dispatch is not None:
+            on_dispatch()
         self.sends.append((domain, service, entity_id, data))
         if self.observe_effect and self.outcome.status is ServiceCallStatus.ACCEPTED:
             self.states[entity_id]["state"] = "off" if service == "turn_off" else "on"

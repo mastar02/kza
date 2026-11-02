@@ -1,6 +1,7 @@
 """Confirmed controls and reviewed expansions with actor-scoped receipts."""
 
 import asyncio
+from contextvars import Context
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
@@ -10,7 +11,7 @@ import re
 import uuid
 
 from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
-from src.home_assistant.control_policy import ActionOrigin, EntityGrant, HomeActor, HomeControlPolicy
+from src.home_assistant.control_policy import ActionOrigin, EntityGrant, HomeActionDenied, HomeActor, HomeControlPolicy
 from src.home_assistant.ha_client import HomeAssistantClient, ServiceCallStatus
 from src.home_assistant.effect_plans import EffectIntent, EffectPlan, expand_effect_plan, validate_plan_references
 from src.home_assistant.operations import (
@@ -197,9 +198,9 @@ class HomeActionService:
             return await asyncio.shield(existing[1])
         if self._closing:
             return HomeActionResult.not_sent(request.request_id, request.entity_id, "home_actions_closed")
-        task = asyncio.create_task(self._run(request, actor))
+        task = asyncio.create_task(self._run(request, actor), context=Context())
         self._requests[key] = (request, task)
-        task.add_done_callback(lambda done: self._finish(key, done))
+        task.add_done_callback(lambda done: self._finish(key, done), context=Context())
         return await asyncio.shield(task)
 
     def get_receipt(self, *, actor: HomeActor, request_id: str) -> HomeActionResult | None:
@@ -348,7 +349,11 @@ class HomeActionService:
 
     async def _perform_leaf(self, request: HomeActionRequest, actor: HomeActor, *, binding: Callable[[HomeActionRequest], Awaitable[EntityGrant]] | None = None) -> HomeActionResult:
         dispatch = DispatchState.NOT_SENT
+        def dispatched():
+            nonlocal dispatch
+            dispatch = DispatchState.UNCERTAIN
         try:
+            actor.require_current()
             fresh = await self.ha.get_entity_state_fresh(request.entity_id)
             unit = await self.ha.get_temperature_unit_fresh() if request.temperature is not None else None
             try:
@@ -360,8 +365,19 @@ class HomeActionService:
                 return HomeActionResult.not_sent(request.request_id, request.entity_id, str(error))
             effect = compile_effect(request)
             initial_state = fresh["state"]
-            dispatch = DispatchState.UNCERTAIN
-            outcome = await self.ha.call_service_once(effect.domain, effect.service, request.entity_id, effect.data)
+            actor.require_current()
+            if actor._current is None:
+                # Trusted household and legacy adapters keep their existing
+                # transport contract. HTTP actors always carry a live guard.
+                dispatched()
+                outcome = await self.ha.call_service_once(effect.domain, effect.service, request.entity_id, effect.data)
+            else:
+                outcome = await self.ha.call_service_once(effect.domain, effect.service, request.entity_id, effect.data,
+                                                          guard=actor._current, on_dispatch=dispatched)
+            if outcome.status == ServiceCallStatus.NOT_SENT:
+                reason = {"service_authority_denied": "home_control_denied",
+                          "service_authority_unavailable": "home_authority_unavailable"}.get(outcome.reason, outcome.reason)
+                return HomeActionResult.not_sent(request.request_id, request.entity_id, reason or "ha_not_sent")
             if outcome.status != ServiceCallStatus.ACCEPTED:
                 rejected = outcome.status == ServiceCallStatus.REJECTED
                 return HomeActionResult(request.request_id, request.entity_id,
@@ -379,15 +395,15 @@ class HomeActionService:
                 "confirmed" if confirmed else "uncertain", None if confirmed else "state_not_confirmed",
                 dispatch=dispatch, effect=EffectState.OBSERVED if confirmed else EffectState.UNCONFIRMED,
                 observation_scope="ha_state" if confirmed else None)
-        except Exception:
+        except Exception as error:
             logger.warning("Home action dependency failed; preserving send certainty")
             attempted = dispatch is not DispatchState.NOT_SENT
             effect = (EffectState.UNCONFIRMED if dispatch is DispatchState.ACCEPTED else
                       EffectState.UNCERTAIN if attempted else EffectState.NOT_OBSERVED)
+            reason = ("ha_attempt_uncertain" if attempted else
+                      str(error) if isinstance(error, HomeActionDenied) else "ha_preflight_failed")
             return HomeActionResult(request.request_id, request.entity_id,
-                "uncertain" if attempted else "failed",
-                "ha_attempt_uncertain" if attempted else "ha_preflight_failed",
-                dispatch=dispatch, effect=effect)
+                "uncertain" if attempted else "failed", reason, dispatch=dispatch, effect=effect)
 
 
 def request_from_service(

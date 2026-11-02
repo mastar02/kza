@@ -59,7 +59,11 @@ class TypedHA(ObservedHA):
     async def confirm_home_action(self, *args, **kwargs):
         return await HomeAssistantClient.confirm_home_action(self, *args, **kwargs)
 
-    async def call_service_once(self, domain, service, entity_id, data):
+    async def call_service_once(self, domain, service, entity_id, data, *, guard=None, on_dispatch=None):
+        if guard is not None and guard() is not True:
+            return ServiceCallOutcome(ServiceCallStatus.NOT_SENT, "service_authority_denied")
+        if on_dispatch is not None:
+            on_dispatch()
         self.sends.append((domain, service, entity_id, data))
         if self.unit_after_send is not None:
             self.unit = self.unit_after_send

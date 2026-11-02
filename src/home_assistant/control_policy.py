@@ -1,12 +1,12 @@
 """Mandatory control selection and server-owned action provenance."""
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 import json
 from pathlib import Path
 import re
-from typing import TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING
 
 from src.home_assistant.operations import BLIND_CLASSES, DOMAIN_OPERATIONS, HVAC_MODES, finite_number
 from src.home_assistant.effect_plans import EffectIntent, GroupMembershipSource, MAX_EFFECTS, scene_effects_from_states
@@ -38,6 +38,7 @@ class HomeActor:
     kind: ActorKind
     subject: str
     permissions: frozenset[str]
+    _current: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if (
@@ -45,8 +46,19 @@ class HomeActor:
             or type(self.permissions) is not frozenset
             or any(type(value) is not str for value in self.permissions)
             or (self.kind is ActorKind.HOUSEHOLD and self.subject != "household")
+            or self._current is not None and not callable(self._current)
         ):
             raise ValueError("invalid_actor")
+
+    def require_current(self) -> None:
+        """An admitted session cannot authorize work after its authority ends."""
+        if self._current is not None:
+            try:
+                allowed = self._current()
+            except Exception:
+                raise HomeActionDenied("home_authority_unavailable") from None
+            if allowed is not True:
+                raise HomeActionDenied("home_control_denied")
 
     @classmethod
     def household(cls) -> "HomeActor":
@@ -187,6 +199,9 @@ class HomeControlPolicy:
 
     async def require_allowed(self, request: "HomeActionRequest", actor: HomeActor) -> EntityGrant:
         """Check actor, producer, selected entity, operation and current limits."""
+        if not isinstance(actor, HomeActor):
+            raise HomeActionDenied("home_control_denied")
+        actor.require_current()
         return self.require_from_grants(request, actor, await self.snapshot_grants())
 
     @staticmethod
@@ -194,6 +209,7 @@ class HomeControlPolicy:
         """Validate an actor and effect against one atomic selection observation."""
         if not isinstance(actor, HomeActor) or "home:control" not in actor.permissions:
             raise HomeActionDenied("home_control_denied")
+        actor.require_current()
         if (
             not isinstance(request.origin, ActionOrigin)
             or (request.origin is ActionOrigin.HTTP) != (actor.kind is ActorKind.DASHBOARD)

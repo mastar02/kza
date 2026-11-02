@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Literal, Self
 
 import aiosqlite
-from fastapi import Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, WebSocketException
+from fastapi import Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, WebSocketException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,7 +23,7 @@ from src.core.sanitize import sanitize_dict
 from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
-from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session
+from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session, session_guard
 from src.dashboard.authority import DashboardAuthority
 from src.dashboard.home_api import (
     LegacyHomeActionBody, execute_home_action, register_home_frontend, register_home_routes,
@@ -479,7 +479,7 @@ class DashboardAPI:
 
         @self.app.post("/api/entities/{entity_id}/call", response_model=HomeActionResult)
         async def call_entity_service(
-            entity_id: str, service: str, data: LegacyHomeActionBody | None = None,
+            entity_id: str, service: str, request: Request, data: LegacyHomeActionBody | None = None,
             principal: DashboardPrincipal = Depends(require_dashboard_session),
         ) -> HomeActionResult:
             """Map legacy controls to the shared allowlisted, confirmed service."""
@@ -492,6 +492,7 @@ class DashboardAPI:
             return await execute_home_action(
                 self.home_actions,
                 HomeActionRequest(entity_id, service, data.request_id, data.brightness_pct), principal,
+                current=session_guard(request, frozenset({'home:control'}), principal),
             )
 
         # ==================== Servicios disponibles ====================
