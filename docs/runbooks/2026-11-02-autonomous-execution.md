@@ -575,3 +575,39 @@ de prueba seguía en cero; se corrigió el alcance del parche y la repetición
 terminó con exit 0. La evidencia está en
 `data/autonomous-roadmap-20261102/t047/login-replacement-evidence.json`.
 Continúan el montaje NEXO de Voces y la asociación manual con personas.
+
+### Voces NEXO con revisión real
+
+La revisión `4d2c0ef` monta Voces en `#voces`, con las columnas, colores y
+diálogo del diseño aprobado. Consulta perfiles y capturas reales, reproduce
+PCM revisado, confirma perfiles, corrige grupos y permite borrar y recrear un
+perfil. Los contadores describen la página actual. El símbolo vocal es
+decorativo; los nombres y grupos proceden del ledger. El formulario explica
+la conservación del perfil y el vencimiento independiente de audio y texto.
+
+Cada conexión conserva su sesión, socket, stores y controlador originales.
+Los GET esperan reset/ACK y `rest_ready`; únicamente se admiten los tres
+canales vocales. Salir, vencer o cerrar sesión sella nuevas lecturas y ACK,
+limpia DOM, selección, borradores y cursores, y espera los decoders y el
+reproductor nativo antes de abrir otra conexión. Un cuerpo tardío no puede
+restaurar una vista ni retirar la sesión siguiente. Un 403 funcional provoca
+una comprobación de identidad, sin consumir dos veces el cuerpo original.
+
+Un resultado incierto bloquea nuevas mutaciones hasta una actualización real.
+La misma confirmación incierta conserva su ID durante la sesión, incluso al
+salir y volver a Voces, sin guardar nombres ni muestras para deduplicarla.
+El servidor compara el comando completo. Un éxito conocido permite una
+intención nueva, incluida la recreación posterior al borrado. La memoria de
+IDs inciertos está acotada y se retira al cerrar o cambiar de sesión.
+
+La suite completa pasa 6.346 casos y conserva el xfail conocido de C05/T037,
+sin cambios durante su ejecución. El delta posterior de frontend y harness
+queda cubierto por 110 pruebas Node, Ruff y Chromium con login individual,
+PCM sintético, un `emptied` nativo retenido, pérdida del recibo, recreación,
+correcciones, borrado, permisos y reflujo a 320/390 píxeles. La regresión de
+Hogar y Personas también pasó. No se suman estas selecciones superpuestas.
+Los hashes, logs, XML y capturas están registrados en
+`data/autonomous-roadmap-20261102/t047/voices-nexo-evidence.json`.
+T047 sigue en progreso: falta la asociación manual persistente voz-persona y
+su limpieza al retirar una cuenta. La revisión vocal no concede permisos ni
+consentimiento. No se acepta ningún criterio con esta unidad local.
