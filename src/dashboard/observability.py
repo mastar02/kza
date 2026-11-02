@@ -15,18 +15,21 @@ WS frames por type (ver src/dashboard/live_event_bus.py:LiveEventType):
     tts:      {zone, text, duration_ms}
     cooldown: {endpoint_id, until, step}
 
-Cada endpoint setea header `X-KZA-Source: real|mock|degraded`. Cae en mocks si
-no hay servicio inyectado, falla, o devuelve vacío.
+Cada colección declara fuente, estado de observación y caducidad. El modo demo
+requiere use_mocks=True; ausencia o fallo en modo operativo nunca devuelve ejemplos.
 """
 
 import logging
-import time
-from datetime import datetime
+from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, WebSocketException
 
 from src.analytics.event_logger import EventLogger
 from src.dashboard import observability_mocks as mocks
-from src.dashboard import system_monitor
+from src.dashboard.monitor_service import MonitorService
+from src.dashboard.observation_http import ObservationHeaders
+from src.core.observation import Observation, ObservationSource, ObservationReason
+from src.home_assistant.capability_service import HomeCapabilityService
+from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
 from src.dashboard.auth import COOKIE_NAME, auth_configured, check_token, require_dashboard_session
 from src.core.owned_work import WorkCloseTimeout
 from src.dashboard.live_event_bus import LiveEventBus
@@ -45,7 +48,7 @@ def _zones_adapter(zone_manager) -> list[dict]:
             "user": None, "lastUtterance": None,
             "audioState": z.state.value if hasattr(z.state, "value") else str(z.state),
             "volume": z.volume, "ma1260_zone": ma_letter,
-            "spotify": {"playing": False},
+            "spotify": {"playing": None},
         })
     return out
 
@@ -55,7 +58,6 @@ def _llm_endpoints_adapter(llm_router, metrics_tracker=None) -> list[dict]:
     cd = getattr(llm_router, "_cd", None)
     if not endpoints:
         return []
-    now = time.time()
     out = []
     for ep in endpoints:
         ep_id = getattr(ep, "id", "?")
@@ -70,23 +72,24 @@ def _llm_endpoints_adapter(llm_router, metrics_tracker=None) -> list[dict]:
         kind = getattr(ep, "kind", None)
         kind_val = kind.value if hasattr(kind, "value") else str(kind)
         # Métricas reales rolling 5min (tps, ttft_ms p50, calls)
-        tps, ttft_ms, calls, last_check_ts = None, None, 0, now
+        tps, ttft_ms, calls, last_check_ts = None, None, None, None
         if metrics_tracker is not None:
             snap = metrics_tracker.snapshot(ep_id)
             if snap:
                 tps = snap.get("tps")
                 ttft_ms = snap.get("ttft_ms")
-                calls = snap.get("calls", 0)
-                last_check_ts = snap.get("last_call_ts", now)
+                calls = snap.get("calls")
+                last_check_ts = snap.get("last_call_ts")
         out.append({
             "id": ep_id, "name": ep_id,
             "url": getattr(getattr(ep, "client", None), "base_url", "local"),
             "priority": getattr(ep, "priority", 0),
             "role": kind_val,
-            "state": "cooldown" if in_cd else "healthy",
+            "state": "cooldown" if in_cd else "unknown",
             "tps": tps, "ttft_ms": ttft_ms, "calls_5min": calls,
-            "last_check": datetime.fromtimestamp(last_check_ts).strftime("%H:%M:%S"),
-            "failures_7d": {"timeout": 0, "billing": 0, "rate_limit": 0, "idle": 0},
+            "last_check": None,
+            "last_call_at": datetime.fromtimestamp(last_check_ts, tz=UTC).isoformat() if type(last_check_ts) in (int, float) else None,
+            "failures_7d": {},
             "cooldown_ends": cooldown_ends,
         })
     return out
@@ -96,18 +99,14 @@ def _users_adapter(user_manager) -> list[dict]:
     users = user_manager.get_all_users(active_only=True)
     out = []
     for u in users:
-        lvl = u.permission_level.value if hasattr(u.permission_level, "value") else int(u.permission_level)
         out.append({
             "id": u.user_id, "name": u.name,
-            "samples": 1 if u.voice_embedding is not None else 0,
-            "lastEnroll": datetime.fromtimestamp(u.created_at).strftime("%Y-%m-%d"),
-            "emotions": {"neutral": 100},
+            "samples": None,
+            "lastEnroll": None,
+            "emotions": {},
             "topCommands": [],
-            "permissions": {
-                "climate": lvl >= 1, "lights": lvl >= 1,
-                "security": lvl >= 3, "music": lvl >= 1, "scenes": lvl >= 2,
-            },
-            "pca": [[0.0, 0.0]],
+            "permissions": {},
+            "pca": [],
         })
     return out
 
@@ -156,47 +155,32 @@ def _ha_actions_adapter(event_logger, *, limit: int = 50) -> list[dict] | None:
             "user": ev.user_name or ev.user_id or "—",
             "service": f"{domain}.{ev.action}",
             "target": ev.entity_id,
-            "args": str(ctx.get("args", "{}")),
-            "ok": ctx.get("success") is True,
-            "lat_ms": ctx.get("latency_ms", 0),
+            "args": str(ctx["args"]) if "args" in ctx else None,
+            "ok": ctx.get("success") if type(ctx.get("success")) is bool else None,
+            "lat_ms": ctx.get("latency_ms"),
         })
         if len(out) >= limit:
             break
     return out
 
 
-async def _ha_entities_adapter(ha_client) -> list[dict] | None:
-    """HA convención: async/await para I/O.
-
-    Probamos varios method names que HA clients suelen exponer:
-    `get_all_entities` (KZA HomeAssistantClient), `get_states`, `states`.
-    """
-    import inspect
-    fn = (getattr(ha_client, "get_all_entities", None)
-          or getattr(ha_client, "get_states", None)
-          or getattr(ha_client, "states", None))
-    if not callable(fn):
-        return None
-    try:
-        states = await fn() if inspect.iscoroutinefunction(fn) else fn()
-        if states is None:
+async def _ha_entities_adapter(ha_client, *, snapshot: HAStatesSnapshot | None = None) -> list[dict] | None:
+    """Project an actual typed read; failed reads cannot masquerade as empty homes."""
+    if snapshot is None:
+        read = getattr(ha_client, "get_state_snapshot", None)
+        if not callable(read):
             return None
-        out = []
-        for s in states[:200]:
-            entity_id = s.get("entity_id", "")
-            domain = entity_id.split(".", 1)[0] if "." in entity_id else "—"
-            out.append({
-                "id": entity_id, "domain": domain,
-                "name": s.get("attributes", {}).get("friendly_name", entity_id),
-                "state": s.get("state", "unknown"),
-                "attrs": s.get("attributes", {}),
-                "score": 1.0,
-                "lastSeen": (s.get("last_changed") or "")[:5],
-            })
-        return out
-    except Exception as e:
-        logger.warning(f"ha_client adapter failed: {e}")
+        snapshot = await read()
+    if not isinstance(snapshot, HAStatesSnapshot) or not snapshot.available:
         return None
+    return [{
+        "id": state["entity_id"], "domain": state["entity_id"].partition(".")[0],
+        "name": state.get("attributes", {}).get("friendly_name", state["entity_id"]),
+        "state": state["state"], "attrs": state.get("attributes", {}),
+        "score": None,
+        "lastSeen": snapshot.observed_at.isoformat() if snapshot.observed_at else None,
+        "state_changed_at": state.get("last_changed"),
+    } for state in snapshot.states[:200]]
 
 
 SOURCE_HEADER = "X-KZA-Source"  # values: "real", "mock", "degraded"
@@ -213,7 +197,8 @@ def register_observability_routes(
     zone_manager=None,
     event_logger=None,
     llm_metrics=None,
-    use_mocks: bool = True,
+    use_mocks: bool = False,
+    capabilities: HomeCapabilityService | None = None,
 ) -> None:
     """Registrar todas las rutas observability en `app`.
 
@@ -221,12 +206,16 @@ def register_observability_routes(
     matchea rutas en orden; un mount catch-all en "/" engulle los /api/*.
 
     Headers de respuesta: cada endpoint setea `X-KZA-Source` con
-        - "real": datos del manager inyectado
-        - "mock": no había manager o use_mocks=True
-        - "degraded": adapter falló y se cae al mock
-    Esto permite a la UI mostrar un banner "datos simulados" cuando aplica.
+        - "real": lectura real, incluidas colecciones vacías o parciales
+        - "mock": demo explícita con use_mocks=True, sin fecha de observación
+        - "degraded": fuente no disponible o vencida, sin ejemplos de reemplazo
+    Los headers de observación conservan los instantes reales y campos desconocidos.
     """
     router = APIRouter(dependencies=[Depends(require_dashboard_session)])
+    observations = ObservationHeaders()
+    monitors = MonitorService()
+    app.state.observability_monitors = monitors
+    app.add_event_handler("shutdown", monitors.aclose)
     real_services = {
         "ha_client": ha_client, "llm_router": llm_router,
         "user_manager": user_manager, "alert_manager": alert_manager,
@@ -241,49 +230,48 @@ def register_observability_routes(
             f"datos reales."
         )
 
-    def _adapt(adapter_call, mock_data, response):
-        """Devuelve datos reales si `adapter_call` produce un resultado.
-
-        Setea SOURCE_HEADER:
-          - "real" si el adapter devolvió un valor (incluso lista vacía — el
-            usuario quiere ver "0 usuarios enrolados", no demos falsos).
-          - "degraded" si el adapter retornó None (no aplicable) o lanzó.
-          - "mock" si use_mocks=True.
-        """
+    def _adapt(adapter_call, mock_data, response, *, component, source, unobserved_fields=()):
+        """Return real data or explicit unavailability; demo requires configuration."""
         if use_mocks:
-            response.headers[SOURCE_HEADER] = "mock"
+            _set_source(response, component, source, real=False)
             return mock_data
         try:
             data = adapter_call()
-            if data is not None:
-                response.headers[SOURCE_HEADER] = "real"
-                return data
-            response.headers[SOURCE_HEADER] = "degraded"
-            logger.warning("adapter returned None, serving mocks (degraded)")
-        except Exception as e:
-            response.headers[SOURCE_HEADER] = "degraded"
-            logger.warning(f"adapter raised, serving mocks (degraded): {e}")
-        return mock_data
+        except Exception as error:
+            logger.warning("Observation unavailable [%s]: %s", component, type(error).__name__)
+            data = None
+        _set_source(response, component, source, real=data is not None, unobserved_fields=unobserved_fields)
+        return data if data is not None else []
 
-    def _set_source(response: Response, real: bool) -> None:
-        response.headers[SOURCE_HEADER] = "real" if real else "mock"
+    def _set_source(response, component, source, *, real=False, observation=None, unobserved_fields=(), reason=None):
+        return observations.apply(response, component, source, available=real, observation=observation,
+            demo=use_mocks, unobserved_fields=unobserved_fields, reason=reason)
 
-    async def _adapt_events(adapter_call, mock_data, response):
+    async def _adapt_events(adapter_call, mock_data, response, *, component, source, unobserved_fields=()):
+        if use_mocks:
+            return _adapt(lambda: None, mock_data, response, component=component, source=source)
         if isinstance(event_logger, EventLogger):
+            attempted = datetime.now(UTC)
+            def read():
+                data = adapter_call()
+                return data, datetime.now(UTC)
             try:
-                observed = await event_logger.acall(adapter_call)
+                data, observed = await event_logger.acall(read)
             except Exception as error:
                 logger.warning("Event observation unavailable: %s", type(error).__name__)
-                observed = None
-            return _adapt(lambda: observed, mock_data, response)
-        return _adapt(adapter_call, mock_data, response)
+                data, observed = None, None
+            observation = Observation.from_read(source, available=data is not None, observed_at=observed,
+                ttl_s=6, attempted_at=attempted, unobserved_fields=unobserved_fields)
+            _set_source(response, component, source, observation=observation)
+            return data if data is not None else []
+        return _adapt(adapter_call, mock_data, response, component=component, source=source,
+                      unobserved_fields=unobserved_fields)
 
     @router.get("/api/zones")
     async def get_zones(response: Response):
-        if zone_manager is None:
-            _set_source(response, real=False)
-            return mocks.ZONES
-        return _adapt(lambda: _zones_adapter(zone_manager), mocks.ZONES, response)
+        return _adapt(lambda: _zones_adapter(zone_manager) if zone_manager is not None else None,
+            mocks.ZONES, response, component="zones", source=ObservationSource.ZONE_MANAGER,
+            unobserved_fields=("user", "last_utterance", "spotify_playback"))
 
     @router.get("/api/conversations")
     async def get_conversations(
@@ -305,8 +293,8 @@ def register_observability_routes(
                 except RuntimeError:
                     raise HTTPException(503,detail='conversation_receipts_unavailable') from None
             raise HTTPException(503,detail='conversation_receipts_unavailable')
-        response.headers[SOURCE_HEADER] = "mock"
-        items = mocks.CONVERSATIONS
+        _set_source(response, "conversations", ObservationSource.EVENT_STORE)
+        items = mocks.CONVERSATIONS if use_mocks else []
         if user:
             items = [i for i in items if i["user"] == user]
         if zone:
@@ -317,43 +305,49 @@ def register_observability_routes(
 
     @router.get("/api/ha/entities")
     async def get_ha_entities(response: Response, domain: str | None = None):
-        if use_mocks or ha_client is None:
-            response.headers[SOURCE_HEADER] = "mock"
+        source = ObservationSource.HA_STATES
+        if use_mocks:
+            _set_source(response, "ha_entities", source)
             items = mocks.HA_ENTITIES
+        elif ha_client is None:
+            _set_source(response, "ha_entities", source, reason=ObservationReason.UNCONFIGURED)
+            items = []
         else:
             try:
-                real = await _ha_entities_adapter(ha_client)
-                if real is not None:
-                    response.headers[SOURCE_HEADER] = "real"
-                    items = real
+                if capabilities is not None:
+                    snapshot = await capabilities.snapshot()
+                    states, observation = snapshot.states, snapshot.observation
                 else:
-                    response.headers[SOURCE_HEADER] = "degraded"
-                    items = mocks.HA_ENTITIES
-            except Exception as e:
-                response.headers[SOURCE_HEADER] = "degraded"
-                logger.warning(f"ha entities adapter raised, fallback: {e}")
-                items = mocks.HA_ENTITIES
+                    states = await ha_client.get_state_snapshot()
+                    if not isinstance(states, HAStatesSnapshot):
+                        raise ValueError("invalid_state_observation")
+                    reason = ObservationReason.DENIED if states.reason == "ha_states_denied" else None
+                    observation = Observation.from_read(source, available=states.available,
+                        observed_at=states.observed_at, expires_at=states.expires_at,
+                        attempted_at=states.attempted_at, ttl_s=STATE_OBSERVATION_TTL_S, reason=reason)
+                _set_source(response, "ha_entities", source, observation=observation,
+                            unobserved_fields=("semantic_score",))
+                items = await _ha_entities_adapter(ha_client, snapshot=states) if observation.current() else []
+                items = items if items is not None else []
+            except Exception as error:
+                logger.warning("HA entity observation unavailable: %s", type(error).__name__)
+                _set_source(response, "ha_entities", source)
+                items = []
         if domain:
-            items = [e for e in items if e["domain"] == domain]
+            items = [value for value in items if value["domain"] == domain]
         return items
 
     @router.get("/api/ha/actions")
     async def get_ha_actions(response: Response):
-        if not use_mocks and event_logger is not None:
-            return await _adapt_events(lambda: _ha_actions_adapter(event_logger),
-                          mocks.HA_ACTIONS, response)
-        response.headers[SOURCE_HEADER] = "mock"
-        return mocks.HA_ACTIONS
+        return await _adapt_events(lambda: _ha_actions_adapter(event_logger) if event_logger is not None else None,
+            mocks.HA_ACTIONS, response, component="ha_actions", source=ObservationSource.EVENT_STORE,
+            unobserved_fields=("action_effect",))
 
     @router.get("/api/llm/endpoints")
     async def get_llm_endpoints(response: Response):
-        if llm_router is None:
-            _set_source(response, real=False)
-            return mocks.LLM_ENDPOINTS
-        return _adapt(
-            lambda: _llm_endpoints_adapter(llm_router, llm_metrics),
-            mocks.LLM_ENDPOINTS, response,
-        )
+        return _adapt(lambda: _llm_endpoints_adapter(llm_router, llm_metrics) if llm_router is not None else None,
+            mocks.LLM_ENDPOINTS, response, component="llm_endpoints", source=ObservationSource.ROUTER_STATE,
+            unobserved_fields=("backend_health", "last_check", "failures_7d"))
 
     @router.post("/api/llm/endpoints/{endpoint_id}/clear-cooldown")
     async def clear_cooldown(endpoint_id: str):
@@ -373,44 +367,55 @@ def register_observability_routes(
 
     @router.get("/api/users")
     async def get_users(response: Response):
-        if user_manager is None:
-            _set_source(response, real=False)
-            return mocks.USERS
-        return _adapt(lambda: _users_adapter(user_manager), mocks.USERS, response)
+        return _adapt(lambda: _users_adapter(user_manager) if user_manager is not None else None,
+            mocks.USERS, response, component="users", source=ObservationSource.USER_REGISTRY,
+            unobserved_fields=("samples", "enrollment_time", "emotions", "pca", "effective_permissions", "top_commands"))
 
     @router.get("/api/alerts")
     async def get_alerts(response: Response, status: str | None = None):
-        if use_mocks or alert_manager is None:
-            response.headers[SOURCE_HEADER] = "mock"
-            items = mocks.ALERTS
-            if status == "active":
-                items = [a for a in items if not a["acked"]]
-            elif status == "acked":
-                items = [a for a in items if a["acked"]]
-            return items
-        try:
-            real = _alerts_adapter(alert_manager, status)
-            if real is not None:
-                response.headers[SOURCE_HEADER] = "real"
-                return real
-            response.headers[SOURCE_HEADER] = "degraded"
-            return mocks.ALERTS
-        except Exception as e:
-            response.headers[SOURCE_HEADER] = "degraded"
-            logger.warning(f"alerts adapter failed: {e}")
-            return mocks.ALERTS
+        items = _adapt(lambda: _alerts_adapter(alert_manager, status) if alert_manager is not None else None,
+            mocks.ALERTS, response, component="alerts", source=ObservationSource.ALERT_MANAGER)
+        if use_mocks and status in {"active", "acked"}:
+            items = [value for value in items if value["acked"] == (status == "acked")]
+        return items
 
     @router.get("/api/system/gpus")
-    async def get_gpus(response: Response):
-        real = system_monitor.gpu_snapshot()
-        _set_source(response, real=real is not None)
-        return real if real else mocks.GPUS
+    async def get_gpus(response: Response, request: Request):
+        source = ObservationSource.GPU_PROBE
+        if use_mocks:
+            _set_source(response, "gpus", source)
+            return mocks.GPUS
+        try:
+            sample = await monitors.sample("gpus")
+            data, observation = sample.data, sample.observation
+        except Exception as error:
+            logger.warning("Monitor observation unavailable [gpus]: %s", type(error).__name__)
+            data, observation = None, None
+        if not auth_configured() or not check_token(request.headers.get("authorization"), request.cookies.get(COOKIE_NAME)):
+            data = None
+            raise HTTPException(401, detail="dashboard_session_expired", headers={"Cache-Control": "no-store"})
+        _set_source(response, "gpus", source, real=data is not None, observation=observation,
+                    unobserved_fields=("role_assignment", "process_probe"))
+        return data if data is not None else []
 
     @router.get("/api/system/services")
-    async def get_services(response: Response):
-        real = system_monitor.services_snapshot()
-        _set_source(response, real=real is not None)
-        return real if real else mocks.SERVICES
+    async def get_services(response: Response, request: Request):
+        source = ObservationSource.SERVICE_PROBE
+        if use_mocks:
+            _set_source(response, "services", source)
+            return mocks.SERVICES
+        try:
+            sample = await monitors.sample("services")
+            data, observation = sample.data, sample.observation
+        except Exception as error:
+            logger.warning("Monitor observation unavailable [services]: %s", type(error).__name__)
+            data, observation = None, None
+        if not auth_configured() or not check_token(request.headers.get("authorization"), request.cookies.get(COOKIE_NAME)):
+            data = None
+            raise HTTPException(401, detail="dashboard_session_expired", headers={"Cache-Control": "no-store"})
+        _set_source(response, "services", source, real=data is not None, observation=observation,
+                    unobserved_fields=("in_process_health", "process_memory", "uptime"))
+        return data if data is not None else []
 
     if event_bus is not None:
         @router.websocket("/ws/live")

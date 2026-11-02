@@ -149,6 +149,22 @@ espera; Casa ancla la vigencia a tiempo monotónico e incluye los vencimientos
 individuales de las entidades. La acción sigue pasando por la revalidación final
 de `HomeActionService`; el descubrimiento no concede permisos.
 
+Las colecciones técnicas añaden `X-KZA-Source-Id`, estado de observación,
+`Observed-At`, `Expires-At` y campos no observados. `Expiry-Scope=observation`
+describe frescura, sin extender retención de contenido. Una lista real vacía
+conserva fuente real; un fallo conserva las fechas anteriores y declara
+indisponibilidad. El cache guarda sólo metadata de nueve componentes, sin
+payloads ni filtros personales, y no retrocede ante respuestas antiguas.
+La demo requiere configuración explícita; los valores inferidos quedan
+desconocidos o parciales, sin acreditar salud, muestras o permisos efectivos.
+
+Los probes nativos comparten trabajo acotado fuera del event loop y fijan su
+observación una sola vez al terminar. El cierre intenta todos sus dueños incluso
+si falla el servidor o el catálogo. Los headers de conversaciones se construyen
+tras la consulta real, dentro del dueño ASGI; su frescura se limita además por
+el vencimiento de las filas. Los receipts y las guardas posteriores a headers
+permanecen como autoridad de entrega y revocación.
+
 Esta infraestructura no acepta C06 por sí sola. La procedencia de cada endpoint,
 la presentación completa de desconocidos y la renovación de las vistas mantienen
 sus verificaciones propias de T012, T040 y T046.

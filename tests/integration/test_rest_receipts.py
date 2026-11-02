@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 import json
 import threading
 
@@ -188,11 +189,34 @@ async def test_receipt_metadata_contains_no_transcript_and_disconnect_does_not_r
                     response = await client.get('/api/conversations')
                     assert response.json()['snapshot']['rows'][0]['stt']==PRIVATE
                     assert response.headers['cache-control']=='no-store'
+                    snapshot = response.json()['snapshot']
+                    observed = datetime.fromisoformat(response.headers['X-KZA-Observed-At']).timestamp()
+                    expires = datetime.fromisoformat(response.headers['X-KZA-Expires-At']).timestamp()
+                    assert response.headers['X-KZA-Source-Id']=='event-store'
+                    assert response.headers['X-KZA-Expiry-Scope']=='observation'
+                    assert observed==pytest.approx(snapshot['observed_at'])
+                    assert expires<=snapshot['expires_at'] and expires<=observed+6
+                    assert PRIVATE not in str(response.headers)
             assert await store.pending(source.conversation_id)==1
             def metadata():
                 with privacy.ledger._transaction() as db:
                     return str(db.execute('SELECT * FROM live_deliveries').fetchall())
             assert PRIVATE not in await privacy.acall(metadata)
+
+
+async def test_empty_conversation_query_has_real_observation_without_a_fictitious_content_expiry(tmp_path,dashboard_auth):
+    async with graph(tmp_path) as (privacy,_,bus,_,clock):
+        async with events_for(tmp_path,privacy) as events, ready_browser(bus) as peer:
+            app=DashboardAPI(event_logger=events,event_bus=bus).app
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
+                    headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
+                response=await client.get('/api/conversations')
+                assert response.status_code==200 and response.json()['snapshot'] is None
+                assert response.headers['X-KZA-Observation-State']=='fresh'
+                assert response.headers['X-KZA-Expiry-Scope']=='observation'
+                observed=datetime.fromisoformat(response.headers['X-KZA-Observed-At']).timestamp()
+                expires=datetime.fromisoformat(response.headers['X-KZA-Expires-At']).timestamp()
+                assert observed==clock.now and expires==observed+6
 
 
 async def test_scope_capacity_and_close_timeout_keep_actual_native_operations(tmp_path,dashboard_auth,monkeypatch):

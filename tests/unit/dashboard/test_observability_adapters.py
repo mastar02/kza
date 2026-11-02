@@ -78,8 +78,10 @@ def test_users_adapter_real_data(fake_user_manager, dashboard_auth):
     assert r.status_code == 200
     [u] = r.json()
     assert u["id"] == "u_test"
-    assert u["samples"] == 1
-    assert u["permissions"]["lights"] is True
+    assert u["samples"] is None and u["permissions"] == {}
+    assert u["emotions"] == {} and u["pca"] == []
+    assert r.headers["X-KZA-Observation-State"] == "partial"
+    assert "effective_permissions" in r.headers["X-KZA-Unobserved-Fields"]
 
 
 def test_alerts_adapter_real_data(fake_alert_manager, dashboard_auth):
@@ -105,7 +107,9 @@ def test_llm_endpoints_adapter_real(fake_llm_router, dashboard_auth):
     assert r.status_code == 200
     [e] = r.json()
     assert e["id"] == "vllm-7b"
-    assert e["state"] == "healthy"
+    assert e["state"] == "unknown"
+    assert e["last_check"] is None and e["failures_7d"] == {}
+    assert r.headers["X-KZA-Observation-State"] == "partial"
     assert e["url"] == "http://localhost:8100"
 
 
@@ -117,14 +121,32 @@ def test_clear_cooldown_real(fake_llm_router, dashboard_auth):
     fake_llm_router._cd.record_success.assert_called_once_with("vllm-7b")
 
 
-def test_adapter_failure_falls_back_to_mocks_with_degraded_source(dashboard_auth):
+def test_adapter_failure_is_unavailable_without_demo_data(dashboard_auth):
     bad = MagicMock()
     bad.get_all_zones.side_effect = RuntimeError("kaboom")
     c = _client(dashboard_auth, zone_manager=bad)
     r = c.get("/api/zones")
     assert r.status_code == 200
     assert r.headers.get("X-KZA-Source") == "degraded"
-    assert len(r.json()) == 5  # mocks tienen 5
+    assert r.json() == []
+    assert r.headers["X-KZA-Observation-State"] == "unavailable"
+    assert "X-KZA-Observed-At" not in r.headers
+
+
+def test_real_empty_and_failed_reads_have_distinct_metadata_without_renewing_dates(dashboard_auth):
+    manager = MagicMock()
+    manager.get_all_zones.return_value = {}
+    with _client(dashboard_auth, zone_manager=manager) as client:
+        first = client.get('/api/zones')
+        assert first.json() == [] and first.headers['X-KZA-Source'] == 'real'
+        assert first.headers['X-KZA-Source-Id'] == 'zone-manager'
+        manager.get_all_zones.side_effect = RuntimeError('synthetic failure')
+        failed = client.get('/api/zones')
+        assert failed.json() == [] and failed.headers['X-KZA-Source'] == 'degraded'
+        assert failed.headers['X-KZA-Observation-State'] == 'unavailable'
+        assert failed.headers['X-KZA-Observed-At'] == first.headers['X-KZA-Observed-At']
+        assert failed.headers['X-KZA-Expires-At'] == first.headers['X-KZA-Expires-At']
+        assert failed.headers['Cache-Control'] == 'no-store'
 
 
 def test_warn_logged_when_use_mocks_with_real_services_injected(caplog, dashboard_auth):

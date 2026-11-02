@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from contextvars import Context
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 import json
 from typing import TYPE_CHECKING
@@ -16,6 +17,8 @@ from starlette.responses import Response
 from starlette.types import ASGIApp,Receive,Scope,Send
 
 from src.analytics.event_logger import EventLogger
+from src.core.observation import Observation, ObservationReason, ObservationSource
+from src.dashboard.observation_http import observation_headers
 from src.dashboard.conversation_projection import ConversationProjection
 from src.dashboard.live_retention_types import RevisionSet,RevisionStamp,SnapshotMetadata
 from src.memory.fact_ledger import MemorySource
@@ -230,9 +233,20 @@ class RestDeliveryOwner:
                 started = True
                 await self._error(send,428)
                 return RestResult.FAILED
+            expiry = min(observed + 6, operation.expires_at) if operation.rows else observed + 6
+            observed_dt = datetime.fromtimestamp(observed, UTC)
+            if expiry > observed:
+                observation = Observation.from_read(ObservationSource.EVENT_STORE, available=True,
+                    observed_at=observed_dt, expires_at=datetime.fromtimestamp(expiry, UTC), ttl_s=6,
+                    attempted_at=observed_dt)
+            else:
+                observation = Observation.from_read(ObservationSource.EVENT_STORE, available=False,
+                    observed_at=None, ttl_s=6, attempted_at=observed_dt, reason=ObservationReason.EXPIRED)
+            metadata = observation_headers(observation, now=datetime.fromtimestamp(self.retention.clock(), UTC))
             started = True
             await send({'type':'http.response.start','status':200,'headers':[
-                (b'content-type',b'application/json'),(b'cache-control',b'no-store'),(b'x-kza-source',b'real')]})
+                (b'content-type',b'application/json'),
+                *((key.lower().encode('ascii'),value.encode('ascii')) for key,value in metadata.items())]})
             # Headers may themselves suspend. Recheck immediately before serializing
             # and handing private bytes to the actual body callback.
             available = (self.connection(connection) is state and guard() is True and not self.retention._closed

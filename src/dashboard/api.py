@@ -4,6 +4,7 @@ API REST con FastAPI para gestión de rutinas, presencia y configuración
 """
 
 import asyncio
+from contextlib import AsyncExitStack
 import json
 import logging
 import os
@@ -175,7 +176,7 @@ class DashboardAPI:
         event_logger=None,
         speaker_identifier=None,
         llm_metrics=None,
-        observability_use_mocks: bool = True,
+        observability_use_mocks: bool = False,
         *,
         home_rooms: Mapping[str, RoomConfig] | None = None,
         home_actions: HomeActionService | None = None,
@@ -213,6 +214,7 @@ class DashboardAPI:
         self.home_actions = home_actions if home_actions is not None else (
             HomeActionService(ha_client) if ha_client is not None else None
         )
+        self._owns_home_catalog = home_catalog is None
         self.home_catalog = home_catalog if home_catalog is not None else HomeCatalogService(
             ha_client, home_rooms or {}, policy=self.home_actions.policy if self.home_actions is not None else None,
             policy_provider=(lambda: self.home_actions.policy) if self.home_actions is not None else None)
@@ -864,6 +866,7 @@ class DashboardAPI:
             event_logger=self.event_logger,
             llm_metrics=self.llm_metrics,
             use_mocks=self.observability_use_mocks,
+            capabilities=getattr(self.home_catalog, "capabilities", None),
         )
 
         # ==================== Admin (mutativos, auth required) ============
@@ -983,17 +986,16 @@ class DashboardAPI:
             self._serve_task = None
 
     async def stop(self) -> None:
-        """Stop accepting HTTP requests and drain serving before shared services.
-
-        Uvicorn owns connection/request shutdown. Do not cancel its task while
-        controls may still be running, and do not close the injected HA client.
-        """
+        """Stop admission and drain owned resources, including after a serving error."""
         if self._server is not None:
             self._server.should_exit = True
-        task = self._serve_task
-        if task is not None and task is not asyncio.current_task():
-            await asyncio.shield(task)
-        await self.home_catalog.aclose()
+        async with AsyncExitStack() as closing:
+            closing.push_async_callback(self.app.state.observability_monitors.aclose)
+            if self._owns_home_catalog:
+                closing.push_async_callback(self.home_catalog.aclose)
+            task = self._serve_task
+            if task is not None and task is not asyncio.current_task():
+                await asyncio.shield(task)
 
     def run_sync(self):
         """Ejecutar servidor de forma síncrona (para testing)"""
