@@ -245,6 +245,8 @@ la sesión recién emitida antes de publicar su cookie. Los efectos comprometido
 y tickets pendientes mantienen su dueño. Esta unidad pasa 626 pruebas;
 `data/autonomous-roadmap-20261102/t013/body-evidence.json` conserva el detalle.
 
+### Persistencia y publicación de tareas
+
 La revisión `4289883` reúne cada transacción y lectura de listas en un callback
 nativo de SQLite, con guarda original antes del commit y rollback propio.
 Los tres mutadores HTTP propagan esa guarda; borrar un ítem comprueba también
@@ -252,8 +254,15 @@ la lista de la ruta. Un fallo de rollback bloquea proyecciones posteriores.
 El cierre conserva su dueño y conexión hasta terminar el trabajo real; el lock
 de ciclo de vida impide sustituirla mientras drena. La unidad pasa 797 pruebas;
 `data/autonomous-roadmap-20261102/t013/sqlite-list-evidence.json` contiene límites
-y evidencia. Los ámbitos personales y la publicación de recordatorios siguen
-pendientes.
+y evidencia. Los ámbitos personales siguen pendientes.
+
+La revisión `63334d2` aplica el mismo dueño a todas las operaciones de
+recordatorios. La sesión original llega hasta el commit y la tarea retenida
+publica después el aviso al scheduler. Un evento compartido evita referencias
+circulares; limpiarlo antes de consultar conserva el aviso que llega durante
+la consulta vacía. Un fallo del aviso conserva el recordatorio escrito sin
+acreditar una entrega futura. La unidad pasa 883 pruebas, con evidencia en
+`data/autonomous-roadmap-20261102/t013/reminder-evidence.json`.
 
 T013 sigue en curso: faltan guards de otras escrituras asíncronas, prevención de
 lecturas personales desde voz anónima, ámbitos personales y de evaluación,
