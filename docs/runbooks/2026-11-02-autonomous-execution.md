@@ -230,7 +230,15 @@ también corrigió fixtures que dejaban abierto un canal de llamadas a un host
 dummy; los clientes quedan ahora con dueño y cierre completos. La evidencia
 privada está en `data/autonomous-roadmap-20261102/t013/native-evidence.json`.
 
-T013 sigue en curso: faltan guards de commits de memoria y otras escrituras
-asíncronas, ámbitos personales y de evaluación, binding HTTP/WS, guardas de todos
+La revisión `82388d7` conserva la autoridad original durante confirmación,
+rechazo, borrado y retirada de conversaciones en memoria. La comprueba después
+del lock y antes del commit nativo; una retirada revierte sólo esa transacción.
+El dueño completa la reconciliación de una escritura ya comprometida aunque
+se cancele el observador o termine su sesión. La evidencia privada está en
+`data/autonomous-roadmap-20261102/t013/memory-evidence.json`.
+
+T013 sigue en curso: faltan guards de otras escrituras asíncronas, prevención de
+lecturas personales desde voz anónima, ámbitos personales y de evaluación,
+binding HTTP/WS, guardas de todos
 los cuerpos privados, gestión de credenciales y navegación por rol. No acredita
 accesos reales ni criterios de aceptación.
