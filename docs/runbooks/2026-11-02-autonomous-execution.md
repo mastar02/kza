@@ -529,3 +529,29 @@ Quedan el canal CONTROL_ONLY, su ámbito durable de reset, el controlador NEXO
 por socket/login y la asociación manual de perfiles con personas. La lectura
 exacta de Evaluación y la interfaz de credenciales continúan en T013. Esta
 unidad no acredita restauración conjunta de backups ni aceptación de campo.
+
+### Canal exclusivo de Voces
+
+`/ws/voices` exige lectura y revisión vocal antes de la admisión, y protocolo 3
+antes de crear la conexión y el desafío persistidos. El servidor fija el modo
+CONTROL_ONLY y sus tres canales: `voices:profiles`, `voices:captures` y
+`voices:review`. La suscripción queda fuera del broadcast general. También se
+validan cola, ticket, frame y canal REST antes de leer o entregar datos.
+
+El ámbito del reset se añade en el servidor a la clave interna de página,
+después de validar el UUID del wire. `technical:UUID` y `voices:UUID` conservan
+el namespace de autorización y separan sus obligaciones durables. Ni un reset
+vocal cubre deuda técnica ni uno técnico cubre deuda vocal. Las claves antiguas
+sin ámbito permanecen pendientes; el cliente no puede reclamar un prefijo.
+
+La revisión `68fbb3d` pasa 877 pruebas de dashboard, herramientas, privacidad,
+recibos y revisión vocal, además de Ruff. Comprueba cero proyección, encolado,
+bytes y tickets generales para el canal vocal; el suscriptor técnico simultáneo
+sigue funcionando. Su UUID no habilita consultas de conversaciones. La retirada
+de perfiles emite sólo el control de su canal. Las pruebas de vencimiento
+durante accept, idle y envío real cubren ambos modos y páginas vacías.
+Los hashes de 774 fuentes y las ejecuciones están en
+`data/autonomous-roadmap-20261102/t047/voices-control-evidence.json`.
+La suite completa de 6.310 pruebas corresponde a la unidad anterior; sus casos
+se superponen con estas 877 verificaciones y no se suman. Continúan el montaje
+NEXO de Voces, su retirada real de medios/ACK y la asociación manual con personas.
