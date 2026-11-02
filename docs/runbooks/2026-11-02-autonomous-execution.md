@@ -291,10 +291,14 @@ consultada conserva el turno independiente; retirar la captura actual cancela
 generación, entrega y procesamiento posterior. Los positivos de selección
 backend explícita conservan las pruebas nativas de transferencia y cierre.
 
-La última corrida completa pasa 6146 pruebas y conserva una exclusión conocida;
-falla la medición de latencia por una pausa cercana a 500 ms que no aparece en
-la medición aislada de diez repeticiones. La unidad sigue en verificación; la
-evidencia y los intentos están en
+La revisión `0174104` pasa la suite completa: 6147 pruebas y una exclusión
+conocida. Un diagnóstico vinculó la pausa de las corridas previas a la
+recolección de 215456 objetos acumulados por otros fixtures. La prueba retira
+ese estado antes de medir, mantiene GC y umbrales activos y cierra cada dueño
+de respuesta. En diez repeticiones mide una pausa máxima de 1,09 ms y una
+cancelación máxima de 1,69 ms. Esta medición sintética no acredita el peor caso
+del proceso completo bajo deuda de GC o carga física. La unidad queda
+verificada localmente; la evidencia y todos los intentos están en
 `data/autonomous-roadmap-20261102/t013/household-evidence.json`.
 
 T013 sigue en curso: faltan el cierre compartido de listas, recordatorios y
