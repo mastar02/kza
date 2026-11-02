@@ -31,6 +31,7 @@ from src.routines.routine_manager import RoutineManager
 from src.routines.factory import build_routine_scheduler
 from src.routines.routine_scheduler import RoutineScheduler
 from src.home_assistant.home_actions import HomeActionService
+from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.home_assistant.control_policy import HomeControlPolicy
 from src.pipeline.voice_pipeline import VoicePipeline
@@ -384,6 +385,9 @@ async def build_application(
         ha_client, policy=HomeControlPolicy(selection_path=ha_config.get("control_selection_path")),
     )
     shutdown.push_async_callback(home_action_service.close)
+    home_capabilities = HomeCapabilityService(ha_client, home_action_service.policy,
+                                            policy_provider=lambda: home_action_service.policy)
+    shutdown.push_async_callback(home_capabilities.aclose)
 
     # Verificar conexión (async)
     if await ha_client.test_connection():
@@ -1532,6 +1536,7 @@ async def build_application(
     )
     home_voice_resolver = HomeVoiceResolver(
         home_action_service, room_context_manager.get_all_rooms() if room_context_manager else {},
+        capabilities=home_capabilities,
     )
     request_router = RequestRouter(
         features=voice_services.features,
@@ -1646,6 +1651,7 @@ async def build_application(
         room_context_manager.get_all_rooms() if room_context_manager else {},
         multi_room_loop.get_microphone_snapshot if multi_room_loop else None,
         actions=home_action_service,
+        capabilities=home_capabilities,
     )
     routine_scheduler = await _initialize_routines(
         config, ha_client=ha_client, home_actions=home_action_service, shutdown=shutdown, start=False,
@@ -1776,7 +1782,7 @@ async def build_application(
         config=config, pipeline=pipeline, ha_client=ha_client,
         home_actions=home_action_service, privacy=privacy_services,
         voice_registry=voice_registry, voice_services=voice_services,
-        home_services=home_services, list_manager=list_manager,
+        home_services=home_services, home_capabilities=home_capabilities, list_manager=list_manager,
         reminder_manager=reminder_manager, routine_scheduler=routine_scheduler,
         dashboard=dashboard,
         models=ApplicationModels(stt, tts, chroma, speaker_identifier, emotion_detector),

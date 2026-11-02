@@ -184,7 +184,12 @@ async def test_final_action_boundary_remains_mandatory(voice_graph, case):
         ha.unit = None
     result = await speak(voice_graph, "Poné el aire a 23 grados")
     assert result["success"] is False
-    assert result["receipt"]["status"] == ("uncertain" if case == "no_effect" else "failed")
+    if case == "unit_unknown":
+        assert result["intent"] == "clarification_requested"
+        assert result["reason"] == "capability_unavailable"
+        assert "receipt" not in result
+    else:
+        assert result["receipt"]["status"] == ("uncertain" if case == "no_effect" else "failed")
     assert len(ha.sends) == int(case == "no_effect")
 
 

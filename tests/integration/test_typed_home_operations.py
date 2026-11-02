@@ -37,6 +37,22 @@ class TypedHA(ObservedHA):
         self.states["climate.test_ac"] = {"entity_id": "climate.test_ac", "state": "cool", "attributes": {"supported_features": 1, "hvac_modes": MODES.copy(), "min_temp": 7, "max_temp": 35, "target_temp_step": 0.5, "temperature": 22, "current_temperature": 31}}
         self.states["cover.test_blind"] = {"entity_id": "cover.test_blind", "state": "open", "attributes": {"supported_features": 15, "device_class": "blind", "current_position": 40}}
 
+    async def get_state_snapshot(self):
+        """Observe this synthetic installation at a known read time."""
+        from copy import deepcopy
+        from datetime import UTC, datetime, timedelta
+        from src.home_assistant.ha_client import HAStatesSnapshot
+        now = datetime.now(UTC)
+        return HAStatesSnapshot(True, now, None, tuple(deepcopy(list(self.states.values()))),
+                                now + timedelta(seconds=6), now)
+
+    async def get_area_assignments(self):
+        """Observe an explicitly empty synthetic registry, without real network IO."""
+        from datetime import UTC, datetime, timedelta
+        from src.home_assistant.ha_client import HAAreaAssignments
+        now = datetime.now(UTC)
+        return HAAreaAssignments(True, now, None, expires_at=now + timedelta(seconds=60), attempted_at=now)
+
     async def get_temperature_unit_fresh(self, **kwargs):
         return self.unit
 
@@ -232,11 +248,8 @@ async def test_nonbinary_control_requires_observed_requested_effect(typed_graph,
 
 async def test_catalog_uses_shared_selection_and_intersects_technical_bounds(typed_graph):
     from src.dashboard.home_catalog import HomeCatalogService
-    from src.home_assistant.ha_client import HAAreaAssignments, HAStatesSnapshot
 
     ha, actions = typed_graph
-    ha.get_state_snapshot = AsyncMock(return_value=HAStatesSnapshot(True, None, None, tuple(ha.states.values())))
-    ha.get_area_assignments = AsyncMock(return_value=HAAreaAssignments(True, None, None))
     catalog = HomeCatalogService(ha, {}, policy=actions.policy)
     snapshot = await catalog.snapshot()
     ac = next(entity for entity in snapshot.entities if entity.domain == "climate")

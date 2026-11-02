@@ -75,6 +75,7 @@ class ApplicationGraph:
     voice_registry: VoiceRegistry
     voice_services: VoiceServices
     home_services: Any
+    home_capabilities: Any
     list_manager: ListManager
     reminder_manager: ReminderManager
     routine_scheduler: RoutineScheduler | None

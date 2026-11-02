@@ -34,7 +34,7 @@ from src.memory.prompt_context import PromptContext, SourcesInvalidated, run_pri
 from src.llm.generation_stream import GuardedGeneration
 from src.core.owned_work import OwnedBlockingWork
 from src.core.task_outcome import (
-    CURRENT_REQUEST_ID, DeliveryOutcome, EffectState, PersistenceState, ResponseRequirement,
+    CURRENT_REQUEST_ID, DeliveryOutcome, DispatchState, EffectState, PersistenceState, ResponseRequirement,
     TaskOutcome, TaskStatus, TurnOutcome, project_turn_outcome,
 )
 from src.core.voice_delivery import GenerationState, ResponseResult
@@ -493,6 +493,8 @@ class RequestRouter:
             try:
                 target = await self.home_voice_resolver.resolve(command, room_id=room_id)
                 reason = target.reason
+                if target.observation is not None:
+                    result["capability_observation"] = target.observation.to_dict(self.home_voice_resolver.capabilities.now())
             except Exception:
                 logger.exception("[HomeVoice] Target resolution unavailable")
                 reason = "selection_unavailable"
@@ -504,6 +506,10 @@ class RequestRouter:
                     "light": "¿Qué temperatura de luz en kelvin querés usar?",
                     "scene": "¿Qué escena querés activar?",
                 }[command.domain]
+            elif reason == "capability_unavailable":
+                question = "No tengo una observación actual suficiente para realizar esa operación."
+            elif reason == "operation_unavailable":
+                question = "Esa operación no está disponible para el dispositivo seleccionado."
             else:
                 question = "¿Qué escena querés activar? Necesito su nombre exacto entre las escenas seleccionadas." if command.domain == "scene" else "¿En qué habitación? Necesito un dispositivo seleccionado para esa habitación."
             result.update(intent="clarification_requested", needs_confirmation=True,
@@ -1407,11 +1413,16 @@ class RequestRouter:
         _llm_classification = result.get("llm_classification")
         if _llm_classification is not None and _llm_classification.intent in _INTENT_REQUIRED_DOMAINS:
             required_domain = _INTENT_REQUIRED_DOMAINS[_llm_classification.intent]
-            if not self.ha.has_domain(required_domain):
-                msg = _UNSUPPORTED_INTENT_MESSAGES.get(
+            capabilities = await self.home_voice_resolver.capabilities.snapshot()
+            present = capabilities.domain_present(required_domain, self.home_voice_resolver.capabilities.now())
+            result["capability_observation"] = capabilities.observation.to_dict(self.home_voice_resolver.capabilities.now())
+            if present is not True:
+                msg = ("No puedo comprobar ahora la disponibilidad de ese dispositivo." if present is None else _UNSUPPORTED_INTENT_MESSAGES.get(
                     _llm_classification.intent,
                     "Eso no lo manejo todavía.",
-                )
+                ))
+                result["_task_outcome"] = TaskOutcome(TaskStatus.UNCERTAIN if present is None else TaskStatus.UNSUPPORTED,
+                    dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED)
                 logger.info(
                     f"[INTENT_REJECT] intent={_llm_classification.intent} "
                     f"required_domain={required_domain} no presente en HA — {msg!r}"
@@ -2125,6 +2136,7 @@ Asistente:"""
         finally:
             await asyncio.shield(suggestions)
             await self._query_work.aclose()
+            await self.home_voice_resolver.aclose()
 
     def resource_status(self) -> dict:
         """Expose retained query/classifier work and private cache admission."""

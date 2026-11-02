@@ -15,7 +15,7 @@ from src.dashboard.api import DashboardAPI
 from src.dashboard.home_catalog import HomeCatalogService
 from src.home_assistant.control_policy import ActionOrigin, EntityGrant, HomeActor, HomeControlPolicy
 from src.home_assistant.effect_plans import EffectIntent, GroupMembershipSource, scene_effects_from_states
-from src.home_assistant.ha_client import HAAreaAssignments, HAStatesSnapshot, ServiceCallOutcome, ServiceCallStatus
+from src.home_assistant.ha_client import ServiceCallOutcome, ServiceCallStatus
 from src.home_assistant.home_actions import HomeActionConflict, HomeActionRequest, HomeActionService
 from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.hooks import HookRegistry, RewriteResult
@@ -137,8 +137,6 @@ async def test_internal_leaf_grants_do_not_create_independent_household_controls
     assert (await actions.execute(request(LEAVES[0], "turn_on", "direct-denied"), actor=HomeActor.household())).status == "failed"
     assert ha.sends == []
     assert (await actions.execute(request(), actor=HomeActor.household())).status == "confirmed"
-    ha.get_state_snapshot = AsyncMock(return_value=HAStatesSnapshot(True, None, None, tuple(ha.states.values())))
-    ha.get_area_assignments = AsyncMock(return_value=HAAreaAssignments(True, None, None))
     catalog = await HomeCatalogService(ha, {}, policy=actions.policy).snapshot()
     assert all(not entity.capabilities for entity in catalog.entities if entity.entity_id in LEAVES)
     assert next(entity for entity in catalog.entities if entity.entity_id == GROUP).capabilities
@@ -331,8 +329,6 @@ def test_authenticated_http_exposes_leaf_receipts_and_preserves_raw_values(compo
 
 async def test_catalog_uses_all_leaf_limits_and_only_verified_scene_effects(composite_graph):
     ha, actions = composite_graph
-    ha.get_state_snapshot = AsyncMock(side_effect=lambda: HAStatesSnapshot(True, None, None, tuple(ha.states.values())))
-    ha.get_area_assignments = AsyncMock(return_value=HAAreaAssignments(True, None, None))
     catalog = HomeCatalogService(ha, {}, policy=actions.policy)
     entities = {entity.entity_id: entity for entity in (await catalog.snapshot()).entities}
     assert entities[SCENE].capabilities == ("activate_scene",) and entities[SCENE].available

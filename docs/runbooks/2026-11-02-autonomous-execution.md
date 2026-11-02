@@ -127,3 +127,28 @@ omiten recibos, IDs, texto y motivos libres. `test_from_text()` es diagnóstico
 de reconocimiento: no acredita ejecución ni entrega. Las pruebas con la
 fábrica efectiva cubren fallos de transporte, PCM, réplica, objetos ausentes,
 efectos parciales y cancelación concurrente. La aceptación física sigue pendiente.
+
+## Observación, capacidad y caducidad
+
+`Observation` conserva fuente cerrada, estado, instante observado, vencimiento y
+último intento por separado. Un intento fallido, una respuesta HTTP o un ACK de
+acción no renuevan la observación. Una fecha ausente o futura no permite declarar
+vigencia. Las observaciones parciales identifican los campos no observados.
+
+`HomeCapabilityService` pertenece al grafo efectivo y comparte una lectura
+simultánea entre voz y Casa, con políticas explícitas y contexto de tarea vacío.
+No cachea decisiones de selección entre consultas. Las capacidades efectivas
+vencen con la primera dependencia que caduque: estados, selección y configuración
+de temperatura cuando corresponda. Primero se resuelve un destino entre todos
+los grants actuales; su falta de observación nunca permite elegir otro.
+
+El servicio conserva el trabajo ante cancelaciones del llamador y drena sus
+hijos antes de retirar HA. El cliente serializa también las lecturas que inicia
+su sync interno. Los consumidores vuelven a consultar el reloj después de una
+espera; Casa ancla la vigencia a tiempo monotónico e incluye los vencimientos
+individuales de las entidades. La acción sigue pasando por la revalidación final
+de `HomeActionService`; el descubrimiento no concede permisos.
+
+Esta infraestructura no acepta C06 por sí sola. La procedencia de cada endpoint,
+la presentación completa de desconocidos y la renovación de las vistas mantienen
+sus verificaciones propias de T012, T040 y T046.

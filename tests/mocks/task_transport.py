@@ -14,6 +14,11 @@ class TaskTransport:
     mode: str = "confirmed"
     modes: dict = field(default_factory=dict)
     hold: bool = False
+    states_hold: bool = False
+    states_status: int = 200
+    state_reads: int = 0
+    states_entered: asyncio.Event = field(default_factory=asyncio.Event)
+    states_release: asyncio.Event = field(default_factory=asyncio.Event)
     sends: list = field(default_factory=list)
     entered: asyncio.Event = field(default_factory=asyncio.Event)
     release: asyncio.Event = field(default_factory=asyncio.Event)
@@ -32,6 +37,12 @@ class TaskTransport:
             return web.json_response({"message": "API running"})
 
         async def states(request):
+            self.state_reads += 1
+            self.states_entered.set()
+            if self.states_hold:
+                await self.states_release.wait()
+            if self.states_status != 200:
+                return web.Response(status=self.states_status)
             return web.json_response(list(self.states.values()))
 
         async def state(request):
@@ -65,4 +76,5 @@ class TaskTransport:
             yield f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
         finally:
             self.release.set()
+            self.states_release.set()
             await runner.cleanup()

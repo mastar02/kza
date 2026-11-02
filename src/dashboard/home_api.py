@@ -18,6 +18,7 @@ from src.home_assistant.home_actions import (
     validate_home_action,
 )
 from src.home_assistant.ha_client import HomeAssistantClient
+from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.control_policy import ActorKind, HomeActor
 from src.home_assistant.operations import PARAMETER_FIELDS, validate_parameters
 from src.rooms.room_context import RoomConfig
@@ -45,7 +46,7 @@ def build_home_services(
     ha_client: HomeAssistantClient | None,
     rooms: Mapping[str, RoomConfig],
     microphone_snapshot_provider: Callable[[], MicrophonesSnapshot | None] | None,
-    *, actions: HomeActionService | None = None,
+    *, actions: HomeActionService | None = None, capabilities: HomeCapabilityService | None = None,
 ) -> HomeServices:
     """Construct home services without reads, tasks, discovery, or HA ownership.
 
@@ -59,7 +60,8 @@ def build_home_services(
     """
     controls = actions if actions is not None else (HomeActionService(ha_client) if ha_client is not None else None)
     return HomeServices(
-        HomeCatalogService(ha_client, rooms, policy=controls.policy if controls is not None else None),
+        HomeCatalogService(ha_client, rooms, policy=controls.policy if controls is not None else None,
+                           capabilities=capabilities, policy_provider=(lambda: controls.policy) if controls is not None else None),
         controls,
         microphone_snapshot_provider,
     )

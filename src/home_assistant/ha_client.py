@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from contextvars import Context
 from enum import StrEnum
 from time import monotonic
@@ -45,6 +45,8 @@ class HAStatesSnapshot:
     observed_at: datetime | None
     reason: str | None
     states: tuple[dict, ...] = ()
+    expires_at: datetime | None = None
+    attempted_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,8 @@ class HAAreaAssignments:
     reason: str | None
     area_names: dict[str, str] = field(default_factory=dict)
     entity_area_ids: dict[str, str] = field(default_factory=dict)
+    expires_at: datetime | None = None
+    attempted_at: datetime | None = None
 
 
 def get_home_capabilities(entity: dict) -> tuple[str, ...]:
@@ -87,6 +91,8 @@ logger = logging.getLogger(__name__)
 REST_TIMEOUT_DEFAULT = 5.0      # Standard REST call timeout (seconds)
 REST_TIMEOUT_BULK = 10.0        # Bulk endpoints (/api/states, /api/services)
 REST_TIMEOUT_HEALTH = 5.0       # Health-check / test_connection
+STATE_OBSERVATION_TTL_S = 6.0
+REGISTRY_OBSERVATION_TTL_S = 60.0
 WS_AUTH_TIMEOUT = 5.0           # WebSocket auth handshake timeout
 WS_CALL_TIMEOUT = 2.0           # WebSocket service-call timeout
 AUTOMATION_TIMEOUT = 10.0       # Automation CRUD operations
@@ -207,6 +213,7 @@ class HomeAssistantClient:
         # Dashboard reads have independent provenance; the voice cache is not
         # evidence of a successful current REST observation.
         self._home_states = HAStatesSnapshot(False, None, "ha_states_unavailable")
+        self._state_snapshot_lock = asyncio.Lock()
         self._area_assignments: HAAreaAssignments | None = None
         self._registry_lock = asyncio.Lock()
         self._registry_refresh_at = 0.0
@@ -269,38 +276,40 @@ class HomeAssistantClient:
     # ==================== REST API ====================
 
     async def get_state_snapshot(self) -> HAStatesSnapshot:
-        """Read bounded REST states and distinguish failure from an empty home.
-
-        Returns:
-            Typed observation with its successful read time and failure reason.
-        """
-        started = time.perf_counter()
-        reason = "ha_states_unavailable"
-        try:
-            session = await self._ensure_session()
-            async with session.get(
-                f"{self.url}/api/states",
-                timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT_BULK),
-            ) as response:
-                response.raise_for_status()
-                states = await response.json()
-            if not isinstance(states, list) or any(
-                not isinstance(state, dict)
-                or not isinstance(state.get("entity_id"), str)
-                or "." not in state["entity_id"]
-                or not isinstance(state.get("state"), str)
-                or not isinstance(state.get("attributes", {}), dict)
-                for state in states
-            ):
-                reason = "ha_states_invalid"
-                raise ValueError("Invalid HA states response")
-            self._home_states = HAStatesSnapshot(True, datetime.now(UTC), None, tuple(states))
-            self._record_success((time.perf_counter() - started) * 1000)
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
-            self._record_error(error, "get_state_snapshot")
-            self._home_states = replace(self._home_states, available=False, reason=reason)
-            logger.warning("HA dashboard state snapshot unavailable")
-        return self._home_states
+        """Read states serially, preserving successful observation time on failure."""
+        async with self._state_snapshot_lock:
+            started = time.perf_counter()
+            attempted_at = datetime.now(UTC)
+            reason = "ha_states_unavailable"
+            try:
+                session = await self._ensure_session()
+                async with session.get(
+                    f"{self.url}/api/states",
+                    timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT_BULK),
+                ) as response:
+                    if response.status in (401, 403):
+                        reason = "ha_states_denied"
+                    response.raise_for_status()
+                    states = await response.json()
+                if not isinstance(states, list) or any(
+                    not isinstance(state, dict)
+                    or not isinstance(state.get("entity_id"), str)
+                    or "." not in state["entity_id"]
+                    or not isinstance(state.get("state"), str)
+                    or not isinstance(state.get("attributes", {}), dict)
+                    for state in states
+                ):
+                    reason = "ha_states_invalid"
+                    raise ValueError("Invalid HA states response")
+                observed_at = datetime.now(UTC)
+                self._home_states = HAStatesSnapshot(True, observed_at, None, tuple(states),
+                    observed_at + timedelta(seconds=STATE_OBSERVATION_TTL_S), attempted_at)
+                self._record_success((time.perf_counter() - started) * 1000)
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+                self._record_error(error, "get_state_snapshot")
+                self._home_states = replace(self._home_states, available=False, reason=reason, attempted_at=attempted_at)
+                logger.warning("HA dashboard state snapshot unavailable")
+            return self._home_states
 
     async def get_area_assignments(self) -> HAAreaAssignments:
         """Read registries on an owned socket, caching one refresh for 60 seconds.
@@ -312,6 +321,7 @@ class HomeAssistantClient:
             if self._area_assignments is not None and monotonic() < self._registry_refresh_at:
                 return self._area_assignments
             previous = self._area_assignments or HAAreaAssignments(False, None, None)
+            attempted_at = datetime.now(UTC)
             try:
                 areas, entities, devices = await self._read_home_registries()
                 names = {area["area_id"]: area["name"] for area in areas}
@@ -333,16 +343,18 @@ class HomeAssistantClient:
                         assignments[entity["entity_id"]] = area_id
                 if not all(isinstance(key, str) and isinstance(value, str) for key, value in names.items()):
                     raise ValueError("Invalid area registry")
+                observed_at = datetime.now(UTC)
                 self._area_assignments = HAAreaAssignments(
-                    True, datetime.now(UTC), None, names, assignments,
+                    True, observed_at, None, names, assignments,
+                    observed_at + timedelta(seconds=REGISTRY_OBSERVATION_TTL_S), attempted_at,
                 )
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, TypeError) as error:
                 self._record_error(error, "get_area_assignments")
                 self._area_assignments = replace(
-                    previous, available=False, reason="ha_registries_unavailable",
+                    previous, available=False, reason="ha_registries_unavailable", attempted_at=attempted_at,
                 )
                 logger.warning("HA dashboard registries unavailable")
-            self._registry_refresh_at = monotonic() + 60.0
+            self._registry_refresh_at = monotonic() + REGISTRY_OBSERVATION_TTL_S
             return self._area_assignments
 
     async def _read_home_registries(self) -> tuple[list[dict], list[dict], list[dict]]:

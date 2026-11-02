@@ -42,10 +42,15 @@
   }
   function createSnapshotClock(data, { monotonic = () => root.performance.now(), wallClock = Date.now } = {}) {
     const receivedMono = monotonic(), receivedWall = wallClock();
-    const observed = observationMillis(data.observed_at);
-    // Casa has no server TTL in schema v1: six seconds is the explicit local
-    // freshness budget. Only observed_at anchors evidence, never last_changed.
-    const ttlMs = (Number.isFinite(data.stale_after_s) && data.stale_after_s > 0 ? data.stale_after_s : 6) * 1000;
+    const explicit = Object.prototype.hasOwnProperty.call(data, 'observation');
+    const observation = explicit && data.observation && typeof data.observation === 'object' ? data.observation : {};
+    const observed = observationMillis(explicit ? observation.observed_at : data.observed_at);
+    const expires = observationMillis(observation.expires_at);
+    // Explicit server expiry is anchored to the original observation. Older
+    // microphone schemas retain their existing local freshness budget.
+    const ttlMs = explicit ? (observed !== null && expires !== null && expires > observed ? expires - observed : 0)
+      : (Number.isFinite(data.stale_after_s) && data.stale_after_s > 0 ? data.stale_after_s : 6) * 1000;
+    const sourceUnavailable = explicit && !['fresh', 'partial'].includes(observation.state);
     const elapsed = () => Math.max(0, monotonic() - receivedMono);
     const age = timestamp => {
       const parsed = observationMillis(timestamp);
@@ -60,14 +65,19 @@
       return { ageMs, stale, remainingMs: stale ? Infinity : ttlMs - ageMs };
     }
     return {
-      age, directionFreshness,
+      age, directionFreshness, now: () => receivedWall + elapsed(),
       read() {
         const ageMs = observed === null ? null : Math.max(0, receivedWall - observed) + elapsed();
-        const stale = data.stale === true || ageMs === null || ageMs >= ttlMs;
+        const stale = data.stale === true || sourceUnavailable || ageMs === null || ageMs >= ttlMs || observed > receivedWall;
         // The existing presentation timer also wakes at each direction deadline.
         // No sample sequence or refresh completion renews the observation time.
         const directionDeadlines = (data.microphones || []).filter(mic => ['observed', 'no_speech'].includes(mic.direction?.state)).map(mic => directionFreshness(mic.direction).remainingMs);
-        return { ageMs, unknown: ageMs === null, stale, remainingMs: Math.min(stale ? Infinity : ttlMs - ageMs, ...directionDeadlines) };
+        const entityDeadlines = (data.entities || []).map(entity => {
+          const expires = observationMillis(entity.observation?.expires_at);
+          const remaining = expires === null ? 0 : expires - (receivedWall + elapsed());
+          return remaining > 0 ? remaining : Infinity;
+        });
+        return { ageMs, unknown: ageMs === null, stale, remainingMs: Math.min(stale ? Infinity : ttlMs - ageMs, ...directionDeadlines, ...entityDeadlines) };
       }
     };
   }
@@ -110,10 +120,14 @@
       physical: 'Pendiente de prueba humana'
     };
   }
-  function entityCanControl(entity, operation, stale) {
+  function entityCanControl(entity, operation, stale, now = Date.now()) {
     const domain = entity.domain || entity.entity_id?.split('.')[0];
     const states = { light: ['on', 'off'], switch: ['on', 'off'], climate: Object.keys(MODE_LABELS), cover: ['open', 'closed', 'opening', 'closing'] };
-    return !stale && entity.available === true && (domain === 'scene' ? entity.state !== 'unavailable' : states[domain]?.includes(entity.state)) && Array.isArray(entity.capabilities) && entity.capabilities.includes(operation);
+    const explicit = Object.prototype.hasOwnProperty.call(entity, 'observation');
+    const observation = entity.observation || {};
+    const observed = observationMillis(observation.observed_at), expires = observationMillis(observation.expires_at);
+    const current = !explicit || (['fresh', 'partial'].includes(observation.state) && observed !== null && expires !== null && observed <= now && now < expires);
+    return !stale && current && entity.available === true && (domain === 'scene' ? entity.state !== 'unavailable' : states[domain]?.includes(entity.state)) && Array.isArray(entity.capabilities) && entity.capabilities.includes(operation);
   }
   function createApi({ fetch: fetcher = root.fetch.bind(root), onDemo = () => {}, onUnauthorized = () => {}, timeoutMs = 12000 } = {}) {
     let sessionGeneration = 0;
@@ -362,10 +376,10 @@
       for (const [operation, label] of [['turn_on', 'Encender'], ['turn_off', 'Apagar'], ['open_cover', 'Abrir'], ['close_cover', 'Cerrar'], ['stop_cover', 'Detener'], ['activate_scene', 'Activar escena']]) {
         if (!entity.capabilities?.includes(operation)) continue;
         const control = button(label, () => {
-          if (entityCanControl(entity, operation, isStale(stateFor())) && !actions.get(entity.entity_id, operation)?.pending) actions.execute(entity.entity_id, operation);
+          if (entityCanControl(entity, operation, isStale(stateFor()), stateFor().clock?.now()) && !actions.get(entity.entity_id, operation)?.pending) actions.execute(entity.entity_id, operation);
         });
         control.setAttribute('aria-label', `${label} ${known(entity.name)}`);
-        bindTemporal(freshness => { control.disabled = !entityCanControl(entity, operation, freshness.stale) || !!actions.get(entity.entity_id, operation)?.pending; });
+        bindTemporal(freshness => { control.disabled = !entityCanControl(entity, operation, freshness.stale, stateFor().clock?.now()) || !!actions.get(entity.entity_id, operation)?.pending; });
         controls.append(control);
       }
       row.append(controls); card.append(row);
@@ -376,7 +390,7 @@
         input.setAttribute('aria-label', `Elegir brillo de ${known(entity.name)}`);
         const output = node('output', '', valid ? `${entity.brightness_pct}%` : 'Sin dato');
         let selected = false;
-        const allowed = () => entityCanControl(entity, 'brightness', isStale(stateFor())) && !actions.get(entity.entity_id, 'brightness')?.pending;
+        const allowed = () => entityCanControl(entity, 'brightness', isStale(stateFor()), stateFor().clock?.now()) && !actions.get(entity.entity_id, 'brightness')?.pending;
         const apply = button('Aplicar', () => { if (selected && allowed()) actions.execute(entity.entity_id, 'brightness', Number(input.value)); });
         bindTemporal(() => { input.disabled = !allowed(); apply.disabled = !selected || !allowed(); });
         input.addEventListener('input', () => { selected = true; output.textContent = `${input.value}% elegido`; apply.disabled = !allowed(); });
@@ -385,7 +399,7 @@
       for (const operation of ['color_temp_kelvin', 'set_temperature', 'set_hvac_mode', 'set_cover_position']) {
         if (!entity.capabilities?.includes(operation)) continue;
         const form = node('div', 'typed-controls'), values = {}, fields = controlFields(entity, operation), inputs = [];
-        const allowed = () => entityCanControl(entity, operation, isStale(stateFor())) && !actions.get(entity.entity_id, operation)?.pending;
+        const allowed = () => entityCanControl(entity, operation, isStale(stateFor()), stateFor().clock?.now()) && !actions.get(entity.entity_id, operation)?.pending;
         const valid = () => fields.every(field => validControlValue(field, values[field.name]));
         const apply = button('Aplicar ' + OPERATION_LABELS[operation].toLowerCase(), () => { if (allowed() && valid()) actions.execute(entity.entity_id, operation, values); });
         for (const field of fields) {

@@ -213,7 +213,9 @@ class DashboardAPI:
         self.home_actions = home_actions if home_actions is not None else (
             HomeActionService(ha_client) if ha_client is not None else None
         )
-        self.home_catalog = home_catalog if home_catalog is not None else HomeCatalogService(ha_client, home_rooms or {}, policy=self.home_actions.policy if self.home_actions is not None else None)
+        self.home_catalog = home_catalog if home_catalog is not None else HomeCatalogService(
+            ha_client, home_rooms or {}, policy=self.home_actions.policy if self.home_actions is not None else None,
+            policy_provider=(lambda: self.home_actions.policy) if self.home_actions is not None else None)
 
         # FastAPI app
         self.app = DashboardApplication(
@@ -991,6 +993,7 @@ class DashboardAPI:
         task = self._serve_task
         if task is not None and task is not asyncio.current_task():
             await asyncio.shield(task)
+        await self.home_catalog.aclose()
 
     def run_sync(self):
         """Ejecutar servidor de forma síncrona (para testing)"""
