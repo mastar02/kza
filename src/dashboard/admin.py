@@ -9,6 +9,7 @@ import asyncio
 import io
 import logging
 import shutil
+import sqlite3
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -43,16 +44,18 @@ logger = logging.getLogger(__name__)
 
 async def _delete_account(work, current, authority, actor, user_manager, user_id):
     """Retain retirement and catalog commit together through observer cancellation."""
-    retired = False
+    retired: bool | None = False
     validator = partial(require_current, current)
     try:
         check = await work.native_step(user_manager.check_removal, user_id, before_read=validator)
         if check.status is not RemovalStatus.ALLOWED:
             raise HTTPException(404 if check.status is RemovalStatus.MISSING else 409, check.message)
         require_current(current)
+        retired = None
         try:
             await authority.retire_user(actor, user_id)
         except PermissionError as error:
+            retired = False
             raise NativeAuthorityRetired('dashboard_authority_retired') from error
         retired = True
         deleted, message = await work.native_step(user_manager.remove_user, user_id, before_save=validator)
@@ -62,7 +65,7 @@ async def _delete_account(work, current, authority, actor, user_manager, user_id
     except NativeAuthorityRetired as error:
         raise HTTPException(403, {"code": "dashboard_authority_retired",
                                   "credentials_retired": retired}) from error
-    except (OSError, RuntimeError) as error:
+    except (OSError, RuntimeError, sqlite3.Error, ValueError) as error:
         raise HTTPException(503, {"code": "user_catalog_unavailable",
                                   "credentials_retired": retired}) from error
     finally:

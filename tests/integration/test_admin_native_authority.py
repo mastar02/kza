@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import gc
 import io
 import os
+import sqlite3
 import subprocess
 import threading
 from types import SimpleNamespace
@@ -145,6 +146,28 @@ async def test_admin_delete_rejected_retirement_never_calls_catalog_remove(admin
     response = await graph.client.delete(f'/api/admin/users/{graph.user.user_id}')
     assert response.status_code == 403
     assert response.json()['detail']['credentials_retired'] is False
+    assert calls == []
+    assert graph.users.get_user(graph.user.user_id) is not None
+
+
+async def test_admin_delete_sqlite_failure_reports_unknown_retirement_without_catalog_write(admin_graph, monkeypatch):
+    graph = admin_graph
+    calls = []
+
+    async def unavailable(*args):
+        raise sqlite3.OperationalError('synthetic private authority path')
+
+    def forbidden(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError('catalog remove attempted')
+
+    monkeypatch.setattr(graph.authority, 'retire_user', unavailable)
+    monkeypatch.setattr(graph.users, 'remove_user', forbidden)
+    response = await graph.client.delete(f'/api/admin/users/{graph.user.user_id}')
+    assert response.status_code == 503
+    assert response.json()['detail'] == {'code': 'user_catalog_unavailable', 'credentials_retired': None}
+    assert 'private authority' not in response.text
+    assert 'routines' not in response.text
     assert calls == []
     assert graph.users.get_user(graph.user.user_id) is not None
 
