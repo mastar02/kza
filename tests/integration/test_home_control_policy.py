@@ -5,6 +5,7 @@ from dataclasses import replace
 import json
 import hashlib
 import shutil
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
@@ -22,7 +23,7 @@ from src.pipeline.command_processor import ProcessedCommand
 from src.pipeline.request_router import RequestRouter
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_scheduler import ReminderScheduler
-from src.reminders.reminder_store import ReminderStore
+from src.reminders.reminder_store import ReminderStore, ReminderScope
 from src.routines.factory import build_routine_scheduler
 from src.routines.models import parse_routine_spec, RoutineValidationError
 from src.routines.routine_executor import RoutineExecutor
@@ -346,7 +347,7 @@ async def test_reminders_validate_at_creation_and_again_at_both_delivery_paths(g
     try:
         manager = ReminderManager(store, home_actions=actions)
         action = {"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp"}
-        reminder = await manager.create("unverified-profile", "test", 1.0, ha_actions=[action])
+        reminder = await manager.create("unverified-profile", "test", 1.0, ha_actions=[action], scope=ReminderScope.SHARED)
         presence = MagicMock()
         presence.get_user_zone.return_value = "test-zone"
         scheduler = ReminderScheduler(store, AsyncMock(), presence, ha, home_actions=actions)
@@ -370,7 +371,7 @@ async def test_reminder_claim_survives_lost_scheduler_completion_and_restart(gra
     store = ReminderStore(db_path)
     await store.initialize()
     action = {"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp"}
-    reminder = await store.create("profile", "test", 1.0, ha_actions=[action])
+    reminder = await store.create("profile", "test", 1.0, ha_actions=[action], scope=ReminderScope.SHARED)
     presence = MagicMock()
     presence.get_user_zone.return_value = "test-zone"
     scheduler = ReminderScheduler(store, AsyncMock(), presence, ha, home_actions=actions)
@@ -414,7 +415,7 @@ async def test_due_and_arrival_race_share_one_committed_reminder_effect(graph, t
     store = ReminderStore(str(tmp_path / "race.db"))
     await store.initialize()
     try:
-        reminder = await store.create("profile", "test", 1.0, ha_actions=[{"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp"}])
+        reminder = await store.create("profile", "test", 1.0, ha_actions=[{"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp"}], scope=ReminderScope.SHARED)
         presence = MagicMock()
         presence.get_user_zone.return_value = "test-zone"
         scheduler = ReminderScheduler(store, AsyncMock(), presence, ha, home_actions=actions)
@@ -424,13 +425,65 @@ async def test_due_and_arrival_race_share_one_committed_reminder_effect(graph, t
         await store.close()
 
 
+async def test_recurring_reminder_late_arrival_cannot_adopt_or_overwrite_next_occurrence(graph, tmp_path):
+    ha, actions, _ = graph
+    store = ReminderStore(str(tmp_path / "occurrences.db"))
+    await store.initialize()
+    entered, release = asyncio.Event(), asyncio.Event()
+    spoken = []
+
+    async def speak(text, **kwargs):
+        spoken.append(text)
+        if len(spoken) == 1:
+            entered.set()
+            await release.wait()
+
+    arrival = None
+    try:
+        reminder = await store.create("profile", "Shared recurrence", time.time() - 1,
+            recurrence="daily", scope=ReminderScope.SHARED, ha_actions=[
+                {"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp"}])
+        presence, tts = MagicMock(), AsyncMock()
+        presence.get_user_zone.return_value = "test-zone"
+        tts.aspeak.side_effect = speak
+        scheduler = ReminderScheduler(store, tts, presence, ha, home_actions=actions)
+        arrival = asyncio.create_task(scheduler.missed_reminder_on_arrival("profile", "test-zone"))
+        await asyncio.wait_for(entered.wait(), 2)
+        await scheduler._fire_reminder(reminder)
+        successor = await store.get_by_id(reminder.id)
+        assert successor.state == "active" and successor.trigger_at > time.time()
+        assert len(ha.sends) == 1
+        release.set()
+        assert await asyncio.wait_for(arrival, 2) == 1
+        assert (await store.get_by_id(reminder.id)).trigger_at == successor.trigger_at
+        assert len(ha.sends) == 1
+        assert await store._work.read(lambda db: db.execute(
+            "SELECT COUNT(*) FROM reminder_home_actions").fetchone()[0]) == 1
+        assert not await store.update_trigger(reminder.id, 1., shared_only=True,
+            expected_trigger_at=reminder.trigger_at)
+        assert not await store.mark_fired(reminder.id, shared_only=True,
+            expected_trigger_at=reminder.trigger_at)
+        await scheduler._fire_reminder(reminder)
+        await scheduler._execute_home_actions(reminder)
+        await scheduler._fire_reminder(successor)
+        assert len(spoken) == 2 and len(ha.sends) == 1
+        assert await store.cancel(reminder.id, shared_only=True)
+        await scheduler._fire_reminder(successor)
+        assert len(spoken) == 2 and len(ha.sends) == 1
+    finally:
+        release.set()
+        if arrival is not None:
+            await asyncio.gather(arrival, return_exceptions=True)
+        await store.close()
+
+
 @pytest.mark.parametrize("uncertain", [False, True])
 async def test_reminder_sequence_advances_only_after_confirmation(graph, tmp_path, uncertain):
     ha, actions, _ = graph
     store = ReminderStore(str(tmp_path / "sequence.db"))
     await store.initialize()
     try:
-        reminder = await store.create("profile", "sequence", 1.0, ha_actions=[
+        reminder = await store.create("profile", "sequence", 1.0, scope=ReminderScope.SHARED, ha_actions=[
             {"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp"},
             {"domain": "light", "service": "turn_off", "entity_id": "light.test_lamp"},
         ])

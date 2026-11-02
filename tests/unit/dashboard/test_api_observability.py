@@ -8,7 +8,7 @@ from httpx import AsyncClient, ASGITransport
 
 from src.dashboard.api import DashboardAPI
 from src.monitoring.health_aggregator import HealthAggregator
-from src.reminders.reminder_store import ReminderStore
+from src.reminders.reminder_store import ReminderStore, ReminderScope
 from src.reminders.reminder_manager import ReminderManager
 
 
@@ -93,6 +93,7 @@ async def api_with_observability(tmp_path, health_aggregator, mock_reminder_sche
         user_id="u1",
         text="take medicine",
         trigger_at=time.time() + 3600,
+        scope=ReminderScope.SHARED,
     )
 
     dashboard = DashboardAPI(

@@ -17,6 +17,11 @@ from src.core.sqlite_work import AuthorityGuard, SQLiteWork
 logger = logging.getLogger(__name__)
 
 
+class ReminderScope(StrEnum):
+    PRIVATE = "private"
+    SHARED = "shared"
+
+
 class ReminderState(StrEnum):
     ACTIVE = "active"
     FIRED = "fired"
@@ -56,6 +61,7 @@ class Reminder:
     state: ReminderState = ReminderState.ACTIVE
     last_fired_at: float | None = None
     fire_count: int = 0
+    scope: ReminderScope = ReminderScope.PRIVATE
 
 
 class ReminderStore:
@@ -95,9 +101,14 @@ class ReminderStore:
                         trigger_at REAL NOT NULL, created_at REAL NOT NULL,
                         recurrence TEXT, recurrence_end REAL, ha_actions TEXT,
                         state TEXT NOT NULL DEFAULT 'active', last_fired_at REAL,
-                        fire_count INTEGER NOT NULL DEFAULT 0
+                        fire_count INTEGER NOT NULL DEFAULT 0,
+                        scope TEXT NOT NULL DEFAULT 'private' CHECK (scope IN ('private', 'shared'))
                     )
                 """)
+                columns = {row[1] for row in db.execute("PRAGMA table_info(reminders)").fetchall()}
+                if "scope" not in columns:
+                    db.execute("ALTER TABLE reminders ADD COLUMN scope TEXT NOT NULL DEFAULT 'private' "
+                               "CHECK (scope IN ('private', 'shared'))")
                 db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_trigger "
                            "ON reminders (trigger_at) WHERE state = 'active'")
                 db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders (user_id, state)")
@@ -184,22 +195,22 @@ class ReminderStore:
     async def create(
         self, user_id: str, text: str, trigger_at: float, recurrence: str | None = None,
         recurrence_end: float | None = None, ha_actions: list[dict] | None = None, *,
-        guard: AuthorityGuard | None = None,
+        guard: AuthorityGuard | None = None, scope: ReminderScope = ReminderScope.PRIVATE,
     ) -> Reminder:
         """Own the native insert and publish its wake after commit, even without its observer."""
         reminder = Reminder(id=uuid.uuid4().hex[:12], user_id=user_id, text=text,
             trigger_at=trigger_at, created_at=time.time(), recurrence=recurrence,
-            recurrence_end=recurrence_end, ha_actions=ha_actions)
+            recurrence_end=recurrence_end, ha_actions=ha_actions, scope=ReminderScope(scope))
         ha_json = json.dumps(ha_actions) if ha_actions else None
         def operation(db):
             db.execute("""
                 INSERT INTO reminders
                     (id, user_id, text, trigger_at, created_at, recurrence,
-                     recurrence_end, ha_actions, state, last_fired_at, fire_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     recurrence_end, ha_actions, state, last_fired_at, fire_count, scope)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (reminder.id, reminder.user_id, reminder.text, reminder.trigger_at,
                   reminder.created_at, reminder.recurrence, reminder.recurrence_end, ha_json,
-                  reminder.state.value, reminder.last_fired_at, reminder.fire_count))
+                  reminder.state.value, reminder.last_fired_at, reminder.fire_count, reminder.scope.value))
             return reminder
         def publish(_reminder):
             if self._on_created is not None:
@@ -227,68 +238,97 @@ class ReminderStore:
             state=ReminderState(row["state"]),
             last_fired_at=row["last_fired_at"],
             fire_count=row["fire_count"],
+            scope=ReminderScope(row["scope"]),
         )
 
-    async def get_by_id(self, reminder_id: str, *, guard: AuthorityGuard | None = None) -> Reminder | None:
-        """Read the complete reminder without a cursor crossing await."""
+    async def get_by_id(self, reminder_id: str, *, guard: AuthorityGuard | None = None,
+                        shared_only: bool = False) -> Reminder | None:
+        """Resolve current scope before projecting any reminder material."""
         def operation(db):
-            row = db.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,)).fetchone()
+            row = db.execute("SELECT * FROM reminders WHERE id = ? "
+                "AND (? = 0 OR scope = 'shared')", (reminder_id, shared_only)).fetchone()
             return self._row_to_reminder(row) if row is not None else None
         return await self._work.read(operation, guard=guard)
 
-    async def get_active_for_user(self, user_id: str, *,
-                                  guard: AuthorityGuard | None = None) -> list[Reminder]:
-        """Project active reminders in one retained native callback."""
+    async def get_active_for_user(self, user_id: str | None, *,
+                                  guard: AuthorityGuard | None = None,
+                                  shared_only: bool = False) -> list[Reminder]:
+        """Select shared household jobs or a trusted user's private view before DTOs."""
         def operation(db):
-            rows = db.execute("SELECT * FROM reminders WHERE user_id = ? AND state = 'active' "
-                              "ORDER BY trigger_at ASC", (user_id,)).fetchall()
+            rows = db.execute("SELECT * FROM reminders WHERE state = 'active' "
+                "AND ((? = 1 AND scope = 'shared') OR (? = 0 AND user_id = ?)) "
+                "ORDER BY trigger_at ASC", (shared_only, shared_only, user_id)).fetchall()
             return [self._row_to_reminder(row) for row in rows]
         return await self._work.read(operation, guard=guard)
 
-    async def get_next_pending(self, *, guard: AuthorityGuard | None = None) -> Reminder | None:
-        """Project the next durable job without retaining a live cursor."""
+    async def count_active(self, *, guard: AuthorityGuard | None = None,
+                           shared_only: bool = False) -> int:
+        """Count eligible active jobs within the same native read owner."""
         def operation(db):
-            row = db.execute("SELECT * FROM reminders WHERE state = 'active' ORDER BY trigger_at ASC LIMIT 1").fetchone()
+            return db.execute("SELECT COUNT(*) FROM reminders WHERE state = 'active' "
+                "AND (? = 0 OR scope = 'shared')", (shared_only,)).fetchone()[0]
+        return await self._work.read(operation, guard=guard)
+
+    async def get_next_pending(self, *, guard: AuthorityGuard | None = None,
+                               shared_only: bool = False) -> Reminder | None:
+        """Project the next eligible durable job without a live cursor."""
+        def operation(db):
+            row = db.execute("SELECT * FROM reminders WHERE state = 'active' "
+                "AND (? = 0 OR scope = 'shared') ORDER BY trigger_at ASC LIMIT 1",
+                (shared_only,)).fetchone()
             return self._row_to_reminder(row) if row is not None else None
         return await self._work.read(operation, guard=guard)
 
-    async def get_due(self, now: float, *, guard: AuthorityGuard | None = None) -> list[Reminder]:
-        """Project due durable jobs as a detached batch."""
+    async def get_due(self, now: float, *, guard: AuthorityGuard | None = None,
+                      shared_only: bool = False) -> list[Reminder]:
+        """Project only eligible due jobs as one detached batch."""
         def operation(db):
             rows = db.execute("SELECT * FROM reminders WHERE state = 'active' AND trigger_at <= ? "
-                              "ORDER BY trigger_at ASC", (now,)).fetchall()
+                "AND (? = 0 OR scope = 'shared') ORDER BY trigger_at ASC", (now, shared_only)).fetchall()
             return [self._row_to_reminder(row) for row in rows]
         return await self._work.read(operation, guard=guard)
 
-    async def mark_fired(self, reminder_id: str, *, guard: AuthorityGuard | None = None) -> None:
-        """Commit software delivery state and its fire count atomically."""
+    async def mark_fired(self, reminder_id: str, *, guard: AuthorityGuard | None = None,
+                         shared_only: bool = False, expected_trigger_at: float | None = None) -> bool:
+        """Commit delivery only for the selected active occurrence when specified."""
         now = time.time()
         def operation(db):
-            db.execute("UPDATE reminders SET state = ?, last_fired_at = ?, fire_count = fire_count + 1 WHERE id = ?",
-                       (ReminderState.FIRED.value, now, reminder_id))
-        await self._work.write(operation, guard=guard)
+            return db.execute("UPDATE reminders SET state = ?, last_fired_at = ?, fire_count = fire_count + 1 "
+                "WHERE id = ? AND (? = 0 OR scope = 'shared') "
+                "AND (? IS NULL OR (trigger_at = ? AND state = 'active'))",
+                (ReminderState.FIRED.value, now, reminder_id, shared_only,
+                 expected_trigger_at, expected_trigger_at)).rowcount > 0
+        return await self._work.write(operation, guard=guard)
 
-    async def cancel(self, reminder_id: str, *, guard: AuthorityGuard | None = None) -> bool:
-        """Commit cancellation only while its original authority remains current."""
+    async def cancel(self, reminder_id: str, *, guard: AuthorityGuard | None = None,
+                     shared_only: bool = False) -> bool:
+        """Commit cancellation only under original authority and current scope."""
         def operation(db):
-            return db.execute("UPDATE reminders SET state = ? WHERE id = ?",
-                              (ReminderState.CANCELLED.value, reminder_id)).rowcount > 0
+            return db.execute("UPDATE reminders SET state = ? WHERE id = ? "
+                "AND (? = 0 OR scope = 'shared')",
+                (ReminderState.CANCELLED.value, reminder_id, shared_only)).rowcount > 0
         return await self._work.write(operation, guard=guard)
 
     async def update_trigger(self, reminder_id: str, new_trigger: float, *,
-                             guard: AuthorityGuard | None = None) -> None:
-        """Commit the next durable recurrence without inheriting its creator's lease."""
+                             guard: AuthorityGuard | None = None, shared_only: bool = False,
+                             expected_trigger_at: float | None = None) -> bool:
+        """Advance only the same active occurrence without overwriting a newer one."""
         def operation(db):
-            db.execute("UPDATE reminders SET trigger_at = ?, state = ? WHERE id = ?",
-                       (new_trigger, ReminderState.ACTIVE.value, reminder_id))
-        await self._work.write(operation, guard=guard)
+            return db.execute("UPDATE reminders SET trigger_at = ?, state = ? WHERE id = ? "
+                "AND (? = 0 OR scope = 'shared') "
+                "AND (? IS NULL OR (trigger_at = ? AND state = 'active'))",
+                (new_trigger, ReminderState.ACTIVE.value, reminder_id, shared_only,
+                 expected_trigger_at, expected_trigger_at)).rowcount > 0
+        return await self._work.write(operation, guard=guard)
 
-    async def get_overdue_for_user(self, user_id: str, now: float, *,
-                                   guard: AuthorityGuard | None = None) -> list[Reminder]:
-        """Project overdue active reminders in one native read."""
+    async def get_overdue_for_user(self, user_id: str | None, now: float, *,
+                                   guard: AuthorityGuard | None = None,
+                                   shared_only: bool = False) -> list[Reminder]:
+        """Filter shared or trusted user jobs before exposing overdue text."""
         def operation(db):
-            rows = db.execute("SELECT * FROM reminders WHERE user_id = ? AND state = 'active' "
-                              "AND trigger_at <= ? ORDER BY trigger_at ASC", (user_id, now)).fetchall()
+            rows = db.execute("SELECT * FROM reminders WHERE state = 'active' AND trigger_at <= ? "
+                "AND ((? = 1 AND scope = 'shared') OR (? = 0 AND user_id = ?)) "
+                "ORDER BY trigger_at ASC", (now, shared_only, shared_only, user_id)).fetchall()
             return [self._row_to_reminder(row) for row in rows]
         return await self._work.read(operation, guard=guard)
 

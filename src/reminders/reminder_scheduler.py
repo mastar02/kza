@@ -8,7 +8,7 @@ from typing import Any
 
 from src.core.voice_delivery import VoiceDeliveryError, invoke_voice_callback
 from src.reminders.recurrence import next_trigger
-from src.reminders.reminder_store import Reminder, ReminderStore
+from src.reminders.reminder_store import Reminder, ReminderState, ReminderStore
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionService
 
@@ -68,7 +68,7 @@ class ReminderScheduler:
         while self._running:
             try:
                 self._wake_event.clear()
-                pending = await self._store.get_next_pending()
+                pending = await self._store.get_next_pending(shared_only=True)
 
                 if pending is None:
                     await self._wake_event.wait()
@@ -86,7 +86,7 @@ class ReminderScheduler:
                         pass
                     continue
 
-                due = await self._store.get_due(time.time())
+                due = await self._store.get_due(time.time(), shared_only=True)
                 for reminder in due:
                     await self._fire_reminder(reminder)
 
@@ -127,67 +127,59 @@ class ReminderScheduler:
         """Wake the scheduler loop to re-evaluate next pending reminder."""
         self._wake_event.set()
 
-    async def _fire_reminder(self, reminder: Reminder) -> None:
-        """Fire a single reminder: TTS, HA actions, reschedule or mark fired.
+    async def _shared_occurrence(self, reminder: Reminder) -> Reminder | None:
+        """Resolve the same active, due shared occurrence without adopting its successor."""
+        identity, selected_trigger = reminder.id, reminder.trigger_at
+        current = await self._store.get_by_id(identity, shared_only=True)
+        if (current is None or current.state is not ReminderState.ACTIVE
+                or current.trigger_at != selected_trigger or current.trigger_at > time.time()):
+            return None
+        return current
 
-        Args:
-            reminder: The reminder to fire.
-        """
+    async def _fire_reminder(self, reminder: Reminder) -> None:
+        """Deliver only the selected active shared occurrence and advance it once."""
+        reminder = await self._shared_occurrence(reminder)
+        if reminder is None:
+            return
         zone = self._presence_detector.get_user_zone(reminder.user_id) if self._presence_detector is not None else self._config.get("output_zone")
         if self._presence_detector is None and zone is None:
             raise VoiceDeliveryError("reminder_output_zone_required")
-
         if zone is None:
             retries = self._retry_counts.get(reminder.id, 0)
             if retries < self._max_retries:
                 self._retry_counts[reminder.id] = retries + 1
                 new_trigger = time.time() + self._retry_interval
-                await self._store.update_trigger(reminder.id, new_trigger)
-                logger.info(
-                    "User %s not present, retry %d/%d for reminder %s",
-                    reminder.user_id,
-                    retries + 1,
-                    self._max_retries,
-                    reminder.id,
-                )
+                changed = await self._store.update_trigger(reminder.id, new_trigger, shared_only=True,
+                    expected_trigger_at=reminder.trigger_at)
+                if changed:
+                    logger.info("User %s not present, retry %d/%d for reminder %s",
+                        reminder.user_id, retries + 1, self._max_retries, reminder.id)
+                else:
+                    self._retry_counts.pop(reminder.id, None)
                 return
-            logger.warning(
-                "Max retries reached for reminder %s, firing anyway",
-                reminder.id,
-            )
-
+            logger.warning("Max retries reached for reminder %s, firing anyway", reminder.id)
         if zone is not None:
             message = f"{self._tts_prefix} {reminder.text}"
             await invoke_voice_callback(self._tts.aspeak, message, zone_id=zone)
-            logger.info(
-                "TTS fired for reminder %s in zone %s", reminder.id, zone
-            )
-
+            logger.info("TTS fired for reminder %s in zone %s", reminder.id, zone)
         await self._execute_home_actions(reminder)
-
         if reminder.recurrence:
             new_trigger_at = next_trigger(reminder.trigger_at, reminder.recurrence)
-
-            if (
-                reminder.recurrence_end is not None
-                and new_trigger_at > reminder.recurrence_end
-            ):
-                await self._store.mark_fired(reminder.id)
-                logger.info(
-                    "Recurring reminder %s past recurrence_end, marked fired",
-                    reminder.id,
-                )
+            if reminder.recurrence_end is not None and new_trigger_at > reminder.recurrence_end:
+                changed = await self._store.mark_fired(reminder.id, shared_only=True,
+                    expected_trigger_at=reminder.trigger_at)
+                if changed:
+                    logger.info("Recurring reminder %s past recurrence_end, marked fired", reminder.id)
             else:
-                await self._store.update_trigger(reminder.id, new_trigger_at)
-                logger.info(
-                    "Recurring reminder %s rescheduled to %s",
-                    reminder.id,
-                    new_trigger_at,
-                )
+                changed = await self._store.update_trigger(reminder.id, new_trigger_at, shared_only=True,
+                    expected_trigger_at=reminder.trigger_at)
+                if changed:
+                    logger.info("Recurring reminder %s rescheduled to %s", reminder.id, new_trigger_at)
         else:
-            await self._store.mark_fired(reminder.id)
-            logger.info("One-shot reminder %s marked fired", reminder.id)
-
+            changed = await self._store.mark_fired(reminder.id, shared_only=True,
+                expected_trigger_at=reminder.trigger_at)
+            if changed:
+                logger.info("One-shot reminder %s marked fired", reminder.id)
         self._retry_counts.pop(reminder.id, None)
 
     def _on_user_arrived(self, user_id: str, presence: Any) -> None:
@@ -244,7 +236,7 @@ class ReminderScheduler:
             Number of missed reminders delivered.
         """
         now = time.time()
-        overdue = await self._store.get_overdue_for_user(user_id, now)
+        overdue = await self._store.get_overdue_for_user(user_id, now, shared_only=True)
 
         if not overdue:
             return 0
@@ -258,6 +250,9 @@ class ReminderScheduler:
 
         delivered = 0
         for reminder in overdue:
+            reminder = await self._shared_occurrence(reminder)
+            if reminder is None:
+                continue
             target_zone = zone_id or (self._presence_detector.get_user_zone(user_id) if self._presence_detector is not None else self._config.get("output_zone"))
             if not target_zone or self._tts is None:
                 raise VoiceDeliveryError("reminder_output_zone_required")
@@ -276,11 +271,14 @@ class ReminderScheduler:
                     reminder.recurrence_end is not None
                     and new_trigger > reminder.recurrence_end
                 ):
-                    await self._store.mark_fired(reminder.id)
+                    await self._store.mark_fired(reminder.id, shared_only=True,
+                        expected_trigger_at=reminder.trigger_at)
                 else:
-                    await self._store.update_trigger(reminder.id, new_trigger)
+                    await self._store.update_trigger(reminder.id, new_trigger, shared_only=True,
+                        expected_trigger_at=reminder.trigger_at)
             else:
-                await self._store.mark_fired(reminder.id)
+                await self._store.mark_fired(reminder.id, shared_only=True,
+                    expected_trigger_at=reminder.trigger_at)
 
             self._retry_counts.pop(reminder.id, None)
             delivered += 1
@@ -289,6 +287,9 @@ class ReminderScheduler:
 
     async def _execute_home_actions(self, reminder: Reminder) -> None:
         """Claim durable effects and apply current policy on every delivery path."""
+        reminder = await self._shared_occurrence(reminder)
+        if reminder is None:
+            return
         for index, action in enumerate(reminder.ha_actions or []):
             identity = json.dumps([reminder.id, reminder.trigger_at, index], separators=(",", ":"), allow_nan=False)
             request_id = "reminder:" + hashlib.sha256(identity.encode()).hexdigest()

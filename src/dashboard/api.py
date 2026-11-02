@@ -25,6 +25,7 @@ from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
 from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_admin, require_dashboard_access, require_dashboard_session, session_guard
 from src.dashboard.authority import DashboardAuthority
+from src.reminders.reminder_store import ReminderScope
 from src.dashboard.home_api import (
     LegacyHomeActionBody, execute_home_action, register_home_frontend, register_home_routes,
 )
@@ -146,6 +147,7 @@ class ReminderCreateModel(BaseModel):
     trigger_at: float
     recurrence: str | None = None
     ha_actions: list[dict] | None = None
+    scope: ReminderScope = ReminderScope.PRIVATE
 
 
 # ==================== Dashboard API ====================
@@ -725,12 +727,17 @@ class DashboardAPI:
 
         # ==================== Reminders ====================
 
-        @self.app.get("/api/reminders")
-        async def get_reminders(user_id: str):
+        @self.app.get("/api/reminders", dependencies=[Depends(require_admin)])
+        async def get_reminders(user_id: str, request: Request):
             if not self.reminder_manager:
                 raise HTTPException(status_code=503, detail="Reminders not configured")
-            reminders = await self.reminder_manager.get_active(user_id)
-            return [{"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence, "state": r.state} for r in reminders]
+            try:
+                reminders = await self.reminder_manager.get_active(user_id,
+                    guard=session_guard(request, frozenset({'admin:manage'})))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="reminder_read_denied") from error
+            return [{"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence,
+                     "state": r.state, "scope": r.scope} for r in reminders]
 
         @self.app.post("/api/reminders")
         async def create_reminder(data: ReminderCreateModel, request: Request):
@@ -738,10 +745,12 @@ class DashboardAPI:
                 raise HTTPException(status_code=503, detail="Reminders not configured")
             try:
                 r = await self.reminder_manager.create(data.user_id, data.text, data.trigger_at,
-                    data.recurrence, data.ha_actions, guard=session_guard(request, frozenset({'admin:manage'})))
+                    data.recurrence, data.ha_actions, scope=data.scope,
+                    guard=session_guard(request, frozenset({'admin:manage'})))
             except PermissionError as error:
                 raise HTTPException(status_code=403, detail="reminder_write_denied") from error
-            return {"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence, "state": r.state,
+            return {"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence,
+                    "state": r.state, "scope": r.scope,
                     "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                         effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}
 
@@ -871,41 +880,26 @@ class DashboardAPI:
             return {"failures": failures}
 
         @self.app.get("/api/reminders/status")
-        async def get_reminders_status():
-            """Reminder scheduler status: pending count, next trigger, delivery failures."""
+        async def get_reminders_status(request: Request):
+            """Describe only the shared jobs eligible for household announcements."""
             result = {
-                "pending_count": 0,
-                "next_trigger_at": None,
-                "scheduler_running": False,
-                "delivery_failures": 0,
+                "pending_count": 0, "next_trigger_at": None,
+                "scheduler_running": False, "delivery_failures": 0,
             }
-
             if self.reminder_scheduler is not None:
-                result["scheduler_running"] = getattr(
-                    self.reminder_scheduler, "_running", False
-                )
-                retry_counts = getattr(
-                    self.reminder_scheduler, "_retry_counts", {}
-                )
-                result["delivery_failures"] = sum(retry_counts.values())
-
+                result["scheduler_running"] = getattr(self.reminder_scheduler, "_running", False)
+                result["delivery_failures"] = sum(getattr(self.reminder_scheduler, "_retry_counts", {}).values())
             if self.reminder_manager is not None:
                 store = getattr(self.reminder_manager, "_store", None)
                 if store is not None:
-                    next_pending = await store.get_next_pending()
-                    if next_pending is not None:
-                        result["next_trigger_at"] = next_pending.trigger_at
-
-                    # Count all active reminders across users
+                    guard = session_guard(request, frozenset({'diagnostics:read'}))
                     try:
-                        async with store._db.execute(
-                            "SELECT COUNT(*) as cnt FROM reminders WHERE state = 'active'"
-                        ) as cursor:
-                            row = await cursor.fetchone()
-                            result["pending_count"] = row[0] if row else 0
-                    except Exception:
-                        logger.debug("Could not query pending reminder count")
-
+                        pending = await store.get_next_pending(shared_only=True, guard=guard)
+                        result["pending_count"] = await store.count_active(shared_only=True, guard=guard)
+                    except PermissionError as error:
+                        raise HTTPException(status_code=403, detail="reminder_read_denied") from error
+                    if pending is not None:
+                        result["next_trigger_at"] = pending.trigger_at
             return result
 
         # ==================== Observability (KZA Dashboard wireframe) ====================

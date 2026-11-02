@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 
 from src.reminders.reminder_manager import ReminderManager
-from src.reminders.reminder_store import ReminderStore
+from src.reminders.reminder_store import ReminderStore, ReminderScope
 
 
 @pytest_asyncio.fixture
@@ -67,6 +67,6 @@ async def test_get_today(manager):
 
 @pytest.mark.asyncio
 async def test_format_for_voice(manager):
-    r = await manager.create(user_id="u1", text="tomar agua", trigger_at=time.time() + 3600)
+    r = await manager.create(user_id="u1", text="tomar agua", trigger_at=time.time() + 3600, scope=ReminderScope.SHARED)
     voice = manager.format_for_voice(r)
     assert "tomar agua" in voice

@@ -6,7 +6,7 @@ import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from src.reminders.reminder_scheduler import ReminderScheduler
-from src.reminders.reminder_store import ReminderStore
+from src.reminders.reminder_store import ReminderStore, ReminderScope
 from tests.mocks.home_control import selected_actions
 
 
@@ -48,7 +48,7 @@ async def scheduler(store, mock_deps):
 @pytest.mark.asyncio
 async def test_fire_reminder_with_tts(scheduler, store, mock_deps):
     mock_deps["presence_detector"].get_user_zone = MagicMock(return_value="living")
-    r = await store.create(user_id="u1", text="basura", trigger_at=time.time() - 10)
+    r = await store.create(user_id="u1", text="basura", trigger_at=time.time() - 10, scope=ReminderScope.SHARED)
     await scheduler._fire_reminder(r)
     mock_deps["tts"].aspeak.assert_awaited_once()
     updated = await store.get_by_id(r.id)
@@ -58,14 +58,14 @@ async def test_fire_reminder_with_tts(scheduler, store, mock_deps):
 async def test_fire_reminder_with_ha_actions(scheduler, store, mock_deps):
     mock_deps["presence_detector"].get_user_zone = MagicMock(return_value="living")
     actions = [{"domain": "light", "service": "turn_on", "entity_id": "light.patio"}]
-    r = await store.create(user_id="u1", text="regar", trigger_at=time.time() - 10, ha_actions=actions)
+    r = await store.create(user_id="u1", text="regar", trigger_at=time.time() - 10, ha_actions=actions, scope=ReminderScope.SHARED)
     await scheduler._fire_reminder(r)
     mock_deps["ha_client"].call_service_once.assert_called_once_with("light", "turn_on", "light.patio", None)
 
 @pytest.mark.asyncio
 async def test_fire_recurring_reschedules(scheduler, store, mock_deps):
     mock_deps["presence_detector"].get_user_zone = MagicMock(return_value="living")
-    r = await store.create(user_id="u1", text="pastilla", trigger_at=time.time() - 10, recurrence="daily")
+    r = await store.create(user_id="u1", text="pastilla", trigger_at=time.time() - 10, recurrence="daily", scope=ReminderScope.SHARED)
     await scheduler._fire_reminder(r)
     updated = await store.get_by_id(r.id)
     assert updated.state == "active"
@@ -74,7 +74,7 @@ async def test_fire_recurring_reschedules(scheduler, store, mock_deps):
 @pytest.mark.asyncio
 async def test_fire_user_not_present_queues_retry(scheduler, store, mock_deps):
     mock_deps["presence_detector"].get_user_zone = MagicMock(return_value=None)
-    r = await store.create(user_id="u1", text="x", trigger_at=time.time() - 10)
+    r = await store.create(user_id="u1", text="x", trigger_at=time.time() - 10, scope=ReminderScope.SHARED)
     await scheduler._fire_reminder(r)
     updated = await store.get_by_id(r.id)
     assert updated.state == "active"  # NOT fired, retrying

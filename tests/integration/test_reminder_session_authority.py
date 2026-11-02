@@ -14,7 +14,7 @@ import pytest
 from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import DashboardAuthority
 from src.reminders.reminder_manager import ReminderManager
-from src.reminders.reminder_store import ReminderActionStatus, ReminderStore
+from src.reminders.reminder_store import ReminderActionStatus, ReminderScope, ReminderStore
 from tests.mocks.memory_graph import Clock
 
 pytestmark = pytest.mark.asyncio
@@ -42,6 +42,78 @@ async def reminder_graph(tmp_path, dashboard_auth):
             assert (await client.post('/api/admin/auth/login', json={'token': token})).status_code == 200
             yield SimpleNamespace(authority=authority, store=store, client=client, path=path,
                                   clock=clock, wake=wake, state=state)
+
+
+async def test_admin_reminder_scope_is_closed_and_implicit_creation_stays_private(reminder_graph):
+    graph = reminder_graph
+    default = await graph.client.post('/api/reminders', json={
+        'user_id': 'unknown', 'text': 'Private default', 'trigger_at': 1.})
+    shared = await graph.client.post('/api/reminders', json={
+        'user_id': 'known-profile', 'text': 'Shared explicit', 'trigger_at': 2., 'scope': 'shared'})
+    invalid = await graph.client.post('/api/reminders', json={
+        'user_id': 'unknown', 'text': 'Invalid scope', 'trigger_at': 3., 'scope': 'public'})
+    assert default.status_code == shared.status_code == 200 and invalid.status_code == 422
+    assert default.json()['scope'] == 'private' and shared.json()['scope'] == 'shared'
+    assert (await graph.store.get_by_id(default.json()['id'])).scope is ReminderScope.PRIVATE
+    assert await graph.store.count_active() == 2
+    status = (await graph.client.get('/api/reminders/status')).json()
+    assert status['pending_count'] == 1 and status['next_trigger_at'] == 2.
+
+
+@pytest.mark.parametrize('resource', ['private', 'status'])
+@pytest.mark.parametrize('cancel_observer', [False, True])
+async def test_http_reminder_read_rechecks_original_scope_before_native_projection(
+    reminder_graph, monkeypatch, dashboard_auth, resource, cancel_observer,
+):
+    graph = reminder_graph
+    private = await graph.store.create('u1', 'Private read marker', 1.)
+    shared = await graph.store.create('other', 'Shared read marker', 2., scope=ReminderScope.SHARED)
+    entered, release = threading.Event(), threading.Event()
+    queued = asyncio.Event()
+    original_read, project = graph.store._work.read, graph.store._row_to_reminder
+    projections = []
+
+    def convert(row):
+        projections.append(row['id'])
+        return project(row)
+
+    def block(database):
+        entered.set()
+        assert release.wait(5)
+        return None
+
+    async def read(function, *, guard=None):
+        queued.set()
+        return await original_read(function, guard=guard)
+
+    monkeypatch.setattr(graph.store, '_row_to_reminder', convert)
+    blocker = asyncio.create_task(original_read(block))
+    pending = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        monkeypatch.setattr(graph.store._work, 'read', read)
+        path = '/api/reminders?user_id=u1' if resource == 'private' else '/api/reminders/status'
+        pending = asyncio.create_task(graph.client.get(path))
+        await asyncio.wait_for(queued.wait(), 2)
+        if cancel_observer:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        assert (await graph.client.post('/api/admin/auth/logout')).json()['session_revoked']
+    finally:
+        release.set()
+        await blocker
+    if not cancel_observer:
+        assert (await pending).status_code == 403
+    await graph.store._work.drain_admitted()
+    assert projections == []
+    response = await graph.client.get(path, headers=dashboard_auth)
+    assert response.status_code == 200
+    if resource == 'private':
+        assert response.json()[0]['id'] == private.id and response.json()[0]['scope'] == 'private'
+        assert projections == [private.id]
+    else:
+        assert response.json()['pending_count'] == 1 and response.json()['next_trigger_at'] == 2.
+        assert projections == [shared.id] and 'Private read marker' not in response.text
 
 
 @pytest.mark.parametrize('operation', ['create', 'cancel'])

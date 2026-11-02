@@ -1498,17 +1498,17 @@ class RequestDispatcher:
         outcome = TaskOutcome(TaskStatus.COMPLETED)
         try:
             if any(w in text_lower for w in ["qué recordatorios", "que recordatorios", "mis recordatorios"]):
-                active = await self.reminder_manager.get_active(user_id)
-                response = ("Tus recordatorios: " + ". ".join(self.reminder_manager.format_for_voice(r) for r in active[:5])
-                            if active else "No tienes recordatorios activos")
+                active = await self.reminder_manager.get_active(None, shared_only=True)
+                response = ("Los recordatorios compartidos son: " + ". ".join(self.reminder_manager.format_for_voice(r) for r in active[:5])
+                            if active else "No hay recordatorios compartidos activos")
             elif any(w in text_lower for w in ["qué tengo pendiente", "que tengo pendiente"]):
-                today = await self.reminder_manager.get_today(user_id)
+                today = await self.reminder_manager.get_today(None, shared_only=True)
                 response = ("Pendiente hoy: " + ". ".join(self.reminder_manager.format_for_voice(r) for r in today)
                             if today else "No tienes nada pendiente hoy")
             elif "cancela" in text_lower and "recordatorio" in text_lower:
                 match = re.search(r'recordatorio\s+(?:de\s+)?(.+)', text_lower)
                 search_text = match.group(1).strip() if match else text_lower
-                cancelled = await self.reminder_manager.cancel_by_text(user_id, search_text)
+                cancelled = await self.reminder_manager.cancel_by_text(None, search_text, shared_only=True)
                 response = "Recordatorio cancelado" if cancelled else "No encontré ese recordatorio"
                 outcome = (TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                            effect=EffectState.OBSERVED, observation_scope="software_state") if cancelled else

@@ -17,6 +17,7 @@ from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionRequest
 from src.main import build_application
 from src.pipeline.command_event import CommandEvent
+from src.reminders.reminder_store import ReminderScope
 from tests.mocks.application_graph import OfflineEncoder, OfflineSTT, OfflineTTS, offline_config, offline_home
 from tests.mocks.audio_output import AudioBackend
 from tests.mocks.task_transport import TaskTransport
@@ -199,7 +200,8 @@ async def test_named_reminder_cancellation_cannot_cancel_an_unrelated_queued_req
     async with offline_home() as (url, _):
         async with AsyncExitStack() as stack:
             graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=factories)
-            reminder = await graph.reminder_manager.create("unknown", "tomar agua", time.time() + 3600)
+            reminder = await graph.reminder_manager.create("unknown", "tomar agua", time.time() + 3600,
+                scope=ReminderScope.SHARED)
             source = graph.privacy.source_for_capture(str(uuid4()), time.time(), "")
             from src.orchestrator.priority_queue import Priority
             queued = graph.pipeline._orchestrator.queue.enqueue("unknown", "synthetic queued request",

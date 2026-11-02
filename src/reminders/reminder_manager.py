@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 from difflib import SequenceMatcher
 
-from src.reminders.reminder_store import ReminderStore, Reminder
+from src.reminders.reminder_store import ReminderStore, Reminder, ReminderScope
 from src.core.sqlite_work import AuthorityGuard
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionService, request_from_service
@@ -28,9 +28,10 @@ class ReminderManager:
         trigger_at: float,
         recurrence: str | None = None,
         ha_actions: list[dict] | None = None,
-        *, guard: AuthorityGuard | None = None,
+        *, guard: AuthorityGuard | None = None, scope: ReminderScope = ReminderScope.PRIVATE,
     ) -> Reminder:
         """Create a new reminder via the store."""
+        scope = ReminderScope(scope)
         for action in ha_actions or []:
             if type(action) is not dict or action.keys() - {"domain", "service", "entity_id", "data"}:
                 raise ValueError("invalid_reminder_action")
@@ -46,6 +47,7 @@ class ReminderManager:
             recurrence=recurrence,
             ha_actions=ha_actions,
             guard=guard,
+            scope=scope,
         )
         logger.info(
             "Created reminder '%s' for user %s at %s",
@@ -55,44 +57,40 @@ class ReminderManager:
         )
         return reminder
 
-    async def cancel_by_id(self, reminder_id: str, *, guard: AuthorityGuard | None = None) -> bool:
-        """Return an actual cancellation receipt, not recognition of an ID."""
-        return await self._store.cancel(reminder_id, guard=guard)
+    async def cancel_by_id(self, reminder_id: str, *, guard: AuthorityGuard | None = None,
+                           shared_only: bool = False) -> bool:
+        """Cancel only within the original authority and selected native scope."""
+        return await self._store.cancel(reminder_id, guard=guard, shared_only=shared_only)
 
-    async def cancel_by_text(self, user_id: str, search_text: str) -> bool:
-        """Cancel the best fuzzy-matched active reminder. Returns True if cancelled."""
-        active = await self._store.get_active_for_user(user_id)
+    async def cancel_by_text(self, user_id: str | None, search_text: str, *,
+                             shared_only: bool = False,
+                             guard: AuthorityGuard | None = None) -> bool:
+        """Apply scope before fuzzy matching and recheck it at cancellation."""
+        active = await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard)
         if not active:
             return False
-
         match = self._fuzzy_find(search_text, active)
         if match is None:
             return False
+        return await self._store.cancel(match.id, shared_only=shared_only, guard=guard)
 
-        if await self._store.cancel(match.id) is not True:
-            return False
-        logger.info("Cancelled reminder '%s' (id=%s) via fuzzy match on '%s'", match.text, match.id, search_text)
-        return True
+    async def get_active(self, user_id: str | None, *, shared_only: bool = False,
+                         guard: AuthorityGuard | None = None) -> list[Reminder]:
+        """Project eligible active jobs without deriving authority from a profile."""
+        return await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard)
 
-    async def get_active(self, user_id: str) -> list[Reminder]:
-        """Return all active reminders for a user."""
-        return await self._store.get_active_for_user(user_id)
-
-    async def get_today(self, user_id: str) -> list[Reminder]:
-        """Return active reminders with trigger_at before end of today."""
+    async def get_today(self, user_id: str | None, *, shared_only: bool = False,
+                        guard: AuthorityGuard | None = None) -> list[Reminder]:
+        """Return eligible active jobs before the end of the current day."""
         now = datetime.now()
-        end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=999999)
-        cutoff = end_of_day.timestamp()
-
-        active = await self._store.get_active_for_user(user_id)
-        return [r for r in active if r.trigger_at <= cutoff]
+        cutoff = now.replace(hour=23, minute=59, second=59, microsecond=999999).timestamp()
+        active = await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard)
+        return [reminder for reminder in active if reminder.trigger_at <= cutoff]
 
     def format_for_voice(self, reminder: Reminder) -> str:
-        """Format a reminder for TTS output.
-
-        Returns:
-            String like "Oye, recuerda tomar agua a las 14:30".
-        """
+        """Format only explicitly shared material for unauthenticated household speech."""
+        if reminder.scope is not ReminderScope.SHARED:
+            raise PermissionError("personal_reminder_voice_session_required")
         trigger_time = datetime.fromtimestamp(reminder.trigger_at).strftime("%H:%M")
         return f"{self._tts_prefix} {reminder.text} a las {trigger_time}"
 

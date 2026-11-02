@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from src.lists.list_store import ListStore
 from src.lists.list_manager import ListManager
 from src.lists.ha_sync import HASyncManager
-from src.reminders.reminder_store import ReminderStore
+from src.reminders.reminder_store import ReminderStore, ReminderScope
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_scheduler import ReminderScheduler
 from tests.mocks.home_control import selected_actions
@@ -126,7 +126,7 @@ class TestReminderFlow:
         tts = reminder_system["tts"]
 
         # Create reminder in the past (should fire immediately)
-        r = await mgr.create(user_id="u1", text="sacar basura", trigger_at=time.time() - 10)
+        r = await mgr.create(user_id="u1", text="sacar basura", trigger_at=time.time() - 10, scope=ReminderScope.SHARED)
 
         # Fire it through scheduler
         reminder = await reminder_system["store"].get_by_id(r.id)
@@ -143,7 +143,7 @@ class TestReminderFlow:
         mgr = reminder_system["manager"]
         scheduler = reminder_system["scheduler"]
 
-        r = await mgr.create(user_id="u1", text="pastilla", trigger_at=time.time() - 10, recurrence="daily")
+        r = await mgr.create(user_id="u1", text="pastilla", trigger_at=time.time() - 10, recurrence="daily", scope=ReminderScope.SHARED)
         reminder = await reminder_system["store"].get_by_id(r.id)
         await scheduler._fire_reminder(reminder)
 
@@ -158,7 +158,7 @@ class TestReminderFlow:
         ha = reminder_system["ha_client"]
 
         actions = [{"domain": "light", "service": "turn_on", "entity_id": "light.jardin"}]
-        r = await mgr.create(user_id="u1", text="regar plantas", trigger_at=time.time() - 10, ha_actions=actions)
+        r = await mgr.create(user_id="u1", text="regar plantas", trigger_at=time.time() - 10, ha_actions=actions, scope=ReminderScope.SHARED)
 
         reminder = await reminder_system["store"].get_by_id(r.id)
         await scheduler._fire_reminder(reminder)

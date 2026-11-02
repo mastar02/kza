@@ -14,7 +14,7 @@ from src.core.voice_delivery import VoiceDeliveryError
 from src.intercom.intercom_system import Announcement
 from src.notifications.smart_notifications import Notification, NotificationChannel
 from src.pipeline.voice_services import build_voice_services
-from src.reminders.reminder_store import ReminderStore
+from src.reminders.reminder_store import ReminderStore, ReminderScope
 from src.routines.routine_executor import RoutineExecutor
 from tests.mocks.voice_graph import voice_graph
 
@@ -42,7 +42,8 @@ async def test_all_feature_callbacks_share_one_pcm_output_and_correct_origin(mon
         notice = Notification('notice', 'Aviso', 'Mensaje de prueba.', user_id='synthetic', zone_id='zone_origin')
         await features.notifications._deliver_to_channel(notice, 'synthetic', NotificationChannel.VOICE, {})
         await features.alert_manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, 'Alerta de prueba.')
-        reminder = await store.create(user_id='synthetic', text='Recordatorio de prueba.', trigger_at=time.time()-1)
+        reminder = await store.create(user_id='synthetic', text='Recordatorio de prueba.', trigger_at=time.time()-1,
+            scope=ReminderScope.SHARED)
         await services.reminders._fire_reminder(reminder)
         assert (await store.get_by_id(reminder.id)).state == 'fired'
         executor = RoutineExecutor(tts_engine=features.voice_delivery)
@@ -116,9 +117,9 @@ async def test_reminder_commit_during_empty_query_keeps_its_wake(monkeypatch, tm
         original_query = store.get_next_pending
         first = True
 
-        async def held_query():
+        async def held_query(**kwargs):
             nonlocal first
-            result = await original_query()
+            result = await original_query(**kwargs)
             if first:
                 first = False
                 assert result is None
@@ -132,11 +133,12 @@ async def test_reminder_commit_during_empty_query_keeps_its_wake(monkeypatch, tm
         services.start_reminders()
         try:
             await asyncio.wait_for(entered.wait(), 3)
-            reminder = await store.create('synthetic-owner', 'Synthetic future reminder', time.time() + 600)
+            reminder = await store.create('synthetic-owner', 'Synthetic future reminder', time.time() + 600,
+                scope=ReminderScope.SHARED)
             assert wake.is_set()
             release.set()
             await asyncio.wait_for(selected.wait(), 3)
-            assert (await original_query()).id == reminder.id
+            assert (await original_query(shared_only=True)).id == reminder.id
             assert services.reminders._wake_event is wake
         finally:
             release.set()
