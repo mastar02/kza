@@ -10,6 +10,8 @@ Jerarquía de permisos:
 - GUEST: Solo consultas, sin control
 """
 
+from collections.abc import Callable
+from copy import deepcopy
 import json
 import logging
 import os
@@ -18,8 +20,14 @@ import time
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
+from threading import RLock
+from typing import TypeVar
+from uuid import uuid4
 
 import numpy as np
+
+
+_CatalogResult = TypeVar("_CatalogResult")
 
 logger = logging.getLogger(__name__)
 
@@ -92,9 +100,9 @@ class User:
             "created_at": self.created_at,
             "last_seen": self.last_seen,
             "is_active": self.is_active,
-            "preferences": self.preferences,
-            "allowed_entities": self.allowed_entities,
-            "blocked_entities": self.blocked_entities
+            "preferences": deepcopy(self.preferences),
+            "allowed_entities": deepcopy(self.allowed_entities),
+            "blocked_entities": deepcopy(self.blocked_entities)
         }
 
     @classmethod
@@ -112,9 +120,9 @@ class User:
             created_at=data.get("created_at", time.time()),
             last_seen=data.get("last_seen", time.time()),
             is_active=data.get("is_active", True),
-            preferences=data.get("preferences", {}),
-            allowed_entities=data.get("allowed_entities", []),
-            blocked_entities=data.get("blocked_entities", [])
+            preferences=deepcopy(data.get("preferences", {})),
+            allowed_entities=deepcopy(data.get("allowed_entities", [])),
+            blocked_entities=deepcopy(data.get("blocked_entities", []))
         )
 
 
@@ -139,6 +147,7 @@ class UserManager:
     """
 
     def __init__(self, data_path: str = "./data/users.json", *, voice_registry=None):
+        self._lock = RLock()
         self.legacy_path = Path(data_path)
         self.voice_registry = voice_registry
         self.voice_review_managed = voice_registry is not None
@@ -150,214 +159,213 @@ class UserManager:
         self._load()
 
     def _load(self):
-        """Cargar usuarios desde archivo"""
-        source = self.data_path if self.data_path.exists() else self.legacy_path
-        if source.exists():
+        """Parse a complete catalog before publishing any row, including legacy input."""
+        with self._lock:
+            source = self.data_path if self.data_path.exists() else self.legacy_path
+            if not source.exists():
+                return
+            candidate = {}
             try:
-                with open(source) as f:
-                    data = json.load(f)
-                if self.voice_review_managed and source==self.data_path and data.get('schema')!='kza-users-accounts-v1':
-                    raise ValueError('unverified_account_catalog')
-
-                for user_data in data.get("users", []):
-                    user = User.from_dict(user_data,include_voice=not self.voice_review_managed)
-                    self._users[user.user_id] = user
-
-                logger.info(f"Cargados {len(self._users)} usuarios")
-
-            except Exception as e:
-                if self.voice_review_managed:
-                    self._users.clear()
-                    self._load_error = True
-                logger.error('Account loading unavailable: %s',type(e).__name__)
+                with open(source) as stream:
+                    data = json.load(stream)
+                if self.voice_review_managed and source == self.data_path and data.get("schema") != "kza-users-accounts-v1":
+                    raise ValueError("unverified_account_catalog")
+                for row in data.get("users", []):
+                    user = User.from_dict(row, include_voice=not self.voice_review_managed)
+                    if user.user_id in candidate:
+                        raise ValueError("duplicate_account_identity")
+                    candidate[user.user_id] = user
+            except Exception as error:
+                self._users = {}
+                self._load_error = True
+                logger.error("Account loading unavailable: %s", type(error).__name__)
+                return
+            self._users = candidate
+            self._load_error = False
+            logger.info("Cargados %s usuarios", len(candidate))
 
     def _require_writable(self):
-        if self.voice_review_managed and self._load_error:
+        if self._load_error:
             raise RuntimeError('unverified_account_catalog')
 
-    def _save(self):
-        """Guardar usuarios a archivo"""
-        self._require_writable()
-        self.data_path.parent.mkdir(parents=True, exist_ok=True,mode=0o700 if self.voice_review_managed else 0o777)
+    @staticmethod
+    def _check_authority(before_save: Callable[[], None] | None) -> None:
+        """Support raising validators and reject an explicitly false guard."""
+        if before_save is not None and before_save() is False:
+            raise PermissionError("user_catalog_authority_retired")
 
-        # Incrementar versión para invalidar caches de embeddings
-        self._version += 1
+    def _mutate(self, edit: Callable[[dict[str, User]], tuple[bool, _CatalogResult]], *,
+                before_save: Callable[[], None] | None = None) -> _CatalogResult:
+        """Serialize copy, authority, persistence and detached result publication."""
+        with self._lock:
+            self._check_authority(before_save)
+            self._require_writable()
+            candidate = deepcopy(self._users)
+            changed, result = edit(candidate)
+            detached = deepcopy(result)
+            if changed:
+                self._save(candidate, before_save=before_save)
+            return detached
 
-        data = {
-            "users": [user.to_dict() for user in self._users.values()],
-            "last_updated": time.time()
-        }
-
-        if self.voice_review_managed:
-            data['schema']='kza-users-accounts-v1'
-            for row in data['users']:
-                row['voice_embedding']=None
-            descriptor,temporary = tempfile.mkstemp(prefix='.accounts-',dir=self.data_path.parent)
+    def _save(self, users: dict[str, User] | None = None, *,
+              before_save: Callable[[], None] | None = None) -> None:
+        """Replace the private snapshot before publishing catalog and version."""
+        with self._lock:
+            self._check_authority(before_save)
+            self._require_writable()
+            candidate = deepcopy(self._users if users is None else users)
+            data = {"users": [user.to_dict() for user in candidate.values()],
+                    "last_updated": time.time()}
+            if self.voice_review_managed:
+                data["schema"] = "kza-users-accounts-v1"
+                for row in data["users"]:
+                    row["voice_embedding"] = None
+            self.data_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            descriptor, temporary = tempfile.mkstemp(prefix=".accounts-", dir=self.data_path.parent)
             try:
-                with os.fdopen(descriptor,'w') as stream:
-                    json.dump(data,stream,indent=2)
+                with os.fdopen(descriptor, "w") as stream:
+                    json.dump(data, stream, indent=2)
                     stream.flush()
                     os.fsync(stream.fileno())
-                os.replace(temporary,self.data_path)
+                self._check_authority(before_save)
+                os.replace(temporary, self.data_path)
+                # Replacement is the commit. Its approved publication must not
+                # depend on a later lease check or observer still being present.
+                self._users = candidate
+                self._version += 1
             finally:
                 if os.path.exists(temporary):
                     os.unlink(temporary)
-        else:
-            with open(self.data_path, "w") as f:
-                json.dump(data, f, indent=2)
 
     # ==================== CRUD ====================
 
     def add_user(
-        self,
-        name: str,
-        permission_level: PermissionLevel,
-        voice_embedding: np.ndarray | None = None,
-        requesting_user: User | None = None
+        self, name: str, permission_level: PermissionLevel,
+        voice_embedding: np.ndarray | None = None, requesting_user: User | None = None, *,
+        before_save: Callable[[], None] | None = None,
     ) -> tuple[User | None, str]:
-        """
-        Agregar nuevo usuario.
+        """Create an account only after its copied catalog snapshot commits."""
+        def edit(users):
+            if self.voice_review_managed and voice_embedding is not None:
+                return False, (None, "La voz se revisa en el panel; no crea cuentas ni permisos.")
+            if requesting_user is not None:
+                requester = users.get(requesting_user.user_id)
+                if requester is None or not requester.is_active:
+                    return False, (None, "Permiso denegado: solicitante no disponible")
+                check = self.check_action_permission(requester, "add_user")
+                if not check.allowed:
+                    return False, (None, f"Permiso denegado: {check.reason}")
+            if any(user.name.lower() == name.lower() for user in users.values()):
+                return False, (None, f"Ya existe un usuario llamado {name}")
+            user_id = f"user_{uuid4().hex}"
+            user = User(user_id=user_id, name=name, permission_level=PermissionLevel(permission_level),
+                        voice_embedding=deepcopy(voice_embedding))
+            users[user_id] = user
+            return True, (user, f"Usuario {name} creado exitosamente")
+        return self._mutate(edit, before_save=before_save)
 
-        Args:
-            name: Nombre del usuario
-            permission_level: Nivel de permisos
-            voice_embedding: Embedding de voz (puede agregarse después)
-            requesting_user: Usuario que solicita la acción (para verificar permisos)
+    def remove_user(self, user_id: str, requesting_user: User | None = None, *,
+                    before_save: Callable[[], None] | None = None) -> tuple[bool, str]:
+        """Delete from a copied catalog without publishing a rejected write."""
+        def edit(users):
+            if requesting_user is not None:
+                requester = users.get(requesting_user.user_id)
+                if requester is None or not requester.is_active:
+                    return False, (False, "Permiso denegado: solicitante no disponible")
+                check = self.check_action_permission(requester, "remove_user")
+                if not check.allowed:
+                    return False, (False, f"Permiso denegado: {check.reason}")
+            user = users.get(user_id)
+            if user is None:
+                return False, (False, "Usuario no encontrado")
+            if user.permission_level == PermissionLevel.ADMIN:
+                admins = sum(u.permission_level == PermissionLevel.ADMIN and u.is_active for u in users.values())
+                if admins <= 1:
+                    return False, (False, "No puedes eliminar al único administrador")
+            del users[user_id]
+            return True, (True, f"Usuario {user.name} eliminado")
+        return self._mutate(edit, before_save=before_save)
 
-        Returns:
-            (User creado o None, mensaje de resultado)
-        """
-        # Verificar permisos del solicitante
-        self._require_writable()
-        if self.voice_review_managed and voice_embedding is not None:
-            return None,'La voz se revisa en el panel; no crea cuentas ni permisos.'
-        if requesting_user is not None:
-            check = self.check_action_permission(requesting_user, "add_user")
-            if not check.allowed:
-                return None, f"Permiso denegado: {check.reason}"
+    def get_user(self, user_id: str, *, before_read: Callable[[], None] | None = None) -> User | None:
+        """Return a detached account after checking authority inside the catalog lock."""
+        with self._lock:
+            self._check_authority(before_read)
+            self._require_writable()
+            result = deepcopy(self._users.get(user_id))
+            self._check_authority(before_read)
+            return result
 
-        # Generar ID único
-        user_id = f"user_{name.lower().replace(' ', '_')}_{int(time.time())}"
+    def get_user_by_name(self, name: str, *, before_read: Callable[[], None] | None = None) -> User | None:
+        """Resolve a name without exposing a live catalog object."""
+        with self._lock:
+            self._check_authority(before_read)
+            self._require_writable()
+            result = next((deepcopy(user) for user in self._users.values()
+                           if user.name.lower() == name.lower()), None)
+            self._check_authority(before_read)
+            return result
 
-        # Verificar que no exista usuario con mismo nombre
-        existing = self.get_user_by_name(name)
-        if existing:
-            return None, f"Ya existe un usuario llamado {name}"
+    def get_all_users(self, active_only: bool = True, *,
+                      before_read: Callable[[], None] | None = None) -> list[User]:
+        """Copy eligible accounts under the original projection authority."""
+        with self._lock:
+            self._check_authority(before_read)
+            self._require_writable()
+            result = [deepcopy(user) for user in self._users.values() if not active_only or user.is_active]
+            self._check_authority(before_read)
+            return result
 
-        user = User(
-            user_id=user_id,
-            name=name,
-            permission_level=permission_level,
-            voice_embedding=voice_embedding
-        )
-
-        self._users[user_id] = user
-        self._save()
-
-        logger.info(f"Usuario creado: {name} (nivel: {permission_level.name})")
-        return user, f"Usuario {name} creado exitosamente"
-
-    def remove_user(
-        self,
-        user_id: str,
-        requesting_user: User | None = None
-    ) -> tuple[bool, str]:
-        """Eliminar usuario"""
-        self._require_writable()
-        if requesting_user is not None:
-            check = self.check_action_permission(requesting_user, "remove_user")
-            if not check.allowed:
-                return False, f"Permiso denegado: {check.reason}"
-
-        if user_id not in self._users:
-            return False, "Usuario no encontrado"
-
-        user = self._users[user_id]
-
-        # No permitir eliminar al último admin
-        if user.permission_level == PermissionLevel.ADMIN:
-            admin_count = sum(
-                1 for u in self._users.values()
-                if u.permission_level == PermissionLevel.ADMIN and u.is_active
-            )
-            if admin_count <= 1:
-                return False, "No puedes eliminar al único administrador"
-
-        del self._users[user_id]
-        self._save()
-
-        logger.info(f"Usuario eliminado: {user.name}")
-        return True, f"Usuario {user.name} eliminado"
-
-    def get_user(self, user_id: str) -> User | None:
-        """Obtener usuario por ID"""
-        return self._users.get(user_id)
-
-    def get_user_by_name(self, name: str) -> User | None:
-        """Obtener usuario por nombre"""
-        name_lower = name.lower()
-        for user in self._users.values():
-            if user.name.lower() == name_lower:
-                return user
-        return None
-
-    def get_all_users(self, active_only: bool = True) -> list[User]:
-        """Obtener todos los usuarios"""
-        users = list(self._users.values())
-        if active_only:
-            users = [u for u in users if u.is_active]
-        return users
-
-    def update_user(self, user_id: str, **updates) -> tuple[bool, str]:
-        """Actualizar datos de usuario"""
-        self._require_writable()
-        if self.voice_review_managed and 'voice_embedding' in updates:
-            raise ValueError('voice_profile_review_required')
-        if user_id not in self._users:
-            return False, "Usuario no encontrado"
-
-        user = self._users[user_id]
-
-        for key, value in updates.items():
-            if hasattr(user, key):
-                setattr(user, key, value)
-
-        self._save()
-        return True, "Usuario actualizado"
+    def update_user(self, user_id: str, *, before_save: Callable[[], None] | None = None,
+                    **updates) -> tuple[bool, str]:
+        """Persist copied fields while keeping the canonical account ID stable."""
+        def edit(users):
+            if self.voice_review_managed and "voice_embedding" in updates:
+                raise ValueError("voice_profile_review_required")
+            user = users.get(user_id)
+            if user is None:
+                return False, (False, "Usuario no encontrado")
+            allowed = User.__dataclass_fields__.keys() - {"user_id"}
+            for key, value in updates.items():
+                if key in allowed:
+                    setattr(user, key, PermissionLevel(value) if key == "permission_level" else deepcopy(value))
+            return True, (True, "Usuario actualizado")
+        return self._mutate(edit, before_save=before_save)
 
     # ==================== Voice Embeddings ====================
 
-    def set_voice_embedding(
-        self,
-        user_id: str,
-        embedding: np.ndarray
-    ) -> bool:
-        """Configurar embedding de voz para un usuario"""
-        if self.voice_review_managed:
-            return False
-        if user_id not in self._users:
-            return False
+    def set_voice_embedding(self, user_id: str, embedding: np.ndarray, *,
+                            before_save: Callable[[], None] | None = None) -> bool:
+        """Re-resolve a legacy account and persist its copied vector under authority."""
+        def edit(users):
+            if self.voice_review_managed or user_id not in users:
+                return False, False
+            users[user_id].voice_embedding = deepcopy(embedding)
+            return True, True
+        return self._mutate(edit, before_save=before_save)
 
-        self._users[user_id].voice_embedding = embedding
-        self._save()
+    def get_all_embeddings(self, *, before_read: Callable[[], None] | None = None) -> dict[str, np.ndarray]:
+        """Copy legacy vectors; managed voice remains available only through its ledger."""
+        with self._lock:
+            self._check_authority(before_read)
+            self._require_writable()
+            result = {} if self.voice_review_managed else {
+                identity: user.voice_embedding.copy() for identity, user in self._users.items()
+                if user.voice_embedding is not None and user.is_active}
+            self._check_authority(before_read)
+            return result
 
-        logger.info(f"Voice embedding actualizado para: {self._users[user_id].name}")
-        return True
-
-    def get_all_embeddings(self) -> dict[str, np.ndarray]:
-        """Obtener todos los embeddings de voz registrados"""
-        if self.voice_review_managed:
-            return {}
-        return {
-            user_id: user.voice_embedding
-            for user_id, user in self._users.items()
-            if user.voice_embedding is not None and user.is_active
-        }
-
-    def update_last_seen(self, user_id: str):
-        """Actualizar última vez visto"""
-        if user_id in self._users:
-            self._users[user_id].last_seen = time.time()
+    def update_last_seen(self, user_id: str, *, before_save: Callable[[], None] | None = None) -> None:
+        """Publish a copied transient observation under the same catalog exclusion."""
+        with self._lock:
+            self._check_authority(before_save)
+            if user_id not in self._users:
+                return
+            candidate = dict(self._users)
+            user = deepcopy(candidate[user_id])
+            user.last_seen = time.time()
+            candidate[user_id] = user
+            self._check_authority(before_save)
+            self._users = candidate
             # No guardar cada vez para no sobrecargar I/O
 
     # ==================== Permisos ====================
@@ -475,35 +483,30 @@ class UserManager:
 
         return f"Lo siento {user.name}, esta acción requiere permisos de {required_es}."
 
-    def get_stats(self) -> dict:
-        """Obtener estadísticas de usuarios"""
-        active_users = [u for u in self._users.values() if u.is_active]
-        with_voice = [u for u in active_users if u.voice_embedding is not None]
+    def get_stats(self, *, before_read: Callable[[], None] | None = None) -> dict:
+        """Project counts from one guarded catalog snapshot."""
+        with self._lock:
+            self._check_authority(before_read)
+            self._require_writable()
+            active = [user for user in self._users.values() if user.is_active]
+            by_level = {level.name: sum(user.permission_level == level for user in active)
+                        for level in PermissionLevel}
+            result = {"total_users": len(self._users), "active_users": len(active),
+                      "users_with_voice": sum(user.voice_embedding is not None for user in active),
+                      "by_permission_level": {key: count for key, count in by_level.items() if count}}
+            self._check_authority(before_read)
+            return result
 
-        by_level = {}
-        for level in PermissionLevel:
-            count = sum(1 for u in active_users if u.permission_level == level)
-            if count > 0:
-                by_level[level.name] = count
-
-        return {
-            "total_users": len(self._users),
-            "active_users": len(active_users),
-            "users_with_voice": len(with_voice),
-            "by_permission_level": by_level
-        }
-
-    def create_default_admin(self, name: str = "Admin") -> User:
-        """Crear usuario admin por defecto si no existe ninguno"""
-        admins = [u for u in self._users.values() if u.permission_level == PermissionLevel.ADMIN]
-
-        if admins:
-            return admins[0]
-
-        user, _ = self.add_user(
-            name=name,
-            permission_level=PermissionLevel.ADMIN
-        )
-
-        logger.info(f"Admin por defecto creado: {name}")
-        return user
+    def create_default_admin(self, name: str = "Admin", *,
+                             before_save: Callable[[], None] | None = None) -> User:
+        """Return or create a detached initial account under the same writer lock."""
+        with self._lock:
+            self._check_authority(before_save)
+            self._require_writable()
+            admins = [user for user in self._users.values() if user.permission_level == PermissionLevel.ADMIN]
+            if admins:
+                return deepcopy(admins[0])
+            user, _ = self.add_user(name=name, permission_level=PermissionLevel.ADMIN, before_save=before_save)
+            if user is None:
+                raise RuntimeError("default_admin_unavailable")
+            return user

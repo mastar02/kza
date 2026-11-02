@@ -11,6 +11,7 @@ Components:
 """
 
 import asyncio
+from collections.abc import Callable
 from contextvars import Context
 import logging
 
@@ -48,6 +49,7 @@ class VoicePipeline:
         memory_manager: object | None = None,
         orchestrator: object | None = None,
         event_bus: LiveEventBus | None = None,
+        close_dependencies: tuple[Callable[[], asyncio.Task], ...] = (),
     ):
         """
         Initialize VoicePipeline with pre-built components.
@@ -74,6 +76,8 @@ class VoicePipeline:
         self.memory = memory_manager
         self._orchestrator = orchestrator
         self._event_bus = event_bus
+        self._close_dependencies = close_dependencies
+        self._stopping: asyncio.Task | None = None
 
         # State
         self._running = False
@@ -133,25 +137,39 @@ class VoicePipeline:
             logger.warning("No AudioLoop configured — pipeline running without audio capture")
 
     async def stop(self) -> None:
-        """Stop all components."""
+        """Seal admission and retain dependent native drains before component teardown."""
         self._running = False
-        if isinstance(self.command_processor, CommandProcessor):
-            self.command_processor.begin_close()
+        if self._stopping is None:
+            if isinstance(self.command_processor, CommandProcessor):
+                self.command_processor.begin_close()
+            dependencies = [begin_close() for begin_close in self._close_dependencies]
 
-        for name, coro in [
-            ("request_router", self.request_router.aclose() if isinstance(self.request_router, RequestRouter) else None),
-            ("orchestrator", self._orchestrator.stop() if self._orchestrator else None),
-            ("audio_loop", self.audio_loop.stop() if self.audio_loop else None),
-            ("command_processor", self.command_processor.aclose() if isinstance(self.command_processor, CommandProcessor) else None),
-            ("features", self.features.stop() if self.features else None),
-        ]:
-            if coro:
-                try:
-                    await coro
-                except Exception as e:
-                    logger.warning(f"Error stopping {name}: {e}")
+            async def finish():
+                await asyncio.gather(*dependencies)
+                for name, coro in [
+                    ("request_router", self.request_router.aclose() if isinstance(self.request_router, RequestRouter) else None),
+                    ("orchestrator", self._orchestrator.stop() if self._orchestrator else None),
+                    ("audio_loop", self.audio_loop.stop() if self.audio_loop else None),
+                    ("command_processor", self.command_processor.aclose() if isinstance(self.command_processor, CommandProcessor) else None),
+                    ("features", self.features.stop() if self.features else None),
+                ]:
+                    if coro:
+                        try:
+                            await coro
+                        except Exception as error:
+                            logger.warning("Error stopping %s: %s", name, type(error).__name__)
+                logger.info("Pipeline stopped")
 
-        logger.info("Pipeline stopped")
+            self._stopping = asyncio.create_task(finish(), context=Context())
+        cancelled = False
+        while not self._stopping.done():
+            try:
+                await asyncio.shield(self._stopping)
+            except asyncio.CancelledError:
+                cancelled = True
+        self._stopping.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def process_command(self, audio_or_event, *, request_id: str | None = None) -> dict:
         """

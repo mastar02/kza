@@ -14,7 +14,7 @@ import statistics
 import time
 from collections import deque
 from threading import Lock
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -41,26 +41,33 @@ class LLMMetricsTracker:
                 self._data[endpoint_id] = q
             q.append((now, int(tokens), float(elapsed_ms)))
 
-    def snapshot(self, endpoint_id: str) -> Optional[dict]:
-        """Devuelve {tps, ttft_ms, calls, last_call_ts} o None si sin datos."""
+    def snapshot(self, endpoint_id: str, *, before_read: Callable[[], None] | None = None) -> Optional[dict]:
+        """Project rolling metrics only after the original read guard acquires the lock."""
         cutoff = time.time() - self._window_s
         with self._lock:
+            if before_read is not None and before_read() is False:
+                raise PermissionError("metrics_authority_retired")
             q = self._data.get(endpoint_id)
             if not q:
                 return None
             entries = [e for e in q if e[0] >= cutoff]
+        if before_read is not None and before_read() is False:
+            raise PermissionError("metrics_authority_retired")
         if not entries:
             return None
         elapsed = [e[2] for e in entries]
         tokens_total = sum(e[1] for e in entries)
         ms_total = sum(elapsed)
         tps = (tokens_total / (ms_total / 1000)) if ms_total > 0 else None
-        return {
+        result = {
             "tps": round(tps, 1) if tps is not None else None,
             "ttft_ms": int(statistics.median(elapsed)),
             "calls": len(entries),
             "last_call_ts": max(e[0] for e in entries),
         }
+        if before_read is not None and before_read() is False:
+            raise PermissionError("metrics_authority_retired")
+        return result
 
     def reset(self, endpoint_id: str | None = None) -> None:
         with self._lock:

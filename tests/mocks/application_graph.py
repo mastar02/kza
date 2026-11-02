@@ -80,7 +80,7 @@ def offline_config(root: Path, ha_url: str, *, rooms: bool = False) -> dict:
         "vectordb": {"path": str(root / "index")},
         "reasoner": {"mode": "http", "cloud": {"consent": False}},
         "router": {"enabled": False},
-        "speaker_id": {"enabled": False},
+        "speaker_id": {"enabled": False, "users_path": str(root / "users.json")},
         "emotion": {"enabled": False},
         "monitoring": {"enabled": False},
         "analytics": {"enabled": False},

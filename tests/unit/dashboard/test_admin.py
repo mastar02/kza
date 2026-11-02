@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI
 
 from src.dashboard.admin import register_admin_routes
-from src.users.user_manager import User
+from src.users.user_manager import UserManager
 from tests.mocks.dashboard_sessions import session_client
 
 
@@ -25,33 +25,9 @@ def _set_token(monkeypatch):
 
 
 @pytest.fixture
-def fake_user_manager():
-    um = MagicMock()
-    um._users = {}
-
-    def add_user(name, permission_level, voice_embedding=None, requesting_user=None):
-        if any(u.name == name for u in um._users.values()):
-            return None, f"Ya existe usuario {name}"
-        uid = f"user_{name.lower()}_1"
-        u = User(user_id=uid, name=name, permission_level=permission_level,
-                 voice_embedding=voice_embedding)
-        um._users[uid] = u
-        return u, "created"
-
-    def get_user(uid):
-        return um._users.get(uid)
-
-    def remove_user(uid, requesting_user=None):
-        if uid in um._users:
-            del um._users[uid]
-            return True, "removed"
-        return False, "no existe"
-
-    um.add_user.side_effect = add_user
-    um.get_user.side_effect = get_user
-    um.remove_user.side_effect = remove_user
-    um._save = MagicMock()
-    return um
+def fake_user_manager(tmp_path):
+    """Exercise actual catalog publication with synthetic private storage."""
+    return UserManager(str(tmp_path / "users.json"))
 
 
 @pytest.fixture
@@ -63,12 +39,12 @@ def fake_speaker_identifier():
 
 @pytest.fixture
 def fake_alert_manager():
-    from src.alerts.alert_manager import Alert, AlertPriority, AlertType
-    a = Alert(alert_id="al_test", alert_type=AlertType.SECURITY,
-              priority=AlertPriority.MEDIUM, message="test")
-    am = MagicMock()
-    am.get_alert.side_effect = lambda i: a if i == "al_test" else None
-    return am
+    from src.alerts.alert_manager import Alert, AlertManager, AlertPriority, AlertType
+    alert = Alert(alert_id="al_test", alert_type=AlertType.SECURITY,
+                  priority=AlertPriority.MEDIUM, message="test")
+    manager = AlertManager()
+    manager._history.append(alert)
+    return manager
 
 
 @pytest.fixture
@@ -209,23 +185,26 @@ def test_enroll_requires_3_samples(fake_user_manager, fake_speaker_identifier, _
 
 
 def test_enroll_with_3_samples_creates_embedding(fake_user_manager, fake_speaker_identifier, _client):
-    c = _client(user_manager=fake_user_manager, speaker_identifier=fake_speaker_identifier)
-    cr = c.post("/api/admin/users",
-                json={"name": "Lía", "permission_level": "adult"}, headers=_bearer())
-    uid = cr.json()["user_id"]
-    files = [
-        ("samples", (f"s{i}.wav", _wav_bytes(), "audio/wav"))
-        for i in range(3)
-    ]
-    r = c.post(f"/api/admin/users/{uid}/enroll", files=files, headers=_bearer())
-    assert r.status_code == 200, r.json()
-    assert r.json()["samples"] == 3
-    assert r.json()["embedding_dim"] == 192
+    observed = []
+    def embed(arrays):
+        assert len(arrays) == 3 and all(isinstance(array, np.ndarray) for array in arrays)
+        assert all(array.dtype == np.float32 for array in arrays)
+        observed.append(tuple(len(array) for array in arrays))
+        return np.zeros(192, dtype=np.float32)
+    fake_speaker_identifier.create_enrollment_embedding.side_effect = embed
+    client = _client(user_manager=fake_user_manager, speaker_identifier=fake_speaker_identifier)
+    created = client.post("/api/admin/users",
+        json={"name": "Lía", "permission_level": "adult"}, headers=_bearer())
+    identity = created.json()["user_id"]
+    files = [("samples", (f"s{i}.wav", _wav_bytes(), "audio/wav")) for i in range(3)]
+    response = client.post(f"/api/admin/users/{identity}/enroll", files=files, headers=_bearer())
+    assert response.status_code == 200 and response.json()["samples"] == 3
+    assert response.json()["embedding_dim"] == 192
+    assert len(observed) == 1 and len(observed[0]) == 3
     fake_speaker_identifier.create_enrollment_embedding.assert_called_once()
-    call_arg = fake_speaker_identifier.create_enrollment_embedding.call_args[0][0]
-    assert len(call_arg) == 3
-    assert all(isinstance(a, np.ndarray) for a in call_arg)
-    assert all(a.dtype == np.float32 for a in call_arg)
+    assert fake_speaker_identifier.create_enrollment_embedding.call_args[0][0] == []
+    np.testing.assert_array_equal(fake_user_manager.get_user(identity).voice_embedding,
+                                  np.zeros(192, dtype=np.float32))
 
 
 def test_enrollment_rechecks_original_session_after_native_work(
@@ -235,7 +214,8 @@ def test_enrollment_rechecks_original_session_after_native_work(
     created = client.post("/api/admin/users",
         json={"name": "Synthetic", "permission_level": "adult"}, headers=_bearer())
     identity = created.json()["user_id"]
-    fake_user_manager._save.reset_mock()
+    before_file = fake_user_manager.data_path.read_bytes()
+    before_version = fake_user_manager._version
     user = fake_user_manager.get_user(identity)
     before = user.voice_embedding
     assert client.post("/api/admin/auth/login", json={"token": TEST_TOKEN}).status_code == 200
@@ -257,7 +237,9 @@ def test_enrollment_rechecks_original_session_after_native_work(
             release.set()
         assert request.result(timeout=5).status_code == 403
     assert user.voice_embedding is before
-    fake_user_manager._save.assert_not_called()
+    assert fake_user_manager.get_user(identity).voice_embedding is None
+    assert fake_user_manager.data_path.read_bytes() == before_file
+    assert fake_user_manager._version == before_version
 
 
 def test_enroll_unknown_user_returns_404(fake_user_manager, fake_speaker_identifier, _client):
@@ -346,5 +328,5 @@ def test_no_token_configured_rejects_without_creating_user(monkeypatch, fake_use
     r = c.post("/api/admin/users",
                json={"name": "Open", "permission_level": "adult"})
     assert r.status_code == 503
-    fake_user_manager.add_user.assert_not_called()
+    assert fake_user_manager._version == 0 and not fake_user_manager.data_path.exists()
     assert fake_user_manager._users == {}

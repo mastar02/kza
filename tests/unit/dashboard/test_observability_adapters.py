@@ -113,12 +113,19 @@ def test_llm_endpoints_adapter_real(fake_llm_router, dashboard_auth):
     assert e["url"] == "http://localhost:8100"
 
 
-def test_clear_cooldown_real(fake_llm_router, dashboard_auth):
-    c = _client(dashboard_auth, llm_router=fake_llm_router)
-    r = c.post("/api/llm/endpoints/vllm-7b/clear-cooldown")
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
-    fake_llm_router._cd.record_success.assert_called_once_with("vllm-7b")
+def test_clear_cooldown_real(fake_llm_router, dashboard_auth, tmp_path):
+    from src.llm.cooldown import CooldownManager
+    from src.llm.types import ErrorKind
+    cooldown = CooldownManager(tmp_path / "cooldown.json")
+    cooldown.record_failure("vllm-7b", ErrorKind.BILLING)
+    fake_llm_router._cd = cooldown
+    client = _client(dashboard_auth, llm_router=fake_llm_router)
+    response = client.post("/api/llm/endpoints/vllm-7b/clear-cooldown")
+    assert response.status_code == 200 and response.json()["ok"] is True
+    assert cooldown.get_state("vllm-7b").error_count == 0
+    restored = CooldownManager(cooldown.persistence_path)
+    assert restored.get_state("vllm-7b").error_count == 0
+    assert restored.is_available("vllm-7b")
 
 
 def test_missing_cooldown_router_cannot_acknowledge_a_demo_effect(dashboard_auth):

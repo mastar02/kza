@@ -649,7 +649,7 @@ async def build_application(
     # Fuente de verdad: settings.yaml § speaker_id.
     speaker_config = config.get("speaker_id", {})
     speaker_identifier = None
-    user_manager = None
+    user_manager = await voice_registry.load_accounts(speaker_config.get('users_path', './data/users.json'))
     voice_enrollment = None
 
     if speaker_config.get("enabled", True):
@@ -664,7 +664,6 @@ async def build_application(
         )
 
         voice_registry.register_encoder(speaker_identifier)
-        user_manager = await voice_registry.load_accounts(speaker_config.get('users_path','./data/users.json'))
 
         voice_enrollment = VoiceEnrollment(
             user_manager=user_manager,
@@ -1712,6 +1711,7 @@ async def build_application(
             zone_manager=zone_manager,
             event_logger=event_logger,
             speaker_identifier=speaker_identifier,
+            speaker_model_lock=command_processor.native_model_lock(speaker_identifier),
             llm_metrics=llm_metrics_tracker,
             observability_use_mocks=dashboard_config.get("observability_use_mocks", False),
             home_catalog=home_services.catalog,
@@ -1793,6 +1793,7 @@ async def build_application(
         memory_manager=memory_manager,
         orchestrator=orchestrator,
         event_bus=live_event_bus,
+        close_dependencies=(dashboard.admin_work.begin_close,) if dashboard is not None else (),
     )
 
     shutdown.push_async_callback(pipeline.stop)

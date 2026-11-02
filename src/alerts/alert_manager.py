@@ -309,22 +309,22 @@ class AlertManager:
             "by_priority": dict(summary["by_priority"]),
         }
 
-    async def mark_processed(self, alert_id: str) -> bool:
-        """
-        Marcar alerta como procesada.
-
-        Args:
-            alert_id: ID de la alerta
-
-        Returns:
-            True si se marcó, False si no se encontró
-        """
+    async def mark_processed(self, alert_id: str, *, before_publish: Callable[[], None] | None = None,
+                             update_timestamp: bool = True,
+                             timestamp_factory: Callable[[], datetime] | None = None) -> bool:
+        """Recheck original authority after the lock and before publishing alert state."""
         async with self._lock:
+            if before_publish is not None and before_publish() is False:
+                raise PermissionError("alert_authority_retired")
             for alert in self._history:
                 if alert.alert_id == alert_id:
+                    timestamp = (timestamp_factory or datetime.utcnow)() if update_timestamp else None
+                    if before_publish is not None and before_publish() is False:
+                        raise PermissionError("alert_authority_retired")
                     alert.processed = True
-                    alert.processed_at = datetime.utcnow()
-                    logger.debug(f"Alert marked as processed: {alert_id}")
+                    if update_timestamp:
+                        alert.processed_at = timestamp
+                    logger.debug("Alert marked as processed: %s", alert_id)
                     return True
             return False
 

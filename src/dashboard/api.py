@@ -5,6 +5,7 @@ API REST con FastAPI para gestión de rutinas, presencia y configuración
 
 import asyncio
 from contextlib import AsyncExitStack
+from contextvars import Context
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
 from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_admin, require_dashboard_access, require_dashboard_session, session_guard
 from src.dashboard.authority import DashboardAuthority
+from src.dashboard.native_work import ensure_admin_work
 from src.reminders.reminder_store import ReminderScope
 from src.dashboard.home_api import (
     LegacyHomeActionBody, execute_home_action, register_home_frontend, register_home_routes,
@@ -178,6 +180,7 @@ class DashboardAPI:
         zone_manager=None,
         event_logger=None,
         speaker_identifier=None,
+        speaker_model_lock=None,
         llm_metrics=None,
         observability_use_mocks: bool = False,
         *,
@@ -209,6 +212,7 @@ class DashboardAPI:
         self.zone_manager = zone_manager
         self.event_logger = event_logger
         self.speaker_identifier = speaker_identifier
+        self.speaker_model_lock = speaker_model_lock
         self.llm_metrics = llm_metrics
         self.observability_use_mocks = observability_use_mocks
         self.microphone_snapshot_provider = microphone_snapshot_provider
@@ -233,6 +237,7 @@ class DashboardAPI:
             docs_url=None, redoc_url=None, openapi_url=None,
         )
         self.app.state.dashboard_authority = authority
+        self.admin_work = ensure_admin_work(self.app)
         self.app.state.rest_delivery_owner = event_bus._retention.rest if event_bus is not None and event_bus._retention is not None else None
 
         # CORS — use explicit config; default to restrictive same-origin
@@ -258,6 +263,7 @@ class DashboardAPI:
         self._ws_clients: list[WebSocket] = []
         self._server = None
         self._serve_task = None
+        self._stop_task: asyncio.Task | None = None
 
         # Registrar rutas
         self._register_routine_exception_handlers()
@@ -916,6 +922,7 @@ class DashboardAPI:
             llm_metrics=self.llm_metrics,
             use_mocks=self.observability_use_mocks,
             capabilities=getattr(self.home_catalog, "capabilities", None),
+            admin_work=self.admin_work,
         )
 
         # ==================== Admin (mutativos, auth required) ============
@@ -926,6 +933,8 @@ class DashboardAPI:
             speaker_identifier=self.speaker_identifier,
             alert_manager=self.alert_manager,
             voice_registry=self.voice_registry,
+            admin_work=self.admin_work,
+            model_lock=self.speaker_model_lock,
         )
         register_memory_routes(self.app, manager=self.memory_manager)
         register_voice_routes(self.app,voices=self.voice_registry)
@@ -1035,16 +1044,34 @@ class DashboardAPI:
             self._serve_task = None
 
     async def stop(self) -> None:
-        """Stop admission and drain owned resources, including after a serving error."""
+        """Retain one complete native/server/resource drain despite observer cancellation."""
         if self._server is not None:
             self._server.should_exit = True
-        async with AsyncExitStack() as closing:
-            closing.push_async_callback(self.app.state.observability_monitors.aclose)
-            if self._owns_home_catalog:
-                closing.push_async_callback(self.home_catalog.aclose)
-            task = self._serve_task
-            if task is not None and task is not asyncio.current_task():
-                await asyncio.shield(task)
+        if self._stop_task is None:
+            native_drain = self.admin_work.begin_close()
+            serving = self._serve_task
+            if serving is asyncio.current_task():
+                serving = None
+
+            async def finish():
+                async with AsyncExitStack() as closing:
+                    closing.push_async_callback(self.app.state.observability_monitors.aclose)
+                    if self._owns_home_catalog:
+                        closing.push_async_callback(self.home_catalog.aclose)
+                    await asyncio.shield(native_drain)
+                    if serving is not None:
+                        await asyncio.shield(serving)
+
+            self._stop_task = asyncio.create_task(finish(), context=Context())
+        cancelled = False
+        while not self._stop_task.done():
+            try:
+                await asyncio.shield(self._stop_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        self._stop_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
     def run_sync(self):
         """Ejecutar servidor de forma síncrona (para testing)"""

@@ -20,6 +20,7 @@ requiere use_mocks=True; ausencia o fallo en modo operativo nunca devuelve ejemp
 """
 
 import logging
+from functools import partial
 from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, WebSocketException
 
@@ -31,7 +32,8 @@ from src.core.observation import Observation, ObservationSource, ObservationReas
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
 from src.dashboard.auth import COOKIE_NAME, require_dashboard_session, session_guard
-from src.core.owned_work import WorkCloseTimeout
+from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.dashboard.native_work import NativeAuthorityRetired, ensure_admin_work, require_current, run_admin_work
 from src.dashboard.live_event_bus import LiveEventBus
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,9 @@ def _zones_adapter(zone_manager) -> list[dict]:
     return out
 
 
-def _llm_endpoints_adapter(llm_router, metrics_tracker=None) -> list[dict]:
+def _llm_endpoints_adapter(llm_router, metrics_tracker=None, *, before_read=None) -> list[dict]:
+    if before_read is not None:
+        before_read()
     endpoints = getattr(llm_router, "_endpoints", None)
     cd = getattr(llm_router, "_cd", None)
     if not endpoints:
@@ -61,12 +65,14 @@ def _llm_endpoints_adapter(llm_router, metrics_tracker=None) -> list[dict]:
     out = []
     for ep in endpoints:
         ep_id = getattr(ep, "id", "?")
-        in_cd = (cd is not None) and (not cd.is_available(ep_id))
+        in_cd = (cd is not None) and (not cd.is_available(ep_id, before_read=before_read))
         cooldown_ends = None
         if in_cd and cd is not None:
             try:
-                eta = cd.next_attempt_at(ep_id)
+                eta = cd.next_attempt_at(ep_id, before_read=before_read)
                 cooldown_ends = datetime.fromtimestamp(eta).strftime("%H:%M:%S")
+            except NativeAuthorityRetired:
+                raise
             except Exception:
                 pass
         kind = getattr(ep, "kind", None)
@@ -74,12 +80,14 @@ def _llm_endpoints_adapter(llm_router, metrics_tracker=None) -> list[dict]:
         # Métricas reales rolling 5min (tps, ttft_ms p50, calls)
         tps, ttft_ms, calls, last_check_ts = None, None, None, None
         if metrics_tracker is not None:
-            snap = metrics_tracker.snapshot(ep_id)
+            snap = metrics_tracker.snapshot(ep_id, before_read=before_read)
             if snap:
                 tps = snap.get("tps")
                 ttft_ms = snap.get("ttft_ms")
                 calls = snap.get("calls")
                 last_check_ts = snap.get("last_call_ts")
+        if before_read is not None:
+            before_read()
         out.append({
             "id": ep_id, "name": ep_id,
             "url": getattr(getattr(ep, "client", None), "base_url", "local"),
@@ -92,23 +100,26 @@ def _llm_endpoints_adapter(llm_router, metrics_tracker=None) -> list[dict]:
             "failures_7d": {},
             "cooldown_ends": cooldown_ends,
         })
+    if before_read is not None:
+        before_read()
     return out
 
 
-def _users_adapter(user_manager) -> list[dict]:
-    users = user_manager.get_all_users(active_only=True)
-    out = []
-    for u in users:
-        out.append({
-            "id": u.user_id, "name": u.name,
-            "samples": None,
-            "lastEnroll": None,
-            "emotions": {},
-            "topCommands": [],
-            "permissions": {},
-            "pca": [],
-        })
-    return out
+def _users_adapter(user_manager, *, before_read=None) -> list[dict]:
+    """Project detached user metadata with a guard inside its native catalog lock."""
+    users = user_manager.get_all_users(active_only=True, before_read=before_read)
+    try:
+        if before_read is not None:
+            before_read()
+        result = [{
+            "id": user.user_id, "name": user.name, "samples": None, "lastEnroll": None,
+            "emotions": {}, "topCommands": [], "permissions": {}, "pca": [],
+        } for user in users]
+        if before_read is not None:
+            before_read()
+        return result
+    finally:
+        users = None
 
 
 def _alerts_adapter(alert_manager, status: str | None) -> list[dict]:
@@ -199,6 +210,7 @@ def register_observability_routes(
     llm_metrics=None,
     use_mocks: bool = False,
     capabilities: HomeCapabilityService | None = None,
+    admin_work: OwnedBlockingWork | None = None,
 ) -> None:
     """Registrar todas las rutas observability en `app`.
 
@@ -212,6 +224,7 @@ def register_observability_routes(
     Los headers de observación conservan los instantes reales y campos desconocidos.
     """
     router = APIRouter(dependencies=[Depends(require_dashboard_session)])
+    work = ensure_admin_work(app, admin_work)
     observations = ObservationHeaders()
     monitors = MonitorService()
     app.state.observability_monitors = monitors
@@ -237,6 +250,8 @@ def register_observability_routes(
             return mock_data
         try:
             data = adapter_call()
+        except NativeAuthorityRetired:
+            raise
         except Exception as error:
             logger.warning("Observation unavailable [%s]: %s", component, type(error).__name__)
             data = None
@@ -343,31 +358,56 @@ def register_observability_routes(
             unobserved_fields=("action_effect",))
 
     @router.get("/api/llm/endpoints")
-    async def get_llm_endpoints(response: Response):
-        return _adapt(lambda: _llm_endpoints_adapter(llm_router, llm_metrics) if llm_router is not None else None,
-            mocks.LLM_ENDPOINTS, response, component="llm_endpoints", source=ObservationSource.ROUTER_STATE,
+    async def get_llm_endpoints(response: Response, request: Request):
+        current = session_guard(request, frozenset({'diagnostics:read'}))
+        if not use_mocks and llm_router is not None:
+            try:
+                data = await run_admin_work(work, current, _llm_endpoints_adapter, llm_router, llm_metrics,
+                    before_read=partial(require_current, current))
+            except NativeAuthorityRetired as error:
+                raise HTTPException(403, "dashboard_authority_retired") from error
+            except RuntimeError as error:
+                raise HTTPException(503, "endpoint_state_unavailable") from error
+        else:
+            data = None
+        return _adapt(lambda: data, mocks.LLM_ENDPOINTS, response, component="llm_endpoints",
+            source=ObservationSource.ROUTER_STATE,
             unobserved_fields=("backend_health", "last_check", "failures_7d"))
 
     @router.post("/api/llm/endpoints/{endpoint_id}/clear-cooldown")
-    async def clear_cooldown(endpoint_id: str):
+    async def clear_cooldown(endpoint_id: str, request: Request):
         if use_mocks:
             return {"ok": True, "endpoint_id": endpoint_id, "mocked": True}
-        cd = getattr(llm_router, "_cd", None)
-        if cd is None:
+        cooldown = getattr(llm_router, "_cd", None)
+        if cooldown is None:
             raise HTTPException(status_code=503, detail="cooldown manager no disponible")
+        current = session_guard(request, frozenset({'admin:manage'}))
         try:
-            cd.record_success(endpoint_id)
-            return {"ok": True, "endpoint_id": endpoint_id}
+            await run_admin_work(work, current, cooldown.record_success, endpoint_id,
+                before_save=partial(require_current, current))
+        except NativeAuthorityRetired as error:
+            raise HTTPException(403, "dashboard_authority_retired") from error
         except KeyError:
-            raise HTTPException(status_code=404, detail=f"endpoint {endpoint_id} not found")
-        except Exception as e:
-            logger.error(f"clear_cooldown {endpoint_id} failed: {type(e).__name__}: {e}")
-            raise
+            raise HTTPException(404, "endpoint_not_found")
+        except (OSError, RuntimeError) as error:
+            raise HTTPException(503, "cooldown_persistence_unavailable") from error
+        return {"ok": True, "endpoint_id": endpoint_id}
 
     @router.get("/api/users")
-    async def get_users(response: Response):
-        return _adapt(lambda: _users_adapter(user_manager) if user_manager is not None else None,
-            mocks.USERS, response, component="users", source=ObservationSource.USER_REGISTRY,
+    async def get_users(response: Response, request: Request):
+        current = session_guard(request, frozenset({'diagnostics:read'}))
+        if not use_mocks and user_manager is not None:
+            validator = partial(require_current, current)
+            try:
+                data = await run_admin_work(work, current, _users_adapter, user_manager, before_read=validator)
+            except NativeAuthorityRetired as error:
+                raise HTTPException(403, "dashboard_authority_retired") from error
+            except RuntimeError as error:
+                raise HTTPException(503, "user_catalog_unavailable") from error
+        else:
+            data = None
+        return _adapt(lambda: data, mocks.USERS, response, component="users",
+            source=ObservationSource.USER_REGISTRY,
             unobserved_fields=("samples", "enrollment_time", "emotions", "pca", "effective_permissions", "top_commands"))
 
     @router.get("/api/alerts")

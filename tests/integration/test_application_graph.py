@@ -106,6 +106,136 @@ async def test_factory_keeps_authority_open_until_all_consumers_have_closed(leav
         assert graph.dashboard_authority._lease_fd is None
 
 
+@pytest.mark.parametrize("dashboard_enabled", [False, True])
+async def test_factory_loads_canonical_accounts_without_constructing_biometric_models(
+    leaves, tmp_path, monkeypatch, dashboard_enabled,
+):
+    import src.main as module
+    from src.users.user_manager import PermissionLevel, UserManager
+
+    legacy = UserManager(str(tmp_path / "users.json"))
+    account, _ = legacy.add_user("Synthetic", PermissionLevel.ADULT, voice_embedding=np.ones(8, dtype=np.float32))
+    previous = legacy.data_path.read_bytes()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("disabled biometric dependency was constructed")
+
+    monkeypatch.setattr(module, "SpeakerIdentifier", forbidden)
+    monkeypatch.setattr(module, "VoiceEnrollment", forbidden)
+    async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url)
+        config["dashboard"]["enabled"] = dashboard_enabled
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            users = graph.pipeline.command_processor.user_manager
+            assert users.voice_review_managed
+            assert users.get_user(account.user_id).name == "Synthetic"
+            assert users.get_user(account.user_id).voice_embedding is None
+            assert users.get_all_embeddings() == {}
+            assert graph.models.speaker_identifier is None
+            assert users.data_path == tmp_path / "users_accounts_v1.json"
+            assert not users.data_path.exists()
+            if dashboard_enabled:
+                assert graph.dashboard.user_manager is users
+            else:
+                assert graph.dashboard is None
+            created, _ = await graph.voice_registry.acall(users.add_user, "Another", PermissionLevel.ADULT)
+            assert created is not None
+            assert users.data_path.stat().st_mode & 0o777 == 0o600
+            assert UserManager(str(legacy.data_path), voice_registry=graph.voice_registry).get_user(account.user_id).voice_embedding is None
+            assert legacy.data_path.read_bytes() == previous
+        assert observations["service_calls"] == 0
+
+
+@pytest.mark.parametrize("close_path", ["factory_stack", "runtime"])
+async def test_real_graph_drains_cancelled_admin_write_before_pipeline_and_authority_retirement(
+    leaves, tmp_path, monkeypatch, dashboard_auth, close_path,
+):
+    import os
+    from httpx import ASGITransport, AsyncClient
+
+    entered, release = threading.Event(), threading.Event()
+    fsync = os.fsync
+    retired = []
+
+    def hold(descriptor):
+        fsync(descriptor)
+        entered.set()
+        assert release.wait(5)
+
+    async with offline_home() as (url, observations):
+        async with AsyncExitStack() as stack:
+            graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=leaves)
+            original_close = graph.pipeline.command_processor.aclose
+
+            async def close():
+                retired.append(True)
+                await original_close()
+
+            monkeypatch.setattr(graph.pipeline.command_processor, "aclose", close)
+            pipeline_entered = asyncio.Event()
+
+            async def pipeline():
+                pipeline_entered.set()
+                await asyncio.Event().wait()
+
+            async def serve():
+                dashboard = graph.dashboard
+                dashboard._serve_task = asyncio.current_task()
+                dashboard._server = SimpleNamespace(should_exit=False)
+                try:
+                    while not dashboard._server.should_exit:
+                        await asyncio.sleep(0.001)
+                finally:
+                    dashboard._serve_task = None
+
+            running = None
+            if close_path == "runtime":
+                monkeypatch.setattr(graph.pipeline, "run", pipeline)
+                monkeypatch.setattr(graph.dashboard, "start", serve)
+                running = asyncio.create_task(graph.run())
+                await asyncio.wait_for(pipeline_entered.wait(), 3)
+            async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url="http://testserver") as client:
+                token = dashboard_auth["Authorization"].split(" ", 1)[1]
+                assert (await client.post("/api/admin/auth/login", json={"token": token})).status_code == 200
+                monkeypatch.setattr(os, "fsync", hold)
+                pending = asyncio.create_task(client.post("/api/admin/users", json={"name": "Retained"}))
+                closing = None
+                try:
+                    assert await asyncio.to_thread(entered.wait, 3)
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                    if running is not None:
+                        running.cancel()
+                        closing = running
+                    else:
+                        closing = asyncio.create_task(stack.aclose())
+                    await until(lambda: graph.dashboard.admin_work.status()["closed"])
+                    if running is not None:
+                        running.cancel()
+                        await asyncio.sleep(0)
+                    assert not closing.done()
+                    assert graph.dashboard.admin_work.status()["operations"] == 1
+                    assert retired == []
+                    assert not graph.pipeline.request_router._closed
+                    assert not graph.ha_client._session.closed
+                    assert graph.dashboard_authority._lease_fd is not None
+                    assert graph.privacy.resource_status()["writer_lease"]
+                finally:
+                    release.set()
+                    await asyncio.gather(pending, return_exceptions=True)
+                    if closing is not None:
+                        await asyncio.gather(closing, return_exceptions=True)
+                assert retired
+                assert graph.dashboard.admin_work.status()["operations"] == 0
+                assert graph.pipeline.request_router._closed
+                assert graph.pipeline.command_processor.user_manager.get_user_by_name("Retained") is not None
+        assert graph.dashboard_authority._lease_fd is None
+        assert graph.ha_client._session.closed
+        assert not graph.privacy.resource_status()["writer_lease"]
+        assert observations["service_calls"] == 0
+
+
 async def test_disabled_dashboard_opens_no_auth_database(leaves, tmp_path):
     async with offline_home() as (url, _):
         config = offline_config(tmp_path, url)

@@ -357,11 +357,15 @@ class CommandProcessor:
         finally:
             audio = result = None
 
-    def _get_cached_embeddings(self) -> dict[str, np.ndarray]:
+    def native_model_lock(self, model):
+        """Expose the exact exclusion used by native capture consumers."""
+        return self._locks[id(model)] if model is not None else None
+
+    def _get_cached_embeddings(self, *, require_live=None) -> dict[str, np.ndarray]:
         now = time.monotonic()
         version = getattr(self.user_manager, "_version", 0)
         if now - self._embeddings_cache_time > self._embeddings_cache_ttl or version != self._embeddings_cache_version or not self._embeddings_cache:
-            self._embeddings_cache = self.user_manager.get_all_embeddings()
+            self._embeddings_cache = self.user_manager.get_all_embeddings(before_read=require_live)
             self._embeddings_cache_time = now
             self._embeddings_cache_version = version
         return self._embeddings_cache
@@ -375,7 +379,7 @@ class CommandProcessor:
         profiles = match = user = None
         try:
             require_live()
-            profiles = self._get_cached_embeddings()
+            profiles = self._get_cached_embeddings(require_live=require_live)
             require_live()
             if not profiles:
                 return None, 0.0, 0.0
@@ -384,10 +388,10 @@ class CommandProcessor:
             elapsed = (time.perf_counter() - started) * 1000
             require_live()
             if match.is_known and match.user_id:
-                user = self.user_manager.get_user(match.user_id)
+                user = self.user_manager.get_user(match.user_id, before_read=require_live)
                 require_live()
                 if user is not None:
-                    self.user_manager.update_last_seen(match.user_id)
+                    self.user_manager.update_last_seen(match.user_id, before_save=require_live)
                     return user, match.confidence, elapsed
             return None, 0.0, elapsed
         finally:
