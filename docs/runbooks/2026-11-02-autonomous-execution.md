@@ -264,7 +264,16 @@ la consulta vacía. Un fallo del aviso conserva el recordatorio escrito sin
 acreditar una entrega futura. La unidad pasa 883 pruebas, con evidencia en
 `data/autonomous-roadmap-20261102/t013/reminder-evidence.json`.
 
-T013 sigue en curso: faltan guards de otras escrituras asíncronas, prevención de
+La revisión `56be9af` aplica la transacción nativa a rutinas y conserva claim y
+publicación del worker dentro del mismo dueño. El drenaje no cerrante incluye
+esa publicación antes de interrumpir workers y permite guardar sus recibos.
+Una generación de stop evita que un arranque concurrente vuelva a publicar
+estado activo. Las seis mutaciones HTTP mantienen su guarda original; los
+trabajos aprobados usan su snapshot y la política doméstica vigente. La unidad
+pasa 1094 pruebas; el detalle está en
+`data/autonomous-roadmap-20261102/t013/routine-evidence.json`.
+
+T013 sigue en curso: faltan guards de mutaciones administrativas nativas, prevención de
 lecturas personales desde voz anónima, ámbitos personales y de evaluación,
 binding HTTP/WS, gestión de credenciales y navegación por rol. No acredita
 accesos reales ni criterios de aceptación.
