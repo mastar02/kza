@@ -711,3 +711,36 @@ referencia previa y comprueba su pérdida de vigencia. La evidencia está en
 Corresponde aplicar y probar el widget inverso de Personas, con un único
 dueño para ambas vistas, paginación acotada y contadores de página. T047 y
 T013 siguen en progreso; ningún criterio ni despliegue cambia de estado.
+
+
+### Voces vinculadas en el detalle de Personas
+
+La revisión `4c000aa` muestra páginas reales de perfiles confirmados
+para la persona seleccionada. El detalle conserva el catálogo y nivel de
+cuenta; el widget vocal sólo lee metadata y declara la cantidad de su página.
+No obtiene capturas, audio ni nombres auxiliares ni admite mutaciones vocales.
+Los nombres se muestran como texto y «Gestionar en Voces» abre la gestión
+global de forma explícita, sin prometer un salto a otro registro.
+
+Ambas vistas reutilizan un único dueño de conexión. Cada configuración queda
+capturada con persona, host y revisión del detalle. Cambiar selección,
+catálogo, host, operación de cuenta o vista sella el anterior antes de limpiar
+su DOM. La nueva conexión espera los decoders y consumidores reales. A→B→A
+con otro host no adopta datos anteriores; un retry encolado tampoco consume
+el timer de otro contexto. Los botones administrativos no reactivan controles
+vocales ocupados. El store rechaza filas de otro destino antes de cachearlas.
+
+Pasan 127 pruebas Node, Ruff y Chromium con 51 perfiles reales sintéticos,
+páginas 50+1, decoder retenido al cambiar C→B→Voces, vacío frente a 503,
+cambio a nivel niño sin alterar vínculo y retiro que limpia los 51 vínculos
+conservando los perfiles. La regresión de Hogar y Personas pasa. Las capturas
+verifican escritorio y el widget visible a 320/390 píxeles. Los hashes y logs
+están en `data/autonomous-roadmap-20261102/t047/person-inverse-evidence.json`.
+La suite de 6.443 casos y un xfail corresponde a `a813030`; los 300 Python de
+producto permanecen idénticos y el delta de UI/harness tiene la validación
+complementaria indicada. No se suman selecciones superpuestas.
+
+La auditoría de la referencia no conserva huecos materiales de T047: queda
+`verified_local` para la integración NEXO. T013 sigue en progreso para lector
+exacto de evaluación y gestión de credenciales/roles. Ningún criterio C ni P4
+queda aceptado y no se modifica el despliegue.

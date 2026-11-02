@@ -1002,7 +1002,7 @@
         "data/autonomous-roadmap-20261102/t047/person-native-evidence.json",
         "data/autonomous-roadmap-20261102/t047/person-filter-evidence.json"
       ],
-      "next_action": "Native manual voice-person metadata verified on f25f7c6, full6422+knownxfail: original reader/target fence, independent CAS, durable retirement -> unlink -> canonical JSON proof; no acoustic identity or grants. NEXO chooser remains under T047. Continue exact evaluator reader and credential/role UI within authority boundaries. No criteria accepted."
+      "next_action": "Continue exact evaluator read consumer: real source digests, selected modality only before payload query, original grant/reader/body fences and minimum deadlines; no voice review/group/profile/person expansion. Do not distribute evaluator credentials before that consumer works. Then explicit credential/role HTTP/UI, independent of account level and manual voice metadata. NEXO T047 verified_local, no criteria accepted."
     },
     {
       "id": "T014",
@@ -1445,7 +1445,7 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "0c1fa93fc21e5d87d5db84d4511c94e540a12a24",
         "f80bfe27d217de7407f3c65d60c083423ddfab0a",
@@ -1460,7 +1460,8 @@
         "4d2c0ef9d8e960114a23d865127479d79266420b",
         "f25f7c606650f0c7b7e6ec4c282d90cd8555bd73",
         "be91b8dc305115f8f9209eda2c8cb6c62e12dff6",
-        "a813030e8df1e9feb0360ae54ed01b8d06d6e921"
+        "a813030e8df1e9feb0360ae54ed01b8d06d6e921",
+        "4c000aa02225fad9cd4a6568b19fb6255b9b62b5"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t047/home-shell-evidence.json",
@@ -1472,9 +1473,10 @@
         "data/autonomous-roadmap-20261102/t047/voices-nexo-evidence.json",
         "data/autonomous-roadmap-20261102/t047/person-native-evidence.json",
         "data/autonomous-roadmap-20261102/t047/person-ui-evidence.json",
-        "data/autonomous-roadmap-20261102/t047/person-filter-evidence.json"
+        "data/autonomous-roadmap-20261102/t047/person-filter-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/person-inverse-evidence.json"
       ],
-      "next_action": "Native per-person profile projection verified locally on a813030, full6443+knownxfail/Ruff0 with785frozen sources. Metadata SQL filters before50-row pages; targetfence applies evenempty, heldemptycursor cannot outlive target, healthyempty metadata envelope stays scoped without relaxing raw sources. Next apply private inversePerson UI (singleowner host/config drains, read-onlyprofilesOnly, pagecounts) and actual Chromium51-row/role/retirement checks. No criteria accepted.",
+      "next_action": "NEXO integration verified locally on 4c000aa: Hogar/Voces/Personas/Acciones real backend, separated authorities, persistent manual link and reversePerson pages, actual51-row pagination/host drains/role/account retirement. Node127/Ruff0/actualChromium withdesktop320/390; nativefull6443+knownxfail on a813030 with300 productPythonfiles unchanged. Independentreference audit foundno materialgap; Gestionar en Voces isexplicit globalnav andcountsarepage-only. Preserve regression while T013 exactevaluation/credentials continues; no C or P4 accepted.",
       "design_reference": {
         "path": "/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd",
         "source_commit": "d686fcde52a34c3b786decf167eebdb91dceb6d6",
