@@ -93,13 +93,37 @@ class VoicePersonFence:
 
 
 @dataclass(frozen=True)
+class EvaluationScopeFence:
+    """Keep the original grant, actual typed sources, proof hashes and deadline."""
+
+    actor: object = field(repr=False)
+    source_digests: frozenset[str] = field(repr=False)
+    expires_at: float
+    sources: tuple = field(repr=False)
+
+    def __post_init__(self) -> None:
+        import math
+        from src.dashboard.evaluation_actor import EvaluationReadActor, evaluation_digests
+        from src.memory.fact_ledger import MemorySource
+        if (type(self.actor) is not EvaluationReadActor or type(self.expires_at) not in (int,float)
+                or not math.isfinite(self.expires_at) or type(self.sources) is not tuple
+                or not 1<=len(self.sources)<=256 or any(type(source) is not MemorySource for source in self.sources)
+                or sum(len(source.fact_dependencies) for source in self.sources)>256
+                or self.expires_at > min(self.actor.grant_deadline(),*[source.expires_at for source in self.sources])):
+            raise ValueError('invalid_evaluation_fence')
+        evaluation_digests(self.source_digests)
+
+    def current(self) -> bool:
+        return self.actor.current(self.source_digests,self.expires_at)
+
+@dataclass(frozen=True)
 class RevisionSet:
     """Combine closed, content-free revision and canonical availability fences."""
 
-    stamps: tuple[RevisionStamp | VoicePersonFence, ...]
+    stamps: tuple[RevisionStamp | VoicePersonFence | EvaluationScopeFence, ...]
 
     def __post_init__(self) -> None:
-        if type(self.stamps) is not tuple or any(type(stamp) not in (RevisionStamp, VoicePersonFence) for stamp in self.stamps):
+        if type(self.stamps) is not tuple or any(type(stamp) not in (RevisionStamp, VoicePersonFence, EvaluationScopeFence) for stamp in self.stamps):
             raise ValueError('invalid_revision_set')
 
     def current(self) -> bool:

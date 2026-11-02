@@ -18,6 +18,7 @@ from src.memory.producer_context import model_admission
 from src.memory.fact_ledger import MemoryOrigin,MemorySource
 from src.users.voice_ledger import VoiceLedger
 from src.users.voice_capture import build_review_capture
+from src.users.voice_evaluation import VoiceEvaluationReader
 
 VOICE_TARGET = {'kind':'source_bound_voice_registry','schema':1}
 
@@ -44,6 +45,7 @@ class VoiceRegistry:
     def __init__(self, privacy):
         self.privacy = privacy
         self.ledger = VoiceLedger(privacy.ledger)
+        self.evaluation = VoiceEvaluationReader(privacy.ledger)
         self._work = OwnedBlockingWork(capacity=6)
         self._disk = OwnedBlockingWork(capacity=2)
         self._free = deque(range(6))

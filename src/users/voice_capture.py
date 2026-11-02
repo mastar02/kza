@@ -7,6 +7,20 @@ import wave
 import numpy as np
 
 
+def validate_voice_preview(audio_wav: bytes, clip_duration_s: float) -> None:
+    """Validate one bounded PCM preview without reading transcript or room data."""
+    if (type(audio_wav) is not bytes or not 44<len(audio_wav)<=192044
+            or type(clip_duration_s) not in (int,float) or not .8<=clip_duration_s<=6.):
+        raise ValueError('invalid_voice_review_capture')
+    try:
+        with wave.open(BytesIO(audio_wav),'rb') as reader:
+            if (reader.getnchannels()!=1 or reader.getsampwidth()!=2 or reader.getframerate()!=16000
+                    or reader.getcomptype()!='NONE' or reader.getnframes()!=round(clip_duration_s*16000)
+                    or len(reader.readframes(reader.getnframes()))!=reader.getnframes()*2):
+                raise ValueError('invalid_voice_review_capture')
+    except (wave.Error,EOFError):
+        raise ValueError('invalid_voice_review_capture') from None
+
 @dataclass(frozen=True,repr=False)
 class VoiceCaptureReview:
     """Own one six-second maximum WAV and bounded source-level review text."""
@@ -18,20 +32,12 @@ class VoiceCaptureReview:
     clip_duration_s: float
 
     def __post_init__(self):
-        if (type(self.audio_wav) is not bytes or not 44<len(self.audio_wav)<=192044
-                or type(self.transcript) is not str or len(self.transcript)>8192
+        if (type(self.transcript) is not str or len(self.transcript)>8192
                 or self.room_id is not None and (type(self.room_id) is not str or not 1<=len(self.room_id)<=128)
                 or type(self.duration_s) not in (int,float) or not .8<=self.duration_s<=30
                 or type(self.clip_duration_s) not in (int,float) or not .8<=self.clip_duration_s<=min(6.,self.duration_s)):
             raise ValueError('invalid_voice_review_capture')
-        try:
-            with wave.open(BytesIO(self.audio_wav),'rb') as reader:
-                if (reader.getnchannels()!=1 or reader.getsampwidth()!=2 or reader.getframerate()!=16000
-                        or reader.getcomptype()!='NONE' or reader.getnframes()!=round(self.clip_duration_s*16000)
-                        or len(reader.readframes(reader.getnframes()))!=reader.getnframes()*2):
-                    raise ValueError('invalid_voice_review_capture')
-        except (wave.Error,EOFError):
-            raise ValueError('invalid_voice_review_capture') from None
+        validate_voice_preview(self.audio_wav,self.clip_duration_s)
 
 
 def build_review_capture(audio: np.ndarray, transcript: str, room_id: str | None) -> VoiceCaptureReview:

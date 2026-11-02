@@ -1000,9 +1000,10 @@
         "data/autonomous-roadmap-20261102/t047/voices-reader-evidence.json",
         "data/autonomous-roadmap-20261102/t047/voices-control-evidence.json",
         "data/autonomous-roadmap-20261102/t047/person-native-evidence.json",
-        "data/autonomous-roadmap-20261102/t047/person-filter-evidence.json"
+        "data/autonomous-roadmap-20261102/t047/person-filter-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/evaluation-native-evidence.json"
       ],
-      "next_action": "Continue exact evaluator read consumer: real source digests, selected modality only before payload query, original grant/reader/body fences and minimum deadlines; no voice review/group/profile/person expansion. Do not distribute evaluator credentials before that consumer works. Then explicit credential/role HTTP/UI, independent of account level and manual voice metadata. NEXO T047 verified_local, no criteria accepted."
+      "next_action": "Exact native evaluator consumer verified locally: original EVALUATOR lease, complete actual source hashes before selected payload only, strict modality SQL, exact deadlines, immutable actual-source proof and cleared private error contexts. Full6475+knownxfail/Ruff0/frozen789, independent reviews closed. Next singular HTTP/EVALUATION_CONTROL_ONLY original-reader/actual-body and durable mode-cookie isolation before evaluator credential UI; then remaining credential/role HTTP/UI. T047 stays verified_local; no criteria accepted."
     },
     {
       "id": "T014",
@@ -2251,11 +2252,11 @@
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
     "field_authorized": false,
-    "next_task": "T047",
+    "next_task": "T013",
     "last_verified_phase": "P0",
-    "last_verified_task": "T012",
+    "last_verified_task": "T047",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T047/nexo-voices-ui",
+    "last_verified_unit": "T013/evaluation-native",
     "user_priority_after_admin_unit": "T047"
   }
 }

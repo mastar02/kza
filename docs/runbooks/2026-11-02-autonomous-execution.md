@@ -744,3 +744,42 @@ La auditoría de la referencia no conserva huecos materiales de T047: queda
 `verified_local` para la integración NEXO. T013 sigue en progreso para lector
 exacto de evaluación y gestión de credenciales/roles. Ningún criterio C ni P4
 queda aceptado y no se modifica el despliegue.
+
+## Lectura nativa de evaluación temporal
+
+El lector nativo admite una muestra y una modalidad expresamente concedidas a
+la sesión original de rol evaluador. El permiso operativo de evaluación no
+convierte al operador en lector de muestras. Consulta primero la procedencia
+acotada y calcula los hashes sobre cada declaración original completa, antes
+de convertirla a fuentes tipadas. Rechaza claves JSON duplicadas, fuentes
+añadidas o ausentes y cualquier declaración que no coincida con la concesión.
+
+La consulta de audio sólo selecciona WAV y duración del preview; la de texto
+sólo selecciona el transcript completo. No leen la otra modalidad, sala, modelo,
+embeddings, grupos, perfiles, personas ni historial. Audio conserva el formato
+PCM mono de 16 bits a 16 kHz y máximo de seis segundos. Texto limita caracteres
+y bytes, incluidos los posteriores a NUL. La validación WAV compartida conserva
+el contrato de las capturas operativas existentes.
+
+El vencimiento efectivo es el mínimo exacto de muestra, credencial, sesión,
+fingerprint, fuentes y dependencias. No usa el TTL redondeado de la cookie.
+Revalida el permiso y la disponibilidad de las fuentes después de terminar
+la codificación real. Una revisión de credencial, sustitución de login, cierre
+de sesión, borrado pendiente o caducidad impide devolver el contenido.
+Los errores esperados se crean fuera de sus manejadores tras limpiar los
+locales privados; tampoco conservan el contenido mediante el traceback original.
+
+La prueba inmutable retiene actor, fuentes tipadas reales, hashes completos y
+vencimiento originales. Revalidar una proyección mutable no puede cambiar esa
+procedencia ni regenerar la prueba. El lector usa el dueño nativo existente de
+VoiceRegistry y no construye modelos ni introduce otro registro de tareas.
+
+La suite final pasa 6475 pruebas y una xfail conocida; las 103 pruebas cruzadas
+se solapan con ese total e incluyen 32 casos específicos de evaluación. Ruff
+no informa errores y los hashes de 789 fuentes permanecieron iguales durante
+la ejecución. La revisión independiente está cerrada y la evidencia está en
+`data/autonomous-roadmap-20261102/t013/evaluation-native-evidence.json`.
+T013 sigue en curso: falta conectar la respuesta HTTP singular, su canal de
+control exclusivo, recibos y guardas del envío exterior antes de distribuir
+credenciales de evaluación. T047 conserva su verificación local y no se acepta
+ningún criterio doméstico o de campo por esta unidad.
