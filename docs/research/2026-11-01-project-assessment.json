@@ -1,0 +1,265 @@
+{
+  "schema_version": 1,
+  "assessment_date_local": "2026-11-01",
+  "timezone": "America/Montevideo",
+  "purpose": "Línea base para evaluar web, usabilidad, núcleo, audio y funciones, y precisar el acceso necesario para analizar grabaciones y resultados.",
+  "checkout": "/home/yo/projects/kza",
+  "development_account": "yo",
+  "reviewed_commit": "5cfeb77eb236b17f870b67838f3f3d5b7bb1a7e4",
+  "runtime_observed_at_utc": "2026-11-02T01:58:45.896829+00:00",
+  "runtime_source_commit": "e9669ec1edb101ca6b190ef8df09314e1ac63562",
+  "method": {
+    "kind": "Juicio técnico provisional basado en evidencia; no benchmark estandarizado ni aceptación de release.",
+    "confidence": "media",
+    "scale": {
+      "0": "Sin implementación ni resultado verificable.",
+      "3": "Degradación operativa importante o recorrido principal bloqueado.",
+      "5": "Implementación parcial con recorridos útiles y brechas materiales.",
+      "7": "Base consistente y pruebas dirigidas, con aceptación integrada pendiente.",
+      "10": "Recorridos completos y resultados de campo representativos, reproducibles y aceptados."
+    },
+    "overall_formula": "round(sum(score_out_of_10 * weight), 1)",
+    "overall_score_out_of_10": 5.0,
+    "excluded_from_scoring": [
+      "Calidad perceptual de la voz, ruido metálico y naturalidad: no hubo escucha humana ni evaluación perceptual del audio en esta sesión.",
+      "Calibración real de identidad o agrupación de hablantes.",
+      "Éxito de acciones físicas del hogar: no se ejecutaron acciones en producción."
+    ]
+  },
+  "scores": [
+    {
+      "area": "Web de uso cotidiano: Tu casa",
+      "score_out_of_10": 7.0,
+      "weight": 0.10,
+      "basis": "Vista local en escritorio y móvil; layout de 390 px sin expansión horizontal, botones semánticos, skip link, estados de error explícitos y vistas de casa, micrófonos, rutinas y memoria.",
+      "limit": "Inspección del estado sin servicios conectados; no demuestra un recorrido doméstico completo en producción."
+    },
+    {
+      "area": "Web de diagnóstico: observabilidad",
+      "score_out_of_10": 4.0,
+      "weight": 0.10,
+      "basis": "Diseño legible en escritorio y revisión de voces funcional en Chromium; mantiene datos de ejemplo identificados por un aviso global. En móvil la barra lateral fija comprime el contenido y el viewport de layout alcanza 725 px para un dispositivo solicitado de 390 px.",
+      "limit": "APIs y fuentes sintéticas locales; no se inspeccionó una sesión web de producción."
+    },
+    {
+      "area": "Usabilidad y accesibilidad",
+      "score_out_of_10": 5.0,
+      "weight": 0.15,
+      "basis": "Carga de muestras visible, reproducción y limpieza al salir verificadas; Tu casa comunica errores. Las nueve opciones laterales de observabilidad son DIV con tabIndex -1 y sin rol; mezcla lenguaje técnico, indicadores estáticos y fuentes de ejemplo.",
+      "limit": "Revisión heurística y DOM; no es un estudio con usuarios ni una certificación de accesibilidad."
+    },
+    {
+      "area": "Núcleo y arquitectura",
+      "score_out_of_10": 7.0,
+      "weight": 0.20,
+      "basis": "Separación de servicios, contratos de control y privacidad, ownership y cierre explícito, pruebas dirigidas y checks de código. Persisten rutas heredadas de funciones y una recuperación de audio que retiene la publicación del heartbeat.",
+      "limit": "No se repitió la suite completa ni se midió capacidad o latencia bajo carga; los dos fallos integrados documentados siguen sin quedar aceptados por estas pruebas."
+    },
+    {
+      "area": "Captura y validación de audio",
+      "score_out_of_10": 4.0,
+      "weight": 0.15,
+      "basis": "Tres de cuatro entradas reportan señal no nula; Cocina está desconectada. Ninguna entrada tiene validación física o de voz completada en el snapshot. Hay mediciones históricas amplias, pero faltan referencias de transcripción y comparación perceptual del ensayo de Hall.",
+      "limit": "Esta nota mide preparación y fiabilidad del recorrido de captura; no puntúa cómo suena la voz."
+    },
+    {
+      "area": "Funciones completadas de punta a punta",
+      "score_out_of_10": 4.5,
+      "weight": 0.15,
+      "basis": "Hay módulos de listas, recordatorios, rutinas, memoria, música y alertas. Crear recordatorios por la ruta rápida sigue remitiendo a la API, la creación de rutinas por voz rechaza la ruta heredada hasta conectar el scheduler persistente y el router no recibe un gestor de timers.",
+      "limit": "Existencia de módulos y pruebas parciales no confirma que todas las capacidades funcionen en el grafo operativo."
+    },
+    {
+      "area": "Operación e integraciones",
+      "score_out_of_10": 3.0,
+      "weight": 0.15,
+      "basis": "Voz y proxy activos, pero salud unhealthy. Home Assistant rechaza el snapshot de estados con 403; sus contadores muestran 4755 errores y cero éxitos. El monitor registra cuatro comandos, todos fallidos.",
+      "limit": "Consulta puntual; los contadores no equivalen a un ensayo controlado y no identifican por sí solos la causa del 403."
+    }
+  ],
+  "current_runtime_aggregates": {
+    "voice_service_active": true,
+    "dashboard_proxy_active": true,
+    "voice_service_restart_counter": 0,
+    "overall_health": "unhealthy",
+    "home_assistant": {
+      "health_detail": "auth_error",
+      "state_snapshot_http_status": 403,
+      "errors_in_current_counter": 4755,
+      "successes_in_current_counter": 0,
+      "websocket_connected": false
+    },
+    "capture": {
+      "configured_entries": 4,
+      "receiving_nonzero_audio_entries": 3,
+      "rooms_receiving": ["living", "hall", "escritorio"],
+      "unavailable_rooms": ["cocina"],
+      "physical_validation_completed": 0,
+      "voice_validation_completed": 0,
+      "interpretation": "Recibir frames no verifica inteligibilidad, habitación física correcta ni éxito de reconocimiento."
+    },
+    "latency_monitor": {
+      "recorded_commands": 4,
+      "success_rate_percent": 0.0,
+      "p50_ms": 2624.7,
+      "p95_ms": 6791.5,
+      "interpretation": "Muestra muy pequeña, sin estratificación por recorrido ni nueva verificación de los límites de medición. No valida una distribución representativa de latencia ni permite conservar como alcanzada la cifra histórica de 150–280 ms."
+    }
+  },
+  "verification_this_session": {
+    "frontend": {
+      "command": "node --test tests/frontend/*.cjs",
+      "exit_code": 0,
+      "passed": 80,
+      "failed": 0,
+      "log": "data/project-assessment-20261101/frontend-tests.log"
+    },
+    "python_directed": {
+      "command": "data/project-assessment-20261101/venv/bin/python -B -m pytest tests/unit/nlu/test_command_grammar.py tests/unit/nlu/test_command_grammar_real_world.py tests/unit/nlu/test_home_command.py tests/unit/tools/test_analyze_audio_quality.py tests/unit/dashboard/test_private_access.py tests/integration/test_voice_capture_order.py -q -o addopts= --junitxml=data/project-assessment-20261101/python-tests.xml",
+      "exit_code": 0,
+      "passed": 452,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "time_s": 30.091,
+      "log": "data/project-assessment-20261101/python-tests.log"
+    },
+    "browser_voice_review": {
+      "command": "data/project-assessment-20261101/venv/bin/python -B -m tests.frontend.browser_voice_review",
+      "exit_code": 0,
+      "passed": true,
+      "javascript_exceptions": 0,
+      "real_chromium_http_websocket_react_native_audio": true,
+      "synthetic_encoder_and_sources": true,
+      "external_bootstrap_assets_blocked": true,
+      "immediate_loading_feedback_with_delayed_http": true,
+      "navigation_and_session_loss_clear_audio": true,
+      "log": "data/project-assessment-20261101/browser-voice-tests.log",
+      "limit": "El test verifica el reproductor y el ciclo de revisión con muestras sintéticas; no es escucha perceptual ni calibración acústica."
+    },
+    "layout": {
+      "exit_code": 0,
+      "requested_widths_px": [1440, 390],
+      "home_mobile_document_width_px": 390,
+      "observability_mobile_document_width_px": 725,
+      "observability_navigation_items_not_in_tab_order": 9,
+      "javascript_exceptions": 0,
+      "fixture": "API local sintética; Tu casa sin servicios conectados.",
+      "evidence": "data/project-assessment-20261101/layout-measurements.json",
+      "screenshots": [
+        "data/project-assessment-20261101/home-1440.png",
+        "data/project-assessment-20261101/home-390.png",
+        "data/project-assessment-20261101/observability-1440.png",
+        "data/project-assessment-20261101/observability-390.png"
+      ]
+    },
+    "ruff": {
+      "command": "data/project-assessment-20261101/venv/bin/ruff check src/ tests/",
+      "version": "0.15.1",
+      "exit_code": 0,
+      "log": "data/project-assessment-20261101/ruff.log"
+    },
+    "full_python_suite_rerun": false,
+    "production_state_changed": false,
+    "development_dependencies": "Entorno aislado bajo yo, en data/ ignorado por Git; no se instalaron dependencias de producción."
+  },
+  "audio_evidence": {
+    "prior_report": "docs/research/2026-10-29-all-accessible-audio-quality.json",
+    "historical_files_measured_on_2026_10_29": 6254,
+    "current_dashboard_previews_measured_on_2026_10_29": 1915,
+    "prior_speech_transcription_performed": false,
+    "prior_subjective_listening_performed": false,
+    "prior_root_cause_confirmed": false,
+    "hall_trial_report": "docs/research/2026-10-29-hall-noise-trial.json",
+    "hall_trial_subjective_improvement_confirmed": false,
+    "fresh_authenticated_dashboard_audio_export_available_to_yo": false,
+    "fresh_audio_decoded_or_transcribed_this_session": false,
+    "native_perceptual_audio_input_tool_available": false,
+    "limits": [
+      "El diagnóstico restringido devuelve agregados de salud; no exporta WAV ni transcripciones.",
+      "No repetir todo el corpus histórico para atribuir un problema actual sin muestras posteriores al ajuste y su procedencia.",
+      "La muestra debe identificar canal ASR o conversación; el ajuste de conversación no demuestra cambios en el canal ASR.",
+      "Otra transcripción automática ayuda a comparar, pero no reemplaza una referencia validada."
+    ]
+  },
+  "minimum_access_for_next_evaluation": [
+    {
+      "need": "Muestras actuales de evaluación consentidas",
+      "delivery": "Exportación acotada a una carpeta privada de yo o endpoint de lectura con muestras seleccionadas, sin conceder shell de kza.",
+      "fields": ["ID opaco", "WAV", "instante", "habitación", "canal ASR/conversación", "sample rate", "configuración DSP usada", "vencimiento original"],
+      "retention": "Conservar el vencimiento y el propósito autorizados; una copia no renueva la retención de grabaciones ordinarias. Un corpus de prueba nuevo requiere consentimiento y plazo explícitos."
+    },
+    {
+      "need": "Resultado esperado y resultado observado",
+      "fields": ["transcripción de referencia validada", "transcripción KZA", "intención y entidad esperadas", "decisión del router", "acción solicitada", "estado final observado", "respuesta anunciada", "tiempos por etapa"]
+    },
+    {
+      "need": "Evaluador de audio",
+      "delivery": "FFmpeg, NumPy, SciPy y soundfile ya permiten mediciones objetivas. Para transcripción independiente se puede preparar un evaluador local en recursos acordados. Para timbre y metalización hace falta una evaluación perceptual específica o escucha humana comparativa.",
+      "cloud_alternative": "Una API de transcripción es opcional: credencial en entorno privado, presupuesto acotado y autorización específica para enviar las muestras elegidas. No se envió audio a terceros.",
+      "official_reference": "https://developers.openai.com/api/docs/guides/speech-to-text"
+    },
+    {
+      "need": "Entorno para probar tareas completas",
+      "delivery": "Sesión de navegador de prueba y simulador o entidades de HA dedicadas. La evaluación física posterior debe delimitar dispositivos y acciones permitidas.",
+      "already_available": "Chromium local automatizado, servidor local, pruebas de frontend y diagnóstico restringido de producción.",
+      "optional_windows": "El puente al PC existe, pero está desconectado; su herramienta indica iniciar Iniciar.cmd en Windows. Sólo hace falta para comprobar ese navegador, salida de audio o hardware del PC."
+    }
+  ],
+  "improvement_order": [
+    {
+      "priority": 1,
+      "item": "Recuperar el acceso de KZA a HA",
+      "acceptance": "Consultar estados y mantener la conexión con la identidad prevista; después demostrar acciones permitidas y rechazos esperados en un entorno controlado. El 403 por sí solo no decide si corresponde cambiar credencial o permisos."
+    },
+    {
+      "priority": 2,
+      "item": "Recuperar Cocina y separar heartbeat de recuperación lenta",
+      "acceptance": "Captura útil verificada por habitación; una entrada desconectada no detiene el heartbeat de las entradas sanas; reconexión sin reaperturas simultáneas."
+    },
+    {
+      "priority": 3,
+      "item": "Medir un corpus de voz y resultados de punta a punta",
+      "acceptance": "Registrar WER/CER con referencias humanas, falsos wakes por hora, rechazos, éxito real por tarea, p50/p95 con límites definidos y cortes de respuesta. Separar audio claro, distancia, ruido, TV y solapamiento. No confundir texto de confirmación con efecto confirmado."
+    },
+    {
+      "priority": 4,
+      "item": "Mejorar el panel técnico y el acceso cotidiano",
+      "acceptance": "Navegación completa por teclado, layout útil a 390 px, estados reales con procedencia visible por componente, indicadores de ejemplo confinados a modo demostración y errores con recuperación comprensible. Conservar la base responsive de Tu casa."
+    },
+    {
+      "priority": 5,
+      "item": "Completar la paridad entre voz y web",
+      "acceptance": "Timers conectados al router, creación y cancelación de recordatorios, y rutinas por voz usando el mismo scheduler persistente y política que la web. Probar persistencia, reinicio y resultado anunciado. Música queda en el roadmap posterior vigente."
+    },
+    {
+      "priority": 6,
+      "item": "Actualizar la matriz de capacidades y cerrar la validación integrada",
+      "acceptance": "Documentación alineada con el artefacto observado, suite completa sin fallos pendientes y métricas de campo. Esta evaluación y sus pruebas parciales no aceptan H6."
+    }
+  ],
+  "current_sources": [
+    "docs/plans/2026-10-25-stabilization-roadmap.md",
+    "docs/plans/2026-10-27-h3-voice-grouping-evaluation.md",
+    "docs/architecture/DEPLOYMENT.md",
+    "docs/runbooks/2026-10-28-readonly-diagnostics.md",
+    "src/orchestrator/dispatcher.py",
+    "src/pipeline/multi_room_audio_loop.py",
+    "src/routines/routine_manager.py",
+    "src/dashboard/frontend/home/index.html",
+    "src/dashboard/frontend/home/home.css",
+    "src/dashboard/frontend/obs/src/app.jsx",
+    "src/dashboard/frontend/obs/index.html"
+  ],
+  "retrieval": {
+    "serena_project_confirmed": "/home/yo/projects/kza",
+    "serena_memories_available": false,
+    "rag_project": "kza",
+    "rag_hits_checked_against_current_sources": true,
+    "limits": "ctx no tenía índice para la skill OpenAI Docs; se leyó su archivo sin crear índices. Algunas rutas citadas en CLAUDE.md están desactualizadas; se localizaron las implementaciones vigentes."
+  },
+  "private_evidence_directory": "data/project-assessment-20261101",
+  "private_snapshot_committed": false,
+  "audio_transcripts_identifiers_credentials_or_raw_logs_committed": false,
+  "production_restart_configuration_firmware_or_release_changes": false
+}
