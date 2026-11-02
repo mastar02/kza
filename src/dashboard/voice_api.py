@@ -85,9 +85,13 @@ def register_voice_routes(app, *, voices=None) -> None:
         return response(request,'captures',cursor,actor)
     @router.get('/profiles')
     async def profiles(request: Request,cursor: str | None = Query(None,max_length=36),
-                       include_person: bool = Query(False),actor: VoiceReviewer = Depends(reviewer)):
-        return response(request,'profiles',cursor,actor,include_person=include_person)
-    def response(request,kind,cursor,actor,*,include_person=False):
+                       include_person: bool = Query(False),
+                       person_id: str | None = Query(None,min_length=1,max_length=128,pattern=r'^[^\x00-\x1f\x7f]+$'),
+                       actor: VoiceReviewer = Depends(reviewer)):
+        if person_id is not None and not include_person:
+            raise HTTPException(422,detail='person_filter_requires_enriched_profiles')
+        return response(request,'profiles',cursor,actor,include_person=include_person,person_id=person_id)
+    def response(request,kind,cursor,actor,*,include_person=False,person_id=None):
         owner = getattr(app.state,'rest_delivery_owner',None)
         if owner is None:
             raise HTTPException(503,detail='voice_delivery_unavailable')
@@ -95,7 +99,7 @@ def register_voice_routes(app, *, voices=None) -> None:
         if include_person:
             permissions.add('admin:manage')
         return VoiceResponse(owner,service(),request.headers.get('x-kza-live-connection'),kind,cursor,actor,
-            reader=session_reader(request,frozenset(permissions)),include_person=include_person)
+            reader=session_reader(request,frozenset(permissions)),include_person=include_person,person_id=person_id)
     @router.post('/profiles')
     async def confirm(body: ConfirmVoiceBody,actor: VoiceReviewer = Depends(reviewer)):
         profile = await call(service().ledger.confirm,tuple(body.fingerprint_ids),body.name,body.request_id,actor)

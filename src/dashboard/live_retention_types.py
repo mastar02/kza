@@ -118,9 +118,13 @@ class SnapshotMetadata:
     activity: bool = False
     revision: RevisionStamp | RevisionSet | None = None
     activity_sources: tuple = ()
+    empty_metadata: bool = False
 
     def available(self, policy, now: float) -> bool:
         """Raw lifetimes and reviewed metadata use their own source authority."""
+        empty_page = (self.empty_metadata is True and self.sources == () and not self.activity_sources
+            and not self.activity and self.channel in {'voices:profiles','voices:captures'}
+            and type(self.revision) in (RevisionStamp,RevisionSet))
         return (not self.activity_sources or policy.activity_sources_available(self.activity_sources)) and (self.expires_at is None or now<self.expires_at) and (
             self.revision is None or self.revision.current()) and (
-            policy.activity_sources_available(self.sources) if self.activity else policy.sources_available(self.sources))
+            policy.activity_sources_available(self.sources) if self.activity or empty_page else policy.sources_available(self.sources))

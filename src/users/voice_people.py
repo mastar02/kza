@@ -181,7 +181,8 @@ class VoicePersonLinks:
             updated_at=?,updated_by=? WHERE profile_id=? AND user_id IS NOT NULL''',
             (self.ledger.clock(), 'system:retired-profile', profile_id)).rowcount
 
-    def project_rows(self, db: sqlite3.Connection, profile_ids: tuple[str, ...], actor: VoiceReviewer) -> tuple[list[dict], VoicePersonFence | None]:
+    def project_rows(self, db: sqlite3.Connection, profile_ids: tuple[str, ...], actor: VoiceReviewer,
+                     person_id: str | None = None) -> tuple[list[dict], VoicePersonFence | None]:
         """Resolve IDs only, under the caller's transaction and one canonical batch fence."""
         actor = self._actor(actor)
         actor.require_people()
@@ -192,6 +193,11 @@ class VoicePersonLinks:
             _profile(identity)
             rows.append(self._metadata(db.execute('SELECT * FROM voice_profile_people WHERE profile_id=?', (identity,)).fetchone()))
         identities = frozenset(row['user_id'] for row in rows if row['user_id'] is not None)
+        if person_id is not None:
+            _identity(person_id)
+            if any(row['user_id'] != person_id for row in rows):
+                raise LookupError('voice_person_changed')
+            identities = identities | frozenset({person_id})
         authority = actor.require_people(identities)
         fence = VoicePersonFence(ref(authority), tuple(sorted(identities))) if identities else None
         return rows, fence

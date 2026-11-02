@@ -50,10 +50,11 @@ class RestOperation:
     revision: RevisionStamp | RevisionSet | None = None
     associated_profiles: tuple = ()
     activity_sources: tuple = ()
+    empty_metadata: bool = False
 
     def metadata(self) -> SnapshotMetadata:
         """Retain only lineage, view expiry and a weak revision fence."""
-        return SnapshotMetadata(self.event_id,self.sources,self.expires_at,self.channel,bool(self.profile_refs),self.revision,self.activity_sources)
+        return SnapshotMetadata(self.event_id,self.sources,self.expires_at,self.channel,bool(self.profile_refs),self.revision,self.activity_sources,self.empty_metadata)
 
 
 class _PrivateDeliveryRetired(RuntimeError):
@@ -166,7 +167,7 @@ class RestDeliveryOwner:
                 if (message.get('type')=='http.response.body' and message.get('body') and operation.private_envelope
                         and (self.connection(operation.connection,reader=operation.reader,channel=operation.channel) is None
                             or operation.guard is None or operation.guard() is not True
-                            or operation.sources and not operation.metadata().available(self.retention.policy,self.retention.clock()))):
+                            or (operation.sources or operation.revision is not None) and not operation.metadata().available(self.retention.policy,self.retention.clock()))):
                     message = {'type':'http.response.body','body':b'{"snapshot":null}'}
                 await send(message)
                 return RestResult.COMPLETE
@@ -180,7 +181,7 @@ class RestDeliveryOwner:
             if (message.get('type')=='http.response.body' and message.get('body') and operation.private_envelope
                     and (self.connection(operation.connection,reader=operation.reader,channel=operation.channel) is None
                         or operation.guard is None or operation.guard() is not True
-                        or operation.sources and not operation.metadata().available(self.retention.policy,self.retention.clock()))):
+                        or (operation.sources or operation.revision is not None) and not operation.metadata().available(self.retention.policy,self.retention.clock()))):
                 message = {'type':'http.response.body','body':b'{"snapshot":null}'}
             task = asyncio.create_task(transmit(message),context=Context())
             message = None

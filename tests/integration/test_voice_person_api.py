@@ -139,12 +139,13 @@ async def test_delivered_person_view_retires_its_profile_channel_until_ack(peopl
     batch = (await profiles(g,person=True)).json()['snapshot']
     state = g.api.app.state.rest_delivery_owner.connection(g.peer.connection,reader=g.reader,
         minimum_protocol=3,channel='voices:profiles')
-    assert state.snapshots[batch['event_id']].available(g.privacy.ledger,g.clock.now)
+    metadata = state.snapshots[batch['event_id']]
+    assert metadata.available(g.privacy.ledger,g.clock.now)
     if change == 'target':
         await g.authority.retire_user(g.root,g.a)
     else:
         assert (await g.client.put(path(g),json=body(g,g.b if change=='replace' else None,1))).status_code == 200
-    assert not state.snapshots[batch['event_id']].available(g.privacy.ledger,g.clock.now)
+    assert not metadata.available(g.privacy.ledger,g.clock.now)
     async with asyncio.timeout(3):
         frame = await g.peer.outgoing.get()
     assert frame['type'] == 'rest_retire' and frame['channel'] == 'voices:profiles'
@@ -259,6 +260,101 @@ async def test_partial_account_retirement_retries_without_restoring_link_or_gran
     assert g.manager.get_user(g.a) is None
     with sqlite3.connect(g.database) as db:
         assert db.execute('SELECT user_id,revision FROM voice_profile_people').fetchone()==(None,2)
+
+
+async def test_person_filter_http_has_no_cross_person_rows(people_web):
+    g = people_web
+    assert (await g.client.put(path(g),json=body(g,g.a))).status_code==200
+    async def read(identity):
+        return await g.client.get('/api/voices/profiles',params={'include_person':'true','person_id':identity},
+            headers={'X-KZA-Live-Connection':g.peer.connection})
+    own = await read(g.a)
+    assert own.status_code==200 and len(own.json()['snapshot']['rows'])==1
+    assert own.json()['snapshot']['rows'][0]['person_link']['user_id']==g.a
+    other = await read(g.b)
+    assert other.status_code==200 and other.json()['snapshot'] is None and other.json()['next_cursor'] is None
+    assert other.json()['connection_id']==g.peer.connection and other.json()['channel']=='voices:profiles'
+    assert g.a not in other.text and g.profile['name'] not in other.text
+
+
+@pytest.mark.parametrize('enriched,identity',[('false','synthetic'),('true',''),('true','a'*129),('true','bad\nidentity')])
+async def test_person_filter_query_is_closed_before_native_read(people_web,monkeypatch,enriched,identity):
+    g = people_web
+    def forbidden(*args,**kwargs):
+        raise AssertionError('invalid filter reached native projection')
+    monkeypatch.setattr(g.voices.ledger,'project',forbidden)
+    response = await g.client.get('/api/voices/profiles',params={'include_person':enriched,'person_id':identity},
+        headers={'X-KZA-Live-Connection':g.peer.connection})
+    assert response.status_code==422
+
+
+@pytest.mark.parametrize('stage',['read','headers','buffer'])
+async def test_empty_filtered_cursor_cannot_escape_target_retirement(people_web,monkeypatch,stage):
+    g = people_web
+    original = g.voices.acall
+    async def held(function,*args):
+        value = await original(function,*args)
+        if function.__name__=='project':
+            assert value.rows==[] and value.sources==()
+            # Empty scans may carry continuation metadata; no row ticket is
+            # needed to prove that the actual outer body checks its fence.
+            value.next_cursor = g.profile['id']
+            if stage=='read':
+                g.entered.set()
+                await g.release.wait()
+        return value
+    monkeypatch.setattr(g.voices,'acall',held)
+    g.hold_profiles = stage=='buffer'
+    async def application(scope,receive,send):
+        async def actual(message):
+            if stage=='headers' and message['type']=='http.response.start':
+                g.entered.set()
+                await g.release.wait()
+            await send(message)
+        await g.api.app(scope,receive,actual)
+    async with AsyncClient(transport=ASGITransport(app=application),base_url='http://testserver',cookies=g.client.cookies) as client:
+        pending = asyncio.create_task(client.get('/api/voices/profiles',
+            params={'include_person':'true','person_id':g.b},headers={'X-KZA-Live-Connection':g.peer.connection}))
+        try:
+            await asyncio.wait_for(g.entered.wait(),3)
+            await g.authority.retire_user(g.root,g.b)
+            g.release.set()
+            response = await pending
+            assert response.status_code==200
+            assert response.json().get('snapshot') is None and response.json().get('next_cursor') is None
+            assert g.profile['id'] not in response.text
+        finally:
+            g.release.set()
+            await asyncio.gather(pending,return_exceptions=True)
+
+
+async def test_filtered_delivery_rejects_a_projection_from_another_target(people_web,monkeypatch):
+    g = people_web
+    assert (await g.client.put(path(g),json=body(g,g.a))).status_code==200
+    original = g.voices.acall
+    async def wrong_target(function,*args):
+        if function.__name__=='project':
+            return await original(function,*args[:4])
+        return await original(function,*args)
+    monkeypatch.setattr(g.voices,'acall',wrong_target)
+    response = await g.client.get('/api/voices/profiles',params={'include_person':'true','person_id':g.b},
+        headers={'X-KZA-Live-Connection':g.peer.connection})
+    assert response.status_code==503 and g.a not in response.text and g.profile['name'] not in response.text
+
+
+def test_explicit_person_filter_always_requires_both_authorities():
+    for query in ['person_id=synthetic','include_person=false&person_id=synthetic']:
+        request = Request({'type':'http','method':'GET','path':'/api/voices/profiles',
+            'query_string':query.encode(),'headers':[]})
+        assert _route_permissions(request)==frozenset({'voices:read','voices:review','admin:manage'})
+
+
+async def test_empty_capture_page_preserves_its_real_connection_envelope(people_web):
+    g = people_web
+    g.clock.now = max(source.expires_at for source in g.sources)+1
+    response = await g.client.get('/api/voices',headers={'X-KZA-Live-Connection':g.peer.connection})
+    assert response.status_code==200
+    assert response.json()=={'connection_id':g.peer.connection,'snapshot':None,'channel':'voices:captures','next_cursor':None}
 
 
 async def test_cancelled_observer_and_closing_admin_owner_still_drain_link_cleanup(people_web,monkeypatch):

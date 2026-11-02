@@ -268,15 +268,19 @@ class VoiceLedger:
         return {'id':row['id'],'name':row['name'],'revision':row['revision'],
             'confirmed_at':row['confirmed_at'],'confirmed_by':row['confirmed_by'],'expires_at':None}
 
-    def project(self, kind: str, cursor: str | None, actor: VoiceReviewer, include_person: bool = False) -> VoiceProjection:
+    def project(self, kind: str, cursor: str | None, actor: VoiceReviewer, include_person: bool = False,
+                person_id: str | None = None) -> VoiceProjection:
         """Separate raw capture lists from source-linked permanent profile labels."""
         if type(actor) is not VoiceReviewer:
             raise PermissionError('voice_review_denied')
         actor.require_current()
         if type(include_person) is not bool or include_person and kind != 'profiles':
             raise ValueError('invalid_voice_person_projection')
+        if person_id is not None and (not include_person or type(person_id) is not str
+                or not 1<=len(person_id)<=128 or any(ord(char)<32 or ord(char)==127 for char in person_id)):
+            raise ValueError('invalid_voice_person_projection')
         if include_person:
-            actor.require_people()
+            actor.require_people(frozenset({person_id}) if person_id is not None else frozenset())
         rows = sources = snapshot = data = result = page = row = original = person_fence = person_links = link = None
         try:
             if kind=='review':
@@ -297,7 +301,13 @@ class VoiceLedger:
                 if kind=='profiles':
                     if cursor is not None and (type(cursor) is not str or str(UUID(cursor))!=cursor):
                         raise ValueError('invalid_voice_cursor')
-                    page = db.execute('SELECT id,name,revision,sources_json,confirmed_at,confirmed_by,deleted_at FROM voice_profiles WHERE deleted_at IS NULL AND id>? ORDER BY id LIMIT 51',(cursor or '',)).fetchall()
+                    if person_id is None:
+                        page = db.execute('SELECT id,name,revision,sources_json,confirmed_at,confirmed_by,deleted_at FROM voice_profiles WHERE deleted_at IS NULL AND id>? ORDER BY id LIMIT 51',(cursor or '',)).fetchall()
+                    else:
+                        page = db.execute('''SELECT p.id,p.name,p.revision,p.sources_json,p.confirmed_at,p.confirmed_by,p.deleted_at
+                            FROM voice_profiles p JOIN voice_profile_people l ON l.profile_id=p.id
+                            WHERE p.deleted_at IS NULL AND l.user_id=? AND p.id>? ORDER BY p.id LIMIT 51''',
+                            (person_id,cursor or '')).fetchall()
                     rows,sources,refs = [],set(),[]
                     next_cursor = None
                     for index,row in enumerate(page):
@@ -318,7 +328,7 @@ class VoiceLedger:
                         refs.append((row['id'],row['revision']))
                     person_fence = None
                     if include_person:
-                        person_links,person_fence = self.people.project_rows(db,tuple(row['id'] for row in rows),actor)
+                        person_links,person_fence = self.people.project_rows(db,tuple(row['id'] for row in rows),actor,person_id)
                         for row,link in zip(rows,person_links,strict=True):
                             row['person_link'] = link
                     observed = self.ledger.clock()
@@ -367,7 +377,7 @@ class VoiceLedger:
                         rows.append(item)
                     observed = self.ledger.clock()
                     expiry = min([*[source.expires_at for source in sources],*[dep.expires_at for source in extra
-                        for dep in source.fact_dependencies if dep.expires_at is not None]],default=observed)
+                        for dep in source.fact_dependencies if dep.expires_at is not None]],default=observed+300)
                     result = VoiceProjection(rows,tuple(sources),observed,expiry,'voices:captures',next_cursor,
                         revision=RevisionSet((RevisionStamp(ref(self.groups),self.groups.projection_revision),
                             *([RevisionStamp(ref(self),self.projection_revision)] if associated else []))),

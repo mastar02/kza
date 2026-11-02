@@ -130,7 +130,7 @@ def voice_person_scope_requested(request: HTTPConnection) -> bool:
         return True
     if path == '/api/voices/profiles' and method in {'GET','HEAD','OPTIONS'}:
         value = request.query_params.get('include_person')
-        return value is not None and value.lower() not in {'false','f','0','off','no','n'}
+        return 'person_id' in request.query_params or value is not None and value.lower() not in {'false','f','0','off','no','n'}
     return False
 
 

@@ -345,3 +345,58 @@ async def test_fresh_ledger_recovers_only_the_actual_persisted_relationship(peop
         assert rows==[{'user_id':g.a,'revision':1}] and fence.current()
     finally:
         await reopened.aclose()
+
+
+async def test_person_filter_selects_before_pagination_without_reading_vectors(people_graph):
+    g = people_graph
+    def prepare():
+        identities = {g.profile['id']}
+        g.links.set_person(g.profile['id'],g.a,1,0,g.actor)
+        for index in range(54):
+            profile = g.voices.ledger.confirm(g.identities,f'Synthetic filtered {index}',str(uuid4()),g.actor)
+            g.links.set_person(profile['id'],g.a,1,0,g.actor)
+            identities.add(profile['id'])
+        unrelated = g.voices.ledger.confirm(g.identities,'Synthetic other person',str(uuid4()),g.actor)
+        g.links.set_person(unrelated['id'],g.b,1,0,g.actor)
+        return identities,unrelated['id']
+    identities,unrelated = await g.voices.acall(prepare)
+    statements = []
+    def read():
+        g.privacy.ledger._db.set_trace_callback(statements.append)
+        try:
+            first = g.voices.ledger.project('profiles',None,g.actor,True,g.a)
+            second = g.voices.ledger.project('profiles',first.next_cursor,g.actor,True,g.a)
+            other = g.voices.ledger.project('profiles',None,g.actor,True,g.b)
+            return first,second,other
+        finally:
+            g.privacy.ledger._db.set_trace_callback(None)
+    first,second,other = await g.voices.acall(read)
+    assert len(first.rows)==50 and first.next_cursor and len(second.rows)==5 and second.next_cursor is None
+    assert {row['id'] for page in [first,second] for row in page.rows}==identities
+    assert all(row['person_link']=={'user_id':g.a,'revision':1} for page in [first,second] for row in page.rows)
+    assert [row['id'] for row in other.rows]==[unrelated]
+    assert not any('embedding' in statement.lower() for statement in statements)
+    assert all(page.revision.current() for page in [first,second,other])
+
+
+async def test_empty_person_filter_keeps_its_actual_target_fence(people_graph):
+    g = people_graph
+    projection = await g.voices.acall(g.voices.ledger.project,'profiles',None,g.actor,True,g.b)
+    assert projection.rows==[] and projection.sources==() and projection.next_cursor is None
+    assert projection.revision.current()
+    fence = next(stamp for stamp in projection.revision.stamps if type(stamp) is VoicePersonFence)
+    assert fence.identities==(g.b,)
+    await g.authority.retire_user(g.root,g.b)
+    assert not projection.revision.current()
+    with pytest.raises(LookupError):
+        await g.voices.acall(g.voices.ledger.project,'profiles',None,g.actor,True,g.b)
+
+
+@pytest.mark.parametrize('kind,enriched,identity',[
+    ('profiles',False,'synthetic'),('captures',True,'synthetic'),
+    ('profiles',True,''),('profiles',True,True),('profiles',True,'bad\nidentity'),
+])
+async def test_person_filter_rejects_implicit_or_malformed_scope(people_graph,kind,enriched,identity):
+    g = people_graph
+    with pytest.raises(ValueError):
+        await g.voices.acall(g.voices.ledger.project,kind,None,g.actor,enriched,identity)

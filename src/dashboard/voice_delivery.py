@@ -14,14 +14,19 @@ from src.dashboard.live_retention_types import RevisionSet, RevisionStamp, Voice
 class VoiceResponse(Response):
     """Read only within the actual retained outer HTTP scope and page connection."""
 
-    def __init__(self, owner, voices, connection, kind, cursor, actor, *, reader, include_person: bool = False):
+    def __init__(self, owner, voices, connection, kind, cursor, actor, *, reader, include_person: bool = False,
+                 person_id: str | None = None):
         super().__init__(content=b'')
         if type(include_person) is not bool or include_person and kind != 'profiles':
             raise ValueError('invalid_voice_person_projection')
         self.owner,self.voices,self.connection = owner,voices,connection
         self.kind,self.cursor,self.actor = kind,cursor,actor
         self.reader = reader
+        if person_id is not None and (not include_person or type(person_id) is not str
+                or not 1<=len(person_id)<=128 or any(ord(char)<32 or ord(char)==127 for char in person_id)):
+            raise ValueError('invalid_voice_person_projection')
         self.include_person = include_person
+        self.person_id = person_id
 
     async def __call__(self, scope, receive, send):
         """An observer cannot retire a native read or actual body callback early."""
@@ -33,7 +38,7 @@ class VoiceResponse(Response):
             await self._deliver(operation,send)
         finally:
             self.owner = self.voices = self.connection = self.kind = self.cursor = self.actor = None
-            self.reader = None
+            self.reader = self.person_id = None
 
     async def _deliver(self, operation, send):
         projection = state = ticket = body = snapshot = row = link = profile_fields = None
@@ -53,7 +58,9 @@ class VoiceResponse(Response):
                 await self.owner._error(send,428)
                 return RestResult.FAILED
             operation.private_envelope = True
-            if self.include_person:
+            if self.person_id is not None:
+                projection = await self.voices.acall(self.voices.ledger.project,self.kind,self.cursor,self.actor,True,self.person_id)
+            elif self.include_person:
                 projection = await self.voices.acall(self.voices.ledger.project,self.kind,self.cursor,self.actor,True)
             else:
                 projection = await self.voices.acall(self.voices.ledger.project,self.kind,self.cursor,self.actor)
@@ -72,6 +79,7 @@ class VoiceResponse(Response):
                 for row in projection.rows:
                     link = row['person_link']
                     if (type(link) is not dict or set(link)!={'user_id','revision'}
+                            or self.person_id is not None and link['user_id'] != self.person_id
                             or type(link['revision']) is not int or link['revision']<0
                             or link['user_id'] is not None and link['revision']<1
                             or link['user_id'] is not None and (type(link['user_id']) is not str
@@ -81,7 +89,10 @@ class VoiceResponse(Response):
                 stamps = projection.revision.stamps if type(projection.revision) is RevisionSet else (projection.revision,)
                 ledger_stamps = [stamp for stamp in stamps if type(stamp) is RevisionStamp and stamp.producer() is self.voices.ledger]
                 person_stamps = [stamp for stamp in stamps if type(stamp) is VoicePersonFence]
-                identities = tuple(sorted({row['person_link']['user_id'] for row in projection.rows if row['person_link']['user_id'] is not None}))
+                identities = {row['person_link']['user_id'] for row in projection.rows if row['person_link']['user_id'] is not None}
+                if self.person_id is not None:
+                    identities.add(self.person_id)
+                identities = tuple(sorted(identities))
                 if (len(ledger_stamps)!=1 or len(person_stamps)!=bool(identities)
                         or identities and (person_stamps[0].identities!=identities
                             or person_stamps[0].authority() is not self.actor._person_authority())):
@@ -101,6 +112,7 @@ class VoiceResponse(Response):
                     'group_revision','group_state','group_reason','group_size','group_similarity','group_expires_at'} for row in projection.rows)
                     or {row['suggested_profile'] for row in projection.rows if row['suggested_profile']}!={identity for identity,_ in projection.associated_profiles}):
                 raise ValueError('invalid_association_metadata')
+            operation.empty_metadata = self.kind in {'profiles','captures'} and not projection.rows
             operation.rows,projection.rows = projection.rows,[]
             operation.sources = projection.sources
             operation.expires_at = projection.expires_at
@@ -125,7 +137,8 @@ class VoiceResponse(Response):
                 (b'content-type',b'application/json'),(b'cache-control',b'no-store'),(b'x-kza-source',b'real')]})
             available = (not self.owner.retention._closed and operation.guard() is True
                 and self.owner.connection(self.connection,reader=self.reader,minimum_protocol=3,channel=operation.channel) is state
-                and (not operation.sources or operation.metadata().available(self.owner.retention.policy,self.owner.retention.clock())))
+                and (not operation.sources and operation.revision is None
+                    or operation.metadata().available(self.owner.retention.policy,self.owner.retention.clock())))
             if ticket is not None and available:
                 snapshot = {'event_id':operation.event_id,'expires_at':operation.expires_at,'observed_at':projection.observed_at,
                     'receipt':ticket.to_dict(),'channel':operation.channel,'next_cursor':projection.next_cursor,'rows':operation.rows}
