@@ -35,6 +35,7 @@ from enum import IntEnum
 from typing import Any, Callable
 
 from src.core.logging import get_logger
+from src.core.task_outcome import DeliveryOutcome
 from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource, sources_authorized
 from src.memory.producer_scopes import ProducerScope
 from src.orchestrator.cancellation import (
@@ -103,6 +104,7 @@ class Request:
     error_response: str | None = field(compare=False, default=None)
     timeout_stage: str | None = field(compare=False, default=None)
     voice_delivery: str | None = field(compare=False, default=None)
+    delivery_outcome: DeliveryOutcome | None = field(compare=False, default=None)
     completed_at: float = field(compare=False, default=None)
 
     # Callbacks

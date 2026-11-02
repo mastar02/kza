@@ -64,6 +64,27 @@ test('projection is detached and dispose clears payload and timers', () => {
   assert.equal(f.live.receive(f.frame()), false);
 });
 
+test('operation and delivery fields survive without arbitrary receipt content', () => {
+  const f = fixture(), frame = f.frame();
+  Object.assign(frame.payload, { handled:true, task_completed:true, response_required:true,
+    response_completed:false, turn_completed:false, success:false, task_status:'completed',
+    persistence_state:'committed', dispatch_state:'not_required', effect_state:'observed',
+    observation_scope:'software_state', generation_state:'complete', delivery_state:'timed_out',
+    receipt:{ entity_id:'private' }, raw:'private' });
+  assert.equal(f.live.receive(frame), true);
+  const payload = f.live.snapshot().payload;
+  assert.equal(payload.task_completed, true);
+  assert.equal(payload.response_completed, false);
+  assert.equal(payload.delivery_state, 'timed_out');
+  assert.equal(payload.receipt, undefined);
+  assert.equal(payload.raw, undefined);
+  const invalid = f.frame(B);
+  Object.assign(invalid.payload, { task_status:'private free text', task_completed:'yes' });
+  f.live.receive(invalid);
+  assert.equal(f.live.snapshot().payload.task_status, undefined);
+  assert.equal(f.live.snapshot().payload.task_completed, undefined);
+});
+
 test('retirement ACK waits for DOM retirement and the render stack to return', () => {
   const f = fixture();
   f.live.receive(f.frame()); f.live.committed(A); f.flush();

@@ -2,6 +2,8 @@
 
 import logging
 
+from src.home_assistant.ha_client import ServiceCallStatus
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,9 +30,9 @@ class HASyncManager:
             return False
         entity = self._entity_id(list_name)
         try:
-            await self._ha.call_service("todo", "add_item", entity, {"item": item_text})
+            outcome = await self._ha.call_service_once("todo", "add_item", entity, {"item": item_text})
             logger.debug(f"HA sync: added '{item_text}' to {entity}")
-            return True
+            return outcome.status is ServiceCallStatus.ACCEPTED
         except Exception as e:
             logger.warning(f"HA sync failed for add_item: {e}")
             return False
@@ -41,9 +43,9 @@ class HASyncManager:
             return False
         entity = self._entity_id(list_name)
         try:
-            await self._ha.call_service("todo", "remove_item", entity, {"item": item_text})
+            outcome = await self._ha.call_service_once("todo", "remove_item", entity, {"item": item_text})
             logger.debug(f"HA sync: removed '{item_text}' from {entity}")
-            return True
+            return outcome.status is ServiceCallStatus.ACCEPTED
         except Exception as e:
             logger.warning(f"HA sync failed for remove_item: {e}")
             return False
@@ -54,9 +56,9 @@ class HASyncManager:
             return False
         entity = self._entity_id(list_name)
         try:
-            await self._ha.call_service("todo", "update_item", entity, {"item": item_text, "status": "completed"})
+            outcome = await self._ha.call_service_once("todo", "update_item", entity, {"item": item_text, "status": "completed"})
             logger.debug(f"HA sync: completed '{item_text}' in {entity}")
-            return True
+            return outcome.status is ServiceCallStatus.ACCEPTED
         except Exception as e:
             logger.warning(f"HA sync failed for complete_item: {e}")
             return False

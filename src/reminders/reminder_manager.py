@@ -52,10 +52,9 @@ class ReminderManager:
         )
         return reminder
 
-    async def cancel_by_id(self, reminder_id: str) -> None:
-        """Cancel a specific reminder by ID."""
-        await self._store.cancel(reminder_id)
-        logger.info("Reminder cancelled by ID: %s", reminder_id)
+    async def cancel_by_id(self, reminder_id: str) -> bool:
+        """Return an actual cancellation receipt, not recognition of an ID."""
+        return await self._store.cancel(reminder_id)
 
     async def cancel_by_text(self, user_id: str, search_text: str) -> bool:
         """Cancel the best fuzzy-matched active reminder. Returns True if cancelled."""
@@ -67,7 +66,8 @@ class ReminderManager:
         if match is None:
             return False
 
-        await self._store.cancel(match.id)
+        if await self._store.cancel(match.id) is not True:
+            return False
         logger.info("Cancelled reminder '%s' (id=%s) via fuzzy match on '%s'", match.text, match.id, search_text)
         return True
 

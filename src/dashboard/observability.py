@@ -157,7 +157,7 @@ def _ha_actions_adapter(event_logger, *, limit: int = 50) -> list[dict] | None:
             "service": f"{domain}.{ev.action}",
             "target": ev.entity_id,
             "args": str(ctx.get("args", "{}")),
-            "ok": ctx.get("success", True),
+            "ok": ctx.get("success") is True,
             "lat_ms": ctx.get("latency_ms", 0),
         })
         if len(out) >= limit:

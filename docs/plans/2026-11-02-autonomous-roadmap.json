@@ -896,10 +896,10 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
+      "status": "in_progress",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": "Introduce independent task/persistence/dispatch/effect/delivery outcomes and verify them through build_application; preserve uncertainty and avoid replay."
+      "next_action": "Implement independent operation and speech receipts across HA, dispatcher, router and bounded telemetry; validate actual-graph failure journeys."
     },
     {
       "id": "T012",

@@ -38,14 +38,17 @@ import re
 import time
 import unicodedata
 from contextlib import aclosing
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Callable
 
 from src.core.logging import get_logger
-from src.core.voice_delivery import DeliveryState
-from src.home_assistant.home_actions import HomeActionService
-from src.home_assistant.voice_actions import VoiceHomeActionExecutor
+from src.core.voice_delivery import DeliveryState, GenerationState
+from src.core.task_outcome import (
+    CURRENT_REQUEST_ID, DeliveryOutcome, DispatchState, EffectState, PersistenceState, ResponseRequirement, TaskOutcome, TaskStatus, TurnOutcome,
+)
+from src.home_assistant.home_actions import HomeActionResult, HomeActionService
+from src.home_assistant.voice_actions import VoiceActionResult, VoiceHomeActionExecutor
 from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.memory.fact_ledger import MemorySource
 from src.memory.producer_scopes import ProducerScopes, current_producer_scope
@@ -318,12 +321,22 @@ class DispatchResult:
     timeout_stage: str | None = None
     voice_delivery: str | None = None
     memory_sources: tuple[MemorySource, ...] | None = field(default=None, repr=False)
+    outcome: TaskOutcome | None = None
+    receipt: HomeActionResult | None = None
+    delivery_outcome: DeliveryOutcome | None = None
+    response_requirement: ResponseRequirement = ResponseRequirement.REQUIRED
+
+    def __post_init__(self) -> None:
+        if self.outcome is None and self.intent in {"simple_query", "conversation"}:
+            generated = (self.delivery_outcome.generation is GenerationState.COMPLETE
+                         if self.delivery_outcome is not None else self.success and bool(self.response))
+            self.outcome = TaskOutcome(TaskStatus.COMPLETED if generated else TaskStatus.FAILED)
 
     def to_dict(self) -> dict:
         return {
             "path": self.path.value,
             "priority": self.priority.name,
-            "success": self.success,
+            **TurnOutcome(self.outcome, self.delivery_outcome, self.response_requirement).to_dict(),
             "response": self.response,
             "intent": self.intent,
             "timings": self.timings,
@@ -332,6 +345,9 @@ class DispatchResult:
             "speech_handled": self.speech_handled,
             "timeout_stage": self.timeout_stage,
             "voice_delivery": self.voice_delivery,
+            "receipt": asdict(self.receipt) if self.receipt is not None else None,
+            "delivery_outcome": self.delivery_outcome.to_dict() if self.delivery_outcome is not None else None,
+            "response_requirement": self.response_requirement.value,
         }
 
 
@@ -880,9 +896,12 @@ class RequestDispatcher:
     ) -> DispatchResult | None:
         """Verificar comandos especiales"""
 
+        object_request = any(_kw_match(noun, text_lower) for noun in
+                             ("recordatorio", "timer", "temporizador", "lista", "rutina"))
+        # Named-object cancellation must not complete an unrelated queued turn.
         # Confirmacion pendiente - check BEFORE cancel keywords
         # so "no cancela" is treated as rejection, not as a cancel command
-        if ctx.pending_confirmation:
+        if ctx.pending_confirmation and not object_request:
             if any(word in text_lower for word in ["si", "confirma", "acepto", "ok"]):
                 # Procesar confirmacion
                 confirmation = ctx.pending_confirmation
@@ -891,9 +910,11 @@ class RequestDispatcher:
                     path=PathType.FAST_ROUTINE,
                     priority=Priority.MEDIUM,
                     success=True,
-                    response="Confirmado",
+                    response="Confirmación recibida; la acción todavía no está ejecutada.",
                     intent="confirmation",
-                    action=confirmation
+                    action=confirmation,
+                    outcome=TaskOutcome(TaskStatus.RECEIVED, dispatch=DispatchState.NOT_SENT,
+                                        effect=EffectState.NOT_OBSERVED),
                 )
             elif any(word in text_lower for word in ["no", "cancela", "rechaza"]):
                 self.context_manager.clear_pending_confirmation(user_id)
@@ -902,19 +923,25 @@ class RequestDispatcher:
                     priority=Priority.MEDIUM,
                     success=True,
                     response="Cancelado",
-                    intent="rejection"
+                    intent="rejection",
+                    outcome=TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE,
+                                        effect=EffectState.OBSERVED, observation_scope="software_state"),
                 )
 
         # Comando de cancelacion
         for keyword in self.CANCEL_KEYWORDS:
-            if _kw_match(keyword, text_lower):
+            if not object_request and _kw_match(keyword, text_lower):
                 cancelled = self.queue.cancel_user_request(user_id)
                 return DispatchResult(
                     path=PathType.FAST_ROUTER,
                     priority=Priority.HIGH,
                     success=True,
                     response="Cancelado" if cancelled else "No hay nada que cancelar",
-                    intent="cancel"
+                    intent="cancel",
+                    outcome=TaskOutcome(TaskStatus.COMPLETED if cancelled else TaskStatus.NEEDS_INPUT,
+                                        persistence=PersistenceState.VOLATILE,
+                                        effect=EffectState.OBSERVED if cancelled else EffectState.NOT_OBSERVED,
+                                        observation_scope="software_state" if cancelled else None),
                 )
 
         # Comando de sincronizacion
@@ -925,7 +952,7 @@ class RequestDispatcher:
                     priority=Priority.MEDIUM,
                     success=True,
                     response="Sincronizando comandos...",
-                    intent="sync"
+                    intent="sync", outcome=TaskOutcome(TaskStatus.RECEIVED),
                 )
 
         # Comando de enrollment
@@ -936,7 +963,7 @@ class RequestDispatcher:
                     priority=Priority.MEDIUM,
                     success=True,
                     response="Iniciando registro de usuario...",
-                    intent="enrollment"
+                    intent="enrollment", outcome=TaskOutcome(TaskStatus.RECEIVED),
                 )
 
         return None
@@ -1053,7 +1080,9 @@ class RequestDispatcher:
             if command:
                 command = {**command, "zone_id": zone_id, "user_id": user_id}
                 t0 = time.perf_counter()
-                success = await self._fire_and_reconcile_ha(command)
+                action_result = await self._dispatch_home_action(command)
+                receipt = action_result.receipt
+                success = receipt.status == "confirmed"
                 timings["home_assistant"] = (time.perf_counter() - t0) * 1000
                 return DispatchResult(
                     path=path,
@@ -1063,6 +1092,10 @@ class RequestDispatcher:
                     intent="domotics",
                     action=command,
                     timings=timings,
+                    receipt=receipt, outcome=receipt.task_outcome,
+                    speech_handled=action_result.feedback_attempted,
+                    delivery_outcome=action_result.feedback,
+                    response_requirement=ResponseRequirement.SILENT if success else ResponseRequirement.REQUIRED,
                 )
 
             # No encontrado en vector DB, intentar con router
@@ -1193,10 +1226,11 @@ class RequestDispatcher:
                 async with asyncio.timeout_at(request.response_deadline):
                     if on_response and position and position > 1:
                         notification = on_response(DispatchResult(
-                            path=PathType.SLOW_LLM, priority=priority, success=True,
+                            path=PathType.SLOW_LLM, priority=priority, success=False,
                             response=f"Un momento, hay {position - 1} peticion(es) antes",
                             intent="queued", was_queued=True,
                             queue_position=position, timings=timings,
+                            outcome=TaskOutcome(TaskStatus.QUEUED),
                         ))
                         if inspect.isawaitable(notification):
                             await notification
@@ -1215,6 +1249,7 @@ class RequestDispatcher:
                 intent="timeout",
                 error="timeout",
                 speech_handled=request.speech_handled,
+                delivery_outcome=request.delivery_outcome,
                 memory_sources=request.memory_sources,
                 was_queued=True,
                 timings=timings
@@ -1245,6 +1280,7 @@ class RequestDispatcher:
                 intent="timeout" if request.timeout_stage is not None else "error",
                 error=result_holder.get("error"),
                 speech_handled=request.speech_handled,
+                delivery_outcome=request.delivery_outcome,
                 memory_sources=request.memory_sources,
                 timeout_stage=request.timeout_stage, voice_delivery=request.voice_delivery,
                 was_queued=True,
@@ -1257,6 +1293,7 @@ class RequestDispatcher:
                 path=PathType.SLOW_LLM, priority=priority, success=False,
                 response="", intent="cancelled", was_queued=True, timings=timings,
                 speech_handled=request.speech_handled,
+                delivery_outcome=request.delivery_outcome,
                 memory_sources=request.memory_sources,
             )
 
@@ -1269,6 +1306,7 @@ class RequestDispatcher:
             response=response or "Sin respuesta",
             memory_sources=request.memory_sources,
             speech_handled=request.speech_handled,
+                delivery_outcome=request.delivery_outcome,
             voice_delivery=request.voice_delivery,
             intent="conversation",
             was_queued=True,
@@ -1354,121 +1392,108 @@ class RequestDispatcher:
         )
 
     async def _fast_list_path(self, text: str, user_id: str, zone_id: str = None) -> DispatchResult:
-        """Handle list commands via ListManager."""
+        """Report actual local reads/writes, independently of spoken feedback."""
         if not self.list_manager:
-            return DispatchResult(
-                path=PathType.FAST_LIST, priority=Priority.HIGH,
-                success=False, response="Listas no configuradas",
-            )
-
+            return DispatchResult(PathType.FAST_LIST, Priority.HIGH, False, "Listas no configuradas",
+                intent="list", outcome=TaskOutcome(TaskStatus.UNSUPPORTED))
+        from src.lists.list_manager import ListManager
         text_lower = text.lower()
+        outcome = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
+        committed = TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
+                                effect=EffectState.OBSERVED, observation_scope="software_state")
         try:
             if any(w in text_lower for w in ["qué hay", "que hay", "dime la lista", "lee la lista"]):
-                list_name = self._extract_list_name(text_lower)
-                items = await self.list_manager.get_items(user_id, list_name)
-                if not items:
-                    response = "La lista está vacía"
-                else:
-                    item_texts = ", ".join(i.text for i in items)
-                    response = f"En la lista tienes: {item_texts}"
+                items = await self.list_manager.get_items(user_id, self._extract_list_name(text_lower))
+                response = "En la lista tienes: " + ", ".join(i.text for i in items) if items else "La lista está vacía"
+                outcome = TaskOutcome(TaskStatus.COMPLETED)
             elif any(w in text_lower for w in ["vacía", "vacia", "limpia"]):
-                list_name = self._extract_list_name(text_lower)
-                await self.list_manager.clear_list(user_id, list_name)
-                response = "Listo, vacié la lista"
+                cleared = await self.list_manager.clear_list(user_id, self._extract_list_name(text_lower))
+                response = "Listo, vacié la lista" if cleared is True else "No encontré esa lista"
+                if cleared is True:
+                    outcome = committed
             elif any(w in text_lower for w in ["borra la lista", "elimina la lista"]):
-                list_name = self._extract_list_name(text_lower)
-                if list_name and await self.list_manager.delete_list(user_id, list_name):
-                    response = f"Borré la lista {list_name}"
-                else:
-                    response = "No encontré esa lista"
+                name = self._extract_list_name(text_lower)
+                removed = bool(name) and await self.list_manager.delete_list(user_id, name)
+                response = f"Borré la lista {name}" if removed else "No encontré esa lista"
+                if removed:
+                    outcome = committed
             elif any(w in text_lower for w in ["crea una lista", "nueva lista"]):
-                shared = "compartida" in text_lower
-                list_name = self._extract_list_name(text_lower)
-                if list_name:
-                    await self.list_manager.create_list(user_id, list_name, shared=shared)
-                    response = f"Creé la lista {list_name}"
+                name = self._extract_list_name(text_lower)
+                if name:
+                    created = await self.list_manager.create_list(user_id, name, shared="compartida" in text_lower)
+                    response = f"Creé la lista {name}" if created is not None else "No pude crear la lista"
+                    outcome = committed if created is not None else TaskOutcome(TaskStatus.FAILED)
                 else:
                     response = "No entendí el nombre de la lista"
             elif any(w in text_lower for w in ["quita", "quitale", "elimina", "tacha"]):
-                item_text = self._extract_item_text(text_lower, removing=True)
-                list_name = self._extract_list_name(text_lower)
-                if item_text and await self.list_manager.remove_item(user_id, item_text, list_name):
-                    response = f"Quité {item_text}"
+                item = self._extract_item_text(text_lower, removing=True)
+                name = self._extract_list_name(text_lower)
+                if item and isinstance(self.list_manager, ListManager):
+                    mutation = await self.list_manager.remove_item_with_outcome(user_id, item, name)
+                    outcome = mutation.outcome
+                    removed = outcome.task_completed
                 else:
-                    response = "No encontré ese artículo en la lista"
+                    removed = bool(item) and await self.list_manager.remove_item(user_id, item, name)
+                    if removed:
+                        outcome = committed
+                response = f"Quité {item}" if removed else "No encontré ese artículo en la lista"
             elif any(w in text_lower for w in ["agrega", "agregale", "añade", "pon"]):
-                item_text = self._extract_item_text(text_lower, removing=False)
-                list_name = self._extract_list_name(text_lower)
-                if item_text:
-                    await self.list_manager.add_item(user_id, item_text, list_name)
-                    response = f"Agregué {item_text}"
+                item = self._extract_item_text(text_lower, removing=False)
+                name = self._extract_list_name(text_lower)
+                if item:
+                    if isinstance(self.list_manager, ListManager):
+                        mutation = await self.list_manager.add_item_with_outcome(user_id, item, name)
+                        outcome = mutation.outcome
+                    else:
+                        created = await self.list_manager.add_item(user_id, item, name)
+                        outcome = committed if created is not None else TaskOutcome(TaskStatus.FAILED)
+                    response = f"Agregué {item}" if outcome.task_completed else "No pude agregar el artículo"
                 else:
                     response = "No entendí qué agregar"
             else:
-                # Fallback: list all lists
                 lists = await self.list_manager.get_all_lists(user_id)
-                if lists:
-                    names = ", ".join(lst.name for lst in lists)
-                    response = f"Tienes estas listas: {names}"
-                else:
-                    response = "No tienes listas creadas"
-
-            return DispatchResult(
-                path=PathType.FAST_LIST, priority=Priority.HIGH,
-                success=True, response=response,
-            )
-        except Exception as e:
-            logger.error("List command error: %s", e)
-            return DispatchResult(
-                path=PathType.FAST_LIST, priority=Priority.HIGH,
-                success=False, response="Hubo un error con la lista",
-            )
+                response = "Tienes estas listas: " + ", ".join(lst.name for lst in lists) if lists else "No tienes listas creadas"
+                outcome = TaskOutcome(TaskStatus.COMPLETED)
+            return DispatchResult(PathType.FAST_LIST, Priority.HIGH, outcome.task_completed,
+                                  response, intent="list", outcome=outcome)
+        except Exception:
+            logger.warning("List command unavailable; no completion receipt")
+            return DispatchResult(PathType.FAST_LIST, Priority.HIGH, False, "Hubo un error con la lista",
+                intent="list", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
 
     async def _fast_reminder_path(self, text: str, user_id: str, zone_id: str = None) -> DispatchResult:
-        """Handle reminder commands via ReminderManager."""
+        """Do not claim creation or cancellation without an operation receipt."""
         if not self.reminder_manager:
-            return DispatchResult(
-                path=PathType.FAST_REMINDER, priority=Priority.HIGH,
-                success=False, response="Recordatorios no configurados",
-            )
-
+            return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Recordatorios no configurados",
+                                  intent="reminder", outcome=TaskOutcome(TaskStatus.UNSUPPORTED))
         text_lower = text.lower()
+        outcome = TaskOutcome(TaskStatus.COMPLETED)
         try:
             if any(w in text_lower for w in ["qué recordatorios", "que recordatorios", "mis recordatorios"]):
                 active = await self.reminder_manager.get_active(user_id)
-                if not active:
-                    response = "No tienes recordatorios activos"
-                else:
-                    lines = [self.reminder_manager.format_for_voice(r) for r in active[:5]]
-                    response = "Tus recordatorios: " + ". ".join(lines)
+                response = ("Tus recordatorios: " + ". ".join(self.reminder_manager.format_for_voice(r) for r in active[:5])
+                            if active else "No tienes recordatorios activos")
             elif any(w in text_lower for w in ["qué tengo pendiente", "que tengo pendiente"]):
                 today = await self.reminder_manager.get_today(user_id)
-                if not today:
-                    response = "No tienes nada pendiente hoy"
-                else:
-                    lines = [self.reminder_manager.format_for_voice(r) for r in today]
-                    response = "Pendiente hoy: " + ". ".join(lines)
+                response = ("Pendiente hoy: " + ". ".join(self.reminder_manager.format_for_voice(r) for r in today)
+                            if today else "No tienes nada pendiente hoy")
             elif "cancela" in text_lower and "recordatorio" in text_lower:
-                import re
                 match = re.search(r'recordatorio\s+(?:de\s+)?(.+)', text_lower)
                 search_text = match.group(1).strip() if match else text_lower
-                if await self.reminder_manager.cancel_by_text(user_id, search_text):
-                    response = "Recordatorio cancelado"
-                else:
-                    response = "No encontré ese recordatorio"
+                cancelled = await self.reminder_manager.cancel_by_text(user_id, search_text)
+                response = "Recordatorio cancelado" if cancelled else "No encontré ese recordatorio"
+                outcome = (TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
+                           effect=EffectState.OBSERVED, observation_scope="software_state") if cancelled else
+                           TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN))
             else:
-                response = "Entendido, pero necesito el Router para interpretar la hora. Usa la API por ahora."
-
-            return DispatchResult(
-                path=PathType.FAST_REMINDER, priority=Priority.HIGH,
-                success=True, response=response,
-            )
-        except Exception as e:
-            logger.error("Reminder command error: %s", e)
-            return DispatchResult(
-                path=PathType.FAST_REMINDER, priority=Priority.HIGH,
-                success=False, response="Hubo un error con el recordatorio",
-            )
+                response = "Todavía no puedo crear ese recordatorio por voz. Necesito interpretar y confirmar la fecha y la hora."
+                outcome = TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN)
+            return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, outcome.task_completed,
+                                  response, intent="reminder", outcome=outcome)
+        except Exception:
+            logger.warning("Reminder command unavailable; no completion receipt")
+            return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Hubo un error con el recordatorio",
+                intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
 
     async def _handle_weather(self, text: str, priority: Priority) -> DispatchResult:
         """Answer from HA. Two branches with very different costs.
@@ -1567,6 +1592,7 @@ class RequestDispatcher:
         return DispatchResult(
             path=PathType.FAST_WEATHER, priority=priority,
             success=success, response=response, intent="weather",
+            outcome=TaskOutcome(TaskStatus.COMPLETED if success and response not in (NO_DATA, NO_FORECAST) else TaskStatus.FAILED),
         )
 
     def _extract_list_name(self, text: str) -> str | None:
@@ -1646,14 +1672,17 @@ class RequestDispatcher:
         return message
 
     async def _fire_and_reconcile_ha(self, command: dict) -> bool:
-        """Run the shared voice boundary and report success only on confirmation."""
+        """Compatibility predicate; actual dispatch keeps the complete receipt."""
+        return (await self._dispatch_home_action(command)).receipt.status == "confirmed"
+
+    async def _dispatch_home_action(self, command: dict, *, request_id: str | None = None) -> VoiceActionResult:
+        """Retain transport, HA observations and local feedback independently."""
         executor = VoiceHomeActionExecutor(
             self.ha, self.home_actions, response_handler=self.response_handler,
             hooks=self.hooks, before_handler_warn_ms=getattr(self, "_before_handler_warn_ms", 5.0),
             unavailable_precheck_enabled=self._unavailable_precheck_enabled,
         )
-        receipt = await executor.execute(command)
-        return receipt.status == "confirmed"
+        return await executor.execute_with_feedback(command, request_id=request_id or CURRENT_REQUEST_ID.get())
 
 
 class MultiUserOrchestrator:
@@ -2097,6 +2126,7 @@ class MultiUserOrchestrator:
                         request.error_response = delivered.text
                         request.timeout_stage = delivered.timeout_stage
                         request.voice_delivery = delivered.delivery
+                        request.delivery_outcome = DeliveryOutcome.from_response(delivered)
                         if delivered.delivery is DeliveryState.CANCELLED:
                             request.cancel(CancellationReason.USER_EXPLICIT)
                             return ""

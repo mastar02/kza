@@ -11,6 +11,7 @@ from uuid import uuid4
 from weakref import WeakSet, finalize, ref
 
 from src.core.owned_work import WorkCloseTimeout
+from src.core.task_outcome import project_turn_outcome
 from src.dashboard.live_browser import LiveBrowserSession
 from src.dashboard.rest_delivery import RestDeliveryOwner
 from src.memory.fact_ledger import FactDependency, MemorySource
@@ -55,6 +56,7 @@ def project_live_payload(payload: object) -> dict | None:
         if type(payload['success']) is not bool:
             return None
         output['success'] = payload['success']
+    output.update(project_turn_outcome(payload))
     if sum(len(value.encode('utf-8')) for value in output.values() if type(value) is str) > 32768:
         return None
     return output

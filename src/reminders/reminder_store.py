@@ -254,14 +254,16 @@ class ReminderStore:
         await self._db.commit()
         logger.debug("Marked reminder %s as fired", reminder_id)
 
-    async def cancel(self, reminder_id: str) -> None:
-        """Cancel a reminder."""
-        await self._db.execute(
+    async def cancel(self, reminder_id: str) -> bool:
+        """Return whether the requested reminder's cancelled state was committed."""
+        async with self._db.execute(
             "UPDATE reminders SET state = ? WHERE id = ?",
             (ReminderState.CANCELLED, reminder_id),
-        )
+        ) as cursor:
+            found = cursor.rowcount > 0
         await self._db.commit()
-        logger.debug("Cancelled reminder %s", reminder_id)
+        logger.debug("Reminder cancellation committed: found=%s", found)
+        return found
 
     async def update_trigger(self, reminder_id: str, new_trigger: float) -> None:
         """Update trigger_at and reset state to active."""

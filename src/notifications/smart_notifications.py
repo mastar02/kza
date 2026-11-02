@@ -17,6 +17,7 @@ from enum import Enum, StrEnum
 import uuid
 
 from src.core.voice_delivery import invoke_voice_callback
+from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -580,19 +581,23 @@ class SmartNotificationManager:
         """
         text_lower = text.lower().strip()
 
-        # DND
-        if re.search(r"no\s+molest(?:ar|es)", text_lower):
-            self.set_dnd(user_id, True)
-            return {
-                "handled": True,
-                "response": "Modo no molestar activado. Solo recibirás notificaciones urgentes."
-            }
-
+        # Evaluate deactivation before its positive substring.
         if re.search(r"desactiva(?:r)?\s+(?:el\s+)?no\s+molest", text_lower):
             self.set_dnd(user_id, False)
             return {
                 "handled": True,
+                "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE,
+                                       effect=EffectState.OBSERVED, observation_scope="software_state"),
                 "response": "Modo no molestar desactivado."
+            }
+
+        if re.search(r"no\s+molest(?:ar|es)", text_lower):
+            self.set_dnd(user_id, True)
+            return {
+                "handled": True,
+                "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE,
+                                       effect=EffectState.OBSERVED, observation_scope="software_state"),
+                "response": "Modo no molestar activado. Solo recibirás notificaciones urgentes."
             }
 
         # Solo urgentes
@@ -606,6 +611,8 @@ class SmartNotificationManager:
             self.add_rule(user_id, rule)
             return {
                 "handled": True,
+                "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE,
+                                       effect=EffectState.OBSERVED, observation_scope="software_state"),
                 "response": "Entendido, solo te notificaré cosas urgentes."
             }
 

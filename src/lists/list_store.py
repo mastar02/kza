@@ -168,10 +168,12 @@ class ListStore:
         rows = await cursor.fetchall()
         return [self._row_to_item(row) for row in rows]
 
-    async def remove_item(self, item_id: str) -> None:
-        """Delete an item by its ID."""
-        await self._db.execute("DELETE FROM list_items WHERE id = ?", (item_id,))
+    async def remove_item(self, item_id: str) -> bool:
+        """Return whether an item existed and its deletion was committed."""
+        async with self._db.execute("DELETE FROM list_items WHERE id = ?", (item_id,)) as cursor:
+            removed = cursor.rowcount > 0
         await self._db.commit()
+        return removed
 
     async def complete_item(self, item_id: str) -> ListItem | None:
         """Mark an item as completed. Returns None if item not found."""
@@ -189,21 +191,25 @@ class ListStore:
             return None
         return self._row_to_item(row)
 
-    async def clear_list(self, list_id: str) -> None:
-        """Remove all items from a list."""
-        await self._db.execute(
-            "DELETE FROM list_items WHERE list_id = ?", (list_id,)
-        )
+    async def clear_list(self, list_id: str) -> bool:
+        """Commit removal and verify that the requested list exists and is empty."""
+        await self._db.execute("DELETE FROM list_items WHERE list_id = ?", (list_id,))
         await self._db.commit()
+        async with self._db.execute(
+            "SELECT EXISTS(SELECT 1 FROM lists WHERE id = ?) "
+            "AND NOT EXISTS(SELECT 1 FROM list_items WHERE list_id = ?)",
+            (list_id, list_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return bool(row[0])
 
-    async def delete_list(self, list_id: str) -> None:
-        """Delete a list and all its items."""
-        await self._db.execute(
-            "DELETE FROM list_items WHERE list_id = ?", (list_id,)
-        )
-        await self._db.execute("DELETE FROM lists WHERE id = ?", (list_id,))
+    async def delete_list(self, list_id: str) -> bool:
+        """Commit deletion and return whether the target list existed."""
+        await self._db.execute("DELETE FROM list_items WHERE list_id = ?", (list_id,))
+        async with self._db.execute("DELETE FROM lists WHERE id = ?", (list_id,)) as cursor:
+            deleted = cursor.rowcount > 0
         await self._db.commit()
-        logger.info("Deleted list id=%s", list_id)
+        return deleted
 
     @staticmethod
     def _row_to_list(row: aiosqlite.Row) -> UserList:

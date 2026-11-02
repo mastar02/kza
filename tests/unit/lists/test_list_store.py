@@ -23,6 +23,14 @@ async def test_create_list(store):
 
 
 @pytest.mark.asyncio
+async def test_clearing_empty_existing_list_completes_but_absent_list_does_not(store):
+    lst = await store.create_list("compras", "user", "user_1")
+    assert await store.clear_list(lst.id) is True
+    assert await store.delete_list(lst.id) is True
+    assert await store.clear_list(lst.id) is False
+
+
+@pytest.mark.asyncio
 async def test_create_shared_list(store):
     lst = await store.create_list("hogar", "shared", None)
     assert lst.owner_type == "shared"

@@ -1,13 +1,26 @@
 """Shared voice hooks, single-attempt execution, receipts and local feedback."""
 
+from collections.abc import Callable
+from dataclasses import dataclass
 import logging
 import time
 import uuid
 
+from src.core.task_outcome import DeliveryOutcome
+from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionResult, HomeActionService
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class VoiceActionResult:
+    """Keep the domain effect and attempted local feedback independent."""
+
+    receipt: HomeActionResult
+    feedback: DeliveryOutcome | None = None
+    feedback_attempted: bool = False
 
 
 class VoiceHomeActionExecutor:
@@ -22,9 +35,20 @@ class VoiceHomeActionExecutor:
         self._before_handler_warn_ms = before_handler_warn_ms
         self._unavailable_precheck_enabled = unavailable_precheck_enabled
 
-    async def execute(self, command: dict) -> HomeActionResult:
+    async def execute(self, command: dict, *, request_id: str | None = None,
+                      _on_feedback: Callable[[DeliveryOutcome], None] | None = None) -> HomeActionResult:
         """Apply hooks and return the shared service receipt, with local failure feedback."""
-        request_id = "voice:" + uuid.uuid4().hex
+        request_id = request_id or "voice:" + uuid.uuid4().hex
+
+        async def feedback(operation):
+            try:
+                delivered = await operation
+            except Exception:
+                if _on_feedback is not None:
+                    _on_feedback(DeliveryOutcome(GenerationState.FAILED, DeliveryState.FAILED, error=True))
+                raise
+            if _on_feedback is not None:
+                _on_feedback(DeliveryOutcome.from_response(delivered) if isinstance(delivered, ResponseResult) else DeliveryOutcome())
         domain = command.get("domain")
         service = command.get("service")
         entity_id = command.get("entity_id")
@@ -63,7 +87,7 @@ class VoiceHomeActionExecutor:
                 )
                 if self.response_handler is not None:
                     try:
-                        await self.response_handler.aspeak(result.reason or "No puedo hacer eso", zone_id=command.get("zone_id"))
+                        await feedback(self.response_handler.aspeak(result.reason or "No puedo hacer eso", zone_id=command.get("zone_id")))
                     except Exception as e:
                         logger.warning(f"No pude hablar block reason: {e}")
                 execute_after_event(
@@ -73,7 +97,7 @@ class VoiceHomeActionExecutor:
                         timestamp=time.time(), call=call, block=result,
                     ),
                 )
-                return HomeActionResult(request_id, entity_id, "failed", "hook_blocked")
+                return HomeActionResult.not_sent(request_id, entity_id, "hook_blocked")
             # Apply rewrite (if any) back to local vars
             domain = result.domain
             service = result.service
@@ -102,7 +126,7 @@ class VoiceHomeActionExecutor:
             )
             if self.response_handler is not None:
                 try:
-                    await self.response_handler.aplay_earcon(zone_id=command.get("zone_id"))
+                    await feedback(self.response_handler.aplay_earcon(zone_id=command.get("zone_id")))
                 except Exception as e:
                     logger.warning(f"No pude reproducir earcon de entidad caída: {e}")
             # Plan #3 OpenClaw — el precheck es una tercera forma de retener
@@ -135,7 +159,7 @@ class VoiceHomeActionExecutor:
                         ),
                     ),
                 )
-            return HomeActionResult(request_id, entity_id, "failed", "entity_unavailable")
+            return HomeActionResult.not_sent(request_id, entity_id, "entity_unavailable")
 
         t0 = time.perf_counter()
         err: str | None = None
@@ -197,7 +221,7 @@ class VoiceHomeActionExecutor:
         )
         if self.response_handler is not None:
             try:
-                await self.response_handler.aplay_earcon(zone_id=command.get("zone_id"))
+                await feedback(self.response_handler.aplay_earcon(zone_id=command.get("zone_id")))
             except Exception as e:
                 logger.warning(f"No pude reproducir earcon de fallo HA: {e}")
         else:
@@ -206,4 +230,10 @@ class VoiceHomeActionExecutor:
                 f"sin response_handler — usuario no fue notificado"
             )
         return receipt
+
+    async def execute_with_feedback(self, command: dict, *, request_id: str | None = None) -> VoiceActionResult:
+        """Keep the action and its optional feedback as separate receipts."""
+        feedback = []
+        receipt = await self.execute(command, request_id=request_id, _on_feedback=feedback.append)
+        return VoiceActionResult(receipt, feedback[-1] if feedback else None, bool(feedback))
 

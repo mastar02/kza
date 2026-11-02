@@ -20,6 +20,7 @@ from src.pipeline.audio_loop import AudioLoop
 from src.pipeline.command_processor import CommandProcessor
 from src.pipeline.request_router import RequestRouter
 from src.pipeline.response_handler import ResponseHandler
+from src.core.task_outcome import project_turn_outcome
 from src.pipeline.feature_manager import FeatureManager
 from src.dashboard.live_event_bus import LiveEvent, LiveEventBus, LiveEventType
 
@@ -152,7 +153,7 @@ class VoicePipeline:
 
         logger.info("Pipeline stopped")
 
-    async def process_command(self, audio_or_event) -> dict:
+    async def process_command(self, audio_or_event, *, request_id: str | None = None) -> dict:
         """
         Process a complete audio command.
 
@@ -165,7 +166,8 @@ class VoicePipeline:
             Dict with text, intent, action, response, success, latency_ms, user.
         """
         if self.request_router:
-            result = await self.request_router.process_command(audio_or_event)
+            options = {"request_id": request_id} if request_id is not None else {}
+            result = await self.request_router.process_command(audio_or_event, **options)
             await self._publish_turn_event(audio_or_event, result)
             return result
         return {"text": "", "success": False, "error": "No request router configured"}
@@ -199,6 +201,7 @@ class VoicePipeline:
                 "latency_ms": result.get("latency_ms"),
                 "success": result.get("success", False),
                 "path": result.get("path", "fast"),
+                **project_turn_outcome(result),
             }
             sources = ()
             if isinstance(self.request_router, RequestRouter):
@@ -213,28 +216,14 @@ class VoicePipeline:
                 Context().run(logger.warning, 'Live publication deferred')
 
     async def test_from_text(self, text: str) -> dict:
-        """
-        Test pipeline directly with text (bypasses audio capture and STT).
-
-        Args:
-            text: Text to process as if transcribed by STT.
-
-        Returns:
-            Dict with text, intent, action, response, success.
-        """
-        result = {"text": text, "intent": None, "action": None, "response": "", "success": False}
-
-        if not self.chroma:
-            result["intent"] = "no_match"
-            return result
-
-        command = self.chroma.search_command(text)
-        if command:
-            result["intent"] = "domotics"
-            result["action"] = command
-            result["success"] = True
-            result["response"] = command.get("description", "")
-        else:
-            result["intent"] = "no_match"
-
+        """Diagnose vector recognition without claiming an executed task."""
+        result = {"text": text, "intent": "no_match", "action": None, "response": "",
+                  "success": False, "handled": False, "task_completed": False,
+                  "response_required": False, "response_completed": None,
+                  "recognition_matched": False, "diagnostic_only": True}
+        if self.chroma is not None:
+            command = await self.chroma.asearch_command(text)
+            if command:
+                result.update(intent="domotics", action=command, recognition_matched=True,
+                              handled=True, response=command.get("description", ""))
         return result

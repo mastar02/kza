@@ -93,3 +93,37 @@ de construcción/warmup/ejecución. Las fuentes y salidas simuladas se identific
 como tales. Las rutas privadas quedan en el directorio temporal, incluida la
 de métricas; los listeners se sustituyen para no ocupar puertos del servidor.
 Estas pruebas no sustituyen aceptación física ni completan las familias de P3.
+
+## Recibos de operación y respuesta
+
+`TaskOutcome` registra estado de la tarea, persistencia, envío, efecto y alcance
+de observación. `DeliveryOutcome` registra generación y entrega real de voz sin
+texto ni excepción privada. `TurnOutcome` los compone por solicitud: `handled`
+sólo indica reconocimiento; `task_completed` exige evidencia de la operación;
+`response_completed` exige la entrega requerida; `turn_completed` y `success`
+requieren ambas. Los éxitos domésticos silenciosos tienen respuesta `silent`
+y `response_completed=null`, sin fabricar una entrega audible.
+
+Una aceptación HA no demuestra efecto. Los recibos conservan cada hoja de una
+operación compuesta y sólo declaran `observed` con alcance `ha_state` tras leer
+el estado correspondiente. Esto tampoco demuestra físicamente la luz o motor.
+El ID interno del turno llega a ambos routers y al servicio compartido: una
+cancelación del llamador no autoriza otro envío para el mismo ID. Los recibos HA
+siguen siendo volátiles; T050/T051 cubren durabilidad y autoridad posterior.
+
+Listas y recordatorios acreditan commits locales; eliminar un objeto ausente o
+una fila que desapareció tras buscarla no completa la operación. Vaciar una
+lista verifica que exista y esté vacía después del commit. La réplica opcional
+de listas hacia HA queda en otro campo: una réplica fallida no borra ni repite
+la escritura local. No establece todavía la autoridad entre HA y KZA de T051.
+Los timers actuales declaran persistencia `volatile`, anuncios en espera quedan
+`queued` y las creaciones de recordatorio sin parser temporal quedan
+`unsupported`; esas familias se completan en P3. Las rutas legacy sin prueba
+explícita conservan `unknown` aunque hayan respondido una frase.
+
+Voz, métricas de disco/TCP y eventos live transmiten estados separados. Las
+proyecciones diagnósticas permiten únicamente booleanos y códigos cerrados;
+omiten recibos, IDs, texto y motivos libres. `test_from_text()` es diagnóstico
+de reconocimiento: no acredita ejecución ni entrega. Las pruebas con la
+fábrica efectiva cubren fallos de transporte, PCM, réplica, objetos ausentes,
+efectos parciales y cancelación concurrente. La aceptación física sigue pendiente.

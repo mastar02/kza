@@ -18,7 +18,7 @@ from dataclasses import asdict
 
 import numpy as np
 
-from src.home_assistant.home_actions import HomeActionRequest, HomeActionService
+from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult, HomeActionService
 from src.home_assistant.operations import compile_effect, finite_number
 from src.home_assistant.voice_actions import VoiceHomeActionExecutor
 from src.home_assistant.voice_resolver import HomeVoiceResolver
@@ -33,6 +33,11 @@ from src.memory.transient import TransientCache
 from src.memory.prompt_context import PromptContext, SourcesInvalidated, run_private
 from src.llm.generation_stream import GuardedGeneration
 from src.core.owned_work import OwnedBlockingWork
+from src.core.task_outcome import (
+    CURRENT_REQUEST_ID, DeliveryOutcome, EffectState, PersistenceState, ResponseRequirement,
+    TaskOutcome, TaskStatus, TurnOutcome, project_turn_outcome,
+)
+from src.core.voice_delivery import GenerationState, ResponseResult
 from src.nlu.llm_router import LLMCommandRouter
 
 logger = logging.getLogger(__name__)
@@ -351,6 +356,7 @@ class RequestRouter:
         self._response_zone = ContextVar("response_zone", default=None)
         self._memory_source = ContextVar("memory_source", default=None)
         self._response_sources = ContextVar("response_sources", default=())
+        self._turn_outcome = ContextVar("turn_outcome", default=None)
 
         # Last-action tracker para comandos ambiguos (Q6: contextual + pregunta fallback)
         if action_tracker is None:
@@ -364,10 +370,54 @@ class RequestRouter:
             return await operation(*args, **kwargs)
         return await asyncio.to_thread(getattr(self.memory, name), *args, **kwargs)
 
-    async def _speak_response(self, text: str, **kwargs) -> None:
+    async def _speak_response(self, text: str, **kwargs) -> ResponseResult:
         """Serialize synthesis/playback in a worker while capture keeps running."""
         kwargs.setdefault("zone_id", self._response_zone.get())
-        return await self.response_handler.aspeak(text, **kwargs)
+        response = await self.response_handler.aspeak(text, **kwargs)
+        self._record_delivery(response)
+        return response
+
+    def _record_delivery(self, response) -> None:
+        turn = self._turn_outcome.get()
+        if turn is not None:
+            turn.record_delivery(DeliveryOutcome.from_response(response)
+                                 if isinstance(response, ResponseResult) else DeliveryOutcome())
+
+    def _record_home_action(self, action_result) -> None:
+        turn = self._turn_outcome.get()
+        if turn is not None:
+            turn.task = action_result.receipt.task_outcome
+            turn.response_requirement = (ResponseRequirement.SILENT if action_result.receipt.status == "confirmed"
+                                         else ResponseRequirement.REQUIRED)
+            if action_result.feedback_attempted:
+                turn.record_delivery(action_result.feedback or DeliveryOutcome())
+
+    def _complete_turn(self, result: dict) -> None:
+        turn = self._turn_outcome.get()
+        if turn is None:
+            return
+        supplied = result.pop("_task_outcome", None)
+        if isinstance(supplied, TaskOutcome):
+            turn.task = supplied
+        if turn.task is None:
+            intent = result.get("intent") or ""
+            if result.get("needs_confirmation") or intent == "clarification_requested":
+                turn.task = TaskOutcome(TaskStatus.NEEDS_INPUT)
+            elif intent == "cancelled":
+                turn.task = TaskOutcome(TaskStatus.CANCELLED)
+            elif intent.startswith(("gate_rejected", "llm_rejected", "noise")) or not intent:
+                turn.task = TaskOutcome(TaskStatus.FAILED, handled=False)
+            elif intent in {"conversation", "simple_query"}:
+                generated = turn.response is not None and turn.response.generation is GenerationState.COMPLETE
+                turn.task = TaskOutcome(TaskStatus.COMPLETED if generated else TaskStatus.FAILED)
+            else:
+                turn.task = TaskOutcome(TaskStatus.UNKNOWN)
+        result.update(turn.to_dict())
+        if turn.response is not None:
+            if turn.response.delivery is not None:
+                result["voice_delivery"] = turn.response.delivery.value
+            if turn.response.timeout_stage is not None:
+                result["timeout_stage"] = turn.response.timeout_stage.value
 
     async def _try_memory_proposal(self, text: str, result: dict) -> bool:
         """Create a review proposal from an explicit request, never confirm it."""
@@ -460,14 +510,32 @@ class RequestRouter:
                       "entity_id": target.entity_id, "zone_id": zone_id}
             result["action"] = action
             started = time.perf_counter()
-            receipt = await self._voice_actions.execute(action)
+            action_result = await self._voice_actions.execute_with_feedback(action, request_id=CURRENT_REQUEST_ID.get())
+            self._record_home_action(action_result)
+            receipt = action_result.receipt
             result["timings"]["home_assistant"] = (time.perf_counter() - started) * 1000
             result["receipt"] = asdict(receipt)
             result["success"] = receipt.status == "confirmed"
         result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
         return True
 
-    async def process_command(self, audio_or_event) -> dict:
+    async def process_command(self, audio_or_event, *, request_id: str | None = None) -> dict:
+        """Compose operation and actual speech receipts for one captured turn."""
+        from uuid import uuid4
+        turn = TurnOutcome(request_id=request_id or "voice:" + uuid4().hex)
+        token = self._turn_outcome.set(turn)
+        identity_token = CURRENT_REQUEST_ID.set(turn.request_id)
+        try:
+            result = await self._process_received_command(audio_or_event)
+            self._complete_turn(result)
+            result["request_id"] = turn.request_id
+            self._log_latency(result)
+            return result
+        finally:
+            CURRENT_REQUEST_ID.reset(identity_token)
+            self._turn_outcome.reset(token)
+
+    async def _process_received_command(self, audio_or_event) -> dict:
         """
         Process a complete audio command.
 
@@ -482,6 +550,8 @@ class RequestRouter:
             latency_ms, user, timings, and optionally path, room.
         """
         from src.pipeline.command_event import CommandEvent, TranscriptSource
+        self._memory_source.set(None)
+        self._response_sources.set(())
         if self._closed:
             return {"text": "", "intent": "cancelled", "success": False, "response": "", "timings": {}, "latency_ms": 0}
 
@@ -520,6 +590,9 @@ class RequestRouter:
             "early_dispatch": early_dispatch,
             "audio_duration_ms": audio_duration_ms,
         }
+        turn = self._turn_outcome.get()
+        if turn is not None:
+            turn.capture_meta = self._last_request_meta
 
         wake_score = getattr(audio_or_event, "wake_score", 1.0)
         textual_wake = bool(getattr(audio_or_event, "textual_wake", False))
@@ -577,6 +650,7 @@ class RequestRouter:
                     )
         except SourcesInvalidated:
             return {"intent": "cancelled", "success": False, "text": "", "response": "", "timings": {}, "latency_ms": 0}
+        self._complete_turn(result)
         classification = result.get("llm_classification")
         if self.llm_command_router is not None and result.get("success") and (result.get("intent") == "domotics" or classification is not None):
             try:
@@ -969,6 +1043,16 @@ class RequestRouter:
         result["action"] = dispatch_result.action
         result["path"] = dispatch_result.path.value if dispatch_result.path else None
         result["timings"].update(dispatch_result.timings)
+        turn = self._turn_outcome.get()
+        if turn is not None:
+            if isinstance(dispatch_result.outcome, TaskOutcome):
+                turn.task = dispatch_result.outcome
+            if isinstance(dispatch_result.delivery_outcome, DeliveryOutcome):
+                turn.record_delivery(dispatch_result.delivery_outcome)
+            if isinstance(dispatch_result.response_requirement, ResponseRequirement):
+                turn.response_requirement = dispatch_result.response_requirement
+        if isinstance(dispatch_result.receipt, HomeActionResult):
+            result["receipt"] = asdict(dispatch_result.receipt)
         for key in ("timeout_stage", "voice_delivery"):
             value = getattr(dispatch_result, key, None)
             if isinstance(value, str):
@@ -1018,7 +1102,6 @@ class RequestRouter:
 
         # 8. Logging
         result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-        self._log_latency(result)
 
         if self.event_logger and result["success"] and result["intent"] == "domotics":
             await self._log_domotics_event(
@@ -1172,6 +1255,11 @@ class RequestRouter:
             result["intent"] = "feedback"
             result["response"] = feedback_result["response"]
             result["success"] = feedback_result.get("success", True)
+            result["_task_outcome"] = TaskOutcome(
+                TaskStatus.COMPLETED if result["success"] else TaskStatus.FAILED,
+                persistence=PersistenceState.COMMITTED if result["success"] else PersistenceState.NOT_WRITTEN,
+                effect=EffectState.OBSERVED if result["success"] else EffectState.NOT_OBSERVED,
+                observation_scope="software_state" if result["success"] else None)
             await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
@@ -1209,6 +1297,9 @@ class RequestRouter:
                 result["intent"] = "enrollment"
                 result["response"] = enrollment_result["response"]
                 result["success"] = enrollment_result["state"].name == "COMPLETED"
+                result["_task_outcome"] = (TaskOutcome(TaskStatus.COMPLETED,
+                    persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
+                    observation_scope="software_state") if result["success"] else TaskOutcome(TaskStatus.NEEDS_INPUT))
                 await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
@@ -1220,6 +1311,8 @@ class RequestRouter:
             count = self.chroma.sync_commands(self.ha, self.llm)
             result["response"] = f"Listo, actualicé {count} comandos"
             result["success"] = True
+            result["_task_outcome"] = TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
+                effect=EffectState.OBSERVED, observation_scope="software_state")
             await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
@@ -1233,6 +1326,7 @@ class RequestRouter:
             )
             if timer_result["handled"]:
                 result["intent"] = "timer"
+                result["_task_outcome"] = timer_result.get("outcome")
                 result["response"] = timer_result["response"]
                 result["success"] = True
                 await self._speak_response(result["response"])
@@ -1248,6 +1342,7 @@ class RequestRouter:
             )
             if intercom_result["handled"]:
                 result["intent"] = "intercom"
+                result["_task_outcome"] = intercom_result.get("outcome")
                 result["response"] = intercom_result["response"]
                 result["success"] = True
                 await self._speak_response(result["response"])
@@ -1262,6 +1357,7 @@ class RequestRouter:
             )
             if notif_result["handled"]:
                 result["intent"] = "notification_config"
+                result["_task_outcome"] = notif_result.get("outcome")
                 result["response"] = notif_result["response"]
                 result["success"] = True
                 await self._speak_response(result["response"])
@@ -1387,10 +1483,12 @@ class RequestRouter:
 
             # Household controls do not derive authority from a voice profile.
             t_ha = time.perf_counter()
-            receipt = await self._voice_actions.execute({
+            action_result = await self._voice_actions.execute_with_feedback({
                 **command, "zone_id": f"zone_{room_id}" if room_id else None,
                 "user_id": user_id, "user_name": user.name if user else None,
-            })
+            }, request_id=CURRENT_REQUEST_ID.get())
+            self._record_home_action(action_result)
+            receipt = action_result.receipt
             result["receipt"] = asdict(receipt)
             success = receipt.status == "confirmed"
             result["timings"]["home_assistant"] = (time.perf_counter() - t_ha) * 1000
@@ -1406,11 +1504,9 @@ class RequestRouter:
 
             # Speak response with emotion adjustments
             emotion_adj = emotion.response_adjustment if emotion else None
-            await self._speak_response(
-                result["response"],
-                emotion_adjustment=emotion_adj,
-                room_context=room_context,
-            )
+            if not success and not action_result.feedback_attempted:
+                await self._speak_response(result["response"], emotion_adjustment=emotion_adj,
+                                           room_context=room_context)
 
             # Log event
             if self.event_logger and success:
@@ -1428,7 +1524,6 @@ class RequestRouter:
                     await self._maybe_present_suggestion()
 
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-            self._log_latency(result)
             return result
 
         # 9. Conversation with LLM/Router
@@ -1488,6 +1583,7 @@ class RequestRouter:
                 result.update(intent="cancelled", success=False, response="")
                 return result
             result["timings"]["llm_stream"] = (time.perf_counter() - pipeline_start) * 1000
+            self._record_delivery(delivery)
             result["response"] = delivery.text.strip()
             result["success"] = delivery.success
             result["voice_delivery"] = delivery.delivery.value
@@ -1873,7 +1969,8 @@ class RequestRouter:
             )
 
         if self.metrics_emitter:
-            meta = getattr(self, "_last_request_meta", {}) or {}
+            turn = self._turn_outcome.get()
+            meta = turn.capture_meta if turn is not None else (getattr(self, "_last_request_meta", {}) or {})
             timings["total"] = total
             try:
                 self.metrics_emitter.emit_request(
@@ -1887,6 +1984,7 @@ class RequestRouter:
                     used_wake_text=bool(meta.get("used_wake_text")),
                     early_dispatch=bool(meta.get("early_dispatch")),
                     sources=self._active_sources(),
+                    outcome=project_turn_outcome(result),
                 )
             except Exception:
                 Context().run(logger.warning, "Diagnostic request metric deferred")

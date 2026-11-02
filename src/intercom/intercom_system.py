@@ -17,6 +17,7 @@ from enum import StrEnum
 import uuid
 
 from src.core.voice_delivery import invoke_voice_callback
+from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -239,12 +240,14 @@ class IntercomSystem:
             else:
                 zones_text = ", ".join(self._get_zone_name(z) for z in target_zones)
 
-            response = f"Anunciando en {zones_text}"
+            response = f"Anuncio en espera para {zones_text}"
 
             return {
                 "handled": True,
                 "response": response,
-                "announcement": announcement
+                "announcement": announcement,
+                "outcome": TaskOutcome(TaskStatus.QUEUED, persistence=PersistenceState.VOLATILE,
+                                       dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED)
             }
 
         return {"handled": False, "response": "", "announcement": None}

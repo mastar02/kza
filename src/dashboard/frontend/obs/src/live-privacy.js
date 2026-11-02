@@ -2,8 +2,21 @@
   'use strict';
   const TYPES = new Set(['turn', 'wake', 'tts', 'alert', 'cooldown']);
   const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const OUTCOME_FLAGS = new Set(['handled', 'task_completed', 'response_required', 'response_completed', 'turn_completed']);
+  const OUTCOME_CODES = {
+    task_status: new Set(['unknown','received','queued','running','needs_input','unsupported','completed','failed','uncertain','cancelled']),
+    persistence_state: new Set(['unknown','not_required','not_written','volatile','committed','failed','uncertain']),
+    dispatch_state: new Set(['unknown','not_required','not_sent','accepted','rejected','uncertain','partial']),
+    effect_state: new Set(['unknown','not_required','not_observed','observed','unconfirmed','uncertain','partial']),
+    replication_state: new Set(['unknown','not_required','not_sent','accepted','rejected','uncertain','partial']),
+    observation_scope: new Set(['software_state','ha_state']),
+    response_requirement: new Set(['required','silent']),
+    generation_state: new Set(['complete','incomplete','cancelled','failed']),
+    delivery_state: new Set(['complete','failed','cancelled','blocked','empty','timed_out']),
+  };
   const FIELDS = new Set(['id', 'user', 'zone', 'stt', 'tts', 'intent', 'path', 'latency_ms',
-    'success', 'confidence', 'text', 'title', 'body', 'endpoint_id', 'until', 'priority', 'type', 'duration_ms', 'step']);
+    'success', 'confidence', 'text', 'title', 'body', 'endpoint_id', 'until', 'priority', 'type', 'duration_ms', 'step',
+    ...OUTCOME_FLAGS, ...Object.keys(OUTCOME_CODES)]);
   let pageIdentity = null;
   function pageId() {
     if (!pageIdentity) {
@@ -111,6 +124,8 @@
       const payload = {};
       for (const [key, value] of Object.entries(frame.payload)) {
         if (!FIELDS.has(key)) continue;
+        if (OUTCOME_FLAGS.has(key) && typeof value !== 'boolean') continue;
+        if (OUTCOME_CODES[key] && !OUTCOME_CODES[key].has(value)) continue;
         if (!(value === null || typeof value === 'boolean' || (typeof value === 'string' && value.length <= 8192)
             || (typeof value === 'number' && Number.isFinite(value)))) return false;
         payload[key] = value;

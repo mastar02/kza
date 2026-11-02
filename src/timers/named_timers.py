@@ -20,6 +20,7 @@ from enum import StrEnum
 import uuid
 
 from src.core.voice_delivery import invoke_voice_callback
+from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -198,43 +199,37 @@ class NamedTimerManager:
     # ==================== Comandos de Voz ====================
 
     def handle_voice_command(self, text: str, user_id: str = None, zone_id: str = "default") -> dict:
-        """
-        Procesar comando de voz relacionado con timers.
-
-        Returns:
-            {
-                "handled": bool,
-                "response": str,
-                "timer": NamedTimer o None
-            }
-        """
+        """Distinguish a recognized timer request from an observed mutation."""
         text_lower = text.lower().strip()
-
-        # Crear timer
         if self._is_create_command(text_lower):
-            return self._handle_create(text_lower, user_id, zone_id)
-
-        # Consultar tiempo restante
-        if self._is_query_command(text_lower):
-            return self._handle_query(text_lower)
-
-        # Cancelar timer
-        if self._is_cancel_command(text_lower):
-            return self._handle_cancel(text_lower)
-
-        # Pausar timer
-        if self._is_pause_command(text_lower):
-            return self._handle_pause(text_lower)
-
-        # Reanudar timer
-        if self._is_resume_command(text_lower):
-            return self._handle_resume(text_lower)
-
-        # Listar timers
-        if self._is_list_command(text_lower):
-            return self._handle_list()
-
-        return {"handled": False, "response": "", "timer": None}
+            result = self._handle_create(text_lower, user_id, zone_id)
+            done = result.get("timer") is not None
+            outcome = TaskOutcome(TaskStatus.COMPLETED if done else TaskStatus.NEEDS_INPUT,
+                persistence=PersistenceState.VOLATILE if done else PersistenceState.NOT_WRITTEN,
+                effect=EffectState.OBSERVED if done else EffectState.NOT_OBSERVED,
+                observation_scope="software_state" if done else None)
+        elif self._is_query_command(text_lower) or self._is_list_command(text_lower):
+            listing = self._is_list_command(text_lower)
+            result = self._handle_list() if listing else self._handle_query(text_lower)
+            name = self._extract_timer_name(text_lower) if not listing else None
+            found = listing or not name or self._find_timer_by_name(name) is not None
+            outcome = TaskOutcome(TaskStatus.COMPLETED if found else TaskStatus.NEEDS_INPUT)
+        else:
+            before = {key: timer.state for key, timer in self._timers.items()}
+            if self._is_cancel_command(text_lower):
+                result = self._handle_cancel(text_lower)
+            elif self._is_pause_command(text_lower):
+                result = self._handle_pause(text_lower)
+            elif self._is_resume_command(text_lower):
+                result = self._handle_resume(text_lower)
+            else:
+                return {"handled": False, "response": "", "timer": None}
+            changed = before != {key: timer.state for key, timer in self._timers.items()}
+            outcome = TaskOutcome(TaskStatus.COMPLETED if changed else TaskStatus.NEEDS_INPUT,
+                persistence=PersistenceState.VOLATILE if changed else PersistenceState.NOT_WRITTEN,
+                effect=EffectState.OBSERVED if changed else EffectState.NOT_OBSERVED,
+                observation_scope="software_state" if changed else None)
+        return {**result, "outcome": outcome}
 
     def _is_create_command(self, text: str) -> bool:
         patterns = [

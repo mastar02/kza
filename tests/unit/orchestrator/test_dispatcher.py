@@ -152,7 +152,8 @@ class TestDispatchResult:
         data = result.to_dict()
         assert data["path"] == "fast_domotics"
         assert data["priority"] == "HIGH"
-        assert data["success"] is True
+        assert data["success"] is False  # A legacy boolean is not an effect/delivery receipt.
+        assert data["task_completed"] is False
 
 
 class TestRequestClassification:

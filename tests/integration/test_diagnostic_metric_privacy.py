@@ -47,9 +47,9 @@ async def receiver():
             await writer.wait_closed()
 
 
-def request(emitter, **kwargs):
+def request(emitter, *, success=True, **kwargs):
     emitter.emit_request(user_id=PRIVATE, zone_id=PRIVATE, text=PRIVATE,
-        intent=PRIVATE, path='fast', success=True,
+        intent=PRIVATE, path='fast', success=success,
         timings={'stt': 12., PRIVATE: 3., 'total': float('nan')},
         entity_id=PRIVATE, service=PRIVATE, **kwargs)
 
@@ -79,6 +79,36 @@ async def test_request_wake_and_error_share_private_free_disk_and_tcp_projection
             assert request_doc['success'] is True
             assert 'total_ms' not in request_doc
             assert all(doc['diagnostic_schema'] == 1 for doc in documents)
+        finally:
+            await emitter.aclose()
+
+
+async def test_task_and_delivery_states_survive_private_free_disk_and_tcp_projection(tmp_path):
+    outcome = {
+        "handled": True, "task_completed": True, "response_required": True,
+        "response_completed": False, "turn_completed": False, "success": False,
+        "outcome": {"status": "completed", "persistence": "committed",
+            "dispatch": "not_required", "effect": "observed", "observation_scope": "software_state",
+            "replication": "uncertain", "response_requirement": "required",
+            "response": {"generation": "complete", "delivery": "failed", "text": PRIVATE}},
+        "receipt": {"request_id": PRIVATE}, "text": PRIVATE,
+    }
+    async with receiver() as (port, lines):
+        emitter = MetricsEmitter(str(tmp_path/'metrics.jsonl'), logstash_host='127.0.0.1', logstash_port=port)
+        try:
+            request(emitter, success=False, outcome=outcome)
+            await emitter.flush()
+            await until(lambda: len(lines) == 1)
+            disk = json.loads(emitter.path.read_text())
+            tcp = json.loads(lines[0])
+            assert disk == tcp
+            assert disk['task_completed'] is True and disk['response_completed'] is False
+            assert disk['turn_completed'] is False
+            assert disk['success'] is False
+            assert disk['task_status'] == 'completed' and disk['persistence_state'] == 'committed'
+            assert disk['delivery_state'] == 'failed' and disk['replication_state'] == 'uncertain'
+            assert PRIVATE not in emitter.path.read_text() and PRIVATE not in lines[0]
+            assert 'receipt' not in disk and 'outcome' not in disk
         finally:
             await emitter.aclose()
 

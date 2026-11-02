@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.core.sanitize import sanitize_dict
+from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
 from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session
@@ -640,7 +641,9 @@ class DashboardAPI:
             if not self.list_manager:
                 raise HTTPException(status_code=503, detail="Lists not configured")
             lst = await self.list_manager.create_list(data.user_id, data.name, data.shared)
-            return {"id": lst.id, "name": lst.name, "owner_type": lst.owner_type, "owner_id": lst.owner_id}
+            return {"id": lst.id, "name": lst.name, "owner_type": lst.owner_type, "owner_id": lst.owner_id,
+                    "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
+                        effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}
 
         @self.app.get("/api/lists/{list_id}/items")
         async def get_list_items(list_id: str):
@@ -654,14 +657,20 @@ class DashboardAPI:
             if not self.list_manager:
                 raise HTTPException(status_code=503, detail="Lists not configured")
             item = await self.list_manager.add_item_to_list_id(list_id, data.text, data.user_id)
-            return {"id": item.id, "text": item.text, "completed": item.completed, "list_id": item.list_id}
+            return {"id": item.id, "text": item.text, "completed": item.completed, "list_id": item.list_id,
+                    "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
+                        effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}
 
         @self.app.delete("/api/lists/{list_id}/items/{item_id}")
         async def delete_list_item(list_id: str, item_id: str):
             if not self.list_manager:
                 raise HTTPException(status_code=503, detail="Lists not configured")
-            await self.list_manager.remove_item_by_id(item_id)
-            return {"status": "deleted"}
+            removed = await self.list_manager.remove_item_by_id(item_id)
+            if removed is not True:
+                raise HTTPException(status_code=404, detail="List item not found")
+            return {"status": "deleted", "outcome": TaskOutcome(TaskStatus.COMPLETED,
+                persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
+                observation_scope="software_state").to_dict()}
 
         # ==================== Reminders ====================
 
@@ -677,14 +686,20 @@ class DashboardAPI:
             if not self.reminder_manager:
                 raise HTTPException(status_code=503, detail="Reminders not configured")
             r = await self.reminder_manager.create(data.user_id, data.text, data.trigger_at, data.recurrence, data.ha_actions)
-            return {"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence, "state": r.state}
+            return {"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence, "state": r.state,
+                    "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
+                        effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}
 
         @self.app.delete("/api/reminders/{reminder_id}")
         async def delete_reminder(reminder_id: str):
             if not self.reminder_manager:
                 raise HTTPException(status_code=503, detail="Reminders not configured")
-            await self.reminder_manager.cancel_by_id(reminder_id)
-            return {"status": "cancelled"}
+            cancelled = await self.reminder_manager.cancel_by_id(reminder_id)
+            if cancelled is not True:
+                raise HTTPException(status_code=404, detail="Reminder not found")
+            return {"status": "cancelled", "outcome": TaskOutcome(TaskStatus.COMPLETED,
+                persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
+                observation_scope="software_state").to_dict()}
 
         # ==================== WebSocket para tiempo real ====================
 

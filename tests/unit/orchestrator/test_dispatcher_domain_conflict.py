@@ -113,7 +113,10 @@ def dispatcher(chroma_returns_light, ha_mock, routine_mock):
         vector_threshold=0.65,
     )
     # Espía el disparo a HA para verificar que NO se prende la luz fantasma.
-    d._fire_and_reconcile_ha = AsyncMock(return_value=None)
+    from src.home_assistant.home_actions import HomeActionResult
+    from src.home_assistant.voice_actions import VoiceActionResult
+    d._dispatch_home_action = AsyncMock(return_value=VoiceActionResult(
+        HomeActionResult.not_sent("fixture", "light.fixture", "test_boundary")))
     return d
 
 
@@ -132,7 +135,7 @@ class TestDomainConflictBlocksPhantomLight:
         # El vector search corrió (devolvió light.escritorio)...
         assert chroma_returns_light.asearch_command.called
         # ...pero la guarda lo rechazó: NO se disparó la luz.
-        assert not dispatcher._fire_and_reconcile_ha.called, (
+        assert not dispatcher._dispatch_home_action.called, (
             "El comando de volumen NO debe prender light.escritorio"
         )
         # ...y devuelve un resultado INMEDIATO y honesto (no cuelga en slow path
@@ -151,7 +154,7 @@ class TestDomainConflictBlocksPhantomLight:
             text="Nexa bajá la temperatura del aire",
             zone_id="zone_escritorio",
         )
-        assert not dispatcher._fire_and_reconcile_ha.called
+        assert not dispatcher._dispatch_home_action.called
         assert result.intent == "domain_conflict"
         assert result.success is False
         assert "temperatura" in result.response.lower()
@@ -180,6 +183,6 @@ class TestDomainConflictBlocksPhantomLight:
             text="Nexa prendé la luz del escritorio",
             zone_id="zone_escritorio",
         )
-        assert dispatcher._fire_and_reconcile_ha.called, (
+        assert dispatcher._dispatch_home_action.called, (
             "Un comando de luz legítimo debe seguir disparando la acción HA"
         )

@@ -1,11 +1,21 @@
 """Business logic for list operations with fuzzy matching and auto-creation."""
+from dataclasses import dataclass
 import logging
 from difflib import SequenceMatcher
 
 from src.lists.list_store import ListStore, UserList, ListItem, OwnerType
 from src.lists.ha_sync import HASyncManager
+from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ListWriteResult:
+    """Keep the committed local object separate from optional replication."""
+
+    item: ListItem | None
+    outcome: TaskOutcome
 
 
 class ListManager:
@@ -72,74 +82,57 @@ class ListManager:
                 "Delete failed: list '%s' not found for user=%s", list_name, user_id
             )
             return False
-        await self._store.delete_list(lst.id)
+        if await self._store.delete_list(lst.id) is not True:
+            return False
         logger.info("Deleted list '%s' for user=%s", list_name, user_id)
         return True
 
-    async def add_item(
-        self,
-        user_id: str,
-        item_text: str,
-        list_name: str | None = None,
-    ) -> ListItem:
-        """Add an item to a list, auto-creating the default list if needed.
+    async def add_item(self, user_id: str, item_text: str, list_name: str | None = None) -> ListItem:
+        """Add locally; remote replication cannot erase a committed write."""
+        result = await self.add_item_with_outcome(user_id, item_text, list_name)
+        return result.item
 
-        Args:
-            user_id: User adding the item.
-            item_text: Text of the item to add.
-            list_name: Target list name. Uses default if None.
-
-        Returns:
-            The newly created ListItem.
-        """
+    async def add_item_with_outcome(self, user_id: str, item_text: str,
+                                    list_name: str | None = None) -> ListWriteResult:
+        """Retain the committed item even when optional HA replication fails."""
         lst = await self._resolve_list(user_id, list_name)
-        item = await self._store.add_item(
-            list_id=lst.id, text=item_text, added_by=user_id
-        )
-        logger.info(
-            "Added item '%s' to list '%s' (user=%s)", item_text, lst.name, user_id
-        )
-        if self._ha_sync:
-            await self._ha_sync.sync_add_item(lst.name, item_text)
-        return item
+        item = await self._store.add_item(list_id=lst.id, text=item_text, added_by=user_id)
+        replication = await self._replicate("sync_add_item", lst.name, item_text)
+        return ListWriteResult(item, TaskOutcome(TaskStatus.COMPLETED,
+            persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
+            observation_scope="software_state", replication=replication))
 
-    async def remove_item(
-        self,
-        user_id: str,
-        item_text: str,
-        list_name: str | None = None,
-    ) -> bool:
-        """Remove an item using fuzzy matching.
+    async def _replicate(self, method: str, *args) -> DispatchState:
+        if self._ha_sync is None:
+            return DispatchState.NOT_REQUIRED
+        try:
+            accepted = await getattr(self._ha_sync, method)(*args)
+            return DispatchState.ACCEPTED if accepted is True else DispatchState.UNCERTAIN
+        except Exception:
+            logger.warning("List committed locally; HA replication remains uncertain")
+            return DispatchState.UNCERTAIN
 
-        Tries substring match first, then falls back to SequenceMatcher.
+    async def remove_item(self, user_id: str, item_text: str, list_name: str | None = None) -> bool:
+        """Remove a matched item; missing targets never count as a mutation."""
+        return (await self.remove_item_with_outcome(user_id, item_text, list_name)).outcome.task_completed
 
-        Args:
-            user_id: User requesting removal.
-            item_text: Query text to match against item texts.
-            list_name: Target list name. Uses default if None.
-
-        Returns:
-            True if an item was found and removed, False otherwise.
-        """
-        lst = await self._resolve_list(user_id, list_name)
-        items = await self._store.get_items(lst.id)
+    async def remove_item_with_outcome(self, user_id: str, item_text: str,
+                                      list_name: str | None = None) -> ListWriteResult:
+        """Separate local deletion from optional HA replication."""
+        lst = await self._store.find_list_by_name(list_name or self._default_list_name, user_id)
+        items = await self._store.get_items(lst.id) if lst is not None else []
         match = self._fuzzy_find(item_text, items)
         if match is None:
-            logger.info(
-                "No fuzzy match for '%s' in list '%s'", item_text, lst.name
-            )
-            return False
-        matched_text = match.text
-        await self._store.remove_item(match.id)
-        logger.info(
-            "Removed item '%s' (matched '%s') from list '%s'",
-            matched_text,
-            item_text,
-            lst.name,
-        )
-        if self._ha_sync:
-            await self._ha_sync.sync_remove_item(lst.name, matched_text)
-        return True
+            return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
+                persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
+        removed = await self._store.remove_item(match.id)
+        if removed is not True:
+            return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
+                persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
+        replication = await self._replicate("sync_remove_item", lst.name, match.text)
+        return ListWriteResult(match, TaskOutcome(TaskStatus.COMPLETED,
+            persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
+            observation_scope="software_state", replication=replication))
 
     async def get_items(
         self, user_id: str, list_name: str | None = None
@@ -160,22 +153,13 @@ class ListManager:
             return []
         return await self._store.get_items(lst.id)
 
-    async def clear_list(
-        self, user_id: str, list_name: str | None = None
-    ) -> None:
-        """Remove all items from a list.
-
-        Args:
-            user_id: User requesting the clear.
-            list_name: Target list name. Uses default if None.
-        """
-        lst = await self._store.find_list_by_name(
-            list_name or self._default_list_name, user_id
-        )
-        if lst is None:
-            return
-        await self._store.clear_list(lst.id)
+    async def clear_list(self, user_id: str, list_name: str | None = None) -> bool:
+        """Remove items only when the requested list exists and commit succeeds."""
+        lst = await self._store.find_list_by_name(list_name or self._default_list_name, user_id)
+        if lst is None or await self._store.clear_list(lst.id) is not True:
+            return False
         logger.info("Cleared list '%s' for user=%s", lst.name, user_id)
+        return True
 
     async def get_items_by_list_id(self, list_id: str) -> list[ListItem]:
         """Get items for a specific list by ID."""
@@ -187,9 +171,9 @@ class ListManager:
         """Add item to a specific list by ID."""
         return await self._store.add_item(list_id, item_text, added_by=user_id)
 
-    async def remove_item_by_id(self, item_id: str) -> None:
-        """Remove a specific item by ID."""
-        await self._store.remove_item(item_id)
+    async def remove_item_by_id(self, item_id: str) -> bool:
+        """Return whether the identified item was actually removed."""
+        return await self._store.remove_item(item_id)
 
     async def get_all_lists(self, user_id: str) -> list[UserList]:
         """Get all lists accessible to a user.

@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 from src.core.owned_work import ClosePhase, OwnedBlockingWork, WorkCloseTimeout
+from src.core.task_outcome import OUTCOME_CODES, OUTCOME_FLAGS, project_turn_outcome
 from src.obs.diagnostic_store import DiagnosticRecord, DiagnosticStore
 from src.memory.producer_context import PRODUCER_CONTEXT
 
@@ -24,14 +25,15 @@ _TIMINGS = frozenset({'stt', 'speaker', 'speaker_id', 'emotion', 'llm_router',
     'routine_check', 'total', 'queue', 'response', 'capture', 'asr', 'inference'})
 _NUMBERS = frozenset({*(name+'_ms' for name in _TIMINGS), 'audio_duration_ms',
     'wake_stt_ms', 'fuzzy_ratio', 'no_speech_prob', 'avg_logprob'})
-_FLAGS = frozenset({'success', 'used_wake_text', 'early_dispatch', 'matched', 'tv_mode'})
+_FLAGS = frozenset({'success', 'used_wake_text', 'early_dispatch', 'matched', 'tv_mode'}) | OUTCOME_FLAGS
 _CODES = {
+    **OUTCOME_CODES,
     'path': frozenset({'fast', 'slow', 'music', 'routine', 'fast_domotics', 'fast_routine',
         'fast_router', 'fast_music', 'slow_music', 'slow_llm', 'sync', 'enrollment',
         'feedback', 'fast_list', 'fast_reminder', 'fast_weather'}),
     'intent': frozenset({'turn_on', 'turn_off', 'toggle', 'set_brightness', 'set_color',
         'set_temperature', 'set_hvac_mode', 'set_position', 'stop', 'scene', 'routine',
-        'timer', 'reminder', 'conversation', 'question', 'cancelled', 'unknown', 'domotics',
+        'timer', 'list', 'reminder', 'conversation', 'question', 'cancelled', 'unknown', 'domotics',
         'feedback', 'suggestion_response', 'learning', 'enrollment', 'sync', 'intercom',
         'notification_config', 'clarification_requested', 'timeout', 'pending_confirmation',
         'confirmation', 'rejection', 'cancel', 'invalid_target', 'domain_conflict',
@@ -322,7 +324,8 @@ class MetricsEmitter:
                      intent: str | None, path: str | None, success: bool,
                      timings: dict[str, float], audio_duration_ms: float | None = None,
                      entity_id: str | None = None, service: str | None = None,
-                     used_wake_text: bool = False, early_dispatch: bool = False, sources=None) -> None:
+                     used_wake_text: bool = False, early_dispatch: bool = False, sources=None,
+                     outcome: dict | None = None) -> None:
         """Keep timings and closed diagnostic codes; discard private arguments."""
         del user_id, zone_id, text, entity_id, service
         doc = None
@@ -331,9 +334,10 @@ class MetricsEmitter:
                 'path': path, 'success': success, 'audio_duration_ms': audio_duration_ms,
                 'used_wake_text': used_wake_text, 'early_dispatch': early_dispatch}
             doc.update({name+'_ms': value for name, value in diagnostic_timings(timings).items()})
+            doc.update(project_turn_outcome(outcome))
             self._enqueue(doc, sources)
         finally:
-            intent = path = timings = doc = sources = None
+            intent = path = timings = doc = sources = outcome = None
             success = audio_duration_ms = used_wake_text = early_dispatch = None
 
     def emit_wake(self, *, room_id: str, matched: bool, wake_word: str | None,

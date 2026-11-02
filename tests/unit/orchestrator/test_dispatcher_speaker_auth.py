@@ -41,7 +41,10 @@ def _dispatcher(require_known: bool):
         vector_threshold=0.65,
         require_known_speaker_for_actions=require_known,
     )
-    d._fire_and_reconcile_ha = AsyncMock(return_value=None)
+    from src.home_assistant.home_actions import HomeActionResult
+    from src.home_assistant.voice_actions import VoiceActionResult
+    d._dispatch_home_action = AsyncMock(return_value=VoiceActionResult(
+        HomeActionResult.not_sent("fixture", "light.fixture", "test_boundary")))
     return d
 
 
@@ -51,13 +54,13 @@ class TestSpeakerAuthGate:
         # Default OFF: sin cambio de comportamiento.
         d = _dispatcher(require_known=False)
         await d.dispatch(user_id="unknown", text="prendé la luz del escritorio", zone_id="zone_escritorio")
-        assert d._fire_and_reconcile_ha.called
+        assert d._dispatch_home_action.called
 
     @pytest.mark.asyncio
     async def test_flag_on_unknown_speaker_blocked(self):
         d = _dispatcher(require_known=True)
         result = await d.dispatch(user_id="unknown", text="prendé la luz del escritorio", zone_id="zone_escritorio")
-        assert not d._fire_and_reconcile_ha.called, "speaker desconocido NO debe disparar la acción"
+        assert not d._dispatch_home_action.called, "speaker desconocido NO debe disparar la acción"
         assert result.intent == "speaker_auth"
         assert result.success is False
 
@@ -65,4 +68,4 @@ class TestSpeakerAuthGate:
     async def test_flag_on_known_speaker_fires(self):
         d = _dispatcher(require_known=True)
         await d.dispatch(user_id="juan", text="prendé la luz del escritorio", zone_id="zone_escritorio")
-        assert d._fire_and_reconcile_ha.called, "speaker enrolado SÍ debe disparar"
+        assert d._dispatch_home_action.called, "speaker enrolado SÍ debe disparar"
