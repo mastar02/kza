@@ -1,0 +1,1341 @@
+{
+  "schema_version": 2,
+  "assessment_date_utc": "2026-11-02",
+  "observations_local_date": "2026-11-01",
+  "timezone": "America/Montevideo",
+  "assembled_at_utc": "2026-11-02T02:51:56.079227+00:00",
+  "reviewed_commit": "32ca216",
+  "runtime_source_commit": "e9669ec1edb101ca6b190ef8df09314e1ac63562",
+  "src_and_config_differ_from_runtime_git_commit": false,
+  "baseline_reference": "docs/research/2026-11-01-project-assessment.json",
+  "scope": "Código y wiring, suite Python completa, frontend y Chromium locales, diagnóstico operativo restringido y lectura de estados/servicios/registros de HA. No se ejecutaron acciones físicas.",
+  "scores": [
+    {
+      "area": "Web Tu casa",
+      "score": 7.0,
+      "weight": 0.1
+    },
+    {
+      "area": "Panel de observabilidad",
+      "score": 4.0,
+      "weight": 0.1
+    },
+    {
+      "area": "Usabilidad y accesibilidad",
+      "score": 5.0,
+      "weight": 0.15
+    },
+    {
+      "area": "Núcleo y arquitectura",
+      "score": 7.5,
+      "weight": 0.2
+    },
+    {
+      "area": "Captura y validación de audio",
+      "score": 4.0,
+      "weight": 0.15
+    },
+    {
+      "area": "Funciones de punta a punta",
+      "score": 3.5,
+      "weight": 0.15
+    },
+    {
+      "area": "Operación e integraciones",
+      "score": 4.0,
+      "weight": 0.15
+    }
+  ],
+  "overall_score_out_of_10": 5.1,
+  "scoring": {
+    "kind": "Juicio técnico orientativo; no benchmark científico.",
+    "confidence": "media",
+    "formula": "Media ponderada de las siete áreas; pesos conservados de la línea base.",
+    "change_interpretation": "La nota refleja evidencia ampliada y recuperación de acceso, no una release ni mejoras de código realizadas durante esta evaluación.",
+    "perceptual_audio_score": null
+  },
+  "runtime": {
+    "observations_utc": [
+      "2026-11-02T02:26:56.479177+00:00",
+      "2026-11-02T02:41:31.331554+00:00"
+    ],
+    "voice_service_active": true,
+    "dashboard_proxy_active": true,
+    "voice_pid_unchanged": true,
+    "home_assistant": {
+      "status": "healthy",
+      "detail": "connected",
+      "historical_error_count": 4779,
+      "error_counter_changed_between_observations": false,
+      "success_count": 4,
+      "websocket_connected": false
+    },
+    "capture": [
+      {
+        "room": "living",
+        "connection": "connected",
+        "capture_state": "receiving",
+        "nonzero_seen": true,
+        "frames_delta": 13978880,
+        "same_generation": true,
+        "physical_validation": "pending",
+        "voice_validation": "unverified"
+      },
+      {
+        "room": "hall",
+        "connection": "connected",
+        "capture_state": "receiving",
+        "nonzero_seen": true,
+        "frames_delta": 13978880,
+        "same_generation": true,
+        "physical_validation": "pending",
+        "voice_validation": "unverified"
+      },
+      {
+        "room": "cocina",
+        "connection": "disconnected",
+        "capture_state": "unavailable",
+        "nonzero_seen": false,
+        "frames_delta": 0,
+        "same_generation": true,
+        "physical_validation": "pending",
+        "voice_validation": "unverified"
+      },
+      {
+        "room": "escritorio",
+        "connection": "connected",
+        "capture_state": "receiving",
+        "nonzero_seen": true,
+        "frames_delta": 13978880,
+        "same_generation": true,
+        "physical_validation": "pending",
+        "voice_validation": "unverified"
+      }
+    ],
+    "latency_monitor": {
+      "total_commands": 4,
+      "success_rate_percent": 0.0,
+      "p50_ms": 2624.7,
+      "p95_ms": 6791.5
+    },
+    "latency_limit": "Cuatro comandos históricos y fallidos; no representan una distribución de latencia ni una prueba nueva de voz."
+  },
+  "home_assistant_read_only_inventory": {
+    "entities_total": 1178,
+    "entities_by_domain": {
+      "alarm_control_panel": 1,
+      "automation": 3,
+      "binary_sensor": 75,
+      "button": 17,
+      "camera": 4,
+      "climate": 1,
+      "conversation": 1,
+      "device_tracker": 437,
+      "event": 3,
+      "input_select": 1,
+      "light": 9,
+      "media_player": 2,
+      "number": 9,
+      "person": 2,
+      "remote": 1,
+      "scene": 7,
+      "script": 2,
+      "select": 8,
+      "sensor": 546,
+      "sun": 1,
+      "switch": 37,
+      "todo": 1,
+      "tts": 2,
+      "update": 4,
+      "vacuum": 1,
+      "water_heater": 1,
+      "weather": 1,
+      "zone": 1
+    },
+    "state_availability_by_domain": {
+      "alarm_control_panel": {
+        "unavailable": 1
+      },
+      "automation": {
+        "reported": 2,
+        "unavailable": 1
+      },
+      "binary_sensor": {
+        "reported": 66,
+        "unavailable": 9
+      },
+      "button": {
+        "unknown": 17
+      },
+      "camera": {
+        "reported": 1,
+        "unavailable": 3
+      },
+      "climate": {
+        "reported": 1
+      },
+      "conversation": {
+        "unknown": 1
+      },
+      "device_tracker": {
+        "unknown": 1,
+        "unavailable": 436
+      },
+      "event": {
+        "unknown": 1,
+        "reported": 2
+      },
+      "input_select": {
+        "reported": 1
+      },
+      "light": {
+        "reported": 8,
+        "unavailable": 1
+      },
+      "media_player": {
+        "unavailable": 2
+      },
+      "number": {
+        "reported": 2,
+        "unavailable": 7
+      },
+      "person": {
+        "unknown": 1,
+        "unavailable": 1
+      },
+      "remote": {
+        "reported": 1
+      },
+      "scene": {
+        "reported": 5,
+        "unknown": 2
+      },
+      "script": {
+        "reported": 2
+      },
+      "select": {
+        "reported": 7,
+        "unknown": 1
+      },
+      "sensor": {
+        "reported": 67,
+        "unknown": 4,
+        "unavailable": 475
+      },
+      "sun": {
+        "reported": 1
+      },
+      "switch": {
+        "reported": 24,
+        "unavailable": 13
+      },
+      "todo": {
+        "reported": 1
+      },
+      "tts": {
+        "unknown": 2
+      },
+      "update": {
+        "reported": 4
+      },
+      "vacuum": {
+        "unavailable": 1
+      },
+      "water_heater": {
+        "unavailable": 1
+      },
+      "weather": {
+        "reported": 1
+      },
+      "zone": {
+        "reported": 1
+      }
+    },
+    "availability_totals": {
+      "reported": 197,
+      "unavailable": 951,
+      "unknown": 30
+    },
+    "services_by_domain": {
+      "adaptive_lighting": 3,
+      "ai_task": 2,
+      "alarm_control_panel": 7,
+      "animated_scenes": 4,
+      "assist_satellite": 3,
+      "automation": 5,
+      "backup": 2,
+      "blink": 5,
+      "button": 1,
+      "camera": 7,
+      "climate": 10,
+      "cloud": 2,
+      "conversation": 2,
+      "counter": 4,
+      "cover": 10,
+      "date": 1,
+      "datetime": 1,
+      "device_tracker": 1,
+      "fan": 9,
+      "ffmpeg": 3,
+      "file": 1,
+      "frontend": 2,
+      "group": 3,
+      "homeassistant": 13,
+      "humidifier": 5,
+      "image": 1,
+      "image_processing": 1,
+      "input_boolean": 4,
+      "input_button": 2,
+      "input_datetime": 2,
+      "input_number": 4,
+      "input_select": 7,
+      "input_text": 2,
+      "lawn_mower": 3,
+      "light": 3,
+      "localtuya": 2,
+      "lock": 3,
+      "logbook": 1,
+      "logger": 2,
+      "media_player": 24,
+      "mqtt": 3,
+      "notify": 4,
+      "number": 1,
+      "persistent_notification": 3,
+      "person": 1,
+      "recorder": 5,
+      "remote": 6,
+      "scene": 5,
+      "schedule": 2,
+      "script": 6,
+      "select": 5,
+      "shelly": 2,
+      "shopping_list": 8,
+      "siren": 3,
+      "switch": 3,
+      "system_log": 2,
+      "text": 1,
+      "time": 1,
+      "timer": 6,
+      "todo": 5,
+      "tts": 3,
+      "update": 3,
+      "vacuum": 9,
+      "valve": 5,
+      "water_heater": 5,
+      "weather": 1,
+      "xiaomi_miot": 13,
+      "zone": 1
+    },
+    "areas_total": 11,
+    "registry_entities_total": 2584,
+    "registry_devices_total": 484,
+    "registry_entities_assigned_area": 43,
+    "capability_domains": {
+      "automation": {
+        "total": 3,
+        "no_area_assignment": 3,
+        "unavailable": 1,
+        "reported": 2
+      },
+      "climate": {
+        "total": 1,
+        "assigned_area": 1,
+        "reported": 1
+      },
+      "light": {
+        "total": 9,
+        "assigned_area": 8,
+        "reported": 8,
+        "no_area_assignment": 1,
+        "unavailable": 1
+      },
+      "scene": {
+        "total": 7,
+        "no_area_assignment": 7,
+        "reported": 5,
+        "unknown": 2
+      },
+      "script": {
+        "total": 2,
+        "no_area_assignment": 2,
+        "reported": 2
+      },
+      "switch": {
+        "total": 37,
+        "no_area_assignment": 36,
+        "reported": 24,
+        "unavailable": 13,
+        "assigned_area": 1
+      }
+    },
+    "alert_source_candidates": [
+      {
+        "domain": "binary_sensor",
+        "device_class": "connectivity",
+        "count": 1
+      },
+      {
+        "domain": "binary_sensor",
+        "device_class": "power",
+        "count": 13
+      },
+      {
+        "domain": "binary_sensor",
+        "device_class": "problem",
+        "count": 48
+      },
+      {
+        "domain": "binary_sensor",
+        "device_class": "unspecified",
+        "count": 4
+      },
+      {
+        "domain": "sensor",
+        "device_class": "battery",
+        "count": 2
+      },
+      {
+        "domain": "sensor",
+        "device_class": "energy",
+        "count": 33
+      },
+      {
+        "domain": "sensor",
+        "device_class": "enum",
+        "count": 3
+      },
+      {
+        "domain": "sensor",
+        "device_class": "power",
+        "count": 15
+      },
+      {
+        "domain": "sensor",
+        "device_class": "temperature",
+        "count": 1
+      },
+      {
+        "domain": "sensor",
+        "device_class": "timestamp",
+        "count": 8
+      },
+      {
+        "domain": "sensor",
+        "device_class": "unspecified",
+        "count": 5
+      }
+    ],
+    "limit": "Entidad, dispositivo, servicio, estado informado y control autorizado son conceptos distintos. El registro contiene numerosos trackers y sensores históricos; unavailable no mide por sí solo averías de dispositivos físicos. La selección creada para inventario no concede controles.",
+    "raw_household_identifiers_or_values_included": false
+  },
+  "capability_matrix": [
+    {
+      "name": "Domótica",
+      "status": "Grafo conectado con HomeActionService y HomeVoiceResolver compartidos; política y recibos. Aceptación física pendiente.",
+      "sources": [
+        "src/main.py:1504",
+        "src/main.py:1513",
+        "src/main.py:1613",
+        "tests/integration/test_voice_home_commands.py:60",
+        "tests/integration/test_voice_home_commands.py:152"
+      ]
+    },
+    {
+      "name": "Consultas y clima",
+      "status": "FAST_WEATHER conectado a caché HA y weather.get_forecasts para horizontes futuros; razonamiento FAST_ROUTER/SLOW_LLM separado. Forecast no hereda presupuesto de caché rápida.",
+      "sources": [
+        "src/orchestrator/dispatcher.py:1473",
+        "src/orchestrator/dispatcher.py:1509",
+        "tests/unit/orchestrator/test_dispatcher_world_routing.py:42"
+      ]
+    },
+    {
+      "name": "Listas",
+      "status": "ListManager persistente construido e inyectado en main; FAST_LIST implementa CRUD. Éxito del turno no siempre distingue tarea completada. Actor personal necesita identidad fiable.",
+      "sources": [
+        "src/main.py:696",
+        "src/main.py:1448",
+        "src/orchestrator/dispatcher.py:1356",
+        "tests/integration/test_lists_reminders_e2e.py:64"
+      ]
+    },
+    {
+      "name": "Timers",
+      "status": "NamedTimerManager se construye y su productor tiene salida compartida; RequestRouter.features queda None porque main no lo pasa y la rama orquestada tampoco recibe timers. No hay comando de voz conectado en main.",
+      "sources": [
+        "src/pipeline/feature_manager.py:436",
+        "src/main.py:1507",
+        "src/pipeline/request_router.py:193",
+        "src/pipeline/request_router.py:1228",
+        "src/pipeline/voice_pipeline.py:69"
+      ]
+    },
+    {
+      "name": "Recordatorios",
+      "status": "Store, manager y consultas conectados; scheduler de entrega se construye si rooms.enabled. Crear por voz sigue sin parser de horario; cancelación global puede interceptar la petición específica. Sin detector de presencia, output_zone ya permite entrega: no repetir ese pendiente antiguo como defecto vigente.",
+      "sources": [
+        "src/main.py:701",
+        "src/main.py:1449",
+        "src/pipeline/voice_services.py:73",
+        "src/orchestrator/dispatcher.py:1427",
+        "src/reminders/reminder_scheduler.py:136",
+        "tests/integration/test_lists_reminders_e2e.py:120"
+      ]
+    },
+    {
+      "name": "Rutinas",
+      "status": "Web usa scheduler persistente y servicio de control común. Voz usa RoutineManager heredado; VoiceRoutineHandler no se construye en src. Creación heredada llama async sin await y también rechaza explícitamente instalar automatización fuera del scheduler.",
+      "sources": [
+        "src/main.py:509",
+        "src/main.py:1442",
+        "src/main.py:1619",
+        "src/main.py:1642",
+        "src/routines/routine_manager.py:178",
+        "src/routines/routine_manager.py:346",
+        "src/home_assistant/ha_client.py:1566"
+      ]
+    },
+    {
+      "name": "Música",
+      "status": "MusicDispatcher y pruebas existen como subsistema; main no lo crea ni lo inyecta. Música está postergada en el roadmap vigente, por lo que es brecha de capacidad y documentación, no requisito nuevo para H5.",
+      "sources": [
+        "src/main.py:1439",
+        "src/orchestrator/dispatcher.py:779",
+        "src/orchestrator/dispatcher.py:1285",
+        "tests/unit/spotify/test_music_dispatcher.py",
+        "docs/plans/2026-10-25-stabilization-roadmap.md:1104"
+      ]
+    },
+    {
+      "name": "Alertas",
+      "status": "AlertManager y scheduler se construyen y comparten salida. Las listas de handlers empiezan vacías y main/fábrica no registra fuentes de seguridad, patrones o dispositivos; la prueba de alerta manual no valida detección automática.",
+      "sources": [
+        "src/pipeline/feature_manager.py:415",
+        "src/pipeline/feature_manager.py:428",
+        "src/alerts/alert_scheduler.py:115",
+        "src/alerts/alert_scheduler.py:308",
+        "tests/integration/test_feature_voice_graph.py:44"
+      ]
+    },
+    {
+      "name": "Memoria",
+      "status": "build_memory_services y autoridad de privacidad compartida conectados a ambos paths. Pedidos explícitos crean propuestas para revisar, no recuerdos permanentes confirmados por voz. Hay procedencia, TTL, retirada y ownership SDK. Calidad semántica no evaluada.",
+      "sources": [
+        "src/main.py:558",
+        "src/main.py:1453",
+        "src/pipeline/request_router.py:372",
+        "src/pipeline/request_router.py:681",
+        "src/pipeline/request_router.py:1096",
+        "tests/integration/test_prompt_provenance.py:74"
+      ]
+    },
+    {
+      "name": "Voces y usuarios",
+      "status": "Registro y revisión integrados; cuentas cargadas con voice_review_managed. La observación no devuelve identidad autenticada y el orquestador conserva unknown/permiso 0. Nombrar perfil no concede identidad o permisos: límite intencional que la matriz debe comunicar.",
+      "sources": [
+        "src/main.py:619",
+        "src/main.py:625",
+        "src/users/user_manager.py:144",
+        "src/orchestrator/dispatcher.py:1938",
+        "src/orchestrator/dispatcher.py:1964",
+        "tests/integration/test_voice_registry.py:56"
+      ]
+    },
+    {
+      "name": "Intercom y notificaciones",
+      "status": "Productores construidos con salida común; handlers de voz detrás de RequestRouter.features comparten la desconexión de timers.",
+      "sources": [
+        "src/pipeline/feature_manager.py:437",
+        "src/pipeline/feature_manager.py:438",
+        "src/pipeline/request_router.py:1243",
+        "src/main.py:1507"
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "CORE-01",
+      "priority": "P1",
+      "title": "Features de voz sin inyección al router de main",
+      "mechanism": "main omite features en RequestRouter; VoicePipeline guarda otro atributo features sin adjuntarlo al router. Timers/intercom no reciben comandos desde ese grafo, y el dispatcher orquestado no tiene handler de timers.",
+      "sources": [
+        "src/main.py:1507",
+        "src/pipeline/request_router.py:280",
+        "src/pipeline/request_router.py:1228",
+        "src/pipeline/voice_pipeline.py:69"
+      ],
+      "next_step": "Un grafo compartido con comandos resueltos antes de bifurcar paths; aceptar crear, consultar, cancelar y aviso desde el entrypoint."
+    },
+    {
+      "id": "CORE-02",
+      "priority": "P1",
+      "title": "Creación de recordatorio por voz sin efecto y success=True",
+      "mechanism": "El else de FAST_REMINDER pide usar la API, no llama create y después retorna success=True. La métrica puede registrar turno atendido como tarea conseguida.",
+      "sources": [
+        "src/orchestrator/dispatcher.py:1461",
+        "src/orchestrator/dispatcher.py:1464"
+      ],
+      "next_step": "Parser temporal, resolución de ambigüedad y resultado de persistencia; distinguir handled de task_completed.",
+      "dynamic_validation": {
+        "scope": "Direct reminder branch with synthetic manager",
+        "returned_success": true,
+        "response_routes_user_to_api": true,
+        "manager_create_calls": 0
+      }
+    },
+    {
+      "id": "CORE-03",
+      "priority": "P1",
+      "title": "Cancelación específica de recordatorio interceptada por cancelación global",
+      "mechanism": "dispatch llama _check_special_commands antes de clasificar. cancela coincide con CANCEL_KEYWORDS y retorna cancelando cola, sin llegar a FAST_REMINDER para cancela el recordatorio. Hallazgo sobre ese dispatcher; el resultado final de audio también depende de sus gates previos.",
+      "sources": [
+        "src/orchestrator/dispatcher.py:390",
+        "src/orchestrator/dispatcher.py:688",
+        "src/orchestrator/dispatcher.py:909",
+        "src/orchestrator/dispatcher.py:1450",
+        "tests/unit/orchestrator/test_dispatcher_lists.py:35"
+      ],
+      "next_step": "Resolver objeto explícito antes de cancelar petición; probar dispatch completo sobre recordatorio persistido.",
+      "dynamic_validation": {
+        "scope": "RequestDispatcher.dispatch with synthetic mocks; no audio front gates or production services",
+        "returned_intent": "cancel",
+        "returned_path": "fast_router",
+        "returned_success": true,
+        "queue_cancel_calls": 1,
+        "reminder_cancel_calls": 0
+      }
+    },
+    {
+      "id": "CORE-04",
+      "priority": "P1",
+      "title": "Rutinas por voz separadas del scheduler y llamada async sin await",
+      "mechanism": "_handle_create llama get_domotics_entities sin await y el extractor indexa la coroutine con entities[:100]. Aun corregido eso, _create_in_ha devuelve rechazo explícito. La web usa otro scheduler y catálogo.",
+      "sources": [
+        "src/main.py:509",
+        "src/main.py:1619",
+        "src/routines/routine_manager.py:178",
+        "src/routines/routine_manager.py:247",
+        "src/home_assistant/ha_client.py:1566",
+        "src/routines/routine_manager.py:346"
+      ],
+      "next_step": "Operaciones de voz sobre el scheduler persistente y la misma política. No habilitar el escritor heredado como atajo."
+    },
+    {
+      "id": "CORE-05",
+      "priority": "P1",
+      "title": "Scheduler de alertas activo con fuentes vacías",
+      "mechanism": "Las tres listas de handlers se inicializan vacías y build_feature_manager no las registra. Dentro de src sólo aparecen definiciones y ejemplo en docstring de register_*; un loop running no demuestra detectar eventos de HA.",
+      "sources": [
+        "src/alerts/alert_scheduler.py:115",
+        "src/alerts/alert_scheduler.py:308",
+        "src/pipeline/feature_manager.py:428",
+        "tests/integration/test_feature_voice_graph.py:44"
+      ],
+      "next_step": "Conectar fuentes HA y demostrar evento simulado -> alerta -> salida configurada en el grafo de la aplicación."
+    },
+    {
+      "id": "CORE-06",
+      "priority": "P1",
+      "title": "Recordatorio sin zona tras agotar reintentos puede cerrarse sin voz",
+      "mechanism": "Con detector de presencia y zone=None, agotados los reintentos el código sigue, omite TTS, ejecuta acciones y marca fired o reprograma. Sin detector sí existe fallback output_zone y es otro caso.",
+      "sources": [
+        "src/reminders/reminder_scheduler.py:136",
+        "src/reminders/reminder_scheduler.py:142",
+        "src/reminders/reminder_scheduler.py:159",
+        "src/reminders/reminder_scheduler.py:163",
+        "src/reminders/reminder_scheduler.py:189"
+      ],
+      "next_step": "Política explícita para ausente, ruta alternativa o estado missed/pendiente, usando recibo de entrega; comprobar llegada posterior."
+    },
+    {
+      "id": "CORE-07",
+      "priority": "P2",
+      "title": "Música no integrada en el entrypoint",
+      "mechanism": "main no construye ni inyecta music_dispatcher; _classify_request sólo detecta música cuando self.music existe.",
+      "sources": [
+        "src/main.py:1439",
+        "src/orchestrator/dispatcher.py:779",
+        "src/orchestrator/dispatcher.py:1285"
+      ],
+      "next_step": "Actualizar matriz de capacidades; conservar su implementación en el roadmap posterior acordado."
+    },
+    {
+      "id": "CORE-08",
+      "priority": "P1",
+      "title": "Los casos citados no prueban el recorrido completo de funciones",
+      "mechanism": "test_reminder_cancel llama sólo _classify_request; tests e2e crean/cancelan directamente en manager; test_feature_voice_graph invoca callbacks manualmente. Esos casos no comprueban frase -> grafo de main -> persistencia -> recibo. No se afirma ausencia de toda otra prueba del repositorio.",
+      "sources": [
+        "tests/unit/orchestrator/test_dispatcher_lists.py:35",
+        "tests/integration/test_lists_reminders_e2e.py:126",
+        "tests/integration/test_lists_reminders_e2e.py:172",
+        "tests/integration/test_feature_voice_graph.py:38",
+        "tests/integration/test_feature_voice_graph.py:44"
+      ],
+      "next_step": "Aceptación desde una fábrica real del grafo de main con servicios simulados, estado final, persistencia tras reinicio y entrega."
+    },
+    {
+      "id": "WEB-01",
+      "priority": "P1",
+      "title": "Controles operativos visibles que no ejecutan la acción anunciada",
+      "evidence": [
+        {
+          "file": "src/dashboard/frontend/obs/src/views/alerts.jsx",
+          "line": 28,
+          "detail": "ack y dismiss son botones sin handler."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/views/system.jsx",
+          "line": 66,
+          "detail": "restart no tiene handler."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/views/llm.jsx",
+          "line": 22,
+          "detail": "force health check no tiene handler."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/views/llm.jsx",
+          "line": 89,
+          "detail": "Confirmar clear cooldown sólo borra confirmId; no invoca operación de backend."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/views/llm.jsx",
+          "line": 95,
+          "detail": "probe no tiene handler."
+        }
+      ],
+      "impact": "El operador puede intentar reconocer una alerta, comprobar el router o reiniciar un servicio sin recibir resultado ni explicación de que el control es un ejemplo.",
+      "acceptance": "Cada acción visible ejecuta una operación autorizada con estado pendiente y resultado verificable, o aparece deshabilitada y explica por qué no está disponible. Una confirmación local nunca se presenta como acción aplicada.",
+      "evidence_type": "código confirmado; no ejecución de acciones"
+    },
+    {
+      "id": "WEB-02",
+      "priority": "P1",
+      "title": "La observabilidad operativa conserva datos sintéticos y valores fijos",
+      "evidence": [
+        {
+          "file": "src/dashboard/frontend/obs/src/app.jsx",
+          "line": 54,
+          "detail": "Host, uptime y build están escritos como literales."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/app.jsx",
+          "line": 70,
+          "detail": "Indicadores superiores de sistema/cooldown/WS son textos fijos de ejemplo."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/app.jsx",
+          "line": 117,
+          "detail": "Existe aviso global explícito que reconoce la mezcla."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/app.jsx",
+          "line": 214,
+          "detail": "Ante fallo de un endpoint se marca degradado y se conserva el mock."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/app.jsx",
+          "line": 224,
+          "detail": "Sólo se reemplaza el mock si X-KZA-Source vale real."
+        }
+      ],
+      "impact": "Un panel degradado puede seguir mostrando entidades, alertas y recursos de ejemplo. El aviso global ayuda, pero obliga a interpretar individualmente qué números representan el hogar.",
+      "acceptance": "Modo operativo sin valores sintéticos: cada componente declara fuente, instante y estado; un fallo muestra indisponibilidad conservando sólo última observación real con vencimiento. Los ejemplos pertenecen a un modo demostración identificable.",
+      "evidence_type": "código confirmado y captura sintética previa"
+    },
+    {
+      "id": "WEB-03",
+      "priority": "P1",
+      "title": "Las nueve entradas laterales de observabilidad no se pueden enfocar con Tab",
+      "evidence": [
+        {
+          "file": "src/dashboard/frontend/obs/src/app.jsx",
+          "line": 42,
+          "detail": "Cada entrada es DIV con onClick; sin enlace, botón, tabindex ni handler de teclado."
+        },
+        {
+          "file": "data/project-assessment-20261101/layout-measurements.json",
+          "detail": "DOM observado: nueve DIV, tabIndex -1, role null."
+        }
+      ],
+      "impact": "La persona que usa teclado no puede llegar a Voces, Privacidad, Sistema o Admin desde esa navegación.",
+      "acceptance": "Enlaces o botones semánticos con foco visible; Tab, Enter y espacio permiten abrir todas las vistas; orden lógico y estado activo anunciado.",
+      "evidence_type": "código y DOM previo confirmado"
+    },
+    {
+      "id": "WEB-04",
+      "priority": "P1",
+      "title": "El panel técnico no adapta su barra lateral y contenido al móvil",
+      "evidence": [
+        {
+          "file": "src/dashboard/frontend/obs/index.html",
+          "line": 44,
+          "detail": "Grid persistente de 220 px y 1fr para la aplicación."
+        },
+        {
+          "file": "data/project-assessment-20261101/layout-measurements.json",
+          "detail": "Dispositivo solicitado 390 px: documentWidth y viewport de layout 725 px; Tu casa permaneció en 390 px."
+        },
+        {
+          "file": "data/project-assessment-20261101/observability-390.png",
+          "detail": "La barra lateral comprime la advertencia y desplaza el contenido principal."
+        }
+      ],
+      "impact": "El usuario móvil encuentra un menú ancho y un cuerpo mínimo; revisar audio y estado exige desplazamiento y pierde legibilidad.",
+      "acceptance": "A 390 px, menú plegable o navegación alternativa, contenido útil dentro del ancho y controles de audio/formularios legibles. Validar también Voces y Admin, no sólo la pantalla inicial.",
+      "evidence_type": "CSS y medición/captura previa"
+    },
+    {
+      "id": "WEB-05",
+      "priority": "P2",
+      "title": "Entrada técnica fragmentada y vistas sin URL recuperable",
+      "evidence": [
+        {
+          "file": "src/dashboard/frontend/home/index.html",
+          "line": 20,
+          "detail": "Panel técnico enlaza a /index.html, el dashboard legado."
+        },
+        {
+          "file": "src/dashboard/frontend/index.html",
+          "line": 28,
+          "detail": "El dashboard legado expone grilla de salud/métricas; no se encontró enlace a /obs/ ni Voces."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/app.jsx",
+          "line": 80,
+          "detail": "La vista activa sólo vive en useState y arranca en live."
+        },
+        {
+          "file": "src/dashboard/frontend/home/home.js",
+          "line": 299,
+          "detail": "La vista activa arranca en house; activate cambia DOM/estado, sin history/hash."
+        }
+      ],
+      "impact": "La persona que entra desde Tu casa no descubre directamente revisión de voces; recargar o usar Atrás no conserva la sección elegida.",
+      "acceptance": "Una entrada técnica coherente ofrece acceso a Voces, Conversaciones y diagnóstico. Cada vista tiene URL estable; recarga, enlace compartido y Atrás conservan la navegación.",
+      "evidence_type": "código confirmado; impacto heurístico"
+    },
+    {
+      "id": "WEB-06",
+      "priority": "P2",
+      "title": "El buscador y atajo anunciado no están implementados",
+      "evidence": [
+        {
+          "file": "src/dashboard/frontend/obs/src/app.jsx",
+          "line": 68,
+          "detail": "Input de búsqueda sin onChange/onKeyDown o controlador."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/app.jsx",
+          "line": 74,
+          "detail": "Se anuncia ⌘K; no se encontró controlador keydown/metaKey/ctrlKey en fuentes propias del shell."
+        }
+      ],
+      "impact": "Se promete búsqueda global y un atajo que no producen resultados; aumenta el costo de localizar entidades, turnos o personas.",
+      "acceptance": "Búsqueda con resultados reales y navegación o retiro del control hasta implementarlo. Atajo accesible en macOS y Ctrl+K donde corresponda, sin capturar entradas de texto indebidamente.",
+      "evidence_type": "código confirmado"
+    },
+    {
+      "id": "WEB-07",
+      "priority": "P2",
+      "title": "El login técnico clasifica errores distintos como token inválido",
+      "evidence": [
+        {
+          "file": "src/dashboard/frontend/obs/src/views/admin.jsx",
+          "line": 50,
+          "detail": "submit hace fetch sin try/catch, sin timeout ni estado de envío."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/views/admin.jsx",
+          "line": 58,
+          "detail": "Cualquier respuesta HTTP no exitosa muestra Token inválido."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/views/admin.jsx",
+          "line": 71,
+          "detail": "Campo de token identificado sólo por placeholder y texto técnico cercano."
+        }
+      ],
+      "impact": "Una caída o rechazo por permisos puede llevar a regenerar credenciales que sí son correctas; un fallo de red no tiene mensaje controlado. Tu casa maneja mejor esta distinción, por lo que la experiencia es inconsistente.",
+      "acceptance": "Distinguir credencial inválida, permiso insuficiente, configuración no disponible y red/timeout; indicar envío, evitar dobles submits y etiquetar el campo explícitamente.",
+      "evidence_type": "código confirmado; no se repitieron fallos de login"
+    },
+    {
+      "id": "WEB-08",
+      "priority": "P2",
+      "title": "La revisión de muchas muestras requiere abrirlas una a una para conocer habitación y transcripción",
+      "evidence": [
+        {
+          "file": "src/dashboard/frontend/obs/src/voice-view.js",
+          "line": 116,
+          "detail": "Tabla de muestras muestra fecha, duración y grupo; no presenta habitación ni filtros."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/voice-view.js",
+          "line": 151,
+          "detail": "La habitación y transcripción se muestran al abrir una revisión individual."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/voice-channel.js",
+          "line": 65,
+          "detail": "La navegación disponible consiste en next con cursor y Actualizar."
+        }
+      ],
+      "impact": "Comparar grabaciones por habitación o después de un ajuste DSP cuesta muchos pasos cuando hay centenares o miles de registros. El orden más reciente primero ayuda pero no resuelve la localización.",
+      "acceptance": "Filtros explícitos por habitación, intervalo de fecha y estado de revisión, dentro del contrato de privacidad y retención; mostrar conteos y la procedencia disponible sin descargar audio innecesario.",
+      "evidence_type": "código confirmado; impacto de escala heurístico"
+    },
+    {
+      "id": "WEB-09",
+      "priority": "P2",
+      "title": "Inventarios y métricas de algunas vistas se hidratan una sola vez",
+      "evidence": [
+        {
+          "file": "src/dashboard/frontend/obs/src/session.js",
+          "line": 31,
+          "detail": "hydrate se ejecuta al iniciar la sesión."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/app.jsx",
+          "line": 172,
+          "detail": "Siete endpoints se consultan en el bootstrap."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/app.jsx",
+          "line": 277,
+          "detail": "El puente WS procesa live/REST de conversaciones y voces; no vuelve a cargar esos inventarios."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/views/system.jsx",
+          "line": 58,
+          "detail": "SERVICES se pinta desde la colección hidratada, sin ciclo propio de consulta."
+        }
+      ],
+      "impact": "Sistema, endpoints, entidades o alertas pueden parecer actuales después de cambios externos aunque la sesión conserve el snapshot inicial. No hay evidencia de frescura por componente.",
+      "acceptance": "Renovación acotada o actualización explícita por vista con observed_at, vencimiento y estado de fuente; al reconectar, reconciliar los inventarios. No atribuir a todo el dashboard la conexión WS de otros canales.",
+      "evidence_type": "código confirmado; sin ensayo de cambios externos"
+    },
+    {
+      "id": "WEB-10",
+      "priority": "P2",
+      "title": "El borrado de usuarios no muestra rechazos HTTP ni ofrece un nombre accesible claro",
+      "evidence": [
+        {
+          "file": "src/dashboard/frontend/obs/src/views/admin.jsx",
+          "line": 162,
+          "detail": "del confirma con UID, hace DELETE y llama onChanged sin revisar response.ok ni mostrar el error."
+        },
+        {
+          "file": "src/dashboard/frontend/obs/src/views/admin.jsx",
+          "line": 200,
+          "detail": "Botón destructivo rotulado únicamente con ×, sin aria-label."
+        }
+      ],
+      "impact": "Si el backend rechaza un borrado, el usuario sólo ve que la fila sigue ahí; el botón × no expresa el objeto de la acción para tecnologías de asistencia.",
+      "acceptance": "Mostrar resultado o rechazo del borrado, usar el nombre visible de la persona en la confirmación y un botón con nombre accesible; no considerar un HTTP recibido como éxito de la operación.",
+      "evidence_type": "código confirmado"
+    },
+    {
+      "id": "WEB-11",
+      "priority": "P2",
+      "title": "Los renders de Memoria y Rutinas no conservan correctamente el foco de teclado",
+      "evidence": [
+        {
+          "file": "src/dashboard/frontend/home/memory.js",
+          "line": 15,
+          "detail": "tick emite un nuevo estado incluso si no venció ningún recuerdo."
+        },
+        {
+          "file": "src/dashboard/frontend/home/memory.js",
+          "line": 17,
+          "detail": "Mientras existan vencimientos finitos, el ticker programa renders con intervalo máximo de un segundo."
+        },
+        {
+          "file": "src/dashboard/frontend/home/memory.js",
+          "line": 68,
+          "detail": "render reemplaza todos los hijos del contenedor sin preservar foco."
+        },
+        {
+          "file": "src/dashboard/frontend/home/routines.js",
+          "line": 252,
+          "detail": "data-routine-field se asigna al LABEL envolvente, no al input/select."
+        },
+        {
+          "file": "src/dashboard/frontend/home/routines.js",
+          "line": 331,
+          "detail": "La restauración intenta leer dataset.routineField del activeElement; cuando el activo es input/select no tiene esa clave."
+        },
+        {
+          "file": "src/dashboard/frontend/home/routines.js",
+          "line": 365,
+          "detail": "La consulta posterior busca wrappers con data-routine-field y llama focus sobre esos wrappers."
+        }
+      ],
+      "impact": "Los renders que reemplazan controles pueden interrumpir navegación por teclado. En Memoria pueden ocurrir cada segundo; la lógica de Rutinas expresa la intención de restaurar foco pero usa claves en el elemento equivocado.",
+      "acceptance": "No reconstruir elementos sin cambios en cada tick, o restaurar foco al control correcto con una clave estable y selección de texto. Probar Tab en Memoria durante caducidad y edición de Rutinas mientras llega un refresh.",
+      "evidence_type": "código confirmado; impacto de interacción requiere reproducción dirigida por root",
+      "dynamic_validation": {
+        "observation_completed": true,
+        "finding": "WEB-11: memory UI tick and keyboard focus",
+        "fixture": "tests.frontend.browser_memory_review.main",
+        "scope": "Disposable local SQLite/Chroma, synthetic facts and local Chromium; no production access.",
+        "confirm_reject_delete_actions_executed": false,
+        "before": {
+          "focusEstablished": true,
+          "targetConnected": true,
+          "memoryCards": 3,
+          "actionLabel": "Conservar sin vencimiento"
+        },
+        "after": {
+          "reason": "normal_dom_replacement",
+          "elapsedMs": 997.1000003814697,
+          "originalTargetConnected": false,
+          "originalTargetStillFocused": false,
+          "replacementControlPresent": true,
+          "replacementControlFocused": false,
+          "activeElementTag": "BODY",
+          "memoryCards": 3
+        },
+        "javascript_exceptions": 0,
+        "bug_reproduced": true
+      }
+    },
+    {
+      "id": "AUD-01",
+      "priority": "P1",
+      "title": "El acceso nuevo a HA no desbloquea las grabaciones de KZA",
+      "evidence": [
+        "tools/analyze_dashboard_audio.py:63",
+        "tools/analyze_dashboard_audio.py:219",
+        "tools/analyze_dashboard_audio.py:222",
+        "docs/research/2026-10-29-all-accessible-audio-quality.json"
+      ],
+      "finding": "El analizador exige KZA_DASHBOARD_TOKEN y una conexión WS v3 para los receipts de las respuestas REST. El diagnóstico forzado sólo devuelve agregados y el informe anterior indica que yo no puede leer el almacenamiento actual. El token HOME_ASSISTANT_TOKEN es una credencial de otro servicio.",
+      "impact": "La consulta de 1178 estados de HA no demuestra acceso a WAV actuales, transcripciones o agrupación de voces de KZA.",
+      "acceptance": "Credencial de sesión del dashboard configurada en privado o exportación acotada autorizada que conserve ID opaco, habitación, procedencia y vencimiento. Usar la API existente y su protocolo; no abrir bases de producción ni recuperar muestras vencidas.",
+      "safe_current_option": "Un operador con acceso vigente puede ejecutar el analizador ya existente y entregar únicamente su JSON agregado. Para un corpus etiquetado se necesita además una finalidad y retención explícitas."
+    },
+    {
+      "id": "AUD-02",
+      "priority": "P1",
+      "title": "La muestra escuchable y la transcripción abarcan intervalos diferentes",
+      "evidence": [
+        "src/users/voice_capture.py:37",
+        "src/users/voice_ledger.py:229",
+        "src/dashboard/frontend/obs/src/voice-view.js:152"
+      ],
+      "finding": "build_review_capture guarda un WAV mono PCM16 de los primeros seis segundos a 16 kHz; duration_s conserva la duración completa, de hasta 30 segundos. review_capture declara clip_truncated y transcript_scope=full_segment. La UI informa el recorte.",
+      "impact": "Comparar una transcripción del preview de seis segundos contra el texto completo produciría falsas deleciones. Un preview recortado tampoco demuestra que el STT recibió audio incompleto ni que la respuesta TTS se cortó.",
+      "acceptance": "Alinear referencia e hipótesis al mismo intervalo. Para WER de segmento completo usar una grabación de evaluación completa autorizada; para previews pedir una referencia humana del preview y etiquetar explícitamente el recorte."
+    },
+    {
+      "id": "AUD-03",
+      "priority": "P1",
+      "title": "La API de revisión no informa el canal original",
+      "evidence": [
+        "src/pipeline/multi_room_audio_loop.py:1662",
+        "src/ambient/ambient_stt.py:55",
+        "src/ambient/transcriber.py:459",
+        "src/users/voice_ledger.py:229",
+        "docs/research/2026-10-29-hall-noise-trial.json"
+      ],
+      "finding": "La ruta de comandos extrae capture_channel; AmbientSTT toma asr_col, mientras el tagger y los previews de origen ambiental reciben ch0, de conferencia/conversación. El payload de review sólo expone habitación, tiempos, transcripción y WAV; carece de lane/canal/DSP. El ensayo PP_MIN_NN afecta conversación y no el tap ASR.",
+      "impact": "Los WAV históricos de wake y los previews ambientales no son cohortes equivalentes. Una mejora o empeoramiento del preview tras tocar PP_MIN_NN no acredita el mismo efecto sobre reconocimiento.",
+      "acceptance": "Registrar origen, lane, índice de canal, tasa, configuración DSP y generación de captura en el manifiesto privado de evaluación. Comparar pares del mismo canal y condición; no deducir la procedencia a partir del nombre de habitación."
+    },
+    {
+      "id": "AUD-04",
+      "priority": "P1",
+      "title": "El diagnóstico objetivo existente no confirma la causa del sonido metálico",
+      "evidence": [
+        "tools/analyze_audio_quality.py:34",
+        "tools/analyze_audio_quality.py:116",
+        "docs/research/2026-10-29-all-accessible-audio-quality.json",
+        "docs/research/2026-10-29-hall-noise-trial.json"
+      ],
+      "finding": "El informe midió 6254 archivos históricos y 1915 previews del momento. Los históricos tienen 52/6115 clips con tres muestras consecutivas cerca de escala completa; los previews 60/1915, todos etiquetados Hall. Son conjuntos y canales diferentes. El ensayo temporal de Hall 0.4→0.51 quedó pendiente de comparación subjetiva.",
+      "impact": "Ni 3.13% de posibles plateaus ni saltos entre muestras prueban una causa de hardware, clicks, ruido metálico o necesidad de aumentar ganancia. La etiqueta Hall tampoco valida físicamente el micrófono.",
+      "acceptance": "Comparación A/B con frases consentidas nuevas, nivel, distancia, ruido y volumen de reproducción constantes; capturas posteriores al cambio, canal conocido y referencias alineadas. Evaluar claridad/metalización y WER por separado. Una lectura correcta del parámetro no acepta una mejora acústica."
+    },
+    {
+      "id": "AUD-05",
+      "priority": "P1",
+      "title": "El éxito de voz debe incluir entrega y efecto confirmado",
+      "evidence": [
+        "src/core/voice_delivery.py:67",
+        "src/core/voice_delivery.py:79",
+        "src/pipeline/response_handler.py:485",
+        "src/core/voice_delivery.py:36",
+        "src/pipeline/multi_room_audio_loop.py:1358"
+      ],
+      "finding": "ResponseResult ya separa generación de entrega y sólo considera success si ambas son completas, sin error ni timeout. Hay presupuestos finitos por etapa. El watchdog sigue esperando la recuperación lenta antes de publicar el siguiente heartbeat, según el cuerpo vigente.",
+      "impact": "Tener texto generado o frames no nulos no demuestra respuesta audible completa, inteligibilidad ni efecto real de la orden. Un heartbeat retenido puede falsear el estado de otra captura sana.",
+      "acceptance": "Medir fin de habla, VAD/endpoint, fin STT, decisión, efecto HA observado, primer PCM, primer sonido y fin/cancelación de respuesta. Separar colas, generación y entrega; reportar p50/p95 por tarea y condición. Simular una captura lenta sin detener el heartbeat de las sanas."
+    },
+    {
+      "id": "AUD-06",
+      "priority": "P2",
+      "title": "WER y confianza necesitan denominadores y calibración explícitos",
+      "evidence": [
+        "tools/ambient_wer.py:55",
+        "tools/ambient_wer.py:52",
+        "src/ambient/wer.py:77",
+        "src/stt/whisper_fast.py:166",
+        "src/stt/parakeet_stt.py:73"
+      ],
+      "finding": "build_report calcula media macro de WER por utterance y un agregado ponderado por volumen de buckets VAD, no WER micro por palabras. Marca no confiable si falta un bucket, faltan hipótesis o cobertura <0.95. Parakeet no expone las señales Whisper no_speech_prob/avg_logprob/compression_ratio; Whisper devuelve promedios diagnósticos por segmentos.",
+      "impact": "Una media de scores de STT no es probabilidad calibrada de reconocer correctamente; los motores y segmentos no se comparan por ese número. El WER macro y micro pueden contar historias diferentes y WER no equivale a éxito de intención/acción.",
+      "acceptance": "Conservar el agregado actual rotulado macro/reponderado; añadir o calcular por separado WER micro, CER, inserciones/deleciones/sustituciones, vacíos sobre habla y alucinaciones en silencio. Publicar n, palabras de referencia, exclusiones y cobertura por condición. Puntuar también intención, entidad y efecto final."
+    },
+    {
+      "id": "AUD-07",
+      "priority": "P1",
+      "title": "La agrupación de voces no tiene aceptación acústica de campo",
+      "evidence": [
+        "docs/plans/2026-10-27-h3-voice-grouping-evaluation.md:15",
+        "docs/plans/2026-10-27-h3-voice-grouping-evaluation.md:22",
+        "docs/plans/2026-10-27-h3-voice-grouping-evaluation.md:29"
+      ],
+      "finding": "El protocolo existente exige un corpus real de al menos tres voces consentidas, sesiones separadas de calibración/evaluación, dos habitaciones y distancias, además de condiciones adversas. Los umbrales coseno y margen están documentados como hipótesis, no calibración medida.",
+      "impact": "Los tests sintéticos y las operaciones manuales de unión/separación no prueban identificación real. Nombrar un perfil no concede identidad verificada ni permisos.",
+      "acceptance": "Aplicar el protocolo vigente: 10 segmentos claros por voz para calibración y 30 por voz para evaluación, ≥10 por condición adversa, diez permutaciones con semillas 0–9; cero uniones entre personas, precisión de pares ≥0.99, recuperación ≥0.80 y cobertura ≥0.70 en claros elegibles, con abstenciones reportadas."
+    },
+    {
+      "id": "AUD-08",
+      "priority": "P1",
+      "title": "Un corpus de evaluación no puede renovar silenciosamente la retención ordinaria",
+      "evidence": [
+        "src/memory/fact_ledger.py:92",
+        "src/users/voice_ledger.py:145",
+        "src/users/voice_ledger.py:203",
+        "src/ambient/transcriber.py:362",
+        "tools/analyze_dashboard_audio.py:209"
+      ],
+      "finding": "Los MemorySource ordinarios tienen límite de 48 horas desde captura; las muestras de revisión usan el mínimo vencimiento de sus fuentes. La API rechaza una fuente vencida y el analizador descarta cuerpos antes de sus ACK. El perfil permanente no implica conservar permanentemente WAV y texto.",
+      "impact": "Copiar previews a otra carpeta o persistir un snapshot con transcripciones puede prolongar el material más allá de la finalidad y plazo originales si se trata como exportación sin ciclo de vida.",
+      "acceptance": "Para medición operativa utilizar agregados en memoria y conservar el vencimiento. Para un corpus nuevo, registrar consentimiento, finalidad, responsables, plazo y retiro de derivados antes de grabarlo; mantener WAV/texto/identidades fuera de Git y del índice RAG."
+    },
+    {
+      "id": "ACCESS-01",
+      "priority": "P2",
+      "title": "El dashboard usa una credencial compartida sin rol de evaluación de sólo lectura",
+      "sources": [
+        "src/dashboard/auth.py:4",
+        "src/dashboard/auth.py:116",
+        "src/dashboard/frontend/home/index.html:22"
+      ],
+      "impact": "Obtener una sesión de evaluación requiere la credencial del operador y su procedencia no queda explicada en el login doméstico.",
+      "acceptance": "Aclarar la obtención de acceso y definir sesiones o credenciales con permisos adecuados al uso cotidiano y a evaluación de lectura; mantener el rechazo cerrado ante falta de autorización."
+    }
+  ],
+  "verification": {
+    "full_pytest": {
+      "tests": 5766,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 5765,
+      "xfailed": 1,
+      "elapsed_s": 500.48,
+      "warnings": 34080,
+      "exit_code": 0
+    },
+    "full_pytest_conditions": "Full pytest tests/ with pinned requirements-test.txt, Python 3.13, CPU-only torch, model hubs offline, nice 10, global limit 1500 seconds; test-specific limits unchanged.",
+    "expected_failure": "tests/unit/nlu/test_regex_extractor.py: test_known_limitations para omisión del verbo en una orden elíptica de dos habitaciones.",
+    "prior_full_suite_failures_reproduced_this_run": false,
+    "prior_failure_root_causes_proven_resolved": false,
+    "frontend_node_tests_reused": {
+      "passed": 80,
+      "failed": 0,
+      "source": "data/project-assessment-20261101/frontend-tests.log",
+      "app_frontend_source_unchanged": true
+    },
+    "ruff_reused": {
+      "version": "0.15.1",
+      "exit_code": 0,
+      "source": "data/project-assessment-20261101/ruff.log",
+      "app_source_unchanged": true
+    },
+    "dashboard_smoke_exit_code": 0,
+    "additional_chromium": [
+      {
+        "module": "tests.frontend.browser_typed_controls",
+        "exit_code": 0,
+        "elapsed_s": 4.323,
+        "log": "data/project-assessment-20261102/browser_typed_controls.log"
+      },
+      {
+        "module": "tests.frontend.browser_memory_review",
+        "exit_code": 0,
+        "elapsed_s": 3.471,
+        "log": "data/project-assessment-20261102/browser_memory_review.log"
+      },
+      {
+        "module": "tests.frontend.browser_live_privacy",
+        "exit_code": 0,
+        "elapsed_s": 13.939,
+        "log": "data/project-assessment-20261102/browser_live_privacy.log"
+      },
+      {
+        "module": "tests.frontend.browser_ambient_control",
+        "exit_code": 0,
+        "elapsed_s": 6.076,
+        "log": "data/project-assessment-20261102/browser_ambient_control.log"
+      }
+    ],
+    "chromium_voice_review_reused": {
+      "passed": true,
+      "source": "data/project-assessment-20261101/browser-voice-tests.log",
+      "synthetic_sources": true
+    },
+    "memory_focus_probe": {
+      "observation_completed": true,
+      "finding": "WEB-11: memory UI tick and keyboard focus",
+      "fixture": "tests.frontend.browser_memory_review.main",
+      "scope": "Disposable local SQLite/Chroma, synthetic facts and local Chromium; no production access.",
+      "confirm_reject_delete_actions_executed": false,
+      "before": {
+        "focusEstablished": true,
+        "targetConnected": true,
+        "memoryCards": 3,
+        "actionLabel": "Conservar sin vencimiento"
+      },
+      "after": {
+        "reason": "normal_dom_replacement",
+        "elapsedMs": 997.1000003814697,
+        "originalTargetConnected": false,
+        "originalTargetStillFocused": false,
+        "replacementControlPresent": true,
+        "replacementControlFocused": false,
+        "activeElementTag": "BODY",
+        "memoryCards": 3
+      },
+      "javascript_exceptions": 0,
+      "bug_reproduced": true
+    },
+    "core_probes": {
+      "cancel_reminder": {
+        "scope": "RequestDispatcher.dispatch with synthetic mocks; no audio front gates or production services",
+        "returned_intent": "cancel",
+        "returned_path": "fast_router",
+        "returned_success": true,
+        "queue_cancel_calls": 1,
+        "reminder_cancel_calls": 0
+      },
+      "create_reminder": {
+        "scope": "Direct reminder branch with synthetic manager",
+        "returned_success": true,
+        "response_routes_user_to_api": true,
+        "manager_create_calls": 0
+      },
+      "request_router_constructors_in_main": [
+        {
+          "line": 1507,
+          "features_keyword_present": false
+        }
+      ],
+      "real_ha_or_device_actions": false
+    },
+    "dependency_check": {
+      "packages": 123,
+      "compatible": true,
+      "runtime_dependencies_modified": false
+    }
+  },
+  "audio": {
+    "new_current_audio_measurement_performed": false,
+    "new_transcription_performed": false,
+    "subjective_listening_performed": false,
+    "current_access_gap": "La credencial del dashboard sigue pendiente; se creó el archivo privado y se explicó dónde está configurada. El token de HA no sirve para la API de audios de KZA.",
+    "existing_analyzer": "tools/analyze_dashboard_audio.py",
+    "proposed_first_measurement": "Hasta 512 previews recientes actualmente autorizados, métricas agregadas por habitación y tiempos HTTP; sin persistir WAV, texto, IDs ni renovar vencimientos. Muestra cronológica acotada, no corpus representativo.",
+    "historical_report": "docs/research/2026-10-29-all-accessible-audio-quality.json",
+    "historical_files_measured": 6254,
+    "dashboard_previews_measured_on_2026_10_29": 1915,
+    "preview_vs_transcript_limit": "Preview de hasta seis segundos y transcripción de segmento de hasta treinta segundos; WER exige el mismo intervalo y referencia validada.",
+    "evaluation_matrix": {
+      "partitioning": "Separar sesiones completas de calibración y prueba; impedir duplicados y fragmentos de una captura en ambos conjuntos.",
+      "conditions": [
+        "habitación/micrófono verificados",
+        "cerca/lejos",
+        "habla clara",
+        "ruido",
+        "TV",
+        "eco/TTS propio",
+        "voces superpuestas",
+        "silencio",
+        "órdenes negativas",
+        "frases interrumpidas"
+      ],
+      "per_sample_private_fields": [
+        "ID opaco",
+        "sesión",
+        "hash del manifiesto",
+        "modelo y revisión",
+        "canal/lane",
+        "sample rate",
+        "DSP",
+        "duración de audio y tramo transcrito",
+        "referencia humana",
+        "hipótesis KZA",
+        "intención y entidad esperadas",
+        "efecto observado",
+        "respuesta generada/entregada",
+        "tiempos por etapa",
+        "permiso y vencimiento"
+      ],
+      "published_aggregates_only": [
+        "n y cobertura",
+        "WER macro/micro y CER separados",
+        "delecione/inserciones/sustituciones",
+        "alucinaciones y vacíos",
+        "falsos wakes por hora",
+        "rechazos de wakes verdaderos",
+        "intención/entidad/éxito final",
+        "p50/p95 por recorrido",
+        "respuestas completas/parciales/canceladas",
+        "agrupación: precisión/recall/cobertura y uniones erróneas"
+      ]
+    },
+    "ordinary_capture_max_retention_hours": 48,
+    "ordinary_capture_retention_limit": "Vencimiento original con techo de 48 horas desde la captura; puede vencer antes o retirarse. Una copia no renueva el plazo.",
+    "current_samples_not_replaced_by_historical_corpus": true
+  },
+  "improvement_sequence": [
+    {
+      "order": 1,
+      "work": "Estabilizar fuentes y diagnóstico",
+      "acceptance": "Recuperar captura útil en Cocina, mantener heartbeat durante recuperación lenta, restablecer WS o declarar su degradación, y presentar sólo observaciones reales con fecha y vencimiento."
+    },
+    {
+      "order": 2,
+      "work": "Completar recordatorios, timers y rutinas",
+      "acceptance": "Frase interpretada por el grafo real, persistencia compartida con web, cancelación del objeto correcto y entrega confirmada o estado pendiente/missed explícito. Reinicio conserva la tarea. Un turno atendido no equivale a tarea completada."
+    },
+    {
+      "order": 3,
+      "work": "Corregir tareas y navegación de la web",
+      "acceptance": "Acciones operativas ejecutables o deshabilitadas con motivo, foco estable, navegación con teclado, panel útil a 390 px, enlaces recuperables y distinción de fallos de login."
+    },
+    {
+      "order": 4,
+      "work": "Medir audio y resultados con referencias",
+      "acceptance": "Canal, intervalo y DSP identificados; WER/CER y métricas de tarea con referencias humanas; p50/p95 por etapa y condición, más A/B perceptual del ensayo de Hall."
+    },
+    {
+      "order": 5,
+      "work": "Conectar alertas a fuentes útiles",
+      "acceptance": "Productores HA seleccionados y evento simulado que llega a la salida local con recibo; revisar candidatos de batería, potencia, energía y problemas antes de habilitar alertas."
+    },
+    {
+      "order": 6,
+      "work": "Cerrar aceptación integrada y documentación",
+      "acceptance": "Matriz de capacidades vigente, corpus de campo y checks del candidato, artefacto y rollback compatibles. Música y ampliaciones quedan en el roadmap posterior acordado."
+    }
+  ],
+  "private_evidence_directory": "data/project-assessment-20261102",
+  "production_configuration_release_services_or_firmware_changed": false,
+  "real_device_control_calls": 0,
+  "raw_audio_transcripts_credentials_or_household_identifiers_committed": false,
+  "roadmap_h6_accepted": false
+}
