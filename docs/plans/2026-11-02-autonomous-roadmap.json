@@ -972,7 +972,9 @@
         "adab7ec8074b353423655317af6ac73969cf2781",
         "69ea99cf677ee73e451c2be2352427e1ef0289a9",
         "13d0ec44a19510914973c1ad16579909cf636fc7",
-        "50135f9aa0ef2095403efb14088579713efd8189"
+        "50135f9aa0ef2095403efb14088579713efd8189",
+        "c2cc15aa2e4b472be617980562f5a3193e9e2985",
+        "64c01a2aa293fc7adc262b8324106faf62f16997"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
@@ -988,9 +990,10 @@
         "data/autonomous-roadmap-20261102/t013/shared-list-evidence.json",
         "data/autonomous-roadmap-20261102/t013/shared-reminder-evidence.json",
         "data/autonomous-roadmap-20261102/t013/admin-evidence.json",
-        "data/autonomous-roadmap-20261102/t047/people-backend-evidence.json"
+        "data/autonomous-roadmap-20261102/t047/people-backend-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/people-ui-evidence.json"
       ],
-      "next_action": "Canonical account metadata and durable credential retirement verified locally: full6285+knownxfail on13d0ec4, error supplement60 on50135f9, Ruff. Next mount real Personas NEXO; then voice transport and persistent manual voice-person metadata without granting identity, consent, role or personal access. Remaining T013: exact evaluation reader, original-login HTTP/WS/receipt ownership, credential and role UI. No criteria accepted."
+      "next_action": "NEXO Personas verified locally: real account CRUD, exact permissions, durable credential retirement, no optimistic state/repost, late-login/GET fences and modal failure handling; Node94/Ruff/Chromium three roles and320/390. Next migrate Voces: bind HTTP/WS/receipt ownership to original login and implement persistent manual voice-person metadata without grants, authentication or consent inference. T013 also retains exact evaluator reader and credential/role UI. Tasks stay in_progress; no criteria accepted."
     },
     {
       "id": "T014",
@@ -1438,13 +1441,16 @@
         "0c1fa93fc21e5d87d5db84d4511c94e540a12a24",
         "f80bfe27d217de7407f3c65d60c083423ddfab0a",
         "13d0ec44a19510914973c1ad16579909cf636fc7",
-        "50135f9aa0ef2095403efb14088579713efd8189"
+        "50135f9aa0ef2095403efb14088579713efd8189",
+        "c2cc15aa2e4b472be617980562f5a3193e9e2985",
+        "64c01a2aa293fc7adc262b8324106faf62f16997"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t047/home-shell-evidence.json",
-        "data/autonomous-roadmap-20261102/t047/people-backend-evidence.json"
+        "data/autonomous-roadmap-20261102/t047/people-backend-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/people-ui-evidence.json"
       ],
-      "next_action": "Canonical account metadata and durable credential retirement verified locally: full6285+knownxfail on13d0ec4, error supplement60 on50135f9, Ruff. Next mount real Personas NEXO; then voice transport and persistent manual voice-person metadata without granting identity, consent, role or personal access. Remaining T013: exact evaluation reader, original-login HTTP/WS/receipt ownership, credential and role UI. No criteria accepted.",
+      "next_action": "NEXO Personas verified locally: real account CRUD, exact permissions, durable credential retirement, no optimistic state/repost, late-login/GET fences and modal failure handling; Node94/Ruff/Chromium three roles and320/390. Next migrate Voces: bind HTTP/WS/receipt ownership to original login and implement persistent manual voice-person metadata without grants, authentication or consent inference. T013 also retains exact evaluator reader and credential/role UI. Tasks stay in_progress; no criteria accepted.",
       "design_reference": {
         "path": "/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd",
         "source_commit": "d686fcde52a34c3b786decf167eebdb91dceb6d6",
@@ -2223,7 +2229,7 @@
     "last_verified_phase": "P0",
     "last_verified_task": "T012",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T047/personas-authority-base",
+    "last_verified_unit": "T047/nexo-personas",
     "user_priority_after_admin_unit": "T047"
   }
 }

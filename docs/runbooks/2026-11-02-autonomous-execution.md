@@ -426,9 +426,9 @@ Las revisiones son `0c1fa93` y `f80bfe2`; la evidencia, capturas y los intentos
 anteriores están en
 `data/autonomous-roadmap-20261102/t047/home-shell-evidence.json`.
 
-Voces y Personas todavía abren las vistas técnicas existentes mediante destinos
-permitidos. Las herramientas anteriores se conservan en `/home/legacy.html`.
-Las siguientes unidades adaptarán esas vistas a NEXO y añadirán el contrato
+Voces todavía abre la vista técnica existente mediante un destino permitido.
+Las herramientas anteriores se conservan en `/home/legacy.html`.
+Las siguientes unidades adaptarán Voces a NEXO y añadirán el contrato
 manual perfil vocal–persona: metadata administrativa sin crear sesión,
 credencial, consentimiento, roles o acceso personal. T047 sigue en curso.
 
@@ -461,5 +461,37 @@ La revisión `13d0ec4` pasa 6.285 pruebas con un xfail conocido. El suplemento
 60 pruebas de administración y Ruff; las suites se superponen y no se suman.
 Se conservaron todos los intentos y hashes de las 770 fuentes verificadas en
 `data/autonomous-roadmap-20261102/t047/people-backend-evidence.json`.
-Esta unidad prepara el backend: la vista Personas NEXO y la vinculación vocal
-persistente siguen pendientes; T047 y T013 conservan su estado en curso.
+Esta unidad prepara el backend de Personas. La vinculación vocal persistente
+sigue pendiente; T047 y T013 conservan su estado en curso.
+
+### Personas NEXO con operaciones reales
+
+Personas deja el enlace técnico y abre tarjetas, detalle y formularios NEXO
+con el catálogo real. Permite crear una cuenta, cambiar su nivel y confirmar
+su baja. Sólo consulta los cuatro escalares administrativos; conserva estados
+activos/inactivos y distingue una respuesta vacía de una fuente indisponible.
+El rol de la sesión permanece visible y separado del nivel de la persona.
+
+La baja requiere permisos de administración y de credenciales. Crear o cambiar
+el nivel no crea accesos ni vincula voces. La interfaz usa texto DOM para nombres
+y verifica el catálogo después de las escrituras. No publica resultados
+optimistas ni repite una mutación cuando se pierde su respuesta; muestra el
+resultado incierto y permite consultar por GET antes de otro envío manual.
+
+El controlador conserva una mutación pendiente al salir y volver a Personas,
+descarta GET antiguos y limpia cuentas, selección, formulario y diálogo al
+retirar la sesión. Un refresco fallido con un diálogo abierto conserva el
+borrador, anuncia el error dentro del diálogo y deshabilita su envío hasta
+verificar de nuevo la fuente. Las lecturas del hogar se pausan en esta vista.
+
+Las revisiones `c2cc15a` y `64c01a2` pasan 94 pruebas JavaScript, Ruff y el
+recorrido Chromium con tres roles e ingreso HTTP individual. El navegador
+comprueba CRUD real, protección del último administrador, retiro de las sesiones
+vinculadas, lecturas cruzadas, respuesta perdida sin reenvío, borrado del diálogo
+antes del logout y GET antiguo después de otro login. Se verificaron el diseño
+de escritorio y el reflow a 320 y 390 píxeles. Las capturas son sintéticas y
+están en `data/autonomous-roadmap-20261102/t047/people-browser/`; la evidencia y
+los hashes de 771 fuentes están en `t047/people-ui-evidence.json`, bajo el mismo
+directorio privado de ejecución. Voces y su contrato de asociación persistente
+siguen pendientes. No se acepta todavía ningún criterio de campo ni se cierra
+T047 o T013.
