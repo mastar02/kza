@@ -967,7 +967,10 @@
         "0174104043dc30329935bd3dbaad4a45fe9afefe",
         "db693704d44ed0129db96f4105fa898a86881701",
         "5fc095a8549b46e834e35690a99448ae64a42e4e",
-        "baeeae50dee976c42bde08a7f10f77906de0ee07"
+        "baeeae50dee976c42bde08a7f10f77906de0ee07",
+        "ade7a98ce4cd47a0082d6b25c7f2e9c030b2e496",
+        "adab7ec8074b353423655317af6ac73969cf2781",
+        "69ea99cf677ee73e451c2be2352427e1ef0289a9"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
@@ -981,9 +984,10 @@
         "data/autonomous-roadmap-20261102/t013/routine-evidence.json",
         "data/autonomous-roadmap-20261102/t013/household-evidence.json",
         "data/autonomous-roadmap-20261102/t013/shared-list-evidence.json",
-        "data/autonomous-roadmap-20261102/t013/shared-reminder-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/shared-reminder-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/admin-evidence.json"
       ],
-      "next_action": "Finish native administrative mutation and catalog publication boundaries with retained work drained before models close, then personal/evaluation scopes, HTTP/WS and receipt ownership, credentials and role-aware UI before full T013 verification."
+      "next_action": "Native admin/catalog unit verified locally (6229 passed, 1 known xfail, Ruff clean). Per user instruction, integrate approved NEXO frontend in T047 next, preserving separate voice/person/account/session authority. Then finish remaining personal/evaluation scopes, HTTP/WS/receipt ownership, credentials and role UI before full T013 verification."
     },
     {
       "id": "T014",
@@ -2204,10 +2208,11 @@
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
     "field_authorized": false,
-    "next_task": "T013",
+    "next_task": "T047",
     "last_verified_phase": "P0",
     "last_verified_task": "T012",
     "next_after_current_unit": "T047",
-    "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions."
+    "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
+    "last_verified_unit": "T013/native-admin-and-catalog"
   }
 }

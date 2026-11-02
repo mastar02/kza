@@ -347,3 +347,41 @@ T013 sigue en curso: faltan guards de mutaciones administrativas nativas,
 ámbitos personales y
 de evaluación, binding HTTP/WS, gestión de credenciales y navegación por rol.
 No acredita accesos reales ni criterios de aceptación.
+
+### Administración nativa y catálogo canónico
+
+El dashboard conserva un único dueño acotado para trabajo administrativo nativo,
+con contexto vacío y la guarda de la sesión original. El catálogo, los reinicios
+y el enrollment legacy se ejecutan fuera del loop. Cancelar el observador no
+cancela el trabajo ya admitido: el cierre sella la admisión y espera su salida,
+el servidor y los recursos. El pipeline recibe ese drenaje como dependencia
+antes de cerrar sus componentes. Un fallo de limpieza puede reintentarse sin
+reabrir la admisión ni repetir una operación administrativa.
+
+UserManager protege un catálogo separado de sus copias públicas. Cada mutación
+valida la cuenta solicitante actual, prepara una copia, escribe y sincroniza un
+temporal privado y vuelve a comprobar autoridad antes de reemplazar el archivo.
+Sólo después publica RAM y versión; una revocación posterior no deshace el
+commit aprobado. Los IDs nuevos son UUID y no reutilizan identidades borradas.
+Un catálogo inválido no publica filas parciales ni simula una lectura vacía.
+Las cuentas canónicas se cargan también con Speaker ID deshabilitado, sin
+importar embeddings legacy ni construir modelos biométricos.
+
+Enrollment usa el mismo bloqueo nativo del modelo que el procesador de voz;
+limita metadatos y frames antes de decodificar y rechaza arrays vacíos o no
+finitos después de convertir. Publica únicamente el resultado pequeño de la
+operación. Reinicio distingue resultado del comando y efecto incierto, sin
+reintentos automáticos. Cooldown publica tras el reemplazo; alertas comprueba
+autoridad dentro de su bloqueo y conserva las reglas de timestamp de ack/dismiss.
+Las lecturas de cuentas, cooldown y métricas revalidan al adquirir sus bloqueos.
+
+Las revisiones `ade7a98`, `adab7ec` y `69ea99c` pasan 995 pruebas cruzadas con
+componentes reales y entradas sintéticas. La suite completa de `69ea99c` pasa
+6229 pruebas y conserva una xfail conocida; no se suman ambos conjuntos.
+Ruff no informa errores y los hashes de las fuentes no cambiaron durante la
+ejecución. La evidencia y los intentos anteriores se conservan en
+`data/autonomous-roadmap-20261102/t013/admin-evidence.json`.
+T013 conserva pendientes los ámbitos personales y de evaluación, binding
+HTTP/WS, recibos, credenciales y navegación por rol. Por instrucción del usuario,
+la siguiente unidad será T047: integrar la referencia NEXO aprobada en el
+frontend con backend real y mantener separado el vínculo vocal de la autoridad.
