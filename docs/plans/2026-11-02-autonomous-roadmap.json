@@ -649,7 +649,7 @@
         "H5"
       ],
       "dependency_level": "verified_local",
-      "status": "planned",
+      "status": "in_progress",
       "evidence": []
     },
     {
@@ -870,10 +870,10 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
+      "status": "in_progress",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Verify actual build_application graph, deferred startup, shared dependencies and failure/cancellation cleanup with offline leaves."
     },
     {
       "id": "T011",

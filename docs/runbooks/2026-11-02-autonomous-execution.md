@@ -62,3 +62,34 @@ fuentes reales se mantienen para sus tareas posteriores.
 El [contrato del corpus](../plans/2026-11-02-evaluation-corpus.md) mantiene
 separados datos ordinarios y evaluación consentida. P0 prepara política y
 fixtures; no permite atribuir resultados humanos, acústicos o físicos.
+
+## Grafo efectivo y laboratorio
+
+`src.main.build_application(config, shutdown=stack, factories=...)` es la misma
+fábrica que utiliza `main()`. Devuelve `ApplicationGraph` con pipeline,
+Casa/HA, privacidad, managers, servicios de voz/web y modelos compartidos.
+Las dependencias hoja omitidas se resuelven al llamar la fábrica; los tests no
+reconstruyen políticas o managers por su cuenta. La fábrica puede inicializar
+almacenamiento y mantenimiento privado: no es una función pura.
+
+El llamador conserva un `AsyncExitStack` y lo cierra incluso si la construcción
+falla o se cancela. Después de construir, `graph.warmup()` precalienta las mismas
+instancias; `graph.run()` inicia sincronización, rutinas, presencia, recordatorios,
+listeners y voz. No hay un modo de construcción alternativo para tests. Warmup
+de STT/SpeakerID/Emotion usa el dueño nativo del procesador; TTS usa el dueño de
+respuestas. Las cancelaciones no liberan privacidad/HA antes del trabajo real.
+
+El cierre operativo retiene su task ante cancelaciones repetidas, observa los
+handles de dashboard/ambient y ejecuta todos los pasos aunque falle un stop.
+Detiene rutinas antes de retirar la pipeline; el stack externo conserva los
+callbacks como respaldo para fallos anteriores al arranque. El cierre completo
+del thread legacy de entrenamiento sigue sujeto al inventario de T022.
+
+`tests/integration/test_application_graph.py` usa esta fábrica con referencias
+sintéticas, cliente HA real contra loopback, Chroma/SQLite reales y adaptadores
+de modelos/audio. Incluye cuatro entradas configuradas sin abrir dispositivos,
+identidad de dependencias, frase → timer → PCM, selección vacía y cancelaciones
+de construcción/warmup/ejecución. Las fuentes y salidas simuladas se identifican
+como tales. Las rutas privadas quedan en el directorio temporal, incluida la
+de métricas; los listeners se sustituyen para no ocupar puertos del servidor.
+Estas pruebas no sustituyen aceptación física ni completan las familias de P3.

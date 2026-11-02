@@ -15,6 +15,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+from src.application import ApplicationFactories, ApplicationGraph, ApplicationModels
 from src.core.settings_schema import (
     DEFAULT_LOCAL_LLM_GATEWAY,
     check_unresolved_env_vars,
@@ -130,7 +131,8 @@ def _build_xvf_controllers(
     return controllers
 
 
-async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma, *, voice_output=None):
+async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma, *,
+                         voice_output=None, command_processor=None):
     """Precalentar modelos con input dummy para evitar cold-start lag.
 
     CUDA compila kernels la primera vez que se usa un modelo — este warmup
@@ -144,17 +146,24 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma,
         speaker_identifier: Opcional. Instancia con método get_embedding.
         emotion_detector: Opcional. Instancia con método detect.
         chroma: Opcional. Instancia de ChromaSync con método warmup_embedder().
+        command_processor: Dueño de los modelos compartidos; retiene el trabajo
+            nativo de warmup aunque se cancele el arranque de la aplicación.
     """
     import numpy as np
     silence = np.zeros(16000, dtype=np.float32)  # 1s @ 16kHz
 
     timings = {}
 
+    async def run_model(model, function, *args, **kwargs):
+        if command_processor is not None:
+            return await command_processor.awarmup_model(model, function, *args, **kwargs)
+        return await asyncio.to_thread(function, *args, **kwargs)
+
     # STT warmup — compila kernels de Whisper
     if stt is not None:
         t0 = time.perf_counter()
         try:
-            await asyncio.to_thread(stt.transcribe, silence, sample_rate=16000)
+            await run_model(stt, stt.transcribe, silence, sample_rate=16000)
             timings["stt"] = (time.perf_counter() - t0) * 1000
         except Exception as e:
             logger.warning(f"Warmup STT skipped: {e}")
@@ -180,7 +189,7 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma,
     if speaker_identifier is not None:
         t0 = time.perf_counter()
         try:
-            await asyncio.to_thread(speaker_identifier.get_embedding, silence)
+            await run_model(speaker_identifier, speaker_identifier.get_embedding, silence)
             timings["speaker_id"] = (time.perf_counter() - t0) * 1000
         except Exception as e:
             logger.warning(f"Warmup speaker_id skipped: {e}")
@@ -190,7 +199,7 @@ async def _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma,
         t0 = time.perf_counter()
         try:
             if hasattr(emotion_detector, "detect"):
-                await asyncio.to_thread(emotion_detector.detect, silence)
+                await run_model(emotion_detector, emotion_detector.detect, silence)
             timings["emotion"] = (time.perf_counter() - t0) * 1000
         except Exception as e:
             logger.warning(f"Warmup emotion skipped: {e}")
@@ -241,17 +250,20 @@ def _preflight_vram(threshold_mib: int = 1500) -> None:
 
 async def _initialize_routines(
     config: dict, *, ha_client, home_actions: HomeActionService, shutdown: AsyncExitStack,
+    start: bool = True,
 ) -> RoutineScheduler | None:
-    """Start persistent routines with shared Casa services and owned cleanup.
+    """Build persistent routines with shared Casa services and owned cleanup.
 
     Args:
         config: Central application configuration.
         ha_client: Shared Home Assistant client owned by main.
         home_actions: Shared Casa action service owned by main.
         shutdown: Application lifecycle stack that outlives web admission.
+        start: Start immediately for existing callers. The application factory
+            defers this until all construction and warmup have succeeded.
 
     Returns:
-        A started scheduler, or None when routines are unavailable. Other
+        An initialized scheduler, or None when routines are unavailable. Other
         application subsystems can continue after an initialization failure.
     """
     cleanup = AsyncExitStack()
@@ -266,7 +278,8 @@ async def _initialize_routines(
         )
         cleanup.push_async_callback(scheduler.store.close)
         cleanup.push_async_callback(scheduler.stop)
-        await scheduler.start()
+        if start:
+            await scheduler.start()
         shutdown.push_async_callback(cleanup.pop_all().aclose)
         transferred = True
         return scheduler
@@ -316,16 +329,34 @@ async def main():
             raise asyncio.CancelledError
 
 
-async def _run_main(shutdown: AsyncExitStack):
-    """Construct and run the voice graph with explicit owned cleanup."""
-
-    # Cargar variables de entorno
+async def _run_main(shutdown: AsyncExitStack) -> None:
+    """Load central configuration, build the shared graph and run it."""
     load_dotenv()
-
-    # Cargar configuración
     config_path = os.getenv("CONFIG_PATH", "config/settings.yaml")
-    logger.info(f"Cargando configuración: {config_path}")
-    config = load_config(config_path)
+    logger.info("Loading application configuration: %s", config_path)
+    graph = await build_application(load_config(config_path), shutdown=shutdown)
+    await graph.warmup()
+    await graph.run()
+
+
+async def build_application(
+    config: dict, *, shutdown: AsyncExitStack,
+    factories: ApplicationFactories | None = None,
+) -> ApplicationGraph:
+    """Construct the actual application graph without starting house producers.
+
+    Args:
+        config: Validated central application configuration, or an explicit
+            offline fixture. The factory never loads dotenv or another config.
+        shutdown: Caller-owned stack; it must be closed on every exit, including
+            factory cancellation. Private storage and retention start here.
+        factories: Optional leaf adapters. Unspecified constructors resolve
+            this module's globals at call time, including existing test patches.
+
+    Returns:
+        The same graph run by main, with operational startup and warmup deferred.
+    """
+    factories = factories or ApplicationFactories()
 
     # Verificar Home Assistant
     ha_config = config.get("home_assistant", {})
@@ -341,7 +372,7 @@ async def _run_main(shutdown: AsyncExitStack):
     logger.info("Inicializando componentes...")
 
     # Home Assistant Client
-    ha_client = HomeAssistantClient(
+    ha_client = (factories.ha_client or HomeAssistantClient)(
         url=ha_url,
         token=ha_token,
         timeout=ha_config.get("timeout", 2.0),
@@ -362,10 +393,10 @@ async def _run_main(shutdown: AsyncExitStack):
 
 
     # Preflight de VRAM antes de cargar modelos pesados (aviso, no bloquea).
-    _preflight_vram()
+    (factories.preflight or _preflight_vram)()
 
     # Speech-to-Text
-    stt = create_stt(config.get("stt", {}))
+    stt = (factories.stt or create_stt)(config.get("stt", {}))
 
     # STT shadow (A/B en vivo, opcional): 2º motor que transcribe el mismo
     # audio del command path solo para comparar/loguear ([STT-shadow]), sin
@@ -373,11 +404,11 @@ async def _run_main(shutdown: AsyncExitStack):
     shadow_stt = None
     _shadow_engine = (config.get("stt", {}) or {}).get("shadow_engine")
     if _shadow_engine:
-        shadow_stt = create_stt({**config.get("stt", {}), "engine": _shadow_engine})
+        shadow_stt = (factories.stt or create_stt)({**config.get("stt", {}), "engine": _shadow_engine})
         logger.info(f"STT shadow habilitado: engine={_shadow_engine} (A/B en vivo)")
 
     # Text-to-Speech
-    tts = create_tts(config.get("tts", {}))
+    tts = (factories.tts or create_tts)(config.get("tts", {}))
 
     # Vector Database — embedder_model y embedder_device son obligatorios.
     # Fuente de verdad: settings.yaml § embeddings (cuda:0, BAAI/bge-m3).
@@ -387,7 +418,7 @@ async def _run_main(shutdown: AsyncExitStack):
         raise ValueError(
             "settings.yaml debe declarar embeddings.model y embeddings.device"
         )
-    chroma = ChromaSync(
+    chroma = (factories.chroma or ChromaSync)(
         chroma_path=vectordb_config.get("path", "./data/chroma_db"),
         embedder_model=embeddings_config["model"],
         embedder_device=embeddings_config["device"],
@@ -715,7 +746,7 @@ async def _run_main(shutdown: AsyncExitStack):
     if zones_config.get("enabled", False):
         # Crear controlador MA1260
         ma1260_config = zones_config.get("ma1260", {})
-        ma1260 = MA1260Controller(
+        ma1260 = (factories.amplifier or MA1260Controller)(
             connection_type=ma1260_config.get("connection_type", "simulation"),
             serial_port=ma1260_config.get("serial_port", "/dev/ttyUSB0"),
             baudrate=ma1260_config.get("baudrate", 9600),
@@ -924,7 +955,7 @@ async def _run_main(shutdown: AsyncExitStack):
                         wake_word=(room_wake_cfg.get("words") or ["nexa"])[0],
                     )
                 else:
-                    wake_detector = WakeWordDetector(
+                    wake_detector = (factories.wake_detector or WakeWordDetector)(
                         models=[room_wake_cfg.get("model", "hey_jarvis")],
                         threshold=room_wake_cfg.get("threshold", 0.5),
                     )
@@ -953,7 +984,7 @@ async def _run_main(shutdown: AsyncExitStack):
         # Build ZoneManager from rooms config if not already built from legacy zones
         if not zone_manager:
             ma1260_cfg = rooms_config.get("ma1260", {})
-            ma1260 = MA1260Controller(
+            ma1260 = (factories.amplifier or MA1260Controller)(
                 connection_type=ma1260_cfg.get("connection_type", "simulation"),
                 serial_port=ma1260_cfg.get("serial_port", "/dev/ttyUSB0"),
                 baudrate=ma1260_cfg.get("baudrate", 9600),
@@ -1161,9 +1192,6 @@ async def _run_main(shutdown: AsyncExitStack):
     # ----------------------------------------------------------------
     # Build pipeline components (DI chain)
     # ----------------------------------------------------------------
-
-    # TTS / streaming config
-    tts_config = config.get("tts", {})
 
     # Audio manager (wake word + VAD)
     audio_manager = AudioManager(
@@ -1475,6 +1503,7 @@ async def _run_main(shutdown: AsyncExitStack):
             ),
         )
 
+        shutdown.push_async_callback(orchestrator.stop)
         context_erasure.attach_manager(orchestrator.context_manager)
 
     # Request router (command routing: orchestrated + legacy paths)
@@ -1505,6 +1534,7 @@ async def _run_main(shutdown: AsyncExitStack):
         home_action_service, room_context_manager.get_all_rooms() if room_context_manager else {},
     )
     request_router = RequestRouter(
+        features=voice_services.features,
         home_voice_resolver=home_voice_resolver,
         before_handler_warn_ms=self_warn_ms,
         unavailable_precheck_enabled=config.get("home_assistant", {}).get("unavailable_precheck_enabled", True),
@@ -1545,6 +1575,7 @@ async def _run_main(shutdown: AsyncExitStack):
         asr_event_logger=event_logger,
     )
 
+    shutdown.push_async_callback(request_router.aclose)
     context_erasure.attach_router(request_router)
     suggestion_erasure.attach_router(request_router)
 
@@ -1617,7 +1648,7 @@ async def _run_main(shutdown: AsyncExitStack):
         actions=home_action_service,
     )
     routine_scheduler = await _initialize_routines(
-        config, ha_client=ha_client, home_actions=home_action_service, shutdown=shutdown,
+        config, ha_client=ha_client, home_actions=home_action_service, shutdown=shutdown, start=False,
     )
 
     live_event_bus = await build_live_services(config,privacy=privacy_services,
@@ -1721,8 +1752,7 @@ async def _run_main(shutdown: AsyncExitStack):
             stt_correction_collector=stt_correction_collector,
             source_policy=privacy_services.ledger,
         )
-        if nightly_trainer.start_scheduler():
-            logger.info("Nightly trainer scheduled")
+        shutdown.push_async_callback(lambda: asyncio.to_thread(nightly_trainer.stop_scheduler))
 
     # Use MultiRoomAudioLoop if rooms are configured, else fall back to AudioLoop
     active_audio_loop = multi_room_loop if multi_room_loop else audio_loop
@@ -1742,91 +1772,17 @@ async def _run_main(shutdown: AsyncExitStack):
 
     shutdown.push_async_callback(pipeline.stop)
 
-    # Precalentar modelos para eliminar cold-start del primer comando (~600ms→~200ms)
-    warmup_config = config.get("warmup", {})
-    if warmup_config.get("enabled", True):
-        await _warmup_models(stt, tts, speaker_identifier, emotion_detector, chroma, voice_output=response_handler)
-
-    # TTS response cache (S2) — pre-genera frases canónicas post-warmup para
-    # que Kokoro ya esté caliente y la síntesis bulk sea rápida.
-    tts_cache_cfg = tts_config.get("response_cache", {}) or {}
-    if tts_cache_cfg.get("enabled", False):
-        from src.tts.response_cache import ResponseCache
-
-        response_cache = ResponseCache(tts, synthesize_callback=response_handler.asynthesize)
-        try:
-            await response_cache.build()
-            response_handler._response_cache = response_cache
-            logger.info(
-                f"TTS response cache: {response_cache.size()} frases "
-                f"inyectadas en ResponseHandler"
-            )
-        except Exception as e:
-            logger.warning(
-                f"TTS response cache falló al build — continúo sin cache: {e}"
-            )
-
-    # Start HA state sync after construction/warmup: synchronous model loads
-    # must not consume the initial REST snapshot deadline.
-    state_prefetch_cfg = ha_config.get("state_prefetch", {})
-    if state_prefetch_cfg.get("enabled", True):
-        try:
-            await ha_client.start_state_sync(
-                full_refresh_interval_s=state_prefetch_cfg.get("full_refresh_interval_s", 300),
-            )
-            logger.info("HA state prefetch cache habilitado")
-        except RuntimeError as e:
-            logger.warning(f"HA state prefetch deshabilitado: {e}; sigo con REST.")
-
-    # Start presence detector before pipeline
-    if presence_detector:
-        await presence_detector.start()
-        logger.info("Presence detector started")
-
-    if reminder_scheduler:
-        voice_services.start_reminders()
-        logger.info("Reminder scheduler started")
-
-    # Ejecutar
-    try:
-        # Start dashboard API as background task
-        dashboard_task = None
-        if dashboard:
-            dashboard_task = asyncio.create_task(dashboard.start())
-            logger.info("Dashboard API started")
-
-        if ambient_path is not None:
-            _ambient_task = asyncio.create_task(ambient_path.start())
-            # Best-effort, pero NO silencioso: si el start muere (CUDA OOM,
-            # DB), queremos verlo en logs aunque el command path siga sano.
-            _ambient_task.add_done_callback(
-                lambda t: logger.error(
-                    f"Ambient path murió al arrancar: {t.exception()}"
-                ) if not t.cancelled() and t.exception() else None
-            )
-
-        await pipeline.run()
-    except KeyboardInterrupt:
-        logger.info("\nDeteniendo...")
-    finally:
-        if dashboard_task:
-            # Stop admission and drain HTTP, including action waiters, before
-            # services are closed by the outer lifecycle. No concurrent cancel.
-            await dashboard.stop()
-            # A task cancelled before its first turn has no server to drain.
-            if not dashboard_task.done():
-                dashboard_task.cancel()
-            await asyncio.gather(dashboard_task, return_exceptions=True)
-        if presence_detector:
-            await presence_detector.stop()
-        if reminder_scheduler:
-            await voice_services.stop_reminders()
-        if ambient_path is not None:
-            await ambient_path.stop()
-        await pipeline.stop()
-        # The outer owner stops routines and closes their store, then drains
-        # shared home actions. HA.close() finally stops state sync
-        # and closes transports once, including construction/warmup failures.
+    return ApplicationGraph(
+        config=config, pipeline=pipeline, ha_client=ha_client,
+        home_actions=home_action_service, privacy=privacy_services,
+        voice_registry=voice_registry, voice_services=voice_services,
+        home_services=home_services, list_manager=list_manager,
+        reminder_manager=reminder_manager, routine_scheduler=routine_scheduler,
+        dashboard=dashboard,
+        models=ApplicationModels(stt, tts, chroma, speaker_identifier, emotion_detector),
+        warmup_models=_warmup_models, presence_detector=presence_detector,
+        ambient_path=ambient_path, nightly_trainer=nightly_trainer,
+    )
 
 
 if __name__ == "__main__":

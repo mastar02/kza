@@ -1,6 +1,7 @@
 """Command transcription and identification with ownership of actual native work."""
 
 import asyncio
+from collections.abc import Callable
 from contextvars import Context
 from dataclasses import dataclass, field
 import logging
@@ -115,6 +116,42 @@ class CommandProcessor:
             raise
         finally:
             model = function = args = cancelled = None
+
+    async def awarmup_model(self, model: object, function: Callable, *args, **kwargs) -> object:
+        """Run synthetic warmup through the same model lock and native owner.
+
+        Args:
+            model: A model owned by this command processor.
+            function: Its warmup operation, with no real capture provenance.
+            *args: Synthetic inputs.
+            **kwargs: Model-specific keyword arguments.
+
+        Returns:
+            The native result. Actual work remains owned after cancellation;
+            synthetic startup input does not require an ordinary capture grant.
+        """
+        if model is None or not any(model is owned for owned in
+                                    (self.stt, self.speaker_id, self.emotion_detector, self.shadow_stt)):
+            raise ValueError("warmup_model_not_owned")
+        cancelled = threading.Event()
+
+        def require_open():
+            self._require_open()
+            if self._paused or cancelled.is_set():
+                raise SourcesInvalidated("warmup_cancelled")
+            if self._privacy is not None:
+                self._privacy.require_available()
+
+        def invoke():
+            with model_admission(self._locks[id(model)], require_open):
+                return function(*args, **kwargs)
+
+        try:
+            require_open()
+            return await self._work.run(invoke)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
 
     def load_models(self) -> None:
         """Load models from an owned worker or an explicit synchronous caller."""

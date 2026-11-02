@@ -40,6 +40,7 @@ def test_tracking_does_not_change_frozen_targets(manifest):
 def test_phase_cannot_skip_required_work(manifest):
     manifest["phases"][0].update(status="verified_local", evidence=["report"])
     manifest["tasks"][0].update(status="verified_local", evidence=[])
+    manifest["tasks"][1].update(status="planned", evidence=[])
     assert "T001: verified state needs evidence" in validate_manifest(manifest)
     assert "P0: required task not locally verified" in validate_manifest(manifest)
 
