@@ -573,9 +573,13 @@ class DashboardAuthority:
                     raise AuthorityRejected("dashboard_credential_capacity")
                 db.execute("INSERT INTO credentials VALUES (?,?,?,?,?,?,?,?,?)", args)
             elif action == "login":
+                values, previous = args
+                if previous is not None:
+                    if db.execute("DELETE FROM sessions WHERE digest=?", (previous,)).rowcount != 1:
+                        raise PermissionError("dashboard_session_replaced")
                 if db.execute("SELECT count(*) FROM sessions").fetchone()[0] >= MAX_SESSIONS:
                     raise AuthorityRejected("dashboard_session_capacity")
-                db.execute("INSERT INTO sessions VALUES (?,?,?,?,?,?)", args)
+                db.execute("INSERT INTO sessions VALUES (?,?,?,?,?,?)", values)
             elif action == "revise":
                 result = db.execute("""UPDATE credentials SET role=?,user_id=?,issued_at=?,expires_at=?,
                                     revision=?,samples=? WHERE id=?""", args).rowcount == 1
@@ -715,12 +719,15 @@ class DashboardAuthority:
         original_current = self._revocation_guard(actor, identity)
         return await asyncio.shield(self._admit("revise", args, lambda: original_current() and self._account_current(user_id)))
 
-    async def login(self, token: str) -> IssuedSession:
-        """Exchange a credential for an individually expiring persisted cookie."""
+    async def login(self, token: str, *, replacing: DashboardLease | None = None) -> IssuedSession:
+        """Issue a cookie, optionally replacing this browser's current session atomically."""
         await self.synchronize()
         actor = self.resolve(token)
         if actor is None or actor.session:
             raise PermissionError("dashboard_login_denied")
+        if replacing is not None and (type(replacing) is not DashboardLease
+                or replacing._authority is not self or not replacing.session or not replacing.current()):
+            raise PermissionError("dashboard_session_replaced")
         now = self._now()
         expiry = min(now + self.session_ttl_s, actor.principal.expires_at or math.inf)
         cookie = "kzas_" + secrets.token_urlsafe(32)
@@ -728,8 +735,11 @@ class DashboardAuthority:
         legacy = digest if actor.binding.startswith("legacy:") else None
         credential = "legacy" if legacy else self._credentials[digest].identity
         try:
-            args = (_hash(cookie), credential, legacy, now, expiry, actor.principal.revision)
-            await asyncio.shield(self._admit("login", args, actor.current))
+            values = (_hash(cookie), credential, legacy, now, expiry, actor.principal.revision)
+            previous = replacing.binding.split(":", 1)[1] if replacing is not None else None
+            def guard() -> bool:
+                return actor.current() and (replacing is None or replacing.current())
+            await asyncio.shield(self._admit("login", (values, previous), guard))
             lease = self.resolve(None, cookie)
             if lease is None:
                 raise PermissionError("dashboard_session_expired")

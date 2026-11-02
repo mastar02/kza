@@ -15,7 +15,7 @@ review_graph = memory_review_graph
 
 
 @pytest.mark.parametrize('path', ['/api/memory', '/api/memory/facts', '/api/memory/proposals'])
-@pytest.mark.parametrize('change', ['logout', 'expire', 'rotate', 'revision'])
+@pytest.mark.parametrize('change', ['logout', 'switch', 'expire', 'rotate', 'revision'])
 @pytest.mark.parametrize('stage', ['read', 'headers'])
 @pytest.mark.parametrize('buffered', [False, True])
 async def test_original_session_retirement_prevents_private_body(
@@ -62,8 +62,9 @@ async def test_original_session_retirement_prevents_private_body(
         pending = asyncio.create_task(client.get(path))
         try:
             await asyncio.wait_for(entered.wait(), 3)
-            if change == 'logout':
-                assert (await graph.client.post('/api/admin/auth/logout')).json()['session_revoked']
+            if change in {'logout', 'switch'}:
+                if change == 'logout':
+                    assert (await graph.client.post('/api/admin/auth/logout')).json()['session_revoked']
                 token = dashboard_auth['Authorization'].split(' ', 1)[1]
                 assert (await graph.client.post('/api/admin/auth/login', json={'token': token})).status_code == 200
             elif change == 'expire':

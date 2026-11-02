@@ -175,6 +175,37 @@ async def test_logout_replay_is_denied_while_other_session_and_bootstrap_bearer_
         assert (await one.get('/api/admin/auth/whoami', headers=dashboard_auth)).status_code == 200
 
 
+async def test_successful_browser_login_replaces_only_its_previous_cookie(session_graph,dashboard_auth):
+    graph = session_graph
+    authority = graph.dashboard_authority
+    token = dashboard_auth['Authorization'].split(' ',1)[1]
+    home = await authority.issue_credential(authority.resolve(token),subject='synthetic-switched-home',
+        role=DashboardRole.HOME,expires_at=time.time()+120)
+    async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app),base_url='http://testserver') as one, \
+            AsyncClient(transport=ASGITransport(app=graph.dashboard.app),base_url='http://testserver') as other:
+        assert (await one.post('/api/admin/auth/login',json={'token':token})).status_code==200
+        previous_cookie = one.cookies[COOKIE_NAME]
+        previous = authority.resolve(None,previous_cookie)
+        assert (await other.post('/api/admin/auth/login',json={'token':token})).status_code==200
+        separate = authority.resolve(None,other.cookies[COOKIE_NAME])
+        assert (await one.post('/api/admin/auth/login',json={'token':home.token})).status_code==200
+        assert one.cookies[COOKIE_NAME]!=previous_cookie
+        assert not previous.current() and separate.current()
+        assert authority.resolve(None,one.cookies[COOKIE_NAME]).principal.role is DashboardRole.HOME
+        assert (await one.get('/api/admin/auth/whoami',headers={'Cookie':f'{COOKIE_NAME}={previous_cookie}'})).status_code==401
+        assert (await other.get('/api/admin/auth/whoami')).status_code==200
+
+
+async def test_failed_browser_login_does_not_replace_a_current_cookie(session_graph,dashboard_auth):
+    token = dashboard_auth['Authorization'].split(' ',1)[1]
+    async with AsyncClient(transport=ASGITransport(app=session_graph.dashboard.app),base_url='http://testserver') as client:
+        assert (await client.post('/api/admin/auth/login',json={'token':token})).status_code==200
+        cookie = client.cookies[COOKIE_NAME]
+        assert (await client.post('/api/admin/auth/login',json={'token':'synthetic-invalid-new-login'})).status_code==401
+        assert client.cookies[COOKIE_NAME]==cookie
+        assert session_graph.dashboard_authority.resolve(None,cookie).current()
+
+
 async def test_http_expiration_is_checked_by_server_while_browser_cookie_is_still_present(
     session_graph, dashboard_auth, monkeypatch,
 ):

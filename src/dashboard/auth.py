@@ -229,8 +229,9 @@ async def login_response(token: str, request: HTTPConnection, *, authority: Dash
     if not isinstance(authority, DashboardAuthority) or not authority.available:
         return JSONResponse(status_code=503, content={"ok": False, "detail": "dashboard_authority_required"},
                             headers=headers)
+    previous = authority.resolve(None, request.cookies.get(COOKIE_NAME))
     try:
-        issued = await authority.login(token)
+        issued = await authority.login(token, replacing=previous) if previous is not None else await authority.login(token)
     except PermissionError:
         return JSONResponse(status_code=401, content={"ok": False, "detail": "token inválido"}, headers=headers)
     except Exception:

@@ -193,6 +193,47 @@ async def test_logout_revokes_only_this_session_and_survives_restart(authority):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_replacements_have_one_winner_and_preserve_other_sessions(authority):
+    service, now, token = authority
+    previous = await service.login(token[0])
+    independent = await service.login(token[0])
+    results = await asyncio.gather(service.login(token[0], replacing=previous.lease),
+                                   service.login(token[0], replacing=previous.lease), return_exceptions=True)
+    winners = [result for result in results if not isinstance(result, BaseException)]
+    assert len(winners) == 1
+    assert sum(isinstance(result, PermissionError) for result in results) == 1
+    assert not previous.lease.current() and independent.lease.current() and winners[0].lease.current()
+    assert len(service._sessions) == 2
+    await service.aclose()
+    replacement = DashboardAuthority(service.path, clock=lambda: now[0], expected_token=lambda: token[0])
+    try:
+        await replacement.initialize()
+        assert replacement.resolve(None, previous.token) is None
+        assert replacement.resolve(None, independent.token) is not None
+        assert replacement.resolve(None, winners[0].token) is not None
+    finally:
+        await replacement.aclose()
+
+
+@pytest.mark.asyncio
+async def test_replacement_capacity_rejection_rolls_back_old_session(authority, monkeypatch):
+    service, _, token = authority
+    previous = await service.login(token[0])
+    from src.dashboard.authority import AuthorityRejected
+    with monkeypatch.context() as limits:
+        limits.setattr('src.dashboard.authority.MAX_SESSIONS', 0)
+        with pytest.raises(AuthorityRejected):
+            await service.login(token[0], replacing=previous.lease)
+    assert previous.lease.current() and service.available
+    with closing(sqlite3.connect(service.path)) as db:
+        assert db.execute('SELECT count(*) FROM sessions').fetchone()[0] == 1
+    with monkeypatch.context() as limits:
+        limits.setattr('src.dashboard.authority.MAX_SESSIONS', 1)
+        replacement = await service.login(token[0], replacing=previous.lease)
+        assert replacement.lease.current() and not previous.lease.current()
+
+
+@pytest.mark.asyncio
 async def test_credential_revocation_retires_every_derived_session_and_survives_restart(authority):
     service, now, root = authority
     credential = await issue(authority)
