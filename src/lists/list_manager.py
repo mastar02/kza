@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 from src.lists.list_store import ListStore, UserList, ListItem, OwnerType
 from src.lists.ha_sync import HASyncManager
 from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
+from src.core.sqlite_work import AuthorityGuard
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ class ListManager:
         )
 
     async def create_list(
-        self, user_id: str, list_name: str, shared: bool = False
+        self, user_id: str, list_name: str, shared: bool = False, *, guard: AuthorityGuard | None = None,
     ) -> UserList:
         """Create a new list for a user or as shared.
 
@@ -59,7 +60,7 @@ class ListManager:
         """
         owner_type = OwnerType.SHARED if shared else OwnerType.USER
         lst = await self._store.create_list(
-            name=list_name, owner_type=owner_type, owner_id=user_id
+            name=list_name, owner_type=owner_type, owner_id=user_id, guard=guard,
         )
         logger.info(
             "Created list '%s' for user=%s (shared=%s)", list_name, user_id, shared
@@ -166,14 +167,15 @@ class ListManager:
         return await self._store.get_items(list_id)
 
     async def add_item_to_list_id(
-        self, list_id: str, item_text: str, user_id: str | None = None
+        self, list_id: str, item_text: str, user_id: str | None = None, *, guard: AuthorityGuard | None = None,
     ) -> ListItem:
         """Add item to a specific list by ID."""
-        return await self._store.add_item(list_id, item_text, added_by=user_id)
+        return await self._store.add_item(list_id, item_text, added_by=user_id, guard=guard)
 
-    async def remove_item_by_id(self, item_id: str) -> bool:
+    async def remove_item_by_id(self, item_id: str, *, list_id: str | None = None,
+                                guard: AuthorityGuard | None = None) -> bool:
         """Return whether the identified item was actually removed."""
-        return await self._store.remove_item(item_id)
+        return await self._store.remove_item(item_id, list_id=list_id, guard=guard)
 
     async def get_all_lists(self, user_id: str) -> list[UserList]:
         """Get all lists accessible to a user.

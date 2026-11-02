@@ -646,10 +646,14 @@ class DashboardAPI:
             return [{"id": l.id, "name": l.name, "owner_type": l.owner_type, "owner_id": l.owner_id} for l in lists]
 
         @self.app.post("/api/lists")
-        async def create_list(data: ListCreateModel):
+        async def create_list(data: ListCreateModel, request: Request):
             if not self.list_manager:
                 raise HTTPException(status_code=503, detail="Lists not configured")
-            lst = await self.list_manager.create_list(data.user_id, data.name, data.shared)
+            try:
+                lst = await self.list_manager.create_list(data.user_id, data.name, data.shared,
+                    guard=session_guard(request, frozenset({'admin:manage'})))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="list_write_denied") from error
             return {"id": lst.id, "name": lst.name, "owner_type": lst.owner_type, "owner_id": lst.owner_id,
                     "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                         effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}
@@ -662,19 +666,27 @@ class DashboardAPI:
             return [{"id": i.id, "text": i.text, "completed": i.completed} for i in items]
 
         @self.app.post("/api/lists/{list_id}/items")
-        async def add_list_item(list_id: str, data: ListItemCreateModel):
+        async def add_list_item(list_id: str, data: ListItemCreateModel, request: Request):
             if not self.list_manager:
                 raise HTTPException(status_code=503, detail="Lists not configured")
-            item = await self.list_manager.add_item_to_list_id(list_id, data.text, data.user_id)
+            try:
+                item = await self.list_manager.add_item_to_list_id(list_id, data.text, data.user_id,
+                    guard=session_guard(request, frozenset({'admin:manage'})))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="list_write_denied") from error
             return {"id": item.id, "text": item.text, "completed": item.completed, "list_id": item.list_id,
                     "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                         effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}
 
         @self.app.delete("/api/lists/{list_id}/items/{item_id}")
-        async def delete_list_item(list_id: str, item_id: str):
+        async def delete_list_item(list_id: str, item_id: str, request: Request):
             if not self.list_manager:
                 raise HTTPException(status_code=503, detail="Lists not configured")
-            removed = await self.list_manager.remove_item_by_id(item_id)
+            try:
+                removed = await self.list_manager.remove_item_by_id(item_id, list_id=list_id,
+                    guard=session_guard(request, frozenset({'admin:manage'})))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="list_write_denied") from error
             if removed is not True:
                 raise HTTPException(status_code=404, detail="List item not found")
             return {"status": "deleted", "outcome": TaskOutcome(TaskStatus.COMPLETED,

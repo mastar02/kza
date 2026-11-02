@@ -81,12 +81,16 @@ class WorkCloseTimeout(RuntimeError):
 class OwnedBlockingWork:
     """Retain actual worker completion, including delegated native operations."""
 
-    def __init__(self, *, worker: Callable | None = None, capacity: int = 8, close_timeout_s: float = 1):
+    def __init__(self, *, worker: Callable | None = None, capacity: int = 8, close_timeout_s: float = 1,
+                 isolate_context: bool = False):
         if type(capacity) is not int or capacity <= 0:
             raise ValueError("invalid_blocking_work_capacity")
         if type(close_timeout_s) not in (int, float) or not math.isfinite(close_timeout_s) or close_timeout_s <= 0:
             raise ValueError("invalid_blocking_work_close_timeout")
+        if type(isolate_context) is not bool:
+            raise ValueError("invalid_blocking_work_context_policy")
         self._worker = worker or _observed_thread
+        self._isolate_context = isolate_context
         self._capacity = capacity
         self._close_timeout_s = close_timeout_s
         self._tasks: set[asyncio.Task] = set()
@@ -112,7 +116,8 @@ class OwnedBlockingWork:
         if len(self._tasks) >= self._capacity:
             raise RuntimeError("blocking_work_capacity")
         timing = WorkTiming(time.monotonic())
-        task = asyncio.create_task(self._execute(timing,function,args,kwargs))
+        task = asyncio.create_task(self._execute(timing,function,args,kwargs),
+                                   context=Context() if self._isolate_context else None)
         self._tasks.add(task)
         self._timings[task] = timing
 
