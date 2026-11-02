@@ -242,10 +242,16 @@ async def test_unverified_account_catalog_is_read_only_and_drops_partial_account
         original = json.dumps(payload).encode()
         catalog.write_bytes(original)
         users = await voices.load_accounts(str(tmp_path/'users.json'))
-        assert users.get_all_users()==[]
+        for read in (users.get_all_users, users.get_all_embeddings,
+                     lambda: users.get_user('partial-admin')):
+            with pytest.raises(RuntimeError,match='unverified_account_catalog'):
+                await voices.acall(read)
         with pytest.raises(RuntimeError,match='unverified_account_catalog'):
             await voices.acall(users.add_user,'Synthetic',PermissionLevel.ADMIN)
-        assert users.get_all_users()==[] and catalog.read_bytes()==original
+        assert users._users == {}
+        assert catalog.read_bytes() == original
+        with pytest.raises(RuntimeError,match='unverified_account_catalog'):
+            await voices.acall(users.get_all_users)
 
 
 async def test_non_16khz_audio_is_rejected_before_copy_or_model_admission(tmp_path):

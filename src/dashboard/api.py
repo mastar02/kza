@@ -1044,10 +1044,13 @@ class DashboardAPI:
             self._serve_task = None
 
     async def stop(self) -> None:
-        """Retain one complete native/server/resource drain despite observer cancellation."""
+        """Retain drains through cancellation; retry only failed resource cleanup."""
         if self._server is not None:
             self._server.should_exit = True
-        if self._stop_task is None:
+        previous = self._stop_task
+        retry = previous is not None and previous.done() and (
+            previous.cancelled() or previous.exception() is not None)
+        if previous is None or retry:
             native_drain = self.admin_work.begin_close()
             serving = self._serve_task
             if serving is asyncio.current_task():
@@ -1063,13 +1066,14 @@ class DashboardAPI:
                         await asyncio.shield(serving)
 
             self._stop_task = asyncio.create_task(finish(), context=Context())
+        stopping = self._stop_task
         cancelled = False
-        while not self._stop_task.done():
+        while not stopping.done():
             try:
-                await asyncio.shield(self._stop_task)
+                await asyncio.shield(stopping)
             except asyncio.CancelledError:
                 cancelled = True
-        self._stop_task.result()
+        stopping.result()
         if cancelled:
             raise asyncio.CancelledError
 

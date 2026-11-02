@@ -372,7 +372,7 @@ async def test_shared_list_concurrent_add_and_remove():
 @pytest.mark.asyncio
 async def test_missed_reminder_on_arrival():
     """When a user arrives home, overdue reminders are delivered via TTS."""
-    from src.reminders.reminder_store import ReminderStore
+    from src.reminders.reminder_store import ReminderScope, ReminderStore
     from src.reminders.reminder_scheduler import ReminderScheduler
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -386,6 +386,7 @@ async def test_missed_reminder_on_arrival():
             user_id="user_a",
             text="tomar la medicina",
             trigger_at=past_time,
+            scope=ReminderScope.SHARED,
         )
 
         # Mock TTS
@@ -489,7 +490,7 @@ async def test_presence_detector_wiring_calls_on_user_arrived():
 @pytest.mark.asyncio
 async def test_missed_reminder_marks_fired_after_delivery():
     """Delivered missed reminders are marked as fired so they don't repeat."""
-    from src.reminders.reminder_store import ReminderStore, ReminderState
+    from src.reminders.reminder_store import ReminderScope, ReminderStore, ReminderState
     from src.reminders.reminder_scheduler import ReminderScheduler
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -502,6 +503,7 @@ async def test_missed_reminder_marks_fired_after_delivery():
             user_id="user_a",
             text="regar las plantas",
             trigger_at=past_time,
+            scope=ReminderScope.SHARED,
         )
 
         tts_mock = AsyncMock()

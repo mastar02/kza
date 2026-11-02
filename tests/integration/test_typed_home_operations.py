@@ -15,7 +15,7 @@ from src.home_assistant.home_actions import HomeActionRequest, HomeActionService
 from src.home_assistant.operations import action_parameters
 from src.orchestrator.dispatcher import RequestDispatcher
 from src.reminders.reminder_scheduler import ReminderScheduler
-from src.reminders.reminder_store import ReminderStore
+from src.reminders.reminder_store import ReminderScope, ReminderStore
 from src.routines.factory import build_routine_scheduler
 from src.routines.models import parse_routine_spec, spec_to_dict
 from tests.integration.test_home_control_policy import ObservedHA
@@ -214,7 +214,8 @@ async def test_reminder_preserves_extended_parameters_and_durable_receipt(typed_
     store = ReminderStore(str(tmp_path / "reminders.db"))
     await store.initialize()
     try:
-        reminder = await store.create("profile", "typed", 1.0, ha_actions=[{"entity_id": "climate.test_ac", "domain": "climate", "service": "set_temperature", "data": {"temperature": 23.5}}])
+        reminder = await store.create("profile", "typed", 1.0, scope=ReminderScope.SHARED,
+                                      ha_actions=[{"entity_id": "climate.test_ac", "domain": "climate", "service": "set_temperature", "data": {"temperature": 23.5}}])
         presence = MagicMock()
         presence.get_user_zone.return_value = "test-zone"
         await ReminderScheduler(store, AsyncMock(), presence, ha, home_actions=actions)._fire_reminder(reminder)
