@@ -4,7 +4,7 @@ from fastapi import APIRouter,Depends,HTTPException,Request,Response
 from pydantic import BaseModel,ConfigDict,Field
 
 from src.ambient.control import AmbientController
-from src.dashboard.auth import COOKIE_NAME,DashboardPrincipal,check_token,require_dashboard_session
+from src.dashboard.auth import DashboardPrincipal, require_dashboard_session, session_guard
 
 
 class AmbientPauseBody(BaseModel):
@@ -19,9 +19,9 @@ def register_ambient_routes(app, *, control=None) -> None:
     """Expose real status and one bounded, server-owned transition at a time."""
     router = APIRouter(prefix='/api/ambient/control')
     async def controller(request: Request, principal: DashboardPrincipal = Depends(require_dashboard_session)):
-        header,cookie = request.headers.get('authorization'),request.cookies.get(COOKIE_NAME)
         try:
-            return AmbientController.from_dashboard(principal,lambda:check_token(header,cookie))
+            return AmbientController.from_dashboard(principal,
+                session_guard(request, frozenset({'ambient:control'}), principal))
         except PermissionError:
             raise HTTPException(403,detail='ambient_control_denied') from None
     def service():

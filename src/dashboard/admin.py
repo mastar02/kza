@@ -13,14 +13,20 @@ import subprocess
 
 import numpy as np
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.dashboard.auth import (
+    DashboardPrincipal,
     auth_configured,
+    current_lease,
+    dashboard_authority,
     login_response,
     logout_response,
     require_admin,
     require_dashboard_origin,
+    require_dashboard_session,
+    session_guard,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,7 +66,7 @@ def register_admin_routes(
 ) -> None:
     """Registrar /api/admin/*. Llamar antes del mount de StaticFiles."""
 
-    if not auth_configured():
+    if not auth_configured(getattr(app.state, "dashboard_authority", None)):
         logger.warning(
             "Dashboard credential is not configured; protected routes return 503"
         )
@@ -71,15 +77,24 @@ def register_admin_routes(
 
     @router.post("/auth/login", dependencies=[Depends(require_dashboard_origin)])
     async def login(body: LoginBody, request: Request):
-        return login_response(body.token, secure=request.url.scheme == "https")
+        authority = dashboard_authority(request, required=True)
+        return await login_response(body.token, authority=authority, secure=request.url.scheme == "https")
 
-    @router.post("/auth/logout", dependencies=[Depends(require_admin)])
-    async def logout():
-        return logout_response()
+    @router.post("/auth/logout")
+    async def logout(request: Request, _principal: DashboardPrincipal = Depends(require_dashboard_session)):
+        lease = current_lease(request)
+        if lease is None:
+            raise HTTPException(status_code=403, detail="dashboard_session_required")
+        return await logout_response(lease, authority=dashboard_authority(request))
 
-    @router.get("/auth/whoami", dependencies=[Depends(require_admin)])
-    async def whoami():
-        return {"ok": True, "auth_configured": auth_configured()}
+    @router.get("/auth/whoami")
+    async def whoami(request: Request, principal: DashboardPrincipal = Depends(require_dashboard_session)):
+        return JSONResponse(content={"ok": True,
+            "auth_configured": auth_configured(dashboard_authority(request)),
+            "subject": principal.subject, "role": principal.role.value,
+            "permissions": sorted(principal.permissions), "expires_at": principal.expires_at,
+            "personal_scope": principal.user_id is not None},
+            headers={"Cache-Control": "no-store"})
 
     # ---------------- Users ----------------
 
@@ -130,8 +145,10 @@ def register_admin_routes(
         @router.post("/users/{user_id}/enroll", dependencies=[Depends(require_admin)])
         async def enroll_voice(
             user_id: str,
+            request: Request,
             samples: list[UploadFile] = File(..., description="WAV mono PCM, ≥3 muestras"),
         ):
+            current = session_guard(request, frozenset({'admin:manage'}))
             if user_manager is None or speaker_identifier is None:
                 raise HTTPException(503, "user_manager o speaker_identifier no inyectados")
             if len(samples) < 3:
@@ -144,12 +161,18 @@ def register_admin_routes(
             except ValueError as e:
                 raise HTTPException(400, f"audio inválido: {e}")
             try:
+                if not current():
+                    raise HTTPException(403, "dashboard_session_expired")
                 embedding = await asyncio.to_thread(
                     speaker_identifier.create_enrollment_embedding, audio_arrays
                 )
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error(f"create_enrollment_embedding falló: {e}")
                 raise HTTPException(500, f"enrollment falló: {e}")
+            if not current():
+                raise HTTPException(403, "dashboard_session_expired")
             user.voice_embedding = embedding
             user_manager._save()
             return {

@@ -30,7 +30,7 @@ from src.dashboard.observation_http import ObservationHeaders
 from src.core.observation import Observation, ObservationSource, ObservationReason
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
-from src.dashboard.auth import COOKIE_NAME, auth_configured, check_token, require_dashboard_session
+from src.dashboard.auth import COOKIE_NAME, require_dashboard_session, session_guard
 from src.core.owned_work import WorkCloseTimeout
 from src.dashboard.live_event_bus import LiveEventBus
 
@@ -285,8 +285,7 @@ def register_observability_routes(
                 connection = request.headers.get('x-kza-live-connection')
                 if event_bus is None or connection is None:
                     raise HTTPException(428,detail='conversation_receipts_required')
-                def available():
-                    return auth_configured() and check_token(request.headers.get('authorization'),request.cookies.get(COOKIE_NAME))
+                available = session_guard(request, frozenset({'conversations:read'}))
                 try:
                     return event_bus.conversation_response(connection,event_logger,
                         {'user':user,'zone':zone,'path':path},available)
@@ -382,6 +381,7 @@ def register_observability_routes(
     @router.get("/api/system/gpus")
     async def get_gpus(response: Response, request: Request):
         source = ObservationSource.GPU_PROBE
+        available = session_guard(request, frozenset({'diagnostics:read'}))
         if use_mocks:
             _set_source(response, "gpus", source)
             return mocks.GPUS
@@ -391,7 +391,7 @@ def register_observability_routes(
         except Exception as error:
             logger.warning("Monitor observation unavailable [gpus]: %s", type(error).__name__)
             data, observation = None, None
-        if not auth_configured() or not check_token(request.headers.get("authorization"), request.cookies.get(COOKIE_NAME)):
+        if not available():
             data = None
             raise HTTPException(401, detail="dashboard_session_expired", headers={"Cache-Control": "no-store"})
         _set_source(response, "gpus", source, real=data is not None, observation=observation,
@@ -401,6 +401,7 @@ def register_observability_routes(
     @router.get("/api/system/services")
     async def get_services(response: Response, request: Request):
         source = ObservationSource.SERVICE_PROBE
+        available = session_guard(request, frozenset({'diagnostics:read'}))
         if use_mocks:
             _set_source(response, "services", source)
             return mocks.SERVICES
@@ -410,7 +411,7 @@ def register_observability_routes(
         except Exception as error:
             logger.warning("Monitor observation unavailable [services]: %s", type(error).__name__)
             data, observation = None, None
-        if not auth_configured() or not check_token(request.headers.get("authorization"), request.cookies.get(COOKIE_NAME)):
+        if not available():
             data = None
             raise HTTPException(401, detail="dashboard_session_expired", headers={"Cache-Control": "no-store"})
         _set_source(response, "services", source, real=data is not None, observation=observation,
@@ -420,6 +421,7 @@ def register_observability_routes(
     if event_bus is not None:
         @router.websocket("/ws/live")
         async def ws_live(ws: WebSocket):
+            bound_guard = session_guard(ws, frozenset({'conversations:read'}))
             try:
                 sub_id, _ = await event_bus.subscribe()
             except RuntimeError:
@@ -433,7 +435,7 @@ def register_observability_routes(
                     raise
                 await ws.send_json(frame)
             def available():
-                return auth_configured() and check_token(ws.headers.get('authorization'), ws.cookies.get(COOKIE_NAME))
+                return bound_guard()
             async def close():
                 await ws.close(code=1000 if available() else 1008)
             try:

@@ -179,6 +179,13 @@ class DashboardLease:
         """Recheck the original authority; never resolve a replacement actor."""
         return permissions <= self.principal.permissions and self._check() is True
 
+
+    def remaining_ttl(self) -> int:
+        """Round the cookie hint; server expiration retains its exact deadline."""
+        if self.principal.expires_at is None or not self.current():
+            return 0
+        return max(0, math.ceil(self.principal.expires_at - self._clock()))
+
     def sample(self, identity: str, sources: frozenset[str] | None = None) -> EvaluationSample | None:
         """Check exact sample/source authority before reading any private bytes."""
         if not self.current(frozenset({DashboardPermission.EVALUATION_READ})):
@@ -211,10 +218,12 @@ def _expected_token() -> str | None:
 
 def _permissions(role: DashboardRole, user_id: str | None) -> frozenset[str]:
     if role is DashboardRole.OPERATOR:
-        return frozenset(DashboardPermission)
-    if role is DashboardRole.HOME:
-        return _HOME_PERMISSIONS | (frozenset({DashboardPermission.PERSONAL_TASKS}) if user_id else frozenset())
-    return frozenset({DashboardPermission.EVALUATION_READ})
+        values = frozenset(DashboardPermission)
+    elif role is DashboardRole.HOME:
+        values = _HOME_PERMISSIONS | (frozenset({DashboardPermission.PERSONAL_TASKS}) if user_id else frozenset())
+    else:
+        values = frozenset({DashboardPermission.EVALUATION_READ})
+    return frozenset(value.value for value in values)
 
 
 def legacy_lease(authorization: str | None, *, expected: Callable[[], str | None] = _expected_token) -> DashboardLease | None:
@@ -314,6 +323,13 @@ class DashboardAuthority:
         with self._state_lock:
             return (self._usable() and bool(self._expected() or any(
                 c.expires_at > self._now() for c in self._credentials.values())))
+
+
+    @property
+    def available(self) -> bool:
+        """Report initialized usable storage without creating any resource."""
+        with self._state_lock:
+            return self._usable()
 
     async def initialize(self) -> None:
         """Acquire the writer lease and load only committed authority."""
@@ -707,8 +723,27 @@ class DashboardAuthority:
                     cancelled = True
             drain.result()
             await self._work.aclose()
-            if self._lease_fd is not None:
-                fd, self._lease_fd = self._lease_fd, None
-                os.close(fd)
+            try:
+                if self._ready and self._lease_fd is not None:
+                    # Native guards can observe rotation/expiry without another
+                    # HTTP request. Persist those fences on a clean shutdown.
+                    self._observe_legacy()
+                    args = self._observed_digest, self._observed_epoch
+                    final = OwnedBlockingWork(capacity=1)
+                    try:
+                        await final.run(self._transaction, "rotate", args, None)
+                    finally:
+                        finish = final.begin_close()
+                        while not finish.done():
+                            try:
+                                await asyncio.shield(finish)
+                            except asyncio.CancelledError:
+                                cancelled = True
+                        finish.result()
+                        await final.aclose()
+            finally:
+                if self._lease_fd is not None:
+                    fd, self._lease_fd = self._lease_fd, None
+                    os.close(fd)
             if cancelled:
                 raise asyncio.CancelledError

@@ -511,3 +511,39 @@ async def test_concurrent_role_changes_keep_old_permission_closed_until_last_com
     assert current.principal.revision == 3
     assert current.sample("vf_" + "a" * 64) is not None
     assert not current.current(frozenset({Permission.HOME_CONTROL}))
+
+
+@pytest.mark.asyncio
+async def test_clean_close_persists_rotation_seen_only_by_native_guard(authority):
+    service, now, token = authority
+    session = await service.login(token[0])
+    original = token[0]
+    token[0] = 'synthetic-native-observed-B'
+    assert not session.lease.current()
+    token[0] = original
+    await service.aclose()
+    replacement = DashboardAuthority(service.path, clock=lambda: now[0], expected_token=lambda: token[0])
+    try:
+        await replacement.initialize()
+        assert replacement.resolve(original) is not None
+        assert replacement.resolve(None, session.token) is None
+    finally:
+        await replacement.aclose()
+
+
+@pytest.mark.asyncio
+async def test_clean_close_persists_sample_expiration_without_http_synchronization(authority):
+    service, now, token = authority
+    selection = sample(now[0])
+    credential = await issue(authority, Role.EVALUATOR, samples=(selection,))
+    lease = service.resolve(credential.token)
+    now[0] = selection.expires_at
+    assert lease.sample(selection.fingerprint_id) is None
+    await service.aclose()
+    now[0] -= 10
+    replacement = DashboardAuthority(service.path, clock=lambda: now[0], expected_token=lambda: token[0])
+    try:
+        await replacement.initialize()
+        assert replacement.resolve(credential.token).sample(selection.fingerprint_id) is None
+    finally:
+        await replacement.aclose()

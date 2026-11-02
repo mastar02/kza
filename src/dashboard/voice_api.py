@@ -3,7 +3,7 @@
 from fastapi import APIRouter,Depends,HTTPException,Query,Request
 from pydantic import BaseModel,ConfigDict,Field
 
-from src.dashboard.auth import COOKIE_NAME,DashboardPrincipal,check_token,require_dashboard_session
+from src.dashboard.auth import DashboardPrincipal, require_dashboard_session, session_guard
 from src.users.voice_ledger import VoiceReviewer
 from src.dashboard.voice_delivery import VoiceResponse
 
@@ -38,9 +38,9 @@ def register_voice_routes(app, *, voices=None) -> None:
     """Register source-retained, authenticated voice metadata and review actions."""
     router = APIRouter(prefix='/api/voices')
     async def reviewer(request: Request,principal: DashboardPrincipal = Depends(require_dashboard_session)):
-        header,cookie = request.headers.get('authorization'),request.cookies.get(COOKIE_NAME)
         try:
-            return VoiceReviewer.from_dashboard(principal,lambda:check_token(header,cookie))
+            return VoiceReviewer.from_dashboard(principal,
+                session_guard(request, frozenset({'voices:review'}), principal))
         except PermissionError:
             raise HTTPException(403,detail='voice_review_denied') from None
     def service():

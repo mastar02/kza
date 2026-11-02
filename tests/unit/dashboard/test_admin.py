@@ -1,16 +1,19 @@
 """Tests para /api/admin/* — auth, users CRUD, enroll, alerts, services."""
 
 import io
+from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
+import threading
 import wave
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from src.dashboard.admin import register_admin_routes
 from src.users.user_manager import User
+from tests.mocks.dashboard_sessions import session_client
 
 
 TEST_TOKEN = "test-secret-token-1234567890"
@@ -68,10 +71,20 @@ def fake_alert_manager():
     return am
 
 
-def _client(**kwargs):
-    app = FastAPI()
-    register_admin_routes(app, **kwargs)
-    return TestClient(app)
+@pytest.fixture
+def _client(tmp_path):
+    with ExitStack() as stack:
+        sequence = []
+        def create(**kwargs):
+            def app_factory(authority):
+                app = FastAPI()
+                app.state.dashboard_authority = authority
+                register_admin_routes(app, **kwargs)
+                return app
+            path = tmp_path / f"app-{len(sequence)}" / "auth.db"
+            sequence.append(path)
+            return stack.enter_context(session_client(app_factory, path))
+        yield create
 
 
 def _bearer():
@@ -93,13 +106,13 @@ def _wav_bytes(seconds: float = 1.0, sr: int = 16000) -> bytes:
 
 # ---------------- Auth ----------------
 
-def test_admin_endpoint_without_token_returns_401(fake_user_manager):
+def test_admin_endpoint_without_token_returns_401(fake_user_manager, _client):
     c = _client(user_manager=fake_user_manager)
     r = c.post("/api/admin/users", json={"name": "X", "permission_level": "adult"})
     assert r.status_code == 401
 
 
-def test_admin_endpoint_with_bad_token_returns_401(fake_user_manager):
+def test_admin_endpoint_with_bad_token_returns_401(fake_user_manager, _client):
     c = _client(user_manager=fake_user_manager)
     r = c.post("/api/admin/users",
                json={"name": "X", "permission_level": "adult"},
@@ -107,7 +120,7 @@ def test_admin_endpoint_with_bad_token_returns_401(fake_user_manager):
     assert r.status_code == 401
 
 
-def test_admin_endpoint_with_correct_token_passes(fake_user_manager):
+def test_admin_endpoint_with_correct_token_passes(fake_user_manager, _client):
     c = _client(user_manager=fake_user_manager)
     r = c.post("/api/admin/users",
                json={"name": "Tomás", "permission_level": "adult"},
@@ -116,7 +129,7 @@ def test_admin_endpoint_with_correct_token_passes(fake_user_manager):
     assert r.json()["name"] == "Tomás"
 
 
-def test_login_sets_cookie(fake_user_manager):
+def test_login_sets_cookie(fake_user_manager, _client):
     c = _client(user_manager=fake_user_manager)
     r = c.post("/api/admin/auth/login", json={"token": TEST_TOKEN})
     assert r.status_code == 200
@@ -124,13 +137,13 @@ def test_login_sets_cookie(fake_user_manager):
     assert "kza_dashboard_token" in r.cookies
 
 
-def test_login_with_wrong_token_returns_401(fake_user_manager):
+def test_login_with_wrong_token_returns_401(fake_user_manager, _client):
     c = _client(user_manager=fake_user_manager)
     r = c.post("/api/admin/auth/login", json={"token": "wrong"})
     assert r.status_code == 401
 
 
-def test_cookie_grants_access_to_admin_endpoints(fake_user_manager):
+def test_cookie_grants_access_to_admin_endpoints(fake_user_manager, _client):
     c = _client(user_manager=fake_user_manager)
     c.post("/api/admin/auth/login", json={"token": TEST_TOKEN})
     r = c.get("/api/admin/auth/whoami")
@@ -139,7 +152,7 @@ def test_cookie_grants_access_to_admin_endpoints(fake_user_manager):
 
 # ---------------- Users CRUD ----------------
 
-def test_create_user_with_invalid_permission_level(fake_user_manager):
+def test_create_user_with_invalid_permission_level(fake_user_manager, _client):
     c = _client(user_manager=fake_user_manager)
     r = c.post("/api/admin/users",
                json={"name": "X", "permission_level": "superadmin"},
@@ -147,7 +160,7 @@ def test_create_user_with_invalid_permission_level(fake_user_manager):
     assert r.status_code == 400
 
 
-def test_create_duplicate_user_returns_409(fake_user_manager):
+def test_create_duplicate_user_returns_409(fake_user_manager, _client):
     c = _client(user_manager=fake_user_manager)
     c.post("/api/admin/users",
            json={"name": "Ana", "permission_level": "adult"}, headers=_bearer())
@@ -156,7 +169,7 @@ def test_create_duplicate_user_returns_409(fake_user_manager):
     assert r.status_code == 409
 
 
-def test_delete_user(fake_user_manager):
+def test_delete_user(fake_user_manager, _client):
     c = _client(user_manager=fake_user_manager)
     cr = c.post("/api/admin/users",
                 json={"name": "Bob", "permission_level": "adult"}, headers=_bearer())
@@ -166,13 +179,13 @@ def test_delete_user(fake_user_manager):
     assert r.json()["ok"] is True
 
 
-def test_delete_unknown_user_returns_404(fake_user_manager):
+def test_delete_unknown_user_returns_404(fake_user_manager, _client):
     c = _client(user_manager=fake_user_manager)
     r = c.delete("/api/admin/users/nonexistent", headers=_bearer())
     assert r.status_code == 404
 
 
-def test_update_permissions(fake_user_manager):
+def test_update_permissions(fake_user_manager, _client):
     c = _client(user_manager=fake_user_manager)
     cr = c.post("/api/admin/users",
                 json={"name": "Eva", "permission_level": "adult"}, headers=_bearer())
@@ -185,7 +198,7 @@ def test_update_permissions(fake_user_manager):
 
 # ---------------- Enrollment ----------------
 
-def test_enroll_requires_3_samples(fake_user_manager, fake_speaker_identifier):
+def test_enroll_requires_3_samples(fake_user_manager, fake_speaker_identifier, _client):
     c = _client(user_manager=fake_user_manager, speaker_identifier=fake_speaker_identifier)
     cr = c.post("/api/admin/users",
                 json={"name": "Lía", "permission_level": "adult"}, headers=_bearer())
@@ -195,7 +208,7 @@ def test_enroll_requires_3_samples(fake_user_manager, fake_speaker_identifier):
     assert r.status_code == 400
 
 
-def test_enroll_with_3_samples_creates_embedding(fake_user_manager, fake_speaker_identifier):
+def test_enroll_with_3_samples_creates_embedding(fake_user_manager, fake_speaker_identifier, _client):
     c = _client(user_manager=fake_user_manager, speaker_identifier=fake_speaker_identifier)
     cr = c.post("/api/admin/users",
                 json={"name": "Lía", "permission_level": "adult"}, headers=_bearer())
@@ -215,14 +228,46 @@ def test_enroll_with_3_samples_creates_embedding(fake_user_manager, fake_speaker
     assert all(a.dtype == np.float32 for a in call_arg)
 
 
-def test_enroll_unknown_user_returns_404(fake_user_manager, fake_speaker_identifier):
+def test_enrollment_rechecks_original_session_after_native_work(
+    fake_user_manager, fake_speaker_identifier, _client,
+):
+    client = _client(user_manager=fake_user_manager, speaker_identifier=fake_speaker_identifier)
+    created = client.post("/api/admin/users",
+        json={"name": "Synthetic", "permission_level": "adult"}, headers=_bearer())
+    identity = created.json()["user_id"]
+    fake_user_manager._save.reset_mock()
+    user = fake_user_manager.get_user(identity)
+    before = user.voice_embedding
+    assert client.post("/api/admin/auth/login", json={"token": TEST_TOKEN}).status_code == 200
+    entered, release = threading.Event(), threading.Event()
+    def embed(audio):
+        entered.set()
+        assert release.wait(5)
+        return np.zeros(192, dtype=np.float32)
+    fake_speaker_identifier.create_enrollment_embedding.side_effect = embed
+    files = [("samples", (f"s{i}.wav", _wav_bytes(), "audio/wav")) for i in range(3)]
+    authority = client.app.state.dashboard_authority
+    lease = authority.resolve(None, client.cookies.get("kza_dashboard_token"))
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        request = workers.submit(client.post, f"/api/admin/users/{identity}/enroll", files=files)
+        try:
+            assert entered.wait(3)
+            assert client.portal.call(authority.logout, lease) is True
+        finally:
+            release.set()
+        assert request.result(timeout=5).status_code == 403
+    assert user.voice_embedding is before
+    fake_user_manager._save.assert_not_called()
+
+
+def test_enroll_unknown_user_returns_404(fake_user_manager, fake_speaker_identifier, _client):
     c = _client(user_manager=fake_user_manager, speaker_identifier=fake_speaker_identifier)
     files = [("samples", (f"s{i}.wav", _wav_bytes(), "audio/wav")) for i in range(3)]
     r = c.post("/api/admin/users/nonexistent/enroll", files=files, headers=_bearer())
     assert r.status_code == 404
 
 
-def test_enroll_with_invalid_audio_returns_400(fake_user_manager, fake_speaker_identifier):
+def test_enroll_with_invalid_audio_returns_400(fake_user_manager, fake_speaker_identifier, _client):
     c = _client(user_manager=fake_user_manager, speaker_identifier=fake_speaker_identifier)
     cr = c.post("/api/admin/users",
                 json={"name": "Z", "permission_level": "adult"}, headers=_bearer())
@@ -234,20 +279,20 @@ def test_enroll_with_invalid_audio_returns_400(fake_user_manager, fake_speaker_i
 
 # ---------------- Alerts ----------------
 
-def test_alert_ack(fake_alert_manager):
+def test_alert_ack(fake_alert_manager, _client):
     c = _client(alert_manager=fake_alert_manager)
     r = c.post("/api/admin/alerts/al_test/ack", headers=_bearer())
     assert r.status_code == 200
     assert r.json()["alert_id"] == "al_test"
 
 
-def test_alert_ack_unknown_returns_404(fake_alert_manager):
+def test_alert_ack_unknown_returns_404(fake_alert_manager, _client):
     c = _client(alert_manager=fake_alert_manager)
     r = c.post("/api/admin/alerts/al_unknown/ack", headers=_bearer())
     assert r.status_code == 404
 
 
-def test_alert_dismiss(fake_alert_manager):
+def test_alert_dismiss(fake_alert_manager, _client):
     c = _client(alert_manager=fake_alert_manager)
     r = c.delete("/api/admin/alerts/al_test", headers=_bearer())
     assert r.status_code == 200
@@ -256,13 +301,13 @@ def test_alert_dismiss(fake_alert_manager):
 
 # ---------------- Services ----------------
 
-def test_restart_service_not_in_allowlist_returns_403():
+def test_restart_service_not_in_allowlist_returns_403(_client):
     c = _client()
     r = c.post("/api/admin/services/sshd/restart", headers=_bearer())
     assert r.status_code == 403
 
 
-def test_restart_service_calls_systemctl(monkeypatch):
+def test_restart_service_calls_systemctl(monkeypatch, _client):
     import shutil
     import subprocess
     monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/systemctl")
@@ -278,7 +323,7 @@ def test_restart_service_calls_systemctl(monkeypatch):
     assert r.json()["service"] == "kza-voice"
 
 
-def test_restart_service_systemctl_failure_returns_500(monkeypatch):
+def test_restart_service_systemctl_failure_returns_500(monkeypatch, _client):
     import shutil
     import subprocess
     monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/systemctl")
@@ -295,7 +340,7 @@ def test_restart_service_systemctl_failure_returns_500(monkeypatch):
 
 # ---------------- Fail closed without a configured token ----------------
 
-def test_no_token_configured_rejects_without_creating_user(monkeypatch, fake_user_manager):
+def test_no_token_configured_rejects_without_creating_user(monkeypatch, fake_user_manager, _client):
     monkeypatch.delenv("KZA_DASHBOARD_TOKEN", raising=False)
     c = _client(user_manager=fake_user_manager)
     r = c.post("/api/admin/users",
