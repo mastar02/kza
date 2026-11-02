@@ -1,0 +1,308 @@
+{
+  "schema_version": 1,
+  "profile_id": "home-2026-11-v1",
+  "task": "T012",
+  "status": "verified_local",
+  "verified_at_utc": "2026-11-02T07:11:18.751442+00:00",
+  "implementation_revision": "b56b32aa58fc57ea4f8de28520adfccad6744b8f",
+  "implementation_commits": [
+    "67b6774c8bcf7b4485ff839b61c21b7429605dc0",
+    "a04d4f6d6cf31f18d5ea9e27a0e3045876de5a53",
+    "cdbe711fd278b9fc675889c0f432720f528e79cf",
+    "9ccb288726adb2c25dca29746ae8d29e4a5b9a43",
+    "b56b32aa58fc57ea4f8de28520adfccad6744b8f"
+  ],
+  "source_verification": {
+    "complete_suite_revision": "9ccb288726adb2c25dca29746ae8d29e4a5b9a43",
+    "complete_suite_file_hashes": {
+      "src/application.py": "6f83d19c4b46da8aac544cfa47f589e1bcfa719794997432d5d5a1479e3cb8a4",
+      "src/core/observation.py": "d68b5ee793d9694f6d4c0f9c8f10e2e27aeb680e1f0ae5c50dc499cba1b8cbe6",
+      "src/dashboard/api.py": "dbdc9150fdfd76bc7083ed6e90aa0385a2fd2ece1843ae20451eafc8e5485c8f",
+      "src/dashboard/frontend/home/home.js": "6db8bbe12b2b306258969d377f04142754c27ae0684d2d4d9da0afdf41401a2b",
+      "src/dashboard/home_api.py": "51939c5e3fc3cd806d922965dc629cfd2808b62ce7e5460320d9d069b1221b6b",
+      "src/dashboard/home_catalog.py": "69b21a25e1bbd9f74a66f8e6fffdacad45fe8ab59e47788ea7703aedd2a50083",
+      "src/dashboard/monitor_service.py": "b10d2cfa40f4f3f595266792318c87263710a55492e5fa1fff4c9405934bbd06",
+      "src/dashboard/observability.py": "510a023c6b154cc721b8d26ed127167918729a9a4fc68eaefe04402ea510488f",
+      "src/dashboard/observation_http.py": "d9df7537f31526f6aa828988a9cb66f4b8548897627422ab3e500227e2019134",
+      "src/dashboard/rest_delivery.py": "5d15e691c94fda66509698b4bebcf99f0e94d95e5c5da9ee8ba2308917dee0b2",
+      "src/home_assistant/capability_projection.py": "4d147c698c5807e2928689143455d6767f08707090562261b738826ef5079470",
+      "src/home_assistant/capability_service.py": "1ffb20a31827cf4618869f123104bda5569850ddb509413639b330ca586ab2a6",
+      "src/home_assistant/ha_client.py": "6cb15cb03834d9fc5a649721bb8d6e037539ace56a790608be0eac3d1dd3095b",
+      "src/home_assistant/voice_resolver.py": "3535fc7196d1075223ace9205180813f8cc069a3f7567884b3e95b456728d6ad",
+      "src/main.py": "68fb8c835bc3e09799f3b694076dcec8c4a91e1e49640f879b3b2fe234d027a8",
+      "src/orchestrator/dispatcher.py": "3b7feebbba0a511e6ea8ccb48f26c5603bbe31e282068c801ba170ca8ba4599b",
+      "src/pipeline/request_router.py": "d3cc2abe8f0ba202f3434fb2bcba4037e83970969019fbd778114787c66c47e3",
+      "tests/frontend/test_typed_controls.cjs": "431b0ae5a669f78c92fc83a11d7e35bbf766e34e079926a85f704bf78ebc069e",
+      "tests/integration/test_capability_application.py": "5b8caf97a7ab0db49909cba1d68fc73072dee5b98ec11ff88425835cca4e87bf",
+      "tests/integration/test_capability_observations.py": "b768f6b5150453497f750950947d4e84022a185156a0d905ce60a4aabb421869",
+      "tests/integration/test_composite_home_effects.py": "89d845b01bf41331926067573a69569c4d37c07bfb10dea0aae7d0f48b7f555c",
+      "tests/integration/test_observation_endpoints.py": "d3d165c0f901bb0a084c53a13b76882381ec491b928aeba13170f62514d189a0",
+      "tests/integration/test_rest_receipts.py": "02dceb000be90c0d4110d873137c2afe911b41137dcb3c27cbaa0bea7d18e48f",
+      "tests/integration/test_typed_home_operations.py": "a22e3e734b4f73c981c9c46d00c89cb6af88e0a580dc54deec1041084a069458",
+      "tests/integration/test_voice_home_commands.py": "d4e8206e770268d445300e964cb70fa51e68d4d750737b70e0370ee142072b6e",
+      "tests/integration/test_weather_observation_graph.py": "e96842692ef46691891f4890ff9afdeeb641bc14de0dc0bde60ba8ea7fe20eb4",
+      "tests/mocks/capability_source.py": "aa855075a114f18de1d675306bf39eb0bc73de322b900d4b912d5e027f02c80d",
+      "tests/mocks/task_transport.py": "90f40d4133b84a2c00f1bb2d3742ad249a11e5b2c4d36c11be9c49ad0982f273",
+      "tests/unit/core/test_observation.py": "24b4015424f5deb2d7fb3d13ecee25d9a91658095d844c53fd0aefb08c6bb6be",
+      "tests/unit/dashboard/test_observability_adapters.py": "acb8ed1d2826917dacc00adacb8598cd753be87832d6e074011ea02527d38699",
+      "tests/unit/dashboard/test_observation_http.py": "5f2619522a03bf59a0639c810203d691dce8dff104cc845947546572faf69420",
+      "tests/unit/orchestrator/test_dispatcher_world_routing.py": "34a1d5751817fa40f9ce0b6b9aa5c8083bdf41c3ced3ee79abc9963aba6a9635"
+    },
+    "complete_suite_clean_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "complete_suite_matches_commit": true,
+    "final_followup_revision": "b56b32aa58fc57ea4f8de28520adfccad6744b8f",
+    "final_followup_file_hashes": {
+      "src/dashboard/observability.py": "e3ff5507b188614d80a2ba3abad239de237ca75310f9392e7d1b5b71730902c2",
+      "src/dashboard/observability_mocks.py": "f210438edeef1605bcba8d27d50fb3a6cf7eb14aaed5fd31daed882aaf621d59",
+      "src/main.py": "e8dac522580338ef247ccfb992e316ce229517b994471ee21b87ae807bad488a",
+      "tests/integration/test_observation_endpoints.py": "1aafbd67487e92eff5a0851c9118076db47df58a534844e6b383ba24e8120806",
+      "tests/unit/dashboard/test_observability_adapters.py": "7f655a85d51ef7bded755da1261b0cb844bcf63230258accd0fd7a3f1a88f647"
+    },
+    "final_followup_matches_commit": true,
+    "scope": "The complete suite ran on 9ccb288; b56b32a changes only explicit-demo defaults, absent cooldown handling, their tests and mock documentation; 112 focused cases cover final committed sources. No release or physical acceptance."
+  },
+  "results": {
+    "complete_suite": {
+      "tests": 5926,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 5925
+    },
+    "final_focused_suite": {
+      "tests": 112,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 112
+    }
+  },
+  "checks": [
+    {
+      "name": "complete pytest tests/",
+      "revision": "9ccb288726adb2c25dca29746ae8d29e4a5b9a43",
+      "command": "HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 ANONYMIZED_TELEMETRY=False nice -n 10 timeout 1500 data/project-assessment-20261102/venv/bin/python -m pytest tests --tb=short -q --junitxml=data/autonomous-roadmap-20261102/t012/full.xml",
+      "exit_code": 0
+    },
+    {
+      "name": "final actual-factory, capability, operational endpoint, weather, REST receipt, event privacy and observability checks",
+      "revision": "b56b32aa58fc57ea4f8de28520adfccad6744b8f",
+      "cases": 112,
+      "exit_code": 0
+    },
+    {
+      "name": "Casa monotonic freshness frontend checks",
+      "cases": 9,
+      "exit_code": 0,
+      "evidence": "data/autonomous-roadmap-20261102/t012/frontend-second.log"
+    },
+    {
+      "name": "Ruff 0.15.1 src/ tests/ tools/roadmap_status.py",
+      "exit_code": 0
+    },
+    {
+      "name": "independent ownership, provenance, privacy and final demo-default review",
+      "blocking_findings_remaining": 0
+    }
+  ],
+  "proven_local": [
+    "One immutable observation model retains source, actual observation time, expiry, last attempt and unknown fields; retries and HTTP serialization never renew original evidence.",
+    "The actual factory shares one capability owner between voice, Casa and weather; effective operations expire at their first required dependency. Missing observations never replace the selected target.",
+    "Native work is bounded, off-loop, shared and owned through cancellation and shutdown; all waiters receive the same observation timestamp and deadline.",
+    "Operational collections distinguish real empty results, absent or failed dependencies, stale history and explicit demo. Missing or false demo configuration never enables examples.",
+    "Conversation freshness is constructed after the actual read and clipped to original content expiry; existing retention tickets and after-header/before-body revocation guards remain authoritative.",
+    "Current weather uses the exact configured entity and clocked shared source; forecast uses one bounded inline request, preserves cancellation, and distinguishes valid, empty, invalid and unavailable reads."
+  ],
+  "known_xfail": {
+    "unchanged_from_baseline": true,
+    "count": 1,
+    "followup_task": "T037",
+    "criterion": "C05 remains not_evaluated; compound pure-ellipsis resolution remains pending."
+  },
+  "limits": [
+    "All C01-C21 acceptance statuses remain not_evaluated; local verification does not accept C06 or physical behavior.",
+    "Complete technical frontend unknown/demo presentation and renewal remain T040/T046; legacy frontend examples are not credited as operational evidence.",
+    "Weather forecast date alignment still uses the inherited positional formatter. T037 must test reordered, non-today-first, missing-day and invalid-date forecasts; T060 retains regression coverage.",
+    "HA read time does not prove physical measurement time; forecast request time does not prove provider issue time. These unknowns remain explicit.",
+    "Real hardware/network latency is unmeasured. Shared live source reads add network work compared with the inherited unclocked cache.",
+    "Synthetic inputs, model adapters, audio backend and loopback HA only; no real household data, production actions, model downloads or paid AI."
+  ],
+  "environment": {
+    "user": "yo",
+    "checkout": "/home/yo/projects/kza",
+    "python": "3.13.12",
+    "node": "22.22.1",
+    "scope": "local development, offline model paths"
+  },
+  "private_evidence_root": "data/autonomous-roadmap-20261102/t012",
+  "retained_attempts": [
+    {
+      "junit": "demo-final.xml",
+      "tests": 112,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 112
+    },
+    {
+      "junit": "endpoints-final.xml",
+      "tests": 83,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 83
+    },
+    {
+      "junit": "endpoints-first.xml",
+      "tests": 44,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 41
+    },
+    {
+      "junit": "endpoints-fourth.xml",
+      "tests": 66,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 66
+    },
+    {
+      "junit": "endpoints-second.xml",
+      "tests": 52,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 52
+    },
+    {
+      "junit": "endpoints-third.xml",
+      "tests": 60,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 60
+    },
+    {
+      "junit": "foundation.xml",
+      "tests": 792,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 791
+    },
+    {
+      "junit": "full.xml",
+      "tests": 5926,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 5925
+    },
+    {
+      "junit": "graph-fifth.xml",
+      "tests": 365,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 365
+    },
+    {
+      "junit": "graph-first.xml",
+      "tests": 301,
+      "failures": 53,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 248
+    },
+    {
+      "junit": "graph-fourth.xml",
+      "tests": 312,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 312
+    },
+    {
+      "junit": "graph-second.xml",
+      "tests": 286,
+      "failures": 5,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 281
+    },
+    {
+      "junit": "graph-third.xml",
+      "tests": 301,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 299
+    },
+    {
+      "junit": "ownership-final.xml",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 7
+    },
+    {
+      "junit": "ownership-first.xml",
+      "tests": 19,
+      "failures": 4,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 15
+    },
+    {
+      "junit": "ownership-second.xml",
+      "tests": 19,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 19
+    },
+    {
+      "junit": "ownership-third.xml",
+      "tests": 22,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 22
+    },
+    {
+      "junit": "weather-final-verified.xml",
+      "tests": 173,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 173
+    },
+    {
+      "junit": "weather-final.xml",
+      "tests": 173,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 173
+    },
+    {
+      "junit": "weather-first.xml",
+      "tests": 165,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 165
+    },
+    {
+      "junit": "weather-graph-first.xml",
+      "tests": 8,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 7
+    }
+  ]
+}

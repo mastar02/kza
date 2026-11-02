@@ -175,3 +175,11 @@ estado HA tampoco acredita el instante de medición meteorológica física.
 Esta infraestructura no acepta C06 por sí sola. La procedencia de cada endpoint,
 la presentación completa de desconocidos y la renovación de las vistas mantienen
 sus verificaciones propias de T012, T040 y T046.
+
+T012 queda verificado localmente: la suite completa sobre `9ccb288` registra
+5925 casos aprobados y el único `xfail` previo. El ajuste final `b56b32a` exige
+demo explícita también en la fábrica y rechaza limpiar un cooldown sin su
+dependencia; sus 112 pruebas focalizadas pasan sobre esa revisión comprometida.
+La evidencia pública conserva ambas revisiones, hashes y primeros intentos en
+`docs/research/2026-11-02-autonomous-t012-validation.json`. No acredita criterios
+de aceptación ni sustituye las comprobaciones pendientes de clima en T037/T060.

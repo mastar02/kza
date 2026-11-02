@@ -920,18 +920,18 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "implemented",
+      "status": "verified_local",
       "implementation_commits": [
         "67b6774c8bcf7b4485ff839b61c21b7429605dc0",
         "a04d4f6d6cf31f18d5ea9e27a0e3045876de5a53",
-        "cdbe711fd278b9fc675889c0f432720f528e79cf"
+        "cdbe711fd278b9fc675889c0f432720f528e79cf",
+        "9ccb288726adb2c25dca29746ae8d29e4a5b9a43",
+        "b56b32aa58fc57ea4f8de28520adfccad6744b8f"
       ],
       "evidence": [
-        "data/autonomous-roadmap-20261102/t012/foundation-evidence.json",
-        "data/autonomous-roadmap-20261102/t012/endpoints-evidence.json",
-        "data/autonomous-roadmap-20261102/t012/weather-evidence.json"
+        "docs/research/2026-11-02-autonomous-t012-validation.json"
       ],
-      "next_action": "Run complete suite on committed sources; preserve C06 not_evaluated and T040/T046 UI/polling obligations; horizon correctness remains T037/T060."
+      "next_action": "Continue T013; preserve C06 not_evaluated, T040/T046 presentation and renewal obligations, and T037/T060 weather date alignment."
     },
     {
       "id": "T013",
@@ -2111,8 +2111,8 @@
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
     "field_authorized": false,
-    "next_task": "T012",
+    "next_task": "T013",
     "last_verified_phase": "P0",
-    "last_verified_task": "T011"
+    "last_verified_task": "T012"
   }
 }
