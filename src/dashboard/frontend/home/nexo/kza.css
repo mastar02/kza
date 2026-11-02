@@ -171,3 +171,23 @@ dialog>p{font-size:13px;color:#abbccd;line-height:1.9;margin:12px 0}
 @media(min-width:1600px){#people-view .people-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:900px){#people-view .people-workspace{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:500px){#people-view .people-grid{grid-template-columns:minmax(0,1fr)}#person-dialog{padding:22px}#person-dialog .modal-actions>*{width:100%}}
+/* Voice review keeps the approved panel hierarchy at readable control sizes. */
+#voice-connection{font-size:12px;color:#93a7c1;min-height:1.5em}
+#voices-view .identity-heading p,#voices-view .voice-guide p,#voices-view .voice-guide-note,#voices-view .voice-detail-description,#voices-view .identity-muted{font-size:12px;line-height:1.7}
+#voices-view .voice-guide strong,#voices-view .voice-profile-info>strong{font-size:13px}
+#voices-view .voice-profile-info>span,#voices-view .capture-card>p,#voices-view .identity-metrics span{font-size:11px;line-height:1.6}
+#voices-view .voice-profile-row>svg{width:24px;height:24px;color:#bba6e7}
+#voices-view .identity-secondary,#voices-view .identity-primary,#voices-view .identity-danger{font-size:12px;min-height:40px}
+#voices-view .voice-list-panel>h3{font-size:15px;margin:0 0 18px}
+#voices-view .voice-guide>svg{height:34px;width:34px;color:var(--mint);margin-bottom:20px}
+#voices-view .voice-guide li{padding-left:0}
+#voices-view .voice-profile-row{grid-template-columns:28px minmax(0,1fr);min-height:64px}
+#voices-view .voice-signature>span{font-size:9px;letter-spacing:1px}
+.nexo-voice-dialog{width:960px;max-width:calc(100% - 32px);max-height:calc(100dvh - 32px);overflow:auto}
+.nexo-voice-modal{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;margin:24px 0}
+.nexo-voice-samples{max-height:420px;overflow:auto}.nexo-voice-samples .review-sample{display:grid;grid-template-columns:22px minmax(0,1fr) auto}
+.nexo-voice-samples .sample-content>strong,.nexo-voice-samples .sample-content>span{font-size:12px;line-height:1.6}
+.nexo-voice-dialog .identity-secondary,.nexo-voice-dialog .identity-primary{font-size:12px;min-height:40px}
+.nexo-voice-review{min-width:0}.nexo-voice-review p{font-size:12px;line-height:1.7;overflow-wrap:anywhere}.nexo-voice-review audio{width:100%;max-width:100%;margin:12px 0}
+.nexo-voice-dialog .review-selection,.nexo-voice-dialog .relationship-note{font-size:12px;line-height:1.7}
+@media(max-width:740px){.nexo-voice-modal{grid-template-columns:minmax(0,1fr)}.nexo-voice-dialog{max-width:calc(100% - 16px);padding:18px}.nexo-voice-dialog .review-corrections{flex-wrap:wrap}#voices-view .identity-heading{flex-wrap:wrap}#voices-view .identity-heading-side{margin-top:0;flex-direction:row;gap:8px}#voices-view .identity-metrics span{font-size:10px}#voices-view .capture-group-grid{grid-template-columns:minmax(0,1fr)}}

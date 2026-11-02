@@ -13,7 +13,10 @@
     })]));
     async function refresh() {
       const attempt = ++sequence;
+      for (const kind of Object.keys(pages)) delete pages[kind];
       for (const kind of Object.keys(channels)) channels[kind].clearView();
+      await Promise.all(Object.values(channels).map(channel => channel.settled()));
+      if (closed || attempt!==sequence) return;
       if (!channels.profiles.refresh()) return;
       await channels.profiles.settled();
       if (closed || attempt!==sequence) return;
@@ -47,14 +50,17 @@
     }
     function leave() {
       sequence++;
+      for (const kind of Object.keys(pages)) delete pages[kind];
       for (const abort of aborts) abort.abort();
       for (const channel of Object.values(channels)) channel.clearView();
       state.clear();
     }
     return {
       state,refresh,leave,
+      settled:() => Promise.allSettled([...actions,...Object.values(channels).map(channel => channel.settled())]),
       open(identity) { for (const channel of Object.values(channels)) channel.open(identity); if (hasView()) refresh(); },
       async reset() {
+        for (const kind of Object.keys(pages)) delete pages[kind];
         sequence++; for (const abort of aborts) abort.abort(); state.clear();
         await Promise.allSettled([...actions]);
         const done = await Promise.all(Object.values(channels).map(channel => channel.reset()));
@@ -62,6 +68,7 @@
       },
       retire(frame) { for (const channel of Object.values(channels)) channel.retire(frame); },
       review(identity) { return /^vf_[0-9a-f]{64}$/.test(identity) && channels.review.refresh(PATHS.review+identity+'/review'); },
+      closeReview() { channels.review.clearView(); state.review.setStatus('waiting'); },
       next(kind) { const cursor = pages[kind]; if (cursor && kind!=='review') channels[kind].refresh(PATHS[kind]+'?cursor='+encodeURIComponent(cursor)); },
       hasNext:kind => !!pages[kind],
       confirm(identities,name,requestId) { return mutate('/api/voices/profiles',
