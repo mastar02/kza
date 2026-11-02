@@ -870,10 +870,15 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": "Verify actual build_application graph, deferred startup, shared dependencies and failure/cancellation cleanup with offline leaves."
+      "status": "verified_local",
+      "implementation_commits": [
+        "ff4b3846499b61f33b0a0350afd5fd9fd2ad450f"
+      ],
+      "evidence": [
+        "docs/research/2026-11-02-autonomous-t010-validation.json",
+        "data/autonomous-roadmap-20261102/t010/evidence.json"
+      ],
+      "next_action": null
     },
     {
       "id": "T011",
@@ -894,7 +899,7 @@
       "status": "planned",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Introduce independent task/persistence/dispatch/effect/delivery outcomes and verify them through build_application; preserve uncertainty and avoid replay."
     },
     {
       "id": "T012",
@@ -1079,7 +1084,7 @@
       "status": "planned",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Complete persistence/restart/voice journeys; include temporizador synonym observed missing in T010 (see T010 validation limits and retained graph-third.log)."
     },
     {
       "id": "T031",
@@ -2093,7 +2098,8 @@
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
     "field_authorized": false,
-    "next_task": "T010",
-    "last_verified_phase": "P0"
+    "next_task": "T011",
+    "last_verified_phase": "P0",
+    "last_verified_task": "T010"
   }
 }

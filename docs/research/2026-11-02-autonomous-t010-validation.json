@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "profile_id": "home-2026-11-v1",
+  "task": "T010",
+  "status": "verified_local",
+  "verified_at_utc": "2026-11-02T05:06:50.608450+00:00",
+  "implementation_revision": "ff4b3846499b61f33b0a0350afd5fd9fd2ad450f",
+  "source_verification": {
+    "command_base_revision": "ff4b3846499b61f33b0a0350afd5fd9fd2ad450f",
+    "command_tracked_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "file_hashes": {
+      "src/main.py": "b751247f2531088a79b3d869b8f27a73205c63e3b843c1bad16f8b6a82cba79b",
+      "src/application.py": "4ef5d0f8ecff259eff67c719fd20e0fd850ee0873aa3744b6ef7ae5c579017d7",
+      "src/pipeline/command_processor.py": "b72d00e540a1bd859455360143e396c3c9be8c05ae7c51dcc6da1a298c84bfed",
+      "tests/mocks/application_graph.py": "9a8661eabf6fcf896dfd82f74c30fb3dc85ec0d965f60b9ccf73bef616f3d0ef",
+      "tests/integration/test_application_graph.py": "5c54fec741a9c9c68e50a81c452e9eca2fc612b1e86adde2a799b683ddeae4a1",
+      "tests/unit/tools/test_roadmap_status.py": "aa1f01d602389312c3571fd6de685776470de1b5e1a914217549a6f755ce07e9"
+    },
+    "matches_implementation_commit": true,
+    "scope": "Full pytest verified the working source tree; candidate artifact/release acceptance remains later work."
+  },
+  "results": {
+    "tests": 5826,
+    "passed": 5825,
+    "failures": 0,
+    "errors": 0,
+    "xfail": 1
+  },
+  "resolved_tracking_test_failure": "P0 task state is now arranged explicitly in the negative gate test; acceptance requirements unchanged.",
+  "checks": [
+    {
+      "name": "actual graph integration",
+      "cases": 15,
+      "failures": 0
+    },
+    {
+      "name": "complete pytest tests/",
+      "exit_code": 0
+    },
+    {
+      "name": "Ruff 0.15.1 src/ tests/ tools/roadmap_status.py",
+      "exit_code": 0
+    },
+    {
+      "name": "independent lifecycle review",
+      "blocking_findings_remaining": 0
+    }
+  ],
+  "proven_local": [
+    "main uses the exposed build_application factory",
+    "HA/action policy/privacy/output/stores and managers share real identities",
+    "four configured input adapters share privacy/output/model locks without opening hardware",
+    "supported timer phrase traverses actual STT/router/features and shared PCM output",
+    "empty selection rejects before HA observation/send",
+    "late construction failure/cancellation and real STT/TTS warmup cancellation retire owners in order",
+    "repeated operational cancellation and failing dashboard stop still observe tasks and stop routines before pipeline"
+  ],
+  "known_xfail": {
+    "test": "test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]",
+    "unchanged_from_baseline": true,
+    "followup_task": "T037",
+    "criterion": "C05 remains not_evaluated; required compound-command acceptance and this xfail need reconciliation in T037/T060"
+  },
+  "limits": [
+    "No C01-C21 acceptance status changed; P1 still has T011-T014 pending.",
+    "CORE-08 factory coverage is prepared; persistence/restart and every required family remain P3/C01 work.",
+    "Existing timer parser does not recognize temporizador synonym; retained failure evidence is a T030 followup.",
+    "Legacy nightly thread termination still requires T022 inventory; profile keeps training disabled/blocked.",
+    "Real sources, physical microphones, audible delivery, participants and iPhone remain required."
+  ],
+  "private_evidence": "data/autonomous-roadmap-20261102/t010/evidence.json"
+}
