@@ -129,10 +129,14 @@ class ListStore:
 
     async def create_list(
         self, name: str, owner_type: OwnerType | str, owner_id: str | None, *,
-        guard: AuthorityGuard | None = None,
+        guard: AuthorityGuard | None = None, shared_only: bool = False,
     ) -> UserList:
-        """Commit a new list under its original native authority."""
+        """Commit a new list under its original native authority and scope."""
         owner_type = OwnerType(owner_type)
+        if shared_only:
+            if owner_type is not OwnerType.SHARED:
+                raise ValueError("shared_list_required")
+            owner_id = None
         now, list_id = time.time(), _generate_id()
         def operation(db):
             db.execute(
@@ -143,76 +147,98 @@ class ListStore:
         return await self._work.write(operation, guard=guard)
 
     async def get_lists_for_user(self, user_id: str | None, *,
-                                 guard: AuthorityGuard | None = None) -> list[UserList]:
-        """Project matching and shared lists in one native queue operation."""
+                                 guard: AuthorityGuard | None = None,
+                                 shared_only: bool = False) -> list[UserList]:
+        """Project only eligible lists inside one native queue operation."""
         def operation(db):
-            rows = db.execute("SELECT * FROM lists WHERE owner_id = ? OR owner_type = 'shared'",
-                              (user_id,)).fetchall()
+            rows = db.execute("SELECT * FROM lists WHERE owner_type = 'shared' "
+                              "OR (? = 0 AND owner_id = ?)", (shared_only, user_id)).fetchall()
             return [self._row_to_list(row) for row in rows]
         return await self._work.read(operation, guard=guard)
 
     async def find_list_by_name(
         self, name: str, user_id: str | None, *, guard: AuthorityGuard | None = None,
+        shared_only: bool = False,
     ) -> UserList | None:
-        """Find a matching or shared list without retaining a live cursor."""
+        """Apply ownership before selecting a matching list or projecting its name."""
         def operation(db):
             row = db.execute("SELECT * FROM lists WHERE LOWER(name) = LOWER(?) "
-                "AND (owner_id = ? OR owner_type = 'shared') LIMIT 1", (name, user_id)).fetchone()
+                "AND (owner_type = 'shared' OR (? = 0 AND owner_id = ?)) LIMIT 1",
+                (name, shared_only, user_id)).fetchone()
             return self._row_to_list(row) if row is not None else None
         return await self._work.read(operation, guard=guard)
 
     async def add_item(
         self, list_id: str, text: str, added_by: str | None = None, *,
-        guard: AuthorityGuard | None = None,
-    ) -> ListItem:
-        """Commit an item and its detached result in the same native transaction."""
+        guard: AuthorityGuard | None = None, shared_only: bool = False,
+    ) -> ListItem | None:
+        """Check the current parent scope and commit its item in one transaction."""
         now, item_id = time.time(), _generate_id()
+        if shared_only:
+            added_by = None
         def operation(db):
+            parent = db.execute("SELECT 1 FROM lists WHERE id = ? "
+                "AND (? = 0 OR owner_type = 'shared')", (list_id, shared_only)).fetchone()
+            if parent is None:
+                return None
             db.execute("INSERT INTO list_items (id, list_id, text, completed, added_by, created_at) "
                 "VALUES (?, ?, ?, 0, ?, ?)", (item_id, list_id, text, added_by, now))
             return ListItem(id=item_id, list_id=list_id, text=text, completed=False,
                             added_by=added_by, created_at=now)
         return await self._work.write(operation, guard=guard)
 
-    async def get_items(self, list_id: str, *, guard: AuthorityGuard | None = None) -> list[ListItem]:
-        """Project all requested items in one native callback."""
+    async def get_items(self, list_id: str, *, guard: AuthorityGuard | None = None,
+                        shared_only: bool = False) -> list[ListItem]:
+        """Filter the parent scope before projecting any requested item."""
         def operation(db):
-            rows = db.execute("SELECT * FROM list_items WHERE list_id = ? ORDER BY created_at",
-                              (list_id,)).fetchall()
+            rows = db.execute("SELECT * FROM list_items WHERE list_id = ? "
+                "AND (? = 0 OR EXISTS (SELECT 1 FROM lists WHERE lists.id = list_items.list_id "
+                "AND owner_type = 'shared')) ORDER BY created_at", (list_id, shared_only)).fetchall()
             return [self._row_to_item(row) for row in rows]
         return await self._work.read(operation, guard=guard)
 
     async def remove_item(self, item_id: str, *, list_id: str | None = None,
-                          guard: AuthorityGuard | None = None) -> bool:
-        """Commit deletion only from the selected list when one is supplied."""
+                          guard: AuthorityGuard | None = None, shared_only: bool = False) -> bool:
+        """Delete only from the selected list while its parent scope is eligible."""
         def operation(db):
-            return db.execute("DELETE FROM list_items WHERE id = ? AND (? IS NULL OR list_id = ?)",
-                              (item_id, list_id, list_id)).rowcount > 0
+            return db.execute("DELETE FROM list_items WHERE id = ? AND (? IS NULL OR list_id = ?) "
+                "AND (? = 0 OR EXISTS (SELECT 1 FROM lists WHERE lists.id = list_items.list_id "
+                "AND owner_type = 'shared'))", (item_id, list_id, list_id, shared_only)).rowcount > 0
         return await self._work.write(operation, guard=guard)
 
     async def complete_item(self, item_id: str, *, list_id: str | None = None,
-                            guard: AuthorityGuard | None = None) -> ListItem | None:
-        """Commit completion and its selected result without a postcommit read gap."""
+                            guard: AuthorityGuard | None = None,
+                            shared_only: bool = False) -> ListItem | None:
+        """Commit completion only within the selected current parent scope."""
         now = time.time()
         def operation(db):
             changed = db.execute("UPDATE list_items SET completed = 1, completed_at = ? "
-                "WHERE id = ? AND (? IS NULL OR list_id = ?)", (now, item_id, list_id, list_id)).rowcount
+                "WHERE id = ? AND (? IS NULL OR list_id = ?) "
+                "AND (? = 0 OR EXISTS (SELECT 1 FROM lists WHERE lists.id = list_items.list_id "
+                "AND owner_type = 'shared'))", (now, item_id, list_id, list_id, shared_only)).rowcount
             if not changed:
                 return None
             return self._row_to_item(db.execute("SELECT * FROM list_items WHERE id = ?", (item_id,)).fetchone())
         return await self._work.write(operation, guard=guard)
 
-    async def clear_list(self, list_id: str, *, guard: AuthorityGuard | None = None) -> bool:
-        """Commit clearing and verify its result inside that same transaction."""
+    async def clear_list(self, list_id: str, *, guard: AuthorityGuard | None = None,
+                         shared_only: bool = False) -> bool:
+        """Verify the parent scope before deleting any item in this transaction."""
         def operation(db):
+            if db.execute("SELECT 1 FROM lists WHERE id = ? AND (? = 0 OR owner_type = 'shared')",
+                          (list_id, shared_only)).fetchone() is None:
+                return False
             db.execute("DELETE FROM list_items WHERE list_id = ?", (list_id,))
-            return bool(db.execute("SELECT EXISTS(SELECT 1 FROM lists WHERE id = ?) "
-                "AND NOT EXISTS(SELECT 1 FROM list_items WHERE list_id = ?)", (list_id, list_id)).fetchone()[0])
+            return not db.execute("SELECT 1 FROM list_items WHERE list_id = ? LIMIT 1", (list_id,)).fetchone()
         return await self._work.write(operation, guard=guard)
 
-    async def delete_list(self, list_id: str, *, guard: AuthorityGuard | None = None) -> bool:
-        """Delete both item and list rows atomically under original authority."""
+    async def delete_list(self, list_id: str, *, guard: AuthorityGuard | None = None,
+                          shared_only: bool = False) -> bool:
+        """Delete an eligible parent and its children atomically under authority."""
         def operation(db):
+            if db.execute("SELECT 1 FROM lists WHERE id = ? AND (? = 0 OR owner_type = 'shared')",
+                          (list_id, shared_only)).fetchone() is None:
+                return False
             db.execute("DELETE FROM list_items WHERE list_id = ?", (list_id,))
             return db.execute("DELETE FROM lists WHERE id = ?", (list_id,)).rowcount > 0
         return await self._work.write(operation, guard=guard)

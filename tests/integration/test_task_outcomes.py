@@ -60,18 +60,19 @@ async def test_committed_list_item_does_not_disappear_or_replay_after_speech_fai
         config = offline_config(tmp_path, url)
         async with AsyncExitStack() as stack:
             graph = await build_application(config, shutdown=stack, factories=factories)
+            await graph.list_manager.create_list(None, "compras", shared=True, shared_only=True)
             graph.models.stt.text = "agrega leche a la lista de compras"
             result = await graph.pipeline.process_command(event())
             assert result["intent"] == "list" and result["handled"]
             assert result["task_completed"] and result["outcome"]["persistence"] == "committed"
             assert result["response_completed"] is not output_fails
             assert result["success"] is not output_fails
-            assert [i.text for i in await graph.list_manager.get_items("unknown", "compras")] == ["leche"]
+            assert [i.text for i in await graph.list_manager.get_items(None, "compras", shared_only=True)] == ["leche"]
             assert observed["service_calls"] == 0
         # Restart the real factory with the same stores; never replay the turn.
         async with AsyncExitStack() as stack:
             restored = await build_application(config, shutdown=stack, factories=factories)
-            assert [i.text for i in await restored.list_manager.get_items("unknown", "compras")] == ["leche"]
+            assert [i.text for i in await restored.list_manager.get_items(None, "compras", shared_only=True)] == ["leche"]
 
 
 @pytest.mark.parametrize("text", ["vacía la lista de inexistente", "recuérdame tomar agua", "cancela el recordatorio de agua"])
@@ -259,13 +260,14 @@ async def test_optional_ha_replication_failure_does_not_erase_committed_list_ite
         async with AsyncExitStack() as stack:
             graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=factories)
             from types import SimpleNamespace
+            await graph.list_manager.create_list(None, "compras", shared=True, shared_only=True)
             graph.list_manager._ha_sync = SimpleNamespace(sync_add_item=AsyncMock(side_effect=RuntimeError("synthetic")))
             graph.models.stt.text = "agrega leche a la lista de compras"
             result = await graph.pipeline.process_command(event())
             assert result["task_completed"]
             assert result["outcome"]["persistence"] == "committed"
             assert result["outcome"]["replication"] == "uncertain"
-            assert len(await graph.list_manager.get_items("unknown", "compras")) == 1
+            assert len(await graph.list_manager.get_items(None, "compras", shared_only=True)) == 1
 
 
 @pytest.mark.parametrize("kind", ["list_item", "list", "clear_list", "reminder"])

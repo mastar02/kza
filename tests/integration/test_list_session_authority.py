@@ -38,6 +38,59 @@ async def list_graph(tmp_path, dashboard_auth):
             yield SimpleNamespace(authority=authority, store=store, client=client, path=path, clock=clock, shutdown=stack)
 
 
+@pytest.mark.parametrize('resource', ['lists', 'items'])
+@pytest.mark.parametrize('cancel_observer', [False, True])
+async def test_private_http_read_rechecks_original_admin_before_native_projection(
+    list_graph, monkeypatch, dashboard_auth, resource, cancel_observer,
+):
+    graph = list_graph
+    target, item = await seed(graph)
+    entered, release = threading.Event(), threading.Event()
+    queued = asyncio.Event()
+    original_read = graph.store._work.read
+    attribute = '_row_to_list' if resource == 'lists' else '_row_to_item'
+    project = getattr(graph.store, attribute)
+    projections = []
+
+    def convert(row):
+        projections.append(True)
+        return project(row)
+
+    def block(database):
+        entered.set()
+        assert release.wait(5)
+        return None
+
+    async def read(function, *, guard=None):
+        queued.set()
+        return await original_read(function, guard=guard)
+
+    monkeypatch.setattr(graph.store, attribute, convert)
+    blocker = asyncio.create_task(original_read(block))
+    pending = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        monkeypatch.setattr(graph.store._work, 'read', read)
+        path = '/api/lists?user_id=u1' if resource == 'lists' else f'/api/lists/{target.id}/items'
+        pending = asyncio.create_task(graph.client.get(path))
+        await asyncio.wait_for(queued.wait(), 2)
+        if cancel_observer:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        assert (await graph.client.post('/api/admin/auth/logout')).json()['session_revoked']
+    finally:
+        release.set()
+        await blocker
+    if not cancel_observer:
+        assert (await pending).status_code == 403
+    await graph.store._work.drain_admitted()
+    assert projections == []
+    authorized = await graph.client.get(path, headers=dashboard_auth)
+    assert authorized.status_code == 200
+    assert authorized.json()[0]['id'] == (target.id if resource == 'lists' else item.id)
+    assert projections == [True]
+
+
 async def seed(graph):
     target = await graph.store.create_list('Synthetic original list', OwnerType.USER, 'u1')
     item = await graph.store.add_item(target.id, 'Synthetic original item', 'u1')

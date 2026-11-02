@@ -46,58 +46,46 @@ class ListManager:
         )
 
     async def create_list(
-        self, user_id: str, list_name: str, shared: bool = False, *, guard: AuthorityGuard | None = None,
+        self, user_id: str | None, list_name: str, shared: bool = False, *,
+        guard: AuthorityGuard | None = None, shared_only: bool = False,
     ) -> UserList:
-        """Create a new list for a user or as shared.
-
-        Args:
-            user_id: Owner of the list.
-            list_name: Name for the new list.
-            shared: If True, the list is visible to all users.
-
-        Returns:
-            The newly created UserList.
-        """
+        """Create an explicitly shared or trusted personal list."""
+        if shared_only and not shared:
+            raise ValueError("shared_list_required")
         owner_type = OwnerType.SHARED if shared else OwnerType.USER
-        lst = await self._store.create_list(
-            name=list_name, owner_type=owner_type, owner_id=user_id, guard=guard,
-        )
-        logger.info(
-            "Created list '%s' for user=%s (shared=%s)", list_name, user_id, shared
-        )
-        return lst
+        return await self._store.create_list(
+            name=list_name, owner_type=owner_type, owner_id=None if shared_only else user_id,
+            guard=guard, shared_only=shared_only)
 
-    async def delete_list(self, user_id: str, list_name: str) -> bool:
-        """Delete a list by name.
-
-        Args:
-            user_id: User requesting the deletion.
-            list_name: Name of the list to delete.
-
-        Returns:
-            True if the list was found and deleted, False otherwise.
-        """
-        lst = await self._store.find_list_by_name(list_name, user_id)
+    async def delete_list(self, user_id: str | None, list_name: str, *,
+                          shared_only: bool = False, guard: AuthorityGuard | None = None) -> bool:
+        """Delete only a list selected and rechecked within the requested scope."""
+        lst = await self._store.find_list_by_name(list_name, user_id,
+            shared_only=shared_only, guard=guard)
         if lst is None:
-            logger.warning(
-                "Delete failed: list '%s' not found for user=%s", list_name, user_id
-            )
             return False
-        if await self._store.delete_list(lst.id) is not True:
-            return False
-        logger.info("Deleted list '%s' for user=%s", list_name, user_id)
-        return True
+        return await self._store.delete_list(lst.id, shared_only=shared_only, guard=guard)
 
-    async def add_item(self, user_id: str, item_text: str, list_name: str | None = None) -> ListItem:
-        """Add locally; remote replication cannot erase a committed write."""
-        result = await self.add_item_with_outcome(user_id, item_text, list_name)
+    async def add_item(self, user_id: str | None, item_text: str, list_name: str | None = None, *,
+                       shared_only: bool = False, guard: AuthorityGuard | None = None) -> ListItem | None:
+        """Add locally only after an eligible list and committed item are selected."""
+        result = await self.add_item_with_outcome(user_id, item_text, list_name,
+            shared_only=shared_only, guard=guard)
         return result.item
 
-    async def add_item_with_outcome(self, user_id: str, item_text: str,
-                                    list_name: str | None = None) -> ListWriteResult:
-        """Retain the committed item even when optional HA replication fails."""
-        lst = await self._resolve_list(user_id, list_name)
-        item = await self._store.add_item(list_id=lst.id, text=item_text, added_by=user_id)
+    async def add_item_with_outcome(self, user_id: str | None, item_text: str,
+                                    list_name: str | None = None, *, shared_only: bool = False,
+                                    guard: AuthorityGuard | None = None) -> ListWriteResult:
+        """Keep scope rejection separate from a committed local write and replication."""
+        lst = await self._resolve_list(user_id, list_name, shared_only=shared_only, guard=guard)
+        if lst is None:
+            return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
+                persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
+        item = await self._store.add_item(list_id=lst.id, text=item_text,
+            added_by=None if shared_only else user_id, shared_only=shared_only, guard=guard)
+        if item is None:
+            return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
+                persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
         replication = await self._replicate("sync_add_item", lst.name, item_text)
         return ListWriteResult(item, TaskOutcome(TaskStatus.COMPLETED,
             persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
@@ -113,20 +101,25 @@ class ListManager:
             logger.warning("List committed locally; HA replication remains uncertain")
             return DispatchState.UNCERTAIN
 
-    async def remove_item(self, user_id: str, item_text: str, list_name: str | None = None) -> bool:
-        """Remove a matched item; missing targets never count as a mutation."""
-        return (await self.remove_item_with_outcome(user_id, item_text, list_name)).outcome.task_completed
+    async def remove_item(self, user_id: str | None, item_text: str, list_name: str | None = None, *,
+                          shared_only: bool = False, guard: AuthorityGuard | None = None) -> bool:
+        """Remove a matching eligible item only after a committed native deletion."""
+        return (await self.remove_item_with_outcome(user_id, item_text, list_name,
+            shared_only=shared_only, guard=guard)).outcome.task_completed
 
-    async def remove_item_with_outcome(self, user_id: str, item_text: str,
-                                      list_name: str | None = None) -> ListWriteResult:
-        """Separate local deletion from optional HA replication."""
-        lst = await self._store.find_list_by_name(list_name or self._default_list_name, user_id)
-        items = await self._store.get_items(lst.id) if lst is not None else []
+    async def remove_item_with_outcome(self, user_id: str | None, item_text: str,
+                                      list_name: str | None = None, *, shared_only: bool = False,
+                                      guard: AuthorityGuard | None = None) -> ListWriteResult:
+        """Apply scope before fuzzy matching and again before native deletion."""
+        lst = await self._store.find_list_by_name(list_name or self._default_list_name, user_id,
+            shared_only=shared_only, guard=guard)
+        items = await self._store.get_items(lst.id, shared_only=shared_only, guard=guard) if lst is not None else []
         match = self._fuzzy_find(item_text, items)
         if match is None:
             return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
                 persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
-        removed = await self._store.remove_item(match.id)
+        removed = await self._store.remove_item(match.id, list_id=lst.id,
+            shared_only=shared_only, guard=guard)
         if removed is not True:
             return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
                 persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
@@ -135,81 +128,65 @@ class ListManager:
             persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
             observation_scope="software_state", replication=replication))
 
-    async def get_items(
-        self, user_id: str, list_name: str | None = None
-    ) -> list[ListItem]:
-        """Get all items in a list.
+    async def get_list(self, user_id: str | None, list_name: str | None = None, *,
+                       shared_only: bool = False, guard: AuthorityGuard | None = None) -> UserList | None:
+        """Resolve an existing eligible list without implicitly creating one."""
+        return await self._store.find_list_by_name(list_name or self._default_list_name, user_id,
+            shared_only=shared_only, guard=guard)
 
-        Args:
-            user_id: User requesting items.
-            list_name: Target list name. Uses default if None.
-
-        Returns:
-            List of ListItem objects.
-        """
-        lst = await self._store.find_list_by_name(
-            list_name or self._default_list_name, user_id
-        )
+    async def get_items(self, user_id: str | None, list_name: str | None = None, *,
+                        shared_only: bool = False, guard: AuthorityGuard | None = None) -> list[ListItem]:
+        """Read only items whose parent is eligible at each native projection."""
+        lst = await self._store.find_list_by_name(list_name or self._default_list_name, user_id,
+            shared_only=shared_only, guard=guard)
         if lst is None:
             return []
-        return await self._store.get_items(lst.id)
+        return await self._store.get_items(lst.id, shared_only=shared_only, guard=guard)
 
-    async def clear_list(self, user_id: str, list_name: str | None = None) -> bool:
-        """Remove items only when the requested list exists and commit succeeds."""
-        lst = await self._store.find_list_by_name(list_name or self._default_list_name, user_id)
-        if lst is None or await self._store.clear_list(lst.id) is not True:
+    async def clear_list(self, user_id: str | None, list_name: str | None = None, *,
+                         shared_only: bool = False, guard: AuthorityGuard | None = None) -> bool:
+        """Clear only an eligible list after its current scope is rechecked."""
+        lst = await self._store.find_list_by_name(list_name or self._default_list_name, user_id,
+            shared_only=shared_only, guard=guard)
+        if lst is None:
             return False
-        logger.info("Cleared list '%s' for user=%s", lst.name, user_id)
-        return True
+        return await self._store.clear_list(lst.id, shared_only=shared_only, guard=guard)
 
-    async def get_items_by_list_id(self, list_id: str) -> list[ListItem]:
-        """Get items for a specific list by ID."""
-        return await self._store.get_items(list_id)
+    async def get_items_by_list_id(self, list_id: str, *, shared_only: bool = False,
+                                   guard: AuthorityGuard | None = None) -> list[ListItem]:
+        """Read a list by ID with an original authority and optional shared scope."""
+        return await self._store.get_items(list_id, shared_only=shared_only, guard=guard)
 
     async def add_item_to_list_id(
-        self, list_id: str, item_text: str, user_id: str | None = None, *, guard: AuthorityGuard | None = None,
-    ) -> ListItem:
-        """Add item to a specific list by ID."""
-        return await self._store.add_item(list_id, item_text, added_by=user_id, guard=guard)
+        self, list_id: str, item_text: str, user_id: str | None = None, *,
+        guard: AuthorityGuard | None = None, shared_only: bool = False,
+    ) -> ListItem | None:
+        """Check the parent and add an item by ID under original authority."""
+        return await self._store.add_item(list_id, item_text,
+            added_by=None if shared_only else user_id, guard=guard, shared_only=shared_only)
 
     async def remove_item_by_id(self, item_id: str, *, list_id: str | None = None,
-                                guard: AuthorityGuard | None = None) -> bool:
-        """Return whether the identified item was actually removed."""
-        return await self._store.remove_item(item_id, list_id=list_id, guard=guard)
+                                guard: AuthorityGuard | None = None,
+                                shared_only: bool = False) -> bool:
+        """Delete an identified item only from an eligible selected list."""
+        return await self._store.remove_item(item_id, list_id=list_id,
+            guard=guard, shared_only=shared_only)
 
-    async def get_all_lists(self, user_id: str) -> list[UserList]:
-        """Get all lists accessible to a user.
+    async def get_all_lists(self, user_id: str | None, *, shared_only: bool = False,
+                            guard: AuthorityGuard | None = None) -> list[UserList]:
+        """Project eligible list names without selecting private homonyms first."""
+        return await self._store.get_lists_for_user(user_id, shared_only=shared_only, guard=guard)
 
-        Args:
-            user_id: User requesting their lists.
-
-        Returns:
-            List of UserList objects (owned + shared).
-        """
-        return await self._store.get_lists_for_user(user_id)
-
-    async def _resolve_list(
-        self, user_id: str, list_name: str | None
-    ) -> UserList:
-        """Find a list by name or auto-create the default list.
-
-        Args:
-            user_id: User context for the lookup.
-            list_name: List name to find, or None for default.
-
-        Returns:
-            The resolved UserList.
-        """
+    async def _resolve_list(self, user_id: str | None, list_name: str | None, *,
+                            shared_only: bool = False,
+                            guard: AuthorityGuard | None = None) -> UserList | None:
+        """Resolve an eligible list; household voice cannot create personal defaults."""
         name = list_name or self._default_list_name
-        lst = await self._store.find_list_by_name(name, user_id)
-        if lst is not None:
+        lst = await self._store.find_list_by_name(name, user_id, shared_only=shared_only, guard=guard)
+        if lst is not None or shared_only:
             return lst
-        logger.info(
-            "Auto-creating list '%s' for user=%s", name, user_id
-        )
-        return await self._store.create_list(
-            name=name, owner_type=OwnerType.USER, owner_id=user_id
-        )
+        return await self._store.create_list(name=name, owner_type=OwnerType.USER, owner_id=user_id,
+            guard=guard)
 
     @staticmethod
     def _fuzzy_find(

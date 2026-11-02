@@ -23,7 +23,7 @@ from src.core.sanitize import sanitize_dict
 from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
-from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session, session_guard
+from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_admin, require_dashboard_access, require_dashboard_session, session_guard
 from src.dashboard.authority import DashboardAuthority
 from src.dashboard.home_api import (
     LegacyHomeActionBody, execute_home_action, register_home_frontend, register_home_routes,
@@ -658,11 +658,15 @@ class DashboardAPI:
 
         # ==================== Lists ====================
 
-        @self.app.get("/api/lists")
-        async def get_lists(user_id: str):
+        @self.app.get("/api/lists", dependencies=[Depends(require_admin)])
+        async def get_lists(user_id: str, request: Request):
             if not self.list_manager:
                 raise HTTPException(status_code=503, detail="Lists not configured")
-            lists = await self.list_manager.get_all_lists(user_id)
+            try:
+                lists = await self.list_manager.get_all_lists(user_id,
+                    guard=session_guard(request, frozenset({'admin:manage'})))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="list_read_denied") from error
             return [{"id": l.id, "name": l.name, "owner_type": l.owner_type, "owner_id": l.owner_id} for l in lists]
 
         @self.app.post("/api/lists")
@@ -678,11 +682,15 @@ class DashboardAPI:
                     "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                         effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}
 
-        @self.app.get("/api/lists/{list_id}/items")
-        async def get_list_items(list_id: str):
+        @self.app.get("/api/lists/{list_id}/items", dependencies=[Depends(require_admin)])
+        async def get_list_items(list_id: str, request: Request):
             if not self.list_manager:
                 raise HTTPException(status_code=503, detail="Lists not configured")
-            items = await self.list_manager.get_items_by_list_id(list_id)
+            try:
+                items = await self.list_manager.get_items_by_list_id(list_id,
+                    guard=session_guard(request, frozenset({'admin:manage'})))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="list_read_denied") from error
             return [{"id": i.id, "text": i.text, "completed": i.completed} for i in items]
 
         @self.app.post("/api/lists/{list_id}/items")
@@ -694,6 +702,8 @@ class DashboardAPI:
                     guard=session_guard(request, frozenset({'admin:manage'})))
             except PermissionError as error:
                 raise HTTPException(status_code=403, detail="list_write_denied") from error
+            if item is None:
+                raise HTTPException(status_code=404, detail="list_not_found")
             return {"id": item.id, "text": item.text, "completed": item.completed, "list_id": item.list_id,
                     "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                         effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}

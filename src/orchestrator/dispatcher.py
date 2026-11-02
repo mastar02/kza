@@ -1407,36 +1407,48 @@ class RequestDispatcher:
             timings=timings
         )
 
-    async def _fast_list_path(self, text: str, user_id: str, zone_id: str = None) -> DispatchResult:
-        """Report actual local reads/writes, independently of spoken feedback."""
+    async def _fast_list_path(self, text: str, user_id: str | None, zone_id: str = None) -> DispatchResult:
+        """Apply household scope before reading names or mutating any list."""
         if not self.list_manager:
             return DispatchResult(PathType.FAST_LIST, Priority.HIGH, False, "Listas no configuradas",
                 intent="list", outcome=TaskOutcome(TaskStatus.UNSUPPORTED))
         from src.lists.list_manager import ListManager
         text_lower = text.lower()
+        user_id = None
         outcome = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
         committed = TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                                 effect=EffectState.OBSERVED, observation_scope="software_state")
         try:
             if any(w in text_lower for w in ["qué hay", "que hay", "dime la lista", "lee la lista"]):
-                items = await self.list_manager.get_items(user_id, self._extract_list_name(text_lower))
-                response = "En la lista tienes: " + ", ".join(i.text for i in items) if items else "La lista está vacía"
+                name = self._extract_list_name(text_lower)
+                if isinstance(self.list_manager, ListManager):
+                    selected = await self.list_manager.get_list(user_id, name, shared_only=True)
+                    if selected is None:
+                        return DispatchResult(PathType.FAST_LIST, Priority.HIGH, False,
+                            "No encontré esa lista compartida. Indicá el nombre de una lista del hogar.",
+                            intent="list", outcome=outcome)
+                    items = await self.list_manager.get_items_by_list_id(selected.id, shared_only=True)
+                else:
+                    items = await self.list_manager.get_items(user_id, name, shared_only=True)
+                response = "En la lista tienes: " + ", ".join(i.text for i in items) if items else "La lista compartida está vacía"
                 outcome = TaskOutcome(TaskStatus.COMPLETED)
             elif any(w in text_lower for w in ["vacía", "vacia", "limpia"]):
-                cleared = await self.list_manager.clear_list(user_id, self._extract_list_name(text_lower))
-                response = "Listo, vacié la lista" if cleared is True else "No encontré esa lista"
+                cleared = await self.list_manager.clear_list(user_id, self._extract_list_name(text_lower), shared_only=True)
+                response = "Listo, vacié la lista" if cleared is True else "No encontré esa lista compartida"
                 if cleared is True:
                     outcome = committed
             elif any(w in text_lower for w in ["borra la lista", "elimina la lista"]):
                 name = self._extract_list_name(text_lower)
-                removed = bool(name) and await self.list_manager.delete_list(user_id, name)
-                response = f"Borré la lista {name}" if removed else "No encontré esa lista"
+                removed = bool(name) and await self.list_manager.delete_list(user_id, name, shared_only=True)
+                response = f"Borré la lista {name}" if removed else "No encontré esa lista compartida"
                 if removed:
                     outcome = committed
             elif any(w in text_lower for w in ["crea una lista", "nueva lista"]):
                 name = self._extract_list_name(text_lower)
-                if name:
-                    created = await self.list_manager.create_list(user_id, name, shared="compartida" in text_lower)
+                if not re.search(r'\blista\s+compartida\b', text_lower):
+                    response = "Indicá que querés crear una lista compartida del hogar."
+                elif name:
+                    created = await self.list_manager.create_list(user_id, name, shared=True, shared_only=True)
                     response = f"Creé la lista {name}" if created is not None else "No pude crear la lista"
                     outcome = committed if created is not None else TaskOutcome(TaskStatus.FAILED)
                 else:
@@ -1445,30 +1457,30 @@ class RequestDispatcher:
                 item = self._extract_item_text(text_lower, removing=True)
                 name = self._extract_list_name(text_lower)
                 if item and isinstance(self.list_manager, ListManager):
-                    mutation = await self.list_manager.remove_item_with_outcome(user_id, item, name)
+                    mutation = await self.list_manager.remove_item_with_outcome(user_id, item, name, shared_only=True)
                     outcome = mutation.outcome
                     removed = outcome.task_completed
                 else:
-                    removed = bool(item) and await self.list_manager.remove_item(user_id, item, name)
+                    removed = bool(item) and await self.list_manager.remove_item(user_id, item, name, shared_only=True)
                     if removed:
                         outcome = committed
-                response = f"Quité {item}" if removed else "No encontré ese artículo en la lista"
+                response = f"Quité {item}" if removed else "No encontré ese artículo en la lista compartida"
             elif any(w in text_lower for w in ["agrega", "agregale", "añade", "pon"]):
                 item = self._extract_item_text(text_lower, removing=False)
                 name = self._extract_list_name(text_lower)
                 if item:
                     if isinstance(self.list_manager, ListManager):
-                        mutation = await self.list_manager.add_item_with_outcome(user_id, item, name)
+                        mutation = await self.list_manager.add_item_with_outcome(user_id, item, name, shared_only=True)
                         outcome = mutation.outcome
                     else:
-                        created = await self.list_manager.add_item(user_id, item, name)
-                        outcome = committed if created is not None else TaskOutcome(TaskStatus.FAILED)
-                    response = f"Agregué {item}" if outcome.task_completed else "No pude agregar el artículo"
+                        created = await self.list_manager.add_item(user_id, item, name, shared_only=True)
+                        outcome = committed if created is not None else TaskOutcome(TaskStatus.NEEDS_INPUT)
+                    response = f"Agregué {item}" if outcome.task_completed else "No encontré una lista compartida donde agregar el artículo."
                 else:
                     response = "No entendí qué agregar"
             else:
-                lists = await self.list_manager.get_all_lists(user_id)
-                response = "Tienes estas listas: " + ", ".join(lst.name for lst in lists) if lists else "No tienes listas creadas"
+                lists = await self.list_manager.get_all_lists(user_id, shared_only=True)
+                response = "Las listas compartidas son: " + ", ".join(lst.name for lst in lists) if lists else "No hay listas compartidas creadas"
                 outcome = TaskOutcome(TaskStatus.COMPLETED)
             return DispatchResult(PathType.FAST_LIST, Priority.HIGH, outcome.task_completed,
                                   response, intent="list", outcome=outcome)
