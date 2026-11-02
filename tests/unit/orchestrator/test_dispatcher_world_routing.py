@@ -1,13 +1,27 @@
 """Weather routing, and the thermostat collision it must not cause."""
 
 from unittest.mock import AsyncMock, MagicMock
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.dispatcher import PathType, Priority, RequestDispatcher
 from src.orchestrator.priority_queue import PriorityRequestQueue
-from src.world.weather import NO_DATA, NO_FORECAST
+from src.world.weather import DEFAULT_ENTITY, NO_DATA, NO_FORECAST
+from src.home_assistant.ha_client import HAStatesSnapshot
+
+
+def weather_snapshot(state, entity_id=DEFAULT_ENTITY):
+    """A synthetic, typed read with explicit time; no unclocked cache fallback."""
+    now = datetime.now(UTC)
+    if state is None:
+        values = ()
+    elif type(state) is not dict or type(state.get('state')) is not str or type(state.get('attributes', {})) is not dict:
+        return HAStatesSnapshot(False, None, 'ha_states_invalid', attempted_at=now)
+    else:
+        values = ({**state, 'entity_id': state.get('entity_id', entity_id)},)
+    return HAStatesSnapshot(True, now, None, values, now+timedelta(seconds=6), now)
 
 
 @pytest.fixture
@@ -237,6 +251,7 @@ def dispatcher_with_async_ha():
         priority_queue=PriorityRequestQueue(),
     )
     d.music = MagicMock()
+    d.ha.get_state_snapshot.return_value = weather_snapshot(None)
     return d
 
 
@@ -277,7 +292,7 @@ async def test_handle_weather_forecast_malformed_response_is_honest_fallback(
 
 def test_handle_weather_current_none_state_is_honest_fallback(dispatcher_with_async_ha):
     d = dispatcher_with_async_ha
-    d.ha.get_entity_state_cached = MagicMock(return_value=None)
+    d.ha.get_state_snapshot = AsyncMock(return_value=weather_snapshot(None))
 
     import asyncio
     result = asyncio.run(d._handle_weather("qué tiempo hace", Priority.HIGH))
@@ -299,7 +314,7 @@ def test_handle_weather_current_malformed_state_is_honest_fallback(
     dispatcher_with_async_ha, malformed_state
 ):
     d = dispatcher_with_async_ha
-    d.ha.get_entity_state_cached = MagicMock(return_value=malformed_state)
+    d.ha.get_state_snapshot = AsyncMock(return_value=weather_snapshot(malformed_state))
 
     import asyncio
     result = asyncio.run(d._handle_weather("qué tiempo hace", Priority.HIGH))
@@ -312,7 +327,7 @@ def test_handle_weather_current_malformed_state_is_honest_fallback(
 async def test_dispatch_wires_fast_weather_end_to_end_with_missing_data(dispatcher_with_async_ha):
     """Full dispatch(), not just _classify_request + _handle_weather in isolation."""
     d = dispatcher_with_async_ha
-    d.ha.get_entity_state_cached = MagicMock(return_value=None)
+    d.ha.get_state_snapshot = AsyncMock(return_value=weather_snapshot(None))
 
     result = await d.dispatch(user_id="u1", text="qué tiempo hace", zone_id="zone_test")
 
@@ -458,15 +473,17 @@ def test_dispatcher_default_weather_entity_matches_the_shipped_config():
 
 
 async def test_configured_weather_entity_is_the_one_queried(dispatcher_with_async_ha):
-    """La entidad configurada llega hasta la llamada a HA, en las dos ramas."""
+    """Extract the exact configured entity from a typed read, with no cache fallback."""
     d = dispatcher_with_async_ha
     d.weather_entity = "weather.casa_de_prueba"
-    d.ha.get_entity_state_cached = MagicMock(return_value=None)
+    d.ha.get_entity_state_cached = MagicMock(side_effect=AssertionError("unclocked cache used"))
+    d.ha.get_state_snapshot = AsyncMock(return_value=weather_snapshot(
+        {"state": "sunny", "attributes": {"temperature": 23}}, d.weather_entity))
     d.ha.call_service_with_response = AsyncMock(return_value=None)
-
-    await d._handle_weather("qué tiempo hace", Priority.HIGH)
-    assert d.ha.get_entity_state_cached.call_args.args[0] == "weather.casa_de_prueba"
-
+    result = await d._handle_weather("qué tiempo hace", Priority.HIGH)
+    assert "23 grados" in result.response
+    d.ha.get_state_snapshot.assert_awaited_once()
+    d.ha.get_entity_state_cached.assert_not_called()
     await d._handle_weather("qué tiempo hace mañana", Priority.HIGH)
     assert d.ha.call_service_with_response.await_args.args[2] == "weather.casa_de_prueba"
 
@@ -508,7 +525,7 @@ async def test_pasado_manana_requests_day_after_tomorrow(dispatcher_with_async_h
 
 async def test_no_data_increments_stat_and_warns(dispatcher_with_async_ha, caplog):
     d = dispatcher_with_async_ha
-    d.ha.get_entity_state_cached = MagicMock(return_value=None)
+    d.ha.get_state_snapshot = AsyncMock(return_value=weather_snapshot(None))
     with caplog.at_level("WARNING"):
         result = await d._handle_weather("qué tiempo hace", Priority.HIGH)
     assert result.success is True          # el degradado honesto NO es fallo
@@ -519,9 +536,9 @@ async def test_no_data_increments_stat_and_warns(dispatcher_with_async_ha, caplo
 
 async def test_data_present_does_not_touch_the_no_data_stat(dispatcher_with_async_ha):
     d = dispatcher_with_async_ha
-    d.ha.get_entity_state_cached = MagicMock(return_value={
+    d.ha.get_state_snapshot = AsyncMock(return_value=weather_snapshot({
         "state": "sunny", "attributes": {"temperature": 22.0},
-    })
+    }))
     result = await d._handle_weather("qué tiempo hace", Priority.HIGH)
     assert "22 grados" in result.response
     assert d._stats["weather_no_data"] == 0
@@ -539,7 +556,7 @@ async def test_no_data_warning_is_rate_limited_but_stat_is_not(
     PRIMERA llamada silenciosamente podría no loguear tampoco.
     """
     d = dispatcher_with_async_ha
-    d.ha.get_entity_state_cached = MagicMock(return_value=None)
+    d.ha.get_state_snapshot = AsyncMock(return_value=weather_snapshot(None))
 
     with caplog.at_level("WARNING"):
         r1 = await d._handle_weather("qué tiempo hace", Priority.HIGH)

@@ -1486,6 +1486,7 @@ async def build_application(
             privacy=privacy_services,
             response_timeout_s=config.get("orchestrator", {}).get("response_timeout_s", 180.0),
             home_actions=home_action_service,
+            home_capabilities=home_capabilities,
             # Plan #2 OpenClaw
             compactor=compactor,
             persister=persister,

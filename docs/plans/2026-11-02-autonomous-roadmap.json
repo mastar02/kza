@@ -1228,7 +1228,7 @@
       "status": "planned",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "T012 source bridge retains positional weather.describe_forecast horizon selection. Validate reordered forecasts, first entry not today, missing requested day and invalid dates via the actual pipeline; retrieval time does not prove forecast issue time/date alignment. Preserve compound-command/ellipsis regression followups and consolidate in T060. No C01/C02/C05/C13 acceptance credited."
     },
     {
       "id": "T040",

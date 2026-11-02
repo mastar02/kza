@@ -19,6 +19,12 @@ class TaskTransport:
     state_reads: int = 0
     states_entered: asyncio.Event = field(default_factory=asyncio.Event)
     states_release: asyncio.Event = field(default_factory=asyncio.Event)
+    forecast_payload: object = None
+    forecast_status: int = 200
+    forecast_hold: bool = False
+    forecast_reads: list = field(default_factory=list)
+    forecast_entered: asyncio.Event = field(default_factory=asyncio.Event)
+    forecast_release: asyncio.Event = field(default_factory=asyncio.Event)
     sends: list = field(default_factory=list)
     entered: asyncio.Event = field(default_factory=asyncio.Event)
     release: asyncio.Event = field(default_factory=asyncio.Event)
@@ -53,6 +59,14 @@ class TaskTransport:
         async def send(request):
             body = await request.json()
             entity = body["entity_id"]
+            if request.match_info["service"] == "get_forecasts":
+                self.forecast_reads.append(body)
+                self.forecast_entered.set()
+                if self.forecast_hold:
+                    await self.forecast_release.wait()
+                if self.forecast_status != 200:
+                    return web.Response(status=self.forecast_status)
+                return web.json_response(self.forecast_payload)
             self.sends.append((entity, request.match_info["service"], body))
             self.entered.set()
             if self.hold:
@@ -77,4 +91,5 @@ class TaskTransport:
         finally:
             self.release.set()
             self.states_release.set()
+            self.forecast_release.set()
             await runner.cleanup()

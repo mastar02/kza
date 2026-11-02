@@ -165,6 +165,13 @@ tras la consulta real, dentro del dueño ASGI; su frescura se limita además por
 el vencimiento de las filas. Los receipts y las guardas posteriores a headers
 permanecen como autoridad de entrega y revocación.
 
+El clima actual del orquestador utiliza la misma lectura tipada y la entidad
+configurada exacta, sin volver al cache sin fecha. El pronóstico conserva su
+consulta acotada y distingue lectura vacía, inválida y fallida. Su fecha de
+consulta no acredita emisión ni alineación de fechas del proveedor; el formatter
+posicional heredado sigue pendiente de comprobación en T037/T060. La lectura de
+estado HA tampoco acredita el instante de medición meteorológica física.
+
 Esta infraestructura no acepta C06 por sí sola. La procedencia de cada endpoint,
 la presentación completa de desconocidos y la renovación de las vistas mantienen
 sus verificaciones propias de T012, T040 y T046.

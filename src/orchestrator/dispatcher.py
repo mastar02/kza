@@ -38,16 +38,20 @@ import re
 import time
 import unicodedata
 from contextlib import aclosing
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Callable
 
 from src.core.logging import get_logger
+from src.core.observation import Observation, ObservationReason, ObservationSource, ObservationState
 from src.core.voice_delivery import DeliveryState, GenerationState
 from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DeliveryOutcome, DispatchState, EffectState, PersistenceState, ResponseRequirement, TaskOutcome, TaskStatus, TurnOutcome,
 )
 from src.home_assistant.home_actions import HomeActionResult, HomeActionService
+from src.home_assistant.capability_service import HomeCapabilityService
+from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
 from src.home_assistant.voice_actions import VoiceActionResult, VoiceHomeActionExecutor
 from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.memory.fact_ledger import MemorySource
@@ -325,6 +329,7 @@ class DispatchResult:
     receipt: HomeActionResult | None = None
     delivery_outcome: DeliveryOutcome | None = None
     response_requirement: ResponseRequirement = ResponseRequirement.REQUIRED
+    observation: Observation | None = None
 
     def __post_init__(self) -> None:
         if self.outcome is None and self.intent in {"simple_query", "conversation"}:
@@ -348,6 +353,7 @@ class DispatchResult:
             "receipt": asdict(self.receipt) if self.receipt is not None else None,
             "delivery_outcome": self.delivery_outcome.to_dict() if self.delivery_outcome is not None else None,
             "response_requirement": self.response_requirement.value,
+            "source_observation": self.observation.to_dict() if self.observation is not None else None,
         }
 
 
@@ -564,6 +570,7 @@ class RequestDispatcher:
         weather_entity: str = DEFAULT_WEATHER_ENTITY,
         home_actions: HomeActionService | None = None,
         response_timeout_s: float = 180.0,
+        home_capabilities: HomeCapabilityService | None = None,
     ):
         """
         Args:
@@ -618,6 +625,7 @@ class RequestDispatcher:
         self.reminder_manager = reminder_manager
         self.response_handler = response_handler
         self.weather_entity = weather_entity
+        self.home_capabilities = home_capabilities
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
         # Voice-auth opcional (default OFF): exige speaker enrolado para ejecutar
@@ -1496,69 +1504,68 @@ class RequestDispatcher:
                 intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
 
     async def _handle_weather(self, text: str, priority: Priority) -> DispatchResult:
-        """Answer from HA. Two branches with very different costs.
+        """Answer from an exact, current HA observation or report missing data.
 
-        - "hoy" (default): cached read via `get_entity_state_cached`, no
-          network hop — fits inside the 300ms fast path budget.
-        - "mañana"/"pasado mañana": a REAL POST to `weather.get_forecasts`,
-          awaited inline. NOT cached; it necessarily blows the fast path
-          budget, and WEATHER_FORECAST_TIMEOUT_S is what bounds by how much.
-
-        Nunca propaga una excepción. Un turno de voz mudo es el peor
-        degradado posible: desde acá una excepción atraviesa `dispatch()`,
-        `MultiUserOrchestrator.process()`, `request_router` y `voice_pipeline`
-        sin que nadie la atrape, y el usuario no escucha NADA — ni respuesta,
-        ni error, ni beep. Los FALLOS sí hablan (ver request_router.py).
-
-        Args:
-            text: Texto del usuario (ya identificado como consulta de clima).
-            priority: Prioridad con la que se clasificó la petición.
-
-        Returns:
-            DispatchResult siempre hablable; `success=False` solo si hubo
-            una excepción inesperada (que además se loguea a ERROR).
+        Current conditions use the shared typed reader. Forecasts retain the
+        existing bounded query and record retrieval time independently of issue time.
+        Neither branch substitutes another entity or uses an unclocked cache.
         """
         from src.world.weather import NO_DATA, describe_current, describe_forecast
 
         text_lower = text.lower()
-        if "pasado mañana" in text_lower or "pasado manana" in text_lower:
-            dia = "pasado mañana"
-        elif "mañana" in text_lower or "manana" in text_lower:
-            dia = "mañana"
-        else:
-            dia = None
-
+        dia = ("pasado mañana" if "pasado mañana" in text_lower or "pasado manana" in text_lower
+               else "mañana" if "mañana" in text_lower or "manana" in text_lower else None)
+        clock = self.home_capabilities.now if self.home_capabilities is not None else lambda: datetime.now(UTC)
+        attempted = clock()
+        source = ObservationSource.HA_FORECAST if dia else ObservationSource.HA_STATES
+        observation = Observation.from_read(source, available=False, observed_at=None,
+            ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted)
         try:
             if dia:
                 payload = await self.ha.call_service_with_response(
                     "weather", "get_forecasts", self.weather_entity,
-                    {"type": "daily"},
-                    timeout=WEATHER_FORECAST_TIMEOUT_S,
-                )
-                # `or {}` en CADA nivel, no `.get(clave, {})`: el default de
-                # `dict.get` solo aplica cuando la CLAVE FALTA, no cuando la
-                # clave existe con valor None. HA puede responder 200 con
-                # {"service_response": null} (el servicio corrió y no tiene
-                # nada que devolver) y ahí `.get("service_response", {})`
-                # devuelve None -> AttributeError en el `.get` siguiente.
-                service_response = (payload or {}).get("service_response") or {}
-                entity_block = service_response.get(self.weather_entity) or {}
-                forecast = entity_block.get("forecast") or []
-                response = describe_forecast(forecast, dia)
+                    {"type": "daily"}, timeout=WEATHER_FORECAST_TIMEOUT_S)
+                service_response = payload.get("service_response") if type(payload) is dict else None
+                entity = service_response.get(self.weather_entity) if type(service_response) is dict else None
+                forecast = entity.get("forecast") if type(entity) is dict else None
+                if type(forecast) is list and all(type(item) is dict for item in forecast):
+                    observation = Observation.from_read(source, available=True, observed_at=clock(),
+                        ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted,
+                        unobserved_fields=("issued_at", "forecast_date_alignment"))
+                    response = describe_forecast(forecast, dia)
+                else:
+                    observation = Observation.from_read(source, available=False, observed_at=None,
+                        ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted,
+                        reason=ObservationReason.UNAVAILABLE if payload is None else ObservationReason.INVALID)
+                    response = describe_forecast([], dia)
             else:
-                response = describe_current(
-                    self.ha.get_entity_state_cached(self.weather_entity)
-                )
+                if self.home_capabilities is not None:
+                    snapshot = await self.home_capabilities.snapshot()
+                    states, observation = snapshot.states, snapshot.observation
+                else:
+                    read = getattr(self.ha, "get_state_snapshot", None)
+                    states = await read() if callable(read) else None
+                    if not isinstance(states, HAStatesSnapshot):
+                        states = HAStatesSnapshot(False, None, "ha_states_unavailable", attempted_at=attempted)
+                    observation = Observation.from_read(source, available=states.available,
+                        observed_at=states.observed_at, expires_at=states.expires_at,
+                        attempted_at=states.attempted_at, ttl_s=STATE_OBSERVATION_TTL_S,
+                        reason=ObservationReason.DENIED if states.reason == "ha_states_denied" else None)
+                now = clock()
+                observation = observation.as_of(now)
+                entity = next((value for value in states.states if value.get("entity_id") == self.weather_entity), None) if observation.current(now) else None
+                response = describe_current(entity)
+                observation = replace(observation,
+                    state=ObservationState.PARTIAL if observation.state is ObservationState.FRESH else observation.state,
+                    unobserved_fields=tuple(sorted(set(observation.unobserved_fields) | {"measurement_time"})))
             success = True
-        except Exception as exc:  # noqa: BLE001 - red de seguridad anti-mudo
-            logger.error(
-                "Weather handler failed (entity=%s, dia=%s): %s",
-                self.weather_entity, dia, exc, exc_info=True,
-            )
+        except Exception as error:
+            logger.warning("Weather read unavailable (entity=%s, horizon=%s): %s",
+                           self.weather_entity, dia, type(error).__name__)
             response, success = NO_DATA, False
 
         # Observabilidad (review PR #14, 2026-08-06): un weather_entity mal
-        # configurado, un boot sin prefetch o un WS muerto degradan TODOS a
+        # configurado o una lectura actual no disponible degradan TODOS a
         # la misma respuesta honesta con success=True — sin esto son
         # invisibles para siempre: cero logs, stats de éxito. El contador
         # separa "habló el clima" de "habló la disculpa"; el warning
@@ -1591,7 +1598,7 @@ class RequestDispatcher:
 
         return DispatchResult(
             path=PathType.FAST_WEATHER, priority=priority,
-            success=success, response=response, intent="weather",
+            success=success, response=response, intent="weather", observation=observation,
             outcome=TaskOutcome(TaskStatus.COMPLETED if success and response not in (NO_DATA, NO_FORECAST) else TaskStatus.FAILED),
         )
 
@@ -1756,6 +1763,7 @@ class MultiUserOrchestrator:
         response_timeout_s: float = 180.0,
         memory_manager=None,
         privacy=None,
+        home_capabilities: HomeCapabilityService | None = None,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -1784,6 +1792,7 @@ class MultiUserOrchestrator:
         self.chroma = chroma_sync
         self.ha = ha_client
         self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
+        self.home_capabilities = home_capabilities
         self.routines = routine_manager
         self.router = router
         self.llm = llm
@@ -1850,6 +1859,7 @@ class MultiUserOrchestrator:
             unavailable_precheck_enabled=unavailable_precheck_enabled,
             weather_entity=weather_entity,
             home_actions=self.home_actions,
+            home_capabilities=self.home_capabilities,
         )
 
         self._running = False

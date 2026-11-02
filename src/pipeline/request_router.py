@@ -38,6 +38,7 @@ from src.core.task_outcome import (
     TaskOutcome, TaskStatus, TurnOutcome, project_turn_outcome,
 )
 from src.core.voice_delivery import GenerationState, ResponseResult
+from src.core.observation import Observation
 from src.nlu.llm_router import LLMCommandRouter
 
 logger = logging.getLogger(__name__)
@@ -1055,6 +1056,8 @@ class RequestRouter:
         result["action"] = dispatch_result.action
         result["path"] = dispatch_result.path.value if dispatch_result.path else None
         result["timings"].update(dispatch_result.timings)
+        if isinstance(dispatch_result.observation, Observation):
+            result["source_observation"] = dispatch_result.observation.to_dict(self.home_voice_resolver.capabilities.now())
         turn = self._turn_outcome.get()
         if turn is not None:
             if isinstance(dispatch_result.outcome, TaskOutcome):

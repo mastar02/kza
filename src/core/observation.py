@@ -11,6 +11,7 @@ class ObservationSource(StrEnum):
     HA_STATES = "ha-rest-states"
     HA_REGISTRY = "ha-registry"
     HA_CONFIG = "ha-config"
+    HA_FORECAST = "ha-weather-forecast"
     HOME_CAPABILITIES = "home-capabilities"
     CONTROL_SELECTION = "control-selection"
     ZONE_MANAGER = "zone-manager"
