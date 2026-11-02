@@ -1451,16 +1451,18 @@
         "64c01a2aa293fc7adc262b8324106faf62f16997",
         "ba52848f10fac8a409147be94d23b510db12954c",
         "8260acb09cf203c11be9e5803c66c3ffccb05ae3",
-        "68fbb3d856afff28d643cfc8ad99bf41d3ce0c0b"
+        "68fbb3d856afff28d643cfc8ad99bf41d3ce0c0b",
+        "55bee7beef284efd8d0046287eb0de62438a0fad"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t047/home-shell-evidence.json",
         "data/autonomous-roadmap-20261102/t047/people-backend-evidence.json",
         "data/autonomous-roadmap-20261102/t047/people-ui-evidence.json",
         "data/autonomous-roadmap-20261102/t047/voices-reader-evidence.json",
-        "data/autonomous-roadmap-20261102/t047/voices-control-evidence.json"
+        "data/autonomous-roadmap-20261102/t047/voices-control-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/login-replacement-evidence.json"
       ],
-      "next_action": "CONTROL_ONLY /ws/voices verified locally on68fbb3d: focused877/Ruff/hash774, no general broadcast, closed voice channels, technical/voices durable reset domains, original reader and actual egress. Next mount NEXO Voces with a per-socket/login state/controller, native media/reset/ACK drain and no stale callbacks; then explicit persistent profile-person metadata requiring separate administrative/review authority, with no grants or consent inference. T013 exact evaluator reader and credential/role UI remain. No criteria accepted.",
+      "next_action": "Browser session replacement verified on 55bee7b (155 focused tests + Ruff), atomic predecessor CAS, original reader withdrawal and independent sessions. Next mount NEXO Voces with per-socket/login state/controller, real media/reset/ACK drain; then explicit persistent voice-person metadata with separate authorities and no grants/consent inference. T013 remains open. No criteria accepted.",
       "design_reference": {
         "path": "/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd",
         "source_commit": "d686fcde52a34c3b786decf167eebdb91dceb6d6",
@@ -2239,7 +2241,7 @@
     "last_verified_phase": "P0",
     "last_verified_task": "T012",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T047/voices-control-only",
+    "last_verified_unit": "T047/browser-session-replacement",
     "user_priority_after_admin_unit": "T047"
   }
 }

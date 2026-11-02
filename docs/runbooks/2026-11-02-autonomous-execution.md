@@ -555,3 +555,23 @@ Los hashes de 774 fuentes y las ejecuciones están en
 La suite completa de 6.310 pruebas corresponde a la unidad anterior; sus casos
 se superponen con estas 877 verificaciones y no se suman. Continúan el montaje
 NEXO de Voces, su retirada real de medios/ACK y la asociación manual con personas.
+
+### Sustitución de sesión del navegador
+
+El login que recibe una cookie vigente sustituye esa sesión en la misma
+transacción que crea la nueva. La comparación del predecesor y la guardia de
+ambas autoridades llegan hasta el commit; dos reemplazos simultáneos tienen
+un solo ganador. Las sesiones de otros navegadores permanecen independientes.
+El cupo se comprueba después de retirar el predecesor, permitiendo un reemplazo
+uno a uno. Un rechazo anterior al commit revierte ambos cambios; un fallo de
+entrega posterior no resucita la sesión retirada.
+
+La revisión `55bee7b` pasa 155 pruebas de sesiones, autoridad, respuestas
+privadas retenidas y canales vocales, además de Ruff. Incluye persistencia del
+reemplazo, login fallido, carrera simultánea, capacidad y retirada antes de
+enviar un cuerpo privado, incluso después de sus headers. La primera ejecución
+de esta selección pasó los 155 casos pero falló al cerrar un fixture cuyo cupo
+de prueba seguía en cero; se corrigió el alcance del parche y la repetición
+terminó con exit 0. La evidencia está en
+`data/autonomous-roadmap-20261102/t047/login-replacement-evidence.json`.
+Continúan el montaje NEXO de Voces y la asociación manual con personas.
