@@ -54,7 +54,7 @@ class RestOperation:
 
 
 class _PrivateDeliveryRetired(RuntimeError):
-    """Terminate a response whose original session retired after its headers."""
+    """Unwind a denied response without sending any remaining private bytes."""
 
 
 class DashboardApplication(FastAPI):
@@ -66,7 +66,6 @@ class DashboardApplication(FastAPI):
             await super().__call__(scope, receive, send)
             return
         guard = None
-        denied = finished = False
         denial = b'{"detail":"dashboard_session_retired"}'
 
         def current() -> bool:
@@ -76,28 +75,24 @@ class DashboardApplication(FastAPI):
                 return False
 
         async def guarded_send(message):
-            nonlocal guard, denied, finished
+            nonlocal guard
             if message['type'] == 'http.response.start':
                 # Logout publishes only its fixed revocation receipt and cookie removal.
                 if not (scope.get('method') == 'POST' and scope.get('path') == '/api/admin/auth/logout'):
                     guard = scope.get('kza.dashboard_delivery_guard')
                 if not current():
-                    denied = True
-                    message = {'type': 'http.response.start', 'status': 403, 'headers': [
+                    await send({'type': 'http.response.start', 'status': 403, 'headers': [
                         (b'content-type', b'application/json'), (b'cache-control', b'no-store'),
-                        (b'content-length', str(len(denial)).encode('ascii'))]}
+                        (b'content-length', str(len(denial)).encode('ascii'))]})
+                    await send({'type': 'http.response.body', 'body': denial})
+                    raise _PrivateDeliveryRetired()
                 elif guard is not None:
                     message = {**message, 'headers': [
                         (key, value) for key, value in message.get('headers', [])
                         if key.lower() != b'cache-control'
                     ] + [(b'cache-control', b'no-store')]}
             elif message['type'] == 'http.response.body':
-                if denied:
-                    if finished:
-                        return
-                    finished = True
-                    message = {'type': 'http.response.body', 'body': denial}
-                elif not current():
+                if not current():
                     # Headers may already have reached the peer. Closing the response
                     # preserves its framing and never presents a replacement as success.
                     raise _PrivateDeliveryRetired()

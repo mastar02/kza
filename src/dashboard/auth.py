@@ -209,7 +209,7 @@ async def require_admin(
     return principal
 
 
-async def login_response(token: str, *, authority: DashboardAuthority | None = None,
+async def login_response(token: str, request: HTTPConnection, *, authority: DashboardAuthority | None = None,
                          secure: bool = False) -> JSONResponse:
     """Set an opaque cookie only after the selected owner commits its session."""
     headers = {"Cache-Control": "no-store"}
@@ -223,9 +223,11 @@ async def login_response(token: str, *, authority: DashboardAuthority | None = N
     except Exception:
         return JSONResponse(status_code=503, content={"ok": False, "detail": "dashboard_authority_unavailable"},
                             headers=headers)
-    lifetime = issued.lease.remaining_ttl()
-    if not lifetime or not issued.lease.current():
+    lease = issued.lease
+    lifetime = lease.remaining_ttl()
+    if not lifetime or not lease.current():
         return JSONResponse(status_code=401, content={"ok": False, "detail": "sesión vencida"}, headers=headers)
+    request.scope["kza.dashboard_delivery_guard"] = lambda: lease.current()
     response = JSONResponse(content={"ok": True}, headers=headers)
     response.set_cookie(key=COOKIE_NAME, value=issued.token, max_age=lifetime,
                         httponly=True, samesite="strict", secure=secure)

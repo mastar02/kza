@@ -142,3 +142,100 @@ async def test_stream_retirement_preserves_sent_fragment_and_aborts_remaining_bo
         finally:
             release.set()
             await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize('change', ['logout', 'expire', 'rotate'])
+async def test_login_checks_new_session_before_publishing_cookie(
+    review_graph, dashboard_auth, monkeypatch, change,
+):
+    graph = review_graph
+    api = DashboardAPI(authority=graph.authority)
+    graph.shutdown.push_async_callback(api.stop)
+    entered, release = asyncio.Event(), asyncio.Event()
+    issued = []
+    original = graph.authority.login
+
+    async def login(token):
+        result = await original(token)
+        issued.append(result.lease)
+        return result
+
+    monkeypatch.setattr(graph.authority, 'login', login)
+
+    @api.app.middleware('http')
+    async def held_response(request, call_next):
+        response = await call_next(request)
+        entered.set()
+        await release.wait()
+        return response
+
+    async with AsyncClient(transport=ASGITransport(app=api.app), base_url='http://testserver') as client:
+        token = dashboard_auth['Authorization'].split(' ', 1)[1]
+        pending = asyncio.create_task(client.post('/api/admin/auth/login', json={'token': token}))
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            assert len(issued) == 1
+            if change == 'logout':
+                assert await graph.authority.logout(issued[0])
+            elif change == 'expire':
+                graph.clock.now += 60
+            else:
+                monkeypatch.setenv('KZA_DASHBOARD_TOKEN', 'synthetic-new-login-root')
+            release.set()
+            response = await asyncio.wait_for(pending, 3)
+            assert response.status_code == 403
+            assert response.json() == {'detail': 'dashboard_session_retired'}
+            assert 'set-cookie' not in response.headers
+            assert not client.cookies
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize('buffered', [False, True])
+async def test_denied_stream_completes_without_waiting_for_original_first_chunk(review_graph, buffered):
+    graph = review_graph
+    api = DashboardAPI(authority=graph.authority)
+    graph.shutdown.push_async_callback(api.stop)
+    if buffered:
+        @api.app.middleware('http')
+        async def buffering(request, call_next):
+            return await call_next(request)
+    entered, release, body_release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    body_started, body_finished = [], []
+
+    async def chunks():
+        body_started.append(True)
+        try:
+            await body_release.wait()
+            yield b'Synthetic private stream content.'
+        finally:
+            body_finished.append(True)
+
+    class HeldStream(StreamingResponse):
+        async def __call__(self, scope, receive, send):
+            entered.set()
+            await release.wait()
+            await super().__call__(scope, receive, send)
+
+    @api.app.get('/api/private-stream')
+    async def stream():
+        return HeldStream(chunks(), media_type='text/plain')
+    api.app.router.routes.insert(0, api.app.router.routes.pop())
+
+    async with AsyncClient(transport=ASGITransport(app=api.app), base_url='http://testserver',
+                           cookies=graph.client.cookies) as client:
+        pending = asyncio.create_task(client.get('/api/private-stream'))
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            assert (await graph.client.post('/api/admin/auth/logout')).json()['session_revoked']
+            release.set()
+            response = await asyncio.wait_for(pending, 3)
+            assert not body_release.is_set()
+            assert response.status_code == 403
+            assert response.json() == {'detail': 'dashboard_session_retired'}
+            assert body_finished == body_started
+        finally:
+            release.set()
+            body_release.set()
+            await asyncio.gather(pending, return_exceptions=True)

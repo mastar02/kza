@@ -78,7 +78,7 @@ def register_admin_routes(
     @router.post("/auth/login", dependencies=[Depends(require_dashboard_origin)])
     async def login(body: LoginBody, request: Request):
         authority = dashboard_authority(request, required=True)
-        return await login_response(body.token, authority=authority, secure=request.url.scheme == "https")
+        return await login_response(body.token, request, authority=authority, secure=request.url.scheme == "https")
 
     @router.post("/auth/logout")
     async def logout(request: Request, _principal: DashboardPrincipal = Depends(require_dashboard_session)):
