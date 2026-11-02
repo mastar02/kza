@@ -217,7 +217,20 @@ inscripción vocal nativa. El cierre conserva épocas y suelo temporal observado
 sin una nueva petición. Los detalles permanecen en
 `data/autonomous-roadmap-20261102/t013/http-evidence.json`.
 
-T013 sigue en curso: faltan vigencia en lanes/envíos domésticos y commits de
-memoria, ámbitos personales y de evaluación, binding HTTP/WS, guardas de todos
+La revisión `6141abb` conserva el lease original en controles domésticos tras
+esperar lanes, preflight y el lock de sesión de HA. Comprueba otra vez justo
+antes de POST y distingue `NOT_SENT` de rechazo remoto e incertidumbre. Cada
+hoja mantiene su autoridad: una retirada posterior a una hoja observada deja
+un recibo parcial y detiene las restantes. Reunirse al mismo ID desde otra
+sesión no sustituye la guarda original ni reenvía el efecto.
+
+Esta unidad pasa 978 pruebas sobre la revisión comprometida, incluidas 17 de
+autoridad con fábrica/transporte reales de laboratorio. La validación de debug
+también corrigió fixtures que dejaban abierto un canal de llamadas a un host
+dummy; los clientes quedan ahora con dueño y cierre completos. La evidencia
+privada está en `data/autonomous-roadmap-20261102/t013/native-evidence.json`.
+
+T013 sigue en curso: faltan guards de commits de memoria y otras escrituras
+asíncronas, ámbitos personales y de evaluación, binding HTTP/WS, guardas de todos
 los cuerpos privados, gestión de credenciales y navegación por rol. No acredita
 accesos reales ni criterios de aceptación.

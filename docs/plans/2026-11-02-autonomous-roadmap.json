@@ -953,14 +953,16 @@
       "implementation_commits": [
         "89f3db99917e9a848a74e04573db0f7010863fbe",
         "3953b1e791621611683289f27dc009d9b57a7d66",
-        "ce6307149cbdec000475c6105b8747ee30697e8f"
+        "ce6307149cbdec000475c6105b8747ee30697e8f",
+        "6141abb24a2c1eb2bac1da126b7dce711d5a1d60"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
         "data/autonomous-roadmap-20261102/t013/graph-evidence.json",
-        "data/autonomous-roadmap-20261102/t013/http-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/http-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/native-evidence.json"
       ],
-      "next_action": "Propagate original lease authority through HomeActor lane/preflight/session-lock waits and native memory commits; bind private bodies and HTTP/WS receipt owners; then complete personal/evaluation scopes, credential management and role-aware UI before full verification."
+      "next_action": "Enforce original lease authority at native memory and other async mutation commit boundaries; guard ordinary private bodies, bind HTTP/WS owners and finish personal/evaluation scopes, credential management and role-aware UI before full T013 verification."
     },
     {
       "id": "T014",
