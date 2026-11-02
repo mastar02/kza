@@ -183,3 +183,22 @@ dependencia; sus 112 pruebas focalizadas pasan sobre esa revisión comprometida.
 La evidencia pública conserva ambas revisiones, hashes y primeros intentos en
 `docs/research/2026-11-02-autonomous-t012-validation.json`. No acredita criterios
 de aceptación ni sustituye las comprobaciones pendientes de clima en T037/T060.
+
+## Autoridad de sesiones en preparación
+
+La base de T013 define roles cerrados de hogar, operación y evaluación temporal,
+concesiones persistidas sólo como hashes y cookies individuales con vencimiento
+y revocación. Una retirada sella admisión antes de SQLite; una concesión se
+publica después del commit. La revisión conserva el secreto pero invalida las
+sesiones y capacidades anteriores. La rotación administrativa conserva épocas
+para no reactivar cookies antiguas al volver a un valor previo.
+
+El dueño conserva transacción y publicación ante cancelaciones, y mantiene el
+lease de escritor hasta terminar el trabajo nativo real. Persiste también los
+vencimientos de muestras sin renovar sus fuentes ni ampliar modalidades.
+La revisión `89f3db9` pasa 102 pruebas focalizadas; su evidencia privada está en
+`data/autonomous-roadmap-20261102/t013/foundation-evidence.json`.
+
+T013 sigue en curso: esta unidad aún no conecta la autoridad con el grafo HTTP,
+los canales, la entrega retenida ni la navegación web. No acredita nuevos
+accesos reales ni criterios de aceptación.
