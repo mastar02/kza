@@ -631,8 +631,10 @@
         "H0"
       ],
       "dependency_level": "verified_local",
-      "status": "in_progress",
-      "evidence": []
+      "status": "verified_local",
+      "evidence": [
+        "docs/research/2026-11-02-autonomous-p0-validation.json"
+      ]
     },
     {
       "id": "P1",
@@ -776,10 +778,15 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": "Finish independent review and record directed verification evidence."
+      "status": "verified_local",
+      "implementation_commits": [
+        "09fcd282df5b53e2756c97e887e407e37b7f83ef"
+      ],
+      "evidence": [
+        "docs/research/2026-11-02-autonomous-p0-validation.json",
+        "data/autonomous-roadmap-20261102/p0-evidence.json"
+      ],
+      "next_action": null
     },
     {
       "id": "T002",
@@ -792,10 +799,15 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": "Finish independent review and record directed verification evidence."
+      "status": "verified_local",
+      "implementation_commits": [
+        "09fcd282df5b53e2756c97e887e407e37b7f83ef"
+      ],
+      "evidence": [
+        "docs/research/2026-11-02-autonomous-p0-validation.json",
+        "data/autonomous-roadmap-20261102/p0-evidence.json"
+      ],
+      "next_action": null
     },
     {
       "id": "T003",
@@ -809,10 +821,15 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": "Finish independent review and record directed verification evidence."
+      "status": "verified_local",
+      "implementation_commits": [
+        "09fcd282df5b53e2756c97e887e407e37b7f83ef"
+      ],
+      "evidence": [
+        "docs/research/2026-11-02-autonomous-p0-validation.json",
+        "data/autonomous-roadmap-20261102/p0-evidence.json"
+      ],
+      "next_action": null
     },
     {
       "id": "T004",
@@ -829,10 +846,15 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": "Finish independent review and record directed verification evidence."
+      "status": "verified_local",
+      "implementation_commits": [
+        "09fcd282df5b53e2756c97e887e407e37b7f83ef"
+      ],
+      "evidence": [
+        "docs/research/2026-11-02-autonomous-p0-validation.json",
+        "data/autonomous-roadmap-20261102/p0-evidence.json"
+      ],
+      "next_action": null
     },
     {
       "id": "T010",
@@ -2070,6 +2092,8 @@
     "owner": "root session; one code/Git writer; read-only subagents",
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
-    "field_authorized": false
+    "field_authorized": false,
+    "next_task": "T010",
+    "last_verified_phase": "P0"
   }
 }

@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "profile_id": "home-2026-11-v1",
+  "phase": "P0",
+  "status": "verified_local",
+  "verified_at_utc": "2026-11-02T04:41:28.308350+00:00",
+  "implementation_revision": "09fcd282df5b53e2756c97e887e407e37b7f83ef",
+  "checks": [
+    {
+      "name": "directed policy and control regressions",
+      "tests": 100,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "evidence": "data/autonomous-roadmap-20261102/p0-final-tests.xml"
+    },
+    {
+      "name": "ruff 0.15.1 src/ tests/ tools/roadmap_status.py",
+      "exit_code": 0
+    },
+    {
+      "name": "offline private HA selection reconciliation",
+      "exit_code": 0,
+      "effective_grants": 0,
+      "source_files_unchanged": true,
+      "runtime_selection_configured": false
+    },
+    {
+      "name": "original target/profile digests and references",
+      "exit_code": 0
+    }
+  ],
+  "tasks": [
+    {
+      "id": "T001",
+      "result": "Activation and frozen decisions, portfolio and targets recorded; original hashes reproducible."
+    },
+    {
+      "id": "T002",
+      "result": "Private real-session/branch checkpoint and command/revision/environment/artifact evidence contract recorded."
+    },
+    {
+      "id": "T003",
+      "result": "Prior selection and expanded effects reconciled with latest existing read snapshot; evidence gaps preserved; no controls enabled."
+    },
+    {
+      "id": "T004",
+      "result": "Separate immutable admission/split/original-deadline/retirement policy and private corpus protocol defined and tested."
+    }
+  ],
+  "independent_review": {
+    "findings_fixed": [
+      "participant-wide revocation",
+      "required original recording and derivative lineage",
+      "human acceptance gate before field phase acceptance"
+    ],
+    "remaining_substantive_findings": 0
+  },
+  "warnings": {
+    "count": 827,
+    "source": "existing src/core/logging.py datetime.utcnow deprecation in control-policy regressions",
+    "new_application_warnings": 0,
+    "suppressed": false
+  },
+  "private_evidence": "data/autonomous-roadmap-20261102/p0-evidence.json",
+  "limits": [
+    "Preparation only: all C01-C21 remain not_evaluated.",
+    "Corpus persistence, producer/copy inventory, actual deletion, late writes and restore reconciliation remain T014/T022/T024.",
+    "Real sources, live effect review, participants, four physical inputs, iPhone and final candidate/window remain required.",
+    "No production changes, HA calls or effects, new credentials, GPU reassignment or training."
+  ]
+}
