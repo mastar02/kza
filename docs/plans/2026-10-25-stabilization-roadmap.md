@@ -1,5 +1,10 @@
 # Roadmap de estabilización y revisión de voces de KZA
 
+> La planificación de ejecución prolongada y las ampliaciones acordadas el 2 de
+> noviembre están en el [roadmap doméstico autónomo](2026-11-02-autonomous-roadmap.md).
+> Conserva los contratos y pendientes H0–H6 y explicita las nuevas decisiones,
+> métricas y dependencias. No convierte esta historia de avances en hitos cerrados.
+
 El resultado buscado es una única release que controle los dispositivos elegidos
 con una política común, responda por voz sin bloquear la captura, conserve la
 memoria durante los plazos acordados y permita revisar las voces agrupadas por

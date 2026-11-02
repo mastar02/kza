@@ -1,0 +1,2059 @@
+{
+  "schema_version": 1,
+  "profile_id": "home-2026-11-v1",
+  "created_at_utc": "2026-11-02T04:07:11.538246+00:00",
+  "status": "planning_waiting_required_answers",
+  "implementation_started": false,
+  "goal_activated": false,
+  "baseline_commit": "eb98b70",
+  "acceptance_targets_sha256": "3ccb8e7c84f9e1ae0c3f74ac515484c16aeaf80c9fe9e31c8c940ac15d33366d",
+  "profile_sha256": null,
+  "baseline_assessment": "docs/research/2026-11-02-comprehensive-assessment.json",
+  "authoritative_prior_plan": "docs/plans/2026-10-25-stabilization-roadmap.md",
+  "target": "Equivalente a 10/10 en cada una de las siete áreas dentro del perfil doméstico confirmado; no perfección universal ni garantía de semanas sin interrupciones.",
+  "budget": {
+    "codex_subscription_only": true,
+    "user_codex_usage_cap": null,
+    "provider_limits_still_apply": true,
+    "new_external_charges_allowed": false,
+    "hardware_purchases_allowed": false,
+    "new_paid_runtime_ai_calls_allowed": false
+  },
+  "confirmed_decisions": [
+    {
+      "id": "Q01",
+      "topic": "Alcance",
+      "decision": "Ampliar con varias integraciones evaluadas por el agente; cartera I01–I05 concretada y confirmada en Q14.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q02",
+      "topic": "Audiencia",
+      "decision": "Un hogar con varias personas y visitas, usando voz y móvil.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q03",
+      "topic": "Presupuesto",
+      "decision": "Uso de la suscripción Codex sin tope propio mientras esté incluido; cero cargos externos adicionales y compras de hardware.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q04",
+      "topic": "Entorno de prueba",
+      "decision": "Sólo simuladores y copias locales durante desarrollo; pruebas físicas en la ventana final.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q05",
+      "topic": "Voz sin identidad",
+      "decision": "Timers, listas y recordatorios compartidos; información personal sólo con sesión autenticada. Se conserva la selección doméstica previa.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q06",
+      "topic": "Participantes",
+      "decision": "Al menos tres personas consentidas; el usuario coordina grabaciones, escucha, referencias y uso de web.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q07",
+      "topic": "Conversación",
+      "decision": "Centrar esta versión en tareas domésticas; posponer conversación general.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q08",
+      "topic": "Corpus de prueba",
+      "decision": "Hasta 30 días desde cada grabación o cierre de su evaluación, lo que ocurra primero. No cambia el máximo de 48 horas ordinario.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q09",
+      "topic": "Tareas vencidas",
+      "decision": "Registrar pendiente, mostrarlo y avisar una vez al recuperarse; no ejecutar acciones domésticas atrasadas automáticamente.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q10",
+      "topic": "Clientes",
+      "decision": "iPhone y Chrome; comprobar el dispositivo físico además de Chromium de laboratorio.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q11",
+      "topic": "Entorno de voz",
+      "decision": "Español rioplatense; Nexa; Living, Hall, Escritorio y Cocina; 1 y 3 metros; ruido habitual y TV; aclaración o abstención ante ambigüedad/solapamiento.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q12",
+      "topic": "TTS",
+      "decision": "Conservar la voz actual y priorizar claridad, menos metalización y respuestas breves.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q13",
+      "topic": "Etapa final",
+      "decision": "Disponibilidad para coordinar hasta siete días de observación y dos sesiones de participantes; fecha y controles se revisan con candidato y rollback concretos.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q14",
+      "topic": "Integraciones obligatorias",
+      "decision": "Energía/consumo, compras/tareas HA, calendario doméstico local en lectura, multimedia/TV HA y salud/eventos técnicos de cámaras existentes; sin vídeo ni biometría.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q15",
+      "topic": "Metas de aceptación",
+      "decision": "Aceptar C01–C21 propuestos y congelarlos antes de evaluar; no son resultados alcanzados ni autorizan ejecutar producción.",
+      "status": "confirmed_by_user"
+    }
+  ],
+  "questions": [
+    {
+      "id": "Q01",
+      "topic": "Alcance",
+      "decision": "Ampliar con varias integraciones evaluadas por el agente; cartera I01–I05 concretada y confirmada en Q14.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q02",
+      "topic": "Audiencia",
+      "decision": "Un hogar con varias personas y visitas, usando voz y móvil.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q03",
+      "topic": "Presupuesto",
+      "decision": "Uso de la suscripción Codex sin tope propio mientras esté incluido; cero cargos externos adicionales y compras de hardware.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q04",
+      "topic": "Entorno de prueba",
+      "decision": "Sólo simuladores y copias locales durante desarrollo; pruebas físicas en la ventana final.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q05",
+      "topic": "Voz sin identidad",
+      "decision": "Timers, listas y recordatorios compartidos; información personal sólo con sesión autenticada. Se conserva la selección doméstica previa.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q06",
+      "topic": "Participantes",
+      "decision": "Al menos tres personas consentidas; el usuario coordina grabaciones, escucha, referencias y uso de web.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q07",
+      "topic": "Conversación",
+      "decision": "Centrar esta versión en tareas domésticas; posponer conversación general.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q08",
+      "topic": "Corpus de prueba",
+      "decision": "Hasta 30 días desde cada grabación o cierre de su evaluación, lo que ocurra primero. No cambia el máximo de 48 horas ordinario.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q09",
+      "topic": "Tareas vencidas",
+      "decision": "Registrar pendiente, mostrarlo y avisar una vez al recuperarse; no ejecutar acciones domésticas atrasadas automáticamente.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q10",
+      "topic": "Clientes",
+      "decision": "iPhone y Chrome; comprobar el dispositivo físico además de Chromium de laboratorio.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q11",
+      "topic": "Entorno de voz",
+      "decision": "Español rioplatense; Nexa; Living, Hall, Escritorio y Cocina; 1 y 3 metros; ruido habitual y TV; aclaración o abstención ante ambigüedad/solapamiento.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q12",
+      "topic": "TTS",
+      "decision": "Conservar la voz actual y priorizar claridad, menos metalización y respuestas breves.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q13",
+      "topic": "Etapa final",
+      "decision": "Disponibilidad para coordinar hasta siete días de observación y dos sesiones de participantes; fecha y controles se revisan con candidato y rollback concretos.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q14",
+      "topic": "Integraciones obligatorias",
+      "decision": "Energía/consumo, compras/tareas HA, calendario doméstico local en lectura, multimedia/TV HA y salud/eventos técnicos de cámaras existentes; sin vídeo ni biometría.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q15",
+      "topic": "Metas de aceptación",
+      "decision": "Aceptar C01–C21 propuestos y congelarlos antes de evaluar; no son resultados alcanzados ni autorizan ejecutar producción.",
+      "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q16",
+      "topic": "Fuentes y controles exactos",
+      "status": "deferred_until_inventory_presented",
+      "decision": null,
+      "proposal": "Presentar selección privada existente y diferencias, calendarios/listas/dispositivos candidatos y límites antes de actuar. No pedir IDs de memoria."
+    },
+    {
+      "id": "Q17",
+      "topic": "Ventana y operador de release",
+      "status": "deferred_until_candidate_ready",
+      "decision": null,
+      "proposal": "Fecha, operador, intervenciones, duración, acciones y rollback sobre artefacto concreto. La disponibilidad Q13 no concede shell ni autorización ilimitada."
+    },
+    {
+      "id": "Q18",
+      "topic": "Acceso a muestras vigentes",
+      "status": "pending_external_input_when_needed",
+      "decision": null,
+      "proposal": "Credencial privada del dashboard o agregado del analizador ejecutado por operador. No bloquea trabajo local ni autoriza leer secretos de kza."
+    },
+    {
+      "id": "Q19",
+      "topic": "Autoridad de rutinas por voz",
+      "status": "pending_user",
+      "decision": null,
+      "proposal": "Proponer cambios para confirmar con sesión; ejecutar sólo rutinas previamente aprobadas. No inferir creación/modificación de la autorización de timers/listas/recordatorios."
+    }
+  ],
+  "integration_portfolio": [
+    {
+      "id": "I01",
+      "name": "Energía y consumo",
+      "status": "included_confirmed_Q14",
+      "readiness": "33 sensores de energía y 15 de potencia informaban estado en el inventario.",
+      "scope": "Lecturas y resúmenes con unidades, instante y cobertura; sin importes monetarios sin tarifa ni cortes automáticos.",
+      "dependency": "Selección de sensores; histórico sólo si hay fuente válida. No convertir potencia instantánea en energía sin integración válida.",
+      "task": "T050"
+    },
+    {
+      "id": "I02",
+      "name": "Compras y tareas HA",
+      "status": "included_confirmed_Q14",
+      "readiness": "Una entidad todo y servicios de todo/shopping_list presentes.",
+      "scope": "Listas compartidas, altas/completados/cancelaciones y sincronización con conflictos/deduplicación explícitos.",
+      "dependency": "Lista real elegida y una autoridad de persistencia definida; invitados sin acceso a listas personales.",
+      "task": "T051"
+    },
+    {
+      "id": "I03",
+      "name": "Calendario doméstico",
+      "status": "included_confirmed_Q14",
+      "readiness": "No había entidad calendar en el inventario; alternativa de fuente privada local/ICS.",
+      "scope": "Agenda de casa en lectura; eventos personales sólo con sesión y alcance autorizado. Sin crear cuentas ni escribir calendarios externos.",
+      "dependency": "Fuente real designada por el usuario antes de aceptación; fixtures no la sustituyen. No instalar servicios HA ajenos.",
+      "task": "T052"
+    },
+    {
+      "id": "I04",
+      "name": "Multimedia y TV por HA",
+      "status": "included_confirmed_Q14",
+      "readiness": "Dos media_player no disponibles; un remote informado.",
+      "scope": "Estado, reproducción/pausa y volumen según capacidades anunciadas; sin exigir Spotify Premium ni asumir multiroom compatible.",
+      "dependency": "Al menos un dispositivo operativo y selección de operaciones/límites; si no funciona, aceptación bloqueada sin compra implícita.",
+      "task": "T053"
+    },
+    {
+      "id": "I05",
+      "name": "Salud y eventos técnicos de cámaras",
+      "status": "included_confirmed_Q14",
+      "readiness": "Una camera informada y tres no disponibles.",
+      "scope": "Sólo disponibilidad y eventos ya expuestos y autorizados; sin fotogramas, grabación, reconocimiento facial ni instalación de Frigate.",
+      "dependency": "Fuente técnica real elegida; salud/eventos significan disponibilidad/error ya expuestos, no vídeo, movimiento o personas inferidos.",
+      "task": "T054"
+    }
+  ],
+  "deferred_integrations": [
+    {
+      "name": "Spotify Premium y multiroom específico",
+      "reason": "No hay suscripción Spotify confirmada ni dispositivos verificados; no se reutiliza la suscripción Codex como cobertura."
+    },
+    {
+      "name": "Frigate nuevo, vídeo persistente y biometría",
+      "reason": "Requiere alcance, infraestructura y permisos adicionales; las cámaras opcionales son sólo metadatos técnicos."
+    },
+    {
+      "name": "Mensajería externa",
+      "reason": "Sin cuentas, destinatarios ni autorización explícita de envío; diagnóstico y avisos permanecen locales."
+    },
+    {
+      "name": "Conversación general y nuevo LoRA",
+      "reason": "Conversación postergada por el usuario; el corpus de evaluación no autoriza entrenamiento ni APIs de pago."
+    }
+  ],
+  "areas": [
+    {
+      "name": "Web Tu casa",
+      "baseline": 7,
+      "criteria": [
+        "C01",
+        "C02",
+        "C07",
+        "C08",
+        "C10",
+        "C11",
+        "C21"
+      ],
+      "target": 10,
+      "status": "not_accepted",
+      "evidence": []
+    },
+    {
+      "name": "Panel de observabilidad",
+      "baseline": 4,
+      "criteria": [
+        "C02",
+        "C06",
+        "C07",
+        "C08",
+        "C11",
+        "C20"
+      ],
+      "target": 10,
+      "status": "not_accepted",
+      "evidence": []
+    },
+    {
+      "name": "Usabilidad y accesibilidad",
+      "baseline": 5,
+      "criteria": [
+        "C02",
+        "C07",
+        "C08",
+        "C09",
+        "C11"
+      ],
+      "target": 10,
+      "status": "not_accepted",
+      "evidence": []
+    },
+    {
+      "name": "Núcleo y arquitectura",
+      "baseline": 7.5,
+      "criteria": [
+        "C01",
+        "C02",
+        "C03",
+        "C04",
+        "C05",
+        "C20"
+      ],
+      "target": 10,
+      "status": "not_accepted",
+      "evidence": []
+    },
+    {
+      "name": "Captura y voz",
+      "baseline": 4,
+      "criteria": [
+        "C03",
+        "C04",
+        "C12",
+        "C14",
+        "C15",
+        "C16",
+        "C17",
+        "C18",
+        "C19",
+        "C20"
+      ],
+      "target": 10,
+      "status": "not_accepted",
+      "evidence": []
+    },
+    {
+      "name": "Funciones de punta a punta",
+      "baseline": 3.5,
+      "criteria": [
+        "C01",
+        "C02",
+        "C13",
+        "C16",
+        "C21"
+      ],
+      "target": 10,
+      "status": "not_accepted",
+      "evidence": []
+    },
+    {
+      "name": "Operación e integraciones",
+      "baseline": 4,
+      "criteria": [
+        "C02",
+        "C04",
+        "C05",
+        "C06",
+        "C19",
+        "C20",
+        "C21"
+      ],
+      "target": 10,
+      "status": "not_accepted",
+      "evidence": []
+    }
+  ],
+  "criteria": [
+    {
+      "id": "C01",
+      "area": "funciones",
+      "target": "100% de casos obligatorios del contrato pasan desde la fábrica real: petición, actor, política, persistencia, efecto/entrega y respuesta coherente.",
+      "minimum_evidence": "Crear, consultar, modificar/ejecutar cuando corresponda, cancelar y reiniciar para cada familia incluida; casos de ambigüedad y fallo.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C02",
+      "area": "invariantes",
+      "target": "Cero efectos no autorizados, falsas confirmaciones, reenvíos ciegos de acciones inciertas o audio antiguo reactivado.",
+      "minimum_evidence": "Matriz determinista y al menos 200 entradas negativas/fallos en el protocolo de aceptación; no promesa universal.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C03",
+      "area": "núcleo",
+      "target": "Conservar H2: heartbeat 5 ms, retraso p95 <=25 ms y máximo <=75 ms; cancelación <=100 ms, parada simulada <=200 ms, cleanup cooperativo <=1 s; PCM exacto y colas acotadas.",
+      "minimum_evidence": "Diez repeticiones y productores simulados de 200 ms, incluidas respuestas largas y trabajo nativo retenido.",
+      "agreement": "existing_contract",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C04",
+      "area": "privacidad",
+      "target": "Inventario completo de productores/SDK/copias, mute total durable reactivable sin voz, vencimiento/borrado sin resurrección en restauración compatible.",
+      "minimum_evidence": "Casos con inicialización, escritura, modelo, transporte y frontend tardíos; ningún participante desconocido permite afirmar borrado total.",
+      "agreement": "existing_contract",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C05",
+      "area": "núcleo",
+      "target": "Suite completa y checks requeridos sin fallos ni xfail en requisitos incluidos; artefacto CPython 3.13 verificado fuera de fuentes y rollback de runtime/datos probado.",
+      "minimum_evidence": "Candidato exacto, dependencias reproducibles y hashes; configuración de arranque validada, entrenamiento nocturno deshabilitado si su utilidad/recursos no están aceptados; advertencias nuevas de aplicación justificadas, sin ocultarlas indiscriminadamente.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C06",
+      "area": "observabilidad",
+      "target": "100% de componentes operativos tienen fuente, instante y caducidad reales; cero mocks operativos o botones que aparenten ejecutar sin backend.",
+      "minimum_evidence": "HTTP 401/403/409/503, timeout, desconexión/reconexión, estado vencido y resultado parcial/incierto.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C07",
+      "area": "usabilidad",
+      "target": "WCAG 2.2 AA en el alcance; teclado y foco estables, lector de pantalla y errores comprensibles. Objetivo de producto: controles táctiles principales de 44 px.",
+      "minimum_evidence": "Inventariar antes de auditar vistas, estados y procesos de hogar/diagnóstico incluidos; automatización más revisión manual. 44 px es objetivo de producto, no el mínimo normativo AA.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C08",
+      "area": "web",
+      "target": "Reflow útil en 320, 390, 768, 1280 y 1440 CSS px; iPhone físico con navegador habitual elegido y Chrome de escritorio.",
+      "minimum_evidence": "Registrar dispositivo y versiones, orientación, texto ampliado, teclado virtual, sesión y reproducción; no imponer Safari ni sustituir iPhone por Chromium.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C09",
+      "area": "usabilidad",
+      "target": ">=95% global de tareas prioritarias sin ayuda y cero confusiones críticas sobre efecto, privacidad o dato vencido; ningún participante queda bloqueado en un recorrido crítico.",
+      "minimum_evidence": "Tres participantes y diez tareas por participante; denominador todos los intentos preregistrados. Ayuda es indicación externa durante la tarea, no feedback normal de KZA. Publicar resultados por persona/recorrido y corregir/revalidar bloqueos críticos sin borrar el primer resultado.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C10",
+      "area": "web",
+      "target": "LCP <=2500 ms, INP <=200 ms y CLS <=0.1 en p75 para clientes compatibles. iPhone: contenido útil p75 <=2500 ms e interacción a pintura p75 <=200 ms, además de C11 y cero saltos que cambien el objetivo táctil.",
+      "minimum_evidence": "Al menos 40 recorridos por cliente, frío/caliente separados; método, versiones y precisión preregistrados antes de reserva, instrumentación contrastada con traza o grabación física. Si falta una API, declarar no evaluable por ese método; no inventar CWV ni aceptar el teléfono sin medición alternativa fiable.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C11",
+      "area": "web",
+      "target": "Feedback visual de acción p95 <=100 ms y preview autorizado de hasta 6 s listo p95 <=1500 ms en LAN.",
+      "minimum_evidence": "40 interacciones/aperturas por cliente. Relojes de activación a pintura observada y de solicitud a reproducción posible con gesto nativo; distinguir DOM/metadatos de pintura/audio realmente reproducible. Separar red, preparación y espera humana registrada. Errores/timeouts válidos se conservan como aperturas fallidas a resolver, no se excluyen para mejorar el p95.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C12",
+      "area": "audio",
+      "target": "WER micro <=10% en claro y <=20% en adversos admitidos; informar también macro, CER, sustituciones/inserciones/deleciones y cobertura >=95%.",
+      "minimum_evidence": "Referencia humana alineada al mismo intervalo; al menos 200 peticiones claras y 100 adversas elegibles, mínimo 20 por condición crítica; exclusiones preregistradas.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C13",
+      "area": "funciones",
+      "target": "Éxito real de tarea >=98% en claro y >=95% en adversos admitidos; ningún resultado atendido sin efecto cuenta como tarea completada.",
+      "minimum_evidence": "Todas las peticiones elegibles de C12; cada familia incluida tiene al menos diez casos y sus fallos se publican por separado.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C14",
+      "area": "audio",
+      "target": "Rechazo de wake verdadero <=5% y falsos wakes <=0.1 por hora de casa, con resultados por habitación.",
+      "minimum_evidence": "100 wakes intencionales y 48 horas de reloj de casa con las cuatro entradas útiles; no sumar horas-micrófono. Revisar >=95% de eventos; los no revisados son inciertos y su cota conservadora no puede hacer pasar el umbral. Deduplicar sólo eventos físicos corroborados como el mismo, conservando conteos originales por micrófono; n e incertidumbre declarados.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C15",
+      "area": "audio",
+      "target": "Tareas simples: fin de habla a primera respuesta de voz significativa p50 <=800 ms y p95 <=1500 ms; resultado software/observación HA de acciones rápidas p95 <=2000 ms.",
+      "minimum_evidence": "Al menos 100 recorridos simples, con desglose por familia y frío/caliente; cada familia tiene al menos diez casos. Un earcon no cuenta como respuesta. Movimientos largos tienen plazo propio en el manifiesto antes de evaluar; estado HA no se confunde con confirmación física.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C16",
+      "area": "audio",
+      "target": ">=99% de entregas de voz debidas completas; todo fallo/parcial/cancelación tiene estado correcto. Interrupción acústica p95 <=250 ms.",
+      "minimum_evidence": "Al menos 100 entregas y 20 interrupciones físicas; incluir respuesta larga no cacheada, barge-in y captura real concurrente. Cancelaciones voluntarias separadas y cola/primer PCM/sonido final instrumentados.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C17",
+      "area": "audio",
+      "target": "Voz actual con claridad mediana >=4/5 para cada participante y cero defectos graves de metalización/recorte en el lote de aceptación.",
+      "minimum_evidence": "Al menos 30 respuestas cortas/largas; escucha A/B ciega balanceada por tres participantes. Rúbrica interna, no MOS validada ni SNR inferido de RMS.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C18",
+      "area": "voces",
+      "target": "H3: cero uniones entre personas; precisión de pares >=0.99, recuperación >=0.80 y cobertura >=0.70 en claros elegibles; cortos/solapamientos se abstienen.",
+      "minimum_evidence": "Tres voces, 10 segmentos claros por voz de calibración y 30 por voz de reserva, dos habitaciones/distancias, >=10 por condición adversa, orden original y semillas 0–9.",
+      "agreement": "existing_contract",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C19",
+      "area": "operación",
+      "target": "Disponibilidad observada >=99.9% de KZA y de cada entrada requerida; ninguna habitación queda compensada por las demás.",
+      "minimum_evidence": "72 horas de soak local y bloque físico fijo de >=72 horas con candidato congelado, dentro de siete días. Disponibilidad = segundos útiles/segundos de la ventana; pausa autenticada intencional se identifica por política. Inyección de fallos antes/después del bloque de estabilidad, preregistrada; publicar también disponibilidad total y fallos planificados/espontáneos. Nunca excluir fallos retrospectivamente. No es SLA futuro.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C20",
+      "area": "operación",
+      "target": "HA/WS se recupera en <=60 s desde dependencia sana; micrófono vuelve a capturar en <=180 s tras reconexión y enumeración. Las entradas sanas mantienen su heartbeat.",
+      "minimum_evidence": "Inyección local de fallos y guion físico autorizado; límites offline H2 sin ampliar y fallo/reintento acotados.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    },
+    {
+      "id": "C21",
+      "area": "integraciones",
+      "target": "Cada integración incluida completa su contrato sobre al menos una fuente/dispositivo real elegido, con rechazo, caducidad, idempotencia cuando escriba y permisos por alcance.",
+      "minimum_evidence": "Calendario requiere fuente real designada; multimedia requiere dispositivo operativo. Simulador verde no cierra estas dependencias.",
+      "agreement": "confirmed_by_user_Q15",
+      "status": "not_evaluated",
+      "evidence": []
+    }
+  ],
+  "stratification": {
+    "applies_to": [
+      "C12",
+      "C13",
+      "C14",
+      "C15",
+      "C16",
+      "C17"
+    ],
+    "dimensions": [
+      "Living/Hall/Escritorio/Cocina",
+      "1 m y 3 m",
+      "tres participantes",
+      "claro/ruido habitual/TV y demás adversos admitidos"
+    ],
+    "protocol": "Asignación y mínimos por estrato antes de abrir reserva; al menos diez casos elegibles por habitación, distancia y participante para los recorridos aplicables, además de los mínimos globales y de condición. No es un factorial completo obligatorio.",
+    "failure_rule": "Publicar cantidades y métricas por estrato; aplicar las metas de su condición y no aceptar un estrato fallido ni uno con evidencia insuficiente por el promedio global. Corregir y reevaluar con reserva adecuada, conservando el resultado original.",
+    "limits": "Mínimos y percentiles son del perfil evaluado; no garantizan generalización a todas las personas, ruidos o dispositivos."
+  },
+  "phases": [
+    {
+      "id": "P0",
+      "name": "Contrato y continuidad",
+      "depends_on": [],
+      "maps_to": [
+        "H0"
+      ],
+      "dependency_level": "verified_local",
+      "status": "planned",
+      "evidence": []
+    },
+    {
+      "id": "P1",
+      "name": "Grafo y contratos comunes",
+      "depends_on": [
+        "P0"
+      ],
+      "maps_to": [
+        "H0",
+        "H1",
+        "H4",
+        "H5"
+      ],
+      "dependency_level": "verified_local",
+      "status": "planned",
+      "evidence": []
+    },
+    {
+      "id": "P2",
+      "name": "Recuperación y privacidad",
+      "depends_on": [
+        "P1"
+      ],
+      "maps_to": [
+        "H2",
+        "H3",
+        "H4"
+      ],
+      "dependency_level": "verified_local",
+      "status": "planned",
+      "evidence": []
+    },
+    {
+      "id": "P3",
+      "name": "Tareas domésticas completas",
+      "depends_on": [
+        "P1"
+      ],
+      "maps_to": [
+        "H1",
+        "H5"
+      ],
+      "dependency_level": "verified_local",
+      "status": "planned",
+      "evidence": []
+    },
+    {
+      "id": "P4",
+      "name": "Web doméstica y diagnóstico",
+      "depends_on": [
+        "P1"
+      ],
+      "maps_to": [
+        "H1",
+        "H3",
+        "H4",
+        "H5"
+      ],
+      "dependency_level": "verified_local",
+      "status": "planned",
+      "evidence": []
+    },
+    {
+      "id": "P5",
+      "name": "Integraciones seleccionadas",
+      "depends_on": [
+        "P1",
+        "P3"
+      ],
+      "maps_to": [
+        "H1",
+        "H5",
+        "ampliación propuesta"
+      ],
+      "dependency_level": "verified_local",
+      "status": "planned",
+      "evidence": []
+    },
+    {
+      "id": "P6",
+      "name": "Aceptación local y candidato",
+      "depends_on": [
+        "P2",
+        "P3",
+        "P4",
+        "P5"
+      ],
+      "maps_to": [
+        "H0",
+        "H2",
+        "H3",
+        "H4",
+        "H5",
+        "H6"
+      ],
+      "dependency_level": "verified_local",
+      "status": "planned",
+      "evidence": []
+    },
+    {
+      "id": "P7",
+      "name": "Ventana física final",
+      "depends_on": [
+        "P6"
+      ],
+      "maps_to": [
+        "H2",
+        "H3",
+        "H4",
+        "H5",
+        "H6"
+      ],
+      "dependency_level": "verified_local",
+      "status": "planned",
+      "evidence": []
+    },
+    {
+      "id": "P8",
+      "name": "Aceptación y entrega",
+      "depends_on": [
+        "P7"
+      ],
+      "maps_to": [
+        "H6"
+      ],
+      "dependency_level": "field_accepted",
+      "status": "planned",
+      "evidence": []
+    }
+  ],
+  "tasks": [
+    {
+      "id": "T001",
+      "phase": "P0",
+      "title": "Congelar perfil, cartera, métricas y decisiones confirmadas",
+      "criteria": [
+        "C01",
+        "C21"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T002",
+      "phase": "P0",
+      "title": "Preparar estado reanudable, propiedad de rama y contratos de evidencia",
+      "criteria": [
+        "C05"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T003",
+      "phase": "P0",
+      "title": "Reconciliar selección privada de HA y permisos sin habilitar controles",
+      "criteria": [
+        "C02",
+        "C21"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T004",
+      "phase": "P0",
+      "title": "Definir corpus, separación y purga con vencimientos originales",
+      "criteria": [
+        "C04",
+        "C12",
+        "C18"
+      ],
+      "findings": [
+        "AUD-08"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T010",
+      "phase": "P1",
+      "title": "Exponer fábrica del grafo efectivo de main y probar sus dependencias",
+      "criteria": [
+        "C01",
+        "C05"
+      ],
+      "findings": [
+        "CORE-08"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T011",
+      "phase": "P1",
+      "title": "Separar recibido, persistido, enviado, efecto observado y entrega",
+      "criteria": [
+        "C01",
+        "C02",
+        "C16"
+      ],
+      "findings": [
+        "CORE-02",
+        "AUD-05"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T012",
+      "phase": "P1",
+      "title": "Unificar capacidad, fuente y frescura para voz y web",
+      "criteria": [
+        "C06"
+      ],
+      "findings": [
+        "WEB-02",
+        "WEB-09"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T013",
+      "phase": "P1",
+      "title": "Aplicar sesión y autoridades mínimas para datos personales, operación y evaluación temporal",
+      "criteria": [
+        "C02",
+        "C04",
+        "C07"
+      ],
+      "findings": [
+        "ACCESS-01",
+        "AUD-01"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T014",
+      "phase": "P1",
+      "title": "Añadir procedencia de canal/DSP y tramos de audio/texto a evaluación",
+      "criteria": [
+        "C04",
+        "C12"
+      ],
+      "findings": [
+        "AUD-02",
+        "AUD-03"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T020",
+      "phase": "P2",
+      "title": "Separar recuperación lenta de publicación de heartbeat",
+      "criteria": [
+        "C03",
+        "C19",
+        "C20"
+      ],
+      "findings": [
+        "AUD-05"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T021",
+      "phase": "P2",
+      "title": "Recuperar HA/WS con backoff acotado y estado veraz",
+      "criteria": [
+        "C06",
+        "C20"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T022",
+      "phase": "P2",
+      "title": "Cerrar inventario de SDK, productores, copias y recursos nativos",
+      "criteria": [
+        "C03",
+        "C04"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T023",
+      "phase": "P2",
+      "title": "Completar mute global durable y reactivación autenticada sin voz",
+      "criteria": [
+        "C04"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T024",
+      "phase": "P2",
+      "title": "Ensayar borrado y restauración sin resurrección de datos retirados",
+      "criteria": [
+        "C04",
+        "C05"
+      ],
+      "findings": [
+        "AUD-08"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T025",
+      "phase": "P2",
+      "title": "Preparar diagnóstico compilado y guion de aceptación de Cocina",
+      "criteria": [
+        "C19",
+        "C20"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T030",
+      "phase": "P3",
+      "title": "Conectar timers/intercom/notificaciones y persistencia de tareas",
+      "criteria": [
+        "C01",
+        "C02"
+      ],
+      "findings": [
+        "CORE-01"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T031",
+      "phase": "P3",
+      "title": "Crear recordatorios con hora, zona y aclaración de ambigüedad",
+      "criteria": [
+        "C01",
+        "C02"
+      ],
+      "findings": [
+        "CORE-02"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T032",
+      "phase": "P3",
+      "title": "Resolver cancelación de objeto antes del cancel genérico",
+      "criteria": [
+        "C01",
+        "C02"
+      ],
+      "findings": [
+        "CORE-03"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T033",
+      "phase": "P3",
+      "title": "Usar scheduler y política comunes para rutinas por voz y web",
+      "criteria": [
+        "C01",
+        "C02",
+        "C05"
+      ],
+      "findings": [
+        "CORE-04"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T034",
+      "phase": "P3",
+      "title": "Persistir avisos pendientes y avisar una vez sin acciones tardías",
+      "criteria": [
+        "C01",
+        "C02",
+        "C16"
+      ],
+      "findings": [
+        "CORE-06"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T035",
+      "phase": "P3",
+      "title": "Aplicar ámbito compartido/personal y permisos de visitas",
+      "criteria": [
+        "C01",
+        "C02",
+        "C04"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T036",
+      "phase": "P3",
+      "title": "Conectar productores útiles de alertas con deduplicación",
+      "criteria": [
+        "C01",
+        "C02",
+        "C06"
+      ],
+      "findings": [
+        "CORE-05"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T037",
+      "phase": "P3",
+      "title": "Completar consultas domésticas locales y órdenes compuestas",
+      "criteria": [
+        "C01",
+        "C02",
+        "C05",
+        "C13"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T040",
+      "phase": "P4",
+      "title": "Resolver controles inertes y retirar ejemplos del modo operativo",
+      "criteria": [
+        "C06",
+        "C07"
+      ],
+      "findings": [
+        "WEB-01",
+        "WEB-02"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T041",
+      "phase": "P4",
+      "title": "Unificar entrada, URLs, historial y navegación por roles",
+      "criteria": [
+        "C07",
+        "C08"
+      ],
+      "findings": [
+        "WEB-05"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T042",
+      "phase": "P4",
+      "title": "Corregir foco, teclado, etiquetas y accesibilidad",
+      "criteria": [
+        "C07",
+        "C09"
+      ],
+      "findings": [
+        "WEB-03",
+        "WEB-11"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T043",
+      "phase": "P4",
+      "title": "Adaptar móvil, formularios y audio a iPhone/Chrome",
+      "criteria": [
+        "C08",
+        "C11"
+      ],
+      "findings": [
+        "WEB-04"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T044",
+      "phase": "P4",
+      "title": "Implementar búsqueda y filtros de muestras con mínimo acceso",
+      "criteria": [
+        "C04",
+        "C07",
+        "C11"
+      ],
+      "findings": [
+        "WEB-06",
+        "WEB-08"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T045",
+      "phase": "P4",
+      "title": "Distinguir sesión, permiso, red, conflicto y efectos inciertos",
+      "criteria": [
+        "C02",
+        "C06",
+        "C07"
+      ],
+      "findings": [
+        "WEB-07",
+        "WEB-10"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T046",
+      "phase": "P4",
+      "title": "Medir carga, interacción, frescura y optimizar donde haya evidencia",
+      "criteria": [
+        "C06",
+        "C10",
+        "C11"
+      ],
+      "findings": [
+        "WEB-09"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T050",
+      "phase": "P5",
+      "title": "Integrar energía/potencia con fuentes y unidades verificables",
+      "criteria": [
+        "C01",
+        "C02",
+        "C21"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T051",
+      "phase": "P5",
+      "title": "Sincronizar compras/tareas HA con autoridad y conflictos explícitos",
+      "criteria": [
+        "C01",
+        "C02",
+        "C04",
+        "C21"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T052",
+      "phase": "P5",
+      "title": "Integrar calendario doméstico HA o archivo/ICS local en lectura",
+      "criteria": [
+        "C01",
+        "C02",
+        "C04",
+        "C21"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T053",
+      "phase": "P5",
+      "title": "Integrar control multimedia/TV por capacidades HA existentes",
+      "criteria": [
+        "C01",
+        "C02",
+        "C21"
+      ],
+      "findings": [
+        "CORE-07"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T054",
+      "phase": "P5",
+      "title": "Integrar salud/eventos técnicos de cámaras existentes sin vídeo",
+      "criteria": [
+        "C02",
+        "C04",
+        "C06",
+        "C21"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required_confirmed_Q14",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T060",
+      "phase": "P6",
+      "title": "Cerrar regresiones, reproducibilidad y checks del candidato",
+      "criteria": [
+        "C01",
+        "C02",
+        "C03",
+        "C05"
+      ],
+      "findings": [
+        "CORE-08"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T061",
+      "phase": "P6",
+      "title": "Ejecutar soak local de 72 horas y fallos simulados",
+      "criteria": [
+        "C03",
+        "C04",
+        "C19",
+        "C20"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T062",
+      "phase": "P6",
+      "title": "Congelar evaluador, reservas y métricas antes del campo",
+      "criteria": [
+        "C12",
+        "C13",
+        "C14",
+        "C15",
+        "C16",
+        "C17",
+        "C18"
+      ],
+      "findings": [
+        "AUD-04",
+        "AUD-06",
+        "AUD-07"
+      ],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T063",
+      "phase": "P6",
+      "title": "Construir/verificar bytecode y restauración compatible en copias",
+      "criteria": [
+        "C04",
+        "C05"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T064",
+      "phase": "P6",
+      "title": "Preparar manifiesto revisable de release y guion de rollback",
+      "criteria": [
+        "C02",
+        "C05",
+        "C19"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T070",
+      "phase": "P7",
+      "title": "Verificar cuatro micrófonos, habitación/canal y dispositivos",
+      "criteria": [
+        "C19",
+        "C20",
+        "C21"
+      ],
+      "findings": [],
+      "human_gate": true,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T071",
+      "phase": "P7",
+      "title": "Realizar calibración consentida y congelar candidato acústico",
+      "criteria": [
+        "C04",
+        "C12",
+        "C18"
+      ],
+      "findings": [],
+      "human_gate": true,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T072",
+      "phase": "P7",
+      "title": "Evaluar reserva independiente y escucha A/B",
+      "criteria": [
+        "C12",
+        "C13",
+        "C14",
+        "C15",
+        "C16",
+        "C17",
+        "C18"
+      ],
+      "findings": [
+        "AUD-04",
+        "AUD-06",
+        "AUD-07"
+      ],
+      "human_gate": true,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T073",
+      "phase": "P7",
+      "title": "Aceptar recorridos con tres usuarios e iPhone real",
+      "criteria": [
+        "C07",
+        "C08",
+        "C09",
+        "C10",
+        "C11"
+      ],
+      "findings": [],
+      "human_gate": true,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T074",
+      "phase": "P7",
+      "title": "Observar estabilidad y probar recuperación dentro de ventana",
+      "criteria": [
+        "C19",
+        "C20"
+      ],
+      "findings": [],
+      "human_gate": true,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T075",
+      "phase": "P7",
+      "title": "Promover o restaurar candidato y datos compatibles",
+      "criteria": [
+        "C04",
+        "C05",
+        "C21"
+      ],
+      "findings": [],
+      "human_gate": true,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T080",
+      "phase": "P8",
+      "title": "Revisión independiente por área y evidencia final",
+      "criteria": [
+        "C01",
+        "C02",
+        "C04",
+        "C05",
+        "C09",
+        "C13",
+        "C17",
+        "C18",
+        "C19",
+        "C21"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T081",
+      "phase": "P8",
+      "title": "Actualizar matriz, guía de hogar, runbooks y estado H0-H6",
+      "criteria": [
+        "C05",
+        "C06"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    },
+    {
+      "id": "T082",
+      "phase": "P8",
+      "title": "Cerrar objetivo sólo con criterios y aceptación completos",
+      "criteria": [
+        "C01",
+        "C02",
+        "C04",
+        "C05",
+        "C07",
+        "C08",
+        "C09",
+        "C10",
+        "C11",
+        "C12",
+        "C13",
+        "C14",
+        "C15",
+        "C16",
+        "C17",
+        "C18",
+        "C19",
+        "C20",
+        "C21"
+      ],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "planned",
+      "implementation_commits": [],
+      "evidence": [],
+      "next_action": null
+    }
+  ],
+  "finding_trace": [
+    {
+      "id": "CORE-01",
+      "title": "Features de voz sin inyección al router de main",
+      "tasks": [
+        "T030"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "CORE-02",
+      "title": "Creación de recordatorio por voz sin efecto y success=True",
+      "tasks": [
+        "T011",
+        "T031"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "CORE-03",
+      "title": "Cancelación específica de recordatorio interceptada por cancelación global",
+      "tasks": [
+        "T032"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "CORE-04",
+      "title": "Rutinas por voz separadas del scheduler y llamada async sin await",
+      "tasks": [
+        "T033"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "CORE-05",
+      "title": "Scheduler de alertas activo con fuentes vacías",
+      "tasks": [
+        "T036"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "CORE-06",
+      "title": "Recordatorio sin zona tras agotar reintentos puede cerrarse sin voz",
+      "tasks": [
+        "T034"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "CORE-07",
+      "title": "Música no integrada en el entrypoint",
+      "tasks": [
+        "T053"
+      ],
+      "status": "open",
+      "note": "CORE-07 se amplía a multimedia local propuesta; Spotify/multiroom no quedan aceptados por ello."
+    },
+    {
+      "id": "CORE-08",
+      "title": "Los casos citados no prueban el recorrido completo de funciones",
+      "tasks": [
+        "T010",
+        "T060"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "WEB-01",
+      "title": "Controles operativos visibles que no ejecutan la acción anunciada",
+      "tasks": [
+        "T040"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "WEB-02",
+      "title": "La observabilidad operativa conserva datos sintéticos y valores fijos",
+      "tasks": [
+        "T012",
+        "T040"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "WEB-03",
+      "title": "Las nueve entradas laterales de observabilidad no se pueden enfocar con Tab",
+      "tasks": [
+        "T042"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "WEB-04",
+      "title": "El panel técnico no adapta su barra lateral y contenido al móvil",
+      "tasks": [
+        "T043"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "WEB-05",
+      "title": "Entrada técnica fragmentada y vistas sin URL recuperable",
+      "tasks": [
+        "T041"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "WEB-06",
+      "title": "El buscador y atajo anunciado no están implementados",
+      "tasks": [
+        "T044"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "WEB-07",
+      "title": "El login técnico clasifica errores distintos como token inválido",
+      "tasks": [
+        "T045"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "WEB-08",
+      "title": "La revisión de muchas muestras requiere abrirlas una a una para conocer habitación y transcripción",
+      "tasks": [
+        "T044"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "WEB-09",
+      "title": "Inventarios y métricas de algunas vistas se hidratan una sola vez",
+      "tasks": [
+        "T012",
+        "T046"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "WEB-10",
+      "title": "El borrado de usuarios no muestra rechazos HTTP ni ofrece un nombre accesible claro",
+      "tasks": [
+        "T045"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "WEB-11",
+      "title": "Los renders de Memoria y Rutinas no conservan correctamente el foco de teclado",
+      "tasks": [
+        "T042"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "AUD-01",
+      "title": "El acceso nuevo a HA no desbloquea las grabaciones de KZA",
+      "tasks": [
+        "T013"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "AUD-02",
+      "title": "La muestra escuchable y la transcripción abarcan intervalos diferentes",
+      "tasks": [
+        "T014"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "AUD-03",
+      "title": "La API de revisión no informa el canal original",
+      "tasks": [
+        "T014"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "AUD-04",
+      "title": "El diagnóstico objetivo existente no confirma la causa del sonido metálico",
+      "tasks": [
+        "T062",
+        "T072"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "AUD-05",
+      "title": "El éxito de voz debe incluir entrega y efecto confirmado",
+      "tasks": [
+        "T011",
+        "T020"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "AUD-06",
+      "title": "WER y confianza necesitan denominadores y calibración explícitos",
+      "tasks": [
+        "T062",
+        "T072"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "AUD-07",
+      "title": "La agrupación de voces no tiene aceptación acústica de campo",
+      "tasks": [
+        "T062",
+        "T072"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "AUD-08",
+      "title": "Un corpus de evaluación no puede renovar silenciosamente la retención ordinaria",
+      "tasks": [
+        "T004",
+        "T024"
+      ],
+      "status": "open",
+      "note": null
+    },
+    {
+      "id": "ACCESS-01",
+      "title": "El dashboard usa una credencial compartida sin rol de evaluación de sólo lectura",
+      "tasks": [
+        "T013"
+      ],
+      "status": "open",
+      "note": null
+    }
+  ],
+  "phase_readiness": {
+    "P0": "Contrato Q14/Q15/Q19 cerrado, decisiones y trazabilidad guardadas.",
+    "P1_through_P6": "Las dependencias exigen entregables requeridos/incluidos verified_local, no aceptación física adelantada. Una tarea opcional no seleccionada no bloquea ni se marca implementada. Criterios compartidos de campo permanecen not_evaluated hasta P7.",
+    "P7": "P6 verified_local más autorización Q17 sobre candidato, controles y rollback concretos; fuentes reales y participantes disponibles.",
+    "P8": "P7 aceptado en campo y cierre de todos los criterios obligatorios de las siete áreas.",
+    "field_failure": "Un fallo de campo conserva la evidencia y devuelve la corrección al desarrollo; puede requerir nueva reserva o ventana autorizada. No convierte simulación en aceptación."
+  },
+  "preserved_constraints": [
+    "Desarrollar, construir, probar y operar Git como yo en /home/yo/projects/kza.",
+    "Producción sólo mediante release de artefacto compilado; sin desarrollo ni git pull bajo kza.",
+    "No cambios administrativos, servicios de otros proyectos, instalación HA, túneles ni credenciales por inferencia.",
+    "Asignación GPU actual; cambios requieren decisión concreta, no se incluyen en autonomía genérica.",
+    "config/settings.yaml centraliza configuración de aplicación; este JSON es seguimiento de trabajo, no nueva configuración runtime.",
+    "Cerraduras y alarmas bloqueadas. Escenas/rutinas comparten selección y límites; perfil acústico no autentica ni eleva permisos.",
+    "Capturas ordinarias y huellas sin confirmar con máximo 48h; hechos automáticos 30d; confirmados hasta borrado; legacy en cuarentena.",
+    "Corpus nuevo consentido: min(captura+30d,cierre de evaluación,revocación); derivados y copias heredan retirada, fuera de Git/RAG.",
+    "Un escritor de código/Git; subagentes para lectura, diseño/revisión independiente y tareas aisladas coordinadas. No sesiones con checkouts concurrentes ni worktrees activos simultáneos."
+  ],
+  "autonomy": {
+    "planning_is_not_execution_authorization": true,
+    "activation_requires_explicit_user_request": true,
+    "development_actions_after_activation": [
+      "Lectura enfocada e investigación primaria pertinente",
+      "Implementación/refactors dentro del perfil y dependencias justificadas bajo yo",
+      "Fixtures, tests dirigidos y validación ampliada cuando corresponda",
+      "Commits y push coherentes, actualización de estado y documentación",
+      "Instrumentación, migraciones en copias, artefacto/rollback y guion de campo"
+    ],
+    "human_gates": [
+      "Consentimientos y referencias/escucha",
+      "Verificación física, micrófono-habitación y Cocina",
+      "iPhone real y observación de efectos",
+      "Ventana de release, selección concreta y operación bajo kza"
+    ],
+    "resume_protocol": [
+      "Confirmar usuario, checkout, rama y cambios ajenos; respetar AGENTS/CLAUDE y recuperación ctx/Serena/RAG",
+      "Leer manifiesto y última evidencia por tarea activa; no depender de que sobreviva toda la conversación",
+      "Verificar commit y resultado de trabajos que quedaron ejecutándose antes de repetirlos",
+      "Elegir próxima tarea con dependencias satisfechas; completar unidad coherente, verificar, guardar evidencia, commit y push",
+      "Actualizar este seguimiento sin marcar aceptado lo que sólo está implementado o simulado"
+    ],
+    "retry_policy": "Reintentos acotados y con backoff; tres intentos de igual fallo sin información nueva activan revisión de causa. Autenticación o alcance se consulta; no rotar identidad/proveedor ni insistir hasta bloquear HA.",
+    "when_waiting": "Registrar dependencia humana/externa y continuar ramas independientes. No interpretar silencio como autorización ni bajar umbrales para cerrar.",
+    "reporting": "Estado al completar una unidad y resumen diario en este hilo mientras haya ejecución activa; bloqueos comunicados al detectarse. Sin mensajes externos ni nuevas automatizaciones instaladas.",
+    "runtime_continuity": "Goal mode y reanudación de sesión requieren entorno/credenciales/cuota disponibles. No se configura un daemon ni se promete proceso ininterrumpido por semanas."
+  },
+  "completion_policy": {
+    "all_included_areas_must_be_accepted": true,
+    "all_required_criteria_need_evidence": true,
+    "no_average_compensates_failed_area": true,
+    "no_open_P0_P1_in_included_scope": true,
+    "physical_and_user_acceptance_required": true,
+    "unsupported_or_missing_dependency_is_not_a_pass": true,
+    "criteria_changes_require_recorded_user_decision_before_new_reserved_evaluation": true,
+    "complete_goal_only_after_evidence_and_final_handover": true
+  },
+  "routine_voice_authority": {
+    "status": "pending_user",
+    "decision": "No habilitar creación/modificación por voz sin resolver Q19; grafo y fixtures pueden prepararse."
+  },
+  "activation_prompt": "Ejecutar el perfil home-2026-11-v1 y las tareas de docs/plans/2026-11-02-autonomous-roadmap.json como yo en /home/yo/projects/kza, conforme a AGENTS.md y CLAUDE.md, hasta aceptar las siete áreas con su evidencia. Respetar presupuesto Codex, ámbito doméstico, privacidad, un escritor, límites GPU y pruebas físicas sólo en ventana final autorizada. Guardar estado, commits y push por unidad; avanzar con tareas independientes y consultar decisiones externas concretas. No declarar 10/10 ni completar el objetivo con criterios humanos/físicos pendientes.",
+  "sources": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/plans/2026-10-25-h2-complete-voice-responses.md",
+    "docs/plans/2026-10-27-h3-voice-grouping-evaluation.md",
+    "https://learn.chatgpt.com/docs/long-running-work",
+    "https://www.w3.org/TR/WCAG22/",
+    "https://web.dev/articles/vitals",
+    "https://www.home-assistant.io/integrations/todo/",
+    "https://www.home-assistant.io/integrations/calendar/",
+    "https://www.home-assistant.io/integrations/media_player/",
+    "https://www.home-assistant.io/docs/energy/"
+  ]
+}
