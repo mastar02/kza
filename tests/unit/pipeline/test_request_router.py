@@ -231,7 +231,9 @@ class TestProcessCommandOrchestrated:
         audio = np.zeros(16000, dtype=np.float32)
         result = await router.process_command(audio)
 
-        assert result["success"] is True
+        assert result["success"] is False
+        assert result["task_completed"] is False
+        assert result["outcome"]["status"] == "unknown"
         assert result["text"] == "nexa enciende la luz"
         assert result["intent"] == "domotics"
         assert result["path"] == "fast"

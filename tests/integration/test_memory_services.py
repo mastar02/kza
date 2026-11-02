@@ -84,7 +84,10 @@ async def test_voice_proposal_can_only_become_permanent_through_authenticated_re
             routine_manager=SimpleNamespace(handle=AsyncMock(return_value={'handled': False})))
         event = CommandEvent(np.zeros(16000, dtype=np.float32), 'origin', timestamp=clock.now, captured_at=clock.now)
         result = await router.process_command(event)
-        assert result['success'] and result['intent'] == 'memory_proposal'
+        assert result['handled'] and result['intent'] == 'memory_proposal'
+        assert not result['success'] and not result['task_completed']
+        assert result['response_completed'] and result['outcome']['status'] == 'needs_input'
+        assert result['outcome']['persistence'] == 'committed'
         proposal = result['memory_proposal']
         assert proposal['sources'][0]['capture_id'] == event.capture_id
         assert await services.manager.long_term.asearch_relevant('cocinar') == []

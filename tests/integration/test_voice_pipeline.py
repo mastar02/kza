@@ -121,7 +121,9 @@ class TestVoicePipelineIntegration:
         result = await pipeline.process_command(sample_audio)
 
         assert result["intent"] == "sync"
-        assert result["success"] is True
+        assert result["task_completed"] is True
+        assert result["response_completed"] is False
+        assert result["success"] is False
 
     @pytest.mark.asyncio
     async def test_process_routine_command(self, pipeline, sample_audio):
@@ -140,7 +142,10 @@ class TestVoicePipelineIntegration:
         result = await pipeline.process_command(sample_audio)
 
         assert result["intent"] == "routine"
-        assert result["success"] is True
+        assert result["handled"] is True
+        assert result["task_completed"] is False
+        assert result["outcome"]["status"] == "unknown"
+        assert result["success"] is False
 
     @pytest.mark.asyncio
     async def test_empty_transcription(self, pipeline, sample_audio):

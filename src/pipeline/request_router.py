@@ -434,16 +434,22 @@ class RequestRouter:
         source = self._memory_source.get()
         if source is None:
             result.update(intent="memory_unavailable", success=False,
-                          response="No pude preparar ese recuerdo para revisión.")
+                          response="No pude preparar ese recuerdo para revisión.",
+                          _task_outcome=TaskOutcome(TaskStatus.FAILED, persistence=PersistenceState.NOT_WRITTEN,
+                                                   effect=EffectState.NOT_OBSERVED))
         else:
             try:
                 proposal = await self.memory.long_term.acall(self.memory.long_term.propose, match[1].strip(), (source,))
                 result.update(intent="memory_proposal", success=True, memory_proposal=proposal,
-                              memory_review_required=True, response="Dejé la propuesta de recuerdo para que la revises en el panel.")
+                              memory_review_required=True, response="Dejé la propuesta de recuerdo para que la revises en el panel.",
+                              _task_outcome=TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.COMMITTED,
+                                                       effect=EffectState.OBSERVED, observation_scope="software_state"))
             except Exception:
                 logger.exception("[Memory] Proposal could not be retained")
                 result.update(intent="memory_unavailable", success=False,
-                              response="No pude preparar ese recuerdo para revisión.")
+                              response="No pude preparar ese recuerdo para revisión.",
+                              _task_outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN,
+                                                       effect=EffectState.UNCERTAIN))
         delivered = await self._speak_response(result["response"])
         result["voice_delivery"] = delivered.delivery.value
         return True
