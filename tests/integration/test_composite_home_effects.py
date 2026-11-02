@@ -26,7 +26,7 @@ from src.pipeline.command_processor import ProcessedCommand
 from src.pipeline.request_router import RequestRouter
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_scheduler import ReminderScheduler
-from src.reminders.reminder_store import ReminderStore
+from src.reminders.reminder_store import ReminderScope, ReminderStore
 from src.rooms.room_context import RoomConfig
 from src.routines.factory import build_routine_scheduler
 from src.routines.models import parse_routine_spec, spec_to_dict
@@ -365,7 +365,8 @@ async def test_reminder_durable_claim_prevents_replay_of_partial_scene_after_res
     store = ReminderStore(path)
     await store.initialize()
     manager = ReminderManager(store, home_actions=actions)
-    reminder = await manager.create("profile", "test", 1.0, ha_actions=[{"entity_id": SCENE, "domain": "scene", "service": "turn_on"}])
+    reminder = await manager.create("profile", "test", 1.0, scope=ReminderScope.SHARED,
+                                    ha_actions=[{"entity_id": SCENE, "domain": "scene", "service": "turn_on"}])
     original = ha.call_service_once
 
     async def partial(*args):

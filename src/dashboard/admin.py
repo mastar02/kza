@@ -318,6 +318,8 @@ def _decode_wav_bytes(raw: bytes) -> np.ndarray:
             count = int(len(data) * 16000 / rate)
             indices = np.linspace(0, len(data) - 1, count).astype(np.int64)
             data = data[indices]
+        if not data.size or not np.isfinite(data).all():
+            raise ValueError("audio_sample_invalid")
         return data.astype(np.float32, copy=True)
     finally:
         raw = data = audio = None

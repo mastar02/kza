@@ -92,14 +92,22 @@ async def graph(tmp_path, *, blocked=None, shadow=False, veto=False, fail=False)
     class Registry:
         _version = 1
 
-        def get_all_embeddings(self):
+        def get_all_embeddings(self, *, before_read=None):
+            if before_read is not None:
+                before_read()
             gates["profiles"].step()
+            if before_read is not None:
+                before_read()
             return {user.user_id: np.ones(192, dtype=np.float32)}
 
-        def get_user(self, user_id):
+        def get_user(self, user_id, *, before_read=None):
+            if before_read is not None:
+                before_read()
             return user
 
-        def update_last_seen(self, user_id):
+        def update_last_seen(self, user_id, *, before_save=None):
+            if before_save is not None:
+                before_save()
             last_seen.append(user_id)
 
     class Identifier:

@@ -425,6 +425,27 @@ def test_native_wav_conversion_is_finite_detached_mono_at_16khz():
         _decode_wav_bytes(invalid.getvalue())
 
 
+@pytest.mark.parametrize("sample", ["empty_after_resample", "overflow_after_downmix"])
+async def test_conversion_cannot_admit_empty_or_nonfinite_audio_to_native_model(admin_graph, sample):
+    import soundfile as sf
+
+    calls = []
+    admin_graph.speaker.create_enrollment_embedding = lambda arrays: calls.append(True)
+    stream = io.BytesIO()
+    if sample == "empty_after_resample":
+        sf.write(stream, np.zeros(1, dtype=np.float32), 192000, format="WAV", subtype="FLOAT")
+    else:
+        sf.write(stream, np.full((2, 2), np.finfo(np.float32).max, dtype=np.float32),
+                 16000, format="WAV", subtype="FLOAT")
+    uploads = [("samples", (f"sample-{n}.wav", stream.getvalue(), "audio/wav")) for n in range(3)]
+    previous = admin_graph.users.data_path.read_bytes()
+    response = await admin_graph.client.post(f"/api/admin/users/{admin_graph.user.user_id}/enroll", files=uploads)
+    assert response.status_code == 400
+    assert calls == []
+    assert admin_graph.users.data_path.read_bytes() == previous
+    assert admin_graph.users.get_user(admin_graph.user.user_id).voice_embedding is None
+
+
 async def test_dashboard_stop_observes_server_after_native_drain_despite_repeated_cancel(admin_graph):
     graph = admin_graph
     entered, release = threading.Event(), threading.Event()
