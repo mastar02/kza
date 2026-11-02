@@ -611,3 +611,39 @@ Los hashes, logs, XML y capturas están registrados en
 T047 sigue en progreso: falta la asociación manual persistente voz-persona y
 su limpieza al retirar una cuenta. La revisión vocal no concede permisos ni
 consentimiento. No se acepta ningún criterio con esta unidad local.
+
+
+### Asociación manual de voz y persona
+
+La revisión `f25f7c6` conserva el vínculo en una tabla propia, con
+revisión independiente del perfil acústico. La API exige revisión vocal y
+administración; el vínculo no autentica, concede permisos ni expresa
+consentimiento. La lectura enriquecida es explícita y mantiene separados los
+campos ordinarios de Voces. Sus recibos verifican la sesión original, la
+revisión del ledger y un único snapshot canónico de todas las personas
+vinculadas, hasta el envío real del cuerpo.
+
+Retirar una cuenta sella sus credenciales de forma durable, limpia los
+vínculos nativos y después permite reemplazar el catálogo JSON. Todos los
+helpers comparten una prueba inmutable del mismo ledger; su lectura no toma
+locks ni hace SQL bajo el lock de cuentas. Un resultado de commit incierto,
+un cierre o una reapertura retiran esa prueba hasta reconciliar SQL. El
+borrado del perfil también deja una revisión de desvinculación.
+
+La migración del vínculo y su versión es atómica. Una restauración con tabla
+o marcador ausentes, versión desconocida o estructura incompleta se rechaza
+antes de reparar esquema. Si ambas tablas faltan se trata como una base
+anterior a esta función. Una apertura fallida no publica una conexión parcial.
+El pipeline probado con una sugerencia acústica realmente vinculada sigue
+usando el contexto compartido anónimo, sin historial, preferencias ni acceso
+personal. Se normaliza el ambiente desconocido a `None` al registrar metadata.
+
+La suite completa pasa 6.422 casos y conserva el xfail conocido de C05/T037;
+las 784 fuentes permanecieron idénticas. Ruff pasa y la revisión independiente
+no conserva bloqueantes. Los resultados enfocados se superponen con la suite.
+La evidencia está en
+`data/autonomous-roadmap-20261102/t047/person-native-evidence.json`.
+T047 sigue en progreso: corresponde aplicar y verificar el selector NEXO con
+catálogo auxiliar ligado al dueño de la vista y a su token de entrega. T013
+conserva sus pendientes de evaluador y credenciales. No se acepta ningún
+criterio ni se modifica producción con esta unidad.

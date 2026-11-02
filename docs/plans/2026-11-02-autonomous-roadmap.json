@@ -977,7 +977,8 @@
         "64c01a2aa293fc7adc262b8324106faf62f16997",
         "ba52848f10fac8a409147be94d23b510db12954c",
         "8260acb09cf203c11be9e5803c66c3ffccb05ae3",
-        "68fbb3d856afff28d643cfc8ad99bf41d3ce0c0b"
+        "68fbb3d856afff28d643cfc8ad99bf41d3ce0c0b",
+        "f25f7c606650f0c7b7e6ec4c282d90cd8555bd73"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
@@ -996,9 +997,10 @@
         "data/autonomous-roadmap-20261102/t047/people-backend-evidence.json",
         "data/autonomous-roadmap-20261102/t047/people-ui-evidence.json",
         "data/autonomous-roadmap-20261102/t047/voices-reader-evidence.json",
-        "data/autonomous-roadmap-20261102/t047/voices-control-evidence.json"
+        "data/autonomous-roadmap-20261102/t047/voices-control-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/person-native-evidence.json"
       ],
-      "next_action": "CONTROL_ONLY /ws/voices verified locally on68fbb3d: focused877/Ruff/hash774, no general broadcast, closed voice channels, technical/voices durable reset domains, original reader and actual egress. Next mount NEXO Voces with a per-socket/login state/controller, native media/reset/ACK drain and no stale callbacks; then explicit persistent profile-person metadata requiring separate administrative/review authority, with no grants or consent inference. T013 exact evaluator reader and credential/role UI remain. No criteria accepted."
+      "next_action": "Native manual voice-person metadata verified on f25f7c6, full6422+knownxfail: original reader/target fence, independent CAS, durable retirement -> unlink -> canonical JSON proof; no acoustic identity or grants. NEXO chooser remains under T047. Continue exact evaluator reader and credential/role UI within authority boundaries. No criteria accepted."
     },
     {
       "id": "T014",
@@ -1453,7 +1455,8 @@
         "8260acb09cf203c11be9e5803c66c3ffccb05ae3",
         "68fbb3d856afff28d643cfc8ad99bf41d3ce0c0b",
         "55bee7beef284efd8d0046287eb0de62438a0fad",
-        "4d2c0ef9d8e960114a23d865127479d79266420b"
+        "4d2c0ef9d8e960114a23d865127479d79266420b",
+        "f25f7c606650f0c7b7e6ec4c282d90cd8555bd73"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t047/home-shell-evidence.json",
@@ -1462,9 +1465,10 @@
         "data/autonomous-roadmap-20261102/t047/voices-reader-evidence.json",
         "data/autonomous-roadmap-20261102/t047/voices-control-evidence.json",
         "data/autonomous-roadmap-20261102/t047/login-replacement-evidence.json",
-        "data/autonomous-roadmap-20261102/t047/voices-nexo-evidence.json"
+        "data/autonomous-roadmap-20261102/t047/voices-nexo-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/person-native-evidence.json"
       ],
-      "next_action": "NEXO Voces real UI verified locally on 4d2c0ef: full6346+knownxfail snapshot, frontend supplement110 Node/Ruff/Chromium, original owner/media/cursor retirement, bounded uncertain IDs and explicit recreation. Next implement persistent manual profile-person link with review + administrative authority, pure batch target fence, guarded native CAS, and durable account retirement -> unlink -> JSON proof. No acoustic identity, grants or consent inference. T013 exact evaluator reader/credential UI remain. No criteria accepted.",
+      "next_action": "Native manual person link verified locally on f25f7c6: independent CAS and unchanged acoustic profile, review+admin, original-reader and batch target fences, shared pure proof for durable retirement -> unlink -> JSON, versioned restore validation; full6422+knownxfail/Ruff0. Next apply staged NEXO chooser with owned auxiliary account catalogue, original-view token and actual decoder/action/media drain. T013 evaluator/credential UI remains. No criteria accepted.",
       "design_reference": {
         "path": "/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd",
         "source_commit": "d686fcde52a34c3b786decf167eebdb91dceb6d6",
