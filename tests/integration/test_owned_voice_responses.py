@@ -234,37 +234,48 @@ async def test_hook_cannot_redirect_a_captured_origin(monkeypatch):
 
 
 async def test_voice_graph_loop_and_cancellation_limits(monkeypatch, record_property):
+    """Measure turns with GC enabled after retiring prior suite fixture garbage."""
+    import gc
     import json
+
+    # A full suite leaves unrelated mock/traceback cycles behind. Retire those
+    # before this timing window; natural collections remain enabled throughout.
+    await asyncio.to_thread(gc.collect)
     lags, cancels = [], []
     loop = asyncio.get_running_loop()
     for _ in range(10):
         owner, engine, backend, endpoint, _ = graph(monkeypatch,
             parts=[0.2, event('Respuesta completa de prueba.'), event(finish='stop')])
-        task = asyncio.create_task(owner.arespond('synthetic', zone_id='zone_origin'))
-        deadline = loop.time() + 0.005
-        while not task.done():
-            await asyncio.sleep(max(0, deadline - loop.time()))
-            lags.append(max(0, loop.time() - deadline) * 1000)
+        try:
+            task = asyncio.create_task(owner.arespond('synthetic', zone_id='zone_origin'))
             deadline = loop.time() + 0.005
-        assert (await task).success and endpoint.body.closed
-        expected = engine.audio('Respuesta completa de prueba.')
-        np.testing.assert_array_equal(backend.heard()[:, 0], expected)
-        backend.stall = True
-        task = asyncio.create_task(owner.aspeak('Cancelar', zone_id='zone_origin'))
-        await until(lambda: len(backend.outputs) == 2)
-        started = loop.time()
-        await owner.cancel('zone_origin')
-        assert (await task).delivery is DeliveryState.CANCELLED
-        await until(lambda: not owner.is_responding)
-        cancels.append((loop.time() - started) * 1000)
-        assert backend.outputs[-1].closed and backend.outputs[-1].aborted.is_set()
+            while not task.done():
+                await asyncio.sleep(max(0, deadline - loop.time()))
+                lags.append(max(0, loop.time() - deadline) * 1000)
+                deadline = loop.time() + 0.005
+            assert (await task).success and endpoint.body.closed
+            expected = engine.audio('Respuesta completa de prueba.')
+            np.testing.assert_array_equal(backend.heard()[:, 0], expected)
+            backend.stall = True
+            task = asyncio.create_task(owner.aspeak('Cancelar', zone_id='zone_origin'))
+            await until(lambda: len(backend.outputs) == 2)
+            started = loop.time()
+            await owner.cancel('zone_origin')
+            assert (await task).delivery is DeliveryState.CANCELLED
+            await until(lambda: not owner.is_responding)
+            cancels.append((loop.time() - started) * 1000)
+            assert backend.outputs[-1].closed and backend.outputs[-1].aborted.is_set()
+        finally:
+            await owner.aclose()
     ordered = sorted(lags)
     p95 = ordered[int(.95 * (len(ordered) - 1))]
     record_property('owned_voice_metrics', json.dumps({
         'repetitions': 10, 'stall_ms': 200, 'heartbeat_interval_ms': 5, 'heartbeat_samples': len(lags),
         'loop_lag_p95_ms': p95, 'loop_lag_max_ms': max(lags),
         'cancel_cleanup_max_ms': max(cancels), 'exact_pcm_runs': 10,
+        'gc_enabled': gc.isenabled(), 'prior_suite_garbage_retired': True,
     }))
+    assert gc.isenabled()
     assert p95 <= 25 and max(lags) <= 75
     assert max(cancels) <= 100
 
