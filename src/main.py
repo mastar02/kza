@@ -742,7 +742,9 @@ async def build_application(
     await list_store.initialize()
     list_manager = ListManager(store=list_store, ha_client=ha_client, config=lists_config)
 
-    reminder_store = ReminderStore(reminders_config.get("db_path", "./data/reminders.db"))
+    reminder_wake_event = asyncio.Event()
+    reminder_store = ReminderStore(reminders_config.get("db_path", "./data/reminders.db"),
+                                   on_created=reminder_wake_event.set)
     shutdown.push_async_callback(reminder_store.close)
     await reminder_store.initialize()
     reminder_manager = ReminderManager(store=reminder_store, config=reminders_config, home_actions=home_action_service)
@@ -1308,7 +1310,7 @@ async def build_application(
         config, tts=tts, shutdown=shutdown, zone_manager=zone_manager, llm=llm,
         hooks=hooks, before_handler_warn_ms=self_warn_ms, user_manager=user_manager,
         ha_client=ha_client, home_actions=home_action_service, reminder_store=reminder_store,
-        presence_detector=presence_detector,
+        presence_detector=presence_detector, reminder_wake_event=reminder_wake_event,
     )
     response_handler = voice_services.responses
     reminder_scheduler = voice_services.reminders

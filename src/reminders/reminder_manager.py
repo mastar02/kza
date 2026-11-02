@@ -4,6 +4,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 
 from src.reminders.reminder_store import ReminderStore, Reminder
+from src.core.sqlite_work import AuthorityGuard
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionService, request_from_service
 
@@ -27,6 +28,7 @@ class ReminderManager:
         trigger_at: float,
         recurrence: str | None = None,
         ha_actions: list[dict] | None = None,
+        *, guard: AuthorityGuard | None = None,
     ) -> Reminder:
         """Create a new reminder via the store."""
         for action in ha_actions or []:
@@ -43,6 +45,7 @@ class ReminderManager:
             trigger_at=trigger_at,
             recurrence=recurrence,
             ha_actions=ha_actions,
+            guard=guard,
         )
         logger.info(
             "Created reminder '%s' for user %s at %s",
@@ -52,9 +55,9 @@ class ReminderManager:
         )
         return reminder
 
-    async def cancel_by_id(self, reminder_id: str) -> bool:
+    async def cancel_by_id(self, reminder_id: str, *, guard: AuthorityGuard | None = None) -> bool:
         """Return an actual cancellation receipt, not recognition of an ID."""
-        return await self._store.cancel(reminder_id)
+        return await self._store.cancel(reminder_id, guard=guard)
 
     async def cancel_by_text(self, user_id: str, search_text: str) -> bool:
         """Cancel the best fuzzy-matched active reminder. Returns True if cancelled."""

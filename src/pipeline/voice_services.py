@@ -38,7 +38,8 @@ class VoiceServices:
 def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_manager=None,
                          llm=None, hooks=None, before_handler_warn_ms: float = 5.0,
                          user_manager=None, ha_client=None, home_actions=None,
-                         reminder_store=None, presence_detector=None) -> VoiceServices:
+                         reminder_store=None, presence_detector=None,
+                         reminder_wake_event: asyncio.Event | None = None) -> VoiceServices:
     """Build the same local delivery graph used by main and register cleanup.
 
     Producers close before the shared output owner, including construction or
@@ -76,7 +77,7 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
             reminder_config["output_zone"] = streaming.get("default_output_zone")
         services.reminders = ReminderScheduler(
             reminder_store, features.voice_delivery, presence_detector, ha_client,
-            reminder_config, home_actions=home_actions,
+            reminder_config, home_actions=home_actions, wake_event=reminder_wake_event,
         )
         shutdown.push_async_callback(services.stop_reminders)
     return services

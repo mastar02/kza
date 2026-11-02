@@ -86,17 +86,61 @@ async def test_missing_background_route_does_not_follow_active_zone(monkeypatch)
 
 async def test_reminder_stop_owns_task_even_before_first_turn(monkeypatch, tmp_path):
     original, engine, _, _, _ = voice_graph(monkeypatch)
-    store = ReminderStore(str(tmp_path / 'reminders.db'))
+    wake = asyncio.Event()
+    store = ReminderStore(str(tmp_path / 'reminders.db'), on_created=wake.set)
     await store.initialize()
     async with AsyncExitStack() as stack:
         stack.push_async_callback(store.close)
         services = build_voice_services({'rooms': {'enabled': True}, 'alerts': {'enabled': False}},
-            tts=engine, shutdown=stack, zone_manager=original.zone_manager, reminder_store=store)
+            tts=engine, shutdown=stack, zone_manager=original.zone_manager, reminder_store=store,
+            reminder_wake_event=wake)
+        assert services.reminders._wake_event is wake
         services.start_reminders()
         task = services.reminder_task
         await services.stop_reminders()
         assert task.done() and not services.reminders._running
         assert services.reminder_task is None
+
+
+async def test_reminder_commit_during_empty_query_keeps_its_wake(monkeypatch, tmp_path):
+    original, engine, _, _, _ = voice_graph(monkeypatch)
+    wake = asyncio.Event()
+    store = ReminderStore(str(tmp_path / 'wake.db'), on_created=wake.set)
+    async with AsyncExitStack() as stack:
+        stack.push_async_callback(store.close)
+        await store.initialize()
+        services = build_voice_services({'rooms': {'enabled': True}, 'alerts': {'enabled': False}},
+            tts=engine, shutdown=stack, zone_manager=original.zone_manager,
+            reminder_store=store, reminder_wake_event=wake)
+        entered, release, selected = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        original_query = store.get_next_pending
+        first = True
+
+        async def held_query():
+            nonlocal first
+            result = await original_query()
+            if first:
+                first = False
+                assert result is None
+                entered.set()
+                await release.wait()
+            elif result is not None:
+                selected.set()
+            return result
+
+        monkeypatch.setattr(store, 'get_next_pending', held_query)
+        services.start_reminders()
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            reminder = await store.create('synthetic-owner', 'Synthetic future reminder', time.time() + 600)
+            assert wake.is_set()
+            release.set()
+            await asyncio.wait_for(selected.wait(), 3)
+            assert (await original_query()).id == reminder.id
+            assert services.reminders._wake_event is wake
+        finally:
+            release.set()
+            await services.stop_reminders()
 
 
 async def test_missing_notification_output_is_not_counted_as_delivered(monkeypatch):

@@ -33,7 +33,7 @@ class ReminderScheduler:
         presence_detector,
         ha_client,
         config: dict = None,
-        *, home_actions: HomeActionService | None = None,
+        *, home_actions: HomeActionService | None = None, wake_event: asyncio.Event | None = None,
     ):
         self._store = store
         self._tts = tts
@@ -42,7 +42,7 @@ class ReminderScheduler:
         self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
         self._config = config or {}
         self._running = False
-        self._wake_event = asyncio.Event()
+        self._wake_event = wake_event if wake_event is not None else asyncio.Event()
         self._retry_counts: dict[str, int] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runner_task: asyncio.Task | None = None
@@ -67,10 +67,10 @@ class ReminderScheduler:
 
         while self._running:
             try:
+                self._wake_event.clear()
                 pending = await self._store.get_next_pending()
 
                 if pending is None:
-                    self._wake_event.clear()
                     await self._wake_event.wait()
                     continue
 
@@ -78,7 +78,6 @@ class ReminderScheduler:
                 delay = pending.trigger_at - now
 
                 if delay > 0:
-                    self._wake_event.clear()
                     try:
                         await asyncio.wait_for(
                             self._wake_event.wait(), timeout=delay

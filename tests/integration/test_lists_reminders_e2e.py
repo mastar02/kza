@@ -1,4 +1,5 @@
 """Integration tests for lists and reminders end-to-end flow."""
+import asyncio
 import time
 
 import pytest
@@ -32,7 +33,8 @@ async def list_system(tmp_path):
 @pytest_asyncio.fixture
 async def reminder_system(tmp_path):
     """Full reminder system with store, manager, and scheduler."""
-    store = ReminderStore(str(tmp_path / "reminders.db"))
+    wake = asyncio.Event()
+    store = ReminderStore(str(tmp_path / "reminders.db"), on_created=wake.set)
     await store.initialize()
     tts = AsyncMock()
     presence = MagicMock()
@@ -43,6 +45,7 @@ async def reminder_system(tmp_path):
     scheduler = ReminderScheduler(
         store=store, tts=tts, presence_detector=presence, home_actions=actions,
         ha_client=ha_client, config={"max_retries": 2, "retry_interval_seconds": 1, "tts_prefix": "Oye, recuerda"},
+        wake_event=wake,
     )
     yield {
         "store": store,

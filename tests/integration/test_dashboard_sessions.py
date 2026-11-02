@@ -1,5 +1,6 @@
 """Actual factory sessions and explicit standalone bearer compatibility."""
 
+import asyncio
 from contextlib import AsyncExitStack
 import time
 
@@ -78,6 +79,55 @@ async def test_factory_administrative_permission_values_reach_real_home_control(
         assert response.status_code == 200
         state = await graph.ha_client.get_entity_state('light.living')
         assert state['state'] == 'on'
+
+
+async def test_factory_reminder_keeps_original_lease_after_real_home_selection(
+    session_graph, dashboard_auth, monkeypatch,
+):
+    graph = session_graph
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = graph.home_actions.validate_selection
+
+    async def held_selection(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        entered.set()
+        await release.wait()
+        return result
+
+    monkeypatch.setattr(graph.home_actions, 'validate_selection', held_selection)
+    async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
+        token = dashboard_auth['Authorization'].split(' ', 1)[1]
+        assert (await client.post('/api/admin/auth/login', json={'token': token})).status_code == 200
+        pending = asyncio.create_task(client.post('/api/reminders', json={
+            'user_id': 'synthetic-owner', 'text': 'Synthetic deferred light action',
+            'trigger_at': time.time() + 600,
+            'ha_actions': [{'domain': 'light', 'service': 'turn_on', 'entity_id': 'light.living'}],
+        }))
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            assert (await client.post('/api/admin/auth/logout')).json()['session_revoked']
+            release.set()
+            assert (await pending).status_code == 403
+            assert await graph.reminder_manager.get_active('synthetic-owner') == []
+            wake = graph.reminder_manager._store._on_created.__self__
+            assert isinstance(wake, asyncio.Event) and not wake.is_set()
+            assert (await graph.ha_client.get_entity_state('light.living'))['state'] == 'off'
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+
+
+async def test_factory_committed_reminder_publishes_its_injected_wake(session_graph, dashboard_auth):
+    graph = session_graph
+    wake = graph.reminder_manager._store._on_created.__self__
+    assert isinstance(wake, asyncio.Event) and not wake.is_set()
+    async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
+        response = await client.post('/api/reminders', headers=dashboard_auth,
+            json={'user_id': 'synthetic-owner', 'text': 'Synthetic reminder', 'trigger_at': time.time() + 600})
+        assert response.status_code == 200
+        assert response.json()['outcome']['persistence'] == 'committed'
+        assert wake.is_set()
+        assert (await graph.reminder_manager.get_active('synthetic-owner'))[0].id == response.json()['id']
 
 
 @pytest.mark.parametrize('role', [DashboardRole.HOME, DashboardRole.EVALUATOR])

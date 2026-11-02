@@ -703,19 +703,27 @@ class DashboardAPI:
             return [{"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence, "state": r.state} for r in reminders]
 
         @self.app.post("/api/reminders")
-        async def create_reminder(data: ReminderCreateModel):
+        async def create_reminder(data: ReminderCreateModel, request: Request):
             if not self.reminder_manager:
                 raise HTTPException(status_code=503, detail="Reminders not configured")
-            r = await self.reminder_manager.create(data.user_id, data.text, data.trigger_at, data.recurrence, data.ha_actions)
+            try:
+                r = await self.reminder_manager.create(data.user_id, data.text, data.trigger_at,
+                    data.recurrence, data.ha_actions, guard=session_guard(request, frozenset({'admin:manage'})))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="reminder_write_denied") from error
             return {"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence, "state": r.state,
                     "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                         effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}
 
         @self.app.delete("/api/reminders/{reminder_id}")
-        async def delete_reminder(reminder_id: str):
+        async def delete_reminder(reminder_id: str, request: Request):
             if not self.reminder_manager:
                 raise HTTPException(status_code=503, detail="Reminders not configured")
-            cancelled = await self.reminder_manager.cancel_by_id(reminder_id)
+            try:
+                cancelled = await self.reminder_manager.cancel_by_id(reminder_id,
+                    guard=session_guard(request, frozenset({'admin:manage'})))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="reminder_write_denied") from error
             if cancelled is not True:
                 raise HTTPException(status_code=404, detail="Reminder not found")
             return {"status": "cancelled", "outcome": TaskOutcome(TaskStatus.COMPLETED,

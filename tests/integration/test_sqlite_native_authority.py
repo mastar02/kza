@@ -134,10 +134,15 @@ async def test_provisional_write_rolls_back_before_other_writer_or_reader(native
 async def test_cancelled_commit_observer_retains_actual_worker_and_close_drain(native_store):
     graph = native_store
     graph.state.hold_commit = True
-    pending = asyncio.create_task(graph.work.write(insert('committed')))
+    current = threading.Event()
+    current.set()
+    published = []
+    pending = asyncio.create_task(graph.work.write(insert('committed'),
+        guard=current.is_set, publish=published.append))
     assert await asyncio.to_thread(graph.state.commit_entered.wait, 3)
     with sqlite3.connect(graph.path) as independent:
         assert values(independent) == ['committed']
+    current.clear()
     pending.cancel()
     with pytest.raises(asyncio.CancelledError):
         await pending
@@ -148,6 +153,7 @@ async def test_cancelled_commit_observer_retains_actual_worker_and_close_drain(n
     graph.state.commit_release.set()
     await graph.work.aclose()
     await graph.work.aclose()
+    assert published == ['committed']
     with sqlite3.connect(graph.path) as independent:
         assert values(independent) == ['committed']
 
@@ -205,7 +211,12 @@ async def test_private_caller_context_and_values_do_not_reach_worker_context_or_
         def operation(database):
             assert marker.get() is None
             return insert(private)(database)
-        assert await native_store.work.write(operation) == private
+        published = []
+        def publish(value):
+            assert marker.get() is None
+            published.append(value)
+        assert await native_store.work.write(operation, publish=publish) == private
+        assert published == [private]
         assert await native_store.work.read(values) == [private]
     finally:
         marker.reset(token)

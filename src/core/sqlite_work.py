@@ -86,8 +86,10 @@ class SQLiteWork:
             close_timeout_s=close_timeout_s, isolate_context=True)
 
     async def _invoke[T](self, operation: Callable[[sqlite3.Connection], T], *,
-                         guard: AuthorityGuard | None, write: bool) -> T:
+                         guard: AuthorityGuard | None, write: bool,
+                         publish: Callable[[T], None] | None = None) -> T:
         context = copy_context()
+        result = None
 
         def invoke():
             return context.run(observe_native, _native, self._connection._conn,
@@ -96,9 +98,12 @@ class SQLiteWork:
         try:
             # A no-argument callback keeps private arguments out of aiosqlite's
             # DEBUG partial repr. Only the isolated owner's timing context crosses.
-            return await self._connection._execute(invoke)
+            result = await self._connection._execute(invoke)
+            if publish is not None:
+                publish(result)
+            return result
         finally:
-            operation = guard = context = invoke = None
+            operation = guard = context = invoke = publish = result = None
 
     async def read[T](self, operation: Callable[[sqlite3.Connection], T], *,
                       guard: AuthorityGuard | None = None) -> T:
@@ -106,9 +111,10 @@ class SQLiteWork:
         return await self._work.run(operation, guard=guard, write=False)
 
     async def write[T](self, operation: Callable[[sqlite3.Connection], T], *,
-                       guard: AuthorityGuard | None = None) -> T:
-        """Own a complete native transaction until commit or its own rollback."""
-        return await self._work.run(operation, guard=guard, write=True)
+                       guard: AuthorityGuard | None = None,
+                       publish: Callable[[T], None] | None = None) -> T:
+        """Own native commit and its synchronous publication; never recheck after commit."""
+        return await self._work.run(operation, guard=guard, write=True, publish=publish)
 
     async def aclose(self) -> None:
         """Stop admission and drain actual work before the caller closes SQLite."""
