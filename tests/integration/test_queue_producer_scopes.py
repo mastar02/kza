@@ -1,7 +1,7 @@
 """Actual queue workers publish prompt affinity to finite response receivers."""
 
 import asyncio
-from contextlib import AsyncExitStack, ExitStack
+from contextlib import AsyncExitStack, ExitStack, aclosing, asynccontextmanager
 import json
 import threading
 from uuid import uuid4
@@ -32,13 +32,43 @@ class Receiver:
 
 async def dispatch(owner, source):
     return await owner.dispatcher._slow_path('Consulta privada sintética.', 'household', None,
-        'origin', Priority.LOW, None, 2, memory_sources=(source,))
+        'origin', Priority.LOW, None, 2, memory_sources=(source,),
+        context_key=owner.context_manager.get_household('origin').user_id)
+
+
+@asynccontextmanager
+async def backend_graph(tmp_path, monkeypatch, **kwargs):
+    """Exercise explicit trusted backend selection inside a retained consumer.
+
+    Anonymous voice never installs this test consumer or selects personal data.
+    The actual memory worker, producer receipts and queue lifecycle stay real.
+    """
+    async with owner_graph(tmp_path, monkeypatch, **kwargs) as graph:
+        owner, manager, *_ = graph
+        generate = owner._generation.astream
+
+        async def consume_backend(prompt, **options):
+            selected = request = composed = source = chunk = None
+            try:
+                request = owner.queue.get_current()
+                selected = await manager.aprompt_context(request.text)
+                request.memory_sources = selected.bind_sources(request.memory_sources)
+                composed = selected.text + '\n\n' + prompt
+                selected = None
+                async with aclosing(generate(composed, **options)) as source:
+                    async for chunk in source:
+                        yield chunk
+            finally:
+                selected = request = composed = source = chunk = prompt = None
+
+        monkeypatch.setattr(owner._generation, 'astream', consume_backend)
+        yield graph
 
 
 @pytest.mark.parametrize('retained_close',[False,True])
 async def test_independent_queue_worker_publishes_fact_sources_to_receiver_before_response(tmp_path, monkeypatch, retained_close):
     hold = asyncio.Event()
-    async with owner_graph(tmp_path, monkeypatch, parts=[event(''), hold, event('Respuesta completa.'), event(finish='stop')]) as (owner, _, memory, clock, endpoint, _, _, _):
+    async with backend_graph(tmp_path, monkeypatch, parts=[event(''), hold, event('Respuesta completa.'), event(finish='stop')]) as (owner, _, memory, clock, endpoint, _, _, _):
         origin, fact = await stored(memory, clock)
         capture = memory_source(now=clock.now)
         receiver = Receiver()
@@ -85,6 +115,7 @@ async def test_independent_queue_worker_publishes_fact_sources_to_receiver_befor
             await asyncio.wait_for(ready.wait(), 2)
         finally:
             hold.set()
+            release_close.set()
             finish.set()
             result = await pending
         assert not result.success and result.response == ''
@@ -94,7 +125,7 @@ async def test_independent_queue_worker_publishes_fact_sources_to_receiver_befor
 
 @pytest.mark.parametrize('ending', ['cancel', 'revoke'])
 async def test_unresolved_native_read_keeps_worker_and_receiver_scopes_after_queue_cycle_exits(tmp_path, monkeypatch, ending):
-    async with owner_graph(tmp_path, monkeypatch) as (owner, manager, memory, clock, endpoint, _, _, _):
+    async with backend_graph(tmp_path, monkeypatch) as (owner, manager, memory, clock, endpoint, _, _, _):
         origin, fact = await stored(memory, clock)
         capture = memory_source(now=clock.now)
         receiver = Receiver()
@@ -162,7 +193,7 @@ async def test_idle_permanent_queue_controller_retains_no_completed_request(tmp_
 
 @pytest.mark.parametrize('transport', ['single', 'multi'])
 @pytest.mark.parametrize('orchestrated', [False, True])
-async def test_real_voice_result_cannot_postprocess_after_fact_revocation(tmp_path, monkeypatch, transport, orchestrated):
+async def test_real_voice_result_cannot_postprocess_after_consumed_capture_revocation(tmp_path, monkeypatch, transport, orchestrated):
     async with capture_graph(tmp_path, monkeypatch, transport) as (g, room):
         async with AsyncExitStack() as stack:
             services = await build_memory_services({'memory': {'preferences_path': str(tmp_path/'preferences.json')}},
@@ -181,11 +212,12 @@ async def test_real_voice_result_cannot_postprocess_after_fact_revocation(tmp_pa
             origin, _ = await stored(memory, g.clock)
             install_poll(room, monkeypatch)
             entered, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
-            posts = []
+            posts, conversations = [], []
 
             async def command(captured):
                 result = await router.process_command(captured)
                 assert result['success'] and result['response'] == 'Una respuesta completa.'
+                conversations.append(result['conversation_id'])
                 entered.set()
                 while not release.is_set():
                     try:
@@ -203,7 +235,9 @@ async def test_real_voice_result_cannot_postprocess_after_fact_revocation(tmp_pa
             try:
                 await asyncio.wait_for(entered.wait(), 3)
                 await g.privacy.acall(g.privacy.ledger.delete_conversation, origin.conversation_id, REVIEWER)
-                assert g.loop.conversation_busy(origin.conversation_id)
+                assert not g.loop.conversation_busy(origin.conversation_id) and not cancelled.is_set()
+                await g.privacy.acall(g.privacy.ledger.delete_conversation, conversations[0], REVIEWER)
+                assert g.loop.conversation_busy(conversations[0])
                 await asyncio.wait_for(cancelled.wait(), 2)
                 assert not posts
             finally:
@@ -214,7 +248,7 @@ async def test_real_voice_result_cannot_postprocess_after_fact_revocation(tmp_pa
 
 
 async def test_native_context_handoff_enriches_receiver_before_worker_resumes(tmp_path, monkeypatch):
-    async with owner_graph(tmp_path, monkeypatch) as (owner, manager, memory, clock, endpoint, _, _, _):
+    async with backend_graph(tmp_path, monkeypatch) as (owner, manager, memory, clock, endpoint, _, _, _):
         origin, fact = await stored(memory, clock)
         capture = memory_source(now=clock.now)
         receiver = Receiver()
@@ -286,7 +320,7 @@ async def test_queue_rejects_a_receiver_that_is_not_metadata(tmp_path, monkeypat
 async def test_failed_generation_retires_selected_context_without_waiting_for_gc(tmp_path, monkeypatch, failure):
     provider_error = ValueError('Synthetic provider failure.')
     parts = [provider_error] if failure == 'provider' else [event('Respuesta parcial.'), event(finish='length')]
-    async with owner_graph(tmp_path, monkeypatch, parts=parts) as (owner, manager, memory, clock, _, _, _, _):
+    async with backend_graph(tmp_path, monkeypatch, parts=parts) as (owner, manager, memory, clock, _, _, _, _):
         await stored(memory, clock)
         contexts = []
         original = manager.aprompt_context

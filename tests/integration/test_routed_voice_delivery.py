@@ -51,8 +51,9 @@ async def test_real_router_delivers_each_reply_or_generation_error_once(monkeypa
         assert endpoint.body.closed and endpoint.client.is_closed()
         amplifier.select_zone.assert_called_once_with(1)
         if orchestrator:
-            history = orchestrator.context_manager.get('unknown').conversation_history
-            assert len(history) == (0 if failure else 2)
+            assert orchestrator.context_manager.get('unknown') is None
+            context = orchestrator.context_manager.get_household('origin')
+            assert context.ephemeral and context.conversation_history == []
         elif failure:
             memory.record_interaction.assert_not_called()
     finally:

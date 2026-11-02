@@ -59,9 +59,10 @@ async def test_actual_factory_anonymous_voice_cannot_read_eligible_personal_data
     monkeypatch.setattr(httpx, 'Client', SyncClient)
     monkeypatch.setattr(httpx, 'AsyncClient', AsyncClient)
     real_build_memory = main_module.build_memory_services
+    memory_client = MemoryClient(tmp_path / 'memory-index')
 
     async def build_memory(config, **kwargs):
-        return await real_build_memory(config, chroma_client=MemoryClient(tmp_path / 'memory-index'), **kwargs)
+        return await real_build_memory(config, chroma_client=memory_client, **kwargs)
 
     monkeypatch.setattr(main_module, 'build_memory_services', build_memory)
     stt, tts = OfflineSTT(text='Nexa explicame el cielo'), OfflineTTS()
@@ -76,6 +77,7 @@ async def test_actual_factory_anonymous_voice_cannot_read_eligible_personal_data
                 'compaction': {'enabled': True, 'model': 'configured-model'},
                 'persistence': {'enabled': True, 'base_path': str(tmp_path / 'contexts')}})
             async with AsyncExitStack() as stack:
+                stack.callback(memory_client.close)
                 graph = await build_application(config, shutdown=stack, factories=factories)
                 router = graph.pipeline.request_router
                 manager = router.memory
@@ -95,6 +97,7 @@ async def test_actual_factory_anonymous_voice_cannot_read_eligible_personal_data
                 for user_id in ('unknown', 'known-profile'):
                     persister.save(UserContext(user_id, markers[4], compacted_summary=markers[3],
                         summary_sources=(source,), _source_policy=manager.long_term.ledger))
+                    assert persister.load(user_id) is not None
                 before = {p.name: p.read_bytes() for p in persister.base_path.glob('*.json')}
                 assert len(before) == 2
                 recalls = AsyncMock(wraps=manager.aprompt_context)

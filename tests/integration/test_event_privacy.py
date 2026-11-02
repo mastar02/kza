@@ -375,8 +375,9 @@ async def test_voice_events_keep_actual_provenance_when_memory_catalogue_is_disa
             assert logged.sources[0].capture_id == event.capture_id
             assert logged.sources[0].captured_at == event.timestamp
             if orchestrator:
-                history = orchestrator.context_manager.get('unknown').conversation_history
-                assert len(history) == 2 and all(turn.sources == logged.sources for turn in history)
+                assert orchestrator.context_manager.get('unknown') is None
+                context = orchestrator.context_manager.get_household('origin')
+                assert context.ephemeral and context.conversation_history == []
         finally:
             if worker:
                 orchestrator._running = False

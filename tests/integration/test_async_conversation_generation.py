@@ -22,7 +22,7 @@ async def graph(monkeypatch, parts):
     monkeypatch.setattr(reasoner, "_new_async_client", endpoint.build)
     orchestrator = MultiUserOrchestrator(None, None, None, llm=reasoner)
     assert orchestrator.dispatcher.queue is orchestrator.queue
-    orchestrator.context_manager.get_or_create("household", zone_id="origin")
+    orchestrator.context_manager.get_household("origin")
     orchestrator._running = True
     processor = asyncio.create_task(orchestrator._process_queue())
     orchestrator._processor_task = processor
@@ -38,6 +38,7 @@ async def dispatch(orchestrator, *, timeout=2):
     return await orchestrator.dispatcher._slow_path(
         text="consulta original", user_id="household", user_name=None,
         zone_id="origin", priority=Priority.LOW, on_response=None, timeout=timeout,
+        context_key=orchestrator.context_manager.get_household("origin").user_id,
     )
 
 
@@ -57,10 +58,8 @@ async def test_complete_response_and_context_without_blocking_capture(monkeypatc
             assert len(lags) >= 20
             all_lags.extend(lags)
             assert result.success and result.response == "respuesta completa"
-            history = owner.context_manager.get("household").conversation_history
-            assert [(turn.role, turn.content) for turn in history] == [
-                ("user", "consulta original"), ("assistant", "respuesta completa"),
-            ]
+            context = owner.context_manager.get_household("origin")
+            assert context.ephemeral and context.conversation_history == []
             assert endpoint.client.is_closed() and endpoint.body.closed
             assert owner.queue._current is None
     ordered = sorted(all_lags)
@@ -81,7 +80,7 @@ async def test_incomplete_answer_fails_and_never_records_success(monkeypatch, pa
     async with graph(monkeypatch, parts) as (owner, endpoint):
         result = await dispatch(owner)
         assert not result.success and result.intent == "error"
-        assert owner.context_manager.get("household").conversation_history == []
+        assert owner.context_manager.get_household("origin").conversation_history == []
         assert endpoint.body.closed and endpoint.client.is_closed()
 
 
@@ -107,14 +106,14 @@ async def test_dispatch_timeout_closes_pending_generation_and_keeps_context_empt
     async with graph(monkeypatch, [event("pending tail"), asyncio.Event()]) as (owner, endpoint):
         result = await dispatch(owner, timeout=0.05)
         assert result.intent == "timeout"
-        request = owner.queue._user_requests["household"]
+        request = owner.queue._user_requests[("household", owner.context_manager.get_household("origin").user_id)]
         assert request.cancellation_token.reason == CancellationReason.TIMEOUT
         async with asyncio.timeout(1):
             while not endpoint.body.closed or not endpoint.client.is_closed():
                 await asyncio.sleep(0.001)
         assert endpoint.client.is_closed()
         assert request.status == RequestStatus.CANCELLED and request.result is None
-        assert owner.context_manager.get("household").conversation_history == []
+        assert owner.context_manager.get_household("origin").conversation_history == []
 
 
 async def test_cancelled_dispatch_cancels_work_instead_of_leaving_request_running(monkeypatch):
@@ -127,8 +126,8 @@ async def test_cancelled_dispatch_cancels_work_instead_of_leaving_request_runnin
         async with asyncio.timeout(1):
             while not endpoint.body.closed or not endpoint.client.is_closed():
                 await asyncio.sleep(0.001)
-        assert owner.queue._user_requests["household"].is_cancelled
-        assert owner.context_manager.get("household").conversation_history == []
+        assert owner.queue._user_requests[("household", owner.context_manager.get_household("origin").user_id)].is_cancelled
+        assert owner.context_manager.get_household("origin").conversation_history == []
 
 
 async def test_direct_token_cancellation_also_notifies_waiter(monkeypatch):
@@ -144,7 +143,7 @@ async def test_direct_token_cancellation_also_notifies_waiter(monkeypatch):
             while not endpoint.body.closed or not endpoint.client.is_closed():
                 await asyncio.sleep(0.001)
         assert endpoint.client.is_closed()
-        assert owner.context_manager.get("household").conversation_history == []
+        assert owner.context_manager.get_household("origin").conversation_history == []
 
 
 async def test_cancellation_latency_and_cleanup_ten_runs(monkeypatch, record_property):
@@ -162,7 +161,7 @@ async def test_cancellation_latency_and_cleanup_ten_runs(monkeypatch, record_pro
                 while not endpoint.body.closed or not endpoint.client.is_closed():
                     await asyncio.sleep(0.001)
             cleanups.append((loop.time() - started) * 1000)
-            assert owner.context_manager.get("household").conversation_history == []
+            assert owner.context_manager.get_household("origin").conversation_history == []
 
     def stats(samples):
         ordered = sorted(samples)
@@ -183,8 +182,9 @@ async def test_new_request_interrupts_waiting_read_without_old_context(monkeypat
         old = owner.queue._current
         endpoint.body = SSEBody([event("respuesta nueva"), event(finish="stop")])
         user = "household" if same_user else "other"
-        owner.context_manager.get_or_create(user)
-        new = owner.queue.enqueue(user, "consulta nueva", Priority.LOW if same_user else Priority.HIGH)
+        context = owner.context_manager.get_household("origin" if same_user else "other")
+        new = owner.queue.enqueue(user, "consulta nueva", Priority.LOW if same_user else Priority.HIGH,
+                                  context_key=context.user_id)
         result = await asyncio.wait_for(task, 1)
         async with asyncio.timeout(1):
             while new.status != RequestStatus.COMPLETED:
@@ -193,9 +193,8 @@ async def test_new_request_interrupts_waiting_read_without_old_context(monkeypat
         assert old.status == RequestStatus.CANCELLED and old.result is None and old_body.closed
         expected = CancellationReason.USER_NEW_REQUEST if same_user else CancellationReason.HIGHER_PRIORITY
         assert old.cancellation_token.reason == expected
-        for context in (owner.context_manager.get("household"), owner.context_manager.get(user)):
-            assert all(turn.content != "consulta original" and "pending" not in turn.content
-                       for turn in context.conversation_history)
+        for context in (owner.context_manager.get_household("origin"), context):
+            assert context.ephemeral and context.conversation_history == []
         assert new.result == "respuesta nueva"
 
 
@@ -204,12 +203,13 @@ async def test_shutdown_cancels_stream_and_notifies_request_waiter(monkeypatch):
         task = asyncio.create_task(dispatch(owner))
         await asyncio.wait_for(endpoint.body.waiting.wait(), 1)
         request = owner.queue._current
+        context = owner.context_manager.get_household("origin")
         await owner.stop()
         result = await asyncio.wait_for(task, 1)
         assert result.intent == "cancelled" and not result.success
         assert request.cancellation_token.reason == CancellationReason.SYSTEM_SHUTDOWN
         assert endpoint.body.closed and endpoint.client.is_closed()
-        assert owner.context_manager.get("household").conversation_history == []
+        assert context.ephemeral and context.conversation_history == []
 
 
 @pytest.mark.parametrize("first", ["cancel", "complete", "fail"])

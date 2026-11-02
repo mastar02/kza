@@ -127,7 +127,7 @@ async def test_native_probe_is_off_loop_and_owned_after_cancel_or_session_revoca
                     release.set()
                     if revoke:
                         response = await request
-                        assert response.status_code == 401 and response.headers['Cache-Control'] == 'no-store'
+                        assert response.status_code == 403 and response.headers['Cache-Control'] == 'no-store'
                         assert 'synthetic-gpu' not in response.text
                     else:
                         await asyncio.wait_for(closing, 2)

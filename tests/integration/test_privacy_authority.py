@@ -174,14 +174,18 @@ async def test_disabled_memory_still_revokes_queue_context_and_snapshot(tmp_path
         await privacy.acall(persister.save, ctx)
         owner._running = True
         owner._processor_task = asyncio.create_task(owner._process_queue())
+        capture = memory_source(now=clock.now)
         receipt = owner.queue.enqueue('household', 'Consulta nueva.', Priority.LOW,
-                                      memory_sources=(memory_source(now=clock.now),))
+                                      memory_sources=(capture,))
         await asyncio.wait_for(endpoint.body.waiting.wait(), 1)
+        assert 'Resumen privado.' not in endpoint.requests[-1].content.decode()
         await privacy.acall(privacy.ledger.delete_conversation, source.conversation_id, ACTOR)
-        await until(lambda: receipt.status is RequestStatus.CANCELLED and endpoint.body.closed)
         assert ctx.to_dict()['compacted_summary'] is None
         assert await privacy.acall(persister.load, 'household') is None
         assert await privacy.acall(persister.purge_expired) == 1
+        assert receipt.status is RequestStatus.PROCESSING and not endpoint.body.closed
+        await privacy.acall(privacy.ledger.delete_conversation, capture.conversation_id, ACTOR)
+        await until(lambda: receipt.status is RequestStatus.CANCELLED and endpoint.body.closed)
         assert not owner._processor_task.done()
 
 
@@ -465,8 +469,9 @@ async def test_disabling_semantic_recall_keeps_fresh_conversation_and_single_voi
         assert len(engine.calls) == 1
         assert await privacy.acall(privacy.ledger.list) == []
         if owner is not None:
-            ctx = owner.context_manager.get('unknown')
-            assert len(ctx.conversation_history) == 2
+            assert owner.context_manager.get('unknown') is None
+            ctx = owner.context_manager.get_household('origin')
+            assert ctx.ephemeral and ctx.conversation_history == []
             assert owner.context_manager.source_policy is privacy.ledger
 
 

@@ -68,7 +68,8 @@ async def test_outer_deadline_cannot_repeat_an_error_whose_device_tail_is_draini
         result = await asyncio.wait_for(request, 2)
         assert not result['success']
         assert engine.calls == ['No pude procesar eso ahora mismo, probá de nuevo.']
-        assert orchestrator.context_manager.get('unknown').conversation_history == []
+        assert orchestrator.context_manager.get('unknown') is None
+        assert orchestrator.context_manager.get_household('origin').conversation_history == []
     finally:
         backend.release_tail.set()
         orchestrator._running = False
@@ -109,7 +110,8 @@ async def test_total_deadline_during_partial_delivery_discards_old_tail_and_spea
         assert result['timeout_stage'] == 'generation' and result['voice_delivery'] == 'complete'
         assert engine.calls == ['Primera oración suficientemente larga.', TIMEOUT_TEXT]
         assert endpoint.body.closed and endpoint.client.is_closed()
-        assert orchestrator.context_manager.get('unknown').conversation_history == []
+        assert orchestrator.context_manager.get('unknown') is None
+        assert orchestrator.context_manager.get_household('origin').conversation_history == []
         assert all(output.closed for output in backend.outputs)
     finally:
         backend.release_tail.set()
@@ -289,8 +291,8 @@ async def test_new_request_cancels_old_error_without_repeating_it_in_both_router
         assert backend.outputs[0].aborted.is_set()
         np.testing.assert_array_equal(np.concatenate(backend.outputs[1].frames)[:, 0], engine.audio('Una respuesta nueva.'))
         if orchestrator:
-            history = orchestrator.context_manager.get('unknown').conversation_history
-            assert len(history) == 2 and history[-1].content == 'Una respuesta nueva.'
+            assert orchestrator.context_manager.get('unknown') is None
+            assert orchestrator.context_manager.get_household('origin').conversation_history == []
     finally:
         backend.release_tail.set()
         if worker:
