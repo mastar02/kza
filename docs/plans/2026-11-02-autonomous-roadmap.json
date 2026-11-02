@@ -952,13 +952,15 @@
       "status": "in_progress",
       "implementation_commits": [
         "89f3db99917e9a848a74e04573db0f7010863fbe",
-        "3953b1e791621611683289f27dc009d9b57a7d66"
+        "3953b1e791621611683289f27dc009d9b57a7d66",
+        "ce6307149cbdec000475c6105b8747ee30697e8f"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
-        "data/autonomous-roadmap-20261102/t013/graph-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/graph-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/http-evidence.json"
       ],
-      "next_action": "Connect request-bound leases and opaque individual login/logout to the shared authority; then finish per-route/channel/native/body permissions and exact evaluation sample scope before full verification."
+      "next_action": "Propagate original lease authority through HomeActor lane/preflight/session-lock waits and native memory commits; bind private bodies and HTTP/WS receipt owners; then complete personal/evaluation scopes, credential management and role-aware UI before full verification."
     },
     {
       "id": "T014",

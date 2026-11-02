@@ -205,6 +205,19 @@ almacén antes de los canales; el dashboard no cierra la dependencia inyectada.
 La revisión `3953b1e` pasa 128 pruebas focalizadas de grafo, configuración y
 compatibilidad. El laboratorio aísla tanto su base como credenciales heredadas.
 
-T013 sigue en curso: falta conectar esa autoridad con login/logout, permisos por
-ruta, canales, entrega retenida y navegación web. No acredita nuevos accesos
-reales ni criterios de aceptación.
+La revisión `ce63071` conecta login/logout y gates basales por ruta. Las cookies
+son opacas; cada petición y operación retenida conserva su lease original.
+Una autoridad inyectada no disponible deniega acceso sin recurrir al token
+administrativo. La integración standalone sin autoridad conserva sólo ese
+bearer, sin cookies compartidas ni emisión de sesiones duraderas.
+
+La unidad HTTP pasa 824 pruebas sobre la revisión comprometida, incluidos
+controles HA de laboratorio con bearer y cookie, y retirada de sesión durante
+inscripción vocal nativa. El cierre conserva épocas y suelo temporal observados
+sin una nueva petición. Los detalles permanecen en
+`data/autonomous-roadmap-20261102/t013/http-evidence.json`.
+
+T013 sigue en curso: faltan vigencia en lanes/envíos domésticos y commits de
+memoria, ámbitos personales y de evaluación, binding HTTP/WS, guardas de todos
+los cuerpos privados, gestión de credenciales y navegación por rol. No acredita
+accesos reales ni criterios de aceptación.
