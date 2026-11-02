@@ -320,7 +320,30 @@ habitación configurada. Revisión y Ruff no encuentran bloqueantes. El detalle
 y los intentos están en
 `data/autonomous-roadmap-20261102/t013/shared-list-evidence.json`.
 
-T013 sigue en curso: faltan el cierre compartido de recordatorios y anuncios,
-guards de mutaciones administrativas nativas, ámbitos personales y
+### Recordatorios compartidos y ocurrencias
+
+Las revisiones `5fc095a` y `baeeae5` añaden un ámbito cerrado privado/compartido.
+Los registros anteriores, incluidos los de `unknown`, y las creaciones sin
+declaración explícita siguen privados. Voz, scheduler, llegadas y acciones
+filtran compartidos en SQL; releen el ID antes de usar su contenido. Los GET
+privados conservan la guarda administrativa original; el estado del scheduler
+cuenta sólo trabajos compartidos mediante el mismo dueño de SQLite.
+
+La relectura conserva la ocurrencia seleccionada y exige que siga activa y
+vencida. Cada transición compara también fecha y estado dentro de su UPDATE.
+Una llegada retenida mientras otra entrega avanza a la siguiente ocurrencia
+no ejecuta esa sucesora ni sobrescribe su fecha, incluso si también está
+vencida. Repetir una ocurrencia antigua, futura, cancelada o completada no
+duplica efectos ni transiciones. Se conserva el aviso publicado después del
+commit y su prueba de creación durante una consulta vacía.
+
+La unidad pasa 1230 pruebas y Ruff. Los grafos reales en ambos modos conservan
+privados activos y silenciosos y entregan el compartido con un único efecto
+HA sintético. La revisión encontró la carrera de recurrencia, se corrigió y
+quedó cubierta por pruebas deterministas. El detalle está en
+`data/autonomous-roadmap-20261102/t013/shared-reminder-evidence.json`.
+
+T013 sigue en curso: faltan guards de mutaciones administrativas nativas,
+ámbitos personales y
 de evaluación, binding HTTP/WS, gestión de credenciales y navegación por rol.
 No acredita accesos reales ni criterios de aceptación.
