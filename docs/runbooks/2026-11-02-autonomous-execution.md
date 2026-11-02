@@ -683,3 +683,31 @@ sumaron suites superpuestas ni se atribuyó la suite completa a otro árbol.
 T047 conserva pendiente la revisión de la presentación inversa desde
 Personas; T013 mantiene evaluador y credenciales. Ningún criterio queda
 aceptado ni se cambia el despliegue con esta unidad.
+
+
+### Consulta de perfiles por persona
+
+La revisión `a813030` añade un filtro canónico opcional a la lectura
+enriquecida de perfiles. Exige lectura y revisión vocal más administración.
+El SQL selecciona la persona antes de paginar y reunir las fuentes; no lee
+vectores, audio ni perfiles ajenos. Cada fila y su fence deben corresponder
+al destino. La consulta vacía también conserva la prueba de ese destino.
+
+La revisión se comprueba en el envío nativo y exterior aun sin fuentes, para
+que un cursor vacío retenido no sobreviva al retiro de la persona. Una marca
+interna, puesta después de validar la proyección vacía, permite comprobar
+la autoridad y caducidad de metadata sin relajar la regla raw que exige
+fuentes. El plazo de una página vacía de capturas corresponde sólo a esa
+consulta: no extiende ninguna captura. Las respuestas vacías sanas mantienen
+su conexión y canal.
+
+Pasan 6.443 pruebas y el xfail conocido de C05/T037, con 785 fuentes idénticas
+durante la ejecución; Ruff pasa. Las selecciones de 78, 154 y 6 casos se
+superponen con esa suite. La primera ejecución encontró una carrera en la
+prueba que volvía a buscar una entrada ya retirada; ahora conserva la
+referencia previa y comprueba su pérdida de vigencia. La evidencia está en
+`data/autonomous-roadmap-20261102/t047/person-filter-evidence.json`.
+
+Corresponde aplicar y probar el widget inverso de Personas, con un único
+dueño para ambas vistas, paginación acotada y contadores de página. T047 y
+T013 siguen en progreso; ningún criterio ni despliegue cambia de estado.
