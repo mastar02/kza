@@ -2,7 +2,7 @@
 
 El objetivo es completar y verificar KZA para un hogar con varias personas y visitas, usando voz y móvil, hasta aprobar las siete áreas de la evaluación. **10/10 significa cumplir el perfil acordado con evidencia**, incluida la prueba física y de usuarios. No significa perfección en cualquier entorno ni se obtiene compensando un área fallida con otra.
 
-**Estado:** cartera de cinco integraciones y metas aceptadas en Q14/Q15, además de las 13 decisiones iniciales. Se está cerrando Q19, autoridad para gestionar rutinas por voz. No se inició implementación ni se activó una ejecución prolongada.
+**Estado:** perfil cerrado con 16 decisiones confirmadas, cinco integraciones y metas C01–C21 aceptadas. Listo para una petición explícita de activación del objetivo. No se inició implementación ni se activó una ejecución prolongada.
 
 La referencia es la [evaluación integral](../research/2026-11-02-comprehensive-assessment.md) de `eb98b70`: 5,1/10 orientativo, 28 hallazgos, 5.765 pruebas pasadas y un `xfail`. Este plan complementa H0–H6; conserva sus restricciones y sus pendientes de privacidad, recursos, mute global y restauración. Una suite verde no cierra esos hitos.
 
@@ -17,6 +17,7 @@ La referencia es la [evaluación integral](../research/2026-11-02-comprehensive-
 | Laboratorio | Simuladores y copias locales durante desarrollo. Pruebas físicas en la ventana final. |
 | Voz sin identidad | Timers, listas y recordatorios compartidos, además del control doméstico seleccionado previamente. Información personal sólo con sesión autenticada. |
 | Avisos vencidos | Registrar pendiente, mostrarlo y avisar una vez al recuperarse; no ejecutar acciones domésticas atrasadas automáticamente. |
+| Rutinas por voz | Una voz sin identidad puede proponer cambios; confirmarlos requiere sesión autenticada y autorizada. Sólo ejecuta rutinas previamente aprobadas dentro de la política y selección domésticas. |
 | Participación | Al menos tres personas consentidas; el usuario coordina grabación, referencias, escucha y web. |
 | Corpus nuevo | Hasta 30 días desde cada grabación o cierre de su evaluación, lo que ocurra primero; retirada antes si se revoca el permiso. |
 | Clientes | iPhone y Chrome; la emulación de laboratorio no sustituye la prueba del teléfono. |
@@ -30,7 +31,7 @@ El [registro de preguntas](2026-11-02-autonomous-questions.md) conserva estas re
 
 ## Alcance doméstico e integraciones elegidas
 
-La base obligatoria comprende control doméstico seleccionado, consultas domésticas y clima, listas, timers, recordatorios, rutinas, alertas existentes, memoria revisable, grupos de voces, privacidad y diagnóstico. Las tareas compartidas tienen actor doméstico explícito; una voz desconocida no se transforma en una cuenta personal. Las operaciones sensibles conservan la política común. La autoridad para gestionar rutinas por voz se fija en Q19 antes de habilitarla en campo.
+La base obligatoria comprende control doméstico seleccionado, consultas domésticas y clima, listas, timers, recordatorios, rutinas, alertas existentes, memoria revisable, grupos de voces, privacidad y diagnóstico. Las tareas compartidas tienen actor doméstico explícito; una voz desconocida no se transforma en una cuenta personal. Las operaciones sensibles conservan la política común. Q19 permite proponer cambios de rutinas por voz y ejecutarlas sólo si ya fueron aprobadas; confirmar cambios exige una sesión autenticada y autorizada.
 
 | Integración | Utilidad y evidencia disponible | Alcance propuesto | Dependencia para aceptar |
 |---|---|---|---|
@@ -175,4 +176,4 @@ El desarrollo, pruebas, construcción y Git siguen bajo `yo` en este checkout. P
 
 La configuración de aplicación continúa centralizada en `config/settings.yaml`; el manifiesto de este plan es seguimiento de trabajo. Los datos privados, WAV, referencias, identidades y credenciales permanecen fuera de Git/RAG. Las decisiones de retención existentes se mantienen salvo la finalidad nueva y acotada del corpus confirmada en esta conversación.
 
-Q14 y Q15 quedaron confirmadas: cinco integraciones y metas de aceptación. Q19 precisa la autoridad de rutinas por voz; Q16–Q18 se resuelven con inventario, candidato o acceso concretos cuando hagan falta y no bloquean la preparación independiente. Una petición explícita posterior activa el objetivo de ejecución. Crear este roadmap no inició trabajo de implementación ni una sesión de semanas.
+Q14, Q15 y Q19 quedaron confirmadas: cinco integraciones, metas de aceptación y autoridad de rutinas por voz. El perfil está listo para arrancar. Q16–Q18 se resuelven con inventario, candidato o acceso concretos cuando hagan falta y no bloquean la preparación independiente. Una petición explícita posterior activa el objetivo de ejecución. Crear este roadmap no inició trabajo de implementación ni una sesión de semanas.

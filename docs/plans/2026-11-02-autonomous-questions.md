@@ -21,12 +21,13 @@ Este registro conserva las respuestas ya dadas y separa las decisiones del plan 
 | Q13 | Etapa final | Disponibilidad para coordinar hasta siete días de observación y dos sesiones de participantes; fecha y controles se revisan con candidato y rollback concretos. |
 | Q14 | Integraciones obligatorias | Energía/consumo, compras/tareas HA, calendario doméstico local en lectura, multimedia/TV HA y salud/eventos técnicos de cámaras existentes; sin vídeo ni biometría. |
 | Q15 | Metas de aceptación | Aceptar C01–C21 propuestos y congelarlos antes de evaluar; no son resultados alcanzados ni autorizan ejecutar producción. |
+| Q19 | Autoridad de rutinas por voz | Una voz sin identidad puede proponer cambios de rutinas; confirmarlos requiere sesión autenticada y autorizada. Sólo puede ejecutar rutinas previamente aprobadas dentro de la política y selección domésticas. |
 
 ## Estado del cierre del perfil
 
 La cartera de cinco integraciones y las metas C01–C21 quedaron aceptadas en Q14 y Q15. Los resultados todavía no se han medido. La interpretación del protocolo se precisa antes de evaluar, sin alterar cifras ni contratos previos.
 
-Q19 sigue pendiente: autoridad para gestionar rutinas por voz. No se deduce de los permisos de timers, listas y recordatorios.
+Q19 también está confirmada. El perfil está listo para una petición explícita de activación, sin ejecución iniciada.
 
 ## Decisiones que necesitan material concreto más adelante
 

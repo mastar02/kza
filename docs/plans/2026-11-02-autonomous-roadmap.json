@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "profile_id": "home-2026-11-v1",
-  "created_at_utc": "2026-11-02T04:07:11.538246+00:00",
-  "status": "planning_waiting_required_answers",
+  "created_at_utc": "2026-11-02T04:32:20.890613+00:00",
+  "status": "ready_for_explicit_activation",
   "implementation_started": false,
   "goal_activated": false,
   "baseline_commit": "eb98b70",
   "acceptance_targets_sha256": "3ccb8e7c84f9e1ae0c3f74ac515484c16aeaf80c9fe9e31c8c940ac15d33366d",
-  "profile_sha256": null,
+  "profile_sha256": "65065c19b6795fecade28c9dd580d2d3e4d90c5a42fd2c0410ba31bf0d0d02ef",
   "baseline_assessment": "docs/research/2026-11-02-comprehensive-assessment.json",
   "authoritative_prior_plan": "docs/plans/2026-10-25-stabilization-roadmap.md",
   "target": "Equivalente a 10/10 en cada una de las siete áreas dentro del perfil doméstico confirmado; no perfección universal ni garantía de semanas sin interrupciones.",
@@ -109,6 +109,12 @@
       "topic": "Metas de aceptación",
       "decision": "Aceptar C01–C21 propuestos y congelarlos antes de evaluar; no son resultados alcanzados ni autorizan ejecutar producción.",
       "status": "confirmed_by_user"
+    },
+    {
+      "id": "Q19",
+      "topic": "Autoridad de rutinas por voz",
+      "decision": "Una voz sin identidad puede proponer cambios de rutinas; confirmarlos requiere sesión autenticada y autorizada. Sólo puede ejecutar rutinas previamente aprobadas dentro de la política y selección domésticas.",
+      "status": "confirmed_by_user"
     }
   ],
   "questions": [
@@ -203,6 +209,12 @@
       "status": "confirmed_by_user"
     },
     {
+      "id": "Q19",
+      "topic": "Autoridad de rutinas por voz",
+      "decision": "Una voz sin identidad puede proponer cambios de rutinas; confirmarlos requiere sesión autenticada y autorizada. Sólo puede ejecutar rutinas previamente aprobadas dentro de la política y selección domésticas.",
+      "status": "confirmed_by_user"
+    },
+    {
       "id": "Q16",
       "topic": "Fuentes y controles exactos",
       "status": "deferred_until_inventory_presented",
@@ -222,13 +234,6 @@
       "status": "pending_external_input_when_needed",
       "decision": null,
       "proposal": "Credencial privada del dashboard o agregado del analizador ejecutado por operador. No bloquea trabajo local ni autoriza leer secretos de kza."
-    },
-    {
-      "id": "Q19",
-      "topic": "Autoridad de rutinas por voz",
-      "status": "pending_user",
-      "decision": null,
-      "proposal": "Proponer cambios para confirmar con sesión; ejecutar sólo rutinas previamente aprobadas. No inferir creación/modificación de la autorización de timers/listas/recordatorios."
     }
   ],
   "integration_portfolio": [
@@ -2039,8 +2044,10 @@
     "complete_goal_only_after_evidence_and_final_handover": true
   },
   "routine_voice_authority": {
-    "status": "pending_user",
-    "decision": "No habilitar creación/modificación por voz sin resolver Q19; grafo y fixtures pueden prepararse."
+    "id": "Q19",
+    "topic": "Autoridad de rutinas por voz",
+    "decision": "Una voz sin identidad puede proponer cambios de rutinas; confirmarlos requiere sesión autenticada y autorizada. Sólo puede ejecutar rutinas previamente aprobadas dentro de la política y selección domésticas.",
+    "status": "confirmed_by_user"
   },
   "activation_prompt": "Ejecutar el perfil home-2026-11-v1 y las tareas de docs/plans/2026-11-02-autonomous-roadmap.json como yo en /home/yo/projects/kza, conforme a AGENTS.md y CLAUDE.md, hasta aceptar las siete áreas con su evidencia. Respetar presupuesto Codex, ámbito doméstico, privacidad, un escritor, límites GPU y pruebas físicas sólo en ventana final autorizada. Guardar estado, commits y push por unidad; avanzar con tareas independientes y consultar decisiones externas concretas. No declarar 10/10 ni completar el objetivo con criterios humanos/físicos pendientes.",
   "sources": [
