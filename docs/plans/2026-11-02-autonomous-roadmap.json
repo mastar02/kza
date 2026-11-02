@@ -694,7 +694,7 @@
         "H5"
       ],
       "dependency_level": "verified_local",
-      "status": "planned",
+      "status": "in_progress",
       "evidence": []
     },
     {
@@ -1430,10 +1430,15 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": "Tras cerrar y subir la unidad native-admin-and-catalog de T013, inspeccionar site/ y previews/ de la referencia aprobada, conservar su estética y conectar Hogar/Voces/Personas/Acciones a contratos reales. Revisar contrato manual perfil vocal-persona sin autenticar por voz ni conceder permisos. Coordinar contratos pendientes T013 y checks T040-T046; sin despliegue de producción.",
+      "status": "in_progress",
+      "implementation_commits": [
+        "0c1fa93fc21e5d87d5db84d4511c94e540a12a24",
+        "f80bfe27d217de7407f3c65d60c083423ddfab0a"
+      ],
+      "evidence": [
+        "data/autonomous-roadmap-20261102/t047/home-shell-evidence.json"
+      ],
+      "next_action": "Shell/Hogar/Acciones first unit verified locally: Node91, backend715, Chromium individual roles/320/390/four synthetic effects/no repost. Next adapt Personas and Voces to NEXO, add safe canonical account-role API and explicit persistent manual voice-person metadata contract, closing needed original-login/credential boundaries from T013. Legacy/technical views remain until migrated; no criteria accepted.",
       "design_reference": {
         "path": "/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd",
         "source_commit": "d686fcde52a34c3b786decf167eebdb91dceb6d6",
@@ -2211,8 +2216,8 @@
     "next_task": "T047",
     "last_verified_phase": "P0",
     "last_verified_task": "T012",
-    "next_after_current_unit": "T047",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T013/native-admin-and-catalog"
+    "last_verified_unit": "T047/nexo-household-shell",
+    "user_priority_after_admin_unit": "T047"
   }
 }

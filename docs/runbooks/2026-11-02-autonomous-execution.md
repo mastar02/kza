@@ -385,3 +385,49 @@ T013 conserva pendientes los ámbitos personales y de evaluación, binding
 HTTP/WS, recibos, credenciales y navegación por rol. Por instrucción del usuario,
 la siguiente unidad será T047: integrar la referencia NEXO aprobada en el
 frontend con backend real y mantener separado el vínculo vocal de la autoridad.
+
+## Referencia NEXO y frontend real
+
+T047 forma parte del goal activo por instrucción del usuario del 2026-11-02.
+La referencia aprobada está en
+`/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd`.
+Se leyeron `LEEME.txt`, `HANDOFF.json` y las capturas y se verificó
+`MANIFEST.sha256`. Los estilos, la geometría amueblada, Three.js e Inter
+proceden de ese paquete; los recursos y sus licencias se sirven localmente.
+
+### Entrada, Hogar y Acciones
+
+La primera unidad conserva el tema oscuro, cian/violeta, tipografía, navegación
+adaptable y modelo 3D. Los ambientes y controles proceden del catálogo real,
+con sus IDs, capacidades y límites. Luces, clima y persianas conservan órdenes
+independientes y recibos; un POST perdido se reconcilia por GET con su mismo
+identificador, sin repetir el envío. La temperatura se identifica como objetivo,
+no como temperatura ambiente. Los campos opcionales no cambian otros ajustes
+sin elección explícita.
+
+La casa permanece ilustrativa: no hay un plano real suministrado ni se infiere
+una relación entre habitaciones del modelo y dispositivos por sus nombres.
+El renderer cancela su RAF, observador y listeners y dispone recursos al salir
+de la vista o de la sesión. La navegación de cámara conserva estado visual y ARIA.
+
+La nueva entrada consulta quién es la sesión y sus permisos antes de acceder
+al catálogo. No obtiene autoridad de voces o nombres. Retira datos, controles
+y renderer al vencer o cerrar sesión; serializa login/logout y no recupera
+datos tras un cierre fallido ni desde bfcache sin volver a comprobar autoridad.
+Los relojes consideran suspensión y retroceso civil sin renovar vencimientos.
+
+La unidad pasa 91 pruebas de JavaScript, 715 pruebas de rutas/autoridad/grafo
+y Chromium con login HTTP individual de Hogar, Evaluación y Administración.
+El navegador verifica efectos HA sintéticos, recibos pendientes, aislamiento,
+cancelación de recursos, foco/borradores y reflow a 320 y 390 píxeles.
+Las capturas contienen exclusivamente datos de prueba; no acreditan dispositivos
+reales, aceptación física ni el cierre completo de T047 o T013.
+Las revisiones son `0c1fa93` y `f80bfe2`; la evidencia, capturas y los intentos
+anteriores están en
+`data/autonomous-roadmap-20261102/t047/home-shell-evidence.json`.
+
+Voces y Personas todavía abren las vistas técnicas existentes mediante destinos
+permitidos. Las herramientas anteriores se conservan en `/home/legacy.html`.
+Las siguientes unidades adaptarán esas vistas a NEXO y añadirán el contrato
+manual perfil vocal–persona: metadata administrativa sin crear sesión,
+credencial, consentimiento, roles o acceso personal. T047 sigue en curso.
