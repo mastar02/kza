@@ -158,8 +158,8 @@ class TestRoomContextResolution:
         )
 
     @pytest.mark.asyncio
-    async def test_resolves_room_context_with_user(self):
-        """Room resolution should include user_id when speaker is identified."""
+    async def test_resolves_room_context_without_personal_authority_from_speaker(self):
+        """An acoustic profile cannot select personal room preferences."""
         room_ctx = _make_room_context()
         room_mgr = MagicMock()
         room_mgr.resolve_room = MagicMock(return_value=room_ctx)
@@ -177,7 +177,7 @@ class TestRoomContextResolution:
 
         room_mgr.resolve_room.assert_called_once_with(
             mic_zone_id="escritorio",
-            user_id="mastar",
+            user_id=None,
         )
 
     @pytest.mark.asyncio
