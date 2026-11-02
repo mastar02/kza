@@ -172,8 +172,10 @@ async def require_dashboard_session(
     if lease._authority is not authority or not lease.current():
         _deny_session(request, 401, "auth required", {"WWW-Authenticate": "Bearer"})
     await require_dashboard_origin(request, kza_dashboard_token)
-    if not lease.current(_route_permissions(request)):
+    permissions = _route_permissions(request)
+    if not lease.current(permissions):
         _deny_session(request, 403, "dashboard_permission_denied")
+    request.scope["kza.dashboard_delivery_guard"] = lambda: lease.current(permissions)
     return lease.principal
 
 

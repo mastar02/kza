@@ -53,17 +53,65 @@ class RestOperation:
         return SnapshotMetadata(self.event_id,self.sources,self.expires_at,self.channel,bool(self.profile_refs),self.revision,self.activity_sources)
 
 
+class _PrivateDeliveryRetired(RuntimeError):
+    """Terminate a response whose original session retired after its headers."""
+
+
 class DashboardApplication(FastAPI):
     """Own private REST scopes outside framework middleware body buffers."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Keep actual outer ASGI sends visible after observer cancellation."""
-        owner = getattr(self.state,'rest_delivery_owner',None)
-        if owner is not None and scope['type']=='http' and (scope.get('path')=='/api/conversations'
-                or scope.get('path','').startswith('/api/voices')):
-            await owner.scope(super().__call__,scope,receive,send)
-        else:
-            await super().__call__(scope,receive,send)
+        """Check original session authority at the actual HTTP transport boundary."""
+        if scope['type'] != 'http':
+            await super().__call__(scope, receive, send)
+            return
+        guard = None
+        denied = finished = False
+        denial = b'{"detail":"dashboard_session_retired"}'
+
+        def current() -> bool:
+            try:
+                return guard is None or guard() is True
+            except Exception:
+                return False
+
+        async def guarded_send(message):
+            nonlocal guard, denied, finished
+            if message['type'] == 'http.response.start':
+                # Logout publishes only its fixed revocation receipt and cookie removal.
+                if not (scope.get('method') == 'POST' and scope.get('path') == '/api/admin/auth/logout'):
+                    guard = scope.get('kza.dashboard_delivery_guard')
+                if not current():
+                    denied = True
+                    message = {'type': 'http.response.start', 'status': 403, 'headers': [
+                        (b'content-type', b'application/json'), (b'cache-control', b'no-store'),
+                        (b'content-length', str(len(denial)).encode('ascii'))]}
+                elif guard is not None:
+                    message = {**message, 'headers': [
+                        (key, value) for key, value in message.get('headers', [])
+                        if key.lower() != b'cache-control'
+                    ] + [(b'cache-control', b'no-store')]}
+            elif message['type'] == 'http.response.body':
+                if denied:
+                    if finished:
+                        return
+                    finished = True
+                    message = {'type': 'http.response.body', 'body': denial}
+                elif not current():
+                    # Headers may already have reached the peer. Closing the response
+                    # preserves its framing and never presents a replacement as success.
+                    raise _PrivateDeliveryRetired()
+            await send(message)
+
+        owner = getattr(self.state, 'rest_delivery_owner', None)
+        try:
+            if owner is not None and (scope.get('path') == '/api/conversations'
+                    or scope.get('path', '').startswith('/api/voices')):
+                await owner.scope(super().__call__, scope, receive, guarded_send)
+            else:
+                await super().__call__(scope, receive, guarded_send)
+        except _PrivateDeliveryRetired:
+            return
 
 
 class ConversationResponse(Response):

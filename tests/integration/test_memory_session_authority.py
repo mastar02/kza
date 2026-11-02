@@ -36,7 +36,7 @@ async def review_graph(tmp_path, dashboard_auth):
             token = dashboard_auth['Authorization'].split(' ', 1)[1]
             assert (await client.post('/api/admin/auth/login', json={'token': token})).status_code == 200
             yield SimpleNamespace(service=services.manager.long_term, manager=services.manager,
-                                  authority=authority, client=client, clock=clock)
+                                  authority=authority, client=client, clock=clock, api=api, shutdown=stack)
 
 
 async def proposal(graph, *, confirmed=False, content='Synthetic private preference.'):
@@ -190,7 +190,9 @@ async def test_committed_review_reconciles_index_after_session_retires(
     if cancel_observer:
         await asyncio.gather(*tuple(graph.service._operations), return_exceptions=True)
     else:
-        await pending
+        response = await pending
+        assert response.status_code == 403
+        assert 'Synthetic private preference.' not in response.text
     fact = await graph.service.acall(graph.service.ledger.get, before['id'])
     assert fact.state is FactState.CONFIRMED and fact.confirmed_by == 'dashboard-admin'
     assert await graph.service.acall(graph.service._collection.count) == 1

@@ -169,12 +169,16 @@ async def test_source_or_session_change_while_headers_wait_never_starts_private_
                     else:
                         monkeypatch.setenv('KZA_DASHBOARD_TOKEN','synthetic-rotated-token')
                     release.set()
-                    response = await observing
-                    assert PRIVATE not in response.text and response.json()['snapshot'] is None
+                    if change == 'session':
+                        with pytest.raises(AssertionError):
+                            await observing
+                    else:
+                        response = await observing
+                        assert PRIVATE not in response.text and response.json()['snapshot'] is None
                     assert await store.pending(source.conversation_id)==1
                 finally:
                     release.set()
-                    await observing
+                    await asyncio.gather(observing,return_exceptions=True)
 
 
 async def test_receipt_metadata_contains_no_transcript_and_disconnect_does_not_retire(tmp_path,dashboard_auth):
