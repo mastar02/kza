@@ -120,6 +120,10 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
     if path in {"/api/admin/auth/whoami", "/api/admin/auth/logout"}:
         return frozenset()
     read = method in {"GET", "HEAD", "OPTIONS"}
+    if path == "/api/admin/users" and read:
+        return frozenset({DashboardPermission.ADMIN_MANAGE})
+    if path.startswith("/api/admin/users/") and path.count("/") == 4 and method == "DELETE":
+        return frozenset({DashboardPermission.ADMIN_MANAGE, DashboardPermission.AUTH_MANAGE})
     if path == "/api/home/microphones":
         return frozenset({DashboardPermission.DIAGNOSTICS_READ})
     if path.startswith("/api/home/"):

@@ -177,10 +177,11 @@ class VoiceRegistry:
         finally:
             function = args = None
 
-    async def load_accounts(self, path: str):
-        """Read role metadata off-loop while quarantining legacy voice vectors."""
+    async def load_accounts(self, path: str, *, retirement_proof=None):
+        """Read role metadata off-loop with an explicit credential-retirement proof."""
         from src.users.user_manager import UserManager
-        return await self.acall(partial(UserManager,path,voice_registry=self))
+        return await self.acall(partial(UserManager, path, voice_registry=self,
+                                       retirement_proof=retirement_proof))
 
     async def clean(self, step) -> ErasureResult:
         """A local voice receipt needs both SQLite cleanup and exited model work."""

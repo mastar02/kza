@@ -376,11 +376,13 @@ async def build_application(
     # Register authority ownership before every consumer. Opening the private
     # database is deferred until construction reaches the dashboard boundary.
     dashboard_authority = None
+    user_manager = None
     if config.get("dashboard", {}).get("enabled", True):
         auth_config = config.get("dashboard", {}).get("auth", {})
         dashboard_authority = DashboardAuthority(
             auth_config.get("db_path", "./data/dashboard_auth.db"),
             session_ttl_s=auth_config.get("session_ttl_s", 30 * 86400),
+            account_provider=lambda: None if user_manager is None else user_manager.active_accounts(),
         )
         shutdown.push_async_callback(dashboard_authority.aclose)
 
@@ -649,7 +651,10 @@ async def build_application(
     # Fuente de verdad: settings.yaml § speaker_id.
     speaker_config = config.get("speaker_id", {})
     speaker_identifier = None
-    user_manager = await voice_registry.load_accounts(speaker_config.get('users_path', './data/users.json'))
+    user_manager = await voice_registry.load_accounts(
+        speaker_config.get('users_path', './data/users.json'),
+        retirement_proof=dashboard_authority.users_retired if dashboard_authority is not None else None,
+    )
     voice_enrollment = None
 
     if speaker_config.get("enabled", True):

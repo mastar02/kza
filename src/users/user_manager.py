@@ -26,6 +26,8 @@ from uuid import uuid4
 
 import numpy as np
 
+from src.core.account_metadata import AccountMetadata, ActiveAccounts, RemovalCheck, RemovalStatus
+
 
 _CatalogResult = TypeVar("_CatalogResult")
 
@@ -146,23 +148,29 @@ class UserManager:
     - Embeddings de voz para identificación
     """
 
-    def __init__(self, data_path: str = "./data/users.json", *, voice_registry=None):
+    def __init__(self, data_path: str = "./data/users.json", *, voice_registry=None,
+                 retirement_proof: Callable[[frozenset[str]], bool] | None = None):
         self._lock = RLock()
         self.legacy_path = Path(data_path)
         self.voice_registry = voice_registry
         self.voice_review_managed = voice_registry is not None
+        self._retirement_proof = retirement_proof
         self.data_path = (self.legacy_path.with_name(self.legacy_path.stem+'_accounts_v1.json')
             if self.voice_review_managed and not self.legacy_path.stem.endswith('_accounts_v1') else self.legacy_path)
         self._users: dict[str, User] = {}
         self._load_error = False
-        self._version: int = 0  # Incrementa cuando usuarios/embeddings cambian (para cache)
+        self._version: int = 0
+        self._account_snapshot = ActiveAccounts(False, frozenset())
         self._load()
 
     def _load(self):
-        """Parse a complete catalog before publishing any row, including legacy input."""
+        """Publish only a completely validated catalog and its canonical membership."""
         with self._lock:
             source = self.data_path if self.data_path.exists() else self.legacy_path
             if not source.exists():
+                self._users = {}
+                self._load_error = False
+                self._account_snapshot = ActiveAccounts(True, frozenset(), self._version)
                 return
             candidate = {}
             try:
@@ -175,14 +183,39 @@ class UserManager:
                     if user.user_id in candidate:
                         raise ValueError("duplicate_account_identity")
                     candidate[user.user_id] = user
+                snapshot = self._account_state(candidate, self._version)
             except Exception as error:
                 self._users = {}
                 self._load_error = True
+                self._account_snapshot = ActiveAccounts(False, frozenset(), self._version)
                 logger.error("Account loading unavailable: %s", type(error).__name__)
                 return
-            self._users = candidate
+            self._users, self._account_snapshot = candidate, snapshot
             self._load_error = False
             logger.info("Cargados %s usuarios", len(candidate))
+
+    @staticmethod
+    def _account_state(users: dict[str, User], revision: int) -> ActiveAccounts:
+        if any(type(user.user_id) is not str or identity != user.user_id
+               or not 1 <= len(identity) <= 128 or any(ord(char) < 32 or ord(char) == 127 for char in identity)
+               or type(user.name) is not str or type(user.permission_level) is not PermissionLevel
+               or type(user.is_active) is not bool for identity, user in users.items()):
+            raise ValueError("invalid_account_metadata")
+        return ActiveAccounts(True, frozenset(identity for identity, user in users.items() if user.is_active is True), revision)
+
+    def active_accounts(self) -> ActiveAccounts:
+        """Return immutable canonical membership without locks, IO or voice material."""
+        return self._account_snapshot
+
+    def project_accounts(self, *, before_read: Callable[[], None] | None = None) -> tuple[AccountMetadata, ...]:
+        """Project only administrative scalars under original read authority."""
+        with self._lock:
+            self._check_authority(before_read)
+            self._require_writable()
+            result = tuple(AccountMetadata(user.user_id, user.name, user.permission_level.name.lower(), user.is_active)
+                           for user in self._users.values())
+            self._check_authority(before_read)
+            return result
 
     def _require_writable(self):
         if self._load_error:
@@ -209,11 +242,14 @@ class UserManager:
 
     def _save(self, users: dict[str, User] | None = None, *,
               before_save: Callable[[], None] | None = None) -> None:
-        """Replace the private snapshot before publishing catalog and version."""
+        """Require durable credential retirement before destructive catalog publication."""
         with self._lock:
             self._check_authority(before_save)
             self._require_writable()
             candidate = deepcopy(self._users if users is None else users)
+            snapshot = self._account_state(candidate, self._version + 1)
+            retired = frozenset(identity for identity, user in self._users.items()
+                if identity not in candidate or user.is_active is True and candidate[identity].is_active is False)
             data = {"users": [user.to_dict() for user in candidate.values()],
                     "last_updated": time.time()}
             if self.voice_review_managed:
@@ -228,11 +264,13 @@ class UserManager:
                     stream.flush()
                     os.fsync(stream.fileno())
                 self._check_authority(before_save)
+                if retired and (self._retirement_proof is None or self._retirement_proof(retired) is not True):
+                    raise PermissionError("account_retirement_required")
+                self._check_authority(before_save)
                 os.replace(temporary, self.data_path)
-                # Replacement is the commit. Its approved publication must not
-                # depend on a later lease check or observer still being present.
-                self._users = candidate
-                self._version += 1
+                # Approved replacement must publish without another fallible check.
+                self._users, self._account_snapshot = candidate, snapshot
+                self._version = snapshot.revision
             finally:
                 if os.path.exists(temporary):
                     os.unlink(temporary)
@@ -264,26 +302,44 @@ class UserManager:
             return True, (user, f"Usuario {name} creado exitosamente")
         return self._mutate(edit, before_save=before_save)
 
+    def _removal_check(self, users: dict[str, User], user_id: str,
+                       requesting_user: User | None = None) -> RemovalCheck:
+        """Apply the same canonical checks before retirement and final mutation."""
+        if requesting_user is not None:
+            requester = users.get(requesting_user.user_id)
+            if requester is None or not requester.is_active:
+                return RemovalCheck(RemovalStatus.PROTECTED, "Permiso denegado: solicitante no disponible")
+            check = self.check_action_permission(requester, "remove_user")
+            if not check.allowed:
+                return RemovalCheck(RemovalStatus.PROTECTED, f"Permiso denegado: {check.reason}")
+        user = users.get(user_id)
+        if user is None:
+            return RemovalCheck(RemovalStatus.MISSING, "Usuario no encontrado")
+        if user.permission_level == PermissionLevel.ADMIN and user.is_active:
+            admins = sum(u.permission_level == PermissionLevel.ADMIN and u.is_active for u in users.values())
+            if admins <= 1:
+                return RemovalCheck(RemovalStatus.PROTECTED, "No puedes eliminar al único administrador")
+        return RemovalCheck(RemovalStatus.ALLOWED, f"Usuario {user.name} eliminado")
+
+    def check_removal(self, user_id: str, requesting_user: User | None = None, *,
+                      before_read: Callable[[], None] | None = None) -> RemovalCheck:
+        """Check deletion without projecting voice vectors or account preferences."""
+        with self._lock:
+            self._check_authority(before_read)
+            self._require_writable()
+            result = self._removal_check(self._users, user_id, requesting_user)
+            self._check_authority(before_read)
+            return result
+
     def remove_user(self, user_id: str, requesting_user: User | None = None, *,
                     before_save: Callable[[], None] | None = None) -> tuple[bool, str]:
-        """Delete from a copied catalog without publishing a rejected write."""
+        """Delete a catalog row only after durable credential retirement."""
         def edit(users):
-            if requesting_user is not None:
-                requester = users.get(requesting_user.user_id)
-                if requester is None or not requester.is_active:
-                    return False, (False, "Permiso denegado: solicitante no disponible")
-                check = self.check_action_permission(requester, "remove_user")
-                if not check.allowed:
-                    return False, (False, f"Permiso denegado: {check.reason}")
-            user = users.get(user_id)
-            if user is None:
-                return False, (False, "Usuario no encontrado")
-            if user.permission_level == PermissionLevel.ADMIN:
-                admins = sum(u.permission_level == PermissionLevel.ADMIN and u.is_active for u in users.values())
-                if admins <= 1:
-                    return False, (False, "No puedes eliminar al único administrador")
+            result = self._removal_check(users, user_id, requesting_user)
+            if result.status is not RemovalStatus.ALLOWED:
+                return False, (False, result.message)
             del users[user_id]
-            return True, (True, f"Usuario {user.name} eliminado")
+            return True, (True, result.message)
         return self._mutate(edit, before_save=before_save)
 
     def get_user(self, user_id: str, *, before_read: Callable[[], None] | None = None) -> User | None:

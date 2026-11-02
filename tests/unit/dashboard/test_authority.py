@@ -9,6 +9,8 @@ import threading
 import pytest
 import pytest_asyncio
 
+from src.core.account_metadata import ActiveAccounts
+
 from src.dashboard.authority import (
     DashboardAuthority, DashboardPermission as Permission, DashboardRole as Role,
     EvaluationModality as Modality, EvaluationSample, legacy_lease, source_digest,
@@ -19,7 +21,8 @@ from src.dashboard.authority import (
 async def authority(tmp_path):
     now, token = [1_700_000_000.0], ["synthetic-administrative-token-A"]
     service = DashboardAuthority(tmp_path / "private" / "auth.db", session_ttl_s=60,
-                                 clock=lambda: now[0], expected_token=lambda: token[0])
+                                 clock=lambda: now[0], expected_token=lambda: token[0],
+                                 account_provider=lambda: ActiveAccounts(True, frozenset({'synthetic-user'})))
     try:
         await service.initialize()
         yield service, now, token

@@ -55,6 +55,10 @@ def _client(tmp_path):
             def app_factory(authority):
                 app = FastAPI()
                 app.state.dashboard_authority = authority
+                users = kwargs.get('user_manager')
+                if users is not None:
+                    users._retirement_proof = authority.users_retired
+                    authority._account_provider = users.active_accounts
                 register_admin_routes(app, **kwargs)
                 return app
             path = tmp_path / f"app-{len(sequence)}" / "auth.db"

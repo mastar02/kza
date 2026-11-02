@@ -19,7 +19,7 @@ import pytest
 
 from src.alerts.alert_manager import Alert, AlertManager, AlertPriority, AlertType
 from src.dashboard.api import DashboardAPI
-from src.dashboard.authority import DashboardAuthority
+from src.dashboard.authority import DashboardAuthority, DashboardRole
 from src.dashboard.native_work import run_admin_work
 from src.llm.cooldown import CooldownManager
 from src.llm.metrics import LLMMetricsTracker
@@ -44,7 +44,9 @@ async def admin_graph(tmp_path, dashboard_auth):
     metrics = LLMMetricsTracker()
     metrics.record("synthetic", tokens=8, elapsed_ms=20)
     async with AsyncExitStack() as stack:
-        authority = DashboardAuthority(tmp_path / "auth.db", clock=clock, session_ttl_s=60)
+        authority = DashboardAuthority(tmp_path / "auth.db", clock=clock, session_ttl_s=60,
+                                       account_provider=users.active_accounts)
+        users._retirement_proof = authority.users_retired
         stack.push_async_callback(authority.aclose)
         await authority.initialize()
         api = DashboardAPI(authority=authority, user_manager=users, speaker_identifier=speaker,
@@ -70,6 +72,137 @@ def samples():
         wav.setframerate(16000)
         wav.writeframes(bytes(3200))
     return [("samples", (f"sample-{n}.wav", stream.getvalue(), "audio/wav")) for n in range(3)]
+
+
+async def test_admin_people_projection_contains_only_scalars_and_denies_household(admin_graph, monkeypatch):
+    graph = admin_graph
+    import src.users.user_manager as catalog
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('private account projection attempted')
+
+    monkeypatch.setattr(catalog, 'deepcopy', forbidden)
+    monkeypatch.setattr(graph.users, 'get_all_users', forbidden)
+    response = await graph.client.get('/api/admin/users')
+    assert response.status_code == 200
+    assert response.headers['Cache-Control'] == 'no-store'
+    assert response.json() == [{'id': graph.user.user_id, 'name': 'Synthetic',
+                                'permission_level': 'adult', 'is_active': True}]
+    credential = await graph.authority.issue_credential(graph.authority.resolve(os.environ['KZA_DASHBOARD_TOKEN']),
+                    subject='synthetic-household', role=DashboardRole.HOME, expires_at=graph.clock.now + 120)
+    assert (await graph.client.post('/api/admin/auth/login', json={'token': credential.token})).status_code == 200
+    monkeypatch.setattr(graph.users, 'project_accounts', forbidden)
+    assert (await graph.client.get('/api/admin/users')).status_code == 403
+
+
+async def test_admin_people_catalog_unavailable_is_not_an_empty_list(admin_graph):
+    graph = admin_graph
+    graph.users._load_error = True
+    response = await graph.client.get('/api/admin/users')
+    assert response.status_code == 503
+    assert response.json()['detail'] == 'user_catalog_unavailable'
+
+
+async def test_last_active_admin_is_protected_before_credential_retirement(admin_graph, monkeypatch):
+    graph = admin_graph
+    graph.users.update_user(graph.user.user_id, permission_level=PermissionLevel.ADMIN)
+
+    async def forbidden(*args):
+        raise AssertionError('protected account reached retirement')
+
+    monkeypatch.setattr(graph.authority, 'retire_user', forbidden)
+    response = await graph.client.delete(f'/api/admin/users/{graph.user.user_id}')
+    assert response.status_code == 409
+    assert graph.users.get_user(graph.user.user_id) is not None
+
+
+async def test_closed_shared_owner_rejects_delete_before_any_native_work(admin_graph, monkeypatch):
+    graph = admin_graph
+    await graph.api.admin_work.aclose()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('closed owner dispatched a native read')
+
+    monkeypatch.setattr(graph.users, 'check_removal', forbidden)
+    response = await graph.client.delete(f'/api/admin/users/{graph.user.user_id}')
+    assert response.status_code == 503
+    assert response.json()['detail']['credentials_retired'] is False
+
+
+async def test_admin_delete_rejected_retirement_never_calls_catalog_remove(admin_graph, monkeypatch):
+    graph = admin_graph
+    calls = []
+
+    async def denied(*args):
+        raise PermissionError('synthetic retirement denied')
+
+    def forbidden(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError('catalog remove attempted')
+
+    monkeypatch.setattr(graph.authority, 'retire_user', denied)
+    monkeypatch.setattr(graph.users, 'remove_user', forbidden)
+    response = await graph.client.delete(f'/api/admin/users/{graph.user.user_id}')
+    assert response.status_code == 403
+    assert response.json()['detail']['credentials_retired'] is False
+    assert calls == []
+    assert graph.users.get_user(graph.user.user_id) is not None
+
+
+async def test_cancelled_admin_delete_keeps_both_retirement_and_catalog_commit_owned(admin_graph, monkeypatch):
+    graph = admin_graph
+    entered, release = threading.Event(), threading.Event()
+    transaction = graph.authority._transaction
+    root = graph.authority.resolve(os.environ['KZA_DASHBOARD_TOKEN'])
+    credential = await graph.authority.issue_credential(root, subject='synthetic-personal', role=DashboardRole.HOME,
+                    expires_at=graph.clock.now + 120, user_id=graph.user.user_id)
+    session = await graph.authority.login(credential.token)
+
+    def held(action, args, guard):
+        if action == 'retire_user':
+            entered.set()
+            assert release.wait(5)
+        return transaction(action, args, guard)
+
+    monkeypatch.setattr(graph.authority, '_transaction', held)
+    closing = None
+    request = asyncio.create_task(graph.client.delete(f'/api/admin/users/{graph.user.user_id}'))
+    try:
+        await wait_event(entered)
+        assert not session.lease.current()
+        assert graph.users.get_user(graph.user.user_id) is not None
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        closing = graph.api.admin_work.begin_close()
+        await asyncio.sleep(0)
+        assert not closing.done()
+    finally:
+        release.set()
+    if closing is not None:
+        await closing
+    assert graph.users.get_user(graph.user.user_id) is None
+    assert graph.authority.users_retired(frozenset({graph.user.user_id}))
+    assert graph.authority.resolve(credential.token) is None
+
+
+async def test_delete_catalog_failure_reports_retirement_and_retry_completes(admin_graph, monkeypatch):
+    graph = admin_graph
+    import src.users.user_manager as catalog
+    replace = catalog.os.replace
+
+    def failed(*args):
+        raise OSError('synthetic private path secret')
+
+    monkeypatch.setattr(catalog.os, 'replace', failed)
+    response = await graph.client.delete(f'/api/admin/users/{graph.user.user_id}')
+    assert response.status_code == 503
+    assert response.json()['detail'] == {'code': 'user_catalog_unavailable', 'credentials_retired': True}
+    assert 'private path' not in response.text
+    assert graph.users.get_user(graph.user.user_id) is not None
+    monkeypatch.setattr(catalog.os, 'replace', replace)
+    assert (await graph.client.delete(f'/api/admin/users/{graph.user.user_id}')).status_code == 200
+    assert graph.users.get_user(graph.user.user_id) is None
 
 
 @pytest.mark.parametrize("resource", ["catalog", "cooldown"])
@@ -175,15 +308,15 @@ async def test_private_read_expiring_while_waiting_for_native_lock_has_no_projec
     lock = {"users": graph.users._lock, "endpoints": graph.cooldown._lock,
             "metrics": graph.metrics._lock}[resource]
     projections = []
-    deepcopy = user_module.deepcopy
+    metadata = user_module.AccountMetadata
 
-    def project(value):
+    def project(*args, **kwargs):
         projections.append(True)
-        return deepcopy(value)
+        return metadata(*args, **kwargs)
 
     if resource == "users":
-        monkeypatch.setattr(user_module, "deepcopy", project)
-        name, target = "get_all_users", graph.users
+        monkeypatch.setattr(user_module, "AccountMetadata", project)
+        name, target = "project_accounts", graph.users
     elif resource == "endpoints":
         name, target = "is_available", graph.cooldown
     else:

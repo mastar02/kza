@@ -106,15 +106,15 @@ def _llm_endpoints_adapter(llm_router, metrics_tracker=None, *, before_read=None
 
 
 def _users_adapter(user_manager, *, before_read=None) -> list[dict]:
-    """Project detached user metadata with a guard inside its native catalog lock."""
-    users = user_manager.get_all_users(active_only=True, before_read=before_read)
+    """Project active account scalars without loading voice vectors or preferences."""
+    users = user_manager.project_accounts(before_read=before_read)
     try:
         if before_read is not None:
             before_read()
         result = [{
-            "id": user.user_id, "name": user.name, "samples": None, "lastEnroll": None,
+            "id": user.id, "name": user.name, "samples": None, "lastEnroll": None,
             "emotions": {}, "topCommands": [], "permissions": {}, "pca": [],
-        } for user in users]
+        } for user in users if user.is_active]
         if before_read is not None:
             before_read()
         return result

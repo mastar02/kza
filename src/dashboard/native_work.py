@@ -39,6 +39,27 @@ async def run_admin_work(owner: OwnedBlockingWork, current: Callable[[], bool],
         args, kwargs = (), {}
 
 
+async def _invoke_admin_sequence(current: Callable[[], bool], function: Callable,
+                                 args: tuple, kwargs: dict):
+    """Retain only detached inputs through the complete admitted sequence."""
+    try:
+        require_current(current)
+        return await function(*args, **kwargs)
+    finally:
+        current = function = None
+        args, kwargs = (), {}
+
+
+async def run_admin_sequence(owner: OwnedBlockingWork, current: Callable[[], bool],
+                             function: Callable, *args, **kwargs):
+    """Use one shared admission for native and asynchronous administrative steps."""
+    try:
+        return await owner.run_async(_invoke_admin_sequence, current, function, args, kwargs)
+    finally:
+        owner = current = function = None
+        args, kwargs = (), {}
+
+
 async def drain_admin_work(owner: OwnedBlockingWork) -> None:
     """Finish the real drain before permitting dependent models to close."""
     task = owner.begin_close()

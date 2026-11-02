@@ -23,6 +23,7 @@ from typing import Callable, Mapping
 from uuid import uuid4
 
 from src.core.owned_work import OwnedBlockingWork
+from src.core.account_metadata import ActiveAccounts
 
 
 class DashboardRole(StrEnum):
@@ -257,6 +258,8 @@ CREATE TABLE IF NOT EXISTS credentials (
 CREATE TABLE IF NOT EXISTS sessions (
  digest TEXT PRIMARY KEY, credential TEXT NOT NULL, legacy_digest TEXT,
  issued_at REAL NOT NULL, expires_at REAL NOT NULL, revision INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS retired_users (
+ user_id TEXT PRIMARY KEY, retired_at REAL NOT NULL);
 """
 
 
@@ -270,7 +273,8 @@ class DashboardAuthority:
     def __init__(self, db_path: str | Path, *, session_ttl_s: float = DEFAULT_SESSION_TTL_S,
                  clock: Callable[[], float] = time.time,
                  expected_token: Callable[[], str | None] = _expected_token,
-                 work: OwnedBlockingWork | None = None):
+                 work: OwnedBlockingWork | None = None,
+                 account_provider: Callable[[], ActiveAccounts | None] | None = None):
         _timestamp(session_ttl_s)
         if not 1 <= session_ttl_s <= DEFAULT_SESSION_TTL_S:
             raise ValueError("invalid_dashboard_session_ttl")
@@ -278,12 +282,15 @@ class DashboardAuthority:
         self.session_ttl_s = session_ttl_s
         self._clock = clock
         self._expected = expected_token
+        self._account_provider = account_provider
         self._work = work or OwnedBlockingWork(capacity=1)
         self._serial = asyncio.Lock()
         self._state_lock = threading.RLock()
         self._credentials = MappingProxyType({})
         self._sessions = MappingProxyType({})
         self._revoking: set[str] = set()
+        self._retiring_users: set[str] = set()
+        self._retired_users: frozenset[str] = frozenset()
         self._revision_admission: dict[str, int] = {}
         self._last_now = 0.0
         self._persisted_floor = 0.0
@@ -402,6 +409,25 @@ class DashboardAuthority:
             return bool(self._usable() and self._legacy_synced() and digest
                         and epoch == self._observed_epoch and digest == self._observed_digest)
 
+    def _account_current(self, user_id: str | None) -> bool:
+        """Check only an immutable canonical snapshot; providers must never acquire IO/locks."""
+        if user_id is None:
+            return True
+        with self._state_lock:
+            if user_id in self._retiring_users or user_id in self._retired_users or self._account_provider is None:
+                return False
+            try:
+                snapshot = self._account_provider()
+            except Exception:
+                return False
+            return type(snapshot) is ActiveAccounts and snapshot.available and user_id in snapshot.active_ids
+
+    def users_retired(self, identities: frozenset[str]) -> bool:
+        """Prove a durable published retirement without SQL or account locks."""
+        with self._state_lock:
+            return bool(type(identities) is frozenset and self._usable()
+                        and identities <= self._retired_users)
+
     def _current(self, digest: str, original: DashboardPrincipal, session: bool, *, allow_revoking: str | None = None) -> bool:
         self._observe_legacy()
         with self._state_lock:
@@ -415,7 +441,8 @@ class DashboardAuthority:
                 return self._legacy_current(entry.revision, entry.legacy_digest)
             credential = (next((c for c in self._credentials.values() if c.identity == entry.credential), None)
                           if entry else self._credentials.get(digest))
-            return bool(credential and credential.expires_at > now and credential.revision == original.revision
+            return bool(credential and self._account_current(credential.user_id)
+                        and credential.expires_at > now and credential.revision == original.revision
                         and (credential.identity not in self._revoking or credential.identity == allow_revoking)
                         and (credential.revision >= self._revision_admission.get(credential.identity, 0)
                              or credential.identity == allow_revoking)
@@ -438,11 +465,13 @@ class DashboardAuthority:
     async def _operate(self, action: str, args: tuple, guard: Callable[[], bool] | None) -> object:
         async with self._serial:
             try:
-                result, credentials, sessions, floor, digest, epoch = await self._work.run(
+                result, credentials, sessions, floor, digest, epoch, retired_users = await self._work.run(
                     self._transaction, action, args, guard)
                 with self._state_lock:
                     self._credentials = MappingProxyType(credentials)
                     self._sessions = MappingProxyType(sessions)
+                    self._retired_users = retired_users
+                    self._retiring_users.difference_update(retired_users)
                     self._last_now = max(self._last_now, floor)
                     self._persisted_floor = max(self._persisted_floor, floor)
                     if not self._ready:
@@ -495,11 +524,17 @@ class DashboardAuthority:
         with closing(sqlite3.connect(self.path, timeout=1)) as db, db:
             db.row_factory = sqlite3.Row
             if action == "initialize":
-                db.executescript(_SCHEMA)
-                version = db.execute("SELECT value FROM auth_meta WHERE key='schema_version'").fetchone()
-                if version is not None and version[0] != "1":
+                has_meta = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='auth_meta'").fetchone()
+                version = db.execute("SELECT value FROM auth_meta WHERE key='schema_version'").fetchone() if has_meta else None
+                if version is not None and version[0] not in {"1", "2"}:
                     raise ValueError("unsupported_dashboard_authority_schema")
-                db.execute("INSERT OR IGNORE INTO auth_meta VALUES ('schema_version','1')")
+                if has_meta and version is None:
+                    raise ValueError("invalid_dashboard_authority_schema")
+                if version is not None and version[0] == "2" and not db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='retired_users'").fetchone():
+                    raise ValueError("missing_dashboard_account_retirements")
+                db.executescript(_SCHEMA)
+                db.execute("INSERT OR REPLACE INTO auth_meta VALUES ('schema_version','2')")
             if not db.in_transaction:
                 db.execute("BEGIN IMMEDIATE")
             meta = dict(db.execute("SELECT key,value FROM auth_meta"))
@@ -535,6 +570,14 @@ class DashboardAuthority:
                 if not result:
                     raise AuthorityRejected("dashboard_credential_missing")
                 db.execute("DELETE FROM sessions WHERE credential=?", (args[-1],))
+            elif action == "retire_user":
+                user_id, admitted = args
+                targets = admitted | {row[0] for row in db.execute("SELECT id FROM credentials WHERE user_id=?", (user_id,))}
+                db.execute("INSERT OR IGNORE INTO retired_users VALUES (?,?)", (user_id, floor))
+                for identity in targets:
+                    db.execute("DELETE FROM sessions WHERE credential=?", (identity,))
+                    db.execute("DELETE FROM credentials WHERE id=?", (identity,))
+                result = True
             elif action == "revoke_credential":
                 result = db.execute("DELETE FROM credentials WHERE id=?", args).rowcount == 1
                 db.execute("DELETE FROM sessions WHERE credential=?", args)
@@ -544,13 +587,19 @@ class DashboardAuthority:
                 pass
             else:
                 raise ValueError("invalid_dashboard_authority_operation")
+            db.execute("DELETE FROM credentials WHERE user_id IN (SELECT user_id FROM retired_users)")
             db.execute("DELETE FROM sessions WHERE credential!='legacy' AND credential NOT IN (SELECT id FROM credentials)")
             db.execute("INSERT OR REPLACE INTO auth_meta VALUES ('clock_floor',?)", (str(floor),))
             credentials, sessions = self._read(db)
+            retired_users = set()
+            for row in db.execute("SELECT user_id,retired_at FROM retired_users"):
+                _identifier(row["user_id"])
+                _timestamp(row["retired_at"])
+                retired_users.add(row["user_id"])
             if guard is not None and guard() is not True:
                 raise PermissionError("dashboard_authority_revoked")
             db.commit()
-        return result, credentials, sessions, floor, digest, epoch
+        return result, credentials, sessions, floor, digest, epoch, frozenset(retired_users)
 
     @staticmethod
     def _read(db: sqlite3.Connection) -> tuple[dict, dict]:
@@ -603,6 +652,8 @@ class DashboardAuthority:
             _identifier(user_id)
             if role is not DashboardRole.HOME:
                 raise ValueError("invalid_dashboard_personal_binding")
+            if not self._account_current(user_id):
+                raise ValueError("dashboard_personal_binding_unavailable")
         if (type(samples) is not tuple or len(samples) > 64
                 or any(type(s) is not EvaluationSample or not now < s.expires_at for s in samples)
                 or len({s.fingerprint_id for s in samples}) != len(samples)
@@ -623,7 +674,8 @@ class DashboardAuthority:
         try:
             args = (identity, _hash(token), subject, role.value, user_id, now, expires_at, 1,
                     json.dumps([s.to_dict() for s in samples], separators=(",", ":")))
-            await asyncio.shield(self._admit("issue", args, lambda: actor.current(frozenset({DashboardPermission.AUTH_MANAGE}))))
+            await asyncio.shield(self._admit("issue", args, lambda: actor.current(frozenset({DashboardPermission.AUTH_MANAGE}))
+                                            and self._account_current(user_id)))
             lease = self.resolve(token)
             if lease is None:
                 raise PermissionError("dashboard_grant_expired")
@@ -648,7 +700,8 @@ class DashboardAuthority:
             self._revision_admission[identity] = revision
         args = (role.value, user_id, now, expires_at, revision,
                 json.dumps([s.to_dict() for s in samples], separators=(",", ":")), identity)
-        return await asyncio.shield(self._admit("revise", args, self._revocation_guard(actor, identity)))
+        original_current = self._revocation_guard(actor, identity)
+        return await asyncio.shield(self._admit("revise", args, lambda: original_current() and self._account_current(user_id)))
 
     async def login(self, token: str) -> IssuedSession:
         """Exchange a credential for an individually expiring persisted cookie."""
@@ -671,6 +724,19 @@ class DashboardAuthority:
             return IssuedSession(cookie, lease)
         finally:
             token = cookie = None
+
+    async def retire_user(self, actor: DashboardLease, user_id: str) -> bool:
+        """Seal all current bindings, then publish a durable canonical-user retirement."""
+        if (type(actor) is not DashboardLease or actor._authority is not self
+                or not actor.current(frozenset({DashboardPermission.AUTH_MANAGE}))):
+            raise PermissionError("dashboard_grant_denied")
+        _identifier(user_id)
+        with self._state_lock:
+            admitted = frozenset(c.identity for c in self._credentials.values() if c.user_id == user_id)
+            self._retiring_users.add(user_id)
+            self._revoking.update(admitted)
+        return await asyncio.shield(self._admit("retire_user", (user_id, admitted),
+            lambda: actor.current(frozenset({DashboardPermission.AUTH_MANAGE}))))
 
     async def revoke_credential(self, actor: DashboardLease, identity: str) -> bool:
         """Close admission immediately and confirm only a committed revocation."""

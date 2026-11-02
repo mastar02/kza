@@ -78,7 +78,8 @@ def test_approved_replace_completes_publication_without_late_authority_check(tmp
 @pytest.mark.parametrize('retirement', ['downgrade', 'inactive', 'delete'])
 @pytest.mark.parametrize('operation', ['create', 'remove'])
 def test_detached_requester_cannot_keep_retired_catalog_permissions(tmp_path, retirement, operation):
-    manager = UserManager(str(tmp_path / 'users.json'))
+    # This isolated catalog has no credential store; dedicated tests cover proof denial.
+    manager = UserManager(str(tmp_path / 'users.json'), retirement_proof=lambda identities: True)
     requester, _ = manager.add_user('Requester', PermissionLevel.ADMIN)
     manager.add_user('Other admin', PermissionLevel.ADMIN)
     target, _ = manager.add_user('Target', PermissionLevel.ADULT)
@@ -99,7 +100,7 @@ def test_detached_requester_cannot_keep_retired_catalog_permissions(tmp_path, re
 
 def test_new_identity_is_not_reused_and_never_contains_name_path_characters(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog_module.time, 'time', lambda: 123.)
-    manager = UserManager(str(tmp_path / 'users.json'))
+    manager = UserManager(str(tmp_path / 'users.json'), retirement_proof=lambda identities: True)
     first, _ = manager.add_user('A/B', PermissionLevel.ADULT)
     assert manager.remove_user(first.user_id)[0]
     second, _ = manager.add_user('A/B', PermissionLevel.ADULT)

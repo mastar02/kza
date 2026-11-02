@@ -30,7 +30,8 @@ def fake_user_manager():
     u = User(user_id="u_test", name="Test", permission_level=PermissionLevel.ADULT,
              voice_embedding=np.array([0.1, 0.2], dtype=np.float32))
     um = MagicMock()
-    um.get_all_users.return_value = [u]
+    from src.core.account_metadata import AccountMetadata
+    um.project_accounts.return_value = (AccountMetadata(u.user_id, u.name, 'adult', True),)
     return um
 
 

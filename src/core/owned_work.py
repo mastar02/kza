@@ -26,23 +26,32 @@ class ClosePhase(StrEnum):
     COMPLETE = 'complete'
 
 
+class WorkKind(StrEnum):
+    """Distinguish native timings from an owned asynchronous coordinator."""
+
+    NATIVE = "native"
+    SEQUENCE = "sequence"
+
+
 @dataclass
 class WorkTiming:
-    """Only monotonic timestamps cross the native observation boundary."""
+    """Only monotonic timestamps and a closed work kind cross the boundary."""
 
     admitted: float
     dispatched: float | None = None
     native_started: float | None = None
     native_finished: float | None = None
     finished: float | None = None
+    kind: WorkKind = WorkKind.NATIVE
 
     def snapshot(self, now: float) -> dict:
         """Report numeric waits without retaining an operation or its context."""
-        phase = ('complete' if self.finished is not None else 'after_native' if self.native_finished is not None
-            else 'native' if self.native_started is not None else 'worker' if self.dispatched is not None else 'queued')
+        phase = ('complete' if self.finished is not None else 'sequence' if self.kind is WorkKind.SEQUENCE
+            else 'after_native' if self.native_finished is not None else 'native' if self.native_started is not None
+            else 'worker' if self.dispatched is not None else 'queued')
         def duration(start, end):
             return None if start is None else max(0.,((now if end is None else end)-start)*1000)
-        return {'phase':phase,'age_ms':duration(self.admitted,self.finished),
+        return {'phase':phase,'kind':self.kind.value,'age_ms':duration(self.admitted,self.finished),
             'dispatch_ms':duration(self.admitted,self.dispatched),
             'native_queue_ms':duration(self.dispatched,self.native_started) if self.native_started is not None else None,
             'native_ms':duration(self.native_started,self.native_finished),
@@ -109,35 +118,96 @@ class OwnedBlockingWork:
             _TIMING.reset(token)
             function, args, kwargs = None, (), {}
 
-    async def run(self, function: Callable, *args, **kwargs):
-        """Admit bounded work and shield its actual worker from caller cancellation."""
-        if self._closed:
-            raise RuntimeError("blocking_work_closed")
-        if len(self._tasks) >= self._capacity:
-            raise RuntimeError("blocking_work_capacity")
-        timing = WorkTiming(time.monotonic())
-        task = asyncio.create_task(self._execute(timing,function,args,kwargs),
-                                   context=Context() if self._isolate_context else None)
-        self._tasks.add(task)
-        self._timings[task] = timing
-
-        def finished(done):
-            self._tasks.discard(done)
-            observation = self._timings.pop(done,None)
-            if observation is not None:
-                self._history.append(observation.snapshot(time.monotonic()))
-            if not done.cancelled():
-                done.exception()
-
-        task.add_done_callback(finished,context=Context())
+    async def _execute_async(self, timing, function, args, kwargs):
+        # A coordinator is not a native invocation. Its native timing is unknown;
+        # nested service owners retain their own actual invocation observations.
+        token = _TIMING.set(None)
+        timing.dispatched = time.monotonic()
         try:
+            # Even an eager task factory must register ownership before a step.
+            await asyncio.sleep(0)
+            return await function(*args, **kwargs)
+        finally:
+            timing.finished = time.monotonic()
+            _TIMING.reset(token)
+            function, args, kwargs = None, (), {}
+
+    def _retain(self, function: Callable, args: tuple, kwargs: dict, *, asynchronous: bool = False) -> asyncio.Task:
+        operation = task = None
+        try:
+            if self._closed:
+                raise RuntimeError("blocking_work_closed")
+            if len(self._tasks) >= self._capacity:
+                raise RuntimeError("blocking_work_capacity")
+            timing = WorkTiming(time.monotonic(), kind=WorkKind.SEQUENCE if asynchronous else WorkKind.NATIVE)
+            execute = self._execute_async if asynchronous else self._execute
+            operation = execute(timing, function, args, kwargs)
+            try:
+                task = asyncio.create_task(operation, context=Context() if self._isolate_context else None)
+            except BaseException:
+                operation.close()
+                raise
+            self._tasks.add(task)
+            self._timings[task] = timing
+
+            def finished(done):
+                self._tasks.discard(done)
+                observation = self._timings.pop(done, None)
+                if observation is not None:
+                    self._history.append(observation.snapshot(time.monotonic()))
+                if not done.cancelled():
+                    done.exception()
+
+            task.add_done_callback(finished, context=Context())
+            return task
+        finally:
+            operation = task = function = None
+            args, kwargs = (), {}
+
+    async def run_async(self, function: Callable, *args, **kwargs) -> object:
+        """Retain one bounded async sequence through observer cancellation and close."""
+        task = None
+        try:
+            task = self._retain(function, args, kwargs, asynchronous=True)
             return await asyncio.shield(task)
         finally:
-            # A cancelled observer can retain this frame through its exception.
-            # The owner set, not that traceback, keeps actual native work alive.
-            # Drop the observer's task/argument links so a later result cannot
-            # remain reachable after the native completion callback releases it.
-            task, function, args, kwargs = None, None, (), {}
+            task = function = None
+            args, kwargs = (), {}
+
+    async def native_step(self, function: Callable, *args, **kwargs) -> object:
+        """Run native work only inside an admitted sequence, including after sealing.
+
+        Await this method directly. A separate caller task does not own a step.
+        Cancellation during a step waits for its actual worker before propagating.
+        """
+        task = result = None
+        try:
+            if asyncio.current_task() not in self._tasks:
+                raise RuntimeError("blocking_work_step_not_owned")
+            task = asyncio.create_task(self._worker(function, *args, **kwargs))
+            cancelled = False
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            result = task.result()
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
+        finally:
+            task = result = function = None
+            args, kwargs = (), {}
+
+    async def run(self, function: Callable, *args, **kwargs):
+        """Admit native work and release rejected/cancelled observer input links."""
+        task = None
+        try:
+            task = self._retain(function, args, kwargs)
+            return await asyncio.shield(task)
+        finally:
+            task = function = None
+            args, kwargs = (), {}
 
     def status(self) -> dict:
         """Report actual retained operations, not cancelled callers."""

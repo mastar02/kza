@@ -18,8 +18,11 @@ import numpy as np
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from src.core.account_metadata import AccountMetadata, RemovalStatus
 from src.core.owned_work import OwnedBlockingWork
-from src.dashboard.native_work import NativeAuthorityRetired, ensure_admin_work, require_current, run_admin_work
+from src.dashboard.native_work import (
+    NativeAuthorityRetired, ensure_admin_work, require_current, run_admin_sequence, run_admin_work,
+)
 from src.memory.producer_context import model_admission
 
 from src.dashboard.auth import (
@@ -36,6 +39,35 @@ from src.dashboard.auth import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _delete_account(work, current, authority, actor, user_manager, user_id):
+    """Retain retirement and catalog commit together through observer cancellation."""
+    retired = False
+    validator = partial(require_current, current)
+    try:
+        check = await work.native_step(user_manager.check_removal, user_id, before_read=validator)
+        if check.status is not RemovalStatus.ALLOWED:
+            raise HTTPException(404 if check.status is RemovalStatus.MISSING else 409, check.message)
+        require_current(current)
+        try:
+            await authority.retire_user(actor, user_id)
+        except PermissionError as error:
+            raise NativeAuthorityRetired('dashboard_authority_retired') from error
+        retired = True
+        deleted, message = await work.native_step(user_manager.remove_user, user_id, before_save=validator)
+        if not deleted:
+            raise HTTPException(409, {"code": "user_catalog_changed", "credentials_retired": True})
+        return {"ok": True, "message": message}
+    except NativeAuthorityRetired as error:
+        raise HTTPException(403, {"code": "dashboard_authority_retired",
+                                  "credentials_retired": retired}) from error
+    except (OSError, RuntimeError) as error:
+        raise HTTPException(503, {"code": "user_catalog_unavailable",
+                                  "credentials_retired": retired}) from error
+    finally:
+        work = current = authority = actor = user_manager = validator = None
+        user_id = None
 
 
 # Servicios que un admin puede reiniciar via API. Allowlist explícita —
@@ -121,6 +153,22 @@ def register_admin_routes(
 
     # ---------------- Users ----------------
 
+    @router.get("/users", dependencies=[Depends(require_admin)], response_model=list[AccountMetadata])
+    async def list_users(request: Request):
+        if user_manager is None:
+            raise HTTPException(503, "user_catalog_unavailable")
+        current = session_guard(request, frozenset({'admin:manage'}))
+        try:
+            rows = await run_admin_work(work, current, user_manager.project_accounts,
+                                        before_read=partial(require_current, current))
+        except NativeAuthorityRetired as error:
+            raise HTTPException(403, "dashboard_authority_retired") from error
+        except (OSError, RuntimeError, ValueError) as error:
+            raise HTTPException(503, "user_catalog_unavailable") from error
+        return JSONResponse([{"id": row.id, "name": row.name, "permission_level": row.permission_level,
+                              "is_active": row.is_active} for row in rows],
+                            headers={"Cache-Control": "no-store"})
+
     @router.post("/users", dependencies=[Depends(require_admin)])
     async def create_user(body: CreateUserBody, request: Request):
         if user_manager is None:
@@ -145,18 +193,17 @@ def register_admin_routes(
     @router.delete("/users/{user_id}", dependencies=[Depends(require_admin)])
     async def delete_user(user_id: str, request: Request):
         if user_manager is None:
-            raise HTTPException(503, "user_manager no inyectado")
-        current = session_guard(request, frozenset({'admin:manage'}))
+            raise HTTPException(503, "user_catalog_unavailable")
+        authority = dashboard_authority(request, required=True)
+        actor = current_lease(request)
+        current = session_guard(request, frozenset({'admin:manage', 'auth:manage'}))
         try:
-            deleted, message = await run_admin_work(work, current, user_manager.remove_user, user_id,
-                before_save=partial(require_current, current))
+            return await run_admin_sequence(work, current, _delete_account,
+                                            work, current, authority, actor, user_manager, user_id)
         except NativeAuthorityRetired as error:
-            raise HTTPException(403, "dashboard_authority_retired") from error
-        except (OSError, RuntimeError) as error:
-            raise HTTPException(503, "user_catalog_unavailable") from error
-        if not deleted:
-            raise HTTPException(404, message)
-        return {"ok": True, "message": message}
+            raise HTTPException(403, {"code": "dashboard_authority_retired", "credentials_retired": False}) from error
+        except RuntimeError as error:
+            raise HTTPException(503, {"code": "user_catalog_unavailable", "credentials_retired": False}) from error
 
     @router.put("/users/{user_id}/permissions", dependencies=[Depends(require_admin)])
     async def update_user_permissions(user_id: str, body: UpdatePermsBody, request: Request):

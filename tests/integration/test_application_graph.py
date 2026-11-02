@@ -137,8 +137,11 @@ async def test_factory_loads_canonical_accounts_without_constructing_biometric_m
             assert not users.data_path.exists()
             if dashboard_enabled:
                 assert graph.dashboard.user_manager is users
+                assert graph.dashboard_authority._account_provider() is users.active_accounts()
+                assert users._retirement_proof == graph.dashboard_authority.users_retired
             else:
                 assert graph.dashboard is None
+                assert users._retirement_proof is None
             created, _ = await graph.voice_registry.acall(users.add_user, "Another", PermissionLevel.ADULT)
             assert created is not None
             assert users.data_path.stat().st_mode & 0o777 == 0o600
