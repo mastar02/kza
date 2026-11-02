@@ -351,7 +351,7 @@ def register_observability_routes(
 
     @router.post("/api/llm/endpoints/{endpoint_id}/clear-cooldown")
     async def clear_cooldown(endpoint_id: str):
-        if use_mocks or llm_router is None:
+        if use_mocks:
             return {"ok": True, "endpoint_id": endpoint_id, "mocked": True}
         cd = getattr(llm_router, "_cd", None)
         if cd is None:

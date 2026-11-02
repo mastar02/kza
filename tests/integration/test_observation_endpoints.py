@@ -25,23 +25,37 @@ def leaves(monkeypatch, tmp_path):
     return capability_leaves.__wrapped__(monkeypatch, tmp_path)
 
 
-async def test_real_empty_ha_and_empty_native_results_are_real_observations(leaves, tmp_path, dashboard_auth, monkeypatch):
+@pytest.mark.parametrize("demo", [None, False, True], ids=["omitted", "false", "explicit-demo"])
+async def test_factory_requires_explicit_demo_and_preserves_real_empty(
+    leaves, tmp_path, dashboard_auth, monkeypatch, demo,
+):
     transport = TaskTransport()
     transport.states.clear()
     monkeypatch.setattr(system_monitor, 'gpu_snapshot', lambda: [])
     monkeypatch.setattr(system_monitor, 'services_snapshot', lambda: [])
     async with transport.serve() as url:
         config, _ = configuration(tmp_path, url)
+        config["dashboard"].pop("observability_use_mocks")
+        if demo is not None:
+            config["dashboard"]["observability_use_mocks"] = demo
         async with AsyncExitStack() as stack:
             graph = await build_application(config, shutdown=stack, factories=leaves)
             async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
                 for path, source in (('/api/ha/entities', 'ha-rest-states'), ('/api/system/gpus', 'nvidia-smi'),
                                      ('/api/system/services', 'service-probes')):
                     response = await client.get(path, headers=dashboard_auth)
-                    assert response.status_code == 200 and response.json() == []
-                    assert response.headers['X-KZA-Source'] == 'real'
-                    assert response.headers['X-KZA-Source-Id'] == source
-                    assert 'X-KZA-Observed-At' in response.headers and 'X-KZA-Expires-At' in response.headers
+                    assert response.status_code == 200
+                    if demo is True:
+                        assert response.json()
+                        assert response.headers['X-KZA-Source'] == 'mock'
+                        assert response.headers['X-KZA-Observation-State'] == 'demo'
+                        assert 'X-KZA-Observed-At' not in response.headers
+                        assert 'X-KZA-Expires-At' not in response.headers
+                    else:
+                        assert response.json() == []
+                        assert response.headers['X-KZA-Source'] == 'real'
+                        assert response.headers['X-KZA-Source-Id'] == source
+                        assert 'X-KZA-Observed-At' in response.headers and 'X-KZA-Expires-At' in response.headers
 
 
 @pytest.mark.parametrize('status', [401, 403, 503, 'timeout'])

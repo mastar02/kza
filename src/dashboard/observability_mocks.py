@@ -1,8 +1,8 @@
 """
 Mock data para el dashboard de observability.
 
-Mismas shapes que `frontend/obs/src/mocks.jsx`. Sirve cuando `USE_MOCKS=True` o
-cuando un servicio real no está disponible (fallback).
+Mismas shapes que `frontend/obs/src/mocks.jsx`. Sólo se sirven con demo
+explícita (`use_mocks=True`); un fallo operativo nunca activa estos ejemplos.
 """
 
 ZONES = [

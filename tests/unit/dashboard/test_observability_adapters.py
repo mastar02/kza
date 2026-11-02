@@ -121,6 +121,12 @@ def test_clear_cooldown_real(fake_llm_router, dashboard_auth):
     fake_llm_router._cd.record_success.assert_called_once_with("vllm-7b")
 
 
+def test_missing_cooldown_router_cannot_acknowledge_a_demo_effect(dashboard_auth):
+    response = _client(dashboard_auth).post("/api/llm/endpoints/vllm-7b/clear-cooldown")
+    assert response.status_code == 503
+    assert response.json() == {"detail": "cooldown manager no disponible"}
+
+
 def test_adapter_failure_is_unavailable_without_demo_data(dashboard_auth):
     bad = MagicMock()
     bad.get_all_zones.side_effect = RuntimeError("kaboom")

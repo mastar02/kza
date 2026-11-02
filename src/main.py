@@ -1695,7 +1695,7 @@ async def build_application(
             event_logger=event_logger,
             speaker_identifier=speaker_identifier,
             llm_metrics=llm_metrics_tracker,
-            observability_use_mocks=dashboard_config.get("observability_use_mocks", True),
+            observability_use_mocks=dashboard_config.get("observability_use_mocks", False),
             home_catalog=home_services.catalog,
             home_actions=home_action_service,
             microphone_snapshot_provider=home_services.microphone_snapshot_provider,
