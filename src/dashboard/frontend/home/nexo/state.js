@@ -1,7 +1,7 @@
 /* Session and catalog presentation; voice labels never select authority. */
 (function (root) {
   'use strict';
-  const VIEWS = { home: ['home:read'], actions: ['home:read'], voices: ['voices:read'], people: ['admin:manage'] };
+  const VIEWS = { home: ['home:read'], actions: ['home:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'] };
   function createSession({ wall = Date.now, monotonic = () => root.performance.now() } = {}) {
     let identity = null, deadline = 0, generation = 0;
     function clear() { identity = null; deadline = 0; generation++; }
@@ -23,8 +23,9 @@
       views: () => Object.keys(VIEWS).filter(view => VIEWS[view].every(can)) };
   }
   function sessionRetired(error) {
+    const code = typeof error?.detail === 'string' ? error.detail : error?.detail?.code;
     return error?.status === 401 || error?.status === 403 &&
-      ['dashboard_session_retired', 'dashboard_authority_retired'].includes(error.detail);
+      ['dashboard_session_retired', 'dashboard_authority_retired'].includes(code);
   }
   function createScopedApi({ session, transport, onRetired = () => {} }) {
     return async function api(path, options = {}) {
@@ -35,14 +36,18 @@
       const permission = pathname === '/api/home/catalog' && method === 'GET' ? 'home:read' :
         pathname === '/api/home/actions' && method === 'GET' ? 'home:read' :
         pathname === '/api/home/actions' && method === 'POST' ? 'home:control' :
-        pathname === '/api/home/microphones' && method === 'GET' ? 'diagnostics:read' : null;
-      if (!publicAuth && (!permission || !session.can(permission))) {
+        pathname === '/api/home/microphones' && method === 'GET' ? 'diagnostics:read' :
+        pathname === '/api/admin/users' && ['GET', 'POST'].includes(method) ? 'admin:manage' :
+        /^\/api\/admin\/users\/[^/]+\/permissions$/.test(pathname) && method === 'PUT' ? 'admin:manage' :
+        /^\/api\/admin\/users\/[^/]+$/.test(pathname) && method === 'DELETE' ? ['admin:manage', 'auth:manage'] : null;
+      const permitted = () => Boolean(permission) && (Array.isArray(permission) ? permission : [permission]).every(session.can);
+      if (!publicAuth && !permitted()) {
         throw Object.assign(new Error('Este acceso no permite la operación.'), { status: 403, sent: false });
       }
       const generation = session.generation();
       try {
         const result = await transport(path, options);
-        if (generation !== session.generation() || !publicAuth && !session.can(permission)) {
+        if (generation !== session.generation() || !publicAuth && !permitted()) {
           throw Object.assign(new Error('La sesión dejó de estar vigente.'), { status: 403, detail: 'dashboard_session_retired' });
         }
         return result;

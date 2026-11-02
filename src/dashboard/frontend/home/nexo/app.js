@@ -1,6 +1,7 @@
 import '../request-id.js';
 import '../home.js';
 import './state.js';
+import './people.js';
 import { createHouse } from './house.js';
 
 const core = window.HomeUI, state = window.NexoState;
@@ -8,7 +9,7 @@ const byId = id => document.getElementById(id);
 const session = state.createSession();
 const roleLabels = { operator: 'Administración', home: 'Acceso de hogar', evaluator: 'Evaluación temporal' };
 let epoch = 0, poller, sessionTimer, ticker, catalog = null, clock = null, lastError = null;
-let roomId, layer = 'lights', house, logoutPending = false, authBusy = false;
+let roomId, layer = 'lights', house, logoutPending = false, authBusy = false, activeView = null;
 try { logoutPending = sessionStorage.getItem('kza.logoutPending') === 'true'; } catch (_) { /* Storage is optional. */ }
 
 function node(tag, className, text) {
@@ -29,6 +30,7 @@ function button(text, callback, className = 'text-button') {
 const transport = core.createApi({ onDemo() { byId('demo-banner').hidden = false; } });
 const api = state.createScopedApi({ session, transport, onRetired() { retire('Iniciá sesión para consultar tu hogar.'); } });
 const actions = core.createActionController({ api, onChange: updateReceipts });
+const people = window.NexoPeople.createPeople({ container: byId('people-view'), dialog: byId('person-dialog'), api, session, icon });
 
 function pendingLogout(value) {
   logoutPending = value;
@@ -47,7 +49,7 @@ function destroyHouse() {
 function retire(message = '') {
   epoch++; session.clear(); transport.invalidateSession();
   clearTimeout(sessionTimer); poller?.stop(); poller = null; ticker?.stop(); ticker = null;
-  actions.clear(); destroyHouse(); catalog = clock = lastError = null; roomId = undefined;
+  people.clear(); actions.clear(); destroyHouse(); catalog = clock = lastError = null; roomId = undefined; activeView = null;
   for (const id of ['room-list', 'room-controls', 'action-list', 'app-nav', 'rail-nav', 'additional-tools']) byId(id).replaceChildren();
   for (const id of ['lights-total', 'entities-total', 'rooms-total', 'room-count']) byId(id).textContent = '—';
   byId('nexo-workspace').hidden = true; byId('login-panel').hidden = false;
@@ -217,7 +219,7 @@ function renderNavigation() {
   const navigation = [
     { id: 'home', label: 'Hogar 3D', icon: 'house' },
     { id: 'voices', label: 'Voces', icon: 'mic', href: '/obs/#users' },
-    { id: 'people', label: 'Personas', icon: 'user', href: '/obs/#admin' },
+    { id: 'people', label: 'Personas', icon: 'user' },
     { id: 'actions', label: 'Acciones', icon: 'list' }
   ].filter(view => session.views().includes(view.id));
   for (const target of ['app-nav', 'rail-nav']) {
@@ -235,9 +237,15 @@ function renderNavigation() {
   if (session.can('diagnostics:read')) { const link = node('a', 'text-button', 'Micrófonos y diagnóstico ↗'); link.href = '/home/legacy.html'; tools.append(link); }
 }
 function activate(view, push = true) {
-  if (!session.views().includes(view) || !['home', 'actions'].includes(view)) return;
-  if (push) history.pushState({ view }, '', view === 'actions' ? '#acciones' : '#hogar');
+  if (!session.views().includes(view) || !['home', 'actions', 'people'].includes(view)) return;
+  if (push && activeView !== view) history.pushState({ view }, '', { home: '#hogar', actions: '#acciones', people: '#personas' }[view]);
+  if (activeView === 'people' && view !== 'people') people.leave();
+  activeView = view;
   byId('home-view').hidden = view !== 'home'; byId('actions-view').hidden = view !== 'actions';
+  byId('people-view').hidden = view !== 'people'; byId('workspace-toolbar').hidden = view === 'people';
+  if (view === 'people') people.open();
+  poller?.setHidden(document.hidden || view === 'people');
+  if (document.hidden || view === 'people') ticker?.stop(); else ticker?.start();
   for (const control of document.querySelectorAll('[data-view]')) {
     const active = control.dataset.view === view; control.classList.toggle('active', active);
     if (active) control.setAttribute('aria-current', 'page'); else control.removeAttribute('aria-current');
@@ -251,7 +259,12 @@ function activate(view, push = true) {
     } });
     cameraView('3d', false);
   }
-  renderControls();
+  if (view !== 'people') renderControls();
+}
+function requestedView() {
+  const requested = { '#acciones': 'actions', '#personas': 'people', '#hogar': 'home' }[location.hash] || 'home';
+  const available = session.views().filter(view => ['home', 'actions', 'people'].includes(view));
+  return available.includes(requested) ? requested : available[0];
 }
 function cameraView(view, apply = true) {
   if (apply) house?.setView(view);
@@ -269,9 +282,9 @@ async function bootstrap() {
     byId('login-panel').hidden = true; byId('nexo-workspace').hidden = false; byId('logout').hidden = false;
     byId('session-label').textContent = roleLabels[session.role()]; byId('login-error').textContent = '';
     renderNavigation(); armSessionTimer();
-    const home = session.can('home:read'); byId('restricted-view').hidden = home; byId('home-view').hidden = !home; byId('actions-view').hidden = true; byId('refresh').hidden = !home;
+    const home = session.can('home:read'); byId('restricted-view').hidden = Boolean(requestedView()); byId('home-view').hidden = !home; byId('actions-view').hidden = true; byId('people-view').hidden = true; byId('refresh').hidden = !home;
+    activate(requestedView(), false);
     if (!home) { byId('connection-status').textContent = 'Sesión vigente.'; return; }
-    activate(location.hash === '#acciones' ? 'actions' : 'home', false);
     const generation = session.generation();
     poller = core.createPoller({
       load: async signal => { await actions.reconcile(); return api('/api/home/catalog', { signal }); },
@@ -283,7 +296,7 @@ async function bootstrap() {
       onError(error) { if (session.generation() === generation && session.active()) { lastError = error; updateTemporal(); } }
     });
     ticker = core.createFreshnessTicker({ read: () => freshness(), onTick: updateTemporal });
-    poller.setHidden(document.hidden); if (!document.hidden) ticker.start(); poller.start();
+    poller.setHidden(document.hidden || activeView === 'people'); if (!document.hidden && activeView !== 'people') ticker.start(); poller.start();
   } catch (error) {
     if (started === epoch) retire(error.status === 401 ? 'Ingresá para consultar tu hogar.' : error.message);
   }
@@ -319,8 +332,8 @@ byId('expand-map').addEventListener('click', () => { const expanded = document.b
 byId('help-button').addEventListener('click', () => byId('info-dialog').showModal());
 for (const id of ['dialog-close', 'dialog-done']) byId(id).addEventListener('click', () => byId('info-dialog').close());
 document.addEventListener('keydown', event => { if (event.key === 'Escape') { document.body.classList.remove('map-expanded'); byId('expand-map').setAttribute('aria-expanded', 'false'); } });
-document.addEventListener('visibilitychange', () => { if (!session.active()) { if (!byId('nexo-workspace').hidden) retire('Tu sesión venció.'); return; } armSessionTimer(); if (document.hidden) ticker?.stop(); else { updateTemporal(); ticker?.start(); } poller?.setHidden(document.hidden); });
-window.addEventListener('popstate', () => activate(location.hash === '#acciones' ? 'actions' : 'home', false));
+document.addEventListener('visibilitychange', () => { if (!session.active()) { if (!byId('nexo-workspace').hidden) retire('Tu sesión venció.'); return; } armSessionTimer(); if (document.hidden || activeView === 'people') ticker?.stop(); else { updateTemporal(); ticker?.start(); } poller?.setHidden(document.hidden || activeView === 'people'); if (!document.hidden && activeView === 'people') people.refresh(); });
+window.addEventListener('popstate', () => activate(requestedView(), false));
 window.addEventListener('pagehide', () => retire());
 window.addEventListener('pageshow', event => { if (event.persisted) bootstrap(); });
 bootstrap();

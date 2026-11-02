@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const nexo = require('../../src/dashboard/frontend/home/nexo/state.js');
 const home = require('../../src/dashboard/frontend/home/home.js');
+const people = require('../../src/dashboard/frontend/home/nexo/people.js');
 
 const identity = (permissions, role = 'home', expires_at = 10) => ({ ok: true, role, permissions, expires_at });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -97,4 +98,54 @@ test('room associations use backend IDs despite homonymous room and entity label
   assert.deepEqual(nexo.roomEntities(catalog, 'r1', 'climate'), []);
   assert.deepEqual(nexo.roomEntities(catalog, 'r2', 'climate'), [second]);
   assert.equal(nexo.entityState(second), 'Modo Frío');
+});
+
+test('account paths have closed methods and deletion needs both account and grant authority', async () => {
+  const session = nexo.createSession({ wall: () => 0, monotonic: () => 0 });
+  const sends = [];
+  const api = nexo.createScopedApi({ session, transport: async (path, options) => { sends.push([path, options.method || 'GET']); } });
+  session.accept(identity(['admin:manage'], 'operator'));
+  assert.deepEqual(session.views(), ['people']);
+  await api('/api/admin/users');
+  await api('/api/admin/users', { method: 'POST' });
+  await api('/api/admin/users/synthetic/permissions', { method: 'PUT' });
+  for (const [path, method] of [['/api/admin/users/synthetic', 'DELETE'], ['/api/admin/users', 'DELETE'],
+      ['/api/admin/users/synthetic', 'PUT'], ['/api/admin/users/synthetic/permissions', 'GET'], ['/api/admin/users/synthetic/enroll', 'POST']]) {
+    await assert.rejects(api(path, { method }), error => error.status === 403 && error.sent === false);
+  }
+  assert.equal(sends.length, 3);
+  session.accept(identity(['admin:manage', 'auth:manage'], 'operator'));
+  await api('/api/admin/users/synthetic', { method: 'DELETE' });
+  assert.equal(sends.length, 4);
+  session.accept(identity(['auth:manage'], 'operator'));
+  await assert.rejects(api('/api/admin/users/synthetic', { method: 'DELETE' }), error => error.sent === false);
+  session.accept(identity(['voices:read'], 'operator'));
+  assert.deepEqual(session.views(), []);
+});
+
+test('a late account response cannot appear in another original login', async () => {
+  const session = nexo.createSession({ wall: () => 0, monotonic: () => 0 });
+  session.accept(identity(['admin:manage'], 'operator'));
+  const response = deferred(); let withdrawn = 0;
+  const api = nexo.createScopedApi({ session, transport: () => response.promise, onRetired: () => withdrawn++ });
+  const pending = api('/api/admin/users');
+  session.clear(); session.accept(identity(['home:read']));
+  response.resolve([{ id: 'old-account', name: 'Private', permission_level: 'admin', is_active: true }]);
+  await assert.rejects(pending, error => error.detail === 'dashboard_session_retired');
+  assert.equal(withdrawn, 0);
+  assert.equal(nexo.sessionRetired({ status: 403, detail: { code: 'dashboard_authority_retired', credentials_retired: null } }), true);
+});
+
+test('account metadata is closed and account role or voice material cannot select session permissions', () => {
+  const account = { id: 'synthetic', name: '<script>synthetic</script>', permission_level: 'admin', is_active: false };
+  const result = people.parseAccounts([account]);
+  assert.deepEqual(result, [account]); assert.notEqual(result[0], account);
+  for (const value of [null, {}, [account, account], [{ ...account, is_active: 'false' }],
+      [{ ...account, permission_level: ['adult'] }], [{ ...account, permission_level: 'operator' }],
+      [{ ...account, voice_embedding: [1, 2, 3] }], [{ ...account, preferences: {} }]]) {
+    assert.throws(() => people.parseAccounts(value));
+  }
+  assert.match(people.mutationError({ detail: { credentials_retired: true } }), /Se confirmó el retiro/);
+  assert.match(people.mutationError({ detail: { credentials_retired: null } }), /No se pudo confirmar/);
+  assert.match(people.mutationError(new Error('private raw detail')), /Puede haberse aplicado/);
 });
