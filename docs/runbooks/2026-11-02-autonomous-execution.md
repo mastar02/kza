@@ -273,7 +273,31 @@ trabajos aprobados usan su snapshot y la política doméstica vigente. La unidad
 pasa 1094 pruebas; el detalle está en
 `data/autonomous-roadmap-20261102/t013/routine-evidence.json`.
 
-T013 sigue en curso: faltan guards de mutaciones administrativas nativas, prevención de
-lecturas personales desde voz anónima, ámbitos personales y de evaluación,
-binding HTTP/WS, gestión de credenciales y navegación por rol. No acredita
-accesos reales ni criterios de aceptación.
+### Contexto de voz anónima
+
+Las revisiones `c37f6d5`, `0bfccb6` y `83eb465` separan el contexto doméstico
+efímero de los contextos personales. La voz no recupera recuerdos, preferencias,
+perfiles ni resúmenes personales, tampoco bajo `unknown`. La prueba con
+`build_application` en ambos modos prepara datos privados recuperables y
+snapshots válidos, comprueba su ausencia del prompt y la respuesta y conserva
+la procedencia de la captura actual. Los contextos domésticos no guardan
+historial libre ni cargan, compactan o escriben snapshots.
+
+La cola separa propietarios domésticos por una clave interna de la habitación
+original y propietarios backend por usuario. Cancelación y reemplazo usan la
+misma separación, independientemente de la zona de salida. Las proyecciones
+públicas revisadas omiten las claves domésticas. Retirar una fuente privada no
+consultada conserva el turno independiente; retirar la captura actual cancela
+generación, entrega y procesamiento posterior. Los positivos de selección
+backend explícita conservan las pruebas nativas de transferencia y cierre.
+
+La última corrida completa pasa 6146 pruebas y conserva una exclusión conocida;
+falla la medición de latencia por una pausa cercana a 500 ms que no aparece en
+la medición aislada de diez repeticiones. La unidad sigue en verificación; la
+evidencia y los intentos están en
+`data/autonomous-roadmap-20261102/t013/household-evidence.json`.
+
+T013 sigue en curso: faltan el cierre compartido de listas, recordatorios y
+anuncios, guards de mutaciones administrativas nativas, ámbitos personales y
+de evaluación, binding HTTP/WS, gestión de credenciales y navegación por rol.
+No acredita accesos reales ni criterios de aceptación.

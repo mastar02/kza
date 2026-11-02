@@ -960,7 +960,10 @@
         "72d77c510b20e8a8e5895dbe69ea351eca7159b6",
         "4289883e35048b4950477c4dbfa1da417237860c",
         "63334d26a888eb7ce463a847434f30b12a194fac",
-        "56be9af1f139812bfb8a90bc267311806f7f6442"
+        "56be9af1f139812bfb8a90bc267311806f7f6442",
+        "c37f6d5a7d8df8a89a520f41331b8e6f4f1f2bc5",
+        "0bfccb613354b6ad170ace59b2bfc97a51ef4f06",
+        "83eb46536ba4798cdf7b8b9cadc7106f97caeba4"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
@@ -971,9 +974,10 @@
         "data/autonomous-roadmap-20261102/t013/body-evidence.json",
         "data/autonomous-roadmap-20261102/t013/sqlite-list-evidence.json",
         "data/autonomous-roadmap-20261102/t013/reminder-evidence.json",
-        "data/autonomous-roadmap-20261102/t013/routine-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/routine-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/household-evidence.json"
       ],
-      "next_action": "Finish remaining native/admin mutations; prevent anonymous voice personal reads/announcements, bind HTTP/WS owners and finish personal/evaluation scopes, credential management and role-aware UI before full T013 verification."
+      "next_action": "Resolve repeated full-suite heartbeat pause during anonymous voice prompt verification; close shared list/reminder reads and announcements, then remaining native/admin mutations, exact evaluator scopes, HTTP/WS ownership, credentials and role-aware UI before full T013 verification."
     },
     {
       "id": "T014",
