@@ -2,7 +2,7 @@
 
 El objetivo es completar y verificar KZA para un hogar con varias personas y visitas, usando voz y móvil, hasta aprobar las siete áreas de la evaluación. **10/10 significa cumplir el perfil acordado con evidencia**, incluida la prueba física y de usuarios. No significa perfección en cualquier entorno ni se obtiene compensando un área fallida con otra.
 
-**Estado:** perfil cerrado con 16 decisiones confirmadas, cinco integraciones y metas C01–C21 aceptadas. Listo para una petición explícita de activación del objetivo. No se inició implementación ni se activó una ejecución prolongada.
+**Estado:** ejecución activada por el objetivo del usuario el 2026-11-02. Se conservan las 16 decisiones, cinco integraciones y metas C01–C21 acordadas. El [manifiesto](2026-11-02-autonomous-roadmap.json) registra el avance; ningún criterio de aceptación se da por medido al iniciar. La [guía de continuidad](../runbooks/2026-11-02-autonomous-execution.md) describe el checkpoint privado y el contrato de evidencia.
 
 La referencia es la [evaluación integral](../research/2026-11-02-comprehensive-assessment.md) de `eb98b70`: 5,1/10 orientativo, 28 hallazgos, 5.765 pruebas pasadas y un `xfail`. Este plan complementa H0–H6; conserva sus restricciones y sus pendientes de privacidad, recursos, mute global y restauración. Una suite verde no cierra esos hitos.
 
@@ -176,4 +176,4 @@ El desarrollo, pruebas, construcción y Git siguen bajo `yo` en este checkout. P
 
 La configuración de aplicación continúa centralizada en `config/settings.yaml`; el manifiesto de este plan es seguimiento de trabajo. Los datos privados, WAV, referencias, identidades y credenciales permanecen fuera de Git/RAG. Las decisiones de retención existentes se mantienen salvo la finalidad nueva y acotada del corpus confirmada en esta conversación.
 
-Q14, Q15 y Q19 quedaron confirmadas: cinco integraciones, metas de aceptación y autoridad de rutinas por voz. El perfil está listo para arrancar. Q16–Q18 se resuelven con inventario, candidato o acceso concretos cuando hagan falta y no bloquean la preparación independiente. Una petición explícita posterior activa el objetivo de ejecución. Crear este roadmap no inició trabajo de implementación ni una sesión de semanas.
+Q14, Q15 y Q19 quedaron confirmadas: cinco integraciones, metas de aceptación y autoridad de rutinas por voz. El objetivo del usuario activó la ejecución el 2026-11-02. Q16–Q18 se resuelven con inventario, candidato o acceso concretos cuando hagan falta y no bloquean la preparación independiente. La creación original del roadmap fue planificación; la activación y la evidencia posterior constan por separado en el manifiesto.

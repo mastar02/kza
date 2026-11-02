@@ -2,9 +2,9 @@
   "schema_version": 1,
   "profile_id": "home-2026-11-v1",
   "created_at_utc": "2026-11-02T04:32:20.890613+00:00",
-  "status": "ready_for_explicit_activation",
-  "implementation_started": false,
-  "goal_activated": false,
+  "status": "in_progress",
+  "implementation_started": true,
+  "goal_activated": true,
   "baseline_commit": "eb98b70",
   "acceptance_targets_sha256": "3ccb8e7c84f9e1ae0c3f74ac515484c16aeaf80c9fe9e31c8c940ac15d33366d",
   "profile_sha256": "65065c19b6795fecade28c9dd580d2d3e4d90c5a42fd2c0410ba31bf0d0d02ef",
@@ -631,7 +631,7 @@
         "H0"
       ],
       "dependency_level": "verified_local",
-      "status": "planned",
+      "status": "in_progress",
       "evidence": []
     },
     {
@@ -776,10 +776,10 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
+      "status": "in_progress",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Finish independent review and record directed verification evidence."
     },
     {
       "id": "T002",
@@ -792,10 +792,10 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
+      "status": "in_progress",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Finish independent review and record directed verification evidence."
     },
     {
       "id": "T003",
@@ -809,10 +809,10 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
+      "status": "in_progress",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Finish independent review and record directed verification evidence."
     },
     {
       "id": "T004",
@@ -829,10 +829,10 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
+      "status": "in_progress",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Finish independent review and record directed verification evidence."
     },
     {
       "id": "T010",
@@ -2062,5 +2062,14 @@
     "https://www.home-assistant.io/integrations/calendar/",
     "https://www.home-assistant.io/integrations/media_player/",
     "https://www.home-assistant.io/docs/energy/"
-  ]
+  ],
+  "execution": {
+    "activated_at_utc": "2026-11-02T04:39:19.880680+00:00",
+    "activation_revision": "162db166d800369a5f231aa357344a30ee62b963",
+    "authorization": "Active user goal: execute docs/plans/2026-11-02-autonomous-roadmap.md",
+    "owner": "root session; one code/Git writer; read-only subagents",
+    "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
+    "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
+    "field_authorized": false
+  }
 }
