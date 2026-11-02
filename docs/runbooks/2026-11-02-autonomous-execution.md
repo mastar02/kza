@@ -237,8 +237,15 @@ El dueño completa la reconciliación de una escritura ya comprometida aunque
 se cancele el observador o termine su sesión. La evidencia privada está en
 `data/autonomous-roadmap-20261102/t013/memory-evidence.json`.
 
+Las revisiones `79a78ab` y `72d77c5` comprueban el lease original antes de headers
+y de cada fragmento privado exterior. Una retirada anterior produce un 403
+completo sin esperar al generador original; después de headers interrumpe la
+respuesta sin sustituir su cuerpo ni declarar éxito. Login comprueba también
+la sesión recién emitida antes de publicar su cookie. Los efectos comprometidos
+y tickets pendientes mantienen su dueño. Esta unidad pasa 626 pruebas;
+`data/autonomous-roadmap-20261102/t013/body-evidence.json` conserva el detalle.
+
 T013 sigue en curso: faltan guards de otras escrituras asíncronas, prevención de
 lecturas personales desde voz anónima, ámbitos personales y de evaluación,
-binding HTTP/WS, guardas de todos
-los cuerpos privados, gestión de credenciales y navegación por rol. No acredita
+binding HTTP/WS, gestión de credenciales y navegación por rol. No acredita
 accesos reales ni criterios de aceptación.
