@@ -199,6 +199,12 @@ vencimientos de muestras sin renovar sus fuentes ni ampliar modalidades.
 La revisión `89f3db9` pasa 102 pruebas focalizadas; su evidencia privada está en
 `data/autonomous-roadmap-20261102/t013/foundation-evidence.json`.
 
-T013 sigue en curso: esta unidad aún no conecta la autoridad con el grafo HTTP,
-los canales, la entrega retenida ni la navegación web. No acredita nuevos
-accesos reales ni criterios de aceptación.
+La fábrica comparte esa autoridad entre `ApplicationGraph`, `DashboardAPI` y
+`app.state`. Registra el cierre antes de los consumidores e inicializa el
+almacén antes de los canales; el dashboard no cierra la dependencia inyectada.
+La revisión `3953b1e` pasa 128 pruebas focalizadas de grafo, configuración y
+compatibilidad. El laboratorio aísla tanto su base como credenciales heredadas.
+
+T013 sigue en curso: falta conectar esa autoridad con login/logout, permisos por
+ruta, canales, entrega retenida y navegación web. No acredita nuevos accesos
+reales ni criterios de aceptación.

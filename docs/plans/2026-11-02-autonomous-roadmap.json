@@ -951,12 +951,14 @@
       "inclusion": "required",
       "status": "in_progress",
       "implementation_commits": [
-        "89f3db99917e9a848a74e04573db0f7010863fbe"
+        "89f3db99917e9a848a74e04573db0f7010863fbe",
+        "3953b1e791621611683289f27dc009d9b57a7d66"
       ],
       "evidence": [
-        "data/autonomous-roadmap-20261102/t013/foundation-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/graph-evidence.json"
       ],
-      "next_action": "Inject the verified private authority into ApplicationGraph/DashboardAPI and individual HTTP sessions; then complete route/channel/native/body scope guards and capability-aware UI before full T013 verification."
+      "next_action": "Connect request-bound leases and opaque individual login/logout to the shared authority; then finish per-route/channel/native/body permissions and exact evaluation sample scope before full verification."
     },
     {
       "id": "T014",
