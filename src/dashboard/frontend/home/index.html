@@ -1,35 +1,46 @@
 <!doctype html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <title>KZA · Tu casa</title>
-  <link rel="stylesheet" href="/home/home.css">
-  <script defer src="/home/request-id.js"></script>
-  <script defer src="/home/home.js"></script>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark">
+<title>KZA · Tu casa, en sintonía</title><meta name="description" content="KZA. Tu hogar, voces, personas y acciones con control local.">
+<link rel="stylesheet" href="/home/nexo/style.css"><link rel="stylesheet" href="/home/nexo/climate.css"><link rel="stylesheet" href="/home/nexo/identity.css"><link rel="stylesheet" href="/home/nexo/kza.css">
+<script type="module" src="/home/nexo/app.js"></script>
 </head>
 <body>
-  <a class="skip-link" href="#main">Ir al contenido</a>
-  <div id="demo-banner" class="demo-banner" role="status" hidden>DEMOSTRACIÓN · Datos sintéticos. No representan tu casa ni verifican equipos reales.</div>
-  <header class="header">
-    <a class="brand" href="/" aria-label="KZA, inicio"><span class="brand-mark" aria-hidden="true">K</span><span>KZA<span class="brand-subtitle">TU CASA, A MANO</span></span></a>
-    <div class="header-actions"><span class="local-label">Control local</span><button id="logout" class="button quiet" hidden>Cerrar sesión</button></div>
-  </header>
-  <main id="main" class="shell" tabindex="-1">
-    <section class="intro"><div><p class="eyebrow">ESPACIO PERSONAL</p><h1>Tu casa, en un vistazo.</h1><p class="intro-copy">Ambientes y dispositivos. El estado que podemos comprobar.</p></div><a class="technical-link" href="/index.html">Panel técnico <span aria-hidden="true">↗</span></a></section>
-    <section id="login-panel" class="login-panel" hidden aria-labelledby="login-title">
-      <span class="section-icon" aria-hidden="true">⌂</span><h2 id="login-title">Entrá a tu casa</h2><p>Usá tu token de administración para abrir una sesión local segura.</p>
-      <form id="login-form"><label for="token">Token de acceso</label><input id="token" name="token" type="password" autocomplete="current-password" required><button class="button primary" type="submit">Iniciar sesión</button><p id="login-error" class="error-text" role="alert"></p></form>
-      <p class="fine-print">El token no se guarda en este navegador. La sesión utiliza una cookie protegida.</p>
-    </section>
-    <section id="workspace" aria-label="Control de la casa">
-      <nav id="view-nav" class="view-nav" aria-label="Vistas de la casa"><button class="view-button active" data-view="house" aria-current="page"><span aria-hidden="true">⌂</span> Casa</button><button class="view-button" data-view="microphones"><span aria-hidden="true">♩</span> Micrófonos</button></nav>
-      <div class="view-heading"><div><p id="view-kicker" class="eyebrow">AMBIENTES Y DISPOSITIVOS</p><h2 id="view-title">Casa</h2></div><button id="refresh" class="button quiet"><span aria-hidden="true">↻</span> Actualizar</button></div>
-      <div id="connection-status" class="connection-status" role="status" aria-live="polite">Consultando el estado…</div>
-      <div id="content" aria-busy="true"></div>
-    </section>
-    <footer>Lo desconocido se muestra como desconocido.<span>KZA · Inteligencia en casa</span></footer>
-  </main>
-</body>
-</html>
+<a class="skip-link" href="#main">Ir al contenido</a>
+<aside class="rail" aria-label="Navegación principal">
+<a class="kza-mark" href="/" aria-label="KZA, inicio">K</a><nav class="rail-group" id="rail-nav"></nav>
+<div class="rail-bottom"><button class="rail-button" id="help-button" aria-label="Ayuda"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-help"/></svg></button><button id="logout" class="rail-button" hidden aria-label="Cerrar sesión"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-power"/></svg></button></div>
+</aside>
+<div class="app-shell">
+<header class="topbar"><a class="wordmark" href="/">KZA<span>HOME OS</span></a><div class="home-picker"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-house"/></svg><span>Mi hogar</span></div><div class="topbar-right"><span id="session-label" class="system-status">Acceso local</span><a id="technical-link" class="demo-badge" href="/obs/" hidden>Panel técnico ↗</a></div></header>
+<main id="main" tabindex="-1">
+<section class="hero"><div><p class="eyebrow">TU ESPACIO. TU CONTROL.</p><h1>Tu casa, en <span>sintonía.</span></h1><p>Todo lo que importa, conectado a ti.</p></div><div class="weather"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-house"/></svg><div><div class="weather-main">Control local</div><div class="weather-detail">KZA · TU HOGAR</div></div></div></section>
+<div id="demo-banner" class="demo-banner" role="status" hidden>Demostración · Datos sintéticos, no representan el estado de tu casa.</div>
+<section class="panel access-panel" id="login-panel" aria-labelledby="login-title">
+<p class="eyebrow">TU ACCESO, TU ESPACIO</p><h2 id="login-title">Bienvenido a casa.</h2><p>Ingresá con tu credencial de acceso a KZA.</p>
+<form id="login-form"><label for="token">Credencial de acceso</label><input id="token" name="token" type="password" autocomplete="current-password" required><button class="primary-button" type="submit">Entrar a KZA →</button></form>
+<p id="login-error" class="message" role="alert"></p><button class="text-button" id="retry-logout" hidden>Reintentar cerrar sesión</button><p class="fine-print">Tu credencial no se guarda en el navegador.</p>
+</section>
+<section id="nexo-workspace" hidden aria-label="Tu hogar">
+<nav class="app-tabs" id="app-nav" aria-label="Apartados de KZA"></nav>
+<div class="workspace-toolbar"><p id="connection-status" role="status" aria-live="polite">Consultando el catálogo…</p><button class="text-button" id="refresh"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-rotate"/></svg>Actualizar</button></div>
+<div id="home-view" class="dashboard-grid">
+<div class="main-column"><section class="house-panel panel" aria-labelledby="house-heading">
+<div class="panel-top"><div class="panel-heading"><span class="section-dot"></span><h2 id="house-heading">Vista de tu hogar</h2><span class="live-badge">ILUSTRACIÓN</span></div></div>
+<div class="map-stage" id="map-stage">
+<div class="map-brand">KZA / 01<span>Un hogar. Infinitas posibilidades.</span></div><div id="house-canvas" role="img" aria-label="Modelo ilustrativo amueblado; no representa el plano de tu casa"></div><div class="map-loading" id="map-loading">Preparando la vista…</div>
+<div class="view-switch" role="group" aria-label="Vista del modelo"><button id="view-3d" class="active" aria-pressed="true">3D</button><button id="view-top" aria-pressed="false">Plano</button></div>
+<div class="map-tools"><button id="zoom-in" aria-label="Acercar modelo"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-plus"/></svg></button><button id="zoom-out" aria-label="Alejar modelo"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-minus"/></svg></button><span></span><button id="reset-view" aria-label="Restablecer vista"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-rotate"/></svg></button><button id="expand-map" aria-label="Ampliar modelo" aria-expanded="false"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-expand"/></svg></button></div>
+<div class="map-hint">Arrastra para explorar <span>·</span> Modelo ilustrativo</div></div>
+<div class="house-stats"><div><span class="stat-icon mint"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-bulb"/></svg></span><div><strong id="lights-total">—</strong><span>luces encendidas observadas</span></div></div><div><span class="stat-icon lavender"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-wifi"/></svg></span><div><strong id="entities-total">—</strong><span>dispositivos en el catálogo</span></div></div><div><span class="stat-icon sky"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-house"/></svg></span><div><strong id="rooms-total">—</strong><span>ambientes configurados</span></div></div></div>
+</section><section class="panel catalog-note"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-layers"/></svg><div><h2>Tu hogar, ambiente por ambiente.</h2><p>Elegí un ambiente para ver sus dispositivos y controles. Iluminación y clima se ajustan por separado.</p></div></section><div id="additional-tools" class="additional-tools"></div></div>
+<aside class="side-column"><section class="rooms-panel panel"><div class="rooms-title"><h2>Ambientes</h2><span id="room-count">—</span></div><div class="control-tabs" id="layer-tabs" role="group" aria-label="Tipo de control"><button data-layer="lights" class="active" aria-pressed="true">Luces</button><button data-layer="climate" aria-pressed="false">Clima</button><button data-layer="all" aria-pressed="false">Todos</button></div><div id="room-list" class="room-list"></div></section><div id="room-controls" aria-live="polite"></div></aside>
+</div>
+<section id="actions-view" hidden aria-labelledby="actions-title"><div class="identity-heading"><div><p class="eyebrow">DEL CONTROL AL RESULTADO</p><h2 id="actions-title">Acciones para tu hogar.</h2><p>Controles disponibles en el catálogo actual.</p></div></div><div id="action-list" class="action-list"></div></section>
+<section id="restricted-view" class="panel empty-panel" hidden><h2>Este acceso no incluye el control del hogar.</h2><p>Las vistas disponibles dependen de los permisos de tu sesión.</p></section>
+</section>
+<footer><div class="footer-brand">KZA <i>·</i><span>Tu casa, en sintonía.</span></div><span>Control local · Estados del backend</span></footer>
+</main></div>
+<dialog id="info-dialog"><div class="dialog-top"><p class="eyebrow">KZA / HOME OS</p><button id="dialog-close" class="icon-button" aria-label="Cerrar ayuda">×</button></div><h2>Tu hogar, a tu manera.</h2><p>Los controles usan los dispositivos y permisos de tu sesión. Cada operación muestra si Home Assistant confirmó el resultado.</p><p>La casa 3D es una ilustración: sus ambientes no están asociados a tus dispositivos. Los controles del catálogo funcionan de forma independiente.</p><button id="dialog-done" class="dialog-done">Entendido →</button></dialog>
+</body></html>

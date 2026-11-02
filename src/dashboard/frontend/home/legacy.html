@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>KZA · Tu casa</title>
+  <link rel="stylesheet" href="/home/home.css">
+  <script defer src="/home/request-id.js"></script>
+  <script defer src="/home/home.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Ir al contenido</a>
+  <div id="demo-banner" class="demo-banner" role="status" hidden>DEMOSTRACIÓN · Datos sintéticos. No representan tu casa ni verifican equipos reales.</div>
+  <header class="header">
+    <a class="brand" href="/" aria-label="KZA, inicio"><span class="brand-mark" aria-hidden="true">K</span><span>KZA<span class="brand-subtitle">TU CASA, A MANO</span></span></a>
+    <div class="header-actions"><span class="local-label">Control local</span><button id="logout" class="button quiet" hidden>Cerrar sesión</button></div>
+  </header>
+  <main id="main" class="shell" tabindex="-1">
+    <section class="intro"><div><p class="eyebrow">ESPACIO PERSONAL</p><h1>Tu casa, en un vistazo.</h1><p class="intro-copy">Ambientes y dispositivos. El estado que podemos comprobar.</p></div><a class="technical-link" href="/index.html">Panel técnico <span aria-hidden="true">↗</span></a></section>
+    <section id="login-panel" class="login-panel" hidden aria-labelledby="login-title">
+      <span class="section-icon" aria-hidden="true">⌂</span><h2 id="login-title">Entrá a tu casa</h2><p>Usá tu token de administración para abrir una sesión local segura.</p>
+      <form id="login-form"><label for="token">Token de acceso</label><input id="token" name="token" type="password" autocomplete="current-password" required><button class="button primary" type="submit">Iniciar sesión</button><p id="login-error" class="error-text" role="alert"></p></form>
+      <p class="fine-print">El token no se guarda en este navegador. La sesión utiliza una cookie protegida.</p>
+    </section>
+    <section id="workspace" aria-label="Control de la casa">
+      <nav id="view-nav" class="view-nav" aria-label="Vistas de la casa"><button class="view-button active" data-view="house" aria-current="page"><span aria-hidden="true">⌂</span> Casa</button><button class="view-button" data-view="microphones"><span aria-hidden="true">♩</span> Micrófonos</button></nav>
+      <div class="view-heading"><div><p id="view-kicker" class="eyebrow">AMBIENTES Y DISPOSITIVOS</p><h2 id="view-title">Casa</h2></div><button id="refresh" class="button quiet"><span aria-hidden="true">↻</span> Actualizar</button></div>
+      <div id="connection-status" class="connection-status" role="status" aria-live="polite">Consultando el estado…</div>
+      <div id="content" aria-busy="true"></div>
+    </section>
+    <footer>Lo desconocido se muestra como desconocido.<span>KZA · Inteligencia en casa</span></footer>
+  </main>
+</body>
+</html>

@@ -1,0 +1,74 @@
+[hidden]{display:none!important}
+.room-controls{display:flex;flex-direction:column;gap:12px;min-width:0}
+.control-tabs{display:flex;padding:4px;gap:4px;border-radius:9px;background:#0e1622}
+.control-tabs button{flex:1;display:flex;justify-content:center;align-items:center;gap:7px;padding:8px 3px;border-radius:6px;font-size:9px;color:#8190a7}
+.control-tabs svg{width:13px;height:13px}
+.control-tabs button.active{color:#8ecbff;background:#71bdff12}
+.control-tabs button[data-layer=lights].active{color:var(--mint);background:#62e8cd12}
+.map-caption{top:54px}
+.map-layer-switch{position:absolute;left:22px;top:3px;display:flex;padding:3px;border-radius:8px;background:#0b111bd9;border:1px solid #ffffff0d;gap:3px;z-index:4}
+.map-layer-switch button{display:flex;align-items:center;gap:6px;border-radius:5px;padding:6px 11px;color:#8391a8;font-size:9px}
+.map-layer-switch svg{height:12px;width:12px}
+.map-layer-switch button.active{background:#71bdff18;color:#8ecbff}
+.map-layer-switch button[data-layer=lights].active{background:#62e8cd13;color:var(--mint)}
+.climate-legend{display:flex;gap:12px;align-items:center;position:absolute;bottom:43px;left:50%;transform:translateX(-50%);font-size:7px;color:#90a0b7;z-index:4;pointer-events:none;white-space:nowrap;background:#0b1420b8;padding:6px 10px;border-radius:5px;border:1px solid #ffffff09}
+.climate-legend span{display:flex;align-items:center;gap:5px}
+.climate-legend i{display:inline-block;width:4px;height:4px;border-radius:50%}
+.cool-dot{background:#71bdff}.heat-dot{background:#ffbe89}.paused-dot{background:#7b8ca3}
+.room-pin.thermal-pin{--thermal-color:#71bdff;gap:5px}
+.thermal-pin .pin-symbol{width:56px;height:28px;border-radius:7px;border-color:color-mix(in srgb,var(--thermal-color) 65%,transparent);background:#122538ee;color:var(--thermal-color);box-shadow:0 0 20px color-mix(in srgb,var(--thermal-color) 12%,transparent);display:flex;gap:4px;justify-content:center;align-items:center}
+.thermal-pin .pin-symbol strong{font-size:11px;letter-spacing:-.3px;font-weight:550}
+.thermal-pin .pin-symbol svg{height:11px;width:11px}
+.thermal-pin .pin-symbol:after{top:27px;left:26px;height:8px;background:linear-gradient(var(--thermal-color),transparent)}
+.thermal-pin .pin-name{font-size:6.5px;padding:4px 5px;color:#c7d4e6}
+.thermal-pin .pin-target{color:var(--thermal-color);margin-left:4px;font-size:6px}
+.room-pin.thermal-pin.active .pin-symbol{background:color-mix(in srgb,var(--thermal-color) 85%,#122538);border-color:#e2f2ffb0;color:#102235;box-shadow:0 0 27px color-mix(in srgb,var(--thermal-color) 30%,transparent)}
+.room-pin.thermal-pin.active .pin-name{color:var(--thermal-color);border-color:color-mix(in srgb,var(--thermal-color) 50%,transparent)}
+.room-pin.thermal-pin.off .pin-symbol{background:#192130ee;color:#9eacbe;border-color:#63708770;box-shadow:none}
+.room-pin.thermal-pin.off.active .pin-symbol{border-color:#acbcd1;color:#d0ddea;background:#283748}
+.thermal-room.active{border-color:color-mix(in srgb,var(--thermal-color) 35%,transparent);background:color-mix(in srgb,var(--thermal-color) 7%,transparent)}
+.thermal-room.active .room-icon{color:var(--thermal-color)}
+.thermal-room .room-devices.on{color:var(--thermal-color)}
+.thermal-room .toggle.is-on{background:var(--thermal-color);border-color:var(--thermal-color);box-shadow:none}
+.thermal-room .toggle.is-on>span{background:#18354b}
+.zones-caption{font-size:9px;line-height:1.6;color:#8f9db2;text-align:right}
+#climate-zones-count>span{font-size:16px;letter-spacing:-.4px;margin-left:3px;color:#7688a1}
+.climate-panel{--thermal-color:#71bdff;padding:20px 18px 16px;background:radial-gradient(ellipse at 50% 40%,#71bdff06,transparent 70%),var(--panel)}
+.climate-panel-heading{display:flex;align-items:center;gap:9px}
+.climate-panel-heading h2{font-size:11px}
+.climate-panel-heading p{font-size:8px;color:#90a0b7;margin-top:5px}
+.climate-panel-heading .small-icon{width:29px;height:31px;color:var(--thermal-color);background:color-mix(in srgb,var(--thermal-color) 5%,transparent)}
+.climate-panel-heading .toggle{margin-left:auto}
+.climate-panel-heading .toggle.is-on{background:var(--thermal-color);border-color:var(--thermal-color);box-shadow:none}
+.climate-panel-heading .toggle.is-on>span{background:#17364d}
+.climate-status{display:flex;align-items:center;justify-content:center;gap:5px;color:var(--thermal-color);font-size:8px;margin:17px 0 10px}
+.climate-status>i{height:4px;width:4px;background:var(--thermal-color);border-radius:50%}
+.climate-status>svg{width:11px;height:11px;margin-left:3px}
+.thermostat-controls{display:flex;align-items:center;justify-content:space-between;gap:7px}
+.thermostat-step{width:28px;height:28px;flex-shrink:0;border:1px solid #ffffff15;border-radius:50%;display:grid;place-items:center;color:#bdcce0;background:#ffffff02}
+.thermostat-step:hover{color:var(--thermal-color);background:#ffffff09;border-color:var(--thermal-color)}
+.thermostat-step svg{height:13px;width:13px}
+.thermostat-ring{width:142px;height:142px;flex-shrink:0;border-radius:50%;position:relative;display:grid;place-items:center;background:conic-gradient(from 205deg,var(--thermal-color) 0deg var(--target-angle,160deg),#26344a var(--target-angle,160deg) 310deg,transparent 310deg);padding:3px;filter:drop-shadow(0 0 14px color-mix(in srgb,var(--thermal-color) 8%,transparent))}
+.thermostat-ring:after{position:absolute;content:'';inset:9px;border:1px dashed #b0c9e51c;border-radius:50%;pointer-events:none}
+.thermostat-inner{width:100%;height:100%;border-radius:50%;background:#111a27;display:flex;align-items:center;justify-content:center;flex-direction:column}
+.thermostat-inner>span:first-child{font-size:5px;letter-spacing:.7px;color:#8fa3bc;line-height:1.5}
+.thermostat-inner>strong{font-size:38px;letter-spacing:-2px;font-weight:430;margin:7px 0 5px;line-height:1;color:#e8f3ff}
+.thermostat-inner>strong>span{color:var(--thermal-color);font-size:30px}
+.thermostat-inner>span:last-child{font-size:5px;letter-spacing:1px;color:#667c99}
+.climate-readings{display:grid;grid-template-columns:1fr 1fr;text-align:center;margin:16px 0 15px;padding:12px 0;border-top:1px solid #ffffff08;border-bottom:1px solid #ffffff08}
+.climate-readings>div{display:flex;flex-direction:column;gap:7px}
+.climate-readings>div+div{border-left:1px solid #ffffff0b}
+.climate-readings>div>span{font-size:7px;color:#8193ae}
+.climate-readings strong{font-size:15px;letter-spacing:-.5px;font-weight:500;color:#c2d6ed}
+.climate-readings strong>span{font-size:9px;color:#8f9eb5;margin-left:2px}
+.climate-modes{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}
+.climate-modes button{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;padding:9px 2px;border:1px solid #ffffff09;border-radius:7px;background:#ffffff02;color:#8598b2;font-size:7px}
+.climate-modes button svg{height:14px;width:14px}
+.climate-modes button.active{color:var(--thermal-color);border-color:color-mix(in srgb,var(--thermal-color) 35%,transparent);background:color-mix(in srgb,var(--thermal-color) 9%,transparent)}
+.climate-independent{display:flex;align-items:center;justify-content:center;gap:5px;font-size:7px;color:#7d91ac;margin-top:16px;line-height:1.5}
+.climate-independent svg{height:11px;width:11px;color:var(--thermal-color)}
+.climate-panel[data-sensor=true] .thermostat-controls{justify-content:center}
+.climate-panel[data-sensor=true] .thermostat-ring{background:conic-gradient(from 205deg,#9aadc3 0deg 220deg,#26344a 220deg 310deg,transparent 310deg)}
+@media(min-width:1600px){.climate-panel{padding:22px}.thermostat-ring{width:155px;height:155px}.climate-panel-heading h2{font-size:12px}.climate-modes button{font-size:8px}.climate-readings>div>span{font-size:8px}.climate-independent{font-size:8px}}
+@media(max-width:1050px) and (min-width:741px){.rooms-panel{grid-row:span 2}.room-controls{grid-column:2;grid-row:1}.ambience-panel{grid-column:2;grid-row:2}.thermostat-controls{justify-content:center;gap:20px}.thermostat-ring{width:150px;height:150px}}
+@media(max-width:740px){.map-layer-switch{left:15px;top:3px}.map-layer-switch button{padding:6px 9px;font-size:8px;gap:5px}.map-layer-switch svg{width:11px;height:11px}.map-caption{top:48px;left:17px}.map-caption>span:last-child{display:none}.climate-legend{bottom:39px;font-size:6px;padding:5px 8px;gap:10px}.thermal-pin .pin-symbol{width:45px;height:24px;gap:2px}.thermal-pin .pin-symbol strong{font-size:9px}.thermal-pin .pin-symbol svg{width:9px;height:9px}.thermal-pin .pin-symbol:after{left:21px;top:23px}.thermal-pin .pin-name{font-size:5px;padding:3px 4px}.thermal-pin .pin-target{font-size:5px;margin-left:3px}.room-controls{grid-row:auto;grid-column:auto}.climate-panel{padding:21px}.control-tabs button{font-size:10px;padding:10px}.climate-panel-heading h2{font-size:12px}.climate-panel-heading p{font-size:9px}.thermostat-controls{justify-content:center;gap:20px}.thermostat-ring{width:154px;height:154px}.thermostat-inner>span:first-child{font-size:6px}.thermostat-inner>span:last-child{font-size:6px}.climate-status{font-size:9px;margin-top:19px}.climate-readings>div>span{font-size:9px}.climate-readings strong{font-size:18px}.climate-modes button{font-size:9px;padding:11px 2px}.climate-independent{font-size:8px}.zones-caption{font-size:7px}.quick-header{min-height:26px}.quick-grid{grid-template-columns:1fr 1fr}.quick-card:last-child{grid-column:1/-1}.quick-card:last-child .access-value{height:46px}.quick-card:last-child .quick-header{font-size:10px}.quick-card:last-child .quick-foot{font-size:8px;min-height:15px}.quick-card:last-child .access-value>strong{font-size:20px}.quick-header{font-size:9px}}

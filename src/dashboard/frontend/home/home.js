@@ -51,7 +51,7 @@
     const ttlMs = explicit ? (observed !== null && expires !== null && expires > observed ? expires - observed : 0)
       : (Number.isFinite(data.stale_after_s) && data.stale_after_s > 0 ? data.stale_after_s : 6) * 1000;
     const sourceUnavailable = explicit && !['fresh', 'partial'].includes(observation.state);
-    const elapsed = () => Math.max(0, monotonic() - receivedMono);
+    const elapsed = () => Math.max(0, monotonic() - receivedMono, wallClock() - receivedWall);
     const age = timestamp => {
       const parsed = observationMillis(timestamp);
       return parsed === null ? null : Math.max(0, receivedWall - parsed) + elapsed();

@@ -77,7 +77,10 @@ function Topbar({ activeNav }) {
 }
 
 function App() {
-  const [active, setActive] = useState('live');
+  const [active, setActive] = useState(() => {
+    const requested = window.location.hash.slice(1);
+    return NAV.some(item => item.id === requested) ? requested : 'live';
+  });
   const tweaks = window.useTweaks ? window.useTweaks({
     accent: 'violet',
     density: 'balanced',
