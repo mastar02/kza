@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "profile_id": "home-2026-11-v1",
+  "task": "T011",
+  "status": "verified_local",
+  "verified_at_utc": "2026-11-02T05:47:33.154019+00:00",
+  "implementation_revision": "4f4cb7792fc359a2a617ca285f17a04176787596",
+  "implementation_commits": [
+    "1b1676ebeb20d37f5b456770b312d0b3b9c02cb6",
+    "4f4cb7792fc359a2a617ca285f17a04176787596"
+  ],
+  "source_verification": {
+    "command_base_revision": "4f4cb7792fc359a2a617ca285f17a04176787596",
+    "command_tracked_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "file_hashes": {
+      "src/core/task_outcome.py": "2fe8135b00fa67ff3a58f148292131fdb1bb199a51ee734b11fb24ba3a53b47e",
+      "src/dashboard/api.py": "0c92c08f7e9ccf4635364c8ad25bcf0495470f8f9bfcb36533edbcfc8fad3a88",
+      "src/dashboard/frontend/obs/src/live-privacy.js": "6dc95cac857359673aca4794e1f7e579b6cde7d0200e9a8bf3b818c6ca091f60",
+      "src/dashboard/live_retention.py": "e39ef7f605da6feec3afc177da1476ce03521ccf6746a7cff61dd7af0f08eff2",
+      "src/dashboard/observability.py": "f67602e266b7946558081efeb89953937c2bd767b80cb8f3bf83e0ab87b3285f",
+      "src/home_assistant/home_actions.py": "d34a6ad175116c3375995e053a6f50320e42a07a1ae4a2253cee2f1be963aeba",
+      "src/home_assistant/voice_actions.py": "8d9cf600f2387f1c9afb46aae40af52ebb6968c7dd65b7a83b492a0f0223f0bb",
+      "src/intercom/intercom_system.py": "6ef87426fbba9aed5f684f4c685ce6a64a17c7f8483c499c3551617d04373345",
+      "src/lists/ha_sync.py": "b462cea90c0d41531030909392f0ef704f643fc5c0be3fe89068ebfc07e0c8aa",
+      "src/lists/list_manager.py": "809dcbee834ced74c471602679bf30232840ce19d81a9360bdb3c73f80209cbf",
+      "src/lists/list_store.py": "5294075354c208ab5f3d3f94b76774d94127f42a1f39a856b2f68f839ecccc4b",
+      "src/notifications/smart_notifications.py": "2c883cd3d2631e48eb478511682aebd0cfe4c7c35132a7210c963d85ad378f7d",
+      "src/obs/metrics_emitter.py": "c74e255b244b42885bcbd6859b9b6dd6910652dc0832faa6b8d3052701f4a778",
+      "src/orchestrator/dispatcher.py": "9e8fa32e0f583120202ad675a2b79d56b26d1534f9eaca1824820a73c9f2e438",
+      "src/orchestrator/priority_queue.py": "0e739af8f26fb8e6e4072fc2c67bd82d7eb45892e3a28661873dfa37fb991037",
+      "src/pipeline/request_router.py": "d2ddf0dd99bb0c4a4b5f73237a29f2e0a61da1f843fe6b5e15c01aefd62550ed",
+      "src/pipeline/voice_pipeline.py": "4ad1353573536eb884712ff5b275fdd2f8ba191c4294cb423ee029be6874b035",
+      "src/reminders/reminder_manager.py": "d822ac9f03b07cbe84c1795cf821c4e6cf85436ef2ff9fb8b09cd180fe9bcf41",
+      "src/reminders/reminder_store.py": "abfb3d89c86bbbcbc4ef6451fb96df4113ee4de49b5b9349f7922d28c6a5476f",
+      "src/timers/named_timers.py": "2f769d3b690b30fe5e1a847285af3bb854df573569472d10958070f601a4032f",
+      "tests/frontend/test_live_privacy.cjs": "4b0534aa06e4ea2caedea37a6d0f9b106fa0c7aabde8cf9b0b6e76a3941f2024",
+      "tests/integration/test_diagnostic_metric_privacy.py": "4824eafcbcfedf69a0be40c97ddb4986d82038ec6bfa12ebfc986a07aad87f74",
+      "tests/integration/test_memory_services.py": "4015d7c9377f02c6a1904a9e00d35495018c60a9a8ce99e6114c9728227527c7",
+      "tests/integration/test_task_outcomes.py": "80d9c5c8bd862f2c3c0c441dfecc6028f3c30cb9c4f4873843da974ad38b2e27",
+      "tests/integration/test_voice_pipeline.py": "552af657367faece066f40354435a97abc949589b518d82872677c89f2a1ecda",
+      "tests/mocks/task_transport.py": "5df330f0f7e3c97a523858e294d638e8d88b4fe0e489934cb4af9d82cef290f3",
+      "tests/unit/core/test_task_outcome.py": "507bd367c0326012a30566bfa687cb18adea6a8ad17f186806e9f087be758060",
+      "tests/unit/lists/test_ha_sync.py": "563de03822433ea9c393da3e302e5357541bbebcb385155bcab53de5f12e9d14",
+      "tests/unit/lists/test_list_store.py": "199accb4d762752b46b031873714672902024c03277a850244044b777210be3e",
+      "tests/unit/orchestrator/test_dispatcher.py": "1665a422337b4cb7a6fee26bb4ad892dca493ba1ce06a619135ba4fdd3f7b3fb",
+      "tests/unit/orchestrator/test_dispatcher_domain_conflict.py": "b8500ae2a5ff0d9c8d7f439f7b590d43088dccaa4ad15837680c9db7d04b7cf7",
+      "tests/unit/orchestrator/test_dispatcher_speaker_auth.py": "a231d3d609f7b9b18d96fae5ad15c62e49705da4e18d863e734c292d71ab6fcf",
+      "tests/unit/pipeline/test_request_router.py": "001b35887dab3bffe045e1d9abc6bca645cf454cae344a23b26a0155298edcdb"
+    },
+    "matches_implementation_commit": true,
+    "scope": "Full pytest verified committed source; tracking metadata is recorded separately. No release or physical acceptance."
+  },
+  "results": {
+    "tests": 5882,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1,
+    "passed": 5881
+  },
+  "checks": [
+    {
+      "name": "actual factory task-outcome journeys",
+      "cases": 27,
+      "exit_code": 0
+    },
+    {
+      "name": "complete pytest tests/",
+      "command": "HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 ANONYMIZED_TELEMETRY=False nice -n 10 timeout 1500 data/project-assessment-20261102/venv/bin/python -m pytest tests --tb=short -q --junitxml=data/autonomous-roadmap-20261102/t011/full-final.xml",
+      "exit_code": 0
+    },
+    {
+      "name": "frontend privacy decoder",
+      "command": "node --test tests/frontend/test_live_privacy.cjs",
+      "cases": 13,
+      "exit_code": 0
+    },
+    {
+      "name": "Ruff 0.15.1 src/ tests/ tools/roadmap_status.py",
+      "exit_code": 0
+    },
+    {
+      "name": "independent contract, lifecycle and privacy review",
+      "blocking_findings_remaining": 0
+    }
+  ],
+  "proven_local": [
+    "Task completion, local persistence, dispatch, observed software/HA effect and required speech delivery remain separate through both routers.",
+    "Confirmed HA effects require accepted send, matching observation and ha_state scope; unconfirmed, rejected, uncertain and partial leaves remain explicit.",
+    "Cancelled pipeline waiters can rejoin the same internal ID without replay; concurrent different IDs remain distinct.",
+    "A committed list mutation survives PCM or optional HA replication failure and process rebuild; rejected replication is never accepted or retried.",
+    "Missing HTTP objects, stale deletion lookups, absent reminder targets, unsupported reminder creation, invalid timers and duplicate timer names cannot claim completion.",
+    "Queue admission, intercom acknowledgement and pending memory review do not claim task completion; authenticated memory confirmation remains required.",
+    "Disk, TCP and live projections retain only bounded status flags/codes, excluding receipt IDs, text and free-form error reasons."
+  ],
+  "initial_full_validation": {
+    "revision": "1b1676ebeb20d37f5b456770b312d0b3b9c02cb6",
+    "tests": 5882,
+    "failures": 5,
+    "errors": 0,
+    "skipped": 1,
+    "passed": 5876,
+    "resolved": "Added explicit pending-review memory receipt; replaced legacy test expectations that credited a boolean or failed PCM as completion.",
+    "log": "data/autonomous-roadmap-20261102/t011/full.log"
+  },
+  "known_xfail": {
+    "unchanged_from_baseline": true,
+    "count": 1,
+    "followup_task": "T037",
+    "criterion": "C05 remains not_evaluated; existing pure-ellipsis command limitation still needs reconciliation."
+  },
+  "limits": [
+    "C01-C21 acceptance statuses remain not_evaluated; no physical or human acceptance is credited.",
+    "HA receipts and current timers declare volatile persistence; durable receipts, restart semantics and authority reconciliation remain T030/T050/T051.",
+    "Optional HA todo replication has dispatch evidence only and does not prove the remote effect.",
+    "Legacy routes without producer evidence remain unknown; complete family journeys and temporal parsing remain P3.",
+    "HA state observation and synthetic PCM completion do not prove a physical device effect or audible delivery.",
+    "Synthetic inputs, model adapters and audio backend; real HA client uses loopback. No real household data, hardware, production changes or paid AI calls."
+  ],
+  "environment": {
+    "user": "yo",
+    "checkout": "/home/yo/projects/kza",
+    "python": "3.13.12",
+    "node": "22.22.1",
+    "scope": "local development, offline model paths"
+  },
+  "private_evidence_root": "data/autonomous-roadmap-20261102/t011",
+  "retained_attempts": [
+    {
+      "junit": "compatibility.xml",
+      "tests": 127,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 127
+    },
+    {
+      "junit": "expanded-tests.xml",
+      "tests": 462,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 461
+    },
+    {
+      "junit": "first-tests.xml",
+      "tests": 270,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 269
+    },
+    {
+      "junit": "full-final.xml",
+      "tests": 5882,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 5881
+    },
+    {
+      "junit": "full.xml",
+      "tests": 5882,
+      "failures": 5,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 5876
+    },
+    {
+      "junit": "outcomes-first.xml",
+      "tests": 34,
+      "failures": 5,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 29
+    },
+    {
+      "junit": "outcomes-fourth.xml",
+      "tests": 132,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 132
+    },
+    {
+      "junit": "outcomes-second.xml",
+      "tests": 37,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 37
+    },
+    {
+      "junit": "outcomes-third.xml",
+      "tests": 130,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 127
+    },
+    {
+      "junit": "router-first.xml",
+      "tests": 0,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 0
+    },
+    {
+      "junit": "router-second.xml",
+      "tests": 455,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 452
+    },
+    {
+      "junit": "targeted-final.xml",
+      "tests": 133,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 133
+    }
+  ]
+}

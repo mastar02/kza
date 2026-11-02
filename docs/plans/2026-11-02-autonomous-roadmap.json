@@ -896,10 +896,15 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": "Implement independent operation and speech receipts across HA, dispatcher, router and bounded telemetry; validate actual-graph failure journeys."
+      "status": "verified_local",
+      "implementation_commits": [
+        "1b1676ebeb20d37f5b456770b312d0b3b9c02cb6",
+        "4f4cb7792fc359a2a617ca285f17a04176787596"
+      ],
+      "evidence": [
+        "docs/research/2026-11-02-autonomous-t011-validation.json"
+      ],
+      "next_action": null
     },
     {
       "id": "T012",
@@ -915,10 +920,10 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
+      "status": "in_progress",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Implement shared observation/capability/expiry service for voice and Casa, owned refresh/close, and explicit observability provenance; retain T040/T046 presentation and renewal obligations."
     },
     {
       "id": "T013",
@@ -2098,8 +2103,8 @@
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
     "field_authorized": false,
-    "next_task": "T011",
+    "next_task": "T012",
     "last_verified_phase": "P0",
-    "last_verified_task": "T010"
+    "last_verified_task": "T011"
   }
 }
