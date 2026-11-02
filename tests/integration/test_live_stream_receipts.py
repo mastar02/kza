@@ -9,15 +9,47 @@ import pytest
 
 from src.dashboard.live_erasure import build_live_services
 from src.dashboard.live_event_bus import LiveEvent, LiveEventType
+from src.core.reader_binding import ReaderBinding
 from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.fact_ledger import MemoryReviewer
 from src.memory.privacy_services import PrivacyServices
 from tests.integration.test_capture_producer_privacy import until
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
+from tests.mocks.browser_authority import bind_browser_authority, make_browser_authority
 
 pytestmark=pytest.mark.asyncio
 ACTOR=MemoryReviewer('synthetic-admin')
+
+
+async def test_idle_reader_without_redundant_guard_closes_without_acknowledging_tickets(tmp_path):
+    from tests.mocks.rest_browser import ready_browser
+    active = [True]
+    reader = ReaderBinding('e'*64,lambda:active[0])
+    async with graph(tmp_path) as (_,_,bus,store,clock):
+        async with ready_browser(bus,reader=reader) as peer:
+            source = memory_source(now=clock.now)
+            ticket = await store.issue(peer.connection,str(uuid4()),source.expires_at,(source,),reader=reader)
+            assert ticket is not None
+            active[0] = False
+            await until(lambda:bus.subscriber_count==0)
+            assert await store.pending(source.conversation_id)==1
+
+
+async def test_an_admitted_subscriber_cannot_change_original_login_before_hello(tmp_path):
+    first = ReaderBinding('c'*64,lambda:True)
+    other = ReaderBinding('d'*64,lambda:True)
+    async with graph(tmp_path) as (_,_,bus,_,_):
+        subscription,_ = await bus.subscribe(reader=first)
+        incoming = asyncio.Queue()
+        async def send(frame):
+            raise AssertionError('mismatched reader published a frame')
+        try:
+            with pytest.raises(PermissionError,match='live_reader_mismatch'):
+                await bus.browser_stream(subscription,send,receiver=incoming.get,reader=other)
+            assert bus._retention._states[subscription].reader is first
+        finally:
+            await bus.unsubscribe(subscription)
 
 
 @asynccontextmanager
@@ -29,7 +61,9 @@ async def graph(tmp_path,timeout=1):
         await privacy.acall(privacy.initialize)
         owner=ErasureCoordinator(privacy,close_timeout_s=timeout)
         stack.push_async_callback(owner.aclose)
+        authority = await make_browser_authority(stack, tmp_path/'browser-auth.db')
         bus=await build_live_services({'dashboard':{'live_event_queue_size':2}},privacy=privacy,owner=owner,shutdown=stack)
+        bind_browser_authority(bus, authority)
         yield privacy,owner,bus,bus._retention.receipts,clock
 
 
@@ -41,7 +75,7 @@ async def browser(bus,client=None,gate=None,handshake=True):
         await outgoing.put(frame)
         if gate is not None and frame['type']=='turn':
             await gate.wait()
-    observing=asyncio.create_task(bus.browser_stream(sub,send,receiver=incoming.get))
+    observing=asyncio.create_task(bus.browser_stream(sub,send,receiver=incoming.get, reader=bus.test_reader))
     async def message(doc):
         await incoming.put({'type':'websocket.receive','text':json.dumps(doc)})
     client=client or str(uuid4())
@@ -194,7 +228,7 @@ async def test_idle_page_cannot_hold_handshake_slot_after_its_fixed_deadline(tmp
         frames=[]
         async def send(frame):
             frames.append(frame)
-        task=asyncio.create_task(bus.browser_stream(sub,send,receiver=incoming.get))
+        task=asyncio.create_task(bus.browser_stream(sub,send,receiver=incoming.get, reader=bus.test_reader))
         await until(lambda:bus._retention._states[sub].browser is not None)
         bus._retention._states[sub].browser._deadline-=10
         bus._retention.prune()
@@ -254,7 +288,7 @@ async def test_restored_ticket_reopens_previously_completed_local_step(tmp_path)
     async with graph(tmp_path) as (privacy,owner,bus,store,clock):
         def restore():
             with privacy.ledger._transaction() as db:
-                db.execute('INSERT INTO live_deliveries VALUES (?,?,?,?,?,?,?,?)',tuple(ticket.values()))
+                db.execute('INSERT INTO live_deliveries VALUES (?,?,?,?,?,?,?,?,?)',tuple(ticket.values()))
                 db.execute('INSERT INTO live_delivery_sources VALUES (?,?)',(ticket['ticket'],source.conversation_id))
         await privacy.acall(restore)
         assert (await local_step(privacy,operation))['state']=='pending'
@@ -273,7 +307,7 @@ async def test_disconnect_during_native_ticket_issue_never_starts_late_private_s
         incoming,outgoing=asyncio.Queue(),asyncio.Queue()
         async def send(frame):
             await outgoing.put(frame)
-        observing=asyncio.create_task(bus.browser_stream(sub,send,receiver=incoming.get))
+        observing=asyncio.create_task(bus.browser_stream(sub,send,receiver=incoming.get, reader=bus.test_reader))
         async def message(doc):
             await incoming.put({'type':'websocket.receive','text':json.dumps(doc)})
         await message({'type':'live_hello','version':1,'client_id':str(uuid4())})

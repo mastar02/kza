@@ -11,12 +11,21 @@ from uuid import UUID, uuid4
 from weakref import WeakKeyDictionary, ref
 
 from src.core.owned_work import OwnedBlockingWork
+from src.core.reader_binding import ReaderBinding
+
+_CONNECTION_SCHEMA = '''CREATE TABLE IF NOT EXISTS live_connections (
+ connection_id TEXT PRIMARY KEY, client_id TEXT NOT NULL, runtime_id TEXT NOT NULL,
+ owner_namespace TEXT NOT NULL, UNIQUE(owner_namespace,client_id))'''
+_RESET_SCHEMA = '''CREATE TABLE IF NOT EXISTS live_resets (
+ id TEXT PRIMARY KEY, client_id TEXT NOT NULL, connection_id TEXT NOT NULL UNIQUE,
+ nonce TEXT NOT NULL, cutoff INTEGER NOT NULL, owner_namespace TEXT NOT NULL)'''
 
 LIVE_RECEIPT_SCHEMA = '''
 CREATE TABLE IF NOT EXISTS live_deliveries (
  seq INTEGER PRIMARY KEY AUTOINCREMENT, ticket TEXT NOT NULL UNIQUE,
  client_id TEXT NOT NULL, connection_id TEXT NOT NULL, event_id TEXT NOT NULL,
- nonce TEXT NOT NULL, issued_at REAL NOT NULL, expires_at REAL NOT NULL
+ nonce TEXT NOT NULL, issued_at REAL NOT NULL, expires_at REAL NOT NULL,
+ owner_namespace TEXT NOT NULL DEFAULT 'legacy-unbound'
 );
 CREATE INDEX IF NOT EXISTS live_delivery_client ON live_deliveries(client_id,seq);
 CREATE TABLE IF NOT EXISTS live_delivery_sources (
@@ -28,14 +37,7 @@ CREATE TABLE IF NOT EXISTS live_delivery_lineage (
  ticket TEXT PRIMARY KEY REFERENCES live_deliveries(ticket) ON DELETE CASCADE,
  version INTEGER NOT NULL, source_digest TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS live_connections (
- connection_id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, runtime_id TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS live_resets (
- id TEXT PRIMARY KEY, client_id TEXT NOT NULL, connection_id TEXT NOT NULL UNIQUE,
- nonce TEXT NOT NULL, cutoff INTEGER NOT NULL
-);
-'''
+''' + _CONNECTION_SCHEMA + ';' + _RESET_SCHEMA + ';'
 _OWNERS = WeakKeyDictionary()
 
 
@@ -99,33 +101,56 @@ class LiveReceiptStore:
 
     def _recover(self, db):
         if not self._initialized:
-            # The sole leased runtime has recovered. Retain every unacked ticket;
-            # a disconnected or restored page is never inferred to be cleared.
-            db.execute('DELETE FROM live_connections')
-            db.execute('DELETE FROM live_resets')
+            # Legacy tickets remain unclaimable obligations. Connections and reset
+            # challenges are runtime leases, so only those ephemeral tables reset.
+            columns = {row[1] for row in db.execute('PRAGMA table_info(live_deliveries)')}
+            if 'owner_namespace' not in columns:
+                db.execute("ALTER TABLE live_deliveries ADD COLUMN owner_namespace TEXT NOT NULL DEFAULT 'legacy-unbound'")
+            for table, schema in (('live_connections', _CONNECTION_SCHEMA), ('live_resets', _RESET_SCHEMA)):
+                columns = {row[1] for row in db.execute('PRAGMA table_info(' + table + ')')}
+                if 'owner_namespace' not in columns:
+                    db.execute('DROP TABLE ' + table)
+                    db.execute(schema)
+                else:
+                    db.execute('DELETE FROM ' + table)
 
-    def _invoke(self, function, args):
-        # Recovery and its published initialized flag share the authority lock.
-        # Another worker must not recover over a hello that just committed.
+    def _invoke(self, function, args, reader, release):
+        # The guard runs after both native locks and again immediately before commit.
         with self.ledger._lock:
             try:
-                with self.ledger._transaction() as db:
+                if reader is not None and not release:
+                    reader.require_current()
+                with self.ledger._transaction(guard=reader.require_current if reader is not None and not release else None) as db:
+                    if reader is not None and not release:
+                        reader.require_current()
                     self._recover(db)
-                    result = function(db, *args)
+                    result = function(db, *(() if reader is None else (reader.namespace,)), *args)
+                    if reader is not None and not release:
+                        reader.require_current()
                 self._initialized = True
                 if self._departed:
-                    present = {row[0] for row in self.ledger._db.execute('SELECT connection_id FROM live_connections')}
+                    present = {(row[0], row[1]) for row in self.ledger._db.execute(
+                        'SELECT owner_namespace,connection_id FROM live_connections')}
                     self._departed.intersection_update(present)
                 return result
             except (Exception, asyncio.CancelledError):
                 return ReceiptFailure.FAILED
+            finally:
+                function = args = reader = None
 
-    async def _call(self, function, *args):
+    async def _call(self, function, *args, reader: ReaderBinding | None = None, release: bool = False):
+        if reader is None and function != self._pending:
+            raise ValueError('live_reader_required')
+        if reader is not None:
+            if type(reader) is not ReaderBinding:
+                raise ValueError('invalid_live_reader')
+            if not release:
+                reader.require_current()
         if self._closed or len(self._tasks) >= 64:
             raise RuntimeError('live_receipt_unavailable')
         async def execute():
             async with self._slots:
-                result = await self._disk.run(self._invoke, function, args)
+                result = await self._disk.run(self._invoke, function, args, reader, release)
                 if isinstance(result, ReceiptFailure):
                     raise RuntimeError(result.value)
                 return result
@@ -138,57 +163,57 @@ class LiveReceiptStore:
         task.add_done_callback(finished, context=Context())
         return await asyncio.shield(task)
 
-    def _connection(self, db, connection):
+    def _connection(self, db, namespace, connection):
         connection = canonical_id(connection)
-        row = db.execute('SELECT client_id FROM live_connections WHERE connection_id=? AND runtime_id=?',
-            (connection,self.runtime_id)).fetchone()
+        row = db.execute('SELECT client_id FROM live_connections WHERE connection_id=? AND runtime_id=? AND owner_namespace=?',
+            (connection,self.runtime_id,namespace)).fetchone()
         if row is None:
             raise ValueError('unknown_live_connection')
         return row[0]
 
-    def _hello(self, db, client, connection):
+    def _hello(self, db, namespace, client, connection):
         client, connection = canonical_id(client), canonical_id(connection)
-        existing = db.execute('SELECT connection_id FROM live_connections WHERE client_id=?',(client,)).fetchone()
+        existing = db.execute('SELECT connection_id FROM live_connections WHERE owner_namespace=? AND client_id=?',(namespace,client)).fetchone()
         if existing is not None:
-            if existing[0] not in self._departed:
+            if (namespace,existing[0]) not in self._departed:
                 raise ValueError('live_client_already_connected')
             db.execute('DELETE FROM live_resets WHERE connection_id=?',(existing[0],))
             db.execute('DELETE FROM live_connections WHERE connection_id=?',(existing[0],))
         if db.execute('SELECT COUNT(*) FROM live_connections').fetchone()[0]>=self.capacity:
             raise ValueError('live_connection_capacity')
-        db.execute('INSERT INTO live_connections VALUES (?,?,?)',(connection,client,self.runtime_id))
-        return self._reset(db,connection)
+        db.execute('INSERT INTO live_connections VALUES (?,?,?,?)',(connection,client,self.runtime_id,namespace))
+        return self._reset(db,namespace,connection)
 
-    async def hello(self, client: str, connection: str) -> LiveReset:
+    async def hello(self, client: str, connection: str, *, reader: ReaderBinding) -> LiveReset:
         """Bind one page instance and request a clear before any private bytes."""
-        return await self._call(self._hello,client,connection)
+        return await self._call(self._hello,client,connection,reader=reader)
 
-    def _reset(self, db, connection):
-        client = self._connection(db,connection)
-        cutoff = db.execute('SELECT COALESCE(MAX(seq),0) FROM live_deliveries WHERE client_id=?',(client,)).fetchone()[0]
+    def _reset(self, db, namespace, connection):
+        client = self._connection(db,namespace,connection)
+        cutoff = db.execute('SELECT COALESCE(MAX(seq),0) FROM live_deliveries WHERE owner_namespace=? AND client_id=?',(namespace,client)).fetchone()[0]
         challenge = LiveReset(str(uuid4()),str(uuid4()))
         db.execute('DELETE FROM live_resets WHERE connection_id=?',(connection,))
-        db.execute('INSERT INTO live_resets VALUES (?,?,?,?,?)',(challenge.id,client,connection,challenge.nonce,cutoff))
+        db.execute('INSERT INTO live_resets VALUES (?,?,?,?,?,?)',(challenge.id,client,connection,challenge.nonce,cutoff,namespace))
         return challenge
 
-    async def reset(self, connection: str) -> LiveReset:
+    async def reset(self, connection: str, *, reader: ReaderBinding) -> LiveReset:
         """Freeze a cutoff; tickets issued later are never covered by its ACK."""
-        return await self._call(self._reset,connection)
+        return await self._call(self._reset,connection,reader=reader)
 
-    def _reset_ack(self, db, connection, identity, nonce):
-        client = self._connection(db,connection)
+    def _reset_ack(self, db, namespace, connection, identity, nonce):
+        client = self._connection(db,namespace,connection)
         identity, nonce = canonical_id(identity), canonical_id(nonce)
-        row = db.execute('SELECT cutoff FROM live_resets WHERE id=? AND nonce=? AND connection_id=? AND client_id=?',
-            (identity,nonce,connection,client)).fetchone()
+        row = db.execute('SELECT cutoff FROM live_resets WHERE id=? AND nonce=? AND connection_id=? AND client_id=? AND owner_namespace=?',
+            (identity,nonce,connection,client,namespace)).fetchone()
         if row is None:
             return False
-        db.execute('DELETE FROM live_deliveries WHERE client_id=? AND seq<=?',(client,row[0]))
-        db.execute('DELETE FROM live_resets WHERE id=?',(identity,))
+        db.execute('DELETE FROM live_deliveries WHERE owner_namespace=? AND client_id=? AND seq<=?',(namespace,client,row[0]))
+        db.execute('DELETE FROM live_resets WHERE id=? AND owner_namespace=?',(identity,namespace))
         return True
 
-    async def reset_ack(self, connection: str, identity: str, nonce: str) -> bool:
+    async def reset_ack(self, connection: str, identity: str, nonce: str, *, reader: ReaderBinding) -> bool:
         """Persist a page clear only for its exact authenticated connection."""
-        return await self._call(self._reset_ack,connection,identity,nonce)
+        return await self._call(self._reset_ack,connection,identity,nonce,reader=reader)
 
     def _profile_sources(self, db, profiles):
         if type(profiles) is not tuple or not 1<=len(profiles)<=50:
@@ -222,8 +247,8 @@ class LiveReceiptStore:
             raise ValueError('live_conversation_lineage_capacity')
         return conversations
 
-    def _issue(self, db, connection, event_id, expires_at, sources, profiles=(), associated=(), activity_sources=()):
-        client = self._connection(db,connection)
+    def _issue(self, db, namespace, connection, event_id, expires_at, sources, profiles=(), associated=(), activity_sources=()):
+        client = self._connection(db,namespace,connection)
         event_id = canonical_id(event_id)
         from src.memory.fact_ledger import MemorySource, FactDependency
         if (type(sources) is not tuple or not sources or len(sources)>256
@@ -253,58 +278,61 @@ class LiveReceiptStore:
             return None
         conversations = self._lineage(db,all_sources)
         total = db.execute('SELECT COUNT(*) FROM live_deliveries').fetchone()[0]
-        count = db.execute('SELECT COUNT(*) FROM live_deliveries WHERE client_id=?',(client,)).fetchone()[0]
+        count = db.execute('SELECT COUNT(*) FROM live_deliveries WHERE owner_namespace=? AND client_id=?',(namespace,client)).fetchone()[0]
         if total>=self.capacity or count>=self.client_capacity:
             return None
         ticket = LiveTicket(str(uuid4()),str(uuid4()))
-        db.execute('INSERT INTO live_deliveries(ticket,client_id,connection_id,event_id,nonce,issued_at,expires_at) VALUES (?,?,?,?,?,?,?)',
-            (ticket.ticket,client,connection,event_id,ticket.nonce,self.ledger.clock(),expires_at))
+        db.execute('INSERT INTO live_deliveries(ticket,client_id,connection_id,event_id,nonce,issued_at,expires_at,owner_namespace) VALUES (?,?,?,?,?,?,?,?)',
+            (ticket.ticket,client,connection,event_id,ticket.nonce,self.ledger.clock(),expires_at,namespace))
         db.executemany('INSERT OR IGNORE INTO live_delivery_sources VALUES (?,?)',
             [(ticket.ticket,conversation) for conversation in conversations])
         digest = hashlib.sha256(json.dumps(sorted(conversations)).encode()).hexdigest()
         db.execute('INSERT INTO live_delivery_lineage VALUES (?,1,?)',(ticket.ticket,digest))
         return ticket
 
-    async def issue(self, connection: str, event_id: str, expires_at: float, sources: tuple) -> LiveTicket | None:
+    async def issue(self, connection: str, event_id: str, expires_at: float, sources: tuple, *, reader: ReaderBinding) -> LiveTicket | None:
         """Commit a content-free ticket before handing bytes to the transport."""
-        return await self._call(self._issue,connection,event_id,expires_at,sources)
+        return await self._call(self._issue,connection,event_id,expires_at,sources,reader=reader)
 
-    async def issue_profiles(self, connection: str, event_id: str, expires_at: float, sources: tuple, profiles: tuple) -> LiveTicket | None:
+    async def issue_profiles(self, connection: str, event_id: str, expires_at: float, sources: tuple, profiles: tuple, *, reader: ReaderBinding) -> LiveTicket | None:
         """Only exact confirmed profile revisions may authorize metadata past raw TTL."""
         if not profiles:
             return None
-        return await self._call(self._issue,connection,event_id,expires_at,sources,profiles)
+        return await self._call(self._issue,connection,event_id,expires_at,sources,profiles,reader=reader)
 
     async def issue_associations(self, connection: str, event_id: str, expires_at: float,
-            sources: tuple, profiles: tuple, activity_sources: tuple) -> LiveTicket | None:
+            sources: tuple, profiles: tuple, activity_sources: tuple, *, reader: ReaderBinding) -> LiveTicket | None:
         """Keep suggestion parents without extending the candidate's raw lifetime."""
         if not profiles:
             return None
-        return await self._call(self._issue,connection,event_id,expires_at,sources,(),profiles,activity_sources)
+        return await self._call(self._issue,connection,event_id,expires_at,sources,(),profiles,activity_sources,reader=reader)
 
-    def _ack(self, db, connection, receipts):
-        client = self._connection(db,connection)
+    def _ack(self, db, namespace, connection, receipts):
+        client = self._connection(db,namespace,connection)
         if type(receipts) is not tuple or not 1<=len(receipts)<=16:
             raise ValueError('invalid_live_ack')
         for ticket,nonce in receipts:
             canonical_id(ticket)
             canonical_id(nonce)
-            db.execute('DELETE FROM live_deliveries WHERE ticket=? AND nonce=? AND client_id=? AND connection_id=?',
-                (ticket,nonce,client,connection))
+            db.execute('DELETE FROM live_deliveries WHERE ticket=? AND nonce=? AND client_id=? AND connection_id=? AND owner_namespace=?',
+                (ticket,nonce,client,connection,namespace))
 
-    async def ack(self, connection: str, receipts: tuple[tuple[str,str],...]) -> None:
+    async def ack(self, connection: str, receipts: tuple[tuple[str,str],...], *, reader: ReaderBinding) -> None:
         """Retire only matching capabilities; unknown or duplicate ACKs are inert."""
-        await self._call(self._ack,connection,receipts)
+        await self._call(self._ack,connection,receipts,reader=reader)
 
-    def _disconnect(self, db, connection):
+    def _disconnect(self, db, namespace, connection):
         canonical_id(connection)
-        self._departed.add(connection)
+        if db.execute('SELECT 1 FROM live_connections WHERE connection_id=? AND runtime_id=? AND owner_namespace=?',
+                (connection,self.runtime_id,namespace)).fetchone() is None:
+            return
+        self._departed.add((namespace,connection))
         db.execute('DELETE FROM live_resets WHERE connection_id=?',(connection,))
-        db.execute('DELETE FROM live_connections WHERE connection_id=? AND runtime_id=?',(connection,self.runtime_id))
+        db.execute('DELETE FROM live_connections WHERE connection_id=? AND runtime_id=? AND owner_namespace=?',(connection,self.runtime_id,namespace))
 
-    async def disconnect(self, connection: str) -> None:
+    async def disconnect(self, connection: str, *, reader: ReaderBinding) -> None:
         """Release the connection lease, preserving all unacknowledged tickets."""
-        await self._call(self._disconnect,connection)
+        await self._call(self._disconnect,connection,reader=reader,release=True)
 
     def _pending(self, db, conversation):
         canonical_id(conversation)

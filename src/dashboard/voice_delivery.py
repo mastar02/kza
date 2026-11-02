@@ -13,10 +13,11 @@ from src.users.voice_projection import VoiceProjection
 class VoiceResponse(Response):
     """Read only within the actual retained outer HTTP scope and page connection."""
 
-    def __init__(self, owner, voices, connection, kind, cursor, actor):
+    def __init__(self, owner, voices, connection, kind, cursor, actor, *, reader):
         super().__init__(content=b'')
         self.owner,self.voices,self.connection = owner,voices,connection
         self.kind,self.cursor,self.actor = kind,cursor,actor
+        self.reader = reader
 
     async def __call__(self, scope, receive, send):
         """An observer cannot retire a native read or actual body callback early."""
@@ -28,13 +29,15 @@ class VoiceResponse(Response):
             await self._deliver(operation,send)
         finally:
             self.owner = self.voices = self.connection = self.kind = self.cursor = self.actor = None
+            self.reader = None
 
     async def _deliver(self, operation, send):
         projection = state = ticket = body = snapshot = None
         started = False
         try:
-            state = self.owner.connection(self.connection,minimum_protocol=3)
+            state = self.owner.connection(self.connection,reader=self.reader,minimum_protocol=3)
             operation.connection = self.connection
+            operation.reader = self.reader
             credential = self.actor._current
             operation.guard = lambda:credential is None or credential() is True
             if (state is None or self.voices.privacy.ledger is not self.owner.retention.policy
@@ -42,7 +45,10 @@ class VoiceResponse(Response):
                 started = True
                 await self.owner._error(send,428)
                 return RestResult.FAILED
+            operation.private_envelope = True
             projection = await self.voices.acall(self.voices.ledger.project,self.kind,self.cursor,self.actor)
+            if self.owner.connection(self.connection,reader=self.reader,minimum_protocol=3) is not state:
+                raise PermissionError('dashboard_reader_retired')
             if (type(projection) is not VoiceProjection or projection.channel!='voices:'+self.kind
                     or type(projection.rows) is not list or len(projection.rows)>(1 if self.kind=='review' else 50)
                     or bool(projection.profile_refs)!=(self.kind=='profiles' and bool(projection.rows))):
@@ -80,7 +86,7 @@ class VoiceResponse(Response):
                     await self.owner._error(send,503)
                     return RestResult.FAILED
                 state.snapshots[operation.event_id] = operation.metadata()
-            if self.owner.connection(self.connection,minimum_protocol=3) is not state or operation.guard() is not True:
+            if self.owner.connection(self.connection,reader=self.reader,minimum_protocol=3) is not state or operation.guard() is not True:
                 started = True
                 await self.owner._error(send,403)
                 return RestResult.FAILED
@@ -88,7 +94,7 @@ class VoiceResponse(Response):
             await send({'type':'http.response.start','status':200,'headers':[
                 (b'content-type',b'application/json'),(b'cache-control',b'no-store'),(b'x-kza-source',b'real')]})
             available = (not self.owner.retention._closed and operation.guard() is True
-                and self.owner.connection(self.connection,minimum_protocol=3) is state
+                and self.owner.connection(self.connection,reader=self.reader,minimum_protocol=3) is state
                 and (not operation.sources or operation.metadata().available(self.owner.retention.policy,self.owner.retention.clock())))
             if ticket is not None and available:
                 snapshot = {'event_id':operation.event_id,'expires_at':operation.expires_at,'observed_at':projection.observed_at,
@@ -97,7 +103,7 @@ class VoiceResponse(Response):
                 state.snapshot_retired.add(operation.event_id)
                 state.wake.set()
             body = json.dumps({'connection_id':self.connection,'snapshot':snapshot,'channel':operation.channel,
-                'next_cursor':projection.next_cursor},ensure_ascii=False,
+                'next_cursor':projection.next_cursor if available else None},ensure_ascii=False,
                 allow_nan=False,separators=(',',':')).encode()
             snapshot = None
             operation.rows = None

@@ -24,6 +24,7 @@ from uuid import uuid4
 
 from src.core.owned_work import OwnedBlockingWork
 from src.core.account_metadata import ActiveAccounts
+from src.core.reader_binding import ReaderBinding
 
 
 class DashboardRole(StrEnum):
@@ -180,6 +181,16 @@ class DashboardLease:
         """Recheck the original authority; never resolve a replacement actor."""
         return permissions <= self.principal.permissions and self._check() is True
 
+    def reader_binding(self, permissions: frozenset[str] = frozenset()) -> ReaderBinding | None:
+        """Bind transport ownership to this server identity and grant revision."""
+        if type(permissions) is not frozenset:
+            raise ValueError('invalid_reader_permissions')
+        if type(self._authority) is not DashboardAuthority or not self.current(permissions):
+            return None
+        namespace = _hash(json.dumps(('kza-reader-v1', self._authority._reader_realm, self.binding,
+                                      self.principal.revision), separators=(',', ':')))
+        return ReaderBinding(namespace, lambda: self.current(permissions))
+
 
     def remaining_ttl(self) -> int:
         """Round the cookie hint; server expiration retains its exact deadline."""
@@ -279,6 +290,7 @@ class DashboardAuthority:
         if not 1 <= session_ttl_s <= DEFAULT_SESSION_TTL_S:
             raise ValueError("invalid_dashboard_session_ttl")
         self.path = Path(db_path)
+        self._reader_realm = os.path.abspath(os.fspath(self.path))
         self.session_ttl_s = session_ttl_s
         self._clock = clock
         self._expected = expected_token

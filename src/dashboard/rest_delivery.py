@@ -18,6 +18,7 @@ from starlette.types import ASGIApp,Receive,Scope,Send
 
 from src.analytics.event_logger import EventLogger
 from src.core.observation import Observation, ObservationReason, ObservationSource
+from src.core.reader_binding import ReaderBinding
 from src.dashboard.observation_http import observation_headers
 from src.dashboard.conversation_projection import ConversationProjection
 from src.dashboard.live_retention_types import RevisionSet,RevisionStamp,SnapshotMetadata
@@ -42,6 +43,8 @@ class RestOperation:
     expires_at: float = 0
     connection: str | None = None
     guard: object | None = field(default=None,repr=False)
+    reader: ReaderBinding | None = field(default=None,repr=False)
+    private_envelope: bool = False
     channel: str = 'conversations'
     profile_refs: tuple = ()
     revision: RevisionStamp | RevisionSet | None = None
@@ -113,21 +116,23 @@ class ConversationResponse(Response):
     """Start private I/O only inside the retained ASGI operation."""
 
     def __init__(self, owner: RestDeliveryOwner, connection: str, events: EventLogger,
-            filters: dict[str,str | None], guard: Callable[[],bool]) -> None:
+            filters: dict[str,str | None], guard: Callable[[],bool], *, reader: ReaderBinding) -> None:
         super().__init__(content=b'')
         self.owner, self.connection, self.events = owner,connection,events
         self.filters, self.guard = filters,guard
+        self.reader = reader
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Observer cancellation never cancels the actual response task."""
         try:
             operation = scope.get('kza.rest_operation')
             if isinstance(operation,RestOperation):
-                await self.owner._deliver(operation,self.connection,self.events,self.filters,self.guard,send)
+                await self.owner._deliver(operation,self.connection,self.events,self.filters,self.guard,send,reader=self.reader)
             else:
-                await self.owner.run(self.connection,self.events,self.filters,self.guard,send)
+                await self.owner.run(self.connection,self.events,self.filters,self.guard,send,reader=self.reader)
         finally:
             self.owner = self.connection = self.events = self.filters = self.guard = None
+            self.reader = None
 
 
 class RestDeliveryOwner:
@@ -158,6 +163,11 @@ class RestDeliveryOwner:
         scope['kza.rest_operation'] = operation
         async def transmit(message):
             try:
+                if (message.get('type')=='http.response.body' and message.get('body') and operation.private_envelope
+                        and (self.connection(operation.connection,reader=operation.reader) is None
+                            or operation.guard is None or operation.guard() is not True
+                            or operation.sources and not operation.metadata().available(self.retention.policy,self.retention.clock()))):
+                    message = {'type':'http.response.body','body':b'{"snapshot":null}'}
                 await send(message)
                 return RestResult.COMPLETE
             except (Exception,asyncio.CancelledError):
@@ -167,10 +177,10 @@ class RestDeliveryOwner:
         async def owned_send(message):
             if len(transmissions)>=2:
                 raise RuntimeError('rest_transport_capacity')
-            if (message.get('type')=='http.response.body' and message.get('body') and operation.sources
-                    and (self.connection(operation.connection) is None
+            if (message.get('type')=='http.response.body' and message.get('body') and operation.private_envelope
+                    and (self.connection(operation.connection,reader=operation.reader) is None
                         or operation.guard is None or operation.guard() is not True
-                        or not operation.metadata().available(self.retention.policy,self.retention.clock()))):
+                        or operation.sources and not operation.metadata().available(self.retention.policy,self.retention.clock()))):
                 message = {'type':'http.response.body','body':b'{"snapshot":null}'}
             task = asyncio.create_task(transmit(message),context=Context())
             message = None
@@ -193,13 +203,19 @@ class RestDeliveryOwner:
             scope.pop('kza.rest_operation',None)
             operation.rows = None
             operation.guard = None
+            operation.reader = None
             app = scope = receive = send = None
 
-    def connection(self, identity: str | None, *, minimum_protocol: int = 2) -> LiveSubscriber | None:
+    def connection(self, identity: str | None, *, reader: ReaderBinding | None, minimum_protocol: int = 2) -> LiveSubscriber | None:
+        """A transport UUID never selects a different original authorization."""
+        if self.retention._closed or type(reader) is not ReaderBinding or not reader.current():
+            return None
         for state in self.retention._states.values():
             browser = state.browser
             if (not state.closed and browser is not None and browser.ready and browser.protocol>=minimum_protocol
-                    and browser.connection == identity and (state.guard is None or state.guard() is True)):
+                    and browser.connection == identity and type(state.reader) is ReaderBinding
+                    and state.reader.namespace == reader.namespace and state.reader.current()
+                    and (state.guard is None or state.guard() is True)):
                 return state
         return None
 
@@ -209,13 +225,13 @@ class RestDeliveryOwner:
             for source in (*operation.sources,*operation.activity_sources)) for operation in (*self._tasks.values(),*self._scopes.values()))
 
     async def run(self, connection: str, events: EventLogger, filters: dict[str,str | None],
-            guard: Callable[[],bool], send: Send) -> None:
+            guard: Callable[[],bool], send: Send, *, reader: ReaderBinding) -> None:
         """Keep a bounded context-free task through native work and ASGI sends."""
         if self.retention._closed or len(self._tasks) >= 8:
             await self._error(send,503)
             return
-        operation = RestOperation()
-        task = asyncio.create_task(self._deliver(operation,connection,events,filters,guard,send),context=Context())
+        operation = RestOperation(reader=reader)
+        task = asyncio.create_task(self._deliver(operation,connection,events,filters,guard,send,reader=reader),context=Context())
         self._tasks[task] = operation
         def finished(done):
             self._tasks.pop(done,None)
@@ -230,19 +246,23 @@ class RestDeliveryOwner:
             (b'content-type',b'application/json'),(b'cache-control',b'no-store')]})
         await send({'type':'http.response.body','body':b'{"detail":"conversation_delivery_unavailable"}'})
 
-    async def _deliver(self, operation, connection, events, filters, guard, send):
+    async def _deliver(self, operation, connection, events, filters, guard, send, *, reader):
         raw = body = document = ticket = state = None
         started = False
         try:
-            state = self.connection(connection)
+            state = self.connection(connection,reader=reader)
             operation.connection = connection
+            operation.reader = reader
             operation.guard = guard
             if (state is None or events.source_policy is not self.retention.policy
                     or guard() is not True or self.retention._closed):
                 started = True
                 await self._error(send,428)
                 return RestResult.FAILED
+            operation.private_envelope = True
             raw = await events.acall(events.get_events,limit=150)
+            if self.connection(connection,reader=reader) is not state or guard() is not True:
+                raise PermissionError('dashboard_reader_retired')
             operation.rows = []
             sources = set()
             observed = self.retention.clock()
@@ -272,7 +292,7 @@ class RestDeliveryOwner:
                     await self._error(send,503)
                     return RestResult.FAILED
                 state.snapshots[operation.event_id] = operation.metadata()
-            if self.retention._closed or self.connection(connection) is not state or guard() is not True:
+            if self.retention._closed or self.connection(connection,reader=reader) is not state or guard() is not True:
                 started = True
                 await self._error(send,428)
                 return RestResult.FAILED
@@ -292,7 +312,7 @@ class RestDeliveryOwner:
                 *((key.lower().encode('ascii'),value.encode('ascii')) for key,value in metadata.items())]})
             # Headers may themselves suspend. Recheck immediately before serializing
             # and handing private bytes to the actual body callback.
-            available = (self.connection(connection) is state and guard() is True and not self.retention._closed
+            available = (self.connection(connection,reader=reader) is state and guard() is True and not self.retention._closed
                 and (not operation.sources or self.retention.policy.sources_available(operation.sources)))
             snapshot = None
             if ticket is not None and available:

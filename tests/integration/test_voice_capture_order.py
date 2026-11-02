@@ -28,7 +28,7 @@ async def test_capture_api_is_newest_first_across_pages_and_does_not_repeat_afte
     async with web_graph(tmp_path) as (_, _, voices, clock, bus):
         expected = await seed(voices, clock, 115)
         async with ready_browser(bus, version=3) as peer:
-            app = DashboardAPI(voice_registry=voices, event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices, event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver',
                     headers={**dashboard_auth, 'X-KZA-Live-Connection': peer.connection}) as client:
                 pages, received, cursor = [], [], None

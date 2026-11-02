@@ -14,6 +14,7 @@ class RestBrowser:
     connection: str
     incoming: asyncio.Queue
     outgoing: asyncio.Queue
+    reader: object
 
     async def message(self, document):
         """Deliver an actual decoded ASGI receive message to the protocol owner."""
@@ -21,16 +22,17 @@ class RestBrowser:
 
 
 @asynccontextmanager
-async def ready_browser(bus, *, version=2):
+async def ready_browser(bus, *, version=2, reader=None, client_id=None):
     """Complete hello/reset and wait for the persisted REST-ready control."""
-    subscription,_ = await bus.subscribe()
+    reader = bus.test_reader if reader is None else reader
+    subscription,_ = await bus.subscribe(reader=reader)
     incoming,outgoing = asyncio.Queue(),asyncio.Queue()
     async def send(frame):
         await outgoing.put(frame)
-    observing = asyncio.create_task(bus.browser_stream(subscription,send,receiver=incoming.get))
-    peer = RestBrowser('',incoming,outgoing)
+    observing = asyncio.create_task(bus.browser_stream(subscription,send,receiver=incoming.get,reader=reader))
+    peer = RestBrowser('',incoming,outgoing,reader)
     try:
-        await peer.message({'type':'live_hello','version':version,'client_id':str(uuid4())})
+        await peer.message({'type':'live_hello','version':version,'client_id':client_id or str(uuid4())})
         async with asyncio.timeout(3):
             reset = await outgoing.get()
         assert reset['type']=='live_reset'

@@ -2,11 +2,27 @@
 
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from contextlib import ExitStack
+import pytest
 
 from src.dashboard.live_event_bus import LiveEventBus, LiveEventType
 from uuid import uuid4
 from src.dashboard.observability import register_observability_routes
+from tests.mocks.dashboard_sessions import session_client
+
+
+@pytest.fixture
+def clients(tmp_path):
+    with ExitStack() as stack:
+        sequence = []
+        def create(app, **kwargs):
+            def inject(authority):
+                app.state.dashboard_authority = authority
+                return app
+            path = tmp_path/f'ws-app-{len(sequence)}'/'auth.db'
+            sequence.append(path)
+            return stack.enter_context(session_client(inject,path,**kwargs))
+        yield create
 
 
 def handshake(ws):
@@ -35,10 +51,10 @@ def test_ws_route_present_with_bus(dashboard_auth, live_graph):
     assert "/ws/live" in paths
 
 
-def test_ws_handshake_and_unsubscribe_on_disconnect(dashboard_auth, live_graph):
+def test_ws_handshake_and_unsubscribe_on_disconnect(dashboard_auth, live_graph, clients):
     bus = live_graph.bus()
     app = _build_app(bus)
-    client = TestClient(app, headers=dashboard_auth)
+    client = clients(app, headers=dashboard_auth)
     assert bus.subscriber_count == 0
     with client.websocket_connect("/ws/live"):
         # Loop interno del TestClient debe haber registrado el subscriber
@@ -48,7 +64,7 @@ def test_ws_handshake_and_unsubscribe_on_disconnect(dashboard_auth, live_graph):
     assert bus.subscriber_count == 0
 
 
-def test_ws_publish_round_trip(dashboard_auth, live_graph):
+def test_ws_publish_round_trip(dashboard_auth, live_graph, clients):
     """Publish desde el mismo loop del server (vía un endpoint trigger)."""
     bus = live_graph.bus()
     app = _build_app(bus)
@@ -62,7 +78,7 @@ def test_ws_publish_round_trip(dashboard_auth, live_graph):
         ))
         return {"ok": True}
 
-    client = TestClient(app, headers=dashboard_auth)
+    client = clients(app, headers=dashboard_auth)
     with client.websocket_connect("/ws/live") as ws:
         handshake(ws)
         client.post("/test/publish")
@@ -74,7 +90,7 @@ def test_ws_publish_round_trip(dashboard_auth, live_graph):
         }
 
 
-def test_ws_two_subscribers_each_receive_frame(dashboard_auth, live_graph):
+def test_ws_two_subscribers_each_receive_frame(dashboard_auth, live_graph, clients):
     bus = live_graph.bus()
     app = _build_app(bus)
 
@@ -83,7 +99,7 @@ def test_ws_two_subscribers_each_receive_frame(dashboard_auth, live_graph):
         await bus.publish(live_graph.event(type=LiveEventType.TURN, payload={"id": "t1"}))
         return {"ok": True}
 
-    client = TestClient(app, headers=dashboard_auth)
+    client = clients(app, headers=dashboard_auth)
     with client.websocket_connect("/ws/live") as ws1:
         handshake(ws1)
         with client.websocket_connect("/ws/live") as ws2:

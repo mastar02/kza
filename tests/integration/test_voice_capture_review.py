@@ -253,7 +253,7 @@ async def test_authenticated_capture_endpoint_applies_original_expiry_and_never_
     async with web_graph(tmp_path) as (_,_,voices,clock,bus):
         async with ready_browser(bus,version=3) as peer:
             source,identity = await observe(voices,clock,ttl=10)
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             url = '/api/voices/captures/'+identity+'/review'
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver') as client:
                 assert (await client.get(url)).status_code==401
@@ -279,7 +279,7 @@ async def test_native_preview_encoding_rechecks_current_authority_without_holdin
                 assert release.wait(3)
                 return encode(raw)
             monkeypatch.setattr(module.base64,'b64encode',held)
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 observing = asyncio.create_task(client.get('/api/voices/captures/'+identity+'/review'))
                 try:

@@ -12,7 +12,9 @@ import pytest
 from src.analytics.event_logger import EventLogger
 from src.core.logging import LogContext,get_context
 from src.core.owned_work import WorkCloseTimeout
+from src.core.reader_binding import ReaderBinding
 from src.dashboard.api import DashboardAPI
+from src.dashboard.rest_delivery import RestOperation
 from tests.integration.test_live_stream_receipts import graph,flush
 from tests.integration.test_capture_producer_privacy import until
 from tests.mocks.memory_sources import memory_source
@@ -20,6 +22,42 @@ from tests.mocks.rest_browser import ready_browser
 
 pytestmark = pytest.mark.asyncio
 PRIVATE = 'Synthetic private REST receipt turn'
+
+
+@pytest.mark.parametrize('empty',[False,True])
+@pytest.mark.parametrize('change',['reader','connection','retention'])
+async def test_reader_retired_between_send_admission_and_actual_callback_cannot_publish_body(tmp_path,empty,change):
+    active = [True]
+    reader = ReaderBinding('f'*64,lambda:active[0])
+    async with graph(tmp_path) as (_,_,bus,_,clock):
+        async with ready_browser(bus,reader=reader) as peer:
+            source = memory_source(now=clock.now)
+            operation = RestOperation(sources=() if empty else (source,),connection=peer.connection,
+                reader=reader,guard=reader.current,expires_at=source.expires_at,private_envelope=True)
+            messages = []
+            state = bus._retention.rest.connection(peer.connection,reader=reader)
+
+            def retire():
+                if change=='reader':
+                    active[0] = False
+                elif change=='retention':
+                    bus.begin_close()
+                else:
+                    state.closed = True
+                    state.wake.set()
+
+            async def application(scope,receive,send):
+                asyncio.get_running_loop().call_soon(retire)
+                await send({'type':'http.response.body','body':json.dumps({'snapshot':None,'next_cursor':PRIVATE}).encode()})
+
+            async def actual(message):
+                messages.append(message)
+
+            async def receive():
+                return {'type':'http.disconnect'}
+
+            await bus._retention.rest._scope(operation,application,{'type':'http'},receive,actual)
+            assert messages==[{'type':'http.response.body','body':b'{"snapshot":null}'}]
 
 
 @asynccontextmanager
@@ -45,7 +83,7 @@ async def test_rest_requires_auth_and_a_confirmed_version_two_connection_before_
         async with events_for(tmp_path,privacy) as events:
             reads = []
             monkeypatch.setattr(events,'get_events',lambda **kw:reads.append(True))
-            app = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False).app
+            app = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver') as client:
                 assert (await client.get('/api/conversations')).status_code==401
                 assert (await client.get('/api/conversations',headers=dashboard_auth)).status_code==428
@@ -59,7 +97,7 @@ async def test_ticket_precedes_actual_outer_body_and_ack_cannot_hide_buffered_se
         async with events_for(tmp_path,privacy) as events, ready_browser(bus) as peer:
             source = memory_source(now=clock.now)
             await events.alog('light.synthetic','turn_on',trigger_phrase=PRIVATE,sources=(source,))
-            api = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False)
+            api = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False, authority=bus.test_authority)
             # This BaseHTTPMiddleware sits between the private Response and the
             # actual outer send. Its buffered copy must remain in the journal.
             @api.app.middleware('http')
@@ -118,7 +156,7 @@ async def test_cancelled_observer_keeps_unknown_native_read_in_streams_claim(tmp
                 assert release.wait(3)
                 return get(**kwargs)
             monkeypatch.setattr(events,'get_events',blocked)
-            app = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False).app
+            app = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 with LogContext(private='Synthetic cancelled caller context'):
@@ -147,7 +185,7 @@ async def test_source_or_session_change_while_headers_wait_never_starts_private_
         async with events_for(tmp_path,privacy) as events, ready_browser(bus) as peer:
             source = memory_source(now=clock.now,ttl=60)
             await events.alog('light.synthetic','turn_on',trigger_phrase=PRIVATE,sources=(source,))
-            api = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False)
+            api = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False, authority=bus.test_authority)
             entered,release = asyncio.Event(),asyncio.Event()
             async def gated(scope,receive,send):
                 async def actual(message):
@@ -186,7 +224,7 @@ async def test_receipt_metadata_contains_no_transcript_and_disconnect_does_not_r
         async with events_for(tmp_path,privacy) as events:
             source = memory_source(now=clock.now)
             await events.alog('light.synthetic','turn_on',trigger_phrase=PRIVATE,sources=(source,))
-            app = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False).app
+            app = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False, authority=bus.test_authority).app
             async with ready_browser(bus) as peer:
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                         headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
@@ -211,7 +249,7 @@ async def test_receipt_metadata_contains_no_transcript_and_disconnect_does_not_r
 async def test_empty_conversation_query_has_real_observation_without_a_fictitious_content_expiry(tmp_path,dashboard_auth):
     async with graph(tmp_path) as (privacy,_,bus,_,clock):
         async with events_for(tmp_path,privacy) as events, ready_browser(bus) as peer:
-            app=DashboardAPI(event_logger=events,event_bus=bus).app
+            app=DashboardAPI(event_logger=events,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 response=await client.get('/api/conversations')
@@ -233,7 +271,7 @@ async def test_scope_capacity_and_close_timeout_keep_actual_native_operations(tm
                 assert release.wait(3)
                 return get(**kwargs)
             monkeypatch.setattr(events,'get_events',blocked)
-            app = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False).app
+            app = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 observers = [asyncio.create_task(client.get('/api/conversations')) for _ in range(8)]

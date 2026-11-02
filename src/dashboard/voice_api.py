@@ -3,7 +3,7 @@
 from fastapi import APIRouter,Depends,HTTPException,Query,Request
 from pydantic import BaseModel,ConfigDict,Field
 
-from src.dashboard.auth import DashboardPrincipal, require_dashboard_session, session_guard
+from src.dashboard.auth import DashboardPrincipal, require_dashboard_session, session_guard, session_reader
 from src.users.voice_ledger import VoiceReviewer
 from src.dashboard.voice_delivery import VoiceResponse
 
@@ -68,7 +68,8 @@ def register_voice_routes(app, *, voices=None) -> None:
         owner = getattr(app.state,'rest_delivery_owner',None)
         if owner is None:
             raise HTTPException(503,detail='voice_delivery_unavailable')
-        return VoiceResponse(owner,service(),request.headers.get('x-kza-live-connection'),kind,cursor,actor)
+        return VoiceResponse(owner,service(),request.headers.get('x-kza-live-connection'),kind,cursor,actor,
+            reader=session_reader(request,frozenset({'voices:read','voices:review'})))
     @router.post('/profiles')
     async def confirm(body: ConfirmVoiceBody,actor: VoiceReviewer = Depends(reviewer)):
         profile = await call(service().ledger.confirm,tuple(body.fingerprint_ids),body.name,body.request_id,actor)

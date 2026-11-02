@@ -266,7 +266,7 @@ async def test_authenticated_review_api_never_returns_vectors_or_accepts_account
     async with web_graph(tmp_path) as (_,_,voices,clock,bus):
         async with ready_browser(bus,version=3) as peer:
             _,identities = await seed(voices,clock)
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver') as client:
                 assert (await client.get('/api/voices')).status_code==401
                 body = {'fingerprint_ids':list(identities),'name':'Synthetic reviewed voice','request_id':str(uuid4())}

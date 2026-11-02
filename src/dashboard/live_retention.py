@@ -11,6 +11,7 @@ from uuid import uuid4
 from weakref import WeakSet, finalize, ref
 
 from src.core.owned_work import WorkCloseTimeout
+from src.core.reader_binding import ReaderBinding
 from src.core.task_outcome import project_turn_outcome
 from src.dashboard.live_browser import LiveBrowserSession
 from src.dashboard.rest_delivery import RestDeliveryOwner
@@ -118,6 +119,7 @@ class LiveSubscriber:
     active: RetainedLiveEvent | None = field(default=None, repr=False)
     closed: bool = False
     guard: object | None = field(default=None, repr=False)
+    reader: ReaderBinding | None = field(default=None, repr=False)
     browser: LiveBrowserSession | None = field(default=None, repr=False)
     snapshots: dict = field(default_factory=dict)
     snapshot_retired: set[str] = field(default_factory=set)
@@ -190,10 +192,10 @@ class LiveRetention:
             if not any(index.get(conversation, ())):
                 index.pop(conversation, None)
 
-    def attach(self, sub_id, queue):
+    def attach(self, sub_id, queue, *, reader=None):
         if self._closed or len(self._states) >= self.max_subscribers:
             raise RuntimeError('live_subscriber_capacity')
-        self._states[sub_id] = LiveSubscriber(queue)
+        self._states[sub_id] = LiveSubscriber(queue,reader=reader)
 
     def notify(self, sub_id):
         state = self._states.get(sub_id)
@@ -240,6 +242,8 @@ class LiveRetention:
                     allowed = False
                 if not allowed:
                     state.closed = True
+            if state.reader is not None and not state.reader.current():
+                state.closed = True
             for record in self._drain(state.queue):
                 if not state.closed and record._data is not None:
                     state.queue.put_nowait(record)
@@ -250,9 +254,13 @@ class LiveRetention:
             if state.retired or state.snapshot_retired or state.closed:
                 state.wake.set()
 
-    async def _send(self, sender, frame):
+    async def _send(self, sender, frame, state):
         self._active += 1
         try:
+            if state.guard is not None and state.guard() is not True:
+                raise PermissionError('dashboard_reader_retired')
+            if state.reader is not None:
+                state.reader.require_current()
             await sender(frame)
         finally:
             frame = None
@@ -262,6 +270,8 @@ class LiveRetention:
         message = None
         try:
             while not state.closed:
+                if state.reader is not None:
+                    state.reader.require_current()
                 message = await receiver()
                 disconnected = type(message) is not dict or message.get('type') == 'websocket.disconnect'
                 if disconnected:
@@ -288,10 +298,12 @@ class LiveRetention:
         try:
             while not state.closed:
                 state.wake.clear()
+                if state.reader is not None:
+                    state.reader.require_current()
                 if state.browser is not None:
                     reset = state.browser.reset_frame()
                     if reset is not None:
-                        await self._send(sender,reset)
+                        await self._send(sender,reset,state)
                         reset = None
                         continue
                     if not state.browser.ready:
@@ -299,7 +311,7 @@ class LiveRetention:
                         continue
                     ready = state.browser.ready_frame()
                     if ready is not None:
-                        await self._send(sender,ready)
+                        await self._send(sender,ready,state)
                         ready = None
                         continue
                 if state.snapshot_retired and state.browser is not None:
@@ -311,7 +323,7 @@ class LiveRetention:
                     control['type'] = 'rest_retire'
                     if state.browser.protocol>=3:
                         control['channel'] = channel
-                    await self._send(sender,control)
+                    await self._send(sender,control,state)
                     control = None
                     state.snapshot_retired.difference_update(tokens)
                     for token in tokens:
@@ -323,7 +335,7 @@ class LiveRetention:
                     # metadata while the actual socket callback is suspended.
                     control = (state.browser.retirement_frame(tokens) if state.browser is not None else
                         {'type':'retire','payload':{'event_ids':tokens},'ts':''})
-                    await self._send(sender,control)
+                    await self._send(sender,control,state)
                     control = None
                     state.retired.difference_update(tokens)
                     if state.last is not None and state.last.event_id in tokens:
@@ -347,7 +359,7 @@ class LiveRetention:
                 if frame is not None and ticket is not None:
                     frame['receipt'] = ticket.to_dict()
                 if frame is not None:
-                    await self._send(sender, frame)
+                    await self._send(sender, frame, state)
                     state.last = LastLiveFrame(record.event_id, record.sources)
                     if not record.available():
                         state.retired.add(record.event_id)
@@ -377,16 +389,26 @@ class LiveRetention:
                     pass
             sender = close = receiver = watching = None
 
-    async def stream(self, sub_id, sender, close=None, receiver=None, guard=None, *, browser=False):
+    async def stream(self, sub_id, sender, close=None, receiver=None, guard=None, *, browser=False, reader=None):
         """Shield actual socket ownership; observer cancellation does not stop it."""
         if self._closed or sub_id not in self._states or sub_id in self._senders:
             raise RuntimeError('live_subscriber_unavailable')
         state = self._states[sub_id]
+        if state.closed:
+            raise RuntimeError('live_subscriber_unavailable')
+        if state.reader is not None:
+            if type(reader) is not ReaderBinding or state.reader.namespace != reader.namespace:
+                raise PermissionError('live_reader_mismatch')
+            state.reader.require_current()
+            reader.require_current()
+        elif reader is not None:
+            state.reader = reader
         state.guard = guard
         if browser:
-            if self.receipts is None or receiver is None:
+            if self.receipts is None or receiver is None or type(reader) is not ReaderBinding:
                 raise RuntimeError('live_browser_receipts_unavailable')
-            state.browser = LiveBrowserSession(self.receipts,state.wake)
+            reader.require_current()
+            state.browser = LiveBrowserSession(self.receipts,state.wake,reader)
         task = asyncio.create_task(self._dispatch(state, sender, close, receiver), context=Context())
         self._senders[sub_id] = task
         def finished(done):
@@ -396,6 +418,7 @@ class LiveRetention:
             self._drain(state.queue)
             state.last = None
             state.guard = None
+            state.reader = None
             state.retired.clear()
             state.snapshots.clear()
             state.snapshot_retired.clear()

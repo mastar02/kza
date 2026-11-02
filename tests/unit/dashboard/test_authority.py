@@ -10,6 +10,7 @@ import pytest
 import pytest_asyncio
 
 from src.core.account_metadata import ActiveAccounts
+from src.core.reader_binding import ReaderBinding
 
 from src.dashboard.authority import (
     DashboardAuthority, DashboardPermission as Permission, DashboardRole as Role,
@@ -35,6 +36,46 @@ def sample(now, **changes):
               "source_digests": frozenset({source_digest({"capture_id": "synthetic-source", "expires_at": now + 20})}),
               "modalities": frozenset({Modality.AUDIO_PREVIEW}), "expires_at": now + 20}
     return EvaluationSample(**(values | changes))
+
+
+async def test_reader_namespace_names_original_login_revision_and_authority_not_subject(authority, tmp_path):
+    service, now, token = authority
+    credential = await service.issue_credential(service.resolve(token[0]), subject='same-subject',
+                        role=Role.HOME, expires_at=now[0] + 120)
+    first, second = await service.login(credential.token), await service.login(credential.token)
+    permission = frozenset({Permission.HOME_READ})
+    reader = first.lease.reader_binding(permission)
+    second_reader = second.lease.reader_binding(permission)
+    assert type(reader) is ReaderBinding
+    assert reader.current()
+    assert reader.namespace == first.lease.reader_binding(permission).namespace
+    assert reader.namespace != second_reader.namespace
+    assert reader.namespace != service.resolve(credential.token).reader_binding(permission).namespace
+    assert first.lease.reader_binding(frozenset({Permission.AUTH_MANAGE})) is None
+    assert first.token not in repr(reader) and 'same-subject' not in repr(reader)
+    other = DashboardAuthority(tmp_path/'other-auth.db', clock=lambda: now[0], expected_token=lambda: token[0])
+    try:
+        await other.initialize()
+        assert service.resolve(token[0]).reader_binding().namespace != other.resolve(token[0]).reader_binding().namespace
+    finally:
+        await other.aclose()
+    assert await service.revise_credential(service.resolve(token[0]),credential.identity,role=Role.HOME,
+                                            expires_at=now[0]+100)
+    assert not reader.current()
+    with pytest.raises(PermissionError,match='dashboard_reader_retired'):
+        reader.require_current()
+    third = await service.login(credential.token)
+    assert third.lease.reader_binding(permission).namespace not in {reader.namespace,second_reader.namespace}
+    assert legacy_lease(token[0],expected=lambda:token[0]).reader_binding() is None
+
+
+@pytest.mark.parametrize('value', [1, None, False, 'true'])
+def test_reader_guard_requires_exact_true_and_hides_namespace(value):
+    reader = ReaderBinding('b'*64, lambda:value)
+    assert not reader.current()
+    assert 'b'*64 not in repr(reader)
+    with pytest.raises(PermissionError):
+        reader.require_current()
 
 
 async def issue(fixture, role=Role.HOME, **changes):

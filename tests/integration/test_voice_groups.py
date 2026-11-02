@@ -172,7 +172,7 @@ async def test_partial_page_group_receipt_includes_members_not_visible_on_that_p
         ordered = sorted((identity for _,identity in samples), reverse=True)
         hidden = next(source for source,identity in samples if identity==ordered[0])
         async with ready_browser(bus,version=3) as peer:
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 data = (await client.get('/api/voices?cursor='+ordered[1])).json()['snapshot']
@@ -187,7 +187,7 @@ async def test_group_edit_retires_buffered_capture_metadata_but_not_permanent_pr
         profile = await voices.acall(voices.ledger.confirm,tuple(ids),'Synthetic permanent group name',str(uuid4()),ACTOR)
         async with ready_browser(bus,version=3) as peer:
             entered,release = asyncio.Event(),asyncio.Event()
-            api = DashboardAPI(voice_registry=voices,event_bus=bus)
+            api = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority)
             @api.app.middleware('http')
             async def buffer(request,call_next):
                 response = await call_next(request)
@@ -295,7 +295,7 @@ async def test_http_corrections_require_auth_exact_revisions_and_reject_permissi
         ids = [(await sample(voices,clock))[1] for _ in range(2)]
         current = await rows(voices)
         revisions = {current[ids[0]]['group_id']:current[ids[0]]['group_revision']}
-        app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+        app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
         body = {'fingerprint_ids':[ids[0]],'expected_revisions':revisions,'action':'split','request_id':str(uuid4())}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver') as client:
             assert (await client.post('/api/voices/groups/corrections',json=body)).status_code==401

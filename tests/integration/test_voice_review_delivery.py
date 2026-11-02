@@ -3,12 +3,15 @@
 import asyncio
 import json
 import threading
+import time
 from uuid import uuid4
 
 import httpx
 import pytest
 
 from src.dashboard.api import DashboardAPI
+from src.dashboard.auth import COOKIE_NAME
+from src.dashboard.authority import DashboardRole
 from src.memory.fact_ledger import MemoryReviewer
 from src.users.voice_projection import VoiceProjection
 from src.users.voice_ledger import VoiceLedger
@@ -17,8 +20,45 @@ from tests.integration.test_live_stream_receipts import flush
 from tests.integration.test_voice_capture_review import observe
 from tests.mocks.rest_browser import ready_browser
 from tests.mocks.voice_registry import ACTOR,seed,web_graph
+from tests.mocks.browser_authority import fixture_token
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_same_credential_and_subject_cannot_exchange_individual_login_connections(tmp_path,dashboard_auth,monkeypatch):
+    async with web_graph(tmp_path) as (_,_,voices,_,bus):
+        authority = bus.test_authority
+        credential = await authority.issue_credential(authority.resolve(fixture_token()),subject='same-synthetic-subject',
+                    role=DashboardRole.OPERATOR,expires_at=time.time()+120)
+        api = DashboardAPI(voice_registry=voices,event_bus=bus,authority=authority)
+        calls = []
+        project = voices.ledger.project
+
+        def observed(*args):
+            calls.append(True)
+            return project(*args)
+
+        monkeypatch.setattr(voices.ledger,'project',observed)
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app),base_url='http://testserver') as first, \
+                    httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app),base_url='http://testserver') as second:
+                for client in (first,second):
+                    assert (await client.post('/api/admin/auth/login',json={'token':credential.token})).status_code==200
+                first_reader = authority.resolve(None,first.cookies[COOKIE_NAME]).reader_binding()
+                second_reader = authority.resolve(None,second.cookies[COOKIE_NAME]).reader_binding()
+                assert first_reader.namespace!=second_reader.namespace
+                page_id = str(uuid4())
+                async with ready_browser(bus,version=3,reader=first_reader,client_id=page_id) as a, \
+                        ready_browser(bus,version=3,reader=second_reader,client_id=page_id) as b:
+                    for client,connection in ((first,b.connection),(second,a.connection)):
+                        assert (await client.get('/api/voices/profiles',headers={'X-KZA-Live-Connection':connection})).status_code==428
+                        assert (await client.get('/api/admin/auth/whoami')).status_code==200
+                    assert (await first.get('/api/voices/profiles',headers={**dashboard_auth,'X-KZA-Live-Connection':a.connection})).status_code==428
+                    assert calls==[]
+                    assert (await first.get('/api/voices/profiles',headers={'X-KZA-Live-Connection':a.connection})).status_code==200
+                    assert calls==[True]
+        finally:
+            await api.stop()
 
 
 async def step(privacy,operation):
@@ -33,7 +73,7 @@ async def test_voice_reads_require_current_auth_and_confirmed_version_three_befo
     async with web_graph(tmp_path) as (_,_,voices,_,bus):
         calls = []
         monkeypatch.setattr(voices.ledger,'project',lambda *args:calls.append(args))
-        app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+        app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
         async with ready_browser(bus) as old:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver') as client:
                 assert (await client.get(path)).status_code==401
@@ -46,7 +86,7 @@ async def test_review_ticket_precedes_outer_body_and_early_ack_cannot_retire_act
     async with web_graph(tmp_path) as (privacy,owner,voices,clock,bus):
         async with ready_browser(bus,version=3) as peer:
             source,identity = await observe(voices,clock,text='Synthetic retained listening transcript')
-            api = DashboardAPI(voice_registry=voices,event_bus=bus)
+            api = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority)
             @api.app.middleware('http')
             async def buffered(request,call_next):
                 return await call_next(request)
@@ -97,7 +137,7 @@ async def test_confirmed_name_survives_raw_ttl_but_cannot_authorize_a_new_raw_ti
         clock.now+=10
         await voices.acall(voices.ledger.prune)
         async with ready_browser(bus,version=3) as peer:
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 response = await client.get('/api/voices/profiles')
@@ -108,8 +148,8 @@ async def test_confirmed_name_survives_raw_ttl_but_cannot_authorize_a_new_raw_ti
                 assert await bus._retention.receipts.pending(sources[0].conversation_id)==1
                 assert (await client.get('/api/voices/captures/'+identities[0]+'/review')).status_code==404
                 receipts = bus._retention.receipts
-                assert await receipts.issue(peer.connection,str(uuid4()),clock.now+300,tuple(sources)) is None
-                assert await receipts.issue_profiles(peer.connection,str(uuid4()),clock.now+300,tuple(sources),((profile['id'],2),)) is None
+                assert await receipts.issue(peer.connection,str(uuid4()),clock.now+300,tuple(sources),reader=peer.reader) is None
+                assert await receipts.issue_profiles(peer.connection,str(uuid4()),clock.now+300,tuple(sources),((profile['id'],2),),reader=peer.reader) is None
 
 
 async def test_deleted_profile_retires_only_its_metadata_channel(tmp_path,dashboard_auth):
@@ -117,7 +157,7 @@ async def test_deleted_profile_retires_only_its_metadata_channel(tmp_path,dashbo
         _,identities = await seed(voices,clock)
         profile = await voices.acall(voices.ledger.confirm,identities,'Synthetic profile',str(uuid4()),ACTOR)
         async with ready_browser(bus,version=3) as peer:
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 profiles = (await client.get('/api/voices/profiles')).json()['snapshot']
@@ -140,7 +180,7 @@ async def test_source_delete_routes_profile_capture_and_audio_controls_separatel
         await voices.acall(voices.ledger.confirm,tuple(item[1] for item in samples),'Synthetic mixed channels',str(uuid4()),ACTOR)
         source,identity = samples[0]
         async with ready_browser(bus,version=3) as peer:
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 batches = [(await client.get(path)).json()['snapshot'] for path in (
@@ -161,7 +201,7 @@ async def test_profile_deleted_behind_framework_buffer_never_reaches_outer_priva
         profile = await voices.acall(voices.ledger.confirm,identities,'Synthetic buffered private name',str(uuid4()),ACTOR)
         async with ready_browser(bus,version=3) as peer:
             entered,release = asyncio.Event(),asyncio.Event()
-            api = DashboardAPI(voice_registry=voices,event_bus=bus)
+            api = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority)
             @api.app.middleware('http')
             async def buffered(request,call_next):
                 response = await call_next(request)
@@ -194,7 +234,7 @@ async def test_profile_metadata_ticket_cannot_launder_an_audio_payload_past_capt
                 'voices:profiles',profile_refs=((profile['id'],1),))
         monkeypatch.setattr(voices.ledger,'project',invalid)
         async with ready_browser(bus,version=3) as peer:
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 response = await client.get('/api/voices/profiles')
@@ -213,7 +253,7 @@ async def test_cancelled_voice_http_observer_keeps_actual_unknown_native_read_in
             return project(*args)
         monkeypatch.setattr(voices.ledger,'project',held)
         async with ready_browser(bus,version=3) as peer:
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 observing = asyncio.create_task(client.get('/api/voices'))
@@ -276,7 +316,7 @@ async def test_suggestion_ticket_includes_the_permanent_profile_sources_without_
         await voices.acall(voices.ledger.prune)
         current,identity = await observe(voices,clock,ttl=60)
         async with ready_browser(bus,version=3) as peer:
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 response = await client.get('/api/voices')
@@ -305,7 +345,7 @@ async def test_receipt_attributes_transitive_fact_conversations_before_parent_er
         current = replace(memory_source(now=clock.now),fact_dependencies=(FactDependency(second.id,second.revision,second.expires_at),))
         await voices.acall(voices.ledger.put,'synthetic-parent-model',VECTOR,1.,(current,))
         async with ready_browser(bus,version=3) as peer:
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 batch = (await client.get('/api/voices')).json()['snapshot']
@@ -323,7 +363,7 @@ async def test_partial_restoration_of_source_index_cannot_lose_a_pending_page_ob
     async with web_graph(tmp_path) as (privacy,_,voices,clock,bus):
         sources,_ = await seed(voices,clock)
         async with ready_browser(bus,version=3) as peer:
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 batch = (await client.get('/api/voices')).json()['snapshot']
@@ -346,7 +386,7 @@ async def test_capture_metadata_cannot_declare_a_suggestion_without_its_reviewed
             return VoiceProjection([row],(sources[0],),clock.now,sources[0].expires_at,'voices:captures')
         monkeypatch.setattr(voices.ledger,'project',invalid)
         async with ready_browser(bus,version=3) as peer:
-            app = DashboardAPI(voice_registry=voices,event_bus=bus).app
+            app = DashboardAPI(voice_registry=voices,event_bus=bus, authority=bus.test_authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
                 response = await client.get('/api/voices')

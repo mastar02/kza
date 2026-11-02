@@ -19,6 +19,7 @@ from starlette.requests import HTTPConnection
 
 from src.dashboard.authority import DashboardPrincipal as DashboardPrincipal
 from src.dashboard.authority import DashboardAuthority, DashboardLease, DashboardPermission, legacy_lease
+from src.core.reader_binding import ReaderBinding
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,12 @@ def current_lease(request: HTTPConnection) -> DashboardLease | None:
     """Return only the original admitted binding, without reauthentication."""
     lease = request.scope.get("kza.dashboard_lease")
     return lease if type(lease) is DashboardLease else None
+
+
+def session_reader(request: HTTPConnection, permissions: frozenset[str]) -> ReaderBinding | None:
+    """Detach original ownership before handing off any private transport work."""
+    lease = current_lease(request)
+    return None if lease is None else lease.reader_binding(permissions)
 
 
 def session_guard(request: HTTPConnection, permissions: frozenset[str] = frozenset(),

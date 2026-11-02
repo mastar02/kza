@@ -20,6 +20,7 @@ from enum import StrEnum
 from typing import Awaitable, Callable
 
 from src.dashboard.live_retention import LiveRetention, RetainedLiveEvent
+from src.core.reader_binding import ReaderBinding
 
 from src.memory.fact_ledger import MemorySource
 
@@ -120,6 +121,14 @@ class LiveEventBus:
     def _dispatch_to_subscriber(
         self, sub_id: int, queue: asyncio.Queue[RetainedLiveEvent], event: RetainedLiveEvent
     ) -> None:
+        if self._retention is not None:
+            state = self._retention._states.get(sub_id)
+            if state is None or state.closed:
+                return
+            if state.reader is not None and not state.reader.current():
+                state.closed = True
+                state.wake.set()
+                return
         try:
             queue.put_nowait(event)
             return
@@ -141,21 +150,25 @@ class LiveEventBus:
             Context().run(logger.warning, 'Live subscriber %s dropped %s events (policy=%s)',
                 sub_id, n, self._overflow_policy.value)
 
-    async def subscribe(self) -> tuple[int, asyncio.Queue[RetainedLiveEvent]]:
+    async def subscribe(self, *, reader: ReaderBinding | None = None) -> tuple[int, asyncio.Queue[RetainedLiveEvent]]:
+        if reader is not None:
+            if type(reader) is not ReaderBinding:
+                raise ValueError('invalid_live_reader')
+            reader.require_current()
         sub_id = self._next_id
         self._next_id += 1
         queue: asyncio.Queue[RetainedLiveEvent] = asyncio.Queue(maxsize=self._queue_size)
         if self._retention is not None:
-            self._retention.attach(sub_id, queue)
+            self._retention.attach(sub_id, queue, reader=reader)
         self._subscribers[sub_id] = queue
         Context().run(logger.debug, 'Live subscriber %s attached', sub_id)
         return sub_id, queue
 
     async def unsubscribe(self, sub_id: int) -> None:
-        if self._retention is not None:
-            await self._retention.detach(sub_id)
         self._subscribers.pop(sub_id, None)
         self._dropped.pop(sub_id, None)
+        if self._retention is not None:
+            await self._retention.detach(sub_id)
         Context().run(logger.debug, 'Live subscriber %s detached', sub_id)
 
     @property
@@ -177,24 +190,24 @@ class LiveEventBus:
         if close is not None:
             await close()
 
-    async def browser_stream(self, sub_id, sender, close=None, receiver=None, guard=None):
+    async def browser_stream(self, sub_id, sender, close=None, receiver=None, guard=None, *, reader=None):
         """Require the durable browser protocol on the network-facing live route."""
         if self._retention is None:
             if close is not None:
                 await close()
             return
-        return await self._retention.stream(sub_id,sender,close,receiver,guard,browser=True)
+        return await self._retention.stream(sub_id,sender,close,receiver,guard,browser=True,reader=reader)
 
     def pending_conversation(self, conversation_id: str) -> int:
         """Read local callback ownership for the STREAMS cleanup driver."""
         return self._retention.pending_conversation(conversation_id) if self._retention is not None else 0
 
-    def conversation_response(self, connection, events, filters, guard):
+    def conversation_response(self, connection, events, filters, guard, *, reader):
         """Private REST reads require the owned version-two browser connection."""
         from src.dashboard.rest_delivery import ConversationResponse
         if self._retention is None or self._retention.receipts is None:
             raise RuntimeError('conversation_receipts_unavailable')
-        return ConversationResponse(self._retention.rest,connection,events,filters,guard)
+        return ConversationResponse(self._retention.rest,connection,events,filters,guard,reader=reader)
 
     def resource_status(self) -> dict:
         """Read content-free ownership counts."""

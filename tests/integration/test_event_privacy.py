@@ -21,6 +21,7 @@ from src.memory.fact_ledger import FactLedger, MemoryReviewer
 from tests.mocks.memory_graph import Clock
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.rest_browser import ready_browser
+from tests.mocks.browser_authority import bind_browser_authority, make_browser_authority
 
 pytestmark = pytest.mark.asyncio
 
@@ -48,17 +49,19 @@ async def until(predicate):
 
 
 @asynccontextmanager
-async def conversation_client(events, policy, clock):
-    bus = LiveEventBus(source_policy=policy,clock=clock,receipts=LiveReceiptStore(policy))
-    bus.start()
-    try:
+async def conversation_client(events, policy, clock, tmp_path):
+    async with AsyncExitStack() as stack:
+        authority = await make_browser_authority(stack, tmp_path/'browser-auth.db')
+        bus = LiveEventBus(source_policy=policy,clock=clock,receipts=LiveReceiptStore(policy))
+        bind_browser_authority(bus, authority)
+        bus.start()
+        stack.push_async_callback(bus.aclose)
         async with ready_browser(bus) as peer:
-            app = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False).app
+            app = DashboardAPI(event_logger=events,event_bus=bus,observability_use_mocks=False,
+                               authority=authority).app
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
                     headers={'X-KZA-Live-Connection':peer.connection}) as client:
                 yield client
-    finally:
-        await bus.aclose()
 
 
 async def test_event_text_expires_at_capture_boundary_while_numeric_diagnostics_remain(tmp_path):
@@ -265,7 +268,7 @@ async def test_authenticated_dashboard_cannot_serve_expired_or_revoked_event_tex
     async with graph(tmp_path) as (events, policy, clock):
         source = memory_source(now=clock.now, ttl=60)
         await events.alog('light.synthetic', 'turn_on', trigger_phrase='Texto privado de prueba.', sources=(source,))
-        async with conversation_client(events,policy,clock) as client:
+        async with conversation_client(events,policy,clock,tmp_path) as client:
             denied = await client.get('/api/conversations')
             assert denied.status_code == 401 and denied.headers['cache-control'] == 'no-store'
             live = await client.get('/api/conversations', headers=dashboard_auth)
@@ -286,7 +289,7 @@ async def test_conversation_snapshot_distinguishes_same_capture_actions_at_the_s
         source = memory_source(now=clock.now)
         for entity in ('light.first', 'light.second', 'light.first'):
             await events.alog(entity, 'turn_on', trigger_phrase='Synthetic shared capture.', sources=(source,))
-        async with conversation_client(events,policy,clock) as client:
+        async with conversation_client(events,policy,clock,tmp_path) as client:
             snapshot = (await client.get('/api/conversations',headers=dashboard_auth)).json()['snapshot']['rows']
             assert len(snapshot) == len({row['id'] for row in snapshot}) == 3
             assert {row['id'] for row in (await client.get('/api/conversations',headers=dashboard_auth)).json()['snapshot']['rows']} == {row['id'] for row in snapshot}

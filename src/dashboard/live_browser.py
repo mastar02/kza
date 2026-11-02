@@ -7,6 +7,7 @@ import json
 from uuid import uuid4
 
 from src.dashboard.live_receipts import canonical_id
+from src.core.reader_binding import ReaderBinding
 
 
 class BrowserPhase(StrEnum):
@@ -19,8 +20,11 @@ class BrowserPhase(StrEnum):
 class LiveBrowserSession:
     """Keep metadata work owned after a socket observer or receive loop exits."""
 
-    def __init__(self, receipts, wake):
+    def __init__(self, receipts, wake, reader: ReaderBinding):
+        if type(reader) is not ReaderBinding:
+            raise ValueError('live_reader_required')
         self.receipts = receipts
+        self.reader = reader
         self.connection = str(uuid4())
         self.phase = BrowserPhase.HELLO
         self._wake = wake
@@ -34,8 +38,8 @@ class LiveBrowserSession:
 
     @property
     def ready(self) -> bool:
-        """Private frames require a committed clear acknowledgement."""
-        return self.phase is BrowserPhase.READY
+        """Private frames need a committed clear and the same live reader."""
+        return self.phase is BrowserPhase.READY and self.reader.current()
 
     def timed_out(self) -> bool:
         """A page cannot reserve a slot forever without clearing its view."""
@@ -86,15 +90,18 @@ class LiveBrowserSession:
 
     async def handle(self, message) -> None:
         """Decode bounded metadata before creating any retained worker task."""
+        self.reader.require_current()
         kind,args = self._decode(message)
         message = None
         async def execute():
             if self.phase is BrowserPhase.CLOSED:
                 return
+            self.reader.require_current()
             if kind == 'live_hello':
                 if self.phase is not BrowserPhase.HELLO:
                     raise ValueError('duplicate_live_hello')
-                reset = await self.receipts.hello(args[0],self.connection)
+                reset = await self.receipts.hello(args[0],self.connection,reader=self.reader)
+                self.reader.require_current()
                 if self.phase is not BrowserPhase.CLOSED:
                     self.protocol = args[1]
                     self._reset, self._reset_sent = reset,False
@@ -102,8 +109,9 @@ class LiveBrowserSession:
             elif kind == 'live_reset_ack':
                 if self.phase is not BrowserPhase.RESET or self._reset is None:
                     raise ValueError('unexpected_live_reset_ack')
-                if not await self.receipts.reset_ack(self.connection,*args):
+                if not await self.receipts.reset_ack(self.connection,*args,reader=self.reader):
                     raise ValueError('invalid_live_reset_ack')
+                self.reader.require_current()
                 if self.phase is not BrowserPhase.CLOSED:
                     self._tickets.clear()
                     self._reset = None
@@ -113,7 +121,8 @@ class LiveBrowserSession:
             elif kind == 'live_ack':
                 if self.phase not in {BrowserPhase.READY,BrowserPhase.RESET}:
                     raise ValueError('unexpected_live_ack')
-                await self.receipts.ack(self.connection,args[0])
+                await self.receipts.ack(self.connection,args[0],reader=self.reader)
+                self.reader.require_current()
                 acknowledged = set(args[0])
                 self._tickets = {event:ticket for event,ticket in self._tickets.items()
                     if (ticket.ticket,ticket.nonce) not in acknowledged}
@@ -134,17 +143,19 @@ class LiveBrowserSession:
         profiles = getattr(record,'profile_refs',())
         associated = getattr(record,'associated_profiles',())
         if profiles:
-            ticket = await self.receipts.issue_profiles(self.connection,record.event_id,record.expires_at,record.sources,profiles)
+            ticket = await self.receipts.issue_profiles(self.connection,record.event_id,record.expires_at,record.sources,profiles,reader=self.reader)
         elif associated:
             ticket = await self.receipts.issue_associations(self.connection,record.event_id,record.expires_at,
-                record.sources,associated,record.activity_sources)
+                record.sources,associated,record.activity_sources,reader=self.reader)
         else:
-            ticket = await self.receipts.issue(self.connection,record.event_id,record.expires_at,record.sources)
+            ticket = await self.receipts.issue(self.connection,record.event_id,record.expires_at,record.sources,reader=self.reader)
+        if not self.ready:
+            return None
         if ticket is not None:
             self._tickets[record.event_id] = ticket
             return ticket
         if self.phase is not BrowserPhase.CLOSED:
-            self._reset = await self.receipts.reset(self.connection)
+            self._reset = await self.receipts.reset(self.connection,reader=self.reader)
             self._reset_sent = False
             self.phase = BrowserPhase.RESET
             self._deadline = asyncio.get_running_loop().time()+5
@@ -165,6 +176,6 @@ class LiveBrowserSession:
         """Wait for late hello/ACK work before releasing its connection lease."""
         self.seal()
         await asyncio.gather(*tuple(self._tasks),return_exceptions=True)
-        await self.receipts.disconnect(self.connection)
+        await self.receipts.disconnect(self.connection,reader=self.reader)
         self._tickets.clear()
         self._reset = None

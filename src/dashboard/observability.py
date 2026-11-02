@@ -19,6 +19,7 @@ Cada colección declara fuente, estado de observación y caducidad. El modo demo
 requiere use_mocks=True; ausencia o fallo en modo operativo nunca devuelve ejemplos.
 """
 
+import asyncio
 import logging
 from functools import partial
 from datetime import UTC, datetime
@@ -31,7 +32,7 @@ from src.dashboard.observation_http import ObservationHeaders
 from src.core.observation import Observation, ObservationSource, ObservationReason
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
-from src.dashboard.auth import COOKIE_NAME, require_dashboard_session, session_guard
+from src.dashboard.auth import COOKIE_NAME, require_dashboard_session, session_guard, session_reader
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.dashboard.native_work import NativeAuthorityRetired, ensure_admin_work, require_current, run_admin_work
 from src.dashboard.live_event_bus import LiveEventBus
@@ -303,7 +304,8 @@ def register_observability_routes(
                 available = session_guard(request, frozenset({'conversations:read'}))
                 try:
                     return event_bus.conversation_response(connection,event_logger,
-                        {'user':user,'zone':zone,'path':path},available)
+                        {'user':user,'zone':zone,'path':path},available,
+                        reader=session_reader(request,frozenset({'conversations:read'})))
                 except RuntimeError:
                     raise HTTPException(503,detail='conversation_receipts_unavailable') from None
             raise HTTPException(503,detail='conversation_receipts_unavailable')
@@ -462,8 +464,12 @@ def register_observability_routes(
         @router.websocket("/ws/live")
         async def ws_live(ws: WebSocket):
             bound_guard = session_guard(ws, frozenset({'conversations:read'}))
+            reader = session_reader(ws, frozenset({'conversations:read'}))
+            if reader is None:
+                await ws.close(code=1008)
+                return
             try:
-                sub_id, _ = await event_bus.subscribe()
+                sub_id, _ = await event_bus.subscribe(reader=reader)
             except RuntimeError:
                 await ws.close(code=1013)
                 return
@@ -480,11 +486,15 @@ def register_observability_routes(
                 await ws.close(code=1000 if available() else 1008)
             try:
                 await ws.accept()
-                await event_bus.browser_stream(sub_id, send, close, ws.receive, available)
+                await event_bus.browser_stream(sub_id, send, close, ws.receive, available,reader=reader)
             except WebSocketDisconnect:
                 pass
             except Exception:
                 logger.warning('Live subscriber unavailable')
+                try:
+                    await ws.close(code=1000 if available() else 1008)
+                except (Exception, asyncio.CancelledError):
+                    pass
             finally:
                 try:
                     await event_bus.unsubscribe(sub_id)

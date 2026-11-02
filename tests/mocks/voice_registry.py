@@ -11,6 +11,7 @@ from src.memory.privacy_services import PrivacyServices
 from src.users.voice_ledger import VoiceReviewer
 from src.users.voice_registry import build_voice_registry
 from src.dashboard.live_erasure import build_live_services
+from tests.mocks.browser_authority import bind_browser_authority, make_browser_authority
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
 
@@ -63,5 +64,7 @@ async def web_graph(tmp_path):
     """Use the actual shared socket receipts and voice authority for HTTP reads."""
     async with graph(tmp_path) as (privacy,owner,voices,clock):
         async with AsyncExitStack() as stack:
+            authority = await make_browser_authority(stack, tmp_path/'browser-auth.db')
             bus = await build_live_services({},privacy=privacy,owner=owner,shutdown=stack)
+            bind_browser_authority(bus, authority)
             yield privacy,owner,voices,clock,bus

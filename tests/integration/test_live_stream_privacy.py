@@ -13,6 +13,7 @@ from src.memory.privacy_services import PrivacyServices
 from tests.integration.test_capture_producer_privacy import until
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
+from tests.mocks.browser_authority import bind_browser_authority, make_browser_authority
 
 pytestmark = pytest.mark.asyncio
 ACTOR = MemoryReviewer('synthetic-admin')
@@ -26,8 +27,10 @@ async def graph(tmp_path):
         privacy = PrivacyServices(str(tmp_path/'privacy.db'), clock=clock, close_timeout_s=.03)
         stack.push_async_callback(privacy.aclose)
         await privacy.acall(privacy.initialize)
+        authority = await make_browser_authority(stack, tmp_path/'browser-auth.db')
         from src.dashboard.live_receipts import LiveReceiptStore
         bus = LiveEventBus(queue_size=2, receipts=LiveReceiptStore(privacy.ledger), source_policy=privacy.ledger, clock=clock, close_timeout_s=.03)
+        bind_browser_authority(bus, authority)
         privacy.add_borrower(bus.begin_close)
         stack.push_async_callback(bus.aclose)
         bus.start()
@@ -154,6 +157,7 @@ async def asgi_socket(bus, authorization):
     from fastapi import FastAPI
     from src.dashboard.observability import register_observability_routes
     app = FastAPI()
+    app.state.dashboard_authority = bus.test_authority
     register_observability_routes(app, event_bus=bus, use_mocks=False)
     incoming, outgoing = asyncio.Queue(), asyncio.Queue()
     scope = {'type':'websocket','path':'/ws/live','raw_path':b'/ws/live','root_path':'',
@@ -175,6 +179,47 @@ async def asgi_socket(bus, authorization):
         await incoming.put({'type':'websocket.disconnect','code':1000})
         async with asyncio.timeout(3):
             await task
+
+
+async def test_reader_retired_during_accept_closes_before_hello_or_native_receipt(tmp_path,dashboard_auth,monkeypatch):
+    from fastapi import FastAPI
+    from src.dashboard.observability import register_observability_routes
+
+    async with graph(tmp_path) as (privacy,bus,_):
+        app = FastAPI()
+        app.state.dashboard_authority = bus.test_authority
+        register_observability_routes(app,event_bus=bus,use_mocks=False)
+        incoming,outgoing = asyncio.Queue(),asyncio.Queue()
+        entered,release = asyncio.Event(),asyncio.Event()
+
+        async def actual(message):
+            if message['type']=='websocket.accept':
+                entered.set()
+                await release.wait()
+            await outgoing.put(message)
+
+        scope = {'type':'websocket','path':'/ws/live','raw_path':b'/ws/live','root_path':'',
+            'scheme':'ws','query_string':b'','server':('localhost',80),'client':('127.0.0.1',12345),
+            'headers':[(b'authorization',dashboard_auth['Authorization'].encode())],'subprotocols':[],'state':{}}
+        await incoming.put({'type':'websocket.connect'})
+        observing = asyncio.create_task(app(scope,incoming.get,actual))
+        try:
+            await asyncio.wait_for(entered.wait(),3)
+            monkeypatch.setenv('KZA_DASHBOARD_TOKEN','synthetic-retired-during-accept')
+            await bus.publish(event(memory_source(now=bus._retention.clock())))
+            assert all(state.queue.empty() for state in bus._retention._states.values())
+        finally:
+            release.set()
+        assert (await asyncio.wait_for(outgoing.get(),3))['type']=='websocket.accept'
+        assert await asyncio.wait_for(outgoing.get(),3)=={'type':'websocket.close','code':1008,'reason':''}
+        await asyncio.wait_for(observing,3)
+        assert bus.subscriber_count==0
+
+        def counts():
+            with privacy.ledger._transaction() as db:
+                return tuple(db.execute('SELECT (SELECT COUNT(*) FROM live_connections),(SELECT COUNT(*) FROM live_deliveries)').fetchone())
+
+        assert await privacy.acall(counts)==(0,0)
 
 
 async def test_real_authenticated_asgi_route_serializes_deadline_and_retires_then_disconnects(tmp_path, dashboard_auth):
