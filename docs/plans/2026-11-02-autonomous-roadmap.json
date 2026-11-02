@@ -964,7 +964,8 @@
         "c37f6d5a7d8df8a89a520f41331b8e6f4f1f2bc5",
         "0bfccb613354b6ad170ace59b2bfc97a51ef4f06",
         "83eb46536ba4798cdf7b8b9cadc7106f97caeba4",
-        "0174104043dc30329935bd3dbaad4a45fe9afefe"
+        "0174104043dc30329935bd3dbaad4a45fe9afefe",
+        "db693704d44ed0129db96f4105fa898a86881701"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
@@ -976,9 +977,10 @@
         "data/autonomous-roadmap-20261102/t013/sqlite-list-evidence.json",
         "data/autonomous-roadmap-20261102/t013/reminder-evidence.json",
         "data/autonomous-roadmap-20261102/t013/routine-evidence.json",
-        "data/autonomous-roadmap-20261102/t013/household-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/household-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/shared-list-evidence.json"
       ],
-      "next_action": "Close shared list/reminder reads and announcements, then remaining native/admin mutations, exact evaluator scopes, HTTP/WS ownership, credentials and role-aware UI before full T013 verification."
+      "next_action": "Close shared reminder reads and announcements with PRIVATE legacy migration and original native admin read guards; then remaining native/admin mutations, exact evaluator scopes, HTTP/WS ownership, credentials and role-aware UI before full T013 verification."
     },
     {
       "id": "T014",

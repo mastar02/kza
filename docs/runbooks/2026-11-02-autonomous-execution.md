@@ -301,7 +301,26 @@ del proceso completo bajo deuda de GC o carga física. La unidad queda
 verificada localmente; la evidencia y todos los intentos están en
 `data/autonomous-roadmap-20261102/t013/household-evidence.json`.
 
-T013 sigue en curso: faltan el cierre compartido de listas, recordatorios y
-anuncios, guards de mutaciones administrativas nativas, ámbitos personales y
+### Listas compartidas por voz
+
+La revisión `db69370` filtra listas compartidas en SQLite antes de seleccionar
+homónimos, construir DTOs o buscar artículos. Cada escritura comprueba de nuevo
+el padre dentro de su transacción, antes de tocar hijos. La voz no autocrea una
+lista personal bajo `unknown`; crear requiere pedir una lista compartida, sin
+atribuir autoría a un perfil acústico. Una escritura rechazada no replica a HA.
+
+Los GET privados requieren administración y llevan la guarda original hasta
+la proyección nativa. Retirar la sesión mientras la lectura espera impide leer
+los campos privados, incluso si se canceló su observador. Añadir a un ID
+inexistente devuelve 404 sin acreditar persistencia. Los casos positivos de
+persistencia y reinicio preparan explícitamente listas compartidas.
+
+La unidad pasa 1134 pruebas, con grafos reales en ambos modos y salida por la
+habitación configurada. Revisión y Ruff no encuentran bloqueantes. El detalle
+y los intentos están en
+`data/autonomous-roadmap-20261102/t013/shared-list-evidence.json`.
+
+T013 sigue en curso: faltan el cierre compartido de recordatorios y anuncios,
+guards de mutaciones administrativas nativas, ámbitos personales y
 de evaluación, binding HTTP/WS, gestión de credenciales y navegación por rol.
 No acredita accesos reales ni criterios de aceptación.
