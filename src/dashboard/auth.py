@@ -13,13 +13,14 @@ servicios). Para single-user on-prem es suficiente.
 import logging
 import os
 import secrets
-from dataclasses import dataclass
 from typing import NoReturn, Optional
 from urllib.parse import urlsplit
 
 from fastapi import Cookie, Depends, Header, HTTPException, WebSocketException, status
 from fastapi.responses import JSONResponse
 from starlette.requests import HTTPConnection
+
+from src.dashboard.authority import DashboardPrincipal as DashboardPrincipal
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +29,7 @@ COOKIE_NAME = "kza_dashboard_token"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 días
 
 
-@dataclass(frozen=True)
-class DashboardPrincipal:
-    """Server-owned identity and permissions for a dashboard session."""
 
-    subject: str
-    permissions: frozenset[str]
 
 
 def _expected_token() -> Optional[str]:

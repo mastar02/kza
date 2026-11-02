@@ -949,10 +949,10 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
+      "status": "in_progress",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Implement private server authority, then bind permissions/scope/expiry to HTTP, WS, native mutation and retained delivery; preserve all acceptance criteria unevaluated."
     },
     {
       "id": "T014",
