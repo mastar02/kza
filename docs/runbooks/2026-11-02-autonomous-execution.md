@@ -647,3 +647,39 @@ T047 sigue en progreso: corresponde aplicar y verificar el selector NEXO con
 catálogo auxiliar ligado al dueño de la vista y a su token de entrega. T013
 conserva sus pendientes de evaluador y credenciales. No se acepta ningún
 criterio ni se modifica producción con esta unidad.
+
+
+### Selector NEXO de persona vinculada
+
+La revisión `be91b8d` conecta la tarjeta y el diálogo manual de la
+referencia con la API real. El selector distingue homónimos por ID canónico
+y permite desvincular expresamente. La asociación conserva la revisión
+acústica y no cambia permisos ni consentimiento. Un catálogo no disponible
+no se presenta como un vínculo vacío; un 409 o 503 exige actualizar sin
+reenviar automáticamente ni mostrar un éxito anticipado.
+
+La consulta auxiliar de nombres pertenece al mismo login, socket y vista de
+Voces. Sólo admite el GET fijo del catálogo con autoridad administrativa y
+retiene su decoder y consumidor hasta su salida real. La aceptación y el
+submit comprueban el token de entrega, el perfil y ambas revisiones. Los
+objetos anidados se copian y congelan. Al retirar la vista se borran nombres,
+opciones y borradores antes de confirmar el DOM vacío. Catálogo, respuesta
+de mutación y audio nativo son barreras independientes; su flush conserva el
+último token realmente renderizado. Una verificación de identidad diferida
+vuelve a comprobar el dueño antes de empezar.
+
+Pasan 120 pruebas Node, Ruff y Chromium con HTTP real, PCM sintético,
+homónimos, vínculo/desvínculo, conflicto CAS, indisponibilidad, catálogo
+retenido bajo otro token y otro login, borrado de cuenta y conservación del
+perfil. También pasa la regresión de Hogar y Personas. Las capturas incluyen
+la tarjeta vinculada, el selector y reflujo a 320/390 píxeles. La evidencia y
+los hashes están en
+`data/autonomous-roadmap-20261102/t047/person-ui-evidence.json`.
+
+La suite de 6.422 casos y un xfail corresponde a `f25f7c6`; los 300 archivos
+Python de producto permanecen idénticos. El delta de esta revisión es de
+frontend y harness, con la comprobación complementaria indicada. No se
+sumaron suites superpuestas ni se atribuyó la suite completa a otro árbol.
+T047 conserva pendiente la revisión de la presentación inversa desde
+Personas; T013 mantiene evaluador y credenciales. Ningún criterio queda
+aceptado ni se cambia el despliegue con esta unidad.

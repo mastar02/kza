@@ -1456,7 +1456,8 @@
         "68fbb3d856afff28d643cfc8ad99bf41d3ce0c0b",
         "55bee7beef284efd8d0046287eb0de62438a0fad",
         "4d2c0ef9d8e960114a23d865127479d79266420b",
-        "f25f7c606650f0c7b7e6ec4c282d90cd8555bd73"
+        "f25f7c606650f0c7b7e6ec4c282d90cd8555bd73",
+        "be91b8dc305115f8f9209eda2c8cb6c62e12dff6"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t047/home-shell-evidence.json",
@@ -1466,9 +1467,10 @@
         "data/autonomous-roadmap-20261102/t047/voices-control-evidence.json",
         "data/autonomous-roadmap-20261102/t047/login-replacement-evidence.json",
         "data/autonomous-roadmap-20261102/t047/voices-nexo-evidence.json",
-        "data/autonomous-roadmap-20261102/t047/person-native-evidence.json"
+        "data/autonomous-roadmap-20261102/t047/person-native-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/person-ui-evidence.json"
       ],
-      "next_action": "Native manual person link verified locally on f25f7c6: independent CAS and unchanged acoustic profile, review+admin, original-reader and batch target fences, shared pure proof for durable retirement -> unlink -> JSON, versioned restore validation; full6422+knownxfail/Ruff0. Next apply staged NEXO chooser with owned auxiliary account catalogue, original-view token and actual decoder/action/media drain. T013 evaluator/credential UI remains. No criteria accepted.",
+      "next_action": "Manual NEXO voice-person selector verified locally on be91b8d: actual HTTP/native link/unlink, canonical homonym choice, no optimistic/retry after409/503, account deletion preserves acoustic profile, original view-token and actual auxiliary/action/media drain. Node120/Ruff0 and actual Chromium voices+Home/People passed; native full6422+knownxfail remains f25f7c6 with300 product Python files unchanged. Audit remaining reverse person->voice UI and exact evaluator/credential UI before closing scope. No criteria accepted.",
       "design_reference": {
         "path": "/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd",
         "source_commit": "d686fcde52a34c3b786decf167eebdb91dceb6d6",
