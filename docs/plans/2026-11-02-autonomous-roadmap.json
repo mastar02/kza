@@ -974,7 +974,9 @@
         "13d0ec44a19510914973c1ad16579909cf636fc7",
         "50135f9aa0ef2095403efb14088579713efd8189",
         "c2cc15aa2e4b472be617980562f5a3193e9e2985",
-        "64c01a2aa293fc7adc262b8324106faf62f16997"
+        "64c01a2aa293fc7adc262b8324106faf62f16997",
+        "ba52848f10fac8a409147be94d23b510db12954c",
+        "8260acb09cf203c11be9e5803c66c3ffccb05ae3"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
@@ -991,9 +993,10 @@
         "data/autonomous-roadmap-20261102/t013/shared-reminder-evidence.json",
         "data/autonomous-roadmap-20261102/t013/admin-evidence.json",
         "data/autonomous-roadmap-20261102/t047/people-backend-evidence.json",
-        "data/autonomous-roadmap-20261102/t047/people-ui-evidence.json"
+        "data/autonomous-roadmap-20261102/t047/people-ui-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/voices-reader-evidence.json"
       ],
-      "next_action": "NEXO Personas verified locally: real account CRUD, exact permissions, durable credential retirement, no optimistic state/repost, late-login/GET fences and modal failure handling; Node94/Ruff/Chromium three roles and320/390. Next migrate Voces: bind HTTP/WS/receipt ownership to original login and implement persistent manual voice-person metadata without grants, authentication or consent inference. T013 also retains exact evaluator reader and credential/role UI. Tasks stay in_progress; no criteria accepted."
+      "next_action": "Original-reader transport/receipt unit verified locally: full6310+knownxfail, Ruff,773 source hashes; namespace admission before queue and native read, real egress and guarded SQL commit, no implicit ACK. Next implement CONTROL_ONLY /ws/voices with durable technical/voices page partition and channel-aware REST lookup; NEXO per-socket/login voice controller, media/ACK teardown, then persistent manual voice-person metadata without grants or consent inference. T013 exact evaluator reader and credential/role UI remain. No criteria accepted."
     },
     {
       "id": "T014",
@@ -1443,14 +1446,17 @@
         "13d0ec44a19510914973c1ad16579909cf636fc7",
         "50135f9aa0ef2095403efb14088579713efd8189",
         "c2cc15aa2e4b472be617980562f5a3193e9e2985",
-        "64c01a2aa293fc7adc262b8324106faf62f16997"
+        "64c01a2aa293fc7adc262b8324106faf62f16997",
+        "ba52848f10fac8a409147be94d23b510db12954c",
+        "8260acb09cf203c11be9e5803c66c3ffccb05ae3"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t047/home-shell-evidence.json",
         "data/autonomous-roadmap-20261102/t047/people-backend-evidence.json",
-        "data/autonomous-roadmap-20261102/t047/people-ui-evidence.json"
+        "data/autonomous-roadmap-20261102/t047/people-ui-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/voices-reader-evidence.json"
       ],
-      "next_action": "NEXO Personas verified locally: real account CRUD, exact permissions, durable credential retirement, no optimistic state/repost, late-login/GET fences and modal failure handling; Node94/Ruff/Chromium three roles and320/390. Next migrate Voces: bind HTTP/WS/receipt ownership to original login and implement persistent manual voice-person metadata without grants, authentication or consent inference. T013 also retains exact evaluator reader and credential/role UI. Tasks stay in_progress; no criteria accepted.",
+      "next_action": "Original-reader transport/receipt unit verified locally: full6310+knownxfail, Ruff,773 source hashes; namespace admission before queue and native read, real egress and guarded SQL commit, no implicit ACK. Next implement CONTROL_ONLY /ws/voices with durable technical/voices page partition and channel-aware REST lookup; NEXO per-socket/login voice controller, media/ACK teardown, then persistent manual voice-person metadata without grants or consent inference. T013 exact evaluator reader and credential/role UI remain. No criteria accepted.",
       "design_reference": {
         "path": "/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd",
         "source_commit": "d686fcde52a34c3b786decf167eebdb91dceb6d6",
@@ -2229,7 +2235,7 @@
     "last_verified_phase": "P0",
     "last_verified_task": "T012",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T047/nexo-personas",
+    "last_verified_unit": "T047/original-reader-deliveries-and-receipts",
     "user_priority_after_admin_unit": "T047"
   }
 }

@@ -495,3 +495,37 @@ los hashes de 771 fuentes están en `t047/people-ui-evidence.json`, bajo el mism
 directorio privado de ejecución. Voces y su contrato de asociación persistente
 siguen pendientes. No se acepta todavía ningún criterio de campo ni se cierra
 T047 o T013.
+
+### Propiedad de lecturas y recibos de Voces
+
+Cada transporte conserva un namespace opaco del servidor, la autorización
+original y su revisión. Dos logins de la misma credencial y del mismo operador
+no pueden intercambiar UUID de conexión ni cubrir los recibos del otro.
+El namespace se fija antes de aceptar la conexión y encolar datos. REST lo
+comprueba antes de la lectura nativa, tras sus awaits, antes del ticket y dentro
+del callback que entrega el cuerpo. También retira cursores de páginas vacías
+si la conexión o su retención dejó de estar disponible.
+
+Las conexiones, entregas y desafíos de reset guardan ese namespace en SQLite.
+La guardia original se comprueba después de adquirir los locks y en el helper
+que confirma la transacción, incluidas sus consultas de recuperación. Un ACK
+provisional se revierte si la autorización se retira antes del commit.
+Desconectar permite liberar sólo la conexión propia, incluso tras revocación;
+conserva todos los tickets sin ACK. La migración mantiene pendientes las filas
+antiguas sin dueño verificable. El vencimiento tampoco acredita su retirada.
+
+El cierre durante `accept`, la retirada idle sin mensajes y la cancelación del
+observador conservan dueños y cleanup. Los fixtures de HTTP, WS y diagnóstico
+inyectan una autoridad real; las pruebas de protocolo usan bindings sintéticos
+explícitos. Se mantienen separadas las mutaciones administrativas del bearer
+anterior y las lecturas privadas que necesitan una autoridad del servidor.
+
+Las revisiones `ba52848` y `8260acb` pasan 6.310 pruebas con un xfail conocido y
+Ruff. La primera pasada completa encontró tres fixtures de diagnóstico sin
+autoridad; se corrigieron y la segunda pasó sin fallos. Los intentos, revisiones
+y hashes de 773 fuentes están en
+`data/autonomous-roadmap-20261102/t047/voices-reader-evidence.json`.
+Quedan el canal CONTROL_ONLY, su ámbito durable de reset, el controlador NEXO
+por socket/login y la asociación manual de perfiles con personas. La lectura
+exacta de Evaluación y la interfaz de credenciales continúan en T013. Esta
+unidad no acredita restauración conjunta de backups ni aceptación de campo.
