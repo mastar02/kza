@@ -431,3 +431,35 @@ permitidos. Las herramientas anteriores se conservan en `/home/legacy.html`.
 Las siguientes unidades adaptarán esas vistas a NEXO y añadirán el contrato
 manual perfil vocal–persona: metadata administrativa sin crear sesión,
 credencial, consentimiento, roles o acceso personal. T047 sigue en curso.
+
+### Catálogo de Personas y retiro de cuentas
+
+La base para Personas incorpora `GET /api/admin/users`, limitado a ID, nombre,
+nivel de cuenta y estado activo. La proyección se realiza dentro del lock con
+la autoridad original; no copia vectores, preferencias ni el objeto completo.
+Un catálogo no verificable devuelve indisponibilidad, no una lista vacía.
+El nivel de cuenta y los permisos de la sesión del dashboard siguen separados.
+
+La baja comprueba primero la existencia y protección del último administrador,
+retira todas las credenciales vinculadas y sus sesiones, y finalmente escribe
+el catálogo. Usa una sola admisión retenida hasta completar sus pasos, aunque
+el observador cancele o el dashboard selle nuevas operaciones. No presenta las
+dos persistencias como una transacción atómica: un fallo posterior al retiro
+informa `credentials_retired: true`; un resultado de retiro incierto conserva
+`null`. No repite escrituras automáticamente.
+
+La autoridad consulta un snapshot canónico inmutable y sin locks del catálogo.
+Las cuentas ausentes, inactivas o no verificables no habilitan acceso personal.
+Los retiros durables impiden nuevos bindings y la reaparición de credenciales
+antiguas aunque se restaure sólo el JSON. El esquema privado pasa de 1 a 2;
+la migración preserva roles y sesiones válidos, y una base 2 sin su tabla de
+retiros se rechaza. Una versión anterior del programa rechaza el esquema 2.
+Esto no acredita todavía restauración conjunta de backups ni rollback de P6.
+
+La revisión `13d0ec4` pasa 6.285 pruebas con un xfail conocido. El suplemento
+`50135f9`, limitado al manejo de errores de la baja y su prueba, pasa otras
+60 pruebas de administración y Ruff; las suites se superponen y no se suman.
+Se conservaron todos los intentos y hashes de las 770 fuentes verificadas en
+`data/autonomous-roadmap-20261102/t047/people-backend-evidence.json`.
+Esta unidad prepara el backend: la vista Personas NEXO y la vinculación vocal
+persistente siguen pendientes; T047 y T013 conservan su estado en curso.
