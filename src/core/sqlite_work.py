@@ -124,6 +124,10 @@ class SQLiteWork:
         """Return actual drain ownership for a retained connection-close task."""
         return self._work.begin_close()
 
+    async def drain_admitted(self) -> None:
+        """Drain the current operations, including publication, keeping admission open."""
+        await self._work.drain_admitted()
+
     def diagnostics(self) -> dict:
         """Report bounded numeric work evidence without retained SQL values."""
         return self._work.diagnostics()

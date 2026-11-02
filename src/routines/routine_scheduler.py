@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+from contextvars import Context
 from dataclasses import replace
 from datetime import datetime, timezone as utc_timezone
 from enum import StrEnum
@@ -24,6 +25,7 @@ from src.routines.models import (
     spec_to_dict,
 )
 from src.routines.routine_store import RoutineStore
+from src.core.sqlite_work import AuthorityGuard
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionRequest
 from src.home_assistant.operations import action_parameters
@@ -85,6 +87,8 @@ class RoutineScheduler:
         self._workers: dict[str, asyncio.Task] = {}
         self._started_workers: set[str] = set()
         self._lifecycle_lock = asyncio.Lock()
+        self._stop_task: asyncio.Task | None = None
+        self._stop_generation = 0
 
     @staticmethod
     def _utc(value: datetime) -> datetime:
@@ -92,17 +96,19 @@ class RoutineScheduler:
             raise ValueError('Scheduler clock must have a timezone')
         return value.astimezone(utc_timezone.utc)
 
-    async def register_routine(self, spec: RoutineSpec, *, actor: str) -> ScheduledRoutine:
+    async def register_routine(self, spec: RoutineSpec, *, actor: str,
+                               guard: AuthorityGuard | None = None) -> ScheduledRoutine:
         """Persist a new normalized definition with server-owned identity."""
         await self._validate_control_selection(spec)
-        return await self.store.save(spec, actor=actor)
+        return await self.store.save(spec, actor=actor, guard=guard)
 
     async def update_routine(self, routine_id: str, spec: RoutineSpec, *,
-                             expected_revision: int, actor: str) -> ScheduledRoutine:
+                             expected_revision: int, actor: str,
+                             guard: AuthorityGuard | None = None) -> ScheduledRoutine:
         """Persist an optimistic update while retaining receipt snapshots."""
         await self._validate_control_selection(spec)
         return await self.store.save(spec, routine_id=routine_id,
-                                     expected_revision=expected_revision, actor=actor)
+                                     expected_revision=expected_revision, actor=actor, guard=guard)
 
     async def _validate_control_selection(self, spec: RoutineSpec) -> None:
         try:
@@ -113,9 +119,10 @@ class RoutineScheduler:
         except ValueError as error:
             raise RoutineValidationError(str(error)) from error
 
-    async def unregister_routine(self, routine_id: str, *, expected_revision: int) -> None:
+    async def unregister_routine(self, routine_id: str, *, expected_revision: int,
+                                 guard: AuthorityGuard | None = None) -> None:
         """Delete an idle definition without deleting its receipts."""
-        await self.store.delete(routine_id, expected_revision=expected_revision)
+        await self.store.delete(routine_id, expected_revision=expected_revision, guard=guard)
 
     async def get_routine(self, routine_id: str) -> ScheduledRoutine | None:
         """Load one persisted definition, or None if absent."""
@@ -126,40 +133,42 @@ class RoutineScheduler:
         return await self.store.list_all()
 
     async def enable_routine(self, routine_id: str, *, expected_revision: int,
-                             actor: str) -> ScheduledRoutine:
+                             actor: str, guard: AuthorityGuard | None = None) -> ScheduledRoutine:
         """Enable an idle routine with optimistic revision checking."""
-        return await self._set_enabled(routine_id, True, expected_revision, actor)
+        return await self._set_enabled(routine_id, True, expected_revision, actor, guard)
 
     async def disable_routine(self, routine_id: str, *, expected_revision: int,
-                              actor: str) -> ScheduledRoutine:
+                              actor: str, guard: AuthorityGuard | None = None) -> ScheduledRoutine:
         """Disable an idle routine with optimistic revision checking."""
-        return await self._set_enabled(routine_id, False, expected_revision, actor)
+        return await self._set_enabled(routine_id, False, expected_revision, actor, guard)
 
     async def _set_enabled(self, routine_id: str, enabled: bool,
-                           expected_revision: int, actor: str) -> ScheduledRoutine:
-        routine = await self.store.get(routine_id)
+                           expected_revision: int, actor: str,
+                           guard: AuthorityGuard | None = None) -> ScheduledRoutine:
+        routine = await self.store.get(routine_id, guard=guard)
         if routine is None:
             raise RoutineNotFound(routine_id)
         if not enabled:
             # Revoking control permission must never prevent disabling a job.
             return await self.store.save(replace(routine.spec, enabled=False), routine_id=routine_id,
-                                         expected_revision=expected_revision, actor=actor)
+                                         expected_revision=expected_revision, actor=actor, guard=guard)
         return await self.update_routine(routine_id, replace(routine.spec, enabled=enabled),
-                                         expected_revision=expected_revision, actor=actor)
+                                         expected_revision=expected_revision, actor=actor, guard=guard)
 
     def preview(self, spec: RoutineSpec) -> dict:
         """Return a normalized definition and ordered actions without I/O."""
         return spec_to_dict(parse_routine_spec(spec_to_dict(spec)))
 
-    async def execute_by_id(self, routine_id: str, *, actor: str, request_id: str) -> RoutineRun:
-        """Claim an actor-scoped manual attempt before starting any effects."""
+    async def execute_by_id(self, routine_id: str, *, actor: str, request_id: str,
+                            guard: AuthorityGuard | None = None) -> RoutineRun:
+        """Own claim and worker publication even after the HTTP observer disappears."""
         async with self._lifecycle_lock:
             if self._stopping:
                 raise RoutineConflict('scheduler_stopping')
             occurrence_key = json.dumps(['manual', actor, request_id], separators=(',', ':'))
-            claim = await self.store.claim_run(routine_id, occurrence_key,
-                                               actor=actor, source='manual')
-            return self._start_claimed_run(claim)
+            claim = await self.store.claim_run(routine_id, occurrence_key, actor=actor, source='manual',
+                guard=guard, publish=self._start_claimed_run)
+            return claim.run
 
     async def get_run(self, routine_id: str, run_id: str) -> RoutineRun:
         """Load a receipt only when it belongs to the requested routine."""
@@ -200,21 +209,46 @@ class RoutineScheduler:
         return run_to_dict(run)
 
     async def start(self) -> None:
-        """Recover interrupted receipts before starting the UTC-clock loop."""
+        """Drain previous publication before recovering or starting the UTC loop."""
+        generation = self._stop_generation
+        stopping = self._stop_task
+        if stopping is not None:
+            await asyncio.shield(stopping)
         async with self._lifecycle_lock:
+            if generation != self._stop_generation:
+                raise RoutineConflict('scheduler_stopping')
             if self._running:
                 return
+            await self.store.drain_admitted()
             if self._workers:
                 raise RoutineConflict('routine_busy')
             self._boot_at = self._utc(self._clock())
             await self.store.initialize()
             await self.store.recover_interrupted()
+            if generation != self._stop_generation:
+                raise RoutineConflict('scheduler_stopping')
+            self._stop_task = None
             self._stopping = False
             self._running = True
-            self._scheduler_task = asyncio.create_task(self._time_loop(), name='routine-scheduler')
+            self._scheduler_task = asyncio.create_task(self._time_loop(),
+                name='routine-scheduler', context=Context())
 
     async def stop(self) -> None:
-        """Cancel and await every owned task before closing the durable store."""
+        """Retain stop after observer cancellation and seal new claims immediately."""
+        self._stopping = True
+        self._running = False
+        self._stop_generation += 1
+        if self._stop_task is None or self._stop_task.done():
+            self._stop_task = asyncio.create_task(self._stop_owned(), context=Context())
+            def observed(done):
+                if not done.cancelled():
+                    done.exception()
+            self._stop_task.add_done_callback(observed, context=Context())
+        stopping = self._stop_task
+        await asyncio.shield(stopping)
+
+    async def _stop_owned(self) -> None:
+        """Drain committed claim publication before interrupting the resulting workers."""
         async with self._lifecycle_lock:
             self._stopping = True
             self._running = False
@@ -223,13 +257,14 @@ class RoutineScheduler:
             if loop_task is not None:
                 loop_task.cancel()
                 await asyncio.gather(loop_task, return_exceptions=True)
+            # Admission stays open for cancellation and terminal receipt writes.
+            await self.store.drain_admitted()
             workers = dict(self._workers)
             unstarted = {run_id for run_id, task in workers.items()
                          if not task.done() and run_id not in self._started_workers}
             for task in workers.values():
                 task.cancel()
             await asyncio.gather(*workers.values(), return_exceptions=True)
-            # A task cancelled before its first instruction cannot run its handler.
             for run_id in unstarted:
                 try:
                     run = await self.store.get_run(run_id)
@@ -258,6 +293,8 @@ class RoutineScheduler:
                 return
             local_now = now.astimezone(self._zone)
             for routine in await self.store.list_all():
+                if self._stopping:
+                    break
                 schedule = routine.spec.schedule
                 if not routine.spec.enabled or schedule is None:
                     continue
@@ -269,21 +306,22 @@ class RoutineScheduler:
                 if due < self._boot_at or due > now:
                     continue
                 try:
-                    claim = await self.store.claim_run(
+                    await self.store.claim_run(
                         routine.routine_id, 'scheduled:' + due.isoformat(),
                         actor='system:scheduler', source='scheduled', scheduled_for=due,
                         expected_revision=routine.revision,
+                        publish=self._start_claimed_run,
                     )
                 except (RoutineNotFound, RoutineConflict):
                     continue
-                self._start_claimed_run(claim)
 
     def _start_claimed_run(self, claim: ClaimResult) -> RoutineRun:
         if claim.created and claim.run.status == RunStatus.RUNNING:
             run_id = claim.run.run_id
-            task = asyncio.create_task(self._run_claimed(claim.run), name='routine:' + run_id)
+            task = asyncio.create_task(self._run_claimed(claim.run),
+                name='routine:' + run_id, context=Context())
             self._workers[run_id] = task
-            task.add_done_callback(lambda completed: self._observe_worker(run_id, completed))
+            task.add_done_callback(lambda completed: self._observe_worker(run_id, completed), context=Context())
         return claim.run
 
     def _observe_worker(self, run_id: str, task: asyncio.Task) -> None:
@@ -298,6 +336,8 @@ class RoutineScheduler:
         """Evaluate fresh conditions and execute the immutable claimed snapshot."""
         self._started_workers.add(run.run_id)
         try:
+            if self._stopping:
+                return await self.store.finish_run(run.run_id, RunStatus.INTERRUPTED)
             if not await self._check_conditions(run.snapshot.spec.conditions):
                 return await self.store.finish_run(run.run_id, RunStatus.SKIPPED)
             return await self.executor.execute_run(run)

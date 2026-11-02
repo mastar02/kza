@@ -149,6 +149,15 @@ class OwnedBlockingWork:
         return {'active':[timing.snapshot(now) for timing in tuple(self._timings.values())],
             'recent':[dict(row) for row in self._history]}
 
+    async def drain_admitted(self) -> None:
+        """Wait for the current admitted snapshot without closing or cancelling work."""
+        admitted = tuple(self._tasks)
+        try:
+            if admitted:
+                await asyncio.shield(asyncio.gather(*admitted, return_exceptions=True))
+        finally:
+            admitted = None
+
     def begin_close(self) -> asyncio.Task:
         """Close admission and return the actual native drain task for an owner."""
         self._closed = True

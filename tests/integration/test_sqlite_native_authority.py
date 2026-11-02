@@ -236,3 +236,49 @@ async def test_accidental_write_from_read_callback_rolls_back_its_own_transactio
     with pytest.raises(RuntimeError, match='sqlite_read_started_transaction'):
         await native_store.work.read(invalid_read)
     assert await native_store.work.read(values) == []
+
+
+@pytest.mark.parametrize('cancel_drainer', [False, True])
+async def test_snapshot_drain_keeps_admission_open_and_cannot_cancel_actual_work(native_store, cancel_drainer):
+    graph = native_store
+    first_entered, first_release = threading.Event(), threading.Event()
+    later_entered, later_release = threading.Event(), threading.Event()
+    graph.state.releases.extend([first_release, later_release])
+    published = []
+
+    def first_operation(database):
+        insert('first')(database)
+        first_entered.set()
+        assert first_release.wait(5)
+        return 'first'
+
+    def later_operation(database):
+        insert('later')(database)
+        later_entered.set()
+        assert later_release.wait(5)
+        return 'later'
+
+    first = asyncio.create_task(graph.work.write(first_operation, publish=published.append))
+    drainer = later = None
+    try:
+        assert await asyncio.to_thread(first_entered.wait, 3)
+        drainer = asyncio.create_task(graph.work.drain_admitted())
+        await asyncio.sleep(0)
+        later = asyncio.create_task(graph.work.write(later_operation))
+        await asyncio.sleep(0)
+        if cancel_drainer:
+            drainer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await drainer
+        first_release.set()
+        assert await first == 'first'
+        assert await asyncio.to_thread(later_entered.wait, 3)
+        if not cancel_drainer:
+            await asyncio.wait_for(drainer, 1)
+        assert not later.done() and published == ['first']
+    finally:
+        first_release.set()
+        later_release.set()
+        await asyncio.gather(*(t for t in (first, drainer, later) if t is not None), return_exceptions=True)
+    assert await graph.work.write(insert('still-open')) == 'still-open'
+    assert await graph.work.read(values) == ['first', 'later', 'still-open']

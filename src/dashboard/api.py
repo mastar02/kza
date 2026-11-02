@@ -302,53 +302,67 @@ class DashboardAPI:
 
         @self.app.post("/api/routines")
         async def create_routine(
-            routine: RoutineWriteModel,
+            routine: RoutineWriteModel, request: Request,
             principal: DashboardPrincipal = Depends(require_dashboard_session),
         ):
             """Acknowledge a new definition only after its commit."""
             scheduler = self._require_routines(principal, {"routines:manage"})
-            created = await scheduler.register_routine(routine.to_spec(), actor=principal.subject)
+            try:
+                created = await scheduler.register_routine(routine.to_spec(), actor=principal.subject,
+                    guard=session_guard(request, frozenset({'routines:manage'}), principal))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="routine_write_denied") from error
             response = await self._routine_to_response(created)
             await self._broadcast_ws({"type": "routine_created", "routine": response})
             return response
 
         @self.app.put("/api/routines/{routine_id}")
         async def update_routine(
-            routine_id: str, update: RoutineUpdateModel,
+            routine_id: str, update: RoutineUpdateModel, request: Request,
             principal: DashboardPrincipal = Depends(require_dashboard_session),
         ):
             """Persist a complete definition with compare-and-swap semantics."""
             scheduler = self._require_routines(principal, {"routines:manage"})
-            updated = await scheduler.update_routine(
-                routine_id, update.to_spec(), expected_revision=update.expected_revision,
-                actor=principal.subject,
-            )
+            try:
+                updated = await scheduler.update_routine(
+                    routine_id, update.to_spec(), expected_revision=update.expected_revision,
+                    actor=principal.subject,
+                    guard=session_guard(request, frozenset({'routines:manage'}), principal))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="routine_write_denied") from error
             response = await self._routine_to_response(updated)
             await self._broadcast_ws({"type": "routine_updated", "routine": response})
             return response
 
         @self.app.delete("/api/routines/{routine_id}")
         async def delete_routine(
-            routine_id: str,
+            routine_id: str, request: Request,
             expected_revision: str = Query(pattern=r"^[1-9][0-9]*$"),
             principal: DashboardPrincipal = Depends(require_dashboard_session),
         ):
             """Delete only the idle revision the caller has actually read."""
             scheduler = self._require_routines(principal, {"routines:manage"})
-            await scheduler.unregister_routine(routine_id, expected_revision=int(expected_revision))
+            try:
+                await scheduler.unregister_routine(routine_id, expected_revision=int(expected_revision),
+                    guard=session_guard(request, frozenset({'routines:manage'}), principal))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="routine_write_denied") from error
             await self._broadcast_ws({"type": "routine_deleted", "routine_id": routine_id})
             return {"success": True}
 
         @self.app.post("/api/routines/{routine_id}/execute", status_code=202)
         async def execute_routine(
-            routine_id: str, body: ExecuteRoutineModel,
+            routine_id: str, body: ExecuteRoutineModel, request: Request,
             principal: DashboardPrincipal = Depends(require_dashboard_session),
         ):
             """Return the durable claim while its scheduler-owned worker proceeds."""
             scheduler = self._require_routines(principal, {"routines:manage", "home:control"})
-            run = await scheduler.execute_by_id(
-                routine_id, actor=principal.subject, request_id=body.request_id,
-            )
+            try:
+                run = await scheduler.execute_by_id(
+                    routine_id, actor=principal.subject, request_id=body.request_id,
+                    guard=session_guard(request, frozenset({'routines:manage', 'home:control'}), principal))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="routine_write_denied") from error
             return run_to_dict(run)
 
         @self.app.get("/api/routines/{routine_id}/runs/{run_id}")
@@ -379,26 +393,32 @@ class DashboardAPI:
 
         @self.app.post("/api/routines/{routine_id}/enable")
         async def enable_routine(
-            routine_id: str, body: RoutineRevisionModel,
+            routine_id: str, body: RoutineRevisionModel, request: Request,
             principal: DashboardPrincipal = Depends(require_dashboard_session),
         ):
             """Enable an idle definition using its expected revision."""
             scheduler = self._require_routines(principal, {"routines:manage"})
-            routine = await scheduler.enable_routine(
-                routine_id, expected_revision=body.expected_revision, actor=principal.subject,
-            )
+            try:
+                routine = await scheduler.enable_routine(
+                    routine_id, expected_revision=body.expected_revision, actor=principal.subject,
+                    guard=session_guard(request, frozenset({'routines:manage'}), principal))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="routine_write_denied") from error
             return await self._routine_to_response(routine)
 
         @self.app.post("/api/routines/{routine_id}/disable")
         async def disable_routine(
-            routine_id: str, body: RoutineRevisionModel,
+            routine_id: str, body: RoutineRevisionModel, request: Request,
             principal: DashboardPrincipal = Depends(require_dashboard_session),
         ):
             """Disable an idle definition using its expected revision."""
             scheduler = self._require_routines(principal, {"routines:manage"})
-            routine = await scheduler.disable_routine(
-                routine_id, expected_revision=body.expected_revision, actor=principal.subject,
-            )
+            try:
+                routine = await scheduler.disable_routine(
+                    routine_id, expected_revision=body.expected_revision, actor=principal.subject,
+                    guard=session_guard(request, frozenset({'routines:manage'}), principal))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="routine_write_denied") from error
             return await self._routine_to_response(routine)
 
         # ==================== Presencia ====================
