@@ -920,14 +920,18 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "implemented",
       "implementation_commits": [
-        "67b6774c8bcf7b4485ff839b61c21b7429605dc0"
+        "67b6774c8bcf7b4485ff839b61c21b7429605dc0",
+        "a04d4f6d6cf31f18d5ea9e27a0e3045876de5a53",
+        "cdbe711fd278b9fc675889c0f432720f528e79cf"
       ],
       "evidence": [
-        "data/autonomous-roadmap-20261102/t012/foundation-evidence.json"
+        "data/autonomous-roadmap-20261102/t012/foundation-evidence.json",
+        "data/autonomous-roadmap-20261102/t012/endpoints-evidence.json",
+        "data/autonomous-roadmap-20261102/t012/weather-evidence.json"
       ],
-      "next_action": "Shared voice/Casa foundation pushed; migrate observability endpoint source/expiry metadata and remove operational fallback confusion, verify actual empty/timeout cases, then run complete suite. T040/T046 presentation and renewal still pending."
+      "next_action": "Run complete suite on committed sources; preserve C06 not_evaluated and T040/T046 UI/polling obligations; horizon correctness remains T037/T060."
     },
     {
       "id": "T013",

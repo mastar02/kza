@@ -1056,8 +1056,9 @@ class RequestRouter:
         result["action"] = dispatch_result.action
         result["path"] = dispatch_result.path.value if dispatch_result.path else None
         result["timings"].update(dispatch_result.timings)
-        if isinstance(dispatch_result.observation, Observation):
-            result["source_observation"] = dispatch_result.observation.to_dict(self.home_voice_resolver.capabilities.now())
+        observation = getattr(dispatch_result, "observation", None)
+        if isinstance(observation, Observation):
+            result["source_observation"] = observation.to_dict(self.home_voice_resolver.capabilities.now())
         turn = self._turn_outcome.get()
         if turn is not None:
             if isinstance(dispatch_result.outcome, TaskOutcome):
