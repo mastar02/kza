@@ -425,7 +425,8 @@ async def test_due_and_arrival_race_share_one_committed_reminder_effect(graph, t
         await store.close()
 
 
-async def test_recurring_reminder_late_arrival_cannot_adopt_or_overwrite_next_occurrence(graph, tmp_path):
+@pytest.mark.parametrize('days_late', [0, 2])
+async def test_recurring_reminder_late_arrival_cannot_adopt_or_overwrite_next_occurrence(graph, tmp_path, days_late):
     ha, actions, _ = graph
     store = ReminderStore(str(tmp_path / "occurrences.db"))
     await store.initialize()
@@ -440,7 +441,7 @@ async def test_recurring_reminder_late_arrival_cannot_adopt_or_overwrite_next_oc
 
     arrival = None
     try:
-        reminder = await store.create("profile", "Shared recurrence", time.time() - 1,
+        reminder = await store.create("profile", "Shared recurrence", time.time() - 1 - days_late * 86400,
             recurrence="daily", scope=ReminderScope.SHARED, ha_actions=[
                 {"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp"}])
         presence, tts = MagicMock(), AsyncMock()
@@ -451,7 +452,8 @@ async def test_recurring_reminder_late_arrival_cannot_adopt_or_overwrite_next_oc
         await asyncio.wait_for(entered.wait(), 2)
         await scheduler._fire_reminder(reminder)
         successor = await store.get_by_id(reminder.id)
-        assert successor.state == "active" and successor.trigger_at > time.time()
+        assert successor.state == "active" and successor.trigger_at > reminder.trigger_at
+        assert (successor.trigger_at > time.time()) is (days_late == 0)
         assert len(ha.sends) == 1
         release.set()
         assert await asyncio.wait_for(arrival, 2) == 1
@@ -465,7 +467,8 @@ async def test_recurring_reminder_late_arrival_cannot_adopt_or_overwrite_next_oc
             expected_trigger_at=reminder.trigger_at)
         await scheduler._fire_reminder(reminder)
         await scheduler._execute_home_actions(reminder)
-        await scheduler._fire_reminder(successor)
+        if days_late == 0:
+            await scheduler._fire_reminder(successor)
         assert len(spoken) == 2 and len(ha.sends) == 1
         assert await store.cancel(reminder.id, shared_only=True)
         await scheduler._fire_reminder(successor)
