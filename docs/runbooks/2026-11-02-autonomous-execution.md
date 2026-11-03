@@ -1381,7 +1381,81 @@ En el diagnóstico reproducible de 4096 entidades, la actualización pasó de
 una medición sintética con el cliente real y conexiones simuladas, sin otra
 suite concurrente; no constituye aceptación de C03 ni prueba física.
 
-T021 continúa `in_progress`: faltan la política de tres fallos de la misma causa
-y la prueba temporal del presupuesto completo de recuperación, incluido el
-retiro real. C06/C20 siguen sin aceptar; esta unidad no acredita HA físico,
-60 segundos ni 72 horas.
+Después de T021-B quedaba por ejecutar el presupuesto completo de recuperación,
+incluido el retiro real, y revisar la política propuesta para fallos repetidos.
+C06/C20 seguían sin aceptar; esa unidad no acredita HA físico, 60 segundos ni
+72 horas.
+
+## Cadencia de recuperación y cierre confirmado de HA
+
+T021-C calcula el siguiente intento desde el inicio del anterior. La adquisición
+y su retiro consumen ese intervalo; no se añade otra espera completa al acabar
+el cierre. El intervalo máximo sigue siendo 30 segundos. Un inventario inicial
+validado reinicia el backoff aunque su receptor permanezca abierto y falle
+después. La regla de tres fallos de la sección de autonomía rige la ejecución
+del agente; no exige incorporar un circuito permanente ni un reset manual al
+cliente de HA. Esa extrapolación del plan anterior se corrigió sin modificar
+las metas aceptadas.
+
+El indicador `closed` puede preceder a la salida de `close()` en
+[aiohttp 3.14.0](https://raw.githubusercontent.com/aio-libs/aiohttp/v3.14.0/aiohttp/client_ws.py).
+Un propietario de cierre registrado se espera incluso si su tarea terminó
+con error o cancelación; el indicador por sí solo no permite descartarlo.
+Cada intento de cierre tiene una observación de cinco segundos, hasta tres
+intentos. La cancelación que no obtiene cooperación conserva el propietario
+y el recurso como pendientes. No se presenta como retirado lo que sólo recibió
+una solicitud de cierre.
+
+El canal de acciones requerido se recupera con su propio temporizador único,
+contexto vacío y comprobaciones de token/generación. Los frames de estados no
+desplazan el próximo intento ni crean propietarios duplicados. El temporizador
+se cancela al admitir una conexión o cerrar el cliente; parar eventos mantiene
+la independencia del canal de acciones. Un canal nunca requerido no se abre.
+La recuperación sólo autentica conexiones: no guarda ni reenvía servicios.
+
+La observación de adquisición pasa de 15 a 20 segundos: una prueba con 4096
+entidades y un mensaje de varios MiB reprodujo el agotamiento de 15 segundos
+durante la validación real y un reintento adicional. Se conserva el volumen
+admitido y la meta de recuperación de 60 segundos. Los límites de mensajes,
+entidades, caché y vigencia de seis segundos no cambian.
+
+El ensayo usa los controladores reales de arranque y recuperación, un reloj
+compartido por `loop.time` y los deadlines nativos, y timers reales de asyncio.
+Avanza las esperas de las hojas de transporte y conserva el tiempo real de CPU;
+no sustituye el controlador ni publica inventarios a mano. El inicio es la
+transición causal de la dependencia a sana, incluido el intento o cierre que
+ya estuviera activo. Las admisiones posteriores esperan la salida real del
+propietario anterior. Se prueban una y 4096 entidades, backoff máximo, saneamiento
+durante adquisición/retiro y reinicio del backoff tras un inventario válido.
+
+Los métodos de reintento y cierre de `e17c3b0`, ejecutados con el mismo ensayo,
+reprodujeron unos 77 y 64 segundos. El cambio dejó esos escenarios de estados
+por debajo de 46 segundos. Otro caso incluyó autenticación de acciones,
+retiro, inventario y una lectura REST del cliente con transporte simulado para
+obtener datos vigentes: pasó de 68,25 a unos 39,5 segundos al eliminar la espera
+del tick de eventos.
+Son modelos de transporte con el cliente y los timers reales, no aceptación
+física ni medición numérica de C03.
+
+La primera suite completa encontró un rechazo de entidad antes de revalidar una
+sesión vencida tras el preflight. No se había enviado el servicio. El caso se
+reprodujo de forma determinista con una entidad no disponible y tres retiradas:
+logout, vencimiento y revisión del rol. El actor original se comprueba ahora
+después de cada lectura de preflight, incluida la unidad de temperatura, antes
+de utilizar su respuesta. No se amplían plazos ni permisos para pasar la prueba.
+
+También se conserva un caso que incumple los 60 segundos: el cierre ignora la
+cancelación. Al vencer ese plazo no hay sucesor ni inventario vigente y el
+propietario continúa registrado. El fallo queda en la evidencia; no se excluye
+ni se convierte en recuperación satisfactoria. T021 sigue `in_progress` y
+C06/C20 no quedan aceptados. La unidad quedó verificada localmente en
+`656b50e`: 89 casos finales y la suite completa de 7418 pruebas, más una xfail
+conocida, en 532,47 segundos; Ruff sin hallazgos. La evidencia de ambas ejecuciones,
+las regresiones y el ajuste final de formato se conserva en
+`data/autonomous-roadmap-20261102/t021/c/evidence.json`.
+
+El siguiente paso se coordina con T022: inventariar la propiedad del socket,
+writer, reader, sesión y trabajo nativo, e identificar un aborto que permita
+demostrar su salida real antes del sucesor. Cerrar la sesión compartida afectaría
+a los canales independientes y no corresponde para una sesión prestada. Ese
+inventario no resuelve por sí solo el incumplimiento temporal registrado.

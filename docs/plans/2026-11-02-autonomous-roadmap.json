@@ -1094,13 +1094,15 @@
       "status": "in_progress",
       "implementation_commits": [
         "8b7c5660ebfd4b0c36f55fe9f2bd81d2d3624fd9",
-        "e17c3b09b9f55d19d1a3992da1a66b4055ef86e9"
+        "e17c3b09b9f55d19d1a3992da1a66b4055ef86e9",
+        "656b50eb4630d431c06724d7d1e0e47d61637164"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t021/a-evidence.json",
-        "data/autonomous-roadmap-20261102/t021/b/evidence.json"
+        "data/autonomous-roadmap-20261102/t021/b/evidence.json",
+        "data/autonomous-roadmap-20261102/t021/c/evidence.json"
       ],
-      "next_action": "T021-B verificada localmente en e17c3b0: flujo subscribe_entities coherente, observaciones por entidad con CAS y fechas originales, cálculo nativo retenido y GET diagnóstico esperado con permisos y vencimiento separados. Pasan 369 específicos, 1126 cruzados, 77 finales de propiedad/HTTP/flujo y la suite completa de 7398 más una xfail conocida; 858 archivos intactos y Ruff sin hallazgos. T021 sigue in_progress: B3 debe resolver tres fallos de la misma causa, estrategia/circuito y reset confiable, y probar el presupuesto temporal completo con dependencia recuperada y retiro real. C06/C20 no evaluados; sin HA real, despliegue ni garantía física de 60 s."
+      "next_action": "T021-C verificada localmente en 656b50e: cadencia absoluta, reinicio tras inventario válido, propietario de cierre realmente retenido y recuperación del canal de acciones con un temporizador único. La autoridad original se revalida tras cada lectura de preflight, incluso no disponible. Pasan 89 finales y la suite completa de 7418 más una xfail conocida; Ruff sin hallazgos. Los ensayos con controlador/timers reales incluyen 1/4096 entidades, backoff máximo e intento/retiro anteriores. La regla de tres intentos rige la autonomía del agente, no exige circuito permanente ni reset manual del runtime. T021 sigue in_progress: un retiro que ignora cancelación conserva su propietario y supera los 60 s. Coordinar con T022 el inventario de recursos y un aborto con salida real comprobada antes del sucesor. C06/C20 siguen no evaluados; sin aceptación física ni garantía universal de 60 s."
     },
     {
       "id": "T022",
@@ -1117,7 +1119,7 @@
       "status": "planned",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Cerrar el inventario de SDK, productores, copias y recursos nativos, empezando por el transporte HA que conserva T021: socket, writer, reader, sesión propia/prestada y trabajo nativo. Precisar aborto, salida real y admisión del sucesor preservando los canales independientes. El inventario por sí solo no resuelve el incumplimiento de C20 ni habilita cerrar una sesión compartida o prestada."
     },
     {
       "id": "T023",
@@ -2294,11 +2296,11 @@
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
     "field_authorized": false,
-    "next_task": "T021",
+    "next_task": "T022",
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T021-B/coherent-entity-stream-and-native-ownership",
+    "last_verified_unit": "T021-C/recovery-cadence-and-confirmed-retirement",
     "user_priority_after_admin_unit": "T047"
   }
 }
