@@ -26,6 +26,7 @@ import sounddevice as sd
 
 from src.ambient.tap import MultiChannelTap
 from src.audio.input_group import InputGroup
+from src.audio.xvf_controller import XvfController
 from src.pipeline.ambient_guard import AmbientGuard, GuardState, classify_outcome
 from src.pipeline.command_event import CapturedTranscript, CommandEvent, TranscriptSource
 from src.wakeword.wake_clip_writer import WakeClipWriter
@@ -357,6 +358,7 @@ class MultiRoomAudioLoop:
         # primero que enumere, y el orden no es estable. Una room sin
         # controller propio NO se gatea (fail-open) en vez de usar el ajeno.
         self._xvf_by_room: dict = dict(xvf_controllers or {})
+        self._xvf_native = OwnedBlockingWork(capacity=8, isolate_context=True)
         self.spenergy_threshold = spenergy_threshold
         # Gate y tuning son features ORTOGONALES sobre el mismo controller
         # (review Fase 1): se puede tunear el DSP con el gate apagado. El
@@ -740,14 +742,24 @@ class MultiRoomAudioLoop:
                 self._schedule_reopen(rs)
 
     def begin_close(self) -> asyncio.Task:
-        """Reject input and retain real native/reset and callback cleanup."""
+        """Seal admission and retain all capture/XVF work until its real exit."""
         self._closed = True
         self._running = False
         if self._closing is None:
+            for ctrl in self._xvf_by_room.values():
+                if isinstance(ctrl, XvfController):
+                    ctrl.request_stop()
+            xvf_close = self._xvf_native.begin_close()
+            self._direction_started = False
+            with self._direction_lock:
+                direction_rooms = tuple(self._direction_observers)
+            for room_id in direction_rooms:
+                self._invalidate_direction(room_id)
             input_pause = self.begin_pause_inputs()
             watchdog = self._watchdog_task
             if watchdog is not None:
                 watchdog.cancel()
+                self._watchdog_task = None
             health = self._audio_health_task
             health_close = self._audio_health_work.begin_close()
             controllers = set(self._capture_controllers.values()) | self._capture_tasks | self._capture_batches | self._early_tasks | self._dispatch_tasks
@@ -755,11 +767,14 @@ class MultiRoomAudioLoop:
                 task.cancel()
             drains = [room.begin_close() for room in self._capture_rooms.values()]
             drains.append(self._inputs.begin_close())
-            drains.extend((input_pause, health_close))
-            drains.append(self._capture_native.begin_close())
+            drains.extend((input_pause, health_close, self._capture_native.begin_close()))
             if isinstance(self._wake_clip_writer, WakeClipWriter):
                 drains.append(self._wake_clip_writer.begin_close())
-            async def finish():
+            self._microphone_inventory_ready.set()
+            for room_id in self._microphone_captures:
+                self._retire_microphone_capture(room_id)
+
+            async def finish_capture():
                 if watchdog is not None:
                     await asyncio.gather(watchdog, return_exceptions=True)
                 if health is not None:
@@ -767,6 +782,44 @@ class MultiRoomAudioLoop:
                 await asyncio.gather(*controllers, *drains, return_exceptions=True)
                 if self._pausing is not None:
                     await asyncio.gather(asyncio.shield(self._pausing), return_exceptions=True)
+                if self._wake_clip_writer is not None and not isinstance(self._wake_clip_writer, WakeClipWriter):
+                    try:
+                        await asyncio.to_thread(self._wake_clip_writer.stop)
+                    except Exception:
+                        pass
+
+            async def finish_xvf():
+                await asyncio.shield(xvf_close)
+                # An admitted start may enter after the first memory-only seal.
+                # Drain admission, seal again, then join the actual pollers.
+                for ctrl in self._xvf_by_room.values():
+                    if isinstance(ctrl, XvfController):
+                        ctrl.request_stop()
+                errors = []
+                for ctrl in self._xvf_by_room.values():
+                    if isinstance(ctrl, XvfController):
+                        try:
+                            await asyncio.to_thread(ctrl.wait_stopped)
+                        except Exception as error:
+                            errors.append(error)
+                    else:
+                        try:
+                            await asyncio.to_thread(ctrl.stop)
+                        except Exception:
+                            pass
+                if errors:
+                    raise errors[0]
+
+            async def finish():
+                results = await asyncio.gather(
+                    finish_capture(), finish_xvf(),
+                    self._stop_direction_observers(), self._stop_microphone_telemetry(),
+                    return_exceptions=True,
+                )
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
+
             self._closing = asyncio.create_task(finish(), context=Context())
         return self._closing
 
@@ -898,12 +951,19 @@ class MultiRoomAudioLoop:
         # writes corren con USB single-threaded (sin transfers concurrentes
         # sobre el mismo handle), y en to_thread para no bloquear el event
         # loop (cada ctrl_transfer con retries puede tardar segundos).
-        await asyncio.to_thread(self._apply_xvf_tuning)
+        await self._xvf_native.run(self._apply_xvf_tuning)
+        if self._closed:
+            raise RuntimeError('capture_closed')
         # Pre-gate SPENERGY: poller solo si el gate está habilitado (fail-open).
         if self.spenergy_gate_enabled:
             for room_id, ctrl in self._xvf_by_room.items():
                 try:
-                    if ctrl.start():
+                    if self._closed:
+                        raise RuntimeError('capture_closed')
+                    started = await self._xvf_native.run(ctrl.start)
+                    if self._closed:
+                        raise RuntimeError('capture_closed')
+                    if started:
                         logger.info(
                             f"Pre-gate SPENERGY activo en {room_id} "
                             f"(umbral {self.spenergy_threshold:.0f})"
@@ -917,6 +977,8 @@ class MultiRoomAudioLoop:
                     logger.warning(
                         f"Pre-gate SPENERGY error al iniciar en {room_id} — gate OFF: {e}"
                     )
+        if self._closed:
+            raise RuntimeError('capture_closed')
         # Reuse the handle opened by a configured legacy gate; DoA never enables it.
         self._direction_started = True
         await self._sync_direction_observers()
@@ -1428,7 +1490,7 @@ class MultiRoomAudioLoop:
                 with self._direction_lock:
                     needs_reset = room_id in self._direction_needs_reset
                 if needs_reset:
-                    await asyncio.to_thread(self._xvf_by_room[room_id].invalidate_device)
+                    await self._xvf_native.run(self._xvf_by_room[room_id].invalidate_device)
                     with self._direction_lock:
                         self._direction_needs_reset.discard(room_id)
                 # Identity/generation can change while an old worker drains.
@@ -1657,34 +1719,8 @@ class MultiRoomAudioLoop:
                 await asyncio.gather(*pending, return_exceptions=True)
 
     async def stop(self):
-        """Stop all audio streams."""
+        """Observe the retained teardown without cancelling its actual owner."""
         closing = self.begin_close()
-        await self._stop_direction_observers()
-        await self._stop_microphone_telemetry()
-        self._microphone_inventory_ready.set()
-        for room_id in self._microphone_captures:
-            self._retire_microphone_capture(room_id)
-        if self._watchdog_task is not None:
-            self._watchdog_task.cancel()
-            self._watchdog_task = None
-        pendientes = self._cancel_reopen_tasks()
-        if pendientes:
-            await asyncio.gather(*pendientes, return_exceptions=True)
-        for ctrl in self._xvf_by_room.values():
-            try:
-                # XvfController.stop() hace thread.join(timeout=1.0) — síncrono.
-                # to_thread evita bloquear el event loop durante el shutdown
-                # (regla del proyecto: nunca llamadas sync en el loop).
-                await asyncio.to_thread(ctrl.stop)
-            except Exception:
-                pass
-        if self._wake_clip_writer is not None and not isinstance(self._wake_clip_writer, WakeClipWriter):
-            try:
-                # stop() drena la cola y hace thread.join — síncrono.
-                await asyncio.to_thread(self._wake_clip_writer.stop)
-            except Exception:
-                pass
-
         try:
             async with asyncio.timeout(self._close_timeout_s):
                 await asyncio.shield(closing)

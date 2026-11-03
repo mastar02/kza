@@ -203,6 +203,16 @@ def parse_usb_port(usb_port: str | None) -> tuple[int, tuple[int, ...]] | None:
         return None
 
 
+@dataclass
+class _XvfPollRun:
+    """Retained admission and worker for one controller generation."""
+
+    generation: int
+    stop_event: threading.Event
+    admission_done: threading.Event
+    starter_thread: threading.Thread
+    thread: threading.Thread | None = None
+
 class XvfController:
     """Lee SPENERGY del XVF3800 vía pyusb y mantiene un pico móvil para gatear.
 
@@ -239,6 +249,8 @@ class XvfController:
         self._usb_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._running = False
+        self._poll_generation = 0
+        self._poll_run: _XvfPollRun | None = None
 
     # ---- USB device ----
     def open(self) -> bool:
@@ -448,39 +460,171 @@ class XvfController:
         return self.read_param("AEC_SPENERGY_VALUES")
 
     # ---- poller ----
+    def _reap_poll_locked(self, run: _XvfPollRun | None) -> None:
+        if run is None or self._poll_run is not run or not run.admission_done.is_set():
+            return
+        if run.thread is not None and run.thread.is_alive():
+            return
+        self._poll_run = None
+        self._thread = None
+        self._running = False
+
+    def _seal_poll_locked(self) -> _XvfPollRun | None:
+        run = self._poll_run
+        self._running = False
+        if run is not None and not run.stop_event.is_set():
+            self._poll_generation += 1
+            run.stop_event.set()
+        return run
+
     def start(self) -> bool:
-        """Arranca el thread de polling. True si quedó corriendo. Fail-open."""
-        if self._thread is not None:
-            return True
-        if self._dev is None and not self.open():
-            return False
-        self._running = True
-        self._thread = threading.Thread(
-            target=self._poll_loop, daemon=True, name="xvf-spenergy"
-        )
-        self._thread.start()
-        logger.info("XvfController: poller SPENERGY iniciado")
-        return True
+        """Start one poller, refusing pending or retiring generations.
+
+        Discovery and Thread.start run outside the publication lock. A stop
+        during either operation seals admission before any sample is published.
+
+        Returns:
+            True for an active poller; False if admission is pending, stopped,
+            retiring, or discovery fails.
+        """
+        with self._lock:
+            self._reap_poll_locked(self._poll_run)
+            if self._poll_run is not None:
+                run = self._poll_run
+                return bool(
+                    self._running and not run.stop_event.is_set()
+                    and run.admission_done.is_set() and run.thread is not None
+                    and run.thread.is_alive()
+                )
+            self._poll_generation += 1
+            run = _XvfPollRun(
+                generation=self._poll_generation, stop_event=threading.Event(),
+                admission_done=threading.Event(), starter_thread=threading.current_thread(),
+            )
+            self._poll_run = run
+        try:
+            if self._dev is None and not self.open():
+                return False
+            with self._lock:
+                if (self._poll_run is not run or run.stop_event.is_set()
+                        or run.generation != self._poll_generation):
+                    return False
+                thread = threading.Thread(
+                    target=self._poll_loop, args=(run,), daemon=True, name="xvf-spenergy",
+                )
+                run.thread = thread
+                self._thread = thread
+                self._running = True
+                self._samples.clear()
+            if run.stop_event.is_set():
+                return False
+            thread.start()
+            with self._lock:
+                active = (self._poll_run is run and self._running
+                          and not run.stop_event.is_set()
+                          and run.generation == self._poll_generation)
+            if active:
+                logger.info("XvfController: SPENERGY poller started")
+            return active
+        except BaseException:
+            with self._lock:
+                if self._poll_run is run:
+                    self._seal_poll_locked()
+            raise
+        finally:
+            with self._lock:
+                if self._poll_run is run and (
+                    run.stop_event.is_set() or run.thread is None or not run.thread.is_alive()
+                ):
+                    self._running = False
+                # This receipt covers discovery and thread-start admission too.
+                run.admission_done.set()
+
+    def request_stop(self) -> None:
+        """Seal poll admission/publication using memory only, without USB or joins.
+
+        The pending admission and worker stay owned until their real exits are
+        observed by wait_stopped or a later external reap.
+        """
+        with self._lock:
+            self._seal_poll_locked()
 
     def stop(self) -> None:
-        self._running = False
-        t = self._thread
-        if t is not None:
-            t.join(timeout=1.0)
-        self._thread = None
+        """Request stop and observe admission/exit for at most one second.
 
-    def _poll_loop(self) -> None:
-        while self._running:
+        Live work remains registered after this bounded observation. Async
+        owners must retain wait_stopped outside the event loop for a real drain.
+        """
+        deadline = time.monotonic() + 1.0
+        with self._lock:
+            run = self._seal_poll_locked()
+        if run is None:
+            return
+        caller = threading.current_thread()
+        if run.thread is caller or (run.starter_thread is caller and not run.admission_done.is_set()):
+            return
+        if not run.admission_done.wait(max(0.0, deadline-time.monotonic())):
+            return
+        thread = run.thread
+        if thread is not None and thread.ident is not None:
+            thread.join(timeout=max(0.0, deadline-time.monotonic()))
+        with self._lock:
+            self._reap_poll_locked(run)
+
+    def wait_stopped(self) -> None:
+        """Drain the captured admission and actual worker exit.
+
+        Call request_stop first. Async lifecycle owners must retain this wait
+        outside the event loop; a timeout cannot terminate native USB work.
+
+        Raises:
+            RuntimeError: If called by the worker or its pending start owner.
+        """
+        with self._lock:
+            run = self._poll_run
+        if run is None:
+            return
+        caller = threading.current_thread()
+        if run.thread is caller or (run.starter_thread is caller and not run.admission_done.is_set()):
+            raise RuntimeError("xvf_wait_from_owner")
+        run.admission_done.wait()
+        thread = run.thread
+        if thread is caller:
+            raise RuntimeError("xvf_wait_from_owner")
+        if thread is not None and thread.ident is not None:
+            thread.join()
+        with self._lock:
+            self._reap_poll_locked(run)
+
+    def _poll_loop(self, run: _XvfPollRun) -> None:
+        try:
+            while not run.stop_event.is_set():
+                with self._lock:
+                    if (self._poll_run is not run or not self._running
+                            or run.generation != self._poll_generation):
+                        break
+                    generation = self._device_generation
+                vals = self.read_spenergy()
+                if vals is not None:
+                    self._record(vals[_AUTO_BEAM_IDX], time.time(), generation, poll_run=run)
+                if run.stop_event.wait(self.poll_interval_s):
+                    break
+        finally:
             with self._lock:
-                generation = self._device_generation
-            vals = self.read_spenergy()
-            if vals is not None:
-                self._record(vals[_AUTO_BEAM_IDX], time.time(), generation)
-            time.sleep(self.poll_interval_s)
+                if self._poll_run is run:
+                    self._running = False
 
-    def _record(self, value: float, now: float, generation: int | None = None) -> None:
+    def _record(
+        self, value: float, now: float, generation: int | None = None,
+        *, poll_run: _XvfPollRun | None = None,
+    ) -> None:
         with self._lock:
             if generation is not None and generation != self._device_generation:
+                return
+            if poll_run is not None and (
+                self._poll_run is not poll_run or not self._running
+                or poll_run.stop_event.is_set() or poll_run.generation != self._poll_generation
+            ):
                 return
             self._samples.append((now, value))
             cutoff = now - self.window_s

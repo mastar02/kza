@@ -1799,7 +1799,10 @@ async def build_application(
         memory_manager=memory_manager,
         orchestrator=orchestrator,
         event_bus=live_event_bus,
-        close_dependencies=(dashboard.admin_work.begin_close,) if dashboard is not None else (),
+        close_dependencies=(
+            ((dashboard.admin_work.begin_close,) if dashboard is not None else ())
+            + ((multi_room_loop.begin_close,) if multi_room_loop is not None else ())
+        ),
     )
 
     shutdown.push_async_callback(pipeline.stop)
