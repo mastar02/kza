@@ -273,6 +273,11 @@ class TextualWakeDetector:
         vad_prob: float | None = None,
         utterance_started_ts: float | None = None,
         memory_source=None,
+        *,
+        audio_provenance=None,
+        transcript_provenance=None,
+        transcript_span=None,
+        transcript_truncated=None,
     ) -> bool:
         """Evaluar una utterance y despachar un comando si corresponde.
 
@@ -387,7 +392,10 @@ class TextualWakeDetector:
             audio=audio,
             room_id=room_id,
             wake_text=text,
-            transcript=CapturedTranscript.from_audio(text, TranscriptSource.AMBIENT, audio),
+            transcript=CapturedTranscript.from_audio(text, TranscriptSource.AMBIENT, audio,
+                transcript_provenance=transcript_provenance, transcript_span=transcript_span,
+                transcript_truncated=transcript_truncated),
+            audio_provenance=audio_provenance,
             capture_complete=True,
             wake_score=1.0,
             textual_wake=True,

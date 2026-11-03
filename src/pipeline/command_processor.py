@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Callable
 from contextvars import Context
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import logging
 import threading
 import time
@@ -11,6 +11,7 @@ import time
 import numpy as np
 
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.evaluation.provenance import CaptureProvenance, FrameInterval
 from src.memory.producer_context import PRODUCER_CONTEXT, model_admission
 from src.memory.producer_scopes import ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated, run_private
@@ -179,20 +180,45 @@ class CommandProcessor:
         return task
 
     async def process_command(self, audio: np.ndarray, use_parallel: bool = True,
-                              pretranscribed_text: str | None = None) -> ProcessedCommand:
+                              pretranscribed_text: str | None = None, *,
+                              audio_provenance: CaptureProvenance | None = None,
+                              transcript_provenance: CaptureProvenance | None = None,
+                              transcript_span: FrameInterval | None = None,
+                              transcript_truncated: bool | None = None) -> ProcessedCommand:
         """Process a capture while preserving ownership of cancelled native work."""
         task = None
         try:
+            # The retained task must not alias a producer's frozen DTO object.
+            if audio_provenance is not None:
+                if type(audio_provenance) is not CaptureProvenance:
+                    raise ValueError('invalid_command_provenance')
+                CaptureProvenance.__post_init__(audio_provenance)
+                audio_provenance = replace(audio_provenance, dsp=replace(audio_provenance.dsp))
+            if transcript_provenance is not None:
+                if type(transcript_provenance) is not CaptureProvenance or type(transcript_span) is not FrameInterval:
+                    raise ValueError('invalid_command_provenance')
+                CaptureProvenance.__post_init__(transcript_provenance)
+                FrameInterval.__post_init__(transcript_span)
+                if transcript_span != FrameInterval(0, transcript_provenance.frame_count):
+                    raise ValueError('invalid_command_provenance')
+                transcript_provenance = replace(transcript_provenance, dsp=replace(transcript_provenance.dsp))
+                transcript_span = replace(transcript_span)
+            elif transcript_span is not None:
+                raise ValueError('invalid_command_provenance')
+            if transcript_truncated is not None and type(transcript_truncated) is not bool:
+                raise ValueError('invalid_command_provenance')
             with self._scopes.operation(PRODUCER_CONTEXT.get().sources):
                 self._require_live()
                 if len(self._commands) + len(self._emotion_tasks) >= 8:
                     raise RuntimeError("command_processor_capacity")
                 task = self._track(asyncio.create_task(run_private(
-                    self._process_command(audio, use_parallel, pretranscribed_text),
+                    self._process_command(audio, use_parallel, pretranscribed_text,
+                        audio_provenance, transcript_provenance, transcript_span, transcript_truncated),
                     self._available)), self._commands)
                 return await task
         finally:
             audio = pretranscribed_text = task = None
+            audio_provenance = transcript_provenance = transcript_span = transcript_truncated = None
 
     def _start_shadow(self, audio):
         if len(self._shadow_tasks) >= 8:
@@ -201,7 +227,9 @@ class CommandProcessor:
             self._native(self.shadow_stt, self.shadow_stt.transcribe_with_confidence,
                          audio, self.sample_rate), self._available)), self._shadow_tasks)
 
-    async def _process_command(self, audio, use_parallel, pretranscribed_text):
+    async def _process_command(self, audio, use_parallel, pretranscribed_text,
+                               audio_provenance=None, transcript_provenance=None,
+                               transcript_span=None, transcript_truncated=None):
         result = ProcessedCommand(text="")
         shadow = stt_result = speaker = emotion = text = None
         started = time.perf_counter()
@@ -222,6 +250,14 @@ class CommandProcessor:
             if stt_result is not None:
                 result.stt_confidence = stt_result
                 result.timings["stt"] = stt_result.elapsed_ms
+                # This branch actually called primary STT on this full input.
+                # A plain pretranscribed_text never receives inferred lineage.
+                transcript_provenance = audio_provenance
+                transcript_span = (FrameInterval(0, audio.size)
+                    if type(audio_provenance) is CaptureProvenance and audio.size else None)
+                transcript_truncated = False
+            elif pretranscribed_text is None:
+                transcript_provenance = transcript_span = transcript_truncated = None
             if speaker is not None:
                 result.user, result.speaker_confidence, result.timings["speaker_id"] = speaker
             if emotion is not None:
@@ -234,7 +270,10 @@ class CommandProcessor:
             if (self.speaker_id is not None and getattr(self.user_manager,'voice_review_managed',False) is True):
                 context = PRODUCER_CONTEXT.get()
                 self.user_manager.voice_registry.observe(self.speaker_id,audio,context.sources,
-                    sample_rate=self.sample_rate,transcript=text[:8192],room_id=context.room_id or None)
+                    sample_rate=self.sample_rate,transcript=text[:8192],room_id=context.room_id or None,
+                    audio_provenance=audio_provenance,transcript_provenance=transcript_provenance,
+                    transcript_span=transcript_span,
+                    transcript_truncated=True if len(text)>8192 else transcript_truncated)
             if result.success:
                 self._current_user, self._current_emotion = result.user, result.emotion
                 self._current_sources = PRODUCER_CONTEXT.get().sources
@@ -248,6 +287,7 @@ class CommandProcessor:
             if shadow is not None and not shadow.done() and asyncio.current_task().cancelling():
                 shadow.cancel()
             audio = pretranscribed_text = result = shadow = stt_result = speaker = emotion = text = None
+            audio_provenance = transcript_provenance = transcript_span = transcript_truncated = None
 
     @staticmethod
     async def _collect(*operations):

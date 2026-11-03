@@ -167,9 +167,11 @@ class RoomProducer:
             for item in items:
                 if isinstance(item, TapPacket):
                     timestamp, chunk, tts_active, epoch = item.timestamp, item.audio, item.tts_active, item.epoch
+                    opening = getattr(item, 'opening', None)
                 else:
                     timestamp, chunk, tts_active = item
                     epoch = None
+                    opening = None
                 if self._closed:
                     segments.clear()
                     self._discard()
@@ -198,9 +200,16 @@ class RoomProducer:
                 )
                 input_source = self._source
                 input_epoch = self._epoch
-                produced = self._segmenter.feed(
-                    ts=timestamp, chunk=chunk, tts_active=tts_active
-                )
+                if opening is None:
+                    # Legacy tuple/fake segmenters keep their original call
+                    # shape. The real segmenter defaults this packet to unknown.
+                    produced = self._segmenter.feed(
+                        ts=timestamp, chunk=chunk, tts_active=tts_active
+                    )
+                else:
+                    produced = self._segmenter.feed(
+                        ts=timestamp, chunk=chunk, tts_active=tts_active, opening=opening
+                    )
                 if not self._admitted(epoch):
                     segments.clear()
                     self._discard()

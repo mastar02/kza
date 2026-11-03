@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 import numpy as np
 
 if TYPE_CHECKING:
+    from src.core.capture_opening import CaptureOpening
     from src.memory.fact_ledger import MemorySource
     from src.memory.sources import CaptureEpoch
 
@@ -40,6 +41,8 @@ class RawSegment:
     complete: bool = True
     input_source: MemorySource | None = field(default=None, repr=False)
     input_epoch: CaptureEpoch | None = field(default=None, repr=False)
+    input_opening: CaptureOpening | None = field(default=None, repr=False)
+    segment_generation: int | None = None
 
     @property
     def duration_s(self) -> float:

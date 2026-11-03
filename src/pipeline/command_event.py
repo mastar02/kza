@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import time
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import numpy as np
+
+from src.evaluation.provenance import CaptureProvenance, FrameInterval
 
 if TYPE_CHECKING:
     from src.nlu.command_grammar import PartialCommand
@@ -30,23 +32,43 @@ class TranscriptSource(StrEnum):
 
 @dataclass(frozen=True)
 class CapturedTranscript:
-    """Bind text to the exact audio it covers, without retaining another clip."""
+    """Keep a producer reuse binding and independent actual STT input metadata."""
 
     text: str
     source: TranscriptSource
     samples: int
     audio_digest: str
+    transcript_provenance: CaptureProvenance | None = None
+    transcript_span: FrameInterval | None = None
+    transcript_truncated: bool | None = None
 
     @classmethod
-    def from_audio(cls, text: str, source: TranscriptSource, audio: np.ndarray) -> CapturedTranscript:
-        """Bind a producer's text to its mono float32 snapshot."""
+    def from_audio(cls, text: str, source: TranscriptSource, audio: np.ndarray, *,
+                   transcript_provenance: CaptureProvenance | None = None,
+                   transcript_span: FrameInterval | None = None,
+                   transcript_truncated: bool | None = None) -> CapturedTranscript:
+        """Bind reuse to a PCM digest; independent metadata records actual STT input."""
         samples = np.asarray(audio, dtype=np.float32)
         if samples.ndim != 1:
             raise ValueError("A transcript must cover mono audio")
-        return cls(text, source, len(samples), hashlib.sha256(samples.tobytes()).hexdigest())
+        provenance, span, truncated = transcript_provenance, transcript_span, transcript_truncated
+        if truncated is not None and type(truncated) is not bool:
+            raise ValueError('invalid_transcript_input_span')
+        if (provenance is None) != (span is None):
+            raise ValueError('invalid_transcript_input_span')
+        if provenance is not None:
+            if type(provenance) is not CaptureProvenance or type(span) is not FrameInterval:
+                raise ValueError('invalid_transcript_input_span')
+            CaptureProvenance.__post_init__(provenance)
+            FrameInterval.__post_init__(span)
+            if span != FrameInterval(0, provenance.frame_count):
+                raise ValueError('invalid_transcript_input_span')
+            provenance, span = replace(provenance, dsp=replace(provenance.dsp)), replace(span)
+        return cls(text, source, len(samples), hashlib.sha256(samples.tobytes()).hexdigest(),
+                   provenance, span, truncated)
 
     def covers(self, audio: np.ndarray) -> bool:
-        """Return whether the final audio is exactly the transcribed snapshot."""
+        """Return whether the producer reuse binding matches final mono audio."""
         samples = np.asarray(audio, dtype=np.float32)
         return (
             samples.ndim == 1 and len(samples) == self.samples
@@ -89,3 +111,4 @@ class CommandEvent:
     conversation_id: str | None = None
     captured_at: float | None = None
     source_expires_at: float | None = None
+    audio_provenance: CaptureProvenance | None = None

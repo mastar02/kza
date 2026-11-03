@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from threading import Event, Lock
 from pathlib import Path
 from typing import Callable, Awaitable, Optional
+from uuid import uuid4
 
 import numpy as np
 import sounddevice as sd
@@ -30,6 +31,8 @@ from src.pipeline.command_event import CapturedTranscript, CommandEvent, Transcr
 from src.wakeword.wake_clip_writer import WakeClipWriter
 from src.pipeline.capture_room import CaptureRoom
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.core.capture_opening import CaptureOpening, coherent_opening, current_capture_opening
+from src.evaluation.provenance import CaptureLane
 from src.memory.producer_context import PRODUCER_CONTEXT, model_admission, producer_context
 from src.memory.producer_scopes import ProducerScopes, current_producer_scope
 from src.memory.prompt_context import SourcesInvalidated, run_private
@@ -60,6 +63,16 @@ CHUNK_SIZE = 1280
 # thread se cuelga (fs trabado, disco lleno bloqueando I/O, etc.), este
 # timeout evita que la recuperación de mics quede rehén de esa escritura.
 AUDIO_HEALTH_WRITE_TIMEOUT_S = 1.0
+
+
+def _pcm_context(parts):
+    """Reduce retained PCM contributions; unknown is never a latest-value label."""
+    opening, conflict = coherent_opening(part[1] for part in parts)
+    channels = {part[2] for part in parts if part[2] is not None}
+    conflict = conflict or len(channels) > 1
+    if conflict or not parts or any(part[1] is None or part[2] is None for part in parts):
+        return None, None, conflict
+    return opening, next(iter(channels)), False
 
 
 def compute_wake_vad(audio_chunk, vad_predict) -> float | None:
@@ -148,6 +161,8 @@ class RoomStream:
     echo_suppressor: EchoSuppressor
     listening: bool = False
     audio_buffer: list = field(default_factory=list)
+    audio_metadata: list = field(default_factory=list)
+    inline_provenance: object = None
     command_start_time: float = 0.0
     # Speculative parsing can shorten endpointing, but never authorize sending
     # an action before capture ends. The snapshot must cover the final audio.
@@ -167,6 +182,9 @@ class RoomStream:
     # dicho durante la latencia de detección de openwakeword. None hasta que el
     # loop lo inicializa con maxlen según wake_preroll_s.
     preroll: object = None
+    preroll_metadata: object = None
+    wake_opening: CaptureOpening | None = None
+    wake_channel: int | None = None
     # Canal de captura del device (L-3 prep 2026-06-04). El XVF3800 UA expone
     # 2 canales (doc Seeed: ch0=Conference post-procesado para oído humano,
     # ch1=ASR del beam auto-select). Default 0 = comportamiento histórico.
@@ -196,6 +214,7 @@ class _CaptureHolder:
 
     def __init__(self, observation: CaptureObservation):
         self.observation = observation
+        self.opening: CaptureOpening | None = None
 
 
 class MultiRoomAudioLoop:
@@ -470,11 +489,13 @@ class MultiRoomAudioLoop:
     def _clear_capture(self, rs: RoomStream) -> None:
         self._reset_listening(rs)
         rs.preroll = None
+        rs.preroll_metadata = None
         rs.barge_in_accum_ms = 0.0
         reset = getattr(rs.wake_detector, 'reset', None)
         if not callable(reset):
             raise RuntimeError('unsupported_capture_reset')
         reset()
+        rs.wake_opening = rs.wake_channel = None
         predictor = self._wake_vad_predictors.get(rs.room_id)
         reset = getattr(predictor, 'reset', None)
         if callable(reset):
@@ -494,7 +515,19 @@ class MultiRoomAudioLoop:
             partial_command=rs.early_command, transcript=rs.transcript,
             capture_complete=rs.capture_complete,
             ambient_strict=self._guard is not None and self._guard.state_for(rs.room_id) is GuardState.STRICT,
-            wake_score=rs.wake_score, captured_at=rs.command_start_time)
+            wake_score=rs.wake_score, captured_at=rs.command_start_time,
+            audio_provenance=self._capture_provenance(rs, audio))
+
+    def _capture_provenance(self, rs: RoomStream, audio):
+        if sum(part[0] for part in rs.audio_metadata) != audio.size:
+            return None
+        opening, channel, conflict = _pcm_context(rs.audio_metadata)
+        if conflict or opening is None:
+            return None
+        if rs.inline_provenance is not None and rs.inline_provenance.frame_count == audio.size:
+            return rs.inline_provenance
+        return opening.project(lane=CaptureLane.COMMAND, segment_generation=rs.capture_generation,
+            selected_channel=channel, frame_count=audio.size, input_ref=uuid4().hex)
 
     def _track_capture(self, task: asyncio.Task, tasks: set) -> asyncio.Task:
         tasks.add(task)
@@ -965,6 +998,16 @@ class MultiRoomAudioLoop:
         dtype = getattr(stream, 'dtype', None)
         index = getattr(stream, 'device', None)
         actual_channels = channels if isinstance(channels, int) else holder.observation.channels
+        # Earlier callbacks keep None; no requested-value fallback establishes provenance.
+        holder.opening = None
+        if (type(rate) in (int, float) and math.isfinite(rate) and float(rate).is_integer()
+                and type(channels) is int):
+            try:
+                from src.evaluation.provenance import CaptureSource
+                holder.opening = CaptureOpening(CaptureSource.LIVE_INPUT, uuid4().hex,
+                    holder.observation.generation, int(rate), channels)
+            except (ValueError, TypeError, OverflowError):
+                pass
         holder.observation = replace(holder.observation,
             sample_rate_hz=float(rate) if isinstance(rate, (int, float)) else float(self.sample_rate),
             channels=actual_channels,
@@ -1551,6 +1594,7 @@ class MultiRoomAudioLoop:
         room = self._capture_rooms[rs.room_id]
 
         def audio_callback(indata, frames, time_info, status):
+            opening = holder.opening
             tap = self._ambient_tap
             ambient_admitted = not isinstance(tap, MultiChannelTap) or tap.accepting
             ambient_boundary = tap.input_boundary(rs.room_id) if isinstance(tap, MultiChannelTap) else None
@@ -1619,7 +1663,7 @@ class MultiRoomAudioLoop:
                             return
                         if isinstance(tap, MultiChannelTap):
                             tap.push(rs.room_id, ambient, ts=timestamp, tts_active=tts_now,
-                                boundary=ambient_boundary, epoch=ambient_epoch)
+                                boundary=ambient_boundary, epoch=ambient_epoch, opening=opening)
                         else:
                             tap.push(rs.room_id, ambient, ts=timestamp, tts_active=tts_now)
                         ambient = None
@@ -1633,7 +1677,7 @@ class MultiRoomAudioLoop:
 
                 if self._microphone_captures.get(rs.room_id) is holder:
                     self._capture_rooms[rs.room_id].push(
-                        timestamp, indata, frames, boundary=ticket.boundary, epoch=voice_epoch)
+                        timestamp, indata, frames, boundary=ticket.boundary, epoch=voice_epoch, opening=opening)
             except Exception:
                 room.callbacks.failed()
             finally:
@@ -1660,6 +1704,12 @@ class MultiRoomAudioLoop:
                     )
                 ch = 0
             audio_chunk = indata[:, ch].copy()
+            opening = current_capture_opening()
+            opening = replace(opening) if opening is not None else None
+            if opening is not None and (opening.channels != indata.shape[1]
+                    or opening.sample_rate_hz != self.sample_rate):
+                opening = None
+            part = (audio_chunk.size, opening, ch)
 
             # Barge-in check (S3) — corre ANTES del echo suppressor porque
             # `is_safe_to_listen` retorna False mientras TTS está activo, lo
@@ -1707,6 +1757,14 @@ class MultiRoomAudioLoop:
             if not should_process and reason != "silence":
                 return
 
+            retained = (rs.audio_metadata if rs.listening else list(rs.preroll_metadata or ()))
+            recurrent_conflict = (opening is not None and rs.wake_opening is not None
+                and (opening != rs.wake_opening or ch != rs.wake_channel))
+            if recurrent_conflict or _pcm_context([*retained, part])[2]:
+                self._clear_capture(rs)
+            if opening is not None:
+                rs.wake_opening, rs.wake_channel = opening, ch
+
             if not rs.listening:
                 # Pre-roll: acumular el audio reciente para sembrar el buffer al
                 # disparar el wake (recupera el comando dicho durante la latencia
@@ -1714,16 +1772,26 @@ class MultiRoomAudioLoop:
                 if self._preroll_maxchunks > 0:
                     if rs.preroll is None:
                         rs.preroll = deque(maxlen=self._preroll_maxchunks)
+                    if rs.preroll_metadata is None:
+                        rs.preroll_metadata = deque(
+                            [(len(chunk), None, None) for chunk in rs.preroll], maxlen=self._preroll_maxchunks)
                     rs.preroll.append(audio_chunk)
+                    rs.preroll_metadata.append(part)
                 room = self._capture_rooms[rs.room_id]
                 room.require_live()
                 backend = getattr(rs.wake_detector, 'whisper', None)
                 native_lock = self.native_model_locks.get(id(backend))
                 if native_lock is not None:
                     with model_admission(native_lock, room.require_live):
-                        detection = rs.wake_detector.detect(audio_chunk)
+                        detect = (getattr(rs.wake_detector, 'detect_with_provenance', None)
+                            if callable(getattr(type(rs.wake_detector), 'detect_with_provenance', None)) else None)
+                        detection = (detect(audio_chunk, opening=opening, selected_channel=ch)
+                            if callable(detect) else rs.wake_detector.detect(audio_chunk))
                 else:
-                    detection = rs.wake_detector.detect(audio_chunk)
+                    detect = (getattr(rs.wake_detector, 'detect_with_provenance', None)
+                        if callable(getattr(type(rs.wake_detector), 'detect_with_provenance', None)) else None)
+                    detection = (detect(audio_chunk, opening=opening, selected_channel=ch)
+                        if callable(detect) else rs.wake_detector.detect(audio_chunk))
                 room.require_live()
                 if detection:
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
@@ -1745,10 +1813,15 @@ class MultiRoomAudioLoop:
                         # para que el endpointing cuente la duración real del buffer.
                         if rs.preroll:
                             rs.audio_buffer = list(np.concatenate(list(rs.preroll)))
+                            rs.audio_metadata = list(rs.preroll_metadata)
+                            rs.inline_provenance = None
                             rs.command_start_time = time.time() - len(rs.audio_buffer) / self.sample_rate
                             rs.preroll.clear()
+                            rs.preroll_metadata.clear()
                         else:
                             rs.audio_buffer = []
+                            rs.audio_metadata = []
+                            rs.inline_provenance = None
                         # Persistir el clip del trigger para entrenamiento
                         # (fail-open: un writer roto jamás corta la captura).
                         if self._wake_clip_writer is not None and rs.audio_buffer:
@@ -1777,10 +1850,15 @@ class MultiRoomAudioLoop:
                         # Si el detector es WhisperWake y ya tiene el audio del comando
                         # inline (la misma utterance del wake word), lo usamos directo.
                         pop_fn = getattr(rs.wake_detector, "pop_pending_command_audio", None)
+                        inline_audio = None
                         if callable(pop_fn):
+                            pop_metadata = getattr(rs.wake_detector, 'pop_pending_command_metadata', None)
+                            inline_metadata = pop_metadata() if callable(pop_metadata) else (None, None, None)
                             inline_audio = pop_fn()
                             if inline_audio is not None and len(inline_audio) > 0:
                                 rs.audio_buffer = list(inline_audio)
+                                inline_opening, inline_channel, rs.inline_provenance = inline_metadata
+                                rs.audio_metadata = [(len(inline_audio), inline_opening, inline_channel)]
                                 if wake_was_truncated:
                                     logger.info(
                                         f"Audio inline ({len(inline_audio)/16000:.2f}s) "
@@ -1798,12 +1876,16 @@ class MultiRoomAudioLoop:
                         # Any subsequently captured samples invalidate reuse.
                         pop_text_fn = getattr(rs.wake_detector, "pop_pending_text", None)
                         if callable(pop_text_fn):
+                            pop_metadata = getattr(rs.wake_detector, 'pop_pending_transcript_metadata', None)
+                            text_metadata = pop_metadata() if callable(pop_metadata) else (None, None, None)
                             popped = pop_text_fn()
                             rs.wake_text = popped if not wake_was_truncated else None
                             if isinstance(rs.wake_text, str) and callable(pop_fn) and inline_audio is not None and len(inline_audio) > 0:
                                 rs.transcript = CapturedTranscript.from_audio(
                                     rs.wake_text, TranscriptSource.WAKE,
                                     np.asarray(rs.audio_buffer, dtype=np.float32),
+                                    transcript_provenance=text_metadata[0], transcript_span=text_metadata[1],
+                                    transcript_truncated=text_metadata[2],
                                 )
                     else:
                         # Wake RECHAZADO por el guard (STRICT score / COOLDOWN):
@@ -1828,10 +1910,15 @@ class MultiRoomAudioLoop:
                     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
                     if rms > 0.02 and rs.echo_suppressor.is_human_voice(audio_chunk):
                         rs.listening = True
+                        rs.capture_generation += 1
                         rs.command_start_time = time.time()
                         rs.audio_buffer = []
+                        rs.audio_metadata = []
+                        rs.inline_provenance = None
             else:
                 rs.audio_buffer.extend(audio_chunk)
+                rs.audio_metadata.append(part)
+                rs.inline_provenance = None
 
         return process
 
@@ -1937,6 +2024,8 @@ class MultiRoomAudioLoop:
         """Cierra el estado de captura y cancela el worker early si está activo."""
         rs.listening = False
         rs.audio_buffer = []
+        rs.audio_metadata = []
+        rs.inline_provenance = None
         rs.early_command = None
         rs.wake_text = None
         rs.transcript = None
@@ -1954,7 +2043,8 @@ class MultiRoomAudioLoop:
         room.require_live()
         if not rs.listening or generation != rs.capture_generation:
             raise SourcesInvalidated('capture_generation_changed')
-        return np.array(rs.audio_buffer, dtype=np.float32)
+        audio = np.array(rs.audio_buffer, dtype=np.float32)
+        return audio, self._capture_provenance(rs, audio)
 
     def _require_early(self, rs: RoomStream, generation: int, cancelled=None) -> None:
         self._capture_rooms[rs.room_id].require_live()
@@ -1963,7 +2053,7 @@ class MultiRoomAudioLoop:
         if cancelled is not None and cancelled.is_set():
             raise SourcesInvalidated('capture_observer_cancelled')
 
-    def _transcribe_early(self, rs: RoomStream, generation: int, audio, cancelled):
+    def _transcribe_early(self, rs: RoomStream, generation: int, audio, cancelled, audio_provenance=None):
         text = partial = transcript = None
         invalidated = False
         try:
@@ -1973,7 +2063,11 @@ class MultiRoomAudioLoop:
                 self._require_early(rs, generation, cancelled)
                 if text:
                     partial = parse_partial_command(text)
-                    transcript = CapturedTranscript.from_audio(text, TranscriptSource.PARTIAL, audio)
+                    from src.evaluation.provenance import FrameInterval
+                    transcript = CapturedTranscript.from_audio(text, TranscriptSource.PARTIAL, audio,
+                        transcript_provenance=audio_provenance,
+                        transcript_span=FrameInterval(0, audio.size) if audio_provenance is not None else None,
+                        transcript_truncated=False)
                 return partial, transcript
         except SourcesInvalidated:
             invalidated = True
@@ -1981,19 +2075,21 @@ class MultiRoomAudioLoop:
             logger.debug('Early STT unavailable: %s', type(error).__name__)
         finally:
             audio = text = partial = transcript = cancelled = None
+            audio_provenance = None
         if invalidated:
             raise SourcesInvalidated('capture_sources_invalidated')
         return None, None
 
-    async def _owned_early(self, rs: RoomStream, generation: int, audio):
+    async def _owned_early(self, rs: RoomStream, generation: int, audio, audio_provenance=None):
         cancelled = Event()
         try:
-            return await self._capture_native.run(self._transcribe_early, rs, generation, audio, cancelled)
+            return await self._capture_native.run(self._transcribe_early, rs, generation, audio, cancelled, audio_provenance)
         except asyncio.CancelledError:
             cancelled.set()
             raise
         finally:
             audio = cancelled = None
+            audio_provenance = None
 
     def _publish_early(self, rs: RoomStream, generation: int, partial, transcript):
         try:
@@ -2007,23 +2103,25 @@ class MultiRoomAudioLoop:
         interval_s = self.early_dispatch_interval_ms / 1000
         min_samples = int(self.early_dispatch_min_audio_s * self.sample_rate)
         generation, last_samples = rs.capture_generation, -1
-        audio = partial = transcript = None
+        audio = partial = transcript = audio_provenance = None
         room = self._capture_rooms[rs.room_id]
         try:
             while rs.listening and self._running and not self._closed:
                 await asyncio.sleep(interval_s)
-                audio = await room.call(self._early_snapshot, rs, generation)
+                audio, audio_provenance = await room.call(self._early_snapshot, rs, generation)
                 if len(audio) < min_samples or len(audio) == last_samples:
-                    audio = None
+                    audio = audio_provenance = None
                     continue
                 last_samples = len(audio)
-                partial, transcript = await self._owned_early(rs, generation, audio)
+                partial, transcript = await self._owned_early(rs, generation, audio, audio_provenance)
                 await room.call(self._publish_early, rs, generation, partial, transcript)
                 audio = partial = transcript = None
+                audio_provenance = None
         except SourcesInvalidated:
             return
         finally:
             audio = partial = transcript = None
+            audio_provenance = None
 
     async def _dispatch_command(self, event: CommandEvent):
         """Dispatch a captured command via registered callback."""

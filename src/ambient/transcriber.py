@@ -13,10 +13,15 @@ import logging
 import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Callable
+from uuid import uuid4
+
+import numpy as np
 
 from src.ambient.types import AmbientUtterance, RawSegment
 from src.ambient.room_producer import RoomProducer
+from src.core.capture_opening import CaptureOpening
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.evaluation.provenance import CaptureLane
 from src.memory.producer_context import producer_context
 from src.memory.producer_scopes import ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated, run_private
@@ -408,15 +413,42 @@ class AmbientTranscriber:
 
     async def _process_segment(self, room_id, seg, capture_source):
         stt_result = text = mono = doa = utt = empty = None
+        selection = audio_provenance = opening = segment_generation = None
+        transcript_provenance = transcript_span = transcript_truncated = None
         try:
+            # Freeze opening and full PCM facts before the first native await.
+            opening = getattr(seg, 'input_opening', None)
+            segment_generation = getattr(seg, 'segment_generation', None)
+            if opening is not None:
+                if (type(opening) is not CaptureOpening or type(seg.audio) is not np.ndarray
+                        or seg.audio.dtype != np.float32 or seg.audio.ndim not in (1, 2)
+                        or opening.sample_rate_hz != 16000
+                        or opening.channels != (1 if seg.audio.ndim == 1 else seg.audio.shape[1])):
+                    raise ValueError('ambient_segment_opening_mismatch')
+                if segment_generation is not None:
+                    audio_provenance = opening.project(lane=CaptureLane.AMBIENT,
+                        segment_generation=segment_generation, selected_channel=0,
+                        frame_count=seg.audio.shape[0], input_ref=uuid4().hex)
             provenance = {}
             if capture_source is not None:
                 provenance = {"capture_id": capture_source.capture_id, "conversation_id": capture_source.conversation_id,
                               "expires_at": capture_source.expires_at}
             self._require_live(capture_source)
-            stt_result = await self._stt.transcribe(seg.audio)
+            if getattr(type(self._stt), 'capture_metadata', False) is True:
+                from src.ambient.ambient_stt import AmbientSTTResult
+                stt_result = await self._stt.transcribe(seg.audio, opening=opening,
+                    segment_generation=segment_generation)
+                if type(stt_result) is not AmbientSTTResult:
+                    raise ValueError('invalid_ambient_stt_selection')
+                AmbientSTTResult.__post_init__(stt_result)
+                selection = stt_result
+                transcript_provenance, transcript_span = selection.provenance, selection.span
+            else:
+                # Legacy/mock engines do not attest which native PCM they read.
+                stt_result = await self._stt.transcribe(seg.audio)
             self._require_live(capture_source)
             text = stt_result.text.strip()
+            transcript_truncated = len(text) > 8192 if selection is not None else None
             archiving = self._archiver is not None and self._archiver.enabled
             if not text:
                 # Sin archiver: comportamiento histórico (descartar y salir).
@@ -461,7 +493,9 @@ class AmbientTranscriber:
             mono = seg.audio[:, 0] if seg.audio.ndim == 2 else seg.audio
             self._require_live(capture_source)
             if getattr(self._tagger,'review_managed',False) is True:
-                speaker, sp_conf = await self._tagger.tag(mono,transcript=text[:8192],room_id=room_id)
+                speaker, sp_conf = await self._tagger.tag(mono,transcript=text[:8192],room_id=room_id,
+                    audio_provenance=audio_provenance,transcript_provenance=transcript_provenance,
+                    transcript_span=transcript_span,transcript_truncated=transcript_truncated)
             else:
                 speaker, sp_conf = await self._tagger.tag(mono)
             self._require_live(capture_source)
@@ -523,7 +557,11 @@ class AmbientTranscriber:
                                                                    utt.t0, utt.expires_at, MemoryOrigin.AMBIENT)
                     await self._textual_wake.maybe_dispatch(
                         room_id, text, source, speaker,
-                        audio=self._stt.asr_mono(seg.audio),
+                        audio=selection.mono_from(seg.audio) if selection is not None else self._stt.asr_mono(seg.audio),
+                        audio_provenance=transcript_provenance,
+                        transcript_provenance=transcript_provenance,
+                        transcript_span=transcript_span,
+                        transcript_truncated=False if selection is not None else None,
                         vad_prob=seg.vad_prob,
                         utterance_started_ts=utterance_started_ts,
                         **provenance,
@@ -545,6 +583,8 @@ class AmbientTranscriber:
                     )
         finally:
             seg = capture_source = stt_result = text = mono = doa = utt = empty = None
+            selection = audio_provenance = opening = segment_generation = provenance = None
+            transcript_provenance = transcript_span = transcript_truncated = None
 
     def _quality(self, text, probability, source):
         self._require_live(source)

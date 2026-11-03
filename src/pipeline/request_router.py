@@ -569,11 +569,13 @@ class RequestRouter:
             return {"text": "", "intent": "cancelled", "success": False, "response": "", "timings": {}, "latency_ms": 0}
 
         pretranscribed_text: str | None = None
+        audio_provenance = transcript_provenance = transcript_span = transcript_truncated = None
         used_wake_text = False
         early_dispatch = False
         ambient_strict = False
         if isinstance(audio_or_event, CommandEvent):
             audio = audio_or_event.audio
+            audio_provenance = audio_or_event.audio_provenance
             room_id = audio_or_event.room_id
             early_dispatch = audio_or_event.early_dispatch
             ambient_strict = getattr(audio_or_event, "ambient_strict", False)
@@ -588,6 +590,9 @@ class RequestRouter:
             transcript = audio_or_event.transcript
             if transcript is not None and transcript.covers(audio):
                 pretranscribed_text = transcript.text
+                transcript_provenance = transcript.transcript_provenance
+                transcript_span = transcript.transcript_span
+                transcript_truncated = transcript.transcript_truncated
                 used_wake_text = transcript.source is TranscriptSource.WAKE
             elif transcript is not None or audio_or_event.wake_text or audio_or_event.partial_command:
                 logger.debug("[Capture] Transcript does not cover final audio; running final STT")
@@ -646,6 +651,11 @@ class RequestRouter:
 
         from src.memory.producer_context import producer_context
         from src.memory.prompt_context import SourcesInvalidated
+        review_options = ({'audio_provenance': audio_provenance,
+            'transcript_provenance': transcript_provenance, 'transcript_span': transcript_span,
+            'transcript_truncated': transcript_truncated}
+            if any(value is not None for value in (audio_provenance, transcript_provenance,
+                transcript_span, transcript_truncated)) else {})
         try:
             with producer_context(room_id, self._active_sources()):
                 if self.orchestrator_enabled and self._orchestrator:
@@ -654,12 +664,14 @@ class RequestRouter:
                         ambient_strict=ambient_strict,
                         wake_score=wake_score, wake_rms=wake_rms,
                         textual_wake=textual_wake,
+                        **review_options,
                     )
                 else:
                     result = await self._process_command_legacy(
                         audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
                         wake_score=wake_score, wake_rms=wake_rms,
                         textual_wake=textual_wake, ambient_strict=ambient_strict,
+                        **review_options,
                     )
         except SourcesInvalidated:
             return {"intent": "cancelled", "success": False, "text": "", "response": "", "timings": {}, "latency_ms": 0}
@@ -700,7 +712,9 @@ class RequestRouter:
                                               ambient_strict: bool = False,
                                               wake_score: float = 1.0,
                                               wake_rms: float = 0.0,
-                                              textual_wake: bool = False) -> dict:
+                                              textual_wake: bool = False,
+                                              audio_provenance=None, transcript_provenance=None,
+                                              transcript_span=None, transcript_truncated=None) -> dict:
         """Process command with multi-user orchestrator."""
         self._response_zone.set(f"zone_{room_id}" if room_id else None)
         result = {
@@ -719,8 +733,13 @@ class RequestRouter:
 
         # 1. Process command (STT + Speaker ID + Emotion in parallel).
         #    Si pretranscribed_text viene del early-dispatch, saltamos el STT.
+        review_options = ({'audio_provenance': audio_provenance,
+            'transcript_provenance': transcript_provenance, 'transcript_span': transcript_span,
+            'transcript_truncated': transcript_truncated}
+            if any(value is not None for value in (audio_provenance, transcript_provenance,
+                transcript_span, transcript_truncated)) else {})
         cmd = await self.command_processor.process_command(
-            audio, use_parallel=True, pretranscribed_text=pretranscribed_text,
+            audio, use_parallel=True, pretranscribed_text=pretranscribed_text, **review_options,
         )
         text = cmd.text
         result["text"] = text
@@ -1134,7 +1153,9 @@ class RequestRouter:
                                         wake_score: float = 1.0,
                                         wake_rms: float = 0.0,
                                         textual_wake: bool = False,
-                                        ambient_strict: bool = False) -> dict:
+                                        ambient_strict: bool = False,
+                                        audio_provenance=None, transcript_provenance=None,
+                                        transcript_span=None, transcript_truncated=None) -> dict:
         """Legacy processing (single-user) for backwards compatibility."""
         self._response_zone.set(f"zone_{room_id}" if room_id else None)
         result = {
@@ -1151,8 +1172,13 @@ class RequestRouter:
         pipeline_start = time.perf_counter()
 
         # 1. Process command (salteando STT si viene de early dispatch)
+        review_options = ({'audio_provenance': audio_provenance,
+            'transcript_provenance': transcript_provenance, 'transcript_span': transcript_span,
+            'transcript_truncated': transcript_truncated}
+            if any(value is not None for value in (audio_provenance, transcript_provenance,
+                transcript_span, transcript_truncated)) else {})
         cmd = await self.command_processor.process_command(
-            audio, use_parallel=True, pretranscribed_text=pretranscribed_text,
+            audio, use_parallel=True, pretranscribed_text=pretranscribed_text, **review_options,
         )
         text = cmd.text
         result["text"] = text

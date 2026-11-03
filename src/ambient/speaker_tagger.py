@@ -15,6 +15,7 @@ from typing import Callable
 import numpy as np
 
 from src.core.owned_work import OwnedBlockingWork
+from src.evaluation.provenance import CaptureProvenance, FrameInterval
 from src.memory.producer_context import PRODUCER_CONTEXT, model_admission
 from src.memory.prompt_context import SourcesInvalidated
 
@@ -44,7 +45,11 @@ class SpeakerTagger:
         if voice_registry is not None:
             self._inference_lock = voice_registry.register_encoder(identifier)
 
-    async def tag(self, audio_mono: np.ndarray, *, transcript: str = '', room_id: str | None = None) -> tuple[str, float]:
+    async def tag(self, audio_mono: np.ndarray, *, transcript: str = '', room_id: str | None = None,
+                  audio_provenance: CaptureProvenance | None = None,
+                  transcript_provenance: CaptureProvenance | None = None,
+                  transcript_span: FrameInterval | None = None,
+                  transcript_truncated: bool | None = None) -> tuple[str, float]:
         """Etiquetar el hablante de una utterance.
 
         Best-effort: audio corto, sin enrolados, o cualquier error del
@@ -58,11 +63,14 @@ class SpeakerTagger:
             if self._voice_registry is not None:
                 self._require_live()
                 self._voice_registry.observe(self._identifier,audio_mono,PRODUCER_CONTEXT.get().sources,
-                    sample_rate=self.sample_rate,transcript=transcript,room_id=room_id)
+                    sample_rate=self.sample_rate,transcript=transcript,room_id=room_id,
+                    audio_provenance=audio_provenance,transcript_provenance=transcript_provenance,
+                    transcript_span=transcript_span,transcript_truncated=transcript_truncated)
                 return ('unknown',0.)
             return await self._work.run(self._identify, audio_mono)
         finally:
-            audio_mono = None
+            audio_mono = transcript = audio_provenance = transcript_provenance = None
+            transcript_span = transcript_truncated = room_id = None
 
     def _identify(self, audio_mono):
         """Load profiles and identify inside the retained native scope."""

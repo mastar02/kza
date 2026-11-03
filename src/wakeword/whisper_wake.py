@@ -21,15 +21,29 @@ import re
 import time
 import unicodedata
 from collections import deque
+from dataclasses import replace
 from difflib import SequenceMatcher
 from typing import Optional
+from uuid import uuid4
 
 import numpy as np
+
+from src.core.capture_opening import CaptureOpening, coherent_opening
+from src.evaluation.provenance import CaptureLane, FrameInterval
 
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 CHUNK_MS = 80  # tamaño esperado del chunk del caller
+
+
+def _wake_context(parts):
+    opening, conflict = coherent_opening(part[0] for part in parts)
+    channels = {part[1] for part in parts if part[1] is not None}
+    conflict = conflict or len(channels) > 1
+    if conflict or not parts or any(part[0] is None or part[1] is None for part in parts):
+        return None, None, conflict
+    return opening, next(iter(channels)), False
 
 # Verbos/keywords que esperamos en un comando real post-wake. Si el texto
 # matcheó la wake pero no tiene ninguno de estos → probablemente es TV
@@ -528,6 +542,15 @@ class WhisperWakeDetector:
         self._in_speech = False
         self._utterance: list[np.ndarray] = []
         self._pre_roll = deque(maxlen=max(1, pre_roll_ms // CHUNK_MS))
+        self._pre_roll_metadata = deque(maxlen=self._pre_roll.maxlen)
+        self._utterance_metadata = []
+        self._capture_part = (None, None)
+        self._segment_generation = 0
+        self._active_stt_context = (None, None)
+        self._last_stt_provenance = None
+        self._last_stt_invoked = False
+        self._vad_opening = self._vad_channel = None
+        self._vad_unknown = False
         self._silence_run_ms = 0
         self._utt_start_t = 0.0
 
@@ -536,6 +559,8 @@ class WhisperWakeDetector:
         # de capturar audio nuevo (que probablemente ya pasó con el wake).
         self._pending_command_audio: Optional[np.ndarray] = None
         self._pending_text: Optional[str] = None
+        self._pending_command_metadata = (None, None, None)
+        self._pending_transcript_metadata = (None, None, None)
 
         # TV-mode tracking — ver `TV_MODE_*` constantes arriba.
         self._reject_timestamps: deque[float] = deque(maxlen=20)
@@ -702,6 +727,20 @@ class WhisperWakeDetector:
             return (match, 1.0)
         return None
 
+    def detect_with_provenance(self, audio_chunk, *, opening, selected_channel):
+        """The selecting caller supplies the actual column; direct detect stays unknown."""
+        previous = self._capture_part
+        try:
+            known = (type(opening) is CaptureOpening and opening.sample_rate_hz == SAMPLE_RATE
+                and type(selected_channel) is int and 0 <= selected_channel < opening.channels)
+            self._capture_part = ((replace(opening), selected_channel) if known else
+                (None, selected_channel if opening is None and type(selected_channel) is int
+                    and 0 <= selected_channel < 64 else None))
+            return self.detect(audio_chunk)
+        finally:
+            self._capture_part = previous
+            audio_chunk = opening = previous = None
+
     def _process_chunk(self, audio_chunk: np.ndarray) -> Optional[str]:
         from src.pipeline.capture_room import require_capture_live
         require_capture_live()
@@ -716,21 +755,44 @@ class WhisperWakeDetector:
         if max_abs > 1.5:  # viene en escala int16
             chunk = chunk / 32768.0
 
+        part = self._capture_part
+        retained = self._utterance_metadata if self._in_speech else list(self._pre_roll_metadata)
+        if _wake_context([*retained, part])[2]:
+            self.reset()
+
+        # Recurrent VAD history outlives the finite PCM deque. Unknown chunks
+        # cannot erase the last known opening/channel and bridge it into B.
+        if part[0] is not None:
+            if self._vad_opening is not None and (self._vad_opening != part[0] or self._vad_channel != part[1]):
+                self.reset()
+            elif self._vad_unknown:
+                reset_vad = getattr(self._vad, 'reset_states', None)
+                if callable(reset_vad):
+                    reset_vad()
+            self._vad_opening, self._vad_channel = part
+            self._vad_unknown = False
+        else:
+            self._vad_unknown = True
+
         is_speech = self._is_speech(chunk)
         require_capture_live()
 
         if not self._in_speech:
             self._pre_roll.append(chunk)
+            self._pre_roll_metadata.append(part)
             if is_speech:
                 self._in_speech = True
+                self._segment_generation += 1
                 self._utt_start_t = time.time()
                 self._utterance = list(self._pre_roll)
                 self._utterance.append(chunk)
+                self._utterance_metadata = [*self._pre_roll_metadata, part]
                 self._silence_run_ms = 0
             return None
 
         # In speech
         self._utterance.append(chunk)
+        self._utterance_metadata.append(part)
         if is_speech:
             self._silence_run_ms = 0
         else:
@@ -746,9 +808,12 @@ class WhisperWakeDetector:
 
         # Close utterance
         audio = np.concatenate(self._utterance) if self._utterance else np.zeros(0, dtype=np.float32)
+        opening, selected_channel, _ = _wake_context(self._utterance_metadata)
+        self._utterance_metadata = []
         self._in_speech = False
         self._utterance = []
         self._pre_roll.clear()
+        self._pre_roll_metadata.clear()
         self._silence_run_ms = 0
 
         dur_ms = len(audio) * 1000 / SAMPLE_RATE
@@ -767,11 +832,21 @@ class WhisperWakeDetector:
                 return None
             logger.info(f"Speaker filter PASS (sim={sim:.3f}) — procede a Whisper")
 
-        match, text = self._transcribe_and_match(audio, dur_ms)
+        self._active_stt_context = (opening, selected_channel)
+        self._last_stt_provenance = None
+        self._last_stt_invoked = False
+        try:
+            match, text = self._transcribe_and_match(audio, dur_ms)
+        finally:
+            self._active_stt_context = (None, None)
         if match and text:
             # Guardar texto completo para que el pipeline lo use como
             # pretranscribed_text (evita 2do Whisper que a veces alucina).
             self._pending_text = text
+            original = self._last_stt_provenance
+            self._pending_transcript_metadata = (original,
+                FrameInterval(0, original.frame_count) if original is not None else None,
+                False if self._last_stt_invoked else None)
             # Recortar el audio desde después del wake word (aprox)
             # El wake word "nexa" pronunciado ocupa ~400-500ms. Asumimos offset conservador.
             # Si el wake fue primera palabra, restamos ~500ms. Si fue en medio, el pipeline
@@ -787,6 +862,10 @@ class WhisperWakeDetector:
             else:
                 # Wake al final sin comando inline → mantener todo el audio como backup
                 self._pending_command_audio = audio.copy()
+            command = (None if opening is None else opening.project(lane=CaptureLane.COMMAND,
+                segment_generation=self._segment_generation, selected_channel=selected_channel,
+                frame_count=len(self._pending_command_audio), input_ref=uuid4().hex))
+            self._pending_command_metadata = (opening, selected_channel, command)
         return match
 
     def reset(self) -> None:
@@ -797,6 +876,15 @@ class WhisperWakeDetector:
         self._silence_run_ms = 0
         self._utt_start_t = 0.0
         self._pending_command_audio = self._pending_text = None
+        self._vad_opening = self._vad_channel = None
+        self._vad_unknown = False
+        self._pre_roll_metadata.clear()
+        self._utterance_metadata.clear()
+        self._active_stt_context = (None, None)
+        self._last_stt_provenance = None
+        self._last_stt_invoked = False
+        self._pending_command_metadata = (None, None, None)
+        self._pending_transcript_metadata = (None, None, None)
         self._follow_up_until = 0.0
         reset = getattr(self._vad, 'reset_states', None)
         if callable(reset):
@@ -811,7 +899,20 @@ class WhisperWakeDetector:
         """
         t = self._pending_text
         self._pending_text = None
+        self._pending_transcript_metadata = (None, None, None)
+        self._last_stt_provenance = None
+        self._last_stt_invoked = False
         return t
+
+    def pop_pending_transcript_metadata(self):
+        """Consume before pop_pending_text; reset/text consumption also seals it."""
+        result, self._pending_transcript_metadata = self._pending_transcript_metadata, (None, None, None)
+        return result
+
+    def pop_pending_command_metadata(self):
+        """Consume before pop_pending_command_audio, without using the current packet."""
+        result, self._pending_command_metadata = self._pending_command_metadata, (None, None, None)
+        return (replace(result[0]), result[1], result[2]) if result[0] is not None else result
 
     def peek_pending_text(self) -> Optional[str]:
         """Leer el texto pendiente SIN consumirlo.
@@ -824,6 +925,7 @@ class WhisperWakeDetector:
         """Consumir el audio recortado de la utterance del wake. El caller lo pasa al STT."""
         audio = self._pending_command_audio
         self._pending_command_audio = None
+        self._pending_command_metadata = (None, None, None)
         return audio
 
     def _transcribe_and_match(self, audio: np.ndarray, dur_ms: float) -> tuple[Optional[str], str]:
@@ -834,6 +936,10 @@ class WhisperWakeDetector:
         require_capture_live()
         try:
             model = getattr(self.whisper, "_model", None) or self.whisper
+            opening, selected_channel = self._active_stt_context
+            actual_input = (None if opening is None else opening.project(lane=CaptureLane.COMMAND,
+                segment_generation=self._segment_generation, selected_channel=selected_channel,
+                frame_count=audio.size, input_ref=uuid4().hex))
             # condition_on_previous_text=False: corta el sesgo del comando
             # anterior. Sin esto, faster-whisper alimenta la transcripción
             # previa como prompt al modelo → utterances de TV se transforman
@@ -848,6 +954,8 @@ class WhisperWakeDetector:
                 vad_filter=False,
                 condition_on_previous_text=False,
             )
+            self._last_stt_invoked = True
+            self._last_stt_provenance = actual_input
             require_capture_live()
             seg_list = list(segments)
             require_capture_live()
