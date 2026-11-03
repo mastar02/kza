@@ -2042,3 +2042,99 @@ causa/corrección acreditada. T021/T022, el mapa inicial de 29 familias y
 C03/C04/C06/C20 siguen abiertos; HA resistente de más de 60 segundos continúa
 incumplido. T047 y su separación de autoridades siguen intactos. No hubo
 despliegue, modelos reales ni aceptación física.
+
+## Retiro de caché PCM y earcon del grafo
+
+T022-J conserva dos RED genuinos: ambos cierres dejaban una frase PCM en la
+caché del grafo, aun manteniendo vivos sus wrappers. La referencia al TTS y al
+callback y el earcon tampoco tenían retirada propia después del drenaje.
+
+El grafo registra la propiedad antes de build y activa después mediante una
+API con guard de identidad y estado terminal. Un fallo parcial conserva su
+dueño aunque nunca active la caché; un registro rechazado retira la instancia
+vacía. Reemplazar la caché activa conserva las anteriores propias hasta su
+retiro. Constructor y attachment son prestados por defecto; un caller externo
+conserva su caché y TTS utilizables después del cierre del grafo.
+
+ResponseHandler sella nuevas entregas y publicaciones e interrumpe sesiones.
+Espera primero reproducción, síntesis nativa, generaciones, callbacks y hooks;
+sólo entonces espera todos los retiros de cachés propias y desprende sus enlaces
+PCM/earcon. Cancel sigue siendo reutilizable. Attach y set_earcon rechazan la
+publicación tardía. Arrays devueltos a terceros no se modifican ni se ponen a
+cero, y la caché no cierra el TTS prestado.
+
+ResponseCache retiene un builder con Context vacío; observadores concurrentes
+se unen y una llamada posterior puede reconstruir mientras siga abierto. El
+fallback síncrono y la extracción/conversión pertenecen a OwnedBlockingWork.
+El sello sólo toca metadatos y bloquea nuevas publicaciones; el mapa físico se
+conserva hasta confirmar los drenajes. La disposición propia ocurre fuera del
+loop y sin mantener el lock durante destructores. Los helpers CachedAudio,
+normalización, WAV, extracción y el banco canónico/templates conservan su AST;
+se mantienen orden de fallback, sample_rate y conversión float32.
+
+La primera revisión encontró un bool de contexto que contaminaba tareas hijas
+y un build que podía esperarse a sí mismo desde su callback. Se sustituyó por
+un token mutable y rechazo explícito de reentrada activa. El guard se comprueba
+antes de que el handler cree un hijo con Context vacío o selle sus recursos.
+El contexto heredado deja de restringir al caller al vencer la operación real.
+
+El handler captura pins de metadatos antes del despacho nativo. El camino
+normal los libera tras el recibo de la task; si el observador ya terminó sin
+confirmación, sólo el finally nativo real puede liberar su pin. Excepciones
+ordinarias de submit no prueban ausencia de ejecución. Las rutas con prueba
+local de no-dispatch liberan reservas; los pins no contienen caché, task, TTS
+ni PCM. Las últimas variables se limpian aún dentro de la operación activa.
+
+La primera suite del grafo pasó 14/16: warmup terminaba antes del postludio
+nativo después de una cancelación temprana del callback. Ahora la secuencia
+espera sus pins reales antes de restaurar contexto y completar build. Se
+preservan esa corrida y la corrección sin relajar aserciones ni presupuestos.
+La revisión reforzó además checks después de ceder el loop y el recibo de la
+task del worker, no sólo una comprobación inmediata de task recién creada.
+
+Las pruebas mantienen PCM/callbacks/wrappers, retienen síntesis, conversión,
+postludio, reproducción y hook propio, y dejan intacto un peer del registro.
+Cubren build parcial sin activar, ambos cierres, cancelación repetida del
+observador, reentrada, contexto heredado vencido, disposiciones fuera del loop
+y factory eager. Un subproceso encola un trabajo y falla el submit: el guard
+permanece hasta la salida nativa real; la barrera fallida y sus recursos siguen
+sin confirmar hasta la salida del proceso. No cancela dueños ni borra flags
+para fabricar quietud.
+
+### Correcciones de la primera full
+
+La primera full conservó 7610 PASS, dos fallos y una xfail con 893 archivos
+intactos. Ambos casos pasaron aislados, sin establecer la causa del intervalo
+de esa corrida. Un RED determinista confirmó cobro de tiempo del consumidor
+después de que anext ya había terminado. Se registra ahora el fin real de la
+lectura; el timeout externo, cancelación y presupuestos se conservan.
+
+El otro fallo estaba en el cleanup final del test de privacidad: volvía a usar
+su observer de 20 ms y suponía que inicialización y cierre ya acabarían en ese
+plazo después de liberar una gate. Se retira esa expectativa implícita de
+rendimiento del finally y se espera el mismo dueño real; el primer timeout y
+los checks de DB/lease se conservan. Un caso nuevo prueba dos timeouts de 20 ms
+con DB/lease retenidas y retorno nativo bloqueado, antes del drenaje completo.
+No cambia código ni presupuesto de privacidad, ni se acredita la causa física
+de la demora de la primera full. Evidencia preservada: failed-verification.json.
+
+### Verificación y continuidad
+
+Pasan 28 regresiones nuevas y 157 casos existentes enfocados. T022-J queda
+verificada localmente en `cd9ec03`: full 7614 casos más la xfail conocida
+en 553.84 segundos, con 895 archivos idénticos durante la ejecución.
+Ruff no encuentra hallazgos en `src/` y `tests/`. Evidencia:
+`data/autonomous-roadmap-20261102/t022/j/evidence.json`; verificación:
+`data/autonomous-roadmap-20261102/t022/j/accepted/verification.json`.
+
+Este corte acredita PCM canónico/earcon y referencias Python propias. No
+acredita erasure de todas las copias privadas del SDK, navegador o buffers
+nativos. El siguiente corte es el lifecycle standalone de calibración: su
+poller arranca antes de construir el stream y usa un join con timeout, fuera
+del actor XVF del monolito. La matriz de enrollment y los tres benchmarks,
+incluidos stdout, npy, JSON y JSONL, alimenta los pendientes de T023/T024.
+
+T021/T022, el mapa de 29 familias y C03/C04/C06/C20 siguen abiertos. Se conserva
+el fallo memory_prompt_unavailable de G sin causa ni corrección acreditada y
+el incumplimiento HA resistente de más de 60 segundos. T047 y su separación de
+autoridades permanecen intactos. No hubo despliegue ni aceptación física.

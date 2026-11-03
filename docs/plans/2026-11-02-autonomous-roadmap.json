@@ -1128,7 +1128,8 @@
         "4359d9139487e3d5b021117e3ec0e4e8386f5ab3",
         "c7be0178dbb1dfdbe723a1fbee94be0b4cc3b94c",
         "63b60b4a46313f257dc2853da5c1ef164521d001",
-        "24e1c3a7b0dc075048a1b137d6e0344a86804973"
+        "24e1c3a7b0dc075048a1b137d6e0344a86804973",
+        "cd9ec03680811908bde07acb14634faac6986d77"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1139,9 +1140,10 @@
         "data/autonomous-roadmap-20261102/t022/f/evidence.json",
         "data/autonomous-roadmap-20261102/t022/g/evidence.json",
         "data/autonomous-roadmap-20261102/t022/h/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/i/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/i/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/j/evidence.json"
       ],
-      "next_action": "T022-I verificada localmente en 24e1c3a: Silero por habitación en wake y ambient conserva admisión/lock hasta inferencia, reset y limpieza del tensor; retiro propio después de drenajes reales. El lock global sólo cubre Hub/eval. Propiedad explícita de segmenter y predictor, prestados por defecto; builder real declara ambos propios y cada discard retira antes de olvidar. Se conservan candidatos rechazados y cargas tardías; factory limpia fallos sin traceback SDK mediante error fijo y controles del mismo tipo. Tres RED pasan; 32 nuevos +465 existentes enfocados; full 7586 más xfail conocida en 539.28s, 888 archivos intactos, Ruff0. Continuar T022-J caché PCM/earcon: registro antes de build, warmup/publicación tardía, borrowers y propiedad prestada. Después reconciliar matriz productor-copia-destino para T023/T024, incluyendo standalone, condicionales y copias SDK. Sólo referencias Python/tensores sintéticos acreditados; fuente Hub no fijada ni versión runtime establecida. Mapa inicial de 29 familias incompleto; T021/T022/C03/C04/C06/C20 abiertos y HA resistente >60s incumplido. Primer Gfull memory_prompt_unavailable permanece sin causa ni corrección acreditada; conservar investigación y no relajar pruebas/retries/budgets. T047 sigue verified_local y sus autoridades separadas."
+      "next_action": "T022-J verificada localmente en cd9ec03: retiro de caché PCM/earcon tras los drenajes reales, sin cerrar préstamos ni permitir publicaciones tardías. Pasan 28 regresiones nuevas, 157 casos existentes enfocados y la full de 7614 casos más la xfail conocida en 553.84 s, con 895 archivos intactos; Ruff sin hallazgos. La primera full fallida queda preservada. Un RED determinista corrigió el cobro de tiempo posterior al fin de lectura del proveedor, sin ampliar presupuestos. El cleanup del test de privacidad espera al mismo dueño real; se retiró su expectativa implícita de un segundo éxito en 20 ms y se agregó una prueba de dos timeouts con DB/lease retenidas. El código y presupuesto de privacidad no cambiaron; la causa del intervalo original no está establecida. Continuar T022-K con el lifecycle standalone de acoustic_calibration.run_capture: dueño antes de load/discovery/thread/stream, drenaje real del poller y callback, sello de publicaciones y cobertura de fallos parciales, interrupción y escritura. Usar hojas sintéticas, sin hardware. Reconciliar enrollment, benchmarks y derivados stdout/npy/JSON/JSONL para la matriz de T023/T024. El mapa de 29 familias, T021/T022 y C03/C04/C06/C20 siguen abiertos; HA resistente a cancelación por más de 60 s sigue incumplido. G memory_prompt_unavailable sigue sin causa ni corrección acreditada. T047 conserva verified_local y la separación de autoridades."
     },
     {
       "id": "T023",
@@ -2322,7 +2324,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-I/selected-silero-retirement",
+    "last_verified_unit": "T022-J/response-pcm-cache-retirement",
     "user_priority_after_admin_unit": "T047"
   }
 }
