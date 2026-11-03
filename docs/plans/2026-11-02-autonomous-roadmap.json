@@ -1127,7 +1127,8 @@
         "744edac224d78069abdf6b3e242346e55b9e2478",
         "4359d9139487e3d5b021117e3ec0e4e8386f5ab3",
         "c7be0178dbb1dfdbe723a1fbee94be0b4cc3b94c",
-        "63b60b4a46313f257dc2853da5c1ef164521d001"
+        "63b60b4a46313f257dc2853da5c1ef164521d001",
+        "24e1c3a7b0dc075048a1b137d6e0344a86804973"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1137,9 +1138,10 @@
         "data/autonomous-roadmap-20261102/t022/e/evidence.json",
         "data/autonomous-roadmap-20261102/t022/f/evidence.json",
         "data/autonomous-roadmap-20261102/t022/g/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/h/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/h/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/i/evidence.json"
       ],
-      "next_action": "T022-H verificada localmente en 63b60b4: WakeWordDetector conserva operaciones/callback reales y retira sólo refs propias tras drenaje; WakeModelOwner registra salas temprano y espera borrowers; AudioManager posee lazy por worker serializado. Reset/pausa siguen reutilizables, no sucesor tras cierre; fallos terminales reales propagados después de observar limpieza, pausa supersedida separada. 3 RED producto→GREEN;29new+457existing enfocados; full 7554 más xfail conocida en 544.04s, 884 intactos,Ruff0. Se preservan2regresiones de pausa iniciales corregidas sin cambiar pruebas/budgets. Continuar Silero seleccionado porroom wake y ambient: modelo callable con retiro terminal y propiedad explícita del segmenter; conservar reset/pause, préstamo y cargas tardías/fallos de factory. Openwakeword ausente en venvvalidación, versiónruntime no establecida; sólo retiro refsPython, sin afirmar destrucción de sesiones/pools/copias nativas. Standalone/condicionales/copiasSDK/mute/restore y mapa29familias siguen pendientes;T021/T022/C03/C04/C06/C20 abiertos y HA>60s intacto. Mantener primer Gfull memory_prompt_unavailable antes de voz/Parakeet: causa no capturada ni corregida;100variantes+segunda full sininstrumentación pasaron misma fuente, no aceptar criterios por ello. T047 ya verified_local y autoridades separadas sin cambios."
+      "next_action": "T022-I verificada localmente en 24e1c3a: Silero por habitación en wake y ambient conserva admisión/lock hasta inferencia, reset y limpieza del tensor; retiro propio después de drenajes reales. El lock global sólo cubre Hub/eval. Propiedad explícita de segmenter y predictor, prestados por defecto; builder real declara ambos propios y cada discard retira antes de olvidar. Se conservan candidatos rechazados y cargas tardías; factory limpia fallos sin traceback SDK mediante error fijo y controles del mismo tipo. Tres RED pasan; 32 nuevos +465 existentes enfocados; full 7586 más xfail conocida en 539.28s, 888 archivos intactos, Ruff0. Continuar T022-J caché PCM/earcon: registro antes de build, warmup/publicación tardía, borrowers y propiedad prestada. Después reconciliar matriz productor-copia-destino para T023/T024, incluyendo standalone, condicionales y copias SDK. Sólo referencias Python/tensores sintéticos acreditados; fuente Hub no fijada ni versión runtime establecida. Mapa inicial de 29 familias incompleto; T021/T022/C03/C04/C06/C20 abiertos y HA resistente >60s incumplido. Primer Gfull memory_prompt_unavailable permanece sin causa ni corrección acreditada; conservar investigación y no relajar pruebas/retries/budgets. T047 sigue verified_local y sus autoridades separadas."
     },
     {
       "id": "T023",
@@ -2320,7 +2322,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-H/openwakeword-model-retirement",
+    "last_verified_unit": "T022-I/selected-silero-retirement",
     "user_priority_after_admin_unit": "T047"
   }
 }

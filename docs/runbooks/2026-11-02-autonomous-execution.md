@@ -1961,3 +1961,84 @@ establecida ni corrección acreditada. T021/T022 permanecen in_progress; el mapa
 inicial de 29 familias y C03/C04/C06/C20 siguen sin aceptar. El incumplimiento HA
 resistente de más de 60 segundos, la separación de autoridades de T047 y los
 requisitos físicos permanecen intactos. No hubo despliegue.
+
+## Retiro de Silero seleccionado por habitación
+
+T022-I conserva tres RED genuinos: los callables de wake seguían reteniendo
+modelos después de ambos cierres y un error de eval retenía el modelo parcial
+mediante su traceback. Una corrida anterior dejó dos errores de fixture por
+OpenWakeWord ausente y ese mismo RED de eval; se preserva separada. Las hojas
+wake de esas pruebas se sustituyeron por OfflineWake, sin cargar modelos reales.
+
+make_silero_predictor devuelve ahora un callable por instancia con reset y
+retiro terminal. La carga, inferencia, item, reset y limpieza del último tensor
+conservan su admisión y lock nativo hasta salir realmente. El sello sólo toca
+memoria; operaciones nuevas reciben silero_closed y las admitidas conservan
+entradas anidadas. El dueño único con Context vacío resiste cancelación repetida
+del observador y evita reentrada desde worker/closer. Después retira únicamente
+sus referencias al modelo, utilidades y módulo, sin invocar close del SDK.
+
+El lock global sigue cubriendo sólo Hub load y eval. El cierre de otra instancia
+no lo toma: se prueba retiro de wake mientras eval ambiental continúa retenido.
+La comparación de AST conserva conversión float32, ventanas de 512, tasa 16000,
+no_grad, item/float, máximo, silencio, reset y opciones de carga. La conversión
+queda dentro del lock de todo el chunk. Los cuerpos reset, cierre de utterance,
+columnas y procedencia del segmenter no cambian; feed sólo añade rechazo terminal.
+
+La primera revisión encontró limpieza de win/probs fuera de la lease. Se movió
+dentro de admisión y RLock antes de validar el corte. El harness retiene el
+destructor de la única ventana y exige contador activo, dueño pendiente y modelo
+vivo; sólo después de liberar ese destructor puede terminar el retiro.
+
+La factory crea un owner antes de cargar y limpia también fallos de Hub, eval
+y etapa posterior. Un error SDK corriente se convierte en el código fijo
+silero_initialization_failed fuera del handler, sin causa/contexto ni frames
+SDK que retengan el modelo. Los controles KeyboardInterrupt, SystemExit,
+CancelledError y GeneratorExit conservan su tipo mediante valores nuevos;
+SystemExit conserva sólo código None/int/bool, sin payload nativo. Se comprueba
+la liberación de modelo y utilidades manteniendo tanto wrapper como error vivos.
+
+La propiedad es explícita en dos niveles: AmbientTranscriber/RoomProducer toma
+owns_segmenters/owns_segmenter y UtteranceSegmenter toma owns_vad_predictor,
+todos prestados por defecto. El builder real declara ambos propios. Cada discard
+resetea y retira el segmenter propio antes de olvidarlo, incluidos pausa, poda
+y cambio de estado; el siguiente uso crea una instancia nueva como antes. El
+reset entre utterances sigue reutilizando el modelo. Se prueba la matriz de
+cuatro combinaciones de propiedad y el peer prestado conserva disponibilidad.
+
+RoomProducer conserva un candidato propio antes de validar su cleanup para no
+perder su dueño si es rechazado. Si falla el constructor del segmenter, el
+builder retira el predictor ya creado. El mapa de propiedad wake está separado
+del mapa activo: conserva instancias tardías sin publicarlas después del cierre.
+Sólo tras todos los CaptureRoom, resets y trabajo nativo se intentan todos los
+retiros; se olvidan únicamente los confirmados. Un fallo conserva su referencia
+y no produce una falsa confirmación del cierre.
+
+Las pruebas del grafo retienen inferencia, postludio de consumidores y reset
+final en wake y ambient, cancelan repetidamente observadores de ambos cierres y
+verifican lease, autoridad y sesión retenidas hasta salida real. Mantienen los
+wrappers externamente y comprueban weakrefs del SDK sintético, no sólo que se
+vacíen los contenedores. No se cancelan los dueños reales ni se manipulan flags
+para aparentar una limpieza.
+
+Pasan 32 regresiones nuevas y 465 pruebas existentes enfocadas. T022-I queda
+verificada localmente en `24e1c3a`: full 7586 casos más la xfail conocida
+en 539.28 segundos, con 888 archivos idénticos durante la ejecución.
+Ruff no encuentra hallazgos en `src/` y `tests/`. Evidencia:
+`data/autonomous-roadmap-20261102/t022/i/evidence.json`; verificación:
+`data/autonomous-roadmap-20261102/t022/i/validated/verification.json`.
+
+La revisión de archivos del prefijo de validación informa Torch 2.12.0+cpu y no
+encuentra fuente Silero allí. La llamada Hub no fija revisión; no se establece
+la versión del runtime ni se recorren otras cachés. El corte sólo acredita
+referencias Python propias y trabajo/tensor sintético, no destrucción de todas
+las copias, caches, pools, sesiones o VRAM de Torch/Silero.
+
+El siguiente corte es cache de respuestas PCM y earcon del grafo, incluidos
+warmup/publicación tardía y propiedad prestada, antes de reconciliar la matriz
+productor-copia-destino para T023/T024. Standalone, ramas condicionales y copias
+SDK siguen pendientes. El fallo memory_prompt_unavailable de G permanece sin
+causa/corrección acreditada. T021/T022, el mapa inicial de 29 familias y
+C03/C04/C06/C20 siguen abiertos; HA resistente de más de 60 segundos continúa
+incumplido. T047 y su separación de autoridades siguen intactos. No hubo
+despliegue, modelos reales ni aceptación física.
