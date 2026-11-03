@@ -21,6 +21,7 @@ import aiohttp
 
 from src.core.owned_work import OwnedBlockingWork
 from src.home_assistant.effect_plans import MAX_EFFECTS
+from src.home_assistant.ws_retirement import capture_websocket_retirement, is_native_websocket
 from src.home_assistant.operations import ActionIntent, DOMAIN_OPERATIONS, action_capabilities, finite_number, matches_observation
 from src.home_assistant.state_projection import (
     MAX_FRAME_BYTES, EntityObservation, apply_delta, apply_initial, apply_rest, apply_rest_failure,
@@ -301,6 +302,7 @@ class HomeAssistantClient:
         self._ws_handshake_locks = {name: asyncio.Lock() for name in ('calls', 'events', 'registry')}
         self._owned_sockets: dict[int, tuple[object, str]] = {}
         self._socket_close_tasks: dict[int, asyncio.Task] = {}
+        self._sdk_retirements = {}
         self._ws_registry = None
         self._channel_observations = {
             name: HAChannelObservation(source='ha_rest' if name == 'rest' else 'ha_ws_' + name,
@@ -657,16 +659,31 @@ class HomeAssistantClient:
             return
         key = id(ws)
         task = self._socket_close_tasks.get(key)
+        retirement = self._sdk_retirements.get(key)
         # aiohttp sets closed before its close coroutine has actually finished.
-        if ws.closed is True and task is None:
+        if ws.closed is True and task is None and not is_native_websocket(ws):
             self._owned_sockets.pop(key, None)
             return
         if task is None:
             async def finish():
+                if retirement is not None:
+                    try:
+                        async with asyncio.timeout(STATE_CLOSE_OBSERVATION_TIMEOUT_S):
+                            await retirement.close()
+                    except asyncio.TimeoutError:
+                        self._observe_channel(purpose, 'retiring', HAConnectionState.UNKNOWN,
+                                              'ha_socket_close_pending')
+                        retirement.request_abort()
+                        await retirement.close()
+                    self._owned_sockets.pop(key, None)
+                    self._sdk_retirements.pop(key, None)
+                    return
                 for attempt in range(3):
                     try:
                         async with asyncio.timeout(STATE_CLOSE_OBSERVATION_TIMEOUT_S):
                             await ws.close()
+                        if is_native_websocket(ws):
+                            raise aiohttp.ClientConnectionError('ha_sdk_retirement_unavailable')
                         if ws.closed is not True:
                             raise aiohttp.ClientConnectionError('ha_socket_close_unconfirmed')
                         self._owned_sockets.pop(key, None)
@@ -1591,6 +1608,9 @@ class HomeAssistantClient:
                         options['max_msg_size'] = STATE_STREAM_MAX_MESSAGE_BYTES
                     ws = await session.ws_connect(self.url.replace('http', 'ws') + '/api/websocket', **options)
                     self._owned_sockets[id(ws)] = (ws, purpose)
+                    retirement = capture_websocket_retirement(ws, self._retain_transport, purpose)
+                    if retirement is not None:
+                        self._sdk_retirements[id(ws)] = retirement
                     if not current():
                         return None
                     json_options = {'loads': _raw_state_json} if purpose == 'events' else {}
