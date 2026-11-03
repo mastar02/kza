@@ -25,7 +25,9 @@ from src.core.voice_person_index import VoicePersonIndex
 from src.memory.erasure_journal import ERASURE_SCHEMA, ErasureJournal
 from src.dashboard.live_receipts import LIVE_RECEIPT_SCHEMA
 from src.memory.index_deletions import INDEX_DELETION_SCHEMA, IndexDeletionQueue
-from src.memory.voice_schema import VOICE_SCHEMA, initialize_voice_people_schema
+from src.memory.voice_schema import (
+    VOICE_SCHEMA, initialize_voice_people_schema, initialize_voice_review_schema,
+)
 
 
 class FactState(StrEnum):
@@ -274,6 +276,7 @@ class FactLedger:
                 db.execute("PRAGMA foreign_keys=ON")
                 db.execute("PRAGMA secure_delete=ON")
                 initialize_voice_people_schema(db)
+                initialize_voice_review_schema(db)
                 db.executescript(_SCHEMA + ERASURE_SCHEMA + INDEX_DELETION_SCHEMA + LIVE_RECEIPT_SCHEMA + VOICE_SCHEMA)
                 if "dependencies" not in {r[1] for r in db.execute("PRAGMA table_info(fact_sources)")}:
                     try:

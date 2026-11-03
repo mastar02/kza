@@ -1141,3 +1141,55 @@ lee archivos, calcula WER ni otorga autorización runtime. La siguiente unidad
 transportará las dos ramas ambientales y la rama de comandos con la PCM real,
 conservando first-writer, vencimiento, borrado y source_digest. T014 permanece
 en curso y no habilita grabaciones ni acepta C04/C12 por sí solo.
+
+## Metadatos nativos de las muestras de voz
+
+La siguiente unidad de T014 prepara el registro y la persistencia de procedencia.
+VoiceCaptureReview conserva dos descriptores y sus intervalos: el audio usado
+para embedding/preview y la entrada que produjo el texto STT. Pueden declarar
+canales distintos. El truncamiento de texto es un dato separado, verdadero,
+falso o desconocido; no se deduce de la longitud del texto retenido.
+
+Los codecs usan documentos JSON v1 cerrados de hasta 4096 bytes UTF-8, separados
+por modalidad. Rechazan duplicados, tipos/versiones inválidos, pares incompletos
+y contenido no finito. Los errores conservan un código fijo y eliminan el
+contenido del parser de sus tracebacks. SQL NULL conserva el estado desconocido;
+metadata no nula inválida deniega la revisión, sin convertirse en legacy.
+
+El constructor fija el preview desde la PCM realmente poseída y valida su WAV
+canónico; no reconstruye frames de una duración redondeada. La entrada STT
+declarada cubre su segmento completo y no adopta el intervalo del preview.
+VoiceRegistry valida y copia los descriptores antes de admitir el trabajo,
+conserva el propietario nativo existente y los retira al terminar. El cierre
+espera la salida real del modelo; no deja un commit tardío autorizado.
+
+La migración de voice_capture_reviews añade audio_metadata_json y
+transcript_metadata_json con un marcador propio de versión 1. La forma antigua
+de seis columnas se migra atómicamente sin actualizar datos anteriores. Una
+forma parcial, un marcador perdido con columnas nuevas, una tabla perdida con
+marcador o una versión desconocida fallan antes de la reparación genérica.
+Un fallo de DDL revierte su migración y el inicializador no publica conexión.
+
+La escritura revalida el DTO y usa columnas explícitas en la misma transacción
+que el preview y texto. La primera escritura conserva su contenido y plazo;
+un duplicado no rellena procedencia desconocida. La duración de una descripción
+tipada debe coincidir frame por frame con la captura; la tolerancia histórica
+sólo permanece para registros sin esa descripción. La cascada y el vencimiento
+existentes retiran la metadata con la muestra.
+
+La revisión limita ambas columnas antes de devolverlas a Python, decodifica
+fuera de SQLite y vuelve a comprobar actor y fuentes. Conserva las claves de
+la respuesta pública actual. Pasan 318 casos cruzados, incluidos migración,
+codecs, propiedad del trabajo, cierre, revisión anterior, vínculos y evaluación.
+La suite completa pasa 6977 pruebas y conserva una xfail conocida en 508,94
+segundos. Los hashes de 841 archivos permanecieron iguales y Ruff pasa.
+Evidencia: `data/autonomous-roadmap-20261102/t014/review-native-evidence.json`.
+
+La ausencia simultánea del marcador y toda la tabla no distingue una base
+previa a esta función de un rollback completo sin ancla externa. Esta unidad no añade
+esa garantía ni modifica fuentes, hashes de concesiones o retención. Sigue
+pendiente conectar los productores reales y exponer metadata por modalidad
+con validadores frontend coordinados. T014 continúa en curso.
+La ampliación de columnas requiere un runtime compatible; esta verificación
+local no acredita un rollback de la instalación con escritores antiguos.
+La prueba de migración en copia y el rollback del candidato siguen en P6.

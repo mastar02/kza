@@ -13,11 +13,15 @@ import threading
 import numpy as np
 
 from src.core.owned_work import OwnedBlockingWork,WorkCloseTimeout
+from src.evaluation.provenance import CaptureProvenance,FrameInterval
 from src.memory.erasure_journal import ErasureParticipant,ErasureResult
 from src.memory.producer_context import model_admission
 from src.memory.fact_ledger import MemoryOrigin,MemorySource
 from src.users.voice_ledger import VoiceLedger
 from src.users.voice_capture import build_review_capture
+from src.users.voice_capture_metadata import (
+    encode_audio_metadata,decode_audio_metadata,encode_transcript_metadata,decode_transcript_metadata,
+)
 from src.users.voice_evaluation import VoiceEvaluationReader
 
 VOICE_TARGET = {'kind':'source_bound_voice_registry','schema':1}
@@ -37,6 +41,10 @@ class VoiceObservation:
     audio: np.ndarray | None = field(repr=False)
     transcript: str = field(default='',repr=False)
     room_id: str | None = None
+    audio_provenance: CaptureProvenance | None = None
+    transcript_provenance: CaptureProvenance | None = None
+    transcript_span: FrameInterval | None = None
+    transcript_truncated: bool | None = None
 
 
 class VoiceRegistry:
@@ -74,7 +82,10 @@ class VoiceRegistry:
         return self._encoders[key][1]
 
     def observe(self, identifier, audio: np.ndarray, sources: tuple, *, sample_rate: int = 16000,
-            transcript: str = '', room_id: str | None = None) -> bool:
+            transcript: str = '', room_id: str | None = None,
+            audio_provenance: CaptureProvenance | None = None,
+            transcript_provenance: CaptureProvenance | None = None,
+            transcript_span: FrameInterval | None = None, transcript_truncated: bool | None = None) -> bool:
         """Reserve bounded PCM ownership and return without model or disk I/O."""
         registration = self._encoders.get(id(identifier))
         if (self._closed or registration is None or type(sample_rate) is not int or sample_rate!=16000
@@ -89,6 +100,18 @@ class VoiceRegistry:
             self._dropped+=1
             return False
         try:
+            preview_span = None if audio_provenance is None else FrameInterval(0,min(audio.size,96000))
+            owned_audio,_ = decode_audio_metadata(encode_audio_metadata(audio_provenance,preview_span))
+            owned_text,owned_span,owned_truncated = decode_transcript_metadata(
+                encode_transcript_metadata(transcript_provenance,transcript_span,transcript_truncated))
+            if owned_audio is not None and (owned_audio.sample_rate_hz!=sample_rate or owned_audio.frame_count!=audio.size):
+                raise ValueError('voice_metadata_pcm_mismatch')
+            if owned_text is not None and owned_span!=FrameInterval(0,owned_text.frame_count):
+                raise ValueError('voice_metadata_transcript_scope_mismatch')
+        except (ValueError,TypeError,OverflowError):
+            self._dropped+=1
+            return False
+        try:
             slot = self._free.popleft()
         except IndexError:
             self._dropped+=1
@@ -97,7 +120,9 @@ class VoiceRegistry:
             self._free.append(slot)
             return False
         try:
-            job = VoiceObservation(identifier,registration[1],sources,audio.copy(),transcript,room_id)
+            job = VoiceObservation(identifier,registration[1],sources,audio.copy(),transcript,room_id,
+                audio_provenance=owned_audio,transcript_provenance=owned_text,
+                transcript_span=owned_span,transcript_truncated=owned_truncated)
             self._jobs[slot] = job
             self._loop.call_soon_threadsafe(self._start,slot,job,context=Context())
         except Exception:
@@ -143,7 +168,9 @@ class VoiceRegistry:
                 require_live()
                 descriptor = [job.identifier.model_name,getattr(job.identifier,'_model_type','unknown'),job.identifier.sample_rate]
                 model_key = 'enc_'+hashlib.sha256(json.dumps(descriptor).encode()).hexdigest()
-                review = build_review_capture(job.audio,job.transcript,job.room_id)
+                review = build_review_capture(job.audio,job.transcript,job.room_id,
+                    audio_provenance=job.audio_provenance,transcript_provenance=job.transcript_provenance,
+                    transcript_span=job.transcript_span,transcript_truncated=job.transcript_truncated)
                 require_live()
                 return self.ledger.put(model_key,vector,job.audio.size/job.identifier.sample_rate,job.sources,review)
         except (Exception,asyncio.CancelledError):
@@ -151,6 +178,8 @@ class VoiceRegistry:
         finally:
             job.audio = None
             job.transcript = ''
+            job.audio_provenance = job.transcript_provenance = job.transcript_span = None
+            job.transcript_truncated = None
             job = vector = review = require_live = None
 
     async def acall(self, function, *args):

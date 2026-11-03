@@ -157,10 +157,10 @@ async def test_expiry_during_wave_encoding_cannot_commit_raw_audio_or_text(tmp_p
     async with graph(tmp_path) as (_,_,voices,clock):
         entered,release = threading.Event(),threading.Event()
         build = module.build_review_capture
-        def held(*args):
+        def held(*args,**kwargs):
             entered.set()
             assert release.wait(3)
-            return build(*args)
+            return build(*args,**kwargs)
         monkeypatch.setattr(module,'build_review_capture',held)
         encoder = Encoder()
         voices.register_encoder(encoder)
@@ -240,7 +240,9 @@ async def test_existing_fingerprints_do_not_gain_invented_review_material_after_
         source = memory_source(now=clock.now)
         identity = await voices.acall(voices.ledger.put,'synthetic-model',VECTOR,1.,(source,))
     with sqlite3.connect(tmp_path/'privacy.db') as db:
+        # A genuine pre-feature database has neither table nor version marker.
         db.execute('DROP TABLE voice_capture_reviews')
+        db.execute('DROP TABLE voice_capture_review_schema')
     async with graph(tmp_path) as (_,_,voices,_):
         [row] = (await voices.acall(voices.ledger.snapshot))['fingerprints']
         assert row['id']==identity and not row['review_available']

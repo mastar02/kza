@@ -16,6 +16,10 @@ from src.dashboard.auth import DashboardPrincipal
 from src.dashboard.authority import DashboardAuthority
 from src.memory.fact_ledger import MemorySource
 from src.users.voice_capture import VoiceCaptureReview
+from src.users.voice_capture_metadata import (
+    MAX_METADATA_BYTES, decode_audio_metadata, decode_transcript_metadata,
+    encode_audio_metadata, encode_transcript_metadata,
+)
 from src.users.voice_groups import VoiceGroups
 from src.users.voice_projection import VoiceProjection
 from src.users.voice_people import VoicePersonLinks
@@ -141,12 +145,22 @@ class VoiceLedger:
                 or any(type(source) is not MemorySource for source in sources)
                 or sum(len(source.fact_dependencies) for source in sources)>256):
             raise ValueError('invalid_voice_capture')
-        if review is not None and (type(review) is not VoiceCaptureReview or abs(review.duration_s-duration_s)>1/16000):
-            raise ValueError('invalid_voice_review_capture')
+        audio_metadata = transcript_metadata = None
         encoded = json.dumps([source.to_dict() for source in sorted(sources,key=lambda source:source.capture_id)],sort_keys=True,separators=(',',':'))
         identity = 'vf_'+hashlib.sha256((model_key+encoded).encode()).hexdigest()
         raw,dimensions = vector_bytes(embedding)
         try:
+            if review is not None:
+                if type(review) is not VoiceCaptureReview:
+                    raise ValueError('invalid_voice_review_capture')
+                VoiceCaptureReview.__post_init__(review)
+                if ((review.audio_provenance is None and abs(review.duration_s-duration_s)>1/16000)
+                        or (review.audio_provenance is not None
+                            and duration_s != review.audio_provenance.frame_count/16000)):
+                    raise ValueError('invalid_voice_review_capture')
+                audio_metadata = encode_audio_metadata(review.audio_provenance,review.audio_span)
+                transcript_metadata = encode_transcript_metadata(
+                    review.transcript_provenance,review.transcript_span,review.transcript_truncated)
             with self.ledger._transaction() as db:
                 self.groups.initialize(db)
                 if not self.ledger._sources_live(db,sources):
@@ -170,15 +184,18 @@ class VoiceLedger:
                 db.executemany('INSERT INTO voice_fingerprint_sources VALUES (?,?)',
                     [(identity,conversation) for conversation in sorted({source.conversation_id for source in sources})])
                 if review is not None:
-                    db.execute('INSERT INTO voice_capture_reviews VALUES (?,?,?,?,?,?)',
-                        (identity,review.audio_wav,review.transcript,review.room_id,review.duration_s,review.clip_duration_s))
+                    db.execute('''INSERT INTO voice_capture_reviews (
+                        fingerprint_id,audio_wav,transcript,room_id,duration_s,clip_duration_s,
+                        audio_metadata_json,transcript_metadata_json) VALUES (?,?,?,?,?,?,?,?)''',
+                        (identity,review.audio_wav,review.transcript,review.room_id,review.duration_s,
+                            review.clip_duration_s,audio_metadata,transcript_metadata))
                 self.groups.add(db,identity,model_key,dimensions,raw,duration_s,sources)
                 grouped = self.groups.metadata(db,identity)
                 if grouped is None or not self.ledger._sources_live(db,grouped[1]):
                     raise LookupError('voice_capture_unavailable')
                 return identity
         finally:
-            embedding = raw = review = None
+            embedding = raw = review = audio_metadata = transcript_metadata = None
 
     def snapshot(self, cursor: str | None = None) -> dict:
         """Return newest-first bounded metadata, never vectors, transcripts or audio."""
@@ -231,20 +248,45 @@ class VoiceLedger:
         if (type(identity) is not str or len(identity)!=67 or not identity.startswith('vf_')
                 or any(char not in '0123456789abcdef' for char in identity[3:])):
             raise ValueError('invalid_voice_capture_id')
-        data = row = capture = None
+        data = row = capture = audio_provenance = audio_span = None
+        transcript_provenance = transcript_span = transcript_truncated = None
+        audio_metadata = transcript_metadata = None
         try:
             actor.require_current()
             with self.ledger._transaction() as db:
-                row = db.execute('''SELECT v.sources_json,v.expires_at,r.* FROM voice_capture_reviews r
+                actor.require_current()
+                row = db.execute('''SELECT v.sources_json,v.expires_at,
+                    r.audio_wav,r.transcript,r.room_id,r.duration_s,r.clip_duration_s,
+                    CAST(r.audio_metadata_json AS BLOB) AS audio_metadata_json,
+                    CAST(r.transcript_metadata_json AS BLOB) AS transcript_metadata_json
+                    FROM voice_capture_reviews r
                     JOIN voice_fingerprints v ON v.id=r.fingerprint_id WHERE v.id=?
-                    AND length(r.audio_wav)<=192044 AND length(r.transcript)<=8192''',(identity,)).fetchone()
+                    AND length(r.audio_wav)<=192044 AND length(r.transcript)<=8192
+                    AND (r.audio_metadata_json IS NULL OR
+                        (typeof(r.audio_metadata_json)='text' AND length(CAST(r.audio_metadata_json AS BLOB))<=?))
+                    AND (r.transcript_metadata_json IS NULL OR
+                        (typeof(r.transcript_metadata_json)='text' AND length(CAST(r.transcript_metadata_json AS BLOB))<=?))''',
+                    (identity,MAX_METADATA_BYTES,MAX_METADATA_BYTES)).fetchone()
                 if row is None or not self._live(row):
                     raise LookupError('voice_capture_unavailable')
             # SQLite has already detached this bounded row. Preview validation
             # and encoding must not hold the authority's writer transaction.
+            actor.require_current()
+            if not self._live(row):
+                raise LookupError('voice_capture_unavailable')
             valid = True
             try:
-                capture = VoiceCaptureReview(row['audio_wav'],row['transcript'],row['room_id'],row['duration_s'],row['clip_duration_s'])
+                audio_metadata = (None if row['audio_metadata_json'] is None
+                    else row['audio_metadata_json'].decode('utf-8'))
+                transcript_metadata = (None if row['transcript_metadata_json'] is None
+                    else row['transcript_metadata_json'].decode('utf-8'))
+                audio_provenance,audio_span = decode_audio_metadata(audio_metadata)
+                transcript_provenance,transcript_span,transcript_truncated = decode_transcript_metadata(
+                    transcript_metadata)
+                capture = VoiceCaptureReview(row['audio_wav'],row['transcript'],row['room_id'],
+                    row['duration_s'],row['clip_duration_s'],audio_provenance=audio_provenance,
+                    audio_span=audio_span,transcript_provenance=transcript_provenance,
+                    transcript_span=transcript_span,transcript_truncated=transcript_truncated)
             except ValueError:
                 valid = False
             if not valid:
@@ -261,7 +303,9 @@ class VoiceLedger:
                 raise LookupError('voice_capture_unavailable')
             return data
         finally:
-            row = data = capture = None
+            row = data = capture = audio_provenance = audio_span = None
+            transcript_provenance = transcript_span = transcript_truncated = None
+            audio_metadata = transcript_metadata = None
 
     @staticmethod
     def _profile(row):
