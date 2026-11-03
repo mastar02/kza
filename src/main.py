@@ -15,7 +15,10 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from src.application import ApplicationFactories, ApplicationGraph, ApplicationModels, STTExecutorOwner, TTSModelOwner
+from src.application import (
+    ApplicationFactories, ApplicationGraph, ApplicationModels,
+    SpeakerModelOwner, STTExecutorOwner, TTSModelOwner,
+)
 from src.core.settings_schema import (
     DEFAULT_LOCAL_LLM_GATEWAY,
     check_unresolved_env_vars,
@@ -620,6 +623,10 @@ async def build_application(
     erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
         memory=memory_manager.long_term if memory_manager is not None else None)
     voice_registry = await build_voice_registry(privacy=privacy_services,owner=erasure_services,shutdown=shutdown)
+    speaker_models = SpeakerModelOwner()
+    shutdown.push_async_callback(speaker_models.aclose)
+    speaker_models.add_borrower(voice_registry.begin_close)
+    privacy_services.add_borrower(speaker_models.begin_close)
     diagnostic_services = await build_diagnostic_services(config, privacy=privacy_services, owner=erasure_services)
     metrics_emitter = diagnostic_services.emitter
     capture_erasure = await build_capture_erasure(config, privacy=privacy_services, owner=erasure_services)
@@ -680,6 +687,7 @@ async def build_application(
             similarity_threshold=speaker_config.get("threshold", 0.75),
         )
 
+        speaker_models.add_model(speaker_identifier)
         voice_registry.register_encoder(speaker_identifier)
 
         voice_enrollment = VoiceEnrollment(
@@ -1183,6 +1191,7 @@ async def build_application(
                 ),
             )
             stt_executors.add_borrower(multi_room_loop.begin_close)
+            speaker_models.add_borrower(multi_room_loop.begin_close)
             shutdown.push_async_callback(multi_room_loop.stop)
             logger.info(
                 f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "
@@ -1208,6 +1217,8 @@ async def build_application(
                         voice_registry=voice_registry,
                         register_stt=stt_executors.add_model,
                         register_stt_borrower=stt_executors.add_borrower,
+                        register_speaker=speaker_models.add_model,
+                        register_speaker_borrower=speaker_models.add_borrower,
                     )
                     shutdown.push_async_callback(ambient_path.stop)
                     await capture_erasure.attach(ambient_path)
@@ -1252,6 +1263,7 @@ async def build_application(
         model_locks=multi_room_loop.native_model_locks if multi_room_loop is not None else None,
     )
     stt_executors.add_borrower(command_processor.begin_close)
+    speaker_models.add_borrower(command_processor.begin_close)
     shutdown.push_async_callback(command_processor.aclose)
 
     # === Plan #3 OpenClaw — Plugin hooks (optional) ===
@@ -1366,6 +1378,7 @@ async def build_application(
     )
     if callable(getattr(type(audio_loop), "begin_close", None)):
         stt_executors.add_borrower(audio_loop.begin_close)
+        speaker_models.add_borrower(audio_loop.begin_close)
     shutdown.push_async_callback(audio_loop.stop)
 
     # === Plan #2 OpenClaw — Compactor + Persister (opcionales) ===
@@ -1746,6 +1759,7 @@ async def build_application(
             voice_registry=voice_registry,
             ambient_control=ambient_control,
         )
+        speaker_models.add_borrower(dashboard.admin_work.begin_close)
         shutdown.push_async_callback(dashboard.stop)
         logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 9500)}")
 
@@ -1820,7 +1834,7 @@ async def build_application(
         close_dependencies=(
             ((dashboard.admin_work.begin_close,) if dashboard is not None else ())
             + ((multi_room_loop.begin_close,) if multi_room_loop is not None else ())
-            + (stt_executors.begin_close, tts_models.begin_close)
+            + (stt_executors.begin_close, tts_models.begin_close, speaker_models.begin_close)
         ),
     )
 
@@ -1836,7 +1850,7 @@ async def build_application(
         models=ApplicationModels(stt, tts, chroma, speaker_identifier, emotion_detector),
         warmup_models=_warmup_models, presence_detector=presence_detector,
         ambient_path=ambient_path, nightly_trainer=nightly_trainer,
-        stt_executors=stt_executors, tts_models=tts_models,
+        stt_executors=stt_executors, tts_models=tts_models, speaker_models=speaker_models,
     )
 
 

@@ -737,6 +737,8 @@ def build_ambient_path(
     voice_registry=None,
     register_stt: Callable[[object], None] | None = None,
     register_stt_borrower: Callable | None = None,
+    register_speaker: Callable[[object], None] | None = None,
+    register_speaker_borrower: Callable | None = None,
 ) -> AmbientPath:
     """Construir el ambient path completo desde config (wiring de main.py).
 
@@ -750,6 +752,9 @@ def build_ambient_path(
             para conservar su dueño si una etapa posterior falla.
         register_stt_borrower: Registrar drenajes reales de ASR y transcriber
             antes del cierre del ejecutor compartido del grafo.
+        register_speaker: Registrar el encoder dedicado antes de dependientes.
+        register_speaker_borrower: Drenajes de tagger/transcriber; el dueño del
+            grafo también debe esperar VoiceRegistry si recibe observaciones.
     """
     from src.ambient.ambient_stt import AmbientSTT
     from src.ambient.audio_archive import AudioArchiver
@@ -798,6 +803,8 @@ def build_ambient_path(
         device=stt_cfg.get("device", "cuda:0"),
         similarity_threshold=0.75,
     )
+    if register_speaker is not None:
+        register_speaker(identifier)
 
     def embeddings_loader() -> dict:
         # Unversioned .npy files have no verified review or capture deadline.
@@ -811,6 +818,8 @@ def build_ambient_path(
         source_policy=privacy.ledger if privacy is not None else None,
         voice_registry=voice_registry,
     )
+    if register_speaker_borrower is not None:
+        register_speaker_borrower(tagger.begin_close)
 
     clf_cfg = ambient_cfg.get("classifier", {}) or {}
     rooms_cfg = ambient_cfg.get("rooms", {}) or {}
@@ -877,6 +886,10 @@ def build_ambient_path(
         archiver=archiver,
         privacy=privacy,
     )
+    if register_stt_borrower is not None:
+        register_stt_borrower(transcriber.begin_close)
+    if register_speaker_borrower is not None:
+        register_speaker_borrower(transcriber.begin_close)
 
     distiller = None
     dis_cfg = ambient_cfg.get("distill", {}) or {}
@@ -906,8 +919,6 @@ def build_ambient_path(
             privacy=privacy,
         )
 
-    if register_stt_borrower is not None:
-        register_stt_borrower(transcriber.begin_close)
     path = AmbientPath(tap=tap, transcriber=transcriber, store=store, distiller=distiller)
     if privacy is not None:
         privacy.add_borrower(path.begin_close)

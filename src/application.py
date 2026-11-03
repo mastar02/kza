@@ -134,6 +134,15 @@ class TTSModelOwner(_ModelResourceOwner):
         super().__init__((KokoroTTS, DualTTS))
 
 
+class SpeakerModelOwner(_ModelResourceOwner):
+    """Own graph-created speaker encoders after their actual borrowers drain."""
+
+    def __init__(self) -> None:
+        from src.users.speaker_identifier import SpeakerIdentifier
+
+        super().__init__((SpeakerIdentifier,))
+
+
 @dataclass(frozen=True)
 class ApplicationModels:
     """The exact model instances used by command processing and warmup."""
@@ -175,6 +184,7 @@ class ApplicationGraph:
     nightly_trainer: Any = None
     stt_executors: STTExecutorOwner | None = None
     tts_models: TTSModelOwner | None = None
+    speaker_models: SpeakerModelOwner | None = None
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     async def warmup(self) -> None:
@@ -269,6 +279,8 @@ class ApplicationGraph:
                 stopping.push_async_callback(self.stt_executors.aclose)
             if self.tts_models is not None:
                 stopping.push_async_callback(self.tts_models.aclose)
+            if self.speaker_models is not None:
+                stopping.push_async_callback(self.speaker_models.aclose)
             stopping.push_async_callback(self.pipeline.stop)
             if self.ambient_path is not None:
                 stopping.push_async_callback(_stop_task, self.ambient_path, ambient_task)
