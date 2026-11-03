@@ -1760,3 +1760,63 @@ por sí solo salida del Thread legacy. T021/T022 siguen `in_progress`, el mapa
 inicial de 29 familias sigue incompleto y C03/C04/C06/C20 continúan sin aceptar.
 El caso HA resistente de más de 60 segundos y la separación de autoridades de
 T047 permanecen intactos. No hay despliegue ni aceptación física adelantada.
+
+## Retiro de encoders de voz compartidos
+
+T022-F conserva dos RED de la fábrica anterior: el modelo de
+`SpeakerIdentifier` seguía referenciado tanto después del cierre del stack como
+después de `_stop_services`. Usan el wrapper real, el loader SpeechBrain sin
+modificar y una hoja SDK sintética en CPU. La corrección registra el encoder
+principal y el dedicado de ambient apenas se construyen, antes de entregar
+préstamos o continuar etapas que pueden fallar.
+
+`SpeakerIdentifier` sella admisión por instancia y retiene las operaciones
+reales de carga, extracción, identificación, verificación y enrollment. Carga e
+inferencia/conversión usan un RLock interno separado de la condición de cierre;
+la carga es idempotente y publica modelo/tipo bajo ese lock. La reserva externa
+permite terminar llamadas anidadas ya admitidas después del sello, incluidas
+muestras posteriores del mismo enrollment. Una llamada independiente posterior
+recibe `speaker_closed`, sin recargar ni devolver una identidad neutral.
+
+El cierre conserva un solo dueño con Context vacío, espera operaciones antes
+de retirar sus referencias a modelo/tipo/cache y resiste cancelaciones repetidas
+del observador. El sello no espera el lock nativo. La reentrada desde un worker
+o desde el mismo Thread del closer falla sin esperarse a sí misma. Los loaders,
+sus opciones/fallback y `compute_similarity` conservan su AST; la comparación
+pura sigue utilizable y los embeddings retornados siguen siendo del caller.
+
+El dueño del grafo espera Registry, CommandProcessor/warmup, los loops de captura
+y filtros wake, el trabajo administrativo y los productores ambient. Esperar
+sólo al tagger sería insuficiente: su modo administrado retorna después de
+postear una observación cuya inferencia sigue dentro de VoiceRegistry. El
+registro del tagger y del transcriber es inmediato; mover también el registro
+STT de este último antes de construir Distiller cubre ese fallo parcial.
+
+Las pruebas retienen principal y ambient después de que su productor retornó,
+cancelan repetidamente el observador de cierre y comprueban modelo, autoridad,
+sesión y lease todavía vivos. Después de la salida real se libera la referencia
+por weakref y no hay publicación tardía ni recarga. Otra barrera retiene el
+postludio de warmup cuando el contador de inferencia del adapter ya es cero.
+Se cubren fallos posteriores de la fábrica principal y antes de completar el
+tagger ambient, constructor concurrente, conversión cpu/numpy y Resemblyzer
+directo o por fallback, sin activar modelos ni dispositivos reales.
+
+Pasan las 23 regresiones nuevas y 525 pruebas existentes enfocadas. T022-F queda
+verificada localmente en `4359d91`: la suite completa pasa 7502
+casos más la xfail conocida en 578,92 segundos; 877 archivos de
+`src/`, `tests/` y `tools/` permanecen idénticos durante esa ejecución. Ruff no
+encuentra hallazgos en `src/` y `tests/`. Evidencia:
+`data/autonomous-roadmap-20261102/t022/f/evidence.json`; verificación:
+`data/autonomous-roadmap-20261102/t022/f/verification.json`.
+
+Esto acredita referencias del adapter y sus operaciones Python, no todas las
+copias Torch/SDK/CUDA ni los outputs del caller. Ambient standalone sin callbacks
+de dueño sigue pendiente de K3: cerrar un Registry prestado afectaría peers y no
+se hace desde AmbientPath. El siguiente corte es Parakeet, seleccionado para
+shadow y ambient en settings pero omitido por el filtro del owner STT actual.
+Emoción está deshabilitada y conserva su retiro condicional pendiente. También
+siguen las otras copias, legacy y el mapa completo con mute/restore T023/T024.
+T021/T022 siguen `in_progress`, el inventario inicial de 29 familias incompleto y
+C03/C04/C06/C20 sin aceptar. El caso HA resistente de más de 60 segundos y la
+separación de autoridades de T047 permanecen intactos; no hay despliegue ni
+aceptación física adelantada.
