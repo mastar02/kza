@@ -1039,14 +1039,16 @@
       "implementation_commits": [
         "7f5046e95e34cccd62e2ebb6e0db8bbfd942ac76",
         "265352dcea9dfd4a8ced9beff883f7ff5dc30e7e",
-        "9e6dcfd43347bdaf5392b3bf97c01c35b4fb431c"
+        "9e6dcfd43347bdaf5392b3bf97c01c35b4fb431c",
+        "751a0d71dfe6e89104fabb944ecb19560398bab1"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t014/corpus-contract-evidence.json",
         "data/autonomous-roadmap-20261102/t014/review-native-evidence.json",
-        "data/autonomous-roadmap-20261102/t014/opening-transport-evidence.json"
+        "data/autonomous-roadmap-20261102/t014/opening-transport-evidence.json",
+        "data/autonomous-roadmap-20261102/t014/producers-evidence.json"
       ],
-      "next_action": "Núcleo y transporte de aperturas verificados en 9e6dcfd: 62 casos dirigidos, Ruff sin hallazgos y suite completa de 7008 pruebas más una xfail conocida; 844 archivos permanecieron iguales. Descriptor por paquete, acumulación desconocida conservadora y referencias de PCM inequívocas; sin cambios de autoridad o retención. Integrar y probar las propuestas privadas revisadas de productores de comando/ambient: holder real, pre-roll, canal fijo, snapshots y entrada STT original separada del audio recortado. Después coordinar lectores/frontend por modalidad y límites de bytes/tipo en campos restaurados. T014 sigue en curso; C04/C12 y evidencia física/release pendientes."
+      "next_action": "Productores nativos verificados en 751a0d7: apertura real por holder, pre-roll y estado recurrente conservadores, canal fijo, snapshots tempranos y entrada STT original separada del audio recortado. Resultado STT sin retener DTO/PCM nativo; truncación antes del recorte de texto y una única observación por ruta. Pasan58 casos nuevos,615 cruzados y7066 de la suite completa más una xfail conocida;847 archivos intactos y Ruff sin hallazgos. Coordinar lectores y frontend por modalidad, tipos/bytes de campos restaurados, validadores cerrados yfixtures antes de exponer metadata. Propuestas privadas preparadas/en revisión; no recopiarlas sobre fixes root. T014 sigue en curso; C04/C12, evidencia física e instalación/rollback pendientes."
     },
     {
       "id": "T020",
@@ -2281,7 +2283,7 @@
     "last_verified_phase": "P0",
     "last_verified_task": "T013",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T014/capture-opening-packets",
+    "last_verified_unit": "T014/runtime-capture-producers",
     "user_priority_after_admin_unit": "T047"
   }
 }
