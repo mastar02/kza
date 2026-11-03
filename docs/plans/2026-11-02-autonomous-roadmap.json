@@ -983,7 +983,8 @@
         "2f87ea99bf6e41f8083943df84388b118d879ad4",
         "d47585d2e2b15106397780c7790bc60153afec14",
         "6d775a84626a93f4100ec7c5320807df1e4bf70c",
-        "d2ff4cea731fdf6b923318d239daa0b969833ada"
+        "d2ff4cea731fdf6b923318d239daa0b969833ada",
+        "f227d94234c33c7c14363dfa0a89e21a9c5dca8e"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
@@ -1008,9 +1009,10 @@
         "data/autonomous-roadmap-20261102/t013/evaluation-native-evidence.json",
         "data/autonomous-roadmap-20261102/t013/evaluation-http-evidence.json",
         "data/autonomous-roadmap-20261102/t013/credential-proof-evidence.json",
-        "data/autonomous-roadmap-20261102/t013/credential-commands-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/credential-commands-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/credential-http-evidence.json"
       ],
-      "next_action": "Native credential commands verified locally: durable schema3 terminal journal (4096 retained receipts), original actor+intent replay before source prep, first-observer secret only, shared legacy/CAS writer ownership, safe admin metadata, final source/account guard and failclosed commit/publication uncertainty. Strict migrations/raw temporal metadata/unique digest/history prevent partial restore from reviving retired permissions. Full6620+knownxfail/Ruff0/frozen800; cross153 including62new, independent reviews closed. Next HTTP credential catalog/attempt/issue/revise/revoke with original issuer and issued-target delivery guards, real lazy EVAL proof without trusted None fallback; then separate NEXO Accesos/evaluator views. Preserve T047 verified_local and no criteria accepted."
+      "next_action": "HTTP credential management verified locally: five auth:manage routes with required real Authority and owned work, closed bounded UTF8 JSON, original-actor durable replay, lazy actual EVAL proof, one-time secret bound to original issuer and issued revision through buffering, cancellation and transport errors. Shared authentication contract preserved; legacy bearer cannot operate credentials without native Authority. Full6705+knownxfail/Ruff0/frozen803;65 direct HTTP cases and expanded route matrix, independent reviews closed. Next own EVALUATOR grant metadata catalog (IDs/modalities/deadlines only; no VoiceRegistry/payload) for automatic sample selection, then NEXO Accesos and isolated evaluator views per nexo-access-plan. Preserve T047 verified_local, separate person/account/voice/role permissions, no criteria accepted."
     },
     {
       "id": "T014",
@@ -2263,7 +2265,7 @@
     "last_verified_phase": "P0",
     "last_verified_task": "T047",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T013/credential-commands",
+    "last_verified_unit": "T013/credential-http",
     "user_priority_after_admin_unit": "T047"
   }
 }

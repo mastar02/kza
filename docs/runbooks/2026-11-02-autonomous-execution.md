@@ -922,12 +922,13 @@ su verificación local; no hubo cambios de producción.
 
 ## Administración HTTP de credenciales
 
-Cinco rutas bajo /api/admin/auth exponen el catálogo de credentials, la consulta
-de credential-attempts y los comandos POST, PUT y DELETE. Todas requieren
+Cinco rutas bajo `/api/admin/auth` exponen el catálogo de credenciales, la consulta
+de `credential-attempts` y los comandos POST, PUT y DELETE. Todas requieren
 auth:manage, Authority real y los propietarios de trabajo y entrega. La ausencia
 o invalidez de esas dependencias impide operar credenciales. El autenticador
 global conserva su contrato; la exigencia nativa se comprueba antes del cuerpo
-y de los comandos, sin habilitar operaciones mediante el modo legacy standalone. Personas, cuentas canónicas, perfiles vocales y DashboardRole siguen
+y de los comandos, sin habilitar operaciones mediante el modo legacy standalone.
+Personas, cuentas canónicas, perfiles vocales y DashboardRole siguen
 siendo autoridades separadas.
 
 El cuerpo JSON tiene límite de 64 KiB y campos cerrados. Rechaza claves
@@ -970,5 +971,6 @@ Los resultados y logs se conservan en
 `data/autonomous-roadmap-20261102/t013/credential-http-evidence.json`.
 
 La siguiente unidad añadirá el catálogo acotado de muestras del propio
-evaluador y conectará Accesos y la vista de evaluación NEXO con estas rutas. El refactor visual T047 conserva su verificación local. No se despliega
+evaluador y conectará Accesos y la vista de evaluación NEXO con estas rutas.
+El refactor visual T047 conserva su verificación local. No se despliega
 producción ni se aceptan criterios domésticos mediante esta unidad.
