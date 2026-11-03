@@ -355,7 +355,10 @@ class HomeActionService:
         try:
             actor.require_current()
             fresh = await self.ha.get_entity_state_fresh(request.entity_id)
+            # Even an unsuccessful source read may outlive the original authority.
+            actor.require_current()
             unit = await self.ha.get_temperature_unit_fresh() if request.temperature is not None else None
+            actor.require_current()
             try:
                 validate_observation(request, fresh, temperature_unit=unit)
                 grant = await binding(request) if binding is not None else await self.policy.require_allowed(request, actor)

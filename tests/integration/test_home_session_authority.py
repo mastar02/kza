@@ -109,11 +109,13 @@ async def test_revocation_while_waiting_for_entity_lane_preserves_no_send_and_or
         assert [s[0] for s in transport.sends] == expected_sends
 
 
+@pytest.mark.parametrize('entity_state', ['off', 'unavailable'])
 @pytest.mark.parametrize('withdrawal', ['logout', 'expiry', 'role-revision'])
 async def test_original_authority_is_rechecked_after_real_ha_preflight(
-    leaves, tmp_path, dashboard_auth, monkeypatch, withdrawal,
+    leaves, tmp_path, dashboard_auth, monkeypatch, withdrawal, entity_state,
 ):
     async with web_graph(tmp_path, leaves, dashboard_auth) as (graph, client, transport):
+        transport.states['light.living']['state'] = entity_state
         authority = graph.dashboard_authority
         grant = None
         headers = dashboard_auth

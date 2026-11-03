@@ -701,7 +701,9 @@ async def test_failed_open_events_socket_retires_before_fresh_subscribed_success
         await _reached(retry_entered)
         assert broken.closed
         assert not successor.opened.is_set()
-        assert delays == [ha_module.STATE_SYNC_BACKOFF_INITIAL_S]
+        assert len(delays) == 1
+        # Acquisition and actual retirement consume the original attempt spacing.
+        assert 0. <= delays[0] < ha_module.STATE_SYNC_BACKOFF_INITIAL_S
 
         changed = asyncio.Event()
 

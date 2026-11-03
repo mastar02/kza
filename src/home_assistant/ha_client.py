@@ -183,9 +183,10 @@ STATE_OBSERVATION_TTL_S = 6.0
 REGISTRY_OBSERVATION_TTL_S = 60.0
 WS_AUTH_TIMEOUT = 5.0           # WebSocket auth handshake timeout
 WS_CALL_TIMEOUT = 2.0           # WebSocket service-call timeout
-STATE_SYNC_ATTEMPT_TIMEOUT_S = 15.0
+STATE_SYNC_ATTEMPT_TIMEOUT_S = 20.0
 STATE_SYNC_BACKOFF_INITIAL_S = 5.0
 STATE_SYNC_BACKOFF_MAX_S = 30.0
+STATE_CLOSE_OBSERVATION_TIMEOUT_S = 5.0
 TRANSPORT_OBSERVATION_TTL_S = 60.0
 STATE_STREAM_MAX_MESSAGE_BYTES = MAX_FRAME_BYTES
 STATE_REST_ADMISSION_CAPACITY = MAX_EFFECTS * 4 + 1
@@ -351,6 +352,13 @@ class HomeAssistantClient:
         self._state_subscribe_task: asyncio.Task | None = None
         self._state_callbacks: list = []  # observers opcionales
         self._state_sync_running = False
+        self._state_sync_baseline_serial = 0
+        self._calls_recovery_task: asyncio.Task | None = None
+        self._calls_recovery_timer: asyncio.TimerHandle | None = None
+        self._calls_recovery_timer_due: float | None = None
+        self._calls_recovery_timer_token: object | None = None
+        self._calls_recovery_backoff = STATE_SYNC_BACKOFF_INITIAL_S
+        self._calls_recovery_not_before = 0.0
         self._state_rebuild_requested = False
         self._state_last_full_refresh: float = 0.0
         self._state_full_refresh_interval_s: float = 300.0
@@ -648,15 +656,17 @@ class HomeAssistantClient:
         if ws is None:
             return
         key = id(ws)
-        if ws.closed is True:
+        task = self._socket_close_tasks.get(key)
+        # aiohttp sets closed before its close coroutine has actually finished.
+        if ws.closed is True and task is None:
             self._owned_sockets.pop(key, None)
             return
-        task = self._socket_close_tasks.get(key)
         if task is None:
             async def finish():
                 for attempt in range(3):
                     try:
-                        await ws.close()
+                        async with asyncio.timeout(STATE_CLOSE_OBSERVATION_TIMEOUT_S):
+                            await ws.close()
                         if ws.closed is not True:
                             raise aiohttp.ClientConnectionError('ha_socket_close_unconfirmed')
                         self._owned_sockets.pop(key, None)
@@ -1634,14 +1644,19 @@ class HomeAssistantClient:
         self._observe_channel('calls', self._channel_observations['calls'].phase,
             self._channel_observations['calls'].state, required=True)
         if self._ws_connected and self._ws_calls is not None and not self._ws_calls.closed:
+            self._cancel_calls_recovery_timer()
             return True
         task = self._calls_connect_task
         if task is None or task.done():
+            self._cancel_calls_recovery_timer()
+            self._calls_recovery_not_before = max(self._calls_recovery_not_before,
+                monotonic() + self._calls_recovery_backoff)
             task = self._calls_connect_task = self._retain_transport(
                 self._connect_calls_owned(self._transport_generation), 'calls')
             def finished(done):
                 if self._calls_connect_task is done:
                     self._calls_connect_task = None
+                    self._schedule_required_calls_recovery()
             task.add_done_callback(finished, context=Context())
         return await asyncio.shield(task)
 
@@ -1970,15 +1985,100 @@ class HomeAssistantClient:
                 'ha_state_sync_stopped', required=False)
 
 
+    def _cancel_calls_recovery_timer(self) -> None:
+        timer, self._calls_recovery_timer = self._calls_recovery_timer, None
+        self._calls_recovery_timer_due = None
+        self._calls_recovery_timer_token = None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_required_calls_recovery(self) -> None:
+        """Own one absolute retry timer, independent of events receiver ticks."""
+        if self._closed or not self._channel_observations['calls'].required:
+            self._cancel_calls_recovery_timer()
+            return
+        if self._ws_calls is not None and not self._ws_calls.closed:
+            self._cancel_calls_recovery_timer()
+            return
+        if ((self._calls_recovery_task is not None and not self._calls_recovery_task.done())
+                or (self._calls_connect_task is not None and not self._calls_connect_task.done())):
+            return
+        due = max(monotonic(), self._calls_recovery_not_before)
+        timer = self._calls_recovery_timer
+        if (timer is not None and not timer.cancelled() and self._calls_recovery_timer_due is not None
+                and self._calls_recovery_timer_due <= due):
+            return
+        self._cancel_calls_recovery_timer()
+        token = self._calls_recovery_timer_token = object()
+        self._calls_recovery_timer_due = due
+        self._calls_recovery_timer = asyncio.get_running_loop().call_later(max(0.0, due - monotonic()),
+            self._required_calls_timer_fired, self._transport_generation, token, context=Context())
+
+    def _required_calls_timer_fired(self, generation, token) -> None:
+        if token is not self._calls_recovery_timer_token:
+            return
+        self._calls_recovery_timer = None
+        self._calls_recovery_timer_due = None
+        self._calls_recovery_timer_token = None
+        if self._closed or generation != self._transport_generation:
+            return
+        self._kick_required_calls_recovery()
+
+    def _kick_required_calls_recovery(self) -> None:
+        """Admit one rate-limited connection probe without blocking event reads."""
+        if self._closed or not self._channel_observations['calls'].required:
+            self._cancel_calls_recovery_timer()
+            return
+        if self._ws_calls is not None and not self._ws_calls.closed:
+            self._cancel_calls_recovery_timer()
+            return
+        if self._calls_recovery_task is not None and not self._calls_recovery_task.done():
+            return
+        if self._calls_connect_task is not None and not self._calls_connect_task.done():
+            return
+        started = monotonic()
+        if started < self._calls_recovery_not_before:
+            self._schedule_required_calls_recovery()
+            return
+        self._cancel_calls_recovery_timer()
+        self._calls_recovery_not_before = started + self._calls_recovery_backoff
+        operation = self._recover_required_calls_once(self._transport_generation)
+        try:
+            task = self._calls_recovery_task = self._retain_transport(operation, 'calls')
+        except BaseException:
+            operation.close()
+            raise
+        def finished(done):
+            if self._calls_recovery_task is done:
+                self._calls_recovery_task = None
+                self._schedule_required_calls_recovery()
+        task.add_done_callback(finished, context=Context())
+
+    async def _recover_required_calls_once(self, generation) -> None:
+        if self._closed or generation != self._transport_generation:
+            return
+        recovered = False
+        try:
+            recovered = await self.connect_websocket()
+        except Exception as error:
+            logger.warning('HA calls recovery attempt failed: %s', type(error).__name__)
+        if self._closed or generation != self._transport_generation:
+            return
+        self._calls_recovery_backoff = (STATE_SYNC_BACKOFF_INITIAL_S if recovered else
+            min(self._calls_recovery_backoff * 2, STATE_SYNC_BACKOFF_MAX_S))
+
     async def _state_sync_loop(self) -> None:
         """One event receiver with capped retry delay; no service/action replay."""
         generation = self._state_generation
         backoff = STATE_SYNC_BACKOFF_INITIAL_S
         while self._state_current(generation):
+            attempt_started = monotonic()
+            baseline_serial = self._state_sync_baseline_serial
+            self._kick_required_calls_recovery()
             try:
                 await self._subscribe_and_sync()
-                backoff = STATE_SYNC_BACKOFF_INITIAL_S
                 if self._state_rebuild_requested and self._state_current(generation):
+                    backoff = STATE_SYNC_BACKOFF_INITIAL_S
                     self._state_rebuild_requested = False
                     continue
             except asyncio.CancelledError:
@@ -1989,8 +2089,10 @@ class HomeAssistantClient:
                 logger.warning('HA events attempt failed: %s', type(error).__name__)
                 self._observe_channel('events', 'retrying',
                     self._channel_observations['events'].state, 'ha_events_retry_pending')
+            if self._state_sync_baseline_serial != baseline_serial:
+                backoff = STATE_SYNC_BACKOFF_INITIAL_S
             if self._state_current(generation):
-                await self._state_retry_wait(backoff)
+                await self._state_retry_wait(max(0.0, attempt_started + backoff - monotonic()))
                 backoff = min(backoff * 2, STATE_SYNC_BACKOFF_MAX_S)
 
 
@@ -2037,9 +2139,12 @@ class HomeAssistantClient:
                 self._record_success((time.perf_counter() - started) * 1000, channel='events',
                     observed_at=observed_at)
                 self._observe_channel('events', 'subscribed', HAConnectionState.CONNECTED)
+                self._state_sync_baseline_serial += 1
+                self._kick_required_calls_recovery()
             full_deadline = monotonic() + self._state_full_refresh_interval_s
             while (self._state_current(generation) and self._ws_events is ws
                     and stream_generation == self._entity_stream_generation):
+                self._kick_required_calls_recovery()
                 remaining = full_deadline - monotonic()
                 if remaining <= 0:
                     self._state_rebuild_requested = True
@@ -2182,6 +2287,7 @@ class HomeAssistantClient:
         """Terminal admission seal with retained socket/session retirement."""
         if self._close_task is None:
             self._closed = True
+            self._cancel_calls_recovery_timer()
             self._state_projection_close = self._state_projection_work.begin_close()
             self._transport_generation += 1
             self._state_generation += 1
