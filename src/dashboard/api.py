@@ -36,6 +36,7 @@ from src.dashboard.live_event_bus import LiveEventBus
 from src.dashboard.memory_api import register_memory_routes
 from src.dashboard.rest_delivery import DashboardApplication
 from src.dashboard.voice_api import register_voice_routes
+from src.dashboard.evaluation_api import register_evaluation_routes
 from src.dashboard.ambient_api import register_ambient_routes
 from src.dashboard.observability import register_observability_routes
 from src.rooms.room_context import RoomConfig
@@ -938,6 +939,7 @@ class DashboardAPI:
         )
         register_memory_routes(self.app, manager=self.memory_manager)
         register_voice_routes(self.app,voices=self.voice_registry)
+        register_evaluation_routes(self.app,voices=self.voice_registry)
         register_ambient_routes(self.app,control=self.ambient_control)
 
         register_home_routes(

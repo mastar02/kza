@@ -32,7 +32,8 @@ from src.dashboard.observation_http import ObservationHeaders
 from src.core.observation import Observation, ObservationSource, ObservationReason
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
-from src.dashboard.auth import COOKIE_NAME, require_dashboard_session, session_guard, session_reader
+from src.dashboard.auth import COOKIE_NAME, current_lease, require_dashboard_session, session_guard, session_reader
+from src.dashboard.authority import DashboardRole
 from src.dashboard.live_retention_types import LiveSubscriptionMode
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.dashboard.native_work import NativeAuthorityRetired, ensure_admin_work, require_current, run_admin_work
@@ -514,5 +515,13 @@ def register_observability_routes(
         @router.websocket('/ws/voices')
         async def ws_voices(ws: WebSocket):
             await private_socket(ws,frozenset({'voices:read','voices:review'}),LiveSubscriptionMode.VOICES_CONTROL_ONLY)
+
+        @router.websocket('/ws/evaluation')
+        async def ws_evaluation(ws: WebSocket):
+            lease = current_lease(ws)
+            if lease is None or lease.principal.role is not DashboardRole.EVALUATOR:
+                await ws.close(code=1008)
+                return
+            await private_socket(ws,frozenset({'evaluation:read'}),LiveSubscriptionMode.EVALUATION_CONTROL_ONLY)
 
     app.include_router(router)

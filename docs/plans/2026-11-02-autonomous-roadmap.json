@@ -1002,9 +1002,10 @@
         "data/autonomous-roadmap-20261102/t047/voices-control-evidence.json",
         "data/autonomous-roadmap-20261102/t047/person-native-evidence.json",
         "data/autonomous-roadmap-20261102/t047/person-filter-evidence.json",
-        "data/autonomous-roadmap-20261102/t013/evaluation-native-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/evaluation-native-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/evaluation-http-evidence.json"
       ],
-      "next_action": "Exact native evaluator consumer verified locally: original EVALUATOR lease, complete actual source hashes before selected payload only, strict modality SQL, exact deadlines, immutable actual-source proof and cleared private error contexts. Full6475+knownxfail/Ruff0/frozen789, independent reviews closed. Next singular HTTP/EVALUATION_CONTROL_ONLY original-reader/actual-body and durable mode-cookie isolation before evaluator credential UI; then remaining credential/role HTTP/UI. T047 stays verified_local; no criteria accepted."
+      "next_action": "Exact evaluator native+HTTP/control consumers verified locally: singular selected payload, original actor/immutable source proof, exclusive EVALUATION_CONTROL_ONLY protocol3, ticket and actual outer-body guards, mode/cookie durable isolation. Full6527+knownxfail/Ruff0/frozen793; cross501 including37newHTTP/control cases, independent reviews closed. Next credential authority preparation/API: server-derived actual-source proof with final pure guard, one-time token and durable consumed-attempt identity/reconciliation; then separate role-based NEXO views. T047 stays verified_local; no criteria accepted."
     },
     {
       "id": "T014",
@@ -2257,7 +2258,7 @@
     "last_verified_phase": "P0",
     "last_verified_task": "T047",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T013/evaluation-native",
+    "last_verified_unit": "T013/evaluation-http-control",
     "user_priority_after_admin_unit": "T047"
   }
 }

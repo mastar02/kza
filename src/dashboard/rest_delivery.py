@@ -105,7 +105,8 @@ class DashboardApplication(FastAPI):
         owner = getattr(self.state, 'rest_delivery_owner', None)
         try:
             if owner is not None and (scope.get('path') == '/api/conversations'
-                    or scope.get('path', '').startswith('/api/voices')):
+                    or scope.get('path', '').startswith('/api/voices')
+                    or scope.get('path') == '/api/evaluation' or scope.get('path', '').startswith('/api/evaluation/')):
                 await owner.scope(super().__call__, scope, receive, guarded_send)
             else:
                 await super().__call__(scope, receive, guarded_send)

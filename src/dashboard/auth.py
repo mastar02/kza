@@ -153,6 +153,8 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
         if read and ("/runs/" in path or path.endswith("/attempts")):
             return frozenset({DashboardPermission.ROUTINES_MANAGE})
         return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.ROUTINES_MANAGE})
+    if path == "/ws/evaluation" or (method == "GET" and path.startswith("/api/evaluation/samples/") and path.count("/") == 4):
+        return frozenset({DashboardPermission.EVALUATION_READ})
     if path == "/api/voices" or path.startswith("/api/voices/"):
         if voice_person_scope_requested(request):
             return frozenset({DashboardPermission.VOICES_REVIEW,DashboardPermission.ADMIN_MANAGE,
@@ -168,7 +170,6 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
         return frozenset({DashboardPermission.CONVERSATIONS_READ})
     if path == "/ws":
         return frozenset({DashboardPermission.HOME_READ})
-    # Personal task ownership and evaluation channels are connected separately.
     # Unknown surfaces inherit an operator permission, including new routes.
     return frozenset({DashboardPermission.DIAGNOSTICS_READ if read else DashboardPermission.ADMIN_MANAGE})
 

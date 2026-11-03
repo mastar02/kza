@@ -126,7 +126,7 @@ class LiveEventBus:
     ) -> None:
         if self._retention is not None:
             state = self._retention._states.get(sub_id)
-            if state is None or state.closed or state.mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY:
+            if state is None or state.closed or state.mode is not LiveSubscriptionMode.TECHNICAL:
                 return
             if state.reader is not None and not state.reader.current():
                 state.closed = True
@@ -157,10 +157,10 @@ class LiveEventBus:
             mode: LiveSubscriptionMode = LiveSubscriptionMode.TECHNICAL) -> tuple[int, asyncio.Queue[RetainedLiveEvent]]:
         if type(mode) is not LiveSubscriptionMode:
             raise ValueError('invalid_live_subscription_mode')
-        if mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY and reader is None:
-            raise ValueError('live_voice_reader_required')
-        if mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY and self._retention is None:
-            raise RuntimeError('live_voice_retention_unavailable')
+        if mode is not LiveSubscriptionMode.TECHNICAL and reader is None:
+            raise ValueError('live_control_reader_required')
+        if mode is not LiveSubscriptionMode.TECHNICAL and self._retention is None:
+            raise RuntimeError('live_control_retention_unavailable')
         if reader is not None:
             if type(reader) is not ReaderBinding:
                 raise ValueError('invalid_live_reader')

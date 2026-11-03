@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from src.dashboard.live_receipts import canonical_id
 from src.core.reader_binding import ReaderBinding
-from src.dashboard.live_retention_types import LiveSubscriptionMode,VOICE_CHANNELS
+from src.dashboard.live_retention_types import LiveSubscriptionMode
 
 
 class BrowserPhase(StrEnum):
@@ -60,8 +60,8 @@ class LiveBrowserSession:
         """Advertise REST admission only after the exact reset commit."""
         if self.ready and self._rest_ready:
             self._rest_ready = False
-            if self.mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY:
-                return {'type':'rest_ready','connection_id':self.connection,'channels':sorted(VOICE_CHANNELS),'ts':''}
+            if self.mode is not LiveSubscriptionMode.TECHNICAL:
+                return {'type':'rest_ready','connection_id':self.connection,'channels':sorted(self.mode.channels),'ts':''}
             return {'type':'rest_ready','connection_id':self.connection,'ts':''}
         return None
 
@@ -99,8 +99,8 @@ class LiveBrowserSession:
         self.reader.require_current()
         kind,args = self._decode(message)
         message = None
-        if kind=='live_hello' and self.mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY and args[1]!=3:
-            raise ValueError('voices_protocol_three_required')
+        if kind=='live_hello' and self.mode is not LiveSubscriptionMode.TECHNICAL and args[1]!=3:
+            raise ValueError(f'{self.mode.value}_protocol_three_required')
         async def execute():
             if self.phase is BrowserPhase.CLOSED:
                 return

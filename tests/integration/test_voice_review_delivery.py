@@ -153,7 +153,7 @@ async def test_confirmed_name_survives_raw_ttl_but_cannot_authorize_a_new_raw_ti
                 assert await receipts.issue_profiles(peer.connection,str(uuid4()),clock.now+300,tuple(sources),((profile['id'],2),),reader=peer.reader) is None
 
 
-@pytest.mark.parametrize('mode',list(LiveSubscriptionMode))
+@pytest.mark.parametrize('mode',[mode for mode in LiveSubscriptionMode if mode.permits_channel('voices:profiles')])
 async def test_deleted_profile_retires_only_its_metadata_channel(tmp_path,dashboard_auth,mode):
     async with web_graph(tmp_path) as (_,_,voices,clock,bus):
         _,identities = await seed(voices,clock)

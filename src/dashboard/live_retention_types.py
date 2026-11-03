@@ -6,6 +6,7 @@ from uuid import UUID
 from weakref import ref
 
 VOICE_CHANNELS = frozenset({'voices:profiles','voices:captures','voices:review'})
+EVALUATION_CHANNELS = frozenset({'evaluation:sample'})
 
 
 def _control_id(value) -> bool:
@@ -22,13 +23,20 @@ class LiveSubscriptionMode(StrEnum):
 
     TECHNICAL = 'technical'
     VOICES_CONTROL_ONLY = 'voices'
+    EVALUATION_CONTROL_ONLY = 'evaluation'
+
+    @property
+    def channels(self) -> frozenset[str]:
+        if self is LiveSubscriptionMode.EVALUATION_CONTROL_ONLY:
+            return EVALUATION_CHANNELS
+        return VOICE_CHANNELS | frozenset({'conversations'}) if self is LiveSubscriptionMode.TECHNICAL else VOICE_CHANNELS
 
     def permits_channel(self, channel: str) -> bool:
-        """Technical views retain the existing voice/conversation protocol."""
-        return type(channel) is str and (channel in VOICE_CHANNELS or self is LiveSubscriptionMode.TECHNICAL and channel=='conversations')
+        """Keep each server-selected private domain closed."""
+        return type(channel) is str and channel in self.channels
 
     def permits_frame(self, frame: dict) -> bool:
-        """A voice control socket carries bounded receipt metadata only."""
+        """Control sockets carry only bounded receipts for their own channels."""
         if self is LiveSubscriptionMode.TECHNICAL:
             return True
         if type(frame) is not dict or frame.get('ts')!='':
@@ -38,9 +46,9 @@ class LiveSubscriptionMode(StrEnum):
             payload = frame['payload']
             return type(payload) is dict and set(payload)=={'id','nonce'} and all(_control_id(value) for value in payload.values())
         if kind=='rest_ready' and set(frame)=={'type','connection_id','channels','ts'}:
-            return _control_id(frame['connection_id']) and frame['channels']==sorted(VOICE_CHANNELS)
+            return _control_id(frame['connection_id']) and frame['channels']==sorted(self.channels)
         if (kind!='rest_retire' or set(frame)!={'type','payload','channel','ts'}
-                or type(frame['channel']) is not str or frame['channel'] not in VOICE_CHANNELS):
+                or type(frame['channel']) is not str or frame['channel'] not in self.channels):
             return False
         payload = frame['payload']
         if type(payload) is not dict or set(payload)!={'event_ids','receipts'}:

@@ -783,3 +783,42 @@ T013 sigue en curso: falta conectar la respuesta HTTP singular, su canal de
 control exclusivo, recibos y guardas del envío exterior antes de distribuir
 credenciales de evaluación. T047 conserva su verificación local y no se acepta
 ningún criterio doméstico o de campo por esta unidad.
+
+## Entrega HTTP y control exclusivo de evaluación
+
+La lectura singular de `/api/evaluation/samples/{fingerprint_id}` exige una
+modalidad explícita y una sola cabecera de conexión. No ofrece catálogo ni
+cursor y rechaza queries de personas, fuentes o vencimientos. Construye el
+actor desde el lease original admitido, sin adoptar otro login. El operador
+no se convierte en evaluador por disponer del permiso de evaluación.
+
+`/ws/evaluation` exige rol evaluador antes de subscribe/accept, protocolo 3
+y únicamente el canal `evaluation:sample`. Sus conexiones no reciben ni
+proyectan publicaciones generales. Los canales y formatos de Voces y del
+modo técnico se conservan. Los prefijos de modo y namespaces de login
+mantienen separadas las obligaciones duraderas de limpieza de cada página.
+
+La respuesta valida el actor, la fila cerrada y la prueba inmutable original
+antes de transferir ownership. Compara fuentes, hashes y vencimiento y llama
+al validador desde la clase. El ticket se persiste antes de headers. La guarda
+conserva sus valores originales aunque termine la respuesta interior; el dueño
+exterior la vuelve a comprobar junto con fuentes y conexión antes de enviar.
+El scope cubre middleware y buffers y aplica `no-store` también a errores.
+
+Las pruebas con sesiones, SQLite y sockets ASGI reales cubren otra cookie
+del mismo credential, otros modos, formato de DTO alterado, caducidad de la
+muestra con sesión vigente y borrado de la fuente dentro de un buffer. Un ACK
+temprano no oculta un callback de body aún activo; cancelar al observador
+tampoco retira una lectura nativa antes de su salida real. El socket con cookie
+y el GET sólo comparten conexión cuando pertenecen al mismo login original.
+
+La suite final pasa 6527 pruebas y conserva una xfail conocida. Las 501 pruebas
+cruzadas se solapan con ese total e incluyen 37 casos nuevos de HTTP/control.
+Ruff no informa errores y los hashes de 793 fuentes permanecieron iguales
+durante la ejecución. Las revisiones independientes están cerradas; evidencia:
+`data/autonomous-roadmap-20261102/t013/evaluation-http-evidence.json`.
+T013 sigue en curso: falta la emisión, listado, revisión y revocación segura
+de credenciales y la navegación por rol. La siguiente unidad preparará proofs
+de fuentes reales y una identidad duradera del intento antes de exponer tokens
+de un solo envío. T047 conserva su estado y no se acepta ningún criterio por
+esta verificación local.

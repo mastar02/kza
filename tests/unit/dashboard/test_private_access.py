@@ -63,7 +63,7 @@ def test_all_private_http_routes_reject_before_using_dependencies(method, path, 
     assert services.mock_calls == [], (method, path, services.mock_calls)
 
 
-@pytest.mark.parametrize("path", ["/ws", "/ws/live"])
+@pytest.mark.parametrize("path", ["/ws", "/ws/live", "/ws/evaluation"])
 @pytest.mark.parametrize("credential", ["missing", "wrong", "unconfigured", "foreign_origin"])
 def test_private_websockets_reject_before_subscribing(path, credential, monkeypatch, dashboard_auth):
     bus = LiveEventBus()

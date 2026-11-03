@@ -34,7 +34,9 @@ async def test_reader_retired_between_send_admission_and_actual_callback_cannot_
     async with graph(tmp_path) as (_,_,bus,_,clock):
         async with ready_browser(bus,reader=reader,version=3,mode=mode) as peer:
             source = memory_source(now=clock.now)
-            channel = 'voices:review' if mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY else 'conversations'
+            channel = {LiveSubscriptionMode.TECHNICAL:'conversations',
+                LiveSubscriptionMode.VOICES_CONTROL_ONLY:'voices:review',
+                LiveSubscriptionMode.EVALUATION_CONTROL_ONLY:'evaluation:sample'}[mode]
             operation = RestOperation(sources=() if empty else (source,),connection=peer.connection,
                 reader=reader,guard=reader.current,expires_at=source.expires_at,private_envelope=True,channel=channel)
             messages = []

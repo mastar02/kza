@@ -353,7 +353,7 @@ class LiveRetention:
                 if state.queue.empty():
                     await state.wake.wait()
                     continue
-                if state.mode is LiveSubscriptionMode.VOICES_CONTROL_ONLY:
+                if state.mode is not LiveSubscriptionMode.TECHNICAL:
                     self._drain(state.queue)
                     raise PermissionError('live_control_queue_not_empty')
                 record = state.queue.get_nowait()

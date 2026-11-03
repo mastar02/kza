@@ -34,7 +34,7 @@ async def test_idle_reader_without_redundant_guard_closes_without_acknowledging_
             ticket = await store.issue(peer.connection,str(uuid4()),source.expires_at,(source,),reader=reader)
             assert ticket is not None
             active[0] = False
-            await until(lambda:bus.subscriber_count==0)
+            await until(lambda:not any(state.browser.connection==peer.connection for state in bus._retention._states.values()))
             assert await store.pending(source.conversation_id)==1
 
 
