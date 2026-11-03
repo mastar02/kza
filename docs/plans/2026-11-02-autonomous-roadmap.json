@@ -1036,9 +1036,13 @@
       "optional": false,
       "inclusion": "required",
       "status": "in_progress",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": "Añadir procedencia tipada y comparación de intervalos exactos al manifiesto privado; después transportar con la PCM real los canales y generaciones diferenciadas y persistir bajo el mismo deadline/borrado. No completar legacy por inferencia, no confundir DSP declarado con observado ni recortar texto por proporción temporal."
+      "implementation_commits": [
+        "7f5046e95e34cccd62e2ebb6e0db8bbfd942ac76"
+      ],
+      "evidence": [
+        "data/autonomous-roadmap-20261102/t014/corpus-contract-evidence.json"
+      ],
+      "next_action": "Contrato puro del corpus verificado en 7f5046e: procedencia tipada, DSP declarado frente a observado, intervalos PCM exactos, vínculo explícito audio/referencia/hipótesis y límites UTC sin renovar retención. Pasan 120 casos enfocados y la suite completa con 6838 pruebas más una xfail conocida; 837 archivos permanecieron iguales. Continuar con runtime-plan.json: transportar dos descriptores de audio/STT con la PCM real, persistirlos por modalidad conservando primer escritor, vencimiento y borrado, y actualizar lectores/validadores juntos. T014 sigue en curso; ningún criterio de campo aceptado."
     },
     {
       "id": "T020",
@@ -2273,7 +2277,7 @@
     "last_verified_phase": "P0",
     "last_verified_task": "T013",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T013/local-closure",
+    "last_verified_unit": "T014/corpus-provenance-contract",
     "user_priority_after_admin_unit": "T047"
   }
 }
