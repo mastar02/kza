@@ -55,13 +55,8 @@ logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1280
 
-# Cota para el `await` de write_audio_health dentro de _stream_watchdog.
-# 1.0s queda cómodamente por debajo del intervalo default del watchdog
-# (stream_watchdog_check_interval_s=2.0s) para no demorar detect_stale_streams
-# / _recover_streams, pero es generoso para una escritura local de pocos KB
-# (mkstemp+json.dump+os.replace normalmente tarda unos pocos ms). Si el
-# thread se cuelga (fs trabado, disco lleno bloqueando I/O, etc.), este
-# timeout evita que la recuperación de mics quede rehén de esa escritura.
+# Warn after this observation budget without cancelling native publication.
+# _audio_health_work retains one real write until it exits, even after timeout.
 AUDIO_HEALTH_WRITE_TIMEOUT_S = 1.0
 
 
@@ -397,6 +392,15 @@ class MultiRoomAudioLoop:
         # 1.5-2s lo normal, 135s el peor observado el 2026-07-29).
         self._watchdog_first_frame_grace_s = stream_watchdog_first_frame_grace_s
         self._watchdog_task = None
+        self._recovery_task = None
+        self._recovery_epoch = 0
+        self._recovery_ready = True
+        self._global_recovery = False
+        self._input_recovery_pause = None
+        self._audio_health_work = OwnedBlockingWork(capacity=1)
+        self._audio_health_task = None
+        self._audio_health_started = 0.0
+        self._audio_health_timed_out = False
         # Snapshot del heartbeat para el poller externo (2026-07-31): el
         # watchdog interno recupera mics pero no puede AVISAR — si el
         # proceso se traba, se traba con él. Ver tools/audio_watchdog_alert.py.
@@ -611,6 +615,8 @@ class MultiRoomAudioLoop:
         for room in self._capture_rooms.values():
             tasks |= set(room.snapshot_operations())
         tasks |= set(self._inputs.snapshot_operations())
+        tasks.update(task for task in (self._recovery_task, self._input_recovery_pause)
+                     if task is not None and not task.done())
         if self._pausing is not None and not self._pausing.done():
             tasks.add(self._pausing)
         if isinstance(self._wake_clip_writer, WakeClipWriter):
@@ -635,11 +641,27 @@ class MultiRoomAudioLoop:
         return {'closed': self._closed, 'paused': self._paused, 'operations': len(self.snapshot_operations()),
                 'batches': len(self._capture_batches), 'source_scopes': self._scopes.resource_status(),
                 'inputs': self._inputs.resource_status(),
+                'audio_health': self._audio_health_work.status(),
                 'rooms': [room.resource_status() for room in self._capture_rooms.values()]}
 
     def begin_pause_inputs(self) -> asyncio.Task:
-        """Seal and close driver inputs; processing retirement is a separate gate."""
-        return self._inputs.begin_pause()
+        """Seal recovery now and retain its real input/native pause barrier."""
+        if self._input_recovery_pause is None:
+            self._recovery_epoch += 1
+            pending = self._cancel_reopen_tasks()
+            recovery = self._recovery_task
+            pause = self._inputs.begin_pause()
+
+            async def finish():
+                await asyncio.gather(*pending, return_exceptions=True)
+                if recovery is not None:
+                    await asyncio.gather(asyncio.shield(recovery), return_exceptions=True)
+                await asyncio.shield(pause)
+
+            self._input_recovery_pause = asyncio.create_task(finish(), context=Context())
+            self._input_recovery_pause.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception(), context=Context())
+        return self._input_recovery_pause
 
     def pause_admission(self) -> None:
         """Seal voice epochs, capture and callbacks before draining actual work."""
@@ -649,7 +671,7 @@ class MultiRoomAudioLoop:
             self._privacy.scopes.suspend_origin(MemoryOrigin.VOICE)
         for room in self._capture_rooms.values():
             room.pause_admission()
-        self._inputs.begin_pause()
+        self.begin_pause_inputs()
         if isinstance(self._wake_clip_writer, WakeClipWriter):
             self._wake_clip_writer.pause_admission()
 
@@ -667,7 +689,7 @@ class MultiRoomAudioLoop:
                         if not tasks:
                             break
                         await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
-                    await asyncio.shield(self._inputs.begin_pause())
+                    await asyncio.shield(self.begin_pause_inputs())
                     await asyncio.gather(*(room.drain_pause() for room in self._capture_rooms.values()))
                     if isinstance(self._wake_clip_writer, WakeClipWriter):
                         await self._wake_clip_writer.drain_pause()
@@ -702,7 +724,17 @@ class MultiRoomAudioLoop:
         """Reallow driver opening after actual close; never reuse an old handle."""
         if self._closed:
             raise RuntimeError('capture_closed')
+        if self._input_recovery_pause is not None:
+            if not self._input_recovery_pause.done():
+                raise RuntimeError('input_group_still_owned')
+            self._input_recovery_pause.result()
+        if self._recovery_task is not None:
+            if (not self._recovery_task.done()
+                    or self._recovery_task.cancelled() and self._input_recovery_pause is None):
+                raise RuntimeError('input_group_still_owned')
         self._inputs.resume()
+        self._input_recovery_pause = None
+        self._recovery_ready = True
         if self._running:
             for rs in self.room_streams.values():
                 self._schedule_reopen(rs)
@@ -712,19 +744,30 @@ class MultiRoomAudioLoop:
         self._closed = True
         self._running = False
         if self._closing is None:
+            input_pause = self.begin_pause_inputs()
+            watchdog = self._watchdog_task
+            if watchdog is not None:
+                watchdog.cancel()
+            health = self._audio_health_task
+            health_close = self._audio_health_work.begin_close()
             controllers = set(self._capture_controllers.values()) | self._capture_tasks | self._capture_batches | self._early_tasks | self._dispatch_tasks
             for task in controllers:
                 task.cancel()
             drains = [room.begin_close() for room in self._capture_rooms.values()]
             drains.append(self._inputs.begin_close())
+            drains.extend((input_pause, health_close))
             drains.append(self._capture_native.begin_close())
             if isinstance(self._wake_clip_writer, WakeClipWriter):
                 drains.append(self._wake_clip_writer.begin_close())
             async def finish():
+                if watchdog is not None:
+                    await asyncio.gather(watchdog, return_exceptions=True)
+                if health is not None:
+                    await asyncio.gather(asyncio.shield(health), return_exceptions=True)
                 await asyncio.gather(*controllers, *drains, return_exceptions=True)
                 if self._pausing is not None:
                     await asyncio.gather(asyncio.shield(self._pausing), return_exceptions=True)
-            self._closing = asyncio.create_task(finish())
+            self._closing = asyncio.create_task(finish(), context=Context())
         return self._closing
 
     def last_command_dispatch_ts(self, room_id: str) -> float:
@@ -1033,22 +1076,21 @@ class MultiRoomAudioLoop:
         except Exception as e:
             logger.warning(f"[audio-watchdog] PortAudio reinit failed: {e}")
 
-    async def _try_reopen_once(self, rs: "RoomStream") -> bool:
-        """Un solo intento de re-resolver el device y reabrir su stream.
+    def _input_epoch_current(self, epoch: int) -> bool:
+        return not self._closed and self._inputs.accepting and epoch == self._recovery_epoch
 
-        Returns:
-            True si la room quedó con stream abierto; False si el device no
-            está en sysfs o PortAudio no pudo abrirlo. Nunca espera ni raisea.
-        """
-        if self._closed or not self._inputs.accepting:
+    async def _try_reopen_once(self, rs: "RoomStream") -> bool:
+        """Join one retained native open without crossing an input pause epoch."""
+        epoch = self._recovery_epoch
+        if not self._input_epoch_current(epoch) or self._global_recovery:
             return False
         stream = await self._inputs.open(rs.room_id)
-        if stream is None or not self._inputs.accepting:
+        if stream is None or not self._input_epoch_current(epoch) or self._global_recovery:
             return False
         await self._sync_direction_observers()
-        return True
+        return self._input_epoch_current(epoch) and not self._global_recovery
 
-    async def _reopen_room(self, rs: "RoomStream") -> None:
+    async def _reopen_room(self, rs: "RoomStream", *, epoch: int | None = None) -> None:
         """Reintentar la reapertura con backoff hasta que el device vuelva.
 
         Waits indefinitely (while self._running) for the device to reappear in
@@ -1057,13 +1099,18 @@ class MultiRoomAudioLoop:
         ⚠️ Por eso NUNCA debe awaitearse en serie sobre varias rooms: ver
         `_recover_streams`.
         """
+        epoch = self._recovery_epoch if epoch is None else epoch
         backoff = self._watchdog_backoff_min_s
-        while self._running and self._inputs.accepting:
+        while self._running and self._input_epoch_current(epoch) and not self._global_recovery:
             if await self._try_reopen_once(rs):
+                if not self._input_epoch_current(epoch):
+                    return
                 logger.info(
                     f"[audio-watchdog] {rs.room_id}: recovered "
                     f"(device={rs.device_index})"
                 )
+                return
+            if not self._input_epoch_current(epoch) or self._global_recovery:
                 return
             logger.warning(
                 f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} "
@@ -1092,13 +1139,49 @@ class MultiRoomAudioLoop:
 
     def _schedule_reopen(self, rs: "RoomStream") -> None:
         """Dejar a `rs` esperando su device en una task propia (idempotente)."""
-        if self._closed or not self._inputs.accepting or self._is_awaiting_reopen(rs.room_id):
+        if (self._closed or not self._inputs.accepting or self._global_recovery
+                or self._is_awaiting_reopen(rs.room_id)):
             return  # ya hay una espera viva para esta room
         logger.warning(
             f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} ausente "
             f"— esperando en background (las demás rooms siguen operativas)"
         )
-        self._reopen_tasks[rs.room_id] = asyncio.create_task(self._reopen_room(rs))
+        task = asyncio.create_task(self._reopen_room(rs, epoch=self._recovery_epoch), context=Context())
+        self._reopen_tasks[rs.room_id] = task
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
+
+    def _schedule_recovery(self, trigger_room_ids: list) -> None:
+        """Admit one finite controller; native effects remain owned by InputGroup."""
+        if (not self._running or not self._recovery_ready or self._closed
+                or not self._inputs.accepting
+                or self._recovery_task is not None and not self._recovery_task.done()):
+            return
+        epoch = self._recovery_epoch
+        rooms = tuple(room for room in self.room_streams if room in trigger_room_ids)
+        if not rooms:
+            return
+
+        async def recover():
+            if self._input_epoch_current(epoch) and self._running and self._recovery_ready:
+                await self._recover_streams(list(rooms))
+
+        self._recovery_task = asyncio.create_task(recover(), context=Context())
+
+        def finished(done):
+            if done.cancelled():
+                # A native admission may survive unexpected owner cancellation.
+                # Do not admit replacement recovery until a real pause drains it.
+                if self._recovery_task is done:
+                    self._recovery_ready = False
+                logger.warning('Audio recovery owner cancelled; admission sealed')
+            elif done.exception() is not None:
+                logger.warning('Audio recovery failed: %s', type(done.exception()).__name__)
+            if not done.cancelled() and self._recovery_task is done:
+                # Native work was awaited to its real exit. Drop exception
+                # frames and RoomStream references instead of caching a task.
+                self._recovery_task = None
+
+        self._recovery_task.add_done_callback(finished, context=Context())
 
     async def _recover_streams(self, trigger_room_ids: list) -> None:
         """Recover failed rooms without interrupting rooms still receiving audio.
@@ -1106,7 +1189,8 @@ class MultiRoomAudioLoop:
         Reinitialize the shared PortAudio catalog only when no other stream is
         healthy. Native stop/open calls must not block the asyncio event loop.
         """
-        if self._closed or not self._inputs.accepting:
+        epoch = self._recovery_epoch
+        if not self._input_epoch_current(epoch):
             return
         now = time.monotonic()
         healthy_other = any(
@@ -1116,19 +1200,46 @@ class MultiRoomAudioLoop:
         )
         affected = trigger_room_ids if healthy_other else list(self.room_streams)
         logger.error(f"[audio-watchdog] streams {trigger_room_ids} stopped delivering audio; recovering {affected}")
-        for room_id in affected:
-            await self._inputs.retire(room_id)
-        if not self._inputs.accepting:
-            return
         if not healthy_other:
-            await self._inputs.catalog_call(self._reinit_portaudio)
+            # Catalog reset invalidates every native handle. Quiesce retry
+            # controllers before the first await, then drain their retained
+            # InputGroup opens as well as already visible native owners.
+            self._global_recovery = True
+        try:
+            if not healthy_other:
+                await asyncio.gather(*self._cancel_reopen_tasks(), return_exceptions=True)
+                if not self._input_epoch_current(epoch):
+                    return
+            for room_id in affected:
+                if not self._input_epoch_current(epoch):
+                    return
+                await self._inputs.retire(room_id)
+            if not self._input_epoch_current(epoch):
+                return
+            if not healthy_other:
+                # A retained open may not yet have constructed its owner when
+                # the first retirement pass ran. No new retry can enter now.
+                await asyncio.gather(*(asyncio.shield(task) for task in self._inputs.snapshot_operations()),
+                                     return_exceptions=True)
+                if not self._input_epoch_current(epoch):
+                    return
+                for room_id in affected:
+                    await self._inputs.retire(room_id)
+                    if not self._input_epoch_current(epoch):
+                        return
+                await self._inputs.catalog_call(self._reinit_portaudio)
+                if not self._input_epoch_current(epoch):
+                    return
+        finally:
+            if not healthy_other:
+                self._global_recovery = False
         for room_id in affected:
-            if not self._inputs.accepting:
+            if not self._input_epoch_current(epoch):
                 return
             rs = self.room_streams[room_id]
             if await self._try_reopen_once(rs):
                 logger.info(f"[audio-watchdog] {room_id}: stream reopened (device={rs.device_index}); awaiting audio frames")
-            else:
+            elif self._input_epoch_current(epoch):
                 self._schedule_reopen(rs)
 
     def _update_audio_anchors(self, now_mono: float, now_wall: float) -> None:
@@ -1398,89 +1509,73 @@ class MultiRoomAudioLoop:
             "first_frame_grace_s": self._watchdog_first_frame_grace_s,
         }
 
-    async def _stream_watchdog(self) -> None:
-        """Periodically detect mics that stopped delivering frames and recover.
+    def _publish_audio_health(self) -> None:
+        """Refresh anchors and admit at most one retained native publication."""
+        now = time.monotonic()
+        now_wall = time.time()
+        self._update_audio_anchors(now_mono=now, now_wall=now_wall)
+        task = self._audio_health_task
+        if (task is not None and not task.done()) or self._audio_health_work._tasks:
+            if not self._audio_health_timed_out and now - self._audio_health_started >= AUDIO_HEALTH_WRITE_TIMEOUT_S:
+                self._audio_health_timed_out = True
+                logger.warning('Audio health publication pending: native write still owned')
+            return
+        if self._closed:
+            return
+        from src.monitoring.audio_health import write_audio_health
 
-        Reuses detect_stale_streams (pure) for the decision. Runs only while
-        self._running; recovery is awaited so we never overlap two recoveries.
-        """
+        self._audio_health_started = now
+        self._audio_health_timed_out = False
+        task = self._audio_health_task = asyncio.create_task(
+            self._audio_health_work.run(write_audio_health, self._audio_health_path,
+                self._audio_health_rooms(), now_wall=now_wall), context=Context())
+
+        def finished(done):
+            if done.cancelled():
+                logger.warning('Audio health publication observer cancelled')
+            elif done.exception() is not None:
+                logger.warning('Audio health publication failed: %s', type(done.exception()).__name__)
+            if not done.cancelled() and self._audio_health_task is done:
+                self._audio_health_task = None
+
+        task.add_done_callback(finished, context=Context())
+
+    async def _stream_watchdog(self) -> None:
+        """Publish health independently of native I/O and one recovery owner."""
         while self._running:
             await asyncio.sleep(self._watchdog_check_interval_s)
             if not self._running:
                 break
-            now = time.monotonic()
-            # Las rooms que ya esperan su device quedan FUERA de la detección:
-            # sin device no entregan frames, así que su last_frame_ts queda
-            # stale para siempre y dispararían un recovery por ciclo. Como el
-            # recovery cierra TODOS los streams, eso cerraría los mics sanos
-            # cada check_interval (peor que el bug que arregla).
+            try:
+                self._publish_audio_health()
+            except Exception as error:
+                logger.warning('Audio health publication failed: %s', type(error).__name__)
+            if not self._recovery_ready or not self._inputs.accepting:
+                continue
             states = [
                 (room_id, rs.last_frame_ts, rs.opened_ts)
                 for room_id, rs in self.room_streams.items()
                 if not self._is_awaiting_reopen(room_id)
             ]
-            # Publicar el heartbeat para el poller externo. El watchdog interno
-            # recupera, pero no puede avisar: si el proceso se traba, se traba
-            # con él. Un fallo acá jamás debe romper la recuperación, así que
-            # anclas y escritura van las dos dentro del try.
-            now_wall = time.time()  # UNA sola lectura: las anclas y el
-            # snapshot tienen que datarse contra el mismo instante, o `age_s`
-            # sale corrido respecto de la referencia que el lector compara.
-            try:
-                from src.monitoring.audio_health import write_audio_health
-
-                self._update_audio_anchors(now_mono=now, now_wall=now_wall)
-                # En thread aparte: write_audio_health hace mkstemp + json.dump
-                # + os.replace SÍNCRONOS, y este loop es el mismo que corre el
-                # fast path (<300ms). Son ~43.000 creaciones+renames por día
-                # sobre ./data/, el mismo disco que events.db, latency.db,
-                # ChromaDB y el entrenamiento nocturno. Mismo criterio que
-                # `_try_reopen_once`, que ya usa to_thread.
-                # `wait_for` (no `to_thread` a secas): un thread colgado nunca
-                # retorna, y detect_stale_streams/_recover_streams corren
-                # DESPUÉS de este bloque try — sin cota, un write trabado
-                # apaga la recuperación de mics entera, no solo la métrica.
-                # AUDIO_HEALTH_WRITE_TIMEOUT_S por qué/cuánto: ver constante.
-                await asyncio.wait_for(
-                    asyncio.to_thread(
-                        write_audio_health,
-                        self._audio_health_path,
-                        self._audio_health_rooms(),
-                        now_wall=now_wall,
-                    ),
-                    timeout=AUDIO_HEALTH_WRITE_TIMEOUT_S,
-                )
-            except Exception as e:
-                # `warning`, no `debug`: en un sistema cuya tesis es que
-                # ninguna señal de salud puede fallar en silencio, el vigilante
-                # que no logra publicar es exactamente el caso a gritar. Un
-                # TimeoutError (write colgado) cae acá también, a propósito.
-                # ⚠️ `except Exception` es deliberado y NO debe ampliarse a
-                # BaseException: ahora que hay un `await` acá adentro, la
-                # cancelación del watchdog se inyecta en este punto, y
-                # CancelledError es BaseException — tiene que propagar para que
-                # `stop()` pueda terminar la task. Hay test que lo fija.
-                # `asyncio.wait_for` respeta esto: una cancelación externa (no
-                # el propio timeout interno) se re-lanza como CancelledError,
-                # no se traga como TimeoutError.
-                logger.warning(f"No pude publicar audio_health: {e}")
-            stale = detect_stale_streams(
-                states,
-                now,
-                self._watchdog_timeout_s,
-                self._watchdog_first_frame_grace_s,
-            )
+            stale = detect_stale_streams(states, time.monotonic(),
+                self._watchdog_timeout_s, self._watchdog_first_frame_grace_s)
             if stale:
-                await self._recover_streams(stale)
+                self._schedule_recovery(stale)
+
 
     async def run(self):
         """Start voice after a bounded identity budget and own telemetry tasks."""
         if self._closed:
             raise RuntimeError('capture_closed')
         self._running = True
+        self._recovery_ready = False
         self._loop = asyncio.get_running_loop()
         self._microphone_inventory_ready.clear()
         self._microphone_telemetry_task = asyncio.create_task(self._microphone_telemetry_loop())
+        if self._watchdog_enabled:
+            # Initial native construct/configure/start can wait indefinitely.
+            # Publish first, but do not recover a still-opening input owner.
+            self._watchdog_task = asyncio.create_task(self._stream_watchdog(), context=Context())
         try:
             try:
                 await asyncio.wait_for(self._microphone_inventory_ready.wait(), self._microphone_startup_budget_s)
@@ -1503,6 +1598,7 @@ class MultiRoomAudioLoop:
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
             await asyncio.shield(self._inputs.begin_close())
+            await asyncio.shield(self.begin_close())
 
     async def _run_capture(self):
         """
@@ -1511,15 +1607,25 @@ class MultiRoomAudioLoop:
         Each room's audio callback runs on sounddevice's C thread.
         Command dispatch happens on the asyncio event loop via create_task.
         """
+        epoch = self._recovery_epoch
+        if self._watchdog_enabled and (self._watchdog_task is None or self._watchdog_task.done()):
+            self._recovery_ready = False
+            self._watchdog_task = asyncio.create_task(self._stream_watchdog(), context=Context())
         for room_id, rs in self.room_streams.items():
             if self._capture_rooms[room_id].resource_status()['closed']:
                 continue
             self._capture_controllers[room_id] = asyncio.create_task(self._consume_room(rs))
         for room_id, rs in self.room_streams.items():
+            if not self._input_epoch_current(epoch):
+                break
             if self._capture_rooms[room_id].resource_status()['closed']:
                 continue
-            if not await self._try_reopen_once(rs):
+            opened = await self._try_reopen_once(rs)
+            if not self._input_epoch_current(epoch):
+                break
+            if not opened:
                 self._schedule_reopen(rs)
+        self._recovery_ready = True
 
         logger.info(
             f"MultiRoomAudioLoop ready "
@@ -1527,7 +1633,6 @@ class MultiRoomAudioLoop:
         )
 
         if self._watchdog_enabled:
-            self._watchdog_task = asyncio.create_task(self._stream_watchdog())
             logger.info(
                 f"[audio-watchdog] ACTIVO (timeout={self._watchdog_timeout_s}s, "
                 f"check={self._watchdog_check_interval_s}s)"

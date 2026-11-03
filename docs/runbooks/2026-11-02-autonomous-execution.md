@@ -1144,7 +1144,7 @@ en curso y no habilita grabaciones ni acepta C04/C12 por sí solo.
 
 ## Metadatos nativos de las muestras de voz
 
-La siguiente unidad de T014 prepara el registro y la persistencia de procedencia.
+La primera unidad nativa de T014 preparó el registro y la persistencia de procedencia.
 VoiceCaptureReview conserva dos descriptores y sus intervalos: el audio usado
 para embedding/preview y la entrada que produjo el texto STT. Pueden declarar
 canales distintos. El truncamiento de texto es un dato separado, verdadero,
@@ -1177,9 +1177,9 @@ tipada debe coincidir frame por frame con la captura; la tolerancia histórica
 sólo permanece para registros sin esa descripción. La cascada y el vencimiento
 existentes retiran la metadata con la muestra.
 
-La revisión limita ambas columnas antes de devolverlas a Python, decodifica
-fuera de SQLite y vuelve a comprobar actor y fuentes. Conserva las claves de
-la respuesta pública actual. Pasan 318 casos cruzados, incluidos migración,
+En esa unidad la revisión limitó ambas columnas antes de devolverlas a Python,
+decodificó fuera de SQLite y volvió a comprobar actor y fuentes. Conservó las
+claves del contrato público de entonces. Pasaron 318 casos cruzados, incluidos migración,
 codecs, propiedad del trabajo, cierre, revisión anterior, vínculos y evaluación.
 La suite completa pasa 6977 pruebas y conserva una xfail conocida en 508,94
 segundos. Los hashes de 841 archivos permanecieron iguales y Ruff pasa.
@@ -1187,9 +1187,91 @@ Evidencia: `data/autonomous-roadmap-20261102/t014/review-native-evidence.json`.
 
 La ausencia simultánea del marcador y toda la tabla no distingue una base
 previa a esta función de un rollback completo sin ancla externa. Esta unidad no añade
-esa garantía ni modifica fuentes, hashes de concesiones o retención. Sigue
-pendiente conectar los productores reales y exponer metadata por modalidad
-con validadores frontend coordinados. T014 continúa en curso.
+esa garantía ni modifica fuentes, hashes de concesiones o retención. Al cerrar
+esa unidad quedaban pendientes los productores y los lectores por modalidad;
+se completaron en la continuación descrita debajo.
 La ampliación de columnas requiere un runtime compatible; esta verificación
 local no acredita un rollback de la instalación con escritores antiguos.
 La prueba de migración en copia y el rollback del candidato siguen en P6.
+
+## Cierre local de procedencia y evaluación
+
+T014 quedó `verified_local` en `16b4003`. `CaptureOpening` viaja con cada paquete
+y los acumuladores conservan todas las aportaciones de pre-roll. Un bloque
+posterior conocido no vuelve a etiquetar PCM desconocida. Las ventanas reales
+del modelo STT y del audio recortado tienen referencias independientes; los
+snapshots tempranos fijan sus descriptores junto con el audio poseído.
+
+El resultado ambiental fija el canal antes de inferir y copia únicamente los
+campos escalares y de texto del motor. No conserva su DTO mutable ni sus
+posibles arrays anidados. El recorte local de texto se registra antes de
+limitarlo; reutilizar texto sin ese dato no lo convierte en `false`.
+
+Los lectores limitan por tipo y bytes todos los campos restaurados antes de
+obtenerlos desde SQLite. El operador recibe `audio_metadata` y
+`transcript_metadata`; el evaluador selecciona sólo el documento de su modalidad
+concedida. Los documentos v1 son canónicos y cerrados. `null` conserva el
+desconocido histórico; metadata no nula malformada vuelve la muestra no disponible.
+La ventana, tasa y canal del texto no se reconstruyen del preview.
+
+Los validadores del navegador copian esos documentos, rechazan enteros no
+representables y cuentan caracteres Unicode y bytes sin truncar en NUL. NEXO
+explica la ventana y el recorte conocidos o desconocidos sin afirmar alineación
+de palabras. La retirada del consumidor original también retira metadata, DOM
+y Blob, incluso con el decoder retenido. Las referencias opacas de procedencia
+permanecen fuera de las etiquetas visibles.
+
+Pasaron 56 casos nuevos, 785 cruzados, 172 Node y seis comprobaciones de Chromium
+real con fixtures sintéticos a 1425/390/320 px. La primera corrida de navegador
+falló en la concatenación del instrumento; su evidencia está conservada y la
+repetición corregida pasó sin errores de ejecución. La suite final pasó 7122
+pruebas y una xfail conocida; 849 archivos permanecieron iguales y Ruff pasó.
+La auditoría de diez obligaciones no encontró entregables software pendientes.
+Evidencia: `data/autonomous-roadmap-20261102/t014/task-evidence.json`.
+
+P1 quedó verificada localmente como dependencia de P2. C04/C12, corpus real,
+DSP físico, métricas, iPhone y release/rollback conservan sus propias tareas y
+criterios; las garantías generales de inventario y restauración siguen en
+T022/T024. El contrato completo del corpus conserva esta separación.
+
+## Recuperación y publicación de heartbeat independientes
+
+T020 separa el tick periódico de dos trabajos finitos: una recuperación de
+entradas por vez y una escritura real de `audio_health` por vez. El publicador
+empieza antes de las aperturas iniciales y la recuperación permanece inhibida
+durante ese handoff. La espera de un driver no detiene el heartbeat ni los
+consumidores de las habitaciones sanas.
+
+La recuperación conserva `InputGroup` y los drivers originales. Cuando no queda
+otra entrada sana, el catálogo global suspende retries, observa sus salidas y
+retira todos los handles retenidos antes del reset de PortAudio. Una época de
+admisión sellada al pausar impide continuaciones antiguas después de reanudar.
+La reanudación espera el controlador y el cierre real de inputs y callbacks.
+El controlador finito aparece en `snapshot_operations`; los loops ociosos no.
+
+La publicación usa `OwnedBlockingWork(capacity=1)`. El presupuesto de observación
+sólo avisa de una escritura lenta; no cancela su I/O ni libera el slot. Mientras
+está retenida no se encola una escritura nueva. El snapshot conserva el mismo
+instante de pared y las anclas de audio que se tomaron al admitirlo, aunque el
+rename termine después. El cierre espera tanto al wrapper como al trabajo real,
+incluidos observadores cancelados o que dejaron de esperar.
+
+El archivo conserva su contrato `wall` y `rooms[age_s, ever]`. Una reapertura
+sin señal no reinicia antigüedad ni fabrica que hubo audio. El heartbeat usa su
+cadencia configurada, no la del probe de 5 ms de H2. Las lecturas de salud en
+memoria siguen independientes del archivo. `capture_status.audio_health` expone
+cuentas del propietario, sin datos de conversación; esta I/O de estado no forma
+parte del drenaje de PCM, pero sí del cierre del runtime.
+
+Las pruebas retienen close, catálogo y construct reales de los propietarios
+con drivers sintéticos, observan varios heartbeats y progreso de la otra
+entrada, y comprueban pausa/reanudación, startup y ausencia de reopen tardío.
+Otro conjunto retiene `os.replace` real para comprobar el slot único y la salida
+real antes de permitir una instancia sucesora. La verificación de unidad no
+acepta los plazos USB físicos, HA/WS ni la observación de 72 horas de C19/C20.
+
+La verificación local pasó 23 casos nuevos, 166 cruzados y otros 89 de
+monitorización, propietarios y grafo. La suite completa pasó 7145 pruebas con
+una xfail conocida en 513,14 segundos; 851 archivos permanecieron iguales y
+Ruff pasó. T020 queda `verified_local`; P2 y los criterios compartidos siguen
+abiertos. Evidencia: `data/autonomous-roadmap-20261102/t020/evidence.json`.

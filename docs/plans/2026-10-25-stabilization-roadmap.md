@@ -1005,7 +1005,7 @@ nombre nunca otorga permisos ni cambia por sí sola qué se considera voz viva.
 ### H4 Recuperar dependencias y mostrar el estado local
 
 El [diagnóstico vivo del 28 de octubre](../research/2026-10-28-runtime-diagnostic.json)
-confirma un defecto pendiente: `_stream_watchdog` espera una recuperación lenta
+documentó un defecto: `_stream_watchdog` espera una recuperación lenta
 y deja de publicar el heartbeat, aunque otra captura siga sana. Un probe aislado
 reproduce el fallo y el snapshot real provoca un falso positivo del poller sobre
 la captura sana. Separar publicación y recuperación conservando los drivers
@@ -1015,6 +1015,12 @@ atribuyó la avalancha de journald a una captura USB de KZA y la contuvo retiran
 sólo el micrófono identificado; ver la
 [prueba de aislamiento](../research/2026-10-28-journald-usb-flood.json).
 La reparación de esa ruta USB, el rechazo de HA y la validación física siguen abiertos.
+
+La corrección de desarrollo se sigue como T020 del roadmap autónomo. Su
+[contrato de recuperación y publicación](../runbooks/2026-11-02-autonomous-execution.md#recuperación-y-publicación-de-heartbeat-independientes)
+separa ambos propietarios y mantiene el I/O retenido hasta su salida real.
+Las verificaciones locales se registran por unidad; no sustituyen la release
+ni la aceptación de H4 con las entradas físicas y dependencias reales.
 
 La [corrida de procesamiento](../research/2026-10-27-h3-capture-processing-pause-validation.json)
 detectó acumulación de hilos de Chroma en pytest y clientes creados sin cierre

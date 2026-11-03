@@ -1664,51 +1664,29 @@ class TestAudioHealthWriteIsOffTheEventLoop:
             "el guard se tragó la cancelación: stop() no podría terminar el "
             "watchdog y la task quedaría viva"
         )
+        await loop.stop()  # Join the real publication retained after cancellation.
 
 
 class TestAudioHealthWriteTimeoutDoesNotBlockRecovery:
-    """Un write colgado no puede apagar la recuperación de mics.
-
-    `detect_stale_streams` + `_recover_streams` corren DESPUÉS del bloque
-    try que publica `audio_health`. Antes del fix, ese `await
-    asyncio.to_thread(write_audio_health, ...)` no tenía cota: un thread que
-    nunca retorna (fs trabado, disco lleno bloqueando I/O) dejaba el await
-    esperando para siempre, y con él, la recuperación de mics enteros —
-    aunque el proceso siguiera reportando `active`. Mutación probada:
-    sacar el `asyncio.wait_for(...)` y dejar el `await asyncio.to_thread(...)`
-    a secas (el código pre-fix) hace que este test falle (TimeoutError a
-    los 0.5s) en vez de que `_recover_streams` se llame.
-    """
+    """A retained native write cannot delay stale-input recovery."""
 
     @pytest.mark.asyncio
-    async def test_hung_write_does_not_block_stale_stream_recovery(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_hung_write_does_not_block_stale_stream_recovery(self, tmp_path, monkeypatch):
         _far_from_boot_monotonic(monkeypatch)
-        # Timeout de escritura chico para que el test sea rápido: la
-        # constante real (1.0s) sigue probada indirectamente por el hecho
-        # de que este test pasa con cualquier valor finito bien por debajo
-        # del sleep colgado de abajo.
         monkeypatch.setattr(mra_mod, "AUDIO_HEALTH_WRITE_TIMEOUT_S", 0.05)
-
         health = tmp_path / "audio_health.json"
         rs = _make_room_stream("cocina", device_index=2)
-        loop = _make_multi_room_loop(
-            rooms={"cocina": rs}, audio_health_path=str(health)
-        )
+        loop = _make_multi_room_loop(rooms={"cocina": rs}, audio_health_path=str(health))
         loop._running = True
         loop._watchdog_check_interval_s = 0.001
         loop._watchdog_timeout_s = 0.01
         loop._watchdog_first_frame_grace_s = 0.01
-        rs.last_frame_ts = time.monotonic() - 10.0  # ya stale al arrancar
+        rs.last_frame_ts = time.monotonic() - 10.0
+        entered, release = threading.Event(), threading.Event()
 
-        def colgado(*_args, **_kwargs):
-            # Sleep finito (no un Event que nunca se setea): así el hilo
-            # real del executor termina solo y no deja el proceso de test
-            # colgado en el join de atexit de ThreadPoolExecutor. Alcanza
-            # con que sea bien mayor al timeout de escritura (0.05s) y al
-            # límite del wait_for de abajo (0.5s) para simular "colgado".
-            time.sleep(1.0)
+        def held_write(*_args, **_kwargs):
+            entered.set()
+            assert release.wait(3)
 
         recovered = {}
 
@@ -1717,20 +1695,17 @@ class TestAudioHealthWriteTimeoutDoesNotBlockRecovery:
             loop._running = False
 
         loop._recover_streams = fake_recover
-
-        with patch.object(audio_health_mod, "write_audio_health", colgado):
-            # `wait_for` acá es la red de seguridad del TEST: contra el
-            # código pre-fix el write cuelga >= 1.0s y este límite de 0.5s
-            # se cumple primero -> TimeoutError, falla rápido en vez de
-            # trabar la suite. Contra el código con el fix, el ciclo
-            # entero (write cortado a los 0.05s + recovery) termina en
-            # milisegundos, muy por debajo de 0.5s.
-            await asyncio.wait_for(loop._stream_watchdog(), timeout=0.5)
-
-        assert recovered.get("ids") == ["cocina"], (
-            "un write colgado no debería impedir _recover_streams: el hilo "
-            "bloqueado queda huérfano, pero el watchdog tiene que seguir"
-        )
+        with patch.object(audio_health_mod, "write_audio_health", held_write):
+            try:
+                await asyncio.wait_for(loop._stream_watchdog(), timeout=0.5)
+                async with asyncio.timeout(2):
+                    while not entered.is_set():
+                        await asyncio.sleep(.001)
+                assert recovered.get("ids") == ["cocina"]
+                assert loop._audio_health_work.status()["operations"] == 1
+            finally:
+                release.set()
+                await loop.stop()
 
 
 class TestAudioHealthSurvivesRecovery:
