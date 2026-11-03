@@ -735,6 +735,8 @@ def build_ambient_path(
     store_fact_fn: Callable[..., str] | None,
     privacy=None,
     voice_registry=None,
+    register_stt: Callable[[object], None] | None = None,
+    register_stt_borrower: Callable | None = None,
 ) -> AmbientPath:
     """Construir el ambient path completo desde config (wiring de main.py).
 
@@ -744,6 +746,10 @@ def build_ambient_path(
         room_ids: rooms con mic real (las que tienen RoomStream).
         store_fact_fn: LongTermMemory.store_fact del MemoryManager de main, o
             None (sin memoria → sin distiller, solo buffer TTL).
+        register_stt: Registrar el motor creado antes de construir dependientes,
+            para conservar su dueño si una etapa posterior falla.
+        register_stt_borrower: Registrar drenajes reales de ASR y transcriber
+            antes del cierre del ejecutor compartido del grafo.
     """
     from src.ambient.ambient_stt import AmbientSTT
     from src.ambient.audio_archive import AudioArchiver
@@ -759,8 +765,14 @@ def build_ambient_path(
 
     stt_cfg = ambient_cfg.get("stt", {}) or {}
     ambient_engine = _build_ambient_stt_engine(stt_cfg, stt_base_cfg)
+    if register_stt is not None:
+        register_stt(ambient_engine)
+    # This builder creates a dedicated ambient engine, separate from command STT.
     ambient_stt = AmbientSTT(stt=ambient_engine, asr_col=ambient_cfg.get("asr_col", 1),
-                             source_policy=privacy.ledger if privacy is not None else None)
+                             source_policy=privacy.ledger if privacy is not None else None,
+                             owns_stt=True)
+    if register_stt_borrower is not None:
+        register_stt_borrower(ambient_stt.begin_close)
 
     seg_cfg = ambient_cfg.get("segmenter", {}) or {}
 
@@ -894,6 +906,8 @@ def build_ambient_path(
             privacy=privacy,
         )
 
+    if register_stt_borrower is not None:
+        register_stt_borrower(transcriber.begin_close)
     path = AmbientPath(tap=tap, transcriber=transcriber, store=store, distiller=distiller)
     if privacy is not None:
         privacy.add_borrower(path.begin_close)

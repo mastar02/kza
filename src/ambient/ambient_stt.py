@@ -9,6 +9,7 @@ vad_filter=False (el VAD ya lo hizo el segmenter sobre el mic crudo).
 from __future__ import annotations
 
 import asyncio
+from contextvars import Context
 from dataclasses import dataclass
 import math
 import threading
@@ -107,17 +108,25 @@ class AmbientSTT:
 
     capture_metadata = True
 
-    def __init__(self, stt, asr_col: int = 1, *, source_policy=None):
-        """
+    def __init__(self, stt, asr_col: int = 1, *, source_policy=None, owns_stt: bool = False):
+        """Initialize ASR with an explicitly owned or borrowed engine.
+
         Args:
-            stt: instancia FastWhisperSTT dedicada (cuda:0). DI por constructor.
-            asr_col: columna del beam ASR en el audio multicanal (fw 6ch: 1).
+            stt: ASR adapter, dedicated to ambient by the application builder.
+            asr_col: Beam column used for ASR.
+            source_policy: Optional capture provenance policy.
+            owns_stt: Close the engine after actual ASR exit when this wrapper
+                owns its dedicated instance; borrowed engines remain reusable.
         """
+        if type(owns_stt) is not bool:
+            raise ValueError("invalid_ambient_stt_ownership")
         self._stt = stt
         self.asr_col = asr_col
         self._work = OwnedBlockingWork()
         self._source_policy = source_policy
         self._inference_lock = threading.Lock()
+        self._owns_stt = owns_stt
+        self._closing: asyncio.Task | None = None
 
     def asr_mono(self, audio: np.ndarray) -> np.ndarray:
         """Extraer la columna ASR mono de un audio potencialmente multicanal.
@@ -189,5 +198,14 @@ class AmbientSTT:
         return tuple(self._work._tasks)
 
     def begin_close(self) -> asyncio.Task:
-        """Reject new ASR and retain its actual native exit."""
-        return self._work.begin_close()
+        """Drain native ASR before closing an explicitly owned engine."""
+        native = self._work.begin_close()
+        if not self._owns_stt:
+            return native
+        if self._closing is None:
+            async def finish():
+                await asyncio.shield(native)
+                if callable(getattr(type(self._stt), "begin_close", None)):
+                    await self._stt.begin_close()
+            self._closing = asyncio.create_task(finish(), context=Context())
+        return self._closing

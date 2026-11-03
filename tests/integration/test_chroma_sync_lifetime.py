@@ -293,7 +293,8 @@ async def test_application_registers_chroma_cleanup_before_later_construction_fa
     else:
         async def failed(*a, privacy, **kw):
             privacy_seen.append(privacy)
-            assert privacy.resource_status()['borrowers'] == 1
+            # Other model owners may also participate in privacy teardown.
+            assert any(reference() == owner.begin_close for reference in privacy._borrowers)
             assert not owner.resource_status()['closed']
             raise RuntimeError('synthetic_later_factory_failure')
         monkeypatch.setattr(module, 'build_memory_services', failed)

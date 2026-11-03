@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from src.application import ApplicationFactories, ApplicationGraph, ApplicationModels
+from src.application import ApplicationFactories, ApplicationGraph, ApplicationModels, STTExecutorOwner
 from src.core.settings_schema import (
     DEFAULT_LOCAL_LLM_GATEWAY,
     check_unresolved_env_vars,
@@ -413,8 +413,12 @@ async def build_application(
     # Preflight de VRAM antes de cargar modelos pesados (aviso, no bloquea).
     (factories.preflight or _preflight_vram)()
 
+    # Own each created Whisper adapter even if later construction fails.
+    stt_executors = STTExecutorOwner()
+    shutdown.push_async_callback(stt_executors.aclose)
     # Speech-to-Text
     stt = (factories.stt or create_stt)(config.get("stt", {}))
+    stt_executors.add_model(stt)
 
     # STT shadow (A/B en vivo, opcional): 2º motor que transcribe el mismo
     # audio del command path solo para comparar/loguear ([STT-shadow]), sin
@@ -423,6 +427,7 @@ async def build_application(
     _shadow_engine = (config.get("stt", {}) or {}).get("shadow_engine")
     if _shadow_engine:
         shadow_stt = (factories.stt or create_stt)({**config.get("stt", {}), "engine": _shadow_engine})
+        stt_executors.add_model(shadow_stt)
         logger.info(f"STT shadow habilitado: engine={_shadow_engine} (A/B en vivo)")
 
     # Text-to-Speech
@@ -604,6 +609,7 @@ async def build_application(
     # Privacy authority always exists; semantic recall remains optional.
     privacy_services = await build_privacy_services(config, shutdown=shutdown)
     privacy_services.add_borrower(chroma.begin_close)
+    privacy_services.add_borrower(stt_executors.begin_close)
     memory_services = await build_memory_services(config, shutdown=shutdown, privacy=privacy_services)
     memory_manager = memory_services.manager if memory_services is not None else None
     erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
@@ -1171,6 +1177,7 @@ async def build_application(
                     "health_path", "./data/audio_health.json"
                 ),
             )
+            stt_executors.add_borrower(multi_room_loop.begin_close)
             shutdown.push_async_callback(multi_room_loop.stop)
             logger.info(
                 f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "
@@ -1194,6 +1201,8 @@ async def build_application(
                         store_fact_fn=_store_fact,
                         privacy=privacy_services,
                         voice_registry=voice_registry,
+                        register_stt=stt_executors.add_model,
+                        register_stt_borrower=stt_executors.add_borrower,
                     )
                     shutdown.push_async_callback(ambient_path.stop)
                     await capture_erasure.attach(ambient_path)
@@ -1237,6 +1246,7 @@ async def build_application(
         privacy=privacy_services,
         model_locks=multi_room_loop.native_model_locks if multi_room_loop is not None else None,
     )
+    stt_executors.add_borrower(command_processor.begin_close)
     shutdown.push_async_callback(command_processor.aclose)
 
     # === Plan #3 OpenClaw — Plugin hooks (optional) ===
@@ -1348,6 +1358,8 @@ async def build_application(
         sample_rate=16000,
         privacy=privacy_services,
     )
+    if callable(getattr(type(audio_loop), "begin_close", None)):
+        stt_executors.add_borrower(audio_loop.begin_close)
     shutdown.push_async_callback(audio_loop.stop)
 
     # === Plan #2 OpenClaw — Compactor + Persister (opcionales) ===
@@ -1802,6 +1814,7 @@ async def build_application(
         close_dependencies=(
             ((dashboard.admin_work.begin_close,) if dashboard is not None else ())
             + ((multi_room_loop.begin_close,) if multi_room_loop is not None else ())
+            + (stt_executors.begin_close,)
         ),
     )
 
@@ -1817,6 +1830,7 @@ async def build_application(
         models=ApplicationModels(stt, tts, chroma, speaker_identifier, emotion_detector),
         warmup_models=_warmup_models, presence_detector=presence_detector,
         ambient_path=ambient_path, nightly_trainer=nightly_trainer,
+        stt_executors=stt_executors,
     )
 
 

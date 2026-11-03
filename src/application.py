@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
+from contextvars import Context
 from dataclasses import dataclass, field
 import logging
 from typing import Any, TYPE_CHECKING
@@ -46,6 +47,74 @@ class ApplicationFactories:
     wake_detector: Callable[..., Any] | None = None
     amplifier: Callable[..., Any] | None = None
     preflight: Callable[[], None] | None = None
+
+
+class STTExecutorOwner:
+    """Own graph-created Whisper executors after their shared borrowers drain."""
+
+    def __init__(self) -> None:
+        self._models: dict[int, Any] = {}
+        self._borrowers: list[Callable[[], asyncio.Task]] = []
+        self._closing: asyncio.Task | None = None
+
+    def add_model(self, model: Any) -> None:
+        """Register an actual Whisper adapter immediately after construction."""
+        from src.stt.whisper_fast import FastWhisperSTT
+
+        if self._closing is not None:
+            raise RuntimeError("stt_executor_owner_closed")
+        if issubclass(type(model), FastWhisperSTT):
+            self._models[id(model)] = model
+
+    def add_borrower(self, begin_close: Callable[[], asyncio.Task]) -> None:
+        """Register the actual drain of a component using a shared adapter."""
+        if self._closing is not None:
+            raise RuntimeError("stt_executor_owner_closed")
+        if begin_close not in self._borrowers:
+            self._borrowers.append(begin_close)
+
+    def begin_close(self) -> asyncio.Task:
+        """Seal borrowers and retain their drains before model retirement."""
+        if self._closing is None:
+            drains, errors = [], []
+            for begin_close in self._borrowers:
+                try:
+                    drains.append(begin_close())
+                except Exception as error:
+                    errors.append(error)
+
+            async def finish():
+                results = await asyncio.gather(*drains, return_exceptions=True)
+                failures = errors + [r for r in results if isinstance(r, BaseException)]
+                if failures:
+                    raise failures[0]
+
+                async def close_model(model):
+                    await model.begin_close()
+
+                results = await asyncio.gather(
+                    *(close_model(model) for model in self._models.values()),
+                    return_exceptions=True,
+                )
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
+
+            self._closing = asyncio.create_task(finish(), context=Context())
+        return self._closing
+
+    async def aclose(self) -> None:
+        """Preserve the actual retirement owner through caller cancellation."""
+        closing = self.begin_close()
+        cancelled = False
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                cancelled = True
+        closing.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
 
 @dataclass(frozen=True)
@@ -87,6 +156,7 @@ class ApplicationGraph:
     presence_detector: Any = None
     ambient_path: Any = None
     nightly_trainer: Any = None
+    stt_executors: STTExecutorOwner | None = None
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     async def warmup(self) -> None:
@@ -177,6 +247,8 @@ class ApplicationGraph:
         # Resources are still open. Drain admission and scheduled producers
         # before retiring command processing; stack callbacks back this up.
         async with AsyncExitStack() as stopping:
+            if self.stt_executors is not None:
+                stopping.push_async_callback(self.stt_executors.aclose)
             stopping.push_async_callback(self.pipeline.stop)
             if self.ambient_path is not None:
                 stopping.push_async_callback(_stop_task, self.ambient_path, ambient_task)

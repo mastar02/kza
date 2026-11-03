@@ -10,13 +10,16 @@ Optimizado para latencia mínima:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from contextvars import Context
 from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
+
+from src.stt.pinned_executor import PinnedThreadPoolExecutor as ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -116,19 +119,219 @@ class FastWhisperSTT:
         # carga y ejecuta su modelo SIEMPRE en su propio thread.
         self._executor: ThreadPoolExecutor | None = None
         self._worker_ident: int | None = None
+        self._worker_thread: threading.Thread | None = None
+        self._worker_state = threading.local()
+        self._lifecycle = threading.Condition()
+        self._creating_executor = False
+        self._admitted = 0
+        self._closed = False
+        self._close_owner: threading.Thread | None = None
+        self._close_finished = threading.Event()
+        self._close_failed = False
+        self._closing: asyncio.Task | None = None
+        self._close_worker: asyncio.Task | None = None
+
+    def _executor_for_admitted(self) -> ThreadPoolExecutor:
+        with self._lifecycle:
+            while self._creating_executor:
+                self._lifecycle.wait()
+            if self._executor is not None:
+                return self._executor
+            self._creating_executor = True
+        try:
+            executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix=f"whisper-{self.device}",
+            )
+            with self._lifecycle:
+                self._executor = executor
+            return executor
+        finally:
+            with self._lifecycle:
+                self._creating_executor = False
+                self._lifecycle.notify_all()
+
+    def _invoke_pinned(self, fn, args):
+        with self._lifecycle:
+            self._worker_thread = threading.current_thread()
+            self._worker_ident = threading.get_ident()
+        previous = getattr(self._worker_state, 'admitted', False)
+        self._worker_state.admitted = True
+        try:
+            return fn(*args)
+        finally:
+            self._worker_state.admitted = previous
+            fn, args = None, ()
+
+    def _release_admission(self, _future=None) -> None:
+        with self._lifecycle:
+            self._admitted -= 1
+            self._lifecycle.notify_all()
 
     def _run_pinned(self, fn, *args):
-        """Ejecutar fn en el thread dedicado del modelo (bloqueante)."""
-        if threading.get_ident() == self._worker_ident:
-            return fn(*args)  # re-entrada desde el propio worker
-        if self._executor is None:
-            self._executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix=f"whisper-{self.device}"
+        """Run on this instance's worker, preserving admitted nested work.
+
+        Reentry is permitted only while the same actual Thread executes an
+        admitted invocation. Sealing does not interrupt that invocation, but
+        rejects every new external submission, including lazy model loading.
+        """
+        if threading.current_thread() is self._worker_thread:
+            if getattr(self._worker_state, 'admitted', False):
+                return fn(*args)
+            with self._lifecycle:
+                closed = self._closed
+            raise RuntimeError('whisper_closed' if closed else 'whisper_unowned_reentry')
+        with self._lifecycle:
+            if self._closed:
+                raise RuntimeError('whisper_closed')
+            self._admitted += 1
+        future = None
+        try:
+            executor = self._executor_for_admitted()
+            # Neither submission/thread startup nor the actual result wait may
+            # hold the lifecycle lock: request_close must remain memory-only.
+            future = executor.submit(self._invoke_pinned, fn, args)
+            future.add_done_callback(self._release_admission)
+            return future.result()
+        finally:
+            if future is None:
+                self._release_admission()
+            future = fn = None
+            args = ()
+
+    def request_close(self) -> None:
+        """Seal new submissions without waiting or touching a model/executor."""
+        with self._lifecycle:
+            self._closed = True
+            self._lifecycle.notify_all()
+
+    def stop(self) -> None:
+        """Seal this instance; use close or aclose to drain its actual exit."""
+        self.request_close()
+
+    def _release_model(self) -> None:
+        # Release only this adapter's Python reference on its pinned worker.
+        # This is not a claim about all CTranslate2/CUDA allocator copies.
+        with self._lifecycle:
+            self._worker_thread = threading.current_thread()
+            self._worker_ident = threading.get_ident()
+        self._model = None
+
+    def wait_closed(self) -> None:
+        """Drain admitted invocations and join this instance's executor threads.
+
+        The sole shutdown owner runs outside the pinned worker. Other callers
+        join its completion receipt; they cannot recreate or close a peer's
+        executor. Async lifecycle callers must retain this wait off-loop.
+
+        Raises:
+            RuntimeError: If invoked on the pinned worker, recursively by the
+                shutdown owner, or after a failed shutdown attempt.
+        """
+        self.request_close()
+        caller = threading.current_thread()
+        with self._lifecycle:
+            if caller is self._worker_thread:
+                raise RuntimeError('whisper_close_from_worker')
+            if self._close_finished.is_set():
+                failed = self._close_failed
+                owner = False
+            elif self._close_owner is caller:
+                raise RuntimeError('whisper_close_from_owner')
+            elif self._close_owner is None:
+                self._close_owner = caller
+                owner = True
+                failed = False
+            else:
+                owner = False
+                failed = False
+        if not owner:
+            self._close_finished.wait()
+            with self._lifecycle:
+                failed = self._close_failed
+            if failed:
+                raise RuntimeError('whisper_shutdown_failed')
+            return
+        failed = True
+        try:
+            with self._lifecycle:
+                while self._admitted:
+                    self._lifecycle.wait()
+                executor = self._executor
+            if executor is not None:
+                try:
+                    executor.submit(self._release_model).result()
+                finally:
+                    executor.shutdown(wait=True)
+            failed = False
+        finally:
+            with self._lifecycle:
+                self._close_failed = failed
+                self._close_finished.set()
+                self._lifecycle.notify_all()
+
+    def close(self) -> None:
+        """Seal and drain this instance synchronously outside its own worker.
+
+        Raises:
+            RuntimeError: If the caller cannot safely join the shutdown owner.
+        """
+        self.wait_closed()
+
+    async def _finish_close(self) -> None:
+        # Register the retained owner before even an eager task factory can
+        # dispatch the blocking shutdown into the default executor.
+        await asyncio.sleep(0)
+        if self._close_worker is None:
+            self._close_worker = asyncio.create_task(
+                asyncio.to_thread(self.wait_closed), context=Context(),
             )
-            self._worker_ident = self._executor.submit(
-                threading.get_ident
-            ).result()
-        return self._executor.submit(fn, *args).result()
+        worker = self._close_worker
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                # Cancelling an observer cannot terminate the real shutdown.
+                continue
+        worker.result()
+
+    def begin_close(self) -> asyncio.Task:
+        """Seal and return the instance's retained async shutdown owner.
+
+        Call from the owning event loop. The returned task owns actual cleanup;
+        callers should observe it through shield or aclose rather than cancel it.
+
+        Returns:
+            The same cleanup task while shutdown is pending or completed.
+
+        Raises:
+            RuntimeError: If called from the pinned worker or without a loop.
+        """
+        self.request_close()
+        if threading.current_thread() is self._worker_thread:
+            raise RuntimeError('whisper_close_from_worker')
+        loop = asyncio.get_running_loop()
+        with self._lifecycle:
+            if self._closing is None or self._closing.cancelled():
+                self._closing = loop.create_task(self._finish_close(), context=Context())
+            return self._closing
+
+    async def aclose(self) -> None:
+        """Retain actual shutdown through repeated caller cancellation.
+
+        Raises:
+            asyncio.CancelledError: After real shutdown if this caller was
+                cancelled while observing it.
+        """
+        closing = self.begin_close()
+        cancelled = False
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                cancelled = True
+        closing.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
     def load(self):
         """Cargar modelo en GPU (idempotente, en el thread dedicado)."""
