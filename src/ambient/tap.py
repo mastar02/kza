@@ -15,6 +15,7 @@ from weakref import WeakMethod, WeakSet
 
 import numpy as np
 
+from src.core.capture_opening import CaptureOpening
 from src.memory.sources import CaptureBoundary, CaptureEpoch
 from src.audio.input_callbacks import InputCallbacks
 
@@ -30,6 +31,7 @@ class TapPacket:
     audio: np.ndarray = field(repr=False)
     tts_active: bool
     epoch: CaptureEpoch | None = field(default=None, repr=False)
+    opening: CaptureOpening | None = None
 
 
 _PUSH_BOUNDARY = CaptureBoundary(None, float('-inf'))
@@ -127,6 +129,7 @@ class MultiChannelTap:
         *,
         boundary: CaptureBoundary | None = None,
         epoch: object = _UNSTAMPED,
+        opening: CaptureOpening | None = None,
     ) -> None:
         """Encolar un chunk. Room no registrada = no-op silencioso (fail-open).
 
@@ -153,7 +156,7 @@ class MultiChannelTap:
                 return
             if room_id in self._capture_ingress and (epoch is not self.input_epoch(room_id) or epoch.retired):
                 return
-            q.append(TapPacket(timestamp, chunk, tts_active, epoch))
+            q.append(TapPacket(timestamp, chunk, tts_active, epoch, opening))
         finally:
             chunk = q = None
             if ticket is not None:

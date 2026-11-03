@@ -21,6 +21,7 @@ from src.memory.fact_ledger import MemoryOrigin, MemorySource
 from src.memory.producer_context import PRODUCER_CONTEXT, producer_context
 from src.memory.producer_scopes import ProducerScope, ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated
+from src.core.capture_opening import CaptureOpening, capture_opening_context
 from src.memory.sources import CaptureBoundary, CaptureEpoch
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ class CapturePacket:
     audio: np.ndarray
     frames: int
     epoch: CaptureEpoch | None = None
+    opening: CaptureOpening | None = None
 
 
 class _AuxiliaryError(StrEnum):
@@ -133,7 +135,7 @@ class CaptureRoom:
         return self._boundary
 
     def push(self, timestamp: float, audio: np.ndarray, frames: int, *, boundary: CaptureBoundary | None = None,
-             epoch: object = _UNSTAMPED) -> None:
+             epoch: object = _UNSTAMPED, opening: CaptureOpening | None = None) -> None:
         """Copy input without locks, model calls or authority queries on callback."""
         queue = self._queue  # Snapshot queue before fence; never revive a detached queue.
         admitted, current = boundary, self._boundary
@@ -142,7 +144,7 @@ class CaptureRoom:
             if not self._closed and not self._paused and not self._failed and (admitted is None or admitted == current) and current.allows(timestamp):
                 if self._privacy is not None and (epoch is not self.input_epoch or epoch.retired):
                     return
-                queue.append(CapturePacket(timestamp, audio.copy(), frames, epoch))
+                queue.append(CapturePacket(timestamp, audio.copy(), frames, epoch, opening))
         except Exception:
             self._input_drops += 1
         finally:
@@ -309,7 +311,8 @@ class CaptureRoom:
                     continue
                 if self._oldest is not None and packet.timestamp < self._oldest:
                     continue
-                self._process(packet.audio, packet.frames, packet.timestamp, None)
+                with capture_opening_context(packet.opening):
+                    self._process(packet.audio, packet.frames, packet.timestamp, None)
                 self.require_live()
                 if not self._packet_available(packet):
                     self._reset()
