@@ -1098,3 +1098,46 @@ ni acepta C02, C04 o C07: siguen pendientes las matrices de aceptación, el inve
 y retiro global, la auditoría completa de accesibilidad y la evidencia de campo.
 T014 conserva la procedencia técnica y los intervalos; T033/T035 conservan sus
 recorridos completos. Evidencia: `data/autonomous-roadmap-20261102/t013/closure-evidence.json`.
+
+## Procedencia y comparación exacta del corpus
+
+La primera unidad de T014 añade CaptureProvenance, DSPObservation y FrameInterval
+al modelo privado de evaluación. Distingue origen, entrada opaca, rama, canal,
+tasa, generaciones de apertura/segmento y cantidad de frames de la PCM poseída.
+Los estados DSP desconocido o declarado no acreditan una revisión observada.
+Las etiquetas históricas channel/dsp_revision no completan esos datos.
+
+El esquema 1 conserva el inventario previo y rechaza campos de comparación nuevos.
+El esquema 2 admite CorpusComparison sólo con un audio, una referencia humana
+revisada y una hipótesis STT ligados explícitamente al mismo artefacto, captura
+e intervalo de frames. No calcula una intersección ni recorta texto para hacerlos
+coincidir. Los milisegundos son una envolvente de compatibilidad; el final real
+de la sesión se contrasta con la cantidad de frames y la tasa mediante aritmética
+entera, incluyendo extremos fraccionarios respecto al reloj de microsegundos.
+
+Un hijo con frames conocidos requiere padres con frames conocidos y contención
+exacta. La admisión revalida los tipos de registros y las condiciones de la sesión,
+sin confiar en una comprobación anterior. La comparación hereda el vencimiento
+original, cierre y revocación; no incorpora un plazo propio. Un registro anterior
+sin procedencia puede seguir inventariado, pero no se convierte en comparable.
+
+Los 120 casos enfocados cubren datos anteriores, tipos inválidos, versiones,
+DSP declarado/observado, límites exactos, linaje, consentimiento y retirada.
+Las revisiones independientes detectaron el padre sin frames, sesiones sin
+revalidar y un rechazo por redondear el final de grabación. Los casos que
+reproducen esos fallos se conservan junto con sus correcciones.
+La revisión temporal también detectó consentimiento posterior a la captura
+durante una repetición de hora local. El orden y los límites se comparan ahora
+como instantes UTC. La corrida completa anterior se interrumpió antes de editar
+fuentes; sus 1750 casos completados no se presentan como una suite completa.
+
+La repetición completa pasa 6838 pruebas y conserva una xfail conocida en
+497,13 segundos; los hashes de 837 archivos de fuente y pruebas permanecen
+iguales. Ruff no informa errores. Evidencia:
+`data/autonomous-roadmap-20261102/t014/corpus-contract-evidence.json`.
+
+Este modelo comprueba declaraciones del manifiesto; no observa el hardware,
+lee archivos, calcula WER ni otorga autorización runtime. La siguiente unidad
+transportará las dos ramas ambientales y la rama de comandos con la PCM real,
+conservando first-writer, vencimiento, borrado y source_digest. T014 permanece
+en curso y no habilita grabaciones ni acepta C04/C12 por sí solo.

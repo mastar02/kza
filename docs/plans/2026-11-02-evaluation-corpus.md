@@ -14,9 +14,11 @@ WAV, referencias, embeddings y rutas concretas quedan fuera de Git y RAG.
 
 El modelo validable está en `src/evaluation/corpus.py`. Sus dataclasses son
 inmutables; los manifiestos privados deberán serializar datetimes con zona
-horaria, enums por valor y tuplas como arrays. Se usa `schema_version: 1` en el
-contenedor persistido; una versión desconocida se rechaza, sin inferir defaults.
-No se agrega una configuración runtime ni un productor de grabaciones en P0.
+horaria, enums por valor y tuplas como arrays. El esquema 1 conserva el inventario
+previo, con procedencia técnica desconocida. El esquema 2 permite declarar
+procedencia tipada y comparaciones explícitas; una versión desconocida se
+rechaza. No hay promoción automática de los registros anteriores. El modelo no
+agrega un adaptador de archivos ni un productor de grabaciones.
 
 ## Esquema y procedencia
 
@@ -33,6 +35,39 @@ registro rechaza IDs duplicados, la reimportación del mismo original, padres
 ausentes/cíclicos, cambios de fuente e intervalos fuera del padre o la grabación.
 Un preview de seis segundos sólo se compara con su referencia de seis segundos.
 La mera existencia de una referencia no demuestra su revisión o calidad.
+
+### Procedencia y alineación por frames
+
+`CaptureProvenance` identifica el origen, una referencia opaca de entrada, la
+rama de procesamiento, las generaciones separadas de apertura y segmento,
+el número de canales, el canal seleccionado, la tasa y los frames de la PCM
+poseída. No se serializa `CaptureObservation` ni se infiere información técnica
+del nombre de habitación. `DSPObservation` distingue estado desconocido,
+configuración declarada y revisión observada. Una intención de configuración
+no acredita una lectura del DSP; la comparación exige una revisión observada.
+Las etiquetas históricas `channel` y `dsp_revision` se conservan como descripción;
+no sustituyen la procedencia tipada ni habilitan una comparación.
+
+Los artefactos del esquema 2 pueden declarar `FrameInterval`: intervalo
+semiabierto relativo al frame cero de esa PCM. Sus campos en milisegundos son
+sólo la envolvente inferior/superior de compatibilidad. Dos intervalos que
+redondean igual siguen siendo diferentes. Un hijo con frames requiere que cada
+padre tenga frames y contenga exactamente su intervalo; no se completa un
+padre desconocido a partir del hijo.
+
+`CorpusComparison` vincula un audio `recording` o `clip`, una referencia
+`human_reference` revisada y una hipótesis `stt_hypothesis`. Los tres pertenecen
+a la misma captura y al mismo intervalo exacto; referencia e hipótesis declaran
+ese audio como padre y fuente explícita. Un texto del segmento completo no se
+recorta por proporción para compararlo con un preview. Los registros sin
+procedencia suficiente pueden seguir inventariados, pero no son comparables.
+
+`require_comparison` comprueba esa coherencia y el vencimiento del snapshot.
+No abre archivos, calcula métricas, prueba el canal físico o reemplaza la
+autoridad vigente de consentimiento, revocaciones y tombstones. El adaptador
+de lectura deberá revalidar esa autoridad y la identidad real de los archivos.
+El transporte desde los productores reales y su persistencia siguen dentro de
+T014; las garantías de borrado y restauración se completan con T022/T024.
 
 ## Separación y apertura de la reserva
 
@@ -60,6 +95,8 @@ Para cada captura y todos sus artefactos:
 
 El acceso se deniega al alcanzar ese instante aunque la eliminación física siga
 pendiente. Cierre y revocaciones se aplican a las copias y derivados registrados.
+El orden temporal y los 30 días se calculan en UTC, también cuando un horario
+local se repite; la comparación no ignora el offset ni el indicador fold.
 Cambiar una revisión/configuración, crear un derivado al día 29 o restaurar un
 manifiesto antiguo no renueva la autorización. Una revocación de participante se
 aplica a todas sus sesiones; nunca sólo a la muestra visible en la interfaz.
