@@ -13,7 +13,7 @@ pytestmark = pytest.mark.asyncio
 
 @asynccontextmanager
 async def endpoint(status):
-    state = {'ready':False,'reads':0,'ws_attempts':0,'service_calls':0}
+    state = {'ready':False,'reads':0,'ws_attempts':0,'service_calls':0,'snapshots':0}
     async def api(request):
         return web.json_response({'message':'API running'}) if state['ready'] else web.Response(status=status)
     async def states(request):
@@ -31,8 +31,15 @@ async def endpoint(status):
         await ws.send_json({'type':'auth_ok'})
         async for msg in ws:
             body = msg.json()
-            if body.get('type') == 'subscribe_events':
+            if body.get('type') == 'subscribe_entities':
                 await ws.send_json({'id':body['id'],'type':'result','success':True})
+                await ws.send_json({'id':body['id'],'type':'event','event':{'a':{
+                    'light.synthetic':{
+                        's':'off','a':{},'c':'synthetic-context',
+                        'lc':1_700_000_000.,'lu':1_700_000_000.,
+                    },
+                }}})
+                state['snapshots'] += 1
         return ws
     async def service(request):
         state['service_calls'] += 1
@@ -83,11 +90,12 @@ async def test_deferred_state_sync_recovers_through_same_client_and_existing_bac
             task = client._state_subscribe_task
             assert task is not None and not task.done()
             async with asyncio.timeout(3):
-                while state['reads']<1:
+                while state['ws_attempts']<1:
                     await asyncio.sleep(.001)
             state['ready']=True
             async with asyncio.timeout(8):
-                while client.get_entity_state_cached('light.synthetic') is None or client._ws_events is None:
+                while (client.get_entity_state_cached('light.synthetic') is None
+                       or client._ws_events is None or state['snapshots']<1):
                     await asyncio.sleep(.005)
             assert client._state_subscribe_task is task and not task.done()
             assert client.get_health_status().state is HAConnectionState.CONNECTED

@@ -6,19 +6,17 @@ import pytest
 
 from tests.mocks.responses import response_handler_mock
 from src.home_assistant.ha_client import HomeAssistantClient
-from tests.mocks.home_control import selected_actions
+from tests.mocks.home_control import observed_entity_client, selected_actions
 
 
 def test_is_entity_available_true_for_live_entity():
-    ha = HomeAssistantClient.__new__(HomeAssistantClient)
-    ha._state_cache = {"light.grupo_living": {"state": "off"}}
+    ha = observed_entity_client("light.grupo_living", "off")
     assert ha.is_entity_available("light.grupo_living") is True
 
 
 @pytest.mark.parametrize("state", ["unavailable"])
 def test_is_entity_available_false_for_dead_entity(state):
-    ha = HomeAssistantClient.__new__(HomeAssistantClient)
-    ha._state_cache = {"light.grupo_cuarto": {"state": state}}
+    ha = observed_entity_client("light.grupo_cuarto", state)
     assert ha.is_entity_available("light.grupo_cuarto") is False
 
 
@@ -40,15 +38,13 @@ def test_is_entity_available_true_for_states_ha_would_execute(state):
     de `unknown` es exactamente la que se estaría bloqueando. En este HA,
     `scene.fria` y `scene.relax` están `unknown` ahora mismo.
     """
-    ha = HomeAssistantClient.__new__(HomeAssistantClient)
-    ha._state_cache = {"scene.fria": {"state": state}}
+    ha = observed_entity_client("scene.fria", state)
     assert ha.is_entity_available("scene.fria") is True
 
 
 def test_is_entity_available_none_when_not_cached():
     """No data is not the same as unavailable — the caller must fail open."""
-    ha = HomeAssistantClient.__new__(HomeAssistantClient)
-    ha._state_cache = {}
+    ha = HomeAssistantClient("http://synthetic.invalid", "synthetic-token")
     assert ha.is_entity_available("light.desconocida") is None
 
 

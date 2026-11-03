@@ -6,6 +6,7 @@ the single WS into two independent connections with their own auth handshake
 and message-id counter.
 """
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -124,14 +125,18 @@ async def test_subscribe_and_sync_opens_events_channel_when_missing(client, monk
 
     messages = [
         {"id": 2, "type": "result", "success": True},
+        {"id": 2, "type": "event", "event": {"a": {"light.a": {
+            "s": "off", "a": {}, "c": "synthetic-context",
+            "lc": 1_700_000_000., "lu": 1_700_000_000.,
+        }}}},
     ]
     idx = {"i": 0}
 
-    async def receive_json():
+    async def receive_json(**_kwargs):
         i = idx["i"]
         idx["i"] += 1
         if i < len(messages):
-            return messages[i]
+            return _kwargs.get("loads", json.loads)(json.dumps(messages[i]))
         client._state_sync_running = False
         raise asyncio.TimeoutError()
 
@@ -158,5 +163,5 @@ async def test_subscribe_and_sync_opens_events_channel_when_missing(client, monk
     # Subscribe was sent on the events channel using the events id counter.
     ws_events.send_json.assert_awaited_once()
     sent = ws_events.send_json.await_args[0][0]
-    assert sent["type"] == "subscribe_events"
-    assert sent["event_type"] == "state_changed"
+    assert sent == {"id": 2, "type": "subscribe_entities"}
+    client._fetch_all_states_rest.assert_not_awaited()

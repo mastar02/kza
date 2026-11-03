@@ -10,7 +10,7 @@ import json
 import logging
 import os
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal, Self
 
 import aiosqlite
@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.core.sanitize import sanitize_dict
+from src.core.observation import Observation, ObservationReason, ObservationSource
 from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
@@ -40,6 +41,7 @@ from src.dashboard.evaluation_api import register_evaluation_routes
 from src.dashboard.credential_api import register_credential_routes
 from src.dashboard.ambient_api import register_ambient_routes
 from src.dashboard.observability import register_observability_routes
+from src.dashboard.observation_http import entity_observation_metadata, observation_headers
 from src.rooms.room_context import RoomConfig
 from src.routines.models import (
     RoutineConflict, RoutineNotFound, RoutineSpec, RoutineValidationError, ScheduledRoutine,
@@ -496,16 +498,48 @@ class DashboardAPI:
             ]
 
         @self.app.get("/api/entities/{entity_id}", dependencies=[Depends(require_dashboard_session)])
-        async def get_entity(entity_id: str):
-            """Obtener estado de entidad"""
+        async def get_entity(entity_id: str, request: Request) -> JSONResponse:
+            """Read one entity under the original diagnostic session authority."""
+            guard = session_guard(request, frozenset({"diagnostics:read"}))
+            attempted_at = datetime.now(UTC)
+
+            def unavailable(reason: ObservationReason) -> JSONResponse:
+                observation = Observation.from_read(ObservationSource.HA_ENTITY,
+                    available=False, observed_at=None, ttl_s=6,
+                    attempted_at=attempted_at if reason is not ObservationReason.UNCONFIGURED else None,
+                    reason=reason)
+                return JSONResponse(status_code=503,
+                    content={"detail": "Estado de entidad no disponible"},
+                    headers=observation_headers(observation, now=datetime.now(UTC)))
+
             if not self.ha:
-                raise HTTPException(status_code=503, detail="Home Assistant no disponible")
-
-            state = self.ha.get_entity_state(entity_id)
-            if not state:
-                raise HTTPException(status_code=404, detail="Entidad no encontrada")
-
-            return state
+                return unavailable(ObservationReason.UNCONFIGURED)
+            try:
+                value = await self.ha.read_entity_observation(entity_id)
+            except Exception as error:
+                logger.warning("HA entity read unavailable: %s", type(error).__name__)
+                return unavailable(ObservationReason.UNAVAILABLE)
+            if guard() is not True:
+                raise HTTPException(status_code=403, detail="dashboard_session_retired")
+            now = datetime.now(UTC)
+            try:
+                metadata = entity_observation_metadata(value, now=now)
+                headers = observation_headers(metadata, now=now)
+                current = value.current(now.timestamp())
+                if current and value.exists is True:
+                    state = value.state
+                    if isinstance(state, dict):
+                        request.scope["kza.dashboard_observation"] = metadata
+                        return JSONResponse(content=state, headers=headers)
+                if current and value.exists is False:
+                    request.scope["kza.dashboard_observation"] = metadata
+                    return JSONResponse(status_code=404,
+                        content={"detail": "Entidad no encontrada"}, headers=headers)
+                return JSONResponse(status_code=503,
+                    content={"detail": "Estado de entidad no disponible"}, headers=headers)
+            except (ValueError, TypeError, OverflowError) as error:
+                logger.warning("HA entity metadata unavailable: %s", type(error).__name__)
+                return unavailable(ObservationReason.INVALID)
 
         @self.app.post("/api/entities/{entity_id}/call", response_model=HomeActionResult)
         async def call_entity_service(

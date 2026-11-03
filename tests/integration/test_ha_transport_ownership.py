@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import deque
 from contextlib import asynccontextmanager
+from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,17 +18,46 @@ from src.monitoring.health_aggregator import HealthAggregator, OverallStatus
 pytestmark = pytest.mark.asyncio
 
 
+WIRE_TIME = 1_700_000_000.0
+
+
+def _compact_state(state="off", attributes=None):
+    return {
+        "s": state, "a": deepcopy(attributes or {}), "c": "synthetic-context",
+        "lc": WIRE_TIME, "lu": WIRE_TIME,
+    }
+
+
+def _rest_state(entity_id="light.synthetic", state="off", attributes=None):
+    return {
+        "entity_id": entity_id, "state": state,
+        "attributes": deepcopy(attributes or {}),
+        "context": {"id": "synthetic-context", "parent_id": None, "user_id": None},
+        "last_changed": "2023-11-14T22:13:20+00:00",
+        "last_updated": "2023-11-14T22:13:20+00:00",
+    }
+
+
 async def _reached(event: asyncio.Event) -> None:
     """Timeout guards a deadlock; all behavioral assertions use explicit gates."""
     async with asyncio.timeout(5):
         await event.wait()
 
 
+def _wire_result(frame, options):
+    loader = options.get("loads", json.loads)
+    assert callable(loader), "JSON loader was not callable"
+    raw = frame if isinstance(frame, str) else json.dumps(frame)
+    return loader(raw)
+
+
 class _Socket:
     def __init__(
         self, name: str, *, hold_auth=False, complete_auth_after_cancel=False,
         hold_close=False, confirmation="matching", fail_after_confirmation=False,
-        hold_registry_reply=False,
+        hold_registry_reply=False, initial_event=None, hold_initial=False,
+        complete_initial_after_cancel=False, hold_delta=False,
+        complete_delta_after_cancel=False, initial_id_offset=0,
     ) -> None:
         self.name = name
         self.closed = False
@@ -38,10 +70,26 @@ class _Socket:
         self.close_finished = asyncio.Event()
         self.subscribe_sent = asyncio.Event()
         self.confirmation_read = asyncio.Event()
+        self.initial_entered = asyncio.Event()
+        self.initial_release = asyncio.Event()
+        self.initial_finished = asyncio.Event()
+        self.stream_waiting = asyncio.Event()
+        self.initial_event = deepcopy(
+            initial_event if initial_event is not None
+            else {"a": {"light.synthetic": _compact_state()}}
+        )
+        self.initial_frame = None
+        self.initial_id_offset = initial_id_offset
+        self.raw_loads_called = False
+        self.complete_initial_after_cancel = complete_initial_after_cancel
+        self.hold_delta = hold_delta
+        self.complete_delta_after_cancel = complete_delta_after_cancel
+        self.delta_entered = asyncio.Event()
+        self.delta_release = asyncio.Event()
         self.registry_reply_entered = asyncio.Event()
         self.registry_reply_release = asyncio.Event()
         self.registry_result_ids: set[int] = set()
-        self.frames: asyncio.Queue = asyncio.Queue()
+        self.frames: asyncio.Queue = asyncio.Queue(maxsize=16)
         self.sent: list[dict] = []
         self.subscriptions: list[int] = []
         self.close_calls = 0
@@ -57,6 +105,10 @@ class _Socket:
             self.close_release.set()
         if not hold_registry_reply:
             self.registry_reply_release.set()
+        if not hold_initial:
+            self.initial_release.set()
+        if not hold_delta:
+            self.delta_release.set()
 
     async def receive_json(self, **_kwargs):
         self.receive_calls += 1
@@ -65,7 +117,7 @@ class _Socket:
         self.max_receivers = max(self.max_receivers, self.active_receivers)
         try:
             if receive_number == 1:
-                return {"type": "auth_required"}
+                return _wire_result({"type": "auth_required"}, _kwargs)
             if receive_number == 2:
                 self.auth_entered.set()
                 while not self.auth_release.is_set():
@@ -75,10 +127,32 @@ class _Socket:
                         self.auth_cancelled.set()
                         if not self.complete_auth_after_cancel:
                             raise
-                return {"type": "auth_ok"}
+                return _wire_result({"type": "auth_ok"}, _kwargs)
+            if self.initial_finished.is_set():
+                self.stream_waiting.set()
             frame = await self.frames.get()
             if isinstance(frame, BaseException):
                 raise frame
+            if isinstance(frame, str):
+                self.raw_loads_called = True
+                return _wire_result(frame, _kwargs)
+            if frame is self.initial_frame:
+                self.initial_entered.set()
+                while not self.initial_release.is_set():
+                    try:
+                        await self.initial_release.wait()
+                    except asyncio.CancelledError:
+                        if not self.complete_initial_after_cancel:
+                            raise
+                self.initial_finished.set()
+            elif frame.get("type") == "event" and self.hold_delta:
+                self.delta_entered.set()
+                while not self.delta_release.is_set():
+                    try:
+                        await self.delta_release.wait()
+                    except asyncio.CancelledError:
+                        if not self.complete_delta_after_cancel:
+                            raise
             if (
                 frame.get("type") == "result"
                 and frame.get("id") in self.registry_result_ids
@@ -93,7 +167,7 @@ class _Socket:
                         pass
             if frame.get("type") == "result":
                 self.confirmation_read.set()
-            return frame
+            return _wire_result(frame, _kwargs)
         finally:
             self.active_receivers -= 1
 
@@ -116,7 +190,9 @@ class _Socket:
                 "result": registries[body["type"]],
             })
             return
-        if body.get("type") != "subscribe_events":
+        if body.get("type") == "subscribe_events":
+            raise AssertionError("obsolete noncoherent state subscription")
+        if body.get("type") != "subscribe_entities":
             return
         subscription_id = body["id"]
         self.subscriptions.append(subscription_id)
@@ -130,6 +206,12 @@ class _Socket:
         self.frames.put_nowait(result)
         if self.fail_after_confirmation:
             self.frames.put_nowait(RuntimeError("synthetic_receive_failure"))
+        else:
+            self.initial_frame = {
+                "type": "event", "id": subscription_id + self.initial_id_offset,
+                "event": deepcopy(self.initial_event),
+            }
+            self.frames.put_nowait(self.initial_frame)
 
     async def close(self, **_kwargs) -> None:
         self.close_calls += 1
@@ -139,24 +221,56 @@ class _Socket:
         self.close_finished.set()
 
     def state_changed(self, state: str) -> None:
+        self.delta({"c": {"light.synthetic": {"+": {
+            "s": state, "lc": WIRE_TIME + 1, "lu": WIRE_TIME + 1,
+        }}}})
+
+    def delta(self, changes: dict, *, id_offset=0) -> None:
         self.frames.put_nowait({
             "type": "event",
-            "id": self.subscriptions[-1],
-            "event": {
-                "event_type": "state_changed",
-                "data": {
-                    "entity_id": "light.synthetic",
-                    "new_state": {
-                        "entity_id": "light.synthetic", "state": state,
-                        "attributes": {},
-                    },
-                },
-            },
+            "id": self.subscriptions[-1] + id_offset,
+            "event": deepcopy(changes),
         })
 
 
+class _Content:
+    def __init__(self, response):
+        self.response = response
+        # Encode fixture data before the measured/gated worker window.
+        self.raw = json.dumps(response.payload).encode("utf-8")
+        self.offset = 0
+        self.read_sizes = []
+
+    async def read(self, n):
+        assert type(n) is int and 0 < n <= 65536, "unbounded HTTP body read"
+        self.read_sizes.append(n)
+        if self.offset == 0:
+            self.response.entered.set()
+            while not self.response.release.is_set():
+                try:
+                    await self.response.release.wait()
+                except asyncio.CancelledError:
+                    if not self.response.complete_after_cancel:
+                        raise
+        part = self.raw[self.offset:self.offset + n]
+        self.offset += len(part)
+        if self.offset >= len(self.raw):
+            self.response.finished.set()
+        return part
+
+
 class _Response:
-    status = 200
+    def __init__(self, payload=None, *, status=200, hold=False,
+                 complete_after_cancel=False):
+        self.payload = deepcopy(payload)
+        self.content = _Content(self)
+        self.status = status
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.complete_after_cancel = complete_after_cancel
+        if not hold:
+            self.release.set()
 
     async def __aenter__(self):
         return self
@@ -165,10 +279,22 @@ class _Response:
         return False
 
     def raise_for_status(self) -> None:
-        return None
+        if self.status >= 400:
+            raise ha_module.aiohttp.ClientResponseError(
+                request_info=SimpleNamespace(real_url="http://synthetic.invalid"),
+                history=(), status=self.status, message="synthetic_source_failure",
+            )
 
-    async def json(self):
-        return [{"entity_id": "light.synthetic", "state": "off", "attributes": {}}]
+    async def json(self, **_kwargs):
+        self.entered.set()
+        while not self.release.is_set():
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                if not self.complete_after_cancel:
+                    raise
+        self.finished.set()
+        return _wire_result(self.payload, _kwargs)
 
 
 class _Session:
@@ -176,19 +302,27 @@ class _Session:
         self.transport = transport
         self.closed = False
         self.close_calls = 0
+        self.ws_options = []
 
     async def ws_connect(self, _url, **_kwargs):
         assert not self.closed, "closed session admitted another WS connection"
         socket = self.transport.next_socket()
+        self.ws_options.append(dict(_kwargs))
+        socket.connect_options = dict(_kwargs)
         self.transport.opened.append(socket)
         socket.opened.set()
         return socket
 
     def get(self, url, **_kwargs):
         assert not self.closed, "closed session admitted another REST read"
-        assert url.endswith("/api/states"), "unexpected recovery HTTP endpoint"
+        assert "/api/states" in url, "unexpected recovery HTTP endpoint"
         self.transport.state_reads += 1
-        return _Response()
+        self.transport.state_urls.append(url)
+        if self.transport.responses:
+            return self.transport.responses.popleft()
+        if url.endswith("/api/states"):
+            return _Response([_rest_state()])
+        return _Response(_rest_state(url.rsplit("/", 1)[-1]))
 
     def post(self, *_args, **_kwargs):
         self.transport.service_posts += 1
@@ -210,6 +344,8 @@ class _Transport:
         self.observers: list[asyncio.Task] = []
         self.cleanup_gates: list[asyncio.Event] = []
         self.state_reads = 0
+        self.state_urls = []
+        self.responses: deque[_Response] = deque()
         self.service_posts = 0
 
     def socket(self, name: str, **kwargs) -> _Socket:
@@ -217,6 +353,12 @@ class _Transport:
         self.planned.append(socket)
         self.all_sockets.append(socket)
         return socket
+
+    def response(self, payload, **kwargs) -> _Response:
+        response = _Response(payload, **kwargs)
+        self.responses.append(response)
+        self.cleanup_gates.append(response.release)
+        return response
 
     def next_socket(self) -> _Socket:
         if self.planned:
@@ -240,6 +382,8 @@ class _Transport:
             gate.set()
         for socket in self.all_sockets:
             socket.auth_release.set()
+            socket.initial_release.set()
+            socket.delta_release.set()
             socket.registry_reply_release.set()
             socket.close_release.set()
 

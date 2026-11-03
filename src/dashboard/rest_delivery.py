@@ -69,7 +69,7 @@ class DashboardApplication(FastAPI):
         if scope['type'] != 'http':
             await super().__call__(scope, receive, send)
             return
-        guard = None
+        guard = observation = None
         denial = b'{"detail":"dashboard_session_retired"}'
 
         def current() -> bool:
@@ -78,10 +78,19 @@ class DashboardApplication(FastAPI):
             except Exception:
                 return False
 
+        def source_current() -> bool:
+            if observation is None:
+                return True
+            try:
+                return type(observation) is Observation and observation.current(datetime.now(UTC))
+            except Exception:
+                return False
+
         async def guarded_send(message):
-            nonlocal guard
+            nonlocal guard, observation
             try:
                 if message['type'] == 'http.response.start':
+                    observation = scope.get('kza.dashboard_observation')
                     # Logout publishes only its fixed revocation receipt and cookie removal.
                     if not (scope.get('method') == 'POST' and scope.get('path') == '/api/admin/auth/logout'):
                         guard = scope.get('kza.dashboard_delivery_guard')
@@ -91,13 +100,24 @@ class DashboardApplication(FastAPI):
                             (b'content-length', str(len(denial)).encode('ascii'))]})
                         await send({'type': 'http.response.body', 'body': denial})
                         raise _PrivateDeliveryRetired()
+                    elif not source_current():
+                        unavailable = b'{"detail":"Estado de entidad no disponible"}'
+                        metadata = (observation_headers(observation, now=datetime.now(UTC))
+                                    if type(observation) is Observation else {'Cache-Control': 'no-store'})
+                        await send({'type': 'http.response.start', 'status': 503, 'headers': [
+                            (b'content-type', b'application/json'),
+                            (b'content-length', str(len(unavailable)).encode('ascii')),
+                            *((key.lower().encode('ascii'), value.encode('ascii'))
+                              for key, value in metadata.items())]})
+                        await send({'type': 'http.response.body', 'body': unavailable})
+                        raise _PrivateDeliveryRetired()
                     elif guard is not None:
                         message = {**message, 'headers': [
                             (key, value) for key, value in message.get('headers', [])
                             if key.lower() != b'cache-control'
                         ] + [(b'cache-control', b'no-store')]}
                 elif message['type'] == 'http.response.body':
-                    if not current():
+                    if not current() or not source_current():
                         # Headers may already have reached the peer. Closing the response
                         # preserves its framing and never presents a replacement as success.
                         raise _PrivateDeliveryRetired()

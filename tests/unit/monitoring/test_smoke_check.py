@@ -10,7 +10,7 @@ entidad viva y produce un payload que HA aceptaría, sin llamar al servicio.
 
 import pytest
 
-from src.home_assistant.ha_client import HomeAssistantClient
+from tests.mocks.home_control import observed_entity_client
 from src.monitoring.smoke_check import (
     check_phrase,
     entity_problem,
@@ -79,8 +79,7 @@ class TestEntityProblem:
         dispatcher las rechazaba. Este test ata los dos criterios: si alguien
         cambia uno solo, esto falla.
         """
-        ha = HomeAssistantClient.__new__(HomeAssistantClient)
-        ha._state_cache = {"scene.fria": {"state": state}}
+        ha = observed_entity_client("scene.fria", state)
 
         smoke_says_dead = entity_problem("scene.fria", {"scene.fria": state}) is not None
         dispatcher_says_dead = ha.is_entity_available("scene.fria") is False

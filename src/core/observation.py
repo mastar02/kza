@@ -9,6 +9,8 @@ import re
 
 class ObservationSource(StrEnum):
     HA_STATES = "ha-rest-states"
+    HA_ENTITY = "ha-rest-entity"
+    HA_ENTITIES = "ha-ws-entities"
     HA_REGISTRY = "ha-registry"
     HA_CONFIG = "ha-config"
     HA_FORECAST = "ha-weather-forecast"

@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 from src.core.observation import Observation, ObservationReason, ObservationSource, ObservationState
+from src.home_assistant.state_projection import EntityObservation
 
 COMPONENTS = frozenset({'zones', 'conversations', 'ha_entities', 'ha_actions', 'llm_endpoints',
                         'users', 'alerts', 'gpus', 'services'})
@@ -22,6 +23,37 @@ def observation_headers(value: Observation, *, now: datetime) -> dict[str, str]:
         if data[key] is not None:
             headers[header] = data[key]
     return headers
+
+def entity_observation_metadata(value: EntityObservation, *, now: datetime) -> Observation:
+    """Describe the original entity evidence without renewing its deadline.
+
+    Args:
+        value: Native current or last-known entity observation.
+        now: The HTTP projection time, used only to check freshness.
+
+    Returns:
+        Closed source metadata and the original observation timestamps.
+    """
+    if type(value) is not EntityObservation:
+        raise ValueError("invalid_entity_observation")
+    source = ObservationSource(value.source)
+    if source not in {ObservationSource.HA_ENTITY, ObservationSource.HA_ENTITIES,
+                      ObservationSource.HA_STATES}:
+        raise ValueError("invalid_entity_observation_source")
+
+    def instant(epoch: float | None) -> datetime | None:
+        return None if epoch is None else datetime.fromtimestamp(epoch, UTC)
+
+    reason = None if value.reason is None else ObservationReason(value.reason)
+    observed, expiry, attempted = (instant(value.observed_at), instant(value.expires_at),
+                                  instant(value.attempted_at))
+    if reason in {ObservationReason.EXPIRED, ObservationReason.CLOCK_SKEW}:
+        state = ObservationState.STALE if reason is ObservationReason.EXPIRED else ObservationState.UNKNOWN
+        return Observation(source, state, observed, expiry, attempted, reason)
+    return Observation.from_read(source,
+        available=value.exists is not None and reason is None,
+        observed_at=observed, expires_at=expiry, attempted_at=attempted, ttl_s=6,
+        reason=reason)
 
 
 class ObservationHeaders:

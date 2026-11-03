@@ -2,10 +2,10 @@
 
 Cubre:
 - Populate inicial del cache via REST snapshot.
-- Update del cache al recibir events state_changed via WebSocket.
+- Update atómico del cache al recibir el stream compacto de entidades.
 - Cache miss → fallback a REST.
 - Resiliencia: loop sigue corriendo después de un error.
-- Limpieza de entities con new_state=None (entity removed/unavailable).
+- Borrados compactos con observación negativa fechada.
 - Callbacks de observers se invocan sin bloquear si uno falla.
 - start_state_sync es idempotente.
 - Graceful shutdown via stop_state_sync.
@@ -14,11 +14,67 @@ Cubre:
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.home_assistant.ha_client import HomeAssistantClient
+from src.home_assistant.ha_client import HAStatesSnapshot, HomeAssistantClient
+from src.home_assistant.state_projection import apply_initial, apply_rest, empty_frame, entity_observation
+
+
+def _state(entity_id, state="off", attributes=None):
+    return {
+        "entity_id": entity_id, "state": state, "attributes": attributes or {},
+        "context": {"id": "synthetic-context", "parent_id": None, "user_id": None},
+        "last_changed": "2023-11-14T22:13:20+00:00",
+        "last_updated": "2023-11-14T22:13:20+00:00",
+    }
+
+
+def _compact(state="off", attributes=None):
+    return {"s": state, "a": attributes or {}, "c": "synthetic-context",
+            "lc": 1_700_000_000., "lu": 1_700_000_000.}
+
+
+def _seed_stream(ha, states):
+    """Seed a complete, explicitly observed synthetic stream baseline."""
+    ha._state_sync_running = True
+    ha._entity_stream_generation += 1
+    ha._state_frame = apply_initial(ha._state_frame,
+        {"a": {key: _compact(value["state"], value.get("attributes"))
+               for key, value in states.items()}},
+        generation=ha._entity_stream_generation, observed_at=ha._entity_now(),
+    )
+
+
+def _seed_rest(ha, entity_id, state="off", attributes=None):
+    frame = ha._state_frame
+    ha._state_frame = apply_rest(
+        frame, entity_id, _state(entity_id, state, attributes),
+        observed_at=ha._entity_now(), ttl_s=6.,
+        expected_generation=frame.generation,
+        expected_revision=frame.entry_revision(entity_id),
+    )
+
+
+def _actual_observation(ha, entity_id, state="off"):
+    frame = empty_frame()
+    frame = apply_rest(
+        frame, entity_id, _state(entity_id, state),
+        observed_at=ha._entity_now(), ttl_s=6.,
+        expected_generation=frame.generation,
+        expected_revision=frame.entry_revision(entity_id),
+    )
+    return entity_observation(frame, entity_id, now=ha._entity_now())
+
+
+def _dated_snapshot(ha, states):
+    observed = datetime.fromtimestamp(ha._entity_now(), UTC)
+    return HAStatesSnapshot(
+        True, observed, None, tuple(states), observed + timedelta(seconds=6), observed,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -43,49 +99,52 @@ async def ha():
 
 
 class TestCachePopulate:
-    """Populación inicial del cache desde REST snapshot."""
+    """Legacy manual REST publication remains dated and independent of stream state."""
 
     @pytest.mark.asyncio
     async def test_cache_populated_on_subscribe(self, ha):
-        """El snapshot REST inicial puebla el cache con todas las entities."""
-        ha._fetch_all_states_rest = AsyncMock(return_value=[
-            {"entity_id": "light.escritorio", "state": "on"},
-            {"entity_id": "light.living", "state": "off"},
-            {"entity_id": "climate.dormitorio", "state": "cool",
-             "attributes": {"temperature": 22}},
+        snapshot = _dated_snapshot(ha, [
+            _state("light.escritorio", "on"),
+            _state("light.living", "off"),
+            _state("climate.dormitorio", "cool", {"temperature": 22}),
         ])
-
+        ha.get_state_snapshot = AsyncMock(return_value=snapshot)
         await ha._refresh_full_state_snapshot()
-
         assert len(ha._state_cache) == 3
         assert ha.get_entity_state_cached("light.escritorio")["state"] == "on"
         assert ha.get_entity_state_cached("light.living")["state"] == "off"
         assert ha.get_entity_state_cached("climate.dormitorio")["attributes"]["temperature"] == 22
+        observed = ha.get_entity_observation("light.escritorio")
+        assert observed.current(ha._entity_now())
+        assert observed.source == "ha-rest-states"
+        assert observed.observed_at == snapshot.observed_at.timestamp()
+        assert observed.expires_at == snapshot.expires_at.timestamp()
 
     @pytest.mark.asyncio
     async def test_empty_snapshot_does_not_wipe_cache(self, ha):
-        """Si el REST devuelve [] (HA caído), el cache no se vacía."""
-        ha._state_cache["light.x"] = {"entity_id": "light.x", "state": "on"}
-        ha._fetch_all_states_rest = AsyncMock(return_value=[])
-
+        _seed_rest(ha, "light.x", "on")
+        previous = ha.get_entity_observation("light.x")
+        ha.get_state_snapshot = AsyncMock(return_value=_dated_snapshot(ha, []))
         await ha._refresh_full_state_snapshot()
-
-        # El cache previo debe quedar intacto — no queremos perder state por un blip
         assert ha.get_entity_state_cached("light.x")["state"] == "on"
+        current = ha.get_entity_observation("light.x")
+        assert current.observed_at == previous.observed_at
+        assert current.expires_at == previous.expires_at
 
     @pytest.mark.asyncio
-    async def test_snapshot_skips_entries_without_entity_id(self, ha):
-        """Defensive: entries malformados (sin entity_id) no crashean el snapshot."""
-        ha._fetch_all_states_rest = AsyncMock(return_value=[
-            {"entity_id": "light.ok", "state": "on"},
-            {"state": "something"},  # malformado — sin entity_id
-            {},
-        ])
-
+    async def test_malformed_snapshot_preserves_history_without_partial_publication(self, ha):
+        _seed_rest(ha, "light.previous", "off")
+        before = ha._state_frame
+        original = ha.get_entity_observation("light.previous")
+        ha.get_state_snapshot = AsyncMock(return_value=_dated_snapshot(ha, [
+            _state("light.ok", "on"), {"state": "something"}, {},
+        ]))
         await ha._refresh_full_state_snapshot()
-
-        assert len(ha._state_cache) == 1
-        assert "light.ok" in ha._state_cache
+        assert ha._state_frame is before
+        assert ha.get_entity_state_cached("light.ok") is None
+        retained = ha.get_entity_observation("light.previous")
+        assert (retained.state, retained.observed_at, retained.expires_at) == (
+            original.state, original.observed_at, original.expires_at)
 
 
 # ---------------------------------------------------------------------------
@@ -94,64 +153,58 @@ class TestCachePopulate:
 
 
 class TestStateChangedEvents:
-    """Handling de events WebSocket que actualizan el cache."""
+    """The real compact publisher commits changes/removals before current reads."""
 
     @pytest.mark.asyncio
     async def test_state_changed_event_updates_cache(self, ha):
-        """Un event state_changed reemplaza el valor en el cache."""
-        ha._state_cache["light.x"] = {"entity_id": "light.x", "state": "off"}
-
-        event = {
-            "event_type": "state_changed",
-            "data": {
-                "entity_id": "light.x",
-                "new_state": {"entity_id": "light.x", "state": "on",
-                              "attributes": {"brightness": 255}},
-                "old_state": {"entity_id": "light.x", "state": "off"},
-            },
-        }
-        ha._handle_state_changed(event)
-
+        _seed_stream(ha, {"light.x": _state("light.x", "off")})
+        await ha._publish_entities_delta({"c": {"light.x": {"+": {
+            "s": "on", "a": {"brightness": 255},
+        }}}})
         cached = ha.get_entity_state_cached("light.x")
         assert cached["state"] == "on"
         assert cached["attributes"]["brightness"] == 255
+        assert ha.get_entity_observation("light.x").current(ha._entity_now())
 
     @pytest.mark.asyncio
     async def test_state_changed_new_entity_creates_cache_entry(self, ha):
-        """Una entity nueva aparece en el cache al primer event."""
-        assert ha.get_entity_state_cached("sensor.nuevo") is None
-
-        event = {
-            "data": {
-                "entity_id": "sensor.nuevo",
-                "new_state": {"entity_id": "sensor.nuevo", "state": "23.4"},
-            },
-        }
-        ha._handle_state_changed(event)
-
+        _seed_stream(ha, {})
+        assert ha.get_entity_observation("sensor.nuevo").exists is False
+        await ha._publish_entities_delta({"a": {"sensor.nuevo": _compact("23.4")}})
         assert ha.get_entity_state_cached("sensor.nuevo")["state"] == "23.4"
 
     @pytest.mark.asyncio
     async def test_state_changed_null_state_removes_entity(self, ha):
-        """new_state=None (entity eliminada/unavailable) purga el cache."""
-        ha._state_cache["light.gone"] = {"entity_id": "light.gone", "state": "on"}
-
-        event = {
-            "data": {"entity_id": "light.gone", "new_state": None},
-        }
-        ha._handle_state_changed(event)
-
+        _seed_stream(ha, {"light.gone": _state("light.gone", "on")})
+        await ha._publish_entities_delta({"r": ["light.gone"]})
         assert ha.get_entity_state_cached("light.gone") is None
+        removed = ha.get_entity_observation("light.gone")
+        assert removed.current(ha._entity_now()) and removed.exists is False
 
     @pytest.mark.asyncio
-    async def test_malformed_event_does_not_crash(self, ha):
-        """Events sin entity_id no crashean el handler."""
-        # No debe raise
+    async def test_malformed_compact_delta_fails_atomically(self, ha):
+        _seed_stream(ha, {"light.x": _state("light.x", "off")})
+        before = ha._state_frame
+        with pytest.raises(ValueError):
+            await ha._publish_entities_delta({"c": {
+                "light.x": {"+": {"s": "on"}},
+                "light.missing": {"+": {"s": "invalid"}},
+            }})
+        assert ha._state_frame is before
+        assert ha.get_entity_state_cached("light.x")["state"] == "off"
+
+    @pytest.mark.asyncio
+    async def test_legacy_event_is_history_and_malformed_legacy_does_not_crash(self, ha):
         ha._handle_state_changed({})
         ha._handle_state_changed({"data": {}})
         ha._handle_state_changed({"data": {"new_state": {"state": "on"}}})
-
-        assert len(ha._state_cache) == 0
+        assert ha._state_cache == {}
+        ha._handle_state_changed({"data": {
+            "entity_id": "light.legacy", "new_state": _state("light.legacy", "on"),
+        }})
+        assert ha._state_cache["light.legacy"]["state"] == "on"
+        assert ha.get_entity_state_cached("light.legacy") is None
+        assert not ha.get_entity_observation("light.legacy").current(ha._entity_now())
 
 
 # ---------------------------------------------------------------------------
@@ -160,41 +213,40 @@ class TestStateChangedEvents:
 
 
 class TestCacheMissFallback:
-    """Cache-first con fallback a REST si no está en cache."""
+    """Only current dated cache entries suppress the bounded native fallback."""
 
     @pytest.mark.asyncio
     async def test_cache_miss_falls_back_to_rest(self, ha):
-        """get_entity_state llama al REST si la entity no está en cache."""
-        rest_result = {"entity_id": "light.no_cached", "state": "on"}
-        ha._get_entity_state_rest = AsyncMock(return_value=rest_result)
-
+        observation = _actual_observation(ha, "light.no_cached", "on")
+        ha.read_entity_observation = AsyncMock(return_value=observation)
         result = await ha.get_entity_state("light.no_cached")
-
-        assert result == rest_result
-        ha._get_entity_state_rest.assert_awaited_once_with("light.no_cached")
+        assert result["state"] == "on"
+        ha.read_entity_observation.assert_awaited_once()
+        assert ha.read_entity_observation.await_args.args[0] == "light.no_cached"
 
     @pytest.mark.asyncio
     async def test_cache_hit_skips_rest(self, ha):
-        """Si la entity está en cache, no se llama al REST (ahorro de latencia)."""
-        ha._state_cache["light.cached"] = {"entity_id": "light.cached", "state": "on"}
-        ha._get_entity_state_rest = AsyncMock(return_value=None)
-
+        _seed_rest(ha, "light.cached", "on")
+        ha.read_entity_observation = AsyncMock()
         result = await ha.get_entity_state("light.cached")
-
         assert result["state"] == "on"
-        ha._get_entity_state_rest.assert_not_awaited()
+        ha.read_entity_observation.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cached_lookup_without_io(self, ha):
-        """get_entity_state_cached es sync y no toca la network."""
-        ha._state_cache["light.a"] = {"entity_id": "light.a", "state": "off"}
-
-        # Si esto tocase network, el test colgaría o fallaría — no hay session real
-        result = ha.get_entity_state_cached("light.a")
-        assert result["state"] == "off"
-
-        # Miss debe ser None, no exception
+        _seed_rest(ha, "light.a", "off")
+        assert ha.get_entity_state_cached("light.a")["state"] == "off"
         assert ha.get_entity_state_cached("light.missing") is None
+        assert ha._session is None
+
+    @pytest.mark.asyncio
+    async def test_raw_legacy_seed_is_not_a_current_observation(self, ha):
+        ha._state_cache = {"light.legacy": _state("light.legacy", "on")}
+        assert ha._state_cache["light.legacy"]["state"] == "on"
+        assert ha.get_entity_state_cached("light.legacy") is None
+        observed = ha.get_entity_observation("light.legacy")
+        assert not observed.current(ha._entity_now())
+        assert observed.observed_at is None and observed.expires_at is None
 
 
 # ---------------------------------------------------------------------------
@@ -203,29 +255,23 @@ class TestCacheMissFallback:
 
 
 class TestStateCallbacks:
-    """Callbacks registrados via register_state_callback."""
+    """Callbacks observe committed current compact changes and stay isolated."""
 
     @pytest.mark.asyncio
     async def test_callback_invoked_on_state_change(self, ha):
-        """El callback recibe (entity_id, new_state) cuando cambia el state."""
+        _seed_stream(ha, {})
         calls = []
         ha.register_state_callback(lambda eid, st: calls.append((eid, st)))
-
-        event = {
-            "data": {
-                "entity_id": "light.x",
-                "new_state": {"state": "on"},
-            },
-        }
-        ha._handle_state_changed(event)
-
+        await ha._publish_entities_delta({"a": {"light.x": _compact("on")}})
         assert len(calls) == 1
         assert calls[0][0] == "light.x"
-        assert calls[0][1] == {"state": "on"}
+        assert calls[0][1]["entity_id"] == "light.x"
+        assert calls[0][1]["state"] == "on"
+        assert ha.get_entity_observation("light.x").current(ha._entity_now())
 
     @pytest.mark.asyncio
     async def test_failing_callback_does_not_break_others(self, ha):
-        """Un callback que raise no previene que otros corran (aislamiento)."""
+        _seed_stream(ha, {})
         calls = []
 
         def broken(eid, st):
@@ -236,10 +282,7 @@ class TestStateCallbacks:
 
         ha.register_state_callback(broken)
         ha.register_state_callback(good)
-
-        event = {"data": {"entity_id": "light.x", "new_state": {"state": "on"}}}
-        ha._handle_state_changed(event)  # no raise
-
+        await ha._publish_entities_delta({"a": {"light.x": _compact("on")}})
         assert calls == ["light.x"]
 
 
@@ -389,55 +432,48 @@ class TestSyncLoopLifecycle:
 
 
 class TestSubscribeAndSync:
-    """Flow completo: snapshot → subscribe → consumir events."""
+    """A single compact stream publishes its first snapshot before deltas."""
 
     @pytest.mark.asyncio
     async def test_subscribe_and_sync_populates_cache(self, ha):
-        """El flow completo puebla el cache y procesa al menos un event."""
-
-        # Snapshot REST inicial
-        ha._fetch_all_states_rest = AsyncMock(return_value=[
-            {"entity_id": "light.a", "state": "off"},
-        ])
-
-        # WS stub: simula receive_json devolviendo
-        # 1) confirmación del subscribe
-        # 2) un event state_changed
-        # 3) timeout (asyncio.TimeoutError) para salir del loop vía stop
-        ha.ensure_websocket_connected = AsyncMock(return_value=True)
+        ha._fetch_all_states_rest = AsyncMock()
         ws_mock = MagicMock()
         ws_mock.closed = False
         ws_mock.close = AsyncMock(side_effect=lambda: setattr(ws_mock, "closed", True))
         ws_mock.send_json = AsyncMock()
-
         messages = [
             {"id": 2, "type": "result", "success": True},
-            {"id": 2, "type": "event", "event": {
-                "data": {"entity_id": "light.a", "new_state": {"state": "on"}},
-            }},
+            {"id": 2, "type": "event", "event": {"a": {"light.a": _compact("off")}}},
+            {"id": 2, "type": "event", "event": {"c": {
+                "light.a": {"+": {"s": "on"}},
+            }}},
         ]
-        idx = {"i": 0}
+        received = []
 
-        async def receive_json():
-            i = idx["i"]
-            idx["i"] += 1
-            if i < len(messages):
-                return messages[i]
-            # Después del segundo message, parar el loop
+        def observed(entity_id, state):
+            if state is not None and state["state"] == "on":
+                current = ha.get_entity_observation(entity_id)
+                received.append((state, current.current(ha._entity_now())))
+
+        ha.register_state_callback(observed)
+
+        async def receive_json(**_kwargs):
+            if messages:
+                return _kwargs.get("loads", json.loads)(json.dumps(messages.pop(0)))
             ha._state_sync_running = False
             raise asyncio.TimeoutError()
 
         ws_mock.receive_json = AsyncMock(side_effect=receive_json)
-        # Seed events channel directly so _subscribe_and_sync skips the
-        # _open_ws_authenticated handshake (dual-WS architecture 2026-04-24).
         ha._ws_events = ws_mock
         ha._state_sync_running = True
-
         await ha._subscribe_and_sync()
 
-        # El cache debe tener el snapshot aplicado y el event aplicado
-        assert ha.get_entity_state_cached("light.a")["state"] == "on"
+        assert len(received) == 1
+        assert received[0][0]["entity_id"] == "light.a"
+        assert received[0][0]["state"] == "on" and received[0][1] is True
+        ha._fetch_all_states_rest.assert_not_awaited()
         ws_mock.send_json.assert_awaited_once()
-        sent = ws_mock.send_json.await_args[0][0]
-        assert sent["type"] == "subscribe_events"
-        assert sent["event_type"] == "state_changed"
+        assert ws_mock.send_json.await_args.args[0] == {
+            "id": 2, "type": "subscribe_entities",
+        }
+        assert ws_mock.closed is True

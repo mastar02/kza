@@ -19,7 +19,93 @@ from typing import Callable
 
 import aiohttp
 
+from src.core.owned_work import OwnedBlockingWork
+from src.home_assistant.effect_plans import MAX_EFFECTS
 from src.home_assistant.operations import ActionIntent, DOMAIN_OPERATIONS, action_capabilities, finite_number, matches_observation
+from src.home_assistant.state_projection import (
+    MAX_FRAME_BYTES, EntityObservation, apply_delta, apply_initial, apply_rest, apply_rest_failure,
+    apply_rest_snapshot, decode_message, decode_states_message, empty_frame, entity_observation,
+    legacy_frame, observation_view,
+)
+
+
+def _raw_state_json(raw):
+    """Transfer raw JSON to the bounded native decoder without parsing here."""
+    return raw
+
+
+
+
+
+
+
+
+def _state_projection_cpu(kind, base, raw, options, callback_count=0):
+    """Compute a bounded immutable replacement; never publish or call observers."""
+    replacement = result = notices = decoded = value = None
+    try:
+        if type(raw) is tuple:
+            raw = b''.join(raw)
+        if kind == 'decode':
+            return None, decode_message(raw), ()
+        if kind == 'snapshot':
+            return None, decode_states_message(raw), ()
+        if kind in ('initial', 'delta'):
+            decoded = decode_message(raw) if type(raw) in (str, bytes) else raw
+            subscribe_id = options.get('subscribe_id')
+            if subscribe_id is not None:
+                decoded = HomeAssistantClient._entities_payload(decoded, subscribe_id)
+            if kind == 'initial':
+                replacement = apply_initial(base, decoded, generation=options['stream_generation'],
+                    observed_at=options['observed_at'], ttl_s=STATE_OBSERVATION_TTL_S,
+                    admitted_revision=options.get('admitted_revision'))
+            else:
+                replacement = apply_delta(base, decoded, observed_at=options['observed_at'],
+                    ttl_s=STATE_OBSERVATION_TTL_S)
+        elif kind in ('rest', 'failure'):
+            entity_id = options['entity_id']
+            expected = dict(expected_generation=options['expected_generation'],
+                expected_revision=options['expected_revision'], attempted_at=options['attempted_at'])
+            if kind == 'rest':
+                decoded = None if options.get('missing') else decode_message(raw)
+                if decoded is None and not options.get('missing'):
+                    raise ValueError('invalid_entity_state')
+                replacement = apply_rest(base, entity_id, decoded,
+                    observed_at=options['observed_at'], ttl_s=STATE_OBSERVATION_TTL_S, **expected)
+            else:
+                replacement = apply_rest_failure(base, entity_id, reason=options['reason'], **expected)
+            result = entity_observation(replacement, entity_id, now=options['now'])
+            if kind == 'failure' and replacement is not base and entity_id not in replacement.entries:
+                result = observation_view(entity_observation(base, entity_id, now=options['now']),
+                    exists=None, reason=options['reason'], attempted_at=options['attempted_at'])
+            if replacement is base:
+                result = observation_view(result, exists=None, reason='source_changed',
+                    attempted_at=options['attempted_at'])
+            if result.source is None and result._value is None:
+                result = replace(result, source='ha-rest-entity')
+        elif kind == 'bulk':
+            expected = {value['entity_id']: options['base'].entry_revision(value['entity_id'])
+                for value in raw.states}
+            replacement = apply_rest_snapshot(base, raw.states,
+                observed_at=raw.observed_at.timestamp(), expires_at=raw.expires_at.timestamp(),
+                attempted_at=None if raw.attempted_at is None else raw.attempted_at.timestamp(),
+                expected_generation=options['expected_generation'], expected_revisions=expected)
+        else:
+            raise ValueError('invalid_state_projection_kind')
+        notices = []
+        if callback_count and kind == 'delta':
+            for identity in replacement.changed_ids + replacement.removed_ids:
+                value = entity_observation(replacement, identity, now=options['now'])
+                admitted = value.current(options['now']) and value.exists is True
+                notices.append((identity, tuple(value.state if admitted else None
+                    for _ in range(callback_count))))
+        return replacement, result, tuple(notices)
+    except Exception:
+        pass
+    finally:
+        base = raw = options = replacement = result = notices = decoded = value = None
+        expected = identity = admitted = None
+    raise ValueError('invalid_ha_state_projection')
 
 
 class ServiceCallStatus(StrEnum):
@@ -101,6 +187,10 @@ STATE_SYNC_ATTEMPT_TIMEOUT_S = 15.0
 STATE_SYNC_BACKOFF_INITIAL_S = 5.0
 STATE_SYNC_BACKOFF_MAX_S = 30.0
 TRANSPORT_OBSERVATION_TTL_S = 60.0
+STATE_STREAM_MAX_MESSAGE_BYTES = MAX_FRAME_BYTES
+STATE_REST_ADMISSION_CAPACITY = MAX_EFFECTS * 4 + 1
+STATE_REST_HTTP_CAPACITY = MAX_EFFECTS
+STATE_RAW_BUFFER_CAPACITY = MAX_FRAME_BYTES * 8
 AUTOMATION_TIMEOUT = 10.0       # Automation CRUD operations
 RELOAD_TIMEOUT = 5.0            # Automation reload
 
@@ -249,10 +339,19 @@ class HomeAssistantClient:
         # Populated via REST snapshot + updated via WebSocket state_changed events.
         # Single-writer (_state_sync_loop) / multi-reader model: GIL + atomic dict
         # operations make read-during-write safe for a single key.
-        self._state_cache: dict[str, dict] = {}
+        self._state_frame = empty_frame()
+        self._state_projection_work = OwnedBlockingWork(capacity=1, isolate_context=True)
+        self._state_projection_close: asyncio.Task | None = None
+        self._state_projection_lock = asyncio.Lock()
+        self._state_projection_tasks: dict[str, set[asyncio.Task]] = {'events': set(), 'rest': set()}
+        self._state_read_slots = asyncio.Semaphore(STATE_REST_HTTP_CAPACITY)
+        self._state_raw_condition = asyncio.Condition()
+        self._state_raw_bytes = 0
+        self._entity_stream_generation = 0
         self._state_subscribe_task: asyncio.Task | None = None
         self._state_callbacks: list = []  # observers opcionales
         self._state_sync_running = False
+        self._state_rebuild_requested = False
         self._state_last_full_refresh: float = 0.0
         self._state_full_refresh_interval_s: float = 300.0
 
@@ -286,6 +385,211 @@ class HomeAssistantClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @property
+    def _state_cache(self) -> dict[str, dict]:
+        """Detached historical projection for legacy trusted diagnostics only."""
+        result = {}
+        for entity_id, observation in self._state_frame.entries.items():
+            state = observation.state
+            if state is not None and observation.exists is not False:
+                result[entity_id] = state
+        return result
+
+    @_state_cache.setter
+    def _state_cache(self, states: dict[str, dict]) -> None:
+        if any(not task.done() for tasks in self._state_projection_tasks.values() for task in tasks):
+            raise RuntimeError('ha_state_projection_busy')
+        previous = self._state_frame
+        self._state_frame = legacy_frame(states, generation=previous.generation,
+                                         revision=previous.revision + 1)
+
+    def _entity_now(self) -> float:
+        return time.time()
+
+    def get_entity_observation(self, entity_id: str) -> EntityObservation:
+        """Read original per-entity evidence without I/O or freshness renewal."""
+        value = entity_observation(self._state_frame, entity_id, now=self._entity_now())
+        if self._closed:
+            return observation_view(value, exists=None, reason='source_closed')
+        if (value.source == 'ha-ws-entities' and
+                (not self._state_sync_running or self._state_frame.generation != self._entity_stream_generation)):
+            return observation_view(value, exists=None, reason=value.reason or 'source_changed')
+        return value
+
+    def _state_failure(self, entity_id: str, reason: str, attempted_at: float) -> EntityObservation:
+        """Return metadata-only local rejection without copying historical payloads."""
+        frame = self._state_frame
+        previous = frame.entries.get(entity_id)
+        if previous is None:
+            source = 'ha-ws-entities' if frame.initialized else 'ha-rest-entity'
+            observed, expiry = (frame.observed_at, frame.expires_at) if frame.initialized else (None, None)
+        else:
+            source = previous.source or 'ha-rest-entity'
+            observed, expiry = previous.observed_at, previous.expires_at
+        return EntityObservation(entity_id, exists=None, source=source, observed_at=observed,
+            expires_at=expiry, attempted_at=attempted_at, reason=reason,
+            generation=frame.generation, revision=frame.entry_revision(entity_id))
+
+    async def _state_operation(self, scope: str, function, *args, **kwargs):
+        """Retain one actor per scope, including I/O, CPU exit and publication."""
+        purpose = scope
+        current = self._state_projection_tasks[purpose]
+        if asyncio.current_task() in current:
+            return await function(*args, **kwargs)
+        capacity = 1 if purpose == 'events' else STATE_REST_ADMISSION_CAPACITY
+        if self._closed or sum(not task.done() for task in current) >= capacity:
+            raise aiohttp.ClientConnectionError('ha_state_projection_unavailable')
+        slot = {'waiting': True}
+        async def finish(function=function, args=args, kwargs=kwargs, slot=slot):
+            result = None
+            try:
+                result = await function(*args, **kwargs)
+                if slot.get('waiting'):
+                    slot['value'] = result
+            finally:
+                result = function = None
+                args, kwargs = (), {}
+        operation = finish()
+        try:
+            task = self._retain_transport(operation, purpose)
+        except BaseException:
+            operation.close()
+            raise
+        self._state_projection_tasks[purpose].add(task)
+        def finished(done):
+            self._state_projection_tasks[purpose].discard(done)
+        task.add_done_callback(finished, context=Context())
+        try:
+            await asyncio.shield(task)
+            return slot.pop('value', None)
+        finally:
+            slot.clear()
+            function, args, kwargs = None, (), {}
+            task = operation = None
+
+    async def _state_native(self, kind, base, raw, options, callback_count=0):
+        """Keep the serial lock owned until the actual CPU worker has exited."""
+        task = result = None
+        cancelled = False
+        try:
+            task = asyncio.create_task(self._state_projection_work.run(
+                _state_projection_cpu, kind, base, raw, options, callback_count), context=Context())
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except RuntimeError:
+                    break
+            try:
+                result = task.result()
+            except RuntimeError:
+                raise aiohttp.ClientConnectionError('ha_state_projection_unavailable') from None
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
+        finally:
+            task = result = kind = base = raw = options = None
+
+    def _state_scope_current(self, purpose, options):
+        if self._closed or options['transport_generation'] != self._transport_generation:
+            return False
+        if not options.get('withdraw_only') and monotonic() >= options['deadline']:
+            return False
+        if purpose == 'events':
+            if options['state_generation'] != self._state_generation:
+                return False
+            if options.get('require_running') and not self._state_sync_running:
+                return False
+            if ('stream_generation' in options
+                    and options['stream_generation'] != self._entity_stream_generation):
+                return False
+        return True
+
+    async def _project_state(self, kind, raw, options, *, purpose):
+        """Serialize decode/reduction and publish the exact computed frame on-loop."""
+        result = replacement = base = notices = callbacks = None
+        try:
+            async with self._state_projection_lock:
+                if not self._state_scope_current(purpose, options):
+                    raise aiohttp.ClientConnectionError('ha_state_projection_retired')
+                base = self._state_frame
+                if kind == 'bulk' and base.initialized:
+                    return None
+                callbacks = tuple(self._state_callbacks) if kind == 'delta' else ()
+                options = {**options, 'now': self._entity_now()}
+                replacement, result, notices = await self._state_native(
+                    kind, base, raw, options, len(callbacks))
+                if not self._state_scope_current(purpose, options):
+                    raise aiohttp.ClientConnectionError('ha_state_projection_retired')
+                if self._state_frame is not base:
+                    raise aiohttp.ClientConnectionError('ha_state_projection_superseded')
+                if replacement is not None:
+                    self._state_frame = replacement
+                if kind in ('initial', 'delta', 'rest') and self._entity_now() >= options['observed_at'] + STATE_OBSERVATION_TTL_S:
+                    raise aiohttp.ClientConnectionError('ha_state_projection_expired')
+                for identity, payloads in notices:
+                    for callback, payload in zip(callbacks, payloads):
+                        value = self._state_frame.entries.get(identity)
+                        admitted = (self._state_scope_current(purpose, options)
+                            and self._state_frame is replacement and value is not None
+                            and value.generation == self._state_frame.generation
+                            and value.exists is True and value.current(self._entity_now()))
+                        try:
+                            callback(identity, payload if admitted else None)
+                        except Exception as error:
+                            logger.debug('HA state callback failed: %s', type(error).__name__)
+                return result
+        finally:
+            raw = options = result = replacement = base = notices = callbacks = None
+            identity = payloads = payload = value = None
+
+    async def _decode_state_message(self, raw, *, deadline, state_generation=None):
+        options = dict(transport_generation=self._transport_generation, deadline=deadline,
+            state_generation=self._state_generation if state_generation is None else state_generation)
+        return await self._state_operation('events', self._project_state,
+            'decode', raw, options, purpose='events')
+
+    async def _drain_state_projections(self, purpose=None):
+        tasks = tuple(task for scope, jobs in self._state_projection_tasks.items() for task in jobs
+            if (purpose is None or scope == purpose) and not task.done() and task is not asyncio.current_task())
+        if tasks:
+            await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+
+    async def _release_state_bytes(self, size):
+        if size:
+            async with self._state_raw_condition:
+                self._state_raw_bytes -= size
+                self._state_raw_condition.notify_all()
+
+    async def _read_state_body(self, response):
+        """Reserve one entire bounded body so partial readers cannot deadlock."""
+        parts, size, charged = [], 0, 0
+        credit = MAX_FRAME_BYTES + 1
+        try:
+            async with self._state_raw_condition:
+                await self._state_raw_condition.wait_for(lambda:
+                    self._closed or self._state_raw_bytes + credit <= STATE_RAW_BUFFER_CAPACITY)
+                if self._closed:
+                    raise aiohttp.ClientConnectionError('ha_client_closed')
+                self._state_raw_bytes += credit
+                charged = credit
+            while size <= MAX_FRAME_BYTES:
+                part = await response.content.read(min(65536, credit - size))
+                if not part:
+                    await self._release_state_bytes(credit - size)
+                    charged = size
+                    return tuple(parts), charged
+                parts.append(part)
+                size += len(part)
+            raise ValueError('ha_state_body_too_large')
+        except BaseException:
+            await self._release_state_bytes(charged)
+            raise
+        finally:
+            parts = part = None
+
+
     async def _ensure_session(self) -> aiohttp.ClientSession:
         """Ensure an aiohttp ClientSession exists, creating one lazily if needed.
 
@@ -311,9 +615,10 @@ class HomeAssistantClient:
 
     def _observe_channel(self, channel: str, phase: str, state: HAConnectionState,
                          reason: str | None = None, *, evidence: bool = False,
-                         attempted_at: float | None = None, required: bool | None = None) -> None:
+                         attempted_at: float | None = None, required: bool | None = None,
+                         observed_at: float | None = None) -> None:
         previous = self._channel_observations[channel]
-        observed = time.time() if evidence else previous.observed_at
+        observed = (time.time() if observed_at is None else observed_at) if evidence else previous.observed_at
         self._channel_observations[channel] = replace(previous, phase=phase, state=state,
             reason=reason, observed_at=observed,
             expires_at=observed + TRANSPORT_OBSERVATION_TTL_S if evidence else previous.expires_at,
@@ -397,14 +702,15 @@ class HomeAssistantClient:
                 return
             await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
 
-    def _record_success(self, latency_ms: float, *, channel: str = 'rest') -> None:
+    def _record_success(self, latency_ms: float, *, channel: str = 'rest', observed_at: float | None = None) -> None:
         """Record a successful HA call for health tracking."""
         if self._closed:
             return
         self._success_count += 1
-        self._last_success_ts = time.time()
+        self._last_success_ts = time.time() if observed_at is None else observed_at
         self._has_auth_error = False
-        self._observe_channel(channel, 'ready', HAConnectionState.CONNECTED, evidence=True)
+        self._observe_channel(channel, 'ready', HAConnectionState.CONNECTED, evidence=True,
+            observed_at=observed_at)
         # Exponential moving average (alpha=0.3)
         if self._avg_latency_ms == 0.0:
             self._avg_latency_ms = latency_ms
@@ -427,44 +733,65 @@ class HomeAssistantClient:
 
     # ==================== REST API ====================
 
-    async def get_state_snapshot(self) -> HAStatesSnapshot:
-        """Read states serially, preserving successful observation time on failure."""
-        async with self._state_snapshot_lock:
-            generation = self._transport_generation
-            started = time.perf_counter()
-            attempted_at = datetime.now(UTC)
-            reason = "ha_states_unavailable"
-            try:
-                session = await self._ensure_session()
-                async with session.get(
-                    f"{self.url}/api/states",
-                    timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT_BULK),
-                ) as response:
-                    if response.status in (401, 403):
-                        reason = "ha_states_denied"
-                    response.raise_for_status()
-                    states = await response.json()
-                if not isinstance(states, list) or any(
-                    not isinstance(state, dict)
-                    or not isinstance(state.get("entity_id"), str)
-                    or "." not in state["entity_id"]
-                    or not isinstance(state.get("state"), str)
-                    or not isinstance(state.get("attributes", {}), dict)
-                    for state in states
-                ):
-                    reason = "ha_states_invalid"
-                    raise ValueError("Invalid HA states response")
-                if self._closed or generation != self._transport_generation:
-                    raise aiohttp.ClientConnectionError('ha_state_observation_retired')
-                observed_at = datetime.now(UTC)
-                self._home_states = HAStatesSnapshot(True, observed_at, None, tuple(states),
-                    observed_at + timedelta(seconds=STATE_OBSERVATION_TTL_S), attempted_at)
-                self._record_success((time.perf_counter() - started) * 1000)
-            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
-                self._record_error(error, "get_state_snapshot")
-                self._home_states = replace(self._home_states, available=False, reason=reason, attempted_at=attempted_at)
-                logger.warning("HA dashboard state snapshot unavailable")
-            return self._home_states
+    async def get_state_snapshot(self, *, _deadline: float | None = None) -> HAStatesSnapshot:
+        """Read one bounded retained REST snapshot, preserving original dates."""
+        attempted = datetime.fromtimestamp(self._entity_now(), UTC)
+        deadline = monotonic() + REST_TIMEOUT_BULK if _deadline is None else _deadline
+        if asyncio.current_task() in self._state_projection_tasks['rest']:
+            return await self._get_state_snapshot_owned(deadline, attempted)
+        try:
+            return await asyncio.wait_for(self._state_operation('rest',
+                self._get_state_snapshot_owned, deadline, attempted), timeout=max(0., deadline - monotonic()))
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return replace(self._home_states, available=False, reason='ha_states_unavailable',
+                attempted_at=attempted)
+
+
+    async def _get_state_snapshot_owned(self, deadline, attempted_at) -> HAStatesSnapshot:
+        raw = states = None
+        charged = 0
+        acquired = False
+        generation = self._transport_generation
+        started = time.perf_counter()
+        reason = 'ha_states_unavailable'
+        try:
+            async with asyncio.timeout_at(deadline):
+                await self._state_snapshot_lock.acquire()
+                acquired = True
+                async with self._state_read_slots:
+                    if self._closed or monotonic() >= deadline:
+                        raise aiohttp.ClientConnectionError('ha_state_read_retired')
+                    session = await self._ensure_session()
+                    async with session.get(f'{self.url}/api/states',
+                            timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT_BULK)) as response:
+                        if response.status in (401, 403):
+                            reason = 'ha_states_denied'
+                        response.raise_for_status()
+                        raw, charged = await self._read_state_body(response)
+                        observed_at = datetime.fromtimestamp(self._entity_now(), UTC)
+            options = dict(transport_generation=generation, deadline=deadline)
+            states = await self._project_state('snapshot', raw, options, purpose='rest')
+            if self._closed or generation != self._transport_generation:
+                raise aiohttp.ClientConnectionError('ha_state_observation_retired')
+            self._home_states = HAStatesSnapshot(True, observed_at, None, states,
+                observed_at + timedelta(seconds=STATE_OBSERVATION_TTL_S), attempted_at)
+            self._record_success((time.perf_counter() - started) * 1000,
+                observed_at=observed_at.timestamp())
+        except (ValueError, TypeError, KeyError):
+            reason = 'ha_states_invalid'
+            self._record_error(ValueError('invalid_ha_states_body'), 'get_state_snapshot')
+            self._home_states = replace(self._home_states, available=False, reason=reason, attempted_at=attempted_at)
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as error:
+            self._record_error(error, 'get_state_snapshot')
+            self._home_states = replace(self._home_states, available=False, reason=reason, attempted_at=attempted_at)
+        finally:
+            raw = states = None
+            if acquired:
+                self._state_snapshot_lock.release()
+            await self._release_state_bytes(charged)
+        return self._home_states
+
+
 
     async def get_area_assignments(self) -> HAAreaAssignments:
         """Read registries on an owned socket, caching one refresh for 60 seconds.
@@ -644,65 +971,82 @@ class HomeAssistantClient:
             return []
 
     async def get_entity_state(self, entity_id: str) -> dict | None:
-        """Obtener estado de una entidad.
-
-        Cache-first: si el prefetch cache tiene la entidad la devuelve sin I/O.
-        Si no, fallback al REST endpoint.
-        """
-        cached = self.get_entity_state_cached(entity_id)
-        if cached is not None:
-            return cached
+        value = self.get_entity_observation(entity_id)
+        if value.current(self._entity_now()):
+            return value.state if value.exists is True else None
         return await self._get_entity_state_rest(entity_id)
 
+
     async def _get_entity_state_rest(self, entity_id: str) -> dict | None:
-        """Obtener estado via REST (sin tocar cache). Usado como fallback."""
-        t_start = time.perf_counter()
+        value = await self.read_entity_observation(entity_id)
+        return value.state if value.current(self._entity_now()) and value.exists is True else None
+
+    async def read_entity_observation(self, entity_id: str, timeout: float = REST_TIMEOUT_DEFAULT) -> EntityObservation:
+        """Force one bounded read; retain its actual I/O/projection after observer loss."""
+        if not finite_number(timeout) or timeout <= 0:
+            raise ValueError('invalid_entity_read_timeout')
+        deadline = monotonic() + timeout
+        attempted = self._entity_now()
+        frame = self._state_frame
+        options = dict(entity_id=entity_id, attempted_at=attempted,
+            expected_generation=frame.generation, expected_revision=frame.entry_revision(entity_id),
+            transport_generation=self._transport_generation, deadline=deadline)
+        frame = None
         try:
-            session = await self._ensure_session()
-            async with session.get(
-                f"{self.url}/api/states/{entity_id}",
-                timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT_DEFAULT)
-            ) as response:
-                if response.status in (401, 403):
-                    self._has_auth_error = True
-                    logger.error(f"HA auth error {response.status} getting state for {entity_id}")
-                    self._record_error(
-                        aiohttp.ClientResponseError(
-                            request_info=response.request_info,
-                            history=response.history,
-                            status=response.status,
-                        ),
-                        f"get_entity_state({entity_id})",
-                    )
-                    return None
-                response.raise_for_status()
-                result = await response.json()
-                elapsed = (time.perf_counter() - t_start) * 1000
-                self._record_success(elapsed)
+            return await asyncio.wait_for(self._state_operation('rest',
+                self._read_entity_observation_owned, entity_id, timeout, options),
+                timeout=max(0., deadline - monotonic()))
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            reason = 'source_closed' if self._closed else 'source_unavailable'
+            return self._state_failure(entity_id, reason, attempted)
+        finally:
+            options = None
+
+    async def _read_entity_observation_owned(self, entity_id, timeout, options):
+        raw = result = None
+        charged = 0
+        started = time.perf_counter()
+        reason = 'source_unavailable'
+        try:
+            try:
+                async with asyncio.timeout_at(options['deadline']):
+                    async with self._state_read_slots:
+                        if self._closed or monotonic() >= options['deadline']:
+                            raise aiohttp.ClientConnectionError('ha_state_read_retired')
+                        session = await self._ensure_session()
+                        async with session.get(f'{self.url}/api/states/{entity_id}',
+                                timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+                            if response.status in (401, 403):
+                                reason = 'source_denied'
+                            missing = response.status == 404
+                            if not missing:
+                                response.raise_for_status()
+                                raw, charged = await self._read_state_body(response)
+                            observed = self._entity_now()
+                options = {**options, 'missing': missing, 'observed_at': observed}
+                result = await self._project_state('rest', raw, options, purpose='rest')
+                self._record_success((time.perf_counter() - started) * 1000, observed_at=observed)
                 return result
-        except asyncio.TimeoutError:
-            elapsed = (time.perf_counter() - t_start) * 1000
-            logger.error(f"HA timeout getting state for {entity_id} after {elapsed:.0f}ms")
-            self._record_error(asyncio.TimeoutError(), f"get_entity_state({entity_id})")
-            return None
-        except aiohttp.ClientConnectorError as e:
-            logger.error(f"HA unavailable (get_entity_state {entity_id}): {e}")
-            self._record_error(e, f"get_entity_state({entity_id})")
-            return None
-        except Exception as e:
-            logger.error(f"Error obteniendo estado de {entity_id}: {e}")
-            self._record_error(e, f"get_entity_state({entity_id})")
-            return None
+            except (ValueError, TypeError, KeyError):
+                reason = 'source_invalid'
+                self._record_error(ValueError('invalid_entity_state'), 'read_entity_observation')
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as error:
+                self._record_error(error, 'read_entity_observation')
+            if self._closed or options['transport_generation'] != self._transport_generation:
+                return self._state_failure(entity_id, 'source_closed', options['attempted_at'])
+            options = {**options, 'reason': reason, 'withdraw_only': True}
+            return await self._project_state('failure', None, options, purpose='rest')
+        finally:
+            raw = result = options = None
+            response = session = None
+            await self._release_state_bytes(charged)
+
+
 
     async def get_entity_state_fresh(self, entity_id: str, timeout: float = 0.15) -> dict | None:
-        """Read a bounded REST state and refresh the local entity cache."""
-        try:
-            state = await asyncio.wait_for(self._get_entity_state_rest(entity_id), timeout=timeout)
-        except asyncio.TimeoutError:
-            return None
-        if state is not None:
-            self._state_cache[entity_id] = state
-        return state
+        value = await self.read_entity_observation(entity_id, timeout=timeout)
+        return value.state if value.current(self._entity_now()) and value.exists is True else None
+
 
     async def confirm_entity_state(
         self, entity_id: str, expected_state: str, timeout: float | None = None,
@@ -795,14 +1139,9 @@ class HomeAssistantClient:
         return False
 
     def get_entity_state_cached(self, entity_id: str) -> dict | None:
-        """Lookup sin I/O contra el prefetch cache.
+        value = self.get_entity_observation(entity_id)
+        return value.state if value.current(self._entity_now()) and value.exists is True else None
 
-        Returns:
-            Dict con el state más reciente conocido via WS push o REST snapshot,
-            o None si no hay entry en cache (típicamente porque el sync aún no
-            corrió o la entidad no existe).
-        """
-        return self._state_cache.get(entity_id)
 
     def is_entity_available(self, entity_id: str) -> bool | None:
         """¿La entidad puede actuar, según el último estado conocido?
@@ -818,7 +1157,7 @@ class HomeAssistantClient:
             servicio de acciones, que consulta estado fresco y política antes
             del envío; el cache no autoriza una acción.
         """
-        entry = self._state_cache.get(entity_id)
+        entry = self.get_entity_state_cached(entity_id)
         if entry is None:
             return None
         # ⚠️ SOLO `unavailable`. `unknown` NO va acá, por más que suene igual
@@ -846,21 +1185,26 @@ class HomeAssistantClient:
         # `unknown` a propósito — ver el comentario allá.
         return entry.get("state") != "unavailable"
 
-    def has_domain(self, domain: str) -> bool:
-        """¿Hay al menos una entidad del dominio en el cache?
+    def has_domain(self, domain: str) -> bool | None:
+        """Current presence, or absence only from a current complete baseline."""
+        now = self._entity_now()
+        unknown = False
+        for entity_id in self._state_frame.entries:
+            if entity_id.startswith(domain + '.'):
+                value = self.get_entity_observation(entity_id)
+                if value.current(now):
+                    if value.exists is True:
+                        return True
+                else:
+                    unknown = True
+        if unknown:
+            return None
+        if (not self._closed and self._state_sync_running
+                and self._state_frame.generation == self._entity_stream_generation
+                and self._state_frame.baseline_current(now)):
+            return False
+        return None
 
-        Permite al pipeline rechazar intents que requieren un dominio inexistente
-        (ej: `set_temperature` sin entidad `climate.*`) en vez de hacer fallback
-        a un dominio similar por embedding.
-
-        Args:
-            domain: dominio HA (sin punto). Ej: "climate", "media_player", "light".
-
-        Returns:
-            True si hay ≥1 entidad cacheada con `entity_id` que empieza con `domain.`
-        """
-        prefix = f"{domain}."
-        return any(eid.startswith(prefix) for eid in self._state_cache)
 
     async def _fetch_all_states_rest(self) -> list[dict]:
         """Wrapper sobre get_all_entities para claridad en el sync loop."""
@@ -1218,6 +1562,8 @@ class HomeAssistantClient:
             for previous, kind in tuple(self._owned_sockets.values()):
                 if kind == purpose:
                     await self._close_socket(previous, purpose)
+            if purpose == 'events':
+                await self._drain_state_projections('events')
             if not current():
                 return None
             ws = None
@@ -1230,17 +1576,28 @@ class HomeAssistantClient:
                     session = await self._ensure_session()
                     if not current():
                         return None
-                    ws = await session.ws_connect(self.url.replace('http', 'ws') + '/api/websocket', heartbeat=30.0)
+                    options = {'heartbeat': 30.0}
+                    if purpose == 'events':
+                        options['max_msg_size'] = STATE_STREAM_MAX_MESSAGE_BYTES
+                    ws = await session.ws_connect(self.url.replace('http', 'ws') + '/api/websocket', **options)
                     self._owned_sockets[id(ws)] = (ws, purpose)
                     if not current():
                         return None
-                    first = await asyncio.wait_for(ws.receive_json(), timeout=WS_AUTH_TIMEOUT)
+                    json_options = {'loads': _raw_state_json} if purpose == 'events' else {}
+                    first = await asyncio.wait_for(ws.receive_json(**json_options), timeout=WS_AUTH_TIMEOUT)
+                    if purpose == 'events':
+                        first = await self._decode_state_message(first, deadline=deadline,
+                            state_generation=state_generation)
                     if not isinstance(first, dict) or first.get('type') != 'auth_required':
                         raise ValueError('ha_ws_protocol_invalid')
                     if not current():
                         return None
                     await ws.send_json({'type': 'auth', 'access_token': self.token})
-                    result = await asyncio.wait_for(ws.receive_json(), timeout=WS_AUTH_TIMEOUT)
+                    result = await asyncio.wait_for(ws.receive_json(**json_options), timeout=WS_AUTH_TIMEOUT)
+                    auth_observed_at = time.time()
+                    if purpose == 'events':
+                        result = await self._decode_state_message(result, deadline=deadline,
+                            state_generation=state_generation)
                     if not isinstance(result, dict) or result.get('type') != 'auth_ok':
                         if isinstance(result, dict) and result.get('type') == 'auth_invalid':
                             if current():
@@ -1257,7 +1614,7 @@ class HomeAssistantClient:
                         self._ws_connected = True
                     self._observe_channel(purpose, 'authenticated',
                         HAConnectionState.UNKNOWN if purpose == 'events' else HAConnectionState.CONNECTED,
-                        evidence=True)
+                        evidence=True, observed_at=auth_observed_at)
                     published = True
                     return ws
             except (asyncio.TimeoutError, aiohttp.ClientError, ValueError, OSError) as error:
@@ -1488,6 +1845,8 @@ class HomeAssistantClient:
 
     async def start_state_sync(self, full_refresh_interval_s: float = 300.0) -> None:
         """Publish the retained warmup/loop owner before any startup await."""
+        if not finite_number(full_refresh_interval_s) or full_refresh_interval_s <= 0:
+            raise ValueError('invalid_ha_full_refresh_interval')
         if self._closed:
             return
         stopping = self._state_stop_task
@@ -1579,6 +1938,7 @@ class HomeAssistantClient:
             previous = task
             self._state_generation += 1
             self._events_attempt_generation += 1
+            self._entity_stream_generation += 1
             generation = self._state_generation
             self._state_sync_running = False
             self._state_stop_owner = owner
@@ -1618,6 +1978,9 @@ class HomeAssistantClient:
             try:
                 await self._subscribe_and_sync()
                 backoff = STATE_SYNC_BACKOFF_INITIAL_S
+                if self._state_rebuild_requested and self._state_current(generation):
+                    self._state_rebuild_requested = False
+                    continue
             except asyncio.CancelledError:
                 return
             except Exception as error:
@@ -1632,113 +1995,180 @@ class HomeAssistantClient:
 
 
     async def _subscribe_and_sync(self) -> None:
-        """One exact-ID subscription; snapshot/cache handoff remains T021-B."""
+        """One coherent initial frame followed by serial compact deltas."""
+        self._state_rebuild_requested = False
         generation = self._state_generation
+        self._entity_stream_generation += 1
+        stream_generation = self._entity_stream_generation
         ws = None
+        started = time.perf_counter()
         deadline = monotonic() + STATE_SYNC_ATTEMPT_TIMEOUT_S
         try:
             async with asyncio.timeout(STATE_SYNC_ATTEMPT_TIMEOUT_S):
-                await self._refresh_full_state_snapshot()
                 if not self._state_current(generation):
                     return
                 ws = self._ws_events
                 if ws is None or ws.closed:
                     ws = await self._open_ws_authenticated('events')
                 if ws is None or not self._state_current(generation):
-                    raise aiohttp.ClientConnectionError('ha_events_unavailable')
+                    raise aiohttp.ClientConnectionError('ha_entities_unavailable')
                 self._ws_events = ws
                 self._ws_msg_id_events += 1
                 subscribe_id = self._ws_msg_id_events
-                await ws.send_json({'id': subscribe_id, 'type': 'subscribe_events', 'event_type': 'state_changed'})
-                confirm = await asyncio.wait_for(ws.receive_json(), timeout=WS_AUTH_TIMEOUT)
+                admitted_revision = self._state_frame.revision
+                await ws.send_json({'id': subscribe_id, 'type': 'subscribe_entities'})
+                confirm = await asyncio.wait_for(ws.receive_json(loads=_raw_state_json), timeout=WS_AUTH_TIMEOUT)
+                confirm = await self._decode_state_message(confirm, deadline=deadline,
+                    state_generation=generation)
                 if (not isinstance(confirm, dict) or type(confirm.get('id')) is not int
                         or confirm['id'] != subscribe_id or confirm.get('type') != 'result'
                         or confirm.get('success') is not True):
-                    raise ValueError('ha_subscribe_confirmation_invalid')
-                if not self._state_current(generation) or monotonic() >= deadline:
+                    raise ValueError('ha_entities_confirmation_invalid')
+                first = await asyncio.wait_for(ws.receive_json(loads=_raw_state_json), timeout=WS_AUTH_TIMEOUT)
+                observed_at = self._entity_now()
+                if (not self._state_current(generation) or monotonic() >= deadline
+                        or stream_generation != self._entity_stream_generation):
                     return
-                self._observe_channel('events', 'subscribed', HAConnectionState.CONNECTED, evidence=True)
-            last_full = monotonic()
-            while self._state_current(generation) and self._ws_events is ws:
+                await self._publish_entities_initial(first, stream_generation=stream_generation,
+                    admitted_revision=admitted_revision, subscribe_id=subscribe_id,
+                    observed_at=observed_at, deadline=deadline)
+                if not self._state_current(generation) or stream_generation != self._entity_stream_generation:
+                    return
+                self._record_success((time.perf_counter() - started) * 1000, channel='events',
+                    observed_at=observed_at)
+                self._observe_channel('events', 'subscribed', HAConnectionState.CONNECTED)
+            full_deadline = monotonic() + self._state_full_refresh_interval_s
+            while (self._state_current(generation) and self._ws_events is ws
+                    and stream_generation == self._entity_stream_generation):
+                remaining = full_deadline - monotonic()
+                if remaining <= 0:
+                    self._state_rebuild_requested = True
+                    return
                 try:
-                    message = await asyncio.wait_for(ws.receive_json(), timeout=30.)
+                    message = await asyncio.wait_for(ws.receive_json(loads=_raw_state_json), timeout=min(30., remaining))
                 except asyncio.TimeoutError:
                     if ws.closed:
-                        raise aiohttp.ClientConnectionError('ha_events_disconnected')
-                    message = None
-                if not self._state_current(generation):
+                        raise aiohttp.ClientConnectionError('ha_entities_disconnected')
+                    continue
+                observed_at = self._entity_now()
+                if (not self._state_current(generation)
+                        or stream_generation != self._entity_stream_generation):
                     return
-                if message is not None:
-                    if not isinstance(message, dict):
-                        raise ValueError('ha_event_frame_invalid')
-                    if message.get('type') == 'event':
-                        if type(message.get('id')) is not int or message['id'] != subscribe_id:
-                            raise ValueError('ha_event_subscription_invalid')
-                        self._handle_state_changed(message.get('event', {}))
-                        self._observe_channel('events', 'subscribed', HAConnectionState.CONNECTED, evidence=True)
-                if monotonic() - last_full > self._state_full_refresh_interval_s:
-                    await self._refresh_full_state_snapshot()
-                    last_full = monotonic()
+                await self._publish_entities_delta(message, subscribe_id=subscribe_id,
+                    observed_at=observed_at, deadline=monotonic() + STATE_OBSERVATION_TTL_S)
+                if not self._state_current(generation) or stream_generation != self._entity_stream_generation:
+                    return
+                self._observe_channel('events', 'subscribed', HAConnectionState.CONNECTED,
+                    evidence=True, observed_at=observed_at)
         except Exception as error:
             if self._state_current(generation) and self._channel_observations['events'].state is not HAConnectionState.AUTH_ERROR:
-                self._record_error(error, 'state_sync', channel='events')
+                self._record_error(error, 'entity_stream', channel='events')
             raise
         finally:
             await self._retire_event_attempt(ws)
 
+    @staticmethod
+    def _entities_payload(message, subscribe_id):
+        if (not isinstance(message, dict) or set(message) != {'id', 'type', 'event'}
+                or type(message.get('id')) is not int or message['id'] != subscribe_id
+                or message.get('type') != 'event' or not isinstance(message.get('event'), dict)):
+            raise ValueError('ha_entities_event_invalid')
+        return message['event']
+
+    async def _publish_entities_initial(self, payload, *, stream_generation: int,
+            admitted_revision: int | None = None, subscribe_id=None, observed_at=None, deadline=None) -> None:
+        observed = self._entity_now() if observed_at is None else observed_at
+        options = dict(transport_generation=self._transport_generation,
+            state_generation=self._state_generation, stream_generation=stream_generation,
+            admitted_revision=admitted_revision, subscribe_id=subscribe_id, require_running=True,
+            observed_at=observed, deadline=monotonic() + STATE_OBSERVATION_TTL_S if deadline is None else deadline)
+        await self._state_operation('events', self._project_state,
+            'initial', payload, options, purpose='events')
+        self._state_last_full_refresh = observed
+
+
+    async def _publish_entities_delta(self, payload, *, subscribe_id=None, observed_at=None, deadline=None) -> None:
+        options = dict(transport_generation=self._transport_generation,
+            state_generation=self._state_generation, stream_generation=self._entity_stream_generation,
+            subscribe_id=subscribe_id, require_running=True,
+            observed_at=self._entity_now() if observed_at is None else observed_at,
+            deadline=monotonic() + STATE_OBSERVATION_TTL_S if deadline is None else deadline)
+        await self._state_operation('events', self._project_state,
+            'delta', payload, options, purpose='events')
+
+
+    def _notify_entity_change(self, entity_id, *, historical=False):
+        for callback in tuple(self._state_callbacks):
+            try:
+                value = self.get_entity_observation(entity_id)
+                admitted = (value.exists is True and value.current(self._entity_now())
+                    or historical and value.exists is not False)
+                callback(entity_id, value.state if admitted else None)
+            except Exception as error:
+                logger.debug('HA state callback failed: %s', type(error).__name__)
+
+
     async def _retire_event_attempt(self, ws=None):
         self._events_attempt_generation += 1
+        self._entity_stream_generation += 1
         opening = self._ws_open_tasks.get('events')
         await self._retire_socket('events', ws)
         if opening is not None:
             await asyncio.gather(asyncio.shield(opening), return_exceptions=True)
         await self._retire_socket('events')
+        await self._drain_state_projections('events')
 
 
     async def _refresh_full_state_snapshot(self) -> None:
-        generation, transport = self._state_generation, self._transport_generation
-        states = await self._fetch_all_states_rest()
-        if self._closed or generation != self._state_generation or transport != self._transport_generation:
+        """Explicit legacy bulk publication, sharing the retained REST discipline."""
+        if self._closed or self._state_frame.initialized:
             return
-        if not states:
-            logger.warning('HA state snapshot empty; retaining legacy cache without renewal')
+        deadline = monotonic() + REST_TIMEOUT_BULK
+        try:
+            await self._state_operation('rest', self._refresh_full_state_snapshot_owned, deadline)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError, KeyError):
             return
-        self._state_cache = {state['entity_id']: state for state in states if 'entity_id' in state}
-        self._state_last_full_refresh = time.time()
+
+    async def _refresh_full_state_snapshot_owned(self, deadline) -> None:
+        previous = self._state_frame
+        transport = self._transport_generation
+        snapshot = await self.get_state_snapshot(_deadline=deadline)
+        if (self._closed or transport != self._transport_generation or self._state_frame.initialized
+                or self._state_frame.generation != previous.generation):
+            return
+        if (not snapshot.available or not snapshot.states or snapshot.observed_at is None
+                or snapshot.expires_at is None):
+            return
+        options = dict(transport_generation=transport, deadline=deadline,
+            expected_generation=previous.generation, base=previous)
+        operation = self._project_state('bulk', snapshot, options, purpose='rest')
+        previous = options = None
+        await operation
+        self._state_last_full_refresh = snapshot.observed_at.timestamp()
+
+
 
 
     def _handle_state_changed(self, event: dict) -> None:
-        """Aplicar un event state_changed al cache.
-
-        Event payload shape:
-            {
-              "event_type": "state_changed",
-              "data": {
-                "entity_id": "light.escritorio",
-                "new_state": {"state": "on", ...} | None,
-                "old_state": {...} | None,
-              }
-            }
-        """
-        data = event.get("data", {})
-        entity_id = data.get("entity_id")
-        new_state = data.get("new_state")
-
-        if not entity_id:
+        """Legacy manual history adapter; runtime uses the compact publisher."""
+        if (self._closed or self._state_frame.initialized or not isinstance(event, dict)
+                or any(not task.done() for jobs in self._state_projection_tasks.values() for task in jobs)):
             return
-
-        if new_state is None:
-            # Entity removed/unavailable
-            self._state_cache.pop(entity_id, None)
+        data = event.get('data', {})
+        if not isinstance(data, dict):
+            return
+        entity_id = data.get('entity_id')
+        state = data.get('new_state')
+        if not isinstance(entity_id, str) or state is not None and not isinstance(state, dict):
+            return
+        history = self._state_cache
+        if state is None:
+            history.pop(entity_id, None)
         else:
-            self._state_cache[entity_id] = new_state
+            history[entity_id] = {**state, 'entity_id': entity_id}
+        self._state_cache = history
+        self._notify_entity_change(entity_id, historical=True)
 
-        # Notificar observers sin dejar que un callback roto rompa el loop
-        for cb in self._state_callbacks:
-            try:
-                cb(entity_id, new_state)
-            except Exception as e:
-                logger.debug(f"State callback error: {e}")
 
     def register_state_callback(self, callback) -> None:
         """Registrar un callback `(entity_id, new_state) -> None` para cambios.
@@ -1752,6 +2182,7 @@ class HomeAssistantClient:
         """Terminal admission seal with retained socket/session retirement."""
         if self._close_task is None:
             self._closed = True
+            self._state_projection_close = self._state_projection_work.begin_close()
             self._transport_generation += 1
             self._state_generation += 1
             self._events_attempt_generation += 1
@@ -1772,6 +2203,8 @@ class HomeAssistantClient:
         for ws, purpose in tuple(self._owned_sockets.values()):
             await self._close_socket(ws, purpose)
         await self._drain_transports()
+        if self._state_projection_close is not None:
+            await asyncio.shield(self._state_projection_close)
         for ws, purpose in tuple(self._owned_sockets.values()):
             await self._close_socket(ws, purpose)
         async with self._session_lock:
