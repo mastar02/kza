@@ -1893,3 +1893,71 @@ sin dueño, ramas condicionales y el mapa completo con mute/restore T023/T024.
 T021/T022 siguen `in_progress`, las 29 familias iniciales incompletas y
 C03/C04/C06/C20 sin aceptar. HA resistente de más de 60 segundos y autoridades
 separadas de T047 permanecen intactos; no hay despliegue ni aceptación física.
+
+## Retiro de OpenWakeWord seleccionado
+
+T022-H conserva tres RED genuinos de la fábrica anterior: dos detectores de
+salas y el detector retenido por un consumidor de AudioManager seguían
+referenciando su backend después del cierre. Las tres pruebas pasan con el
+retiro terminal explícito. No se cargó ningún modelo real.
+
+WakeWordDetector reserva admisión por instancia y serializa carga, inferencia,
+reset y callback inline con un RLock. El sello sólo modifica memoria; las
+operaciones ya admitidas terminan sus entradas anidadas. Las nuevas reciben
+`wake_closed`. El único dueño con Context vacío espera el retorno real antes
+de retirar las referencias propias de OpenWakeWord, sesiones custom, callback
+e historial. La reentrada desde worker/closer falla y la cancelación repetida
+del observador conserva el dueño. Las consultas de metadatos usan nombres y
+escalares desacoplados, sin esperar al lock nativo ni tomar referencias del SDK.
+
+La normalización, la detección y las firmas de seis métodos conservan su AST
+tras retirar los wrappers de admisión y lock. El predictor custom conserva el
+cuerpo completo. La carga pasa a ser idempotente; se mantiene la ruta `.onnx`
+por openwakeword.Model y el argumento inference_framework original. No se
+activa la ruta custom que la configuración actual no seleccionaba.
+
+WakeModelOwner registra inmediatamente los detectores reales creados para
+salas, antes de EchoSuppressor/RoomStream, y espera los borrowers de captura
+antes de retirarlos. Queda conectado a privacidad, pipeline, cierre runtime y
+fallback del stack; cubre también construcción parcial. El detector lazy de
+AudioManager pertenece a su worker CaptureRoom: su cierre espera la carga y
+el postludio del consumidor, conserva el campo hasta confirmar el retiro y
+rechaza recarga con `wake_backend_closed`. No se registra dinámicamente desde
+el worker en un owner del event loop. Reset y pausa siguen siendo reutilizables.
+
+Los loops dejan de descartar fallos de los drenajes terminales reales. Observan
+todos los drenajes y las demás limpiezas antes de propagar el fallo. La primera
+suite enfocada dejó dos regresiones al tratar una pausa invalidada por cierre
+como barrera terminal fallida: CaptureRoom ya repite y confirma el reset durante
+su cierre real. Se corrigió esa distinción sin cambiar pruebas, presupuesto ni
+retries; la evidencia inicial de 455 PASS y dos fallos queda preservada. La
+pausa supersedida sigue observada como operación; manda el drenaje terminal.
+
+Las pruebas retienen constructor, inferencia, callback, postludio y reset final
+en ambos cierres, con cancelación repetida de observadores. Verifican weakrefs,
+no recarga, peer independiente, reset reutilizable, fallo parcial y ruta lazy
+real sin abrir dispositivo. Dos subprocesos rechazan el transporte nativo del
+reset: el cierre debe fallar, retener backend y lease de privacidad y dejar que
+el stack retire recursos ajenos. No cancelan dueños ni modifican flags para
+fabricar una confirmación; el proceso conserva la propiedad de la lease fallida.
+
+Pasan 29 regresiones nuevas y 457 pruebas existentes enfocadas. T022-H queda
+verificada localmente en `63b60b4`: full 7554 casos más la xfail conocida
+en 544.04 segundos, con 884 archivos idénticos durante la ejecución.
+Ruff no encuentra hallazgos en `src/` y `tests/`. Evidencia:
+`data/autonomous-roadmap-20261102/t022/h/evidence.json`; verificación:
+`data/autonomous-roadmap-20261102/t022/h/validated/verification.json`.
+
+El SDK openwakeword no está instalado en el prefijo de validación autorizado;
+requirements declara >=0.6.0 y no establece la versión del runtime. La evidencia
+usa wrappers reales con hojas SDK sintéticas y sólo acredita el retiro de sus
+referencias Python propias. No acredita destrucción de todos los pools, hilos,
+sesiones o copias nativas, ni invoca métodos close desconocidos del SDK.
+
+El siguiente corte es Silero por habitación. Siguen abiertos standalone, ramas
+condicionales, copias SDK y el inventario con mute/restore T023/T024. El primer
+fallo memory_prompt_unavailable de G conserva su investigación sin causa
+establecida ni corrección acreditada. T021/T022 permanecen in_progress; el mapa
+inicial de 29 familias y C03/C04/C06/C20 siguen sin aceptar. El incumplimiento HA
+resistente de más de 60 segundos, la separación de autoridades de T047 y los
+requisitos físicos permanecen intactos. No hubo despliegue.
