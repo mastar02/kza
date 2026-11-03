@@ -2138,3 +2138,115 @@ T021/T022, el mapa de 29 familias y C03/C04/C06/C20 siguen abiertos. Se conserva
 el fallo memory_prompt_unavailable de G sin causa ni corrección acreditada y
 el incumplimiento HA resistente de más de 60 segundos. T047 y su separación de
 autoridades permanecen intactos. No hubo despliegue ni aceptación física.
+
+## Retiro de captura standalone de calibración
+
+Dos RED reproducen huecos del harness: un fallo al construir InputStream deja
+el detector cargado sin retirar, y el join de un segundo permite guardar JSONL
+mientras sigue viva la lectura USB. Se conservan fuente, fixture y resultados.
+Este poller propio no es el actor XVF del monolito ya corregido.
+
+### Recibos y fallos parciales
+
+run_capture instala un dueño fuerte antes de load, open y start, y antes de
+construir o entrar en el stream. El cierre sella nuevas admisiones y filas, pide stop al
+poller y confirma stream, hilo nativo y callbacks admitidos. Sólo después retira
+el detector y las referencias/cache del controlador. Las variables PCM/driver
+y resultados USB se sueltan antes del recibo de fin; una lectura o predicción
+que termina después del sello no publica su fila. Callbacks retenidos después
+del cierre rechazan trabajo nuevo.
+
+El contexto de sounddevice usa stop/close con errores ignorados. El dueño hace
+la entrada normal y llama stop/close con ignore_errors=False, sin repetir close
+ni usar ptr=NULL como prueba de éxito después de un error. Un stop fallido con
+close confirmado mantiene el error de captura; una retirada incierta conserva
+su dueño en el registro de proceso y bloquea snapshot y éxito. Un fallo no
+impide intentar las otras limpiezas disponibles.
+
+La guarda exige CPython 3.13 y la forma del handle nativo antes de start.
+ident=None y _started=False no prueban ausencia de arranque: un bootstrap
+pendiente se une por el handle verificado. El finally del target no sustituye
+al join nativo. Las interrupciones durante join/espera de callbacks se guardan,
+se espera la salida real y luego se propagan. Un start sin recibo suficiente
+retiene al dueño hasta la salida del proceso, sin reiniciar flags ni fingir
+cierre exitoso; ese caso se prueba en un subproceso.
+
+### Callbacks y errores retenidos
+
+La primera suite nueva pasó 20/21: el error de arranque quedaba oculto por la
+incertidumbre de cierre. Ahora los fallos ordinarios se agrupan con el original;
+los controles conservan prioridad. Se conserva la corrida fallida. Ruff señaló
+una asignación de limpieza a un parámetro no usado: del libera esas referencias
+antes de notificar el drenaje del callback.
+
+La revisión encontró dos RED del callback: el SDK podía absorber un fallo
+ordinario o control y permitir JSONL/éxito. El dueño registra un descriptor nuevo, sella filas
+y solicita parada; el caller propaga el fallo después de drenar. No guarda el
+traceback, contexto o mensaje del SDK, que podrían retener PCM/modelos. Se
+prueba PCM liberado con el error aún vivo, tanto en fallo ordinario como control.
+Los fallos que escapan del poller usan el mismo puente, con OSError ordinario;
+el error USB interno conserva su camino fail-open. Otros dos RED
+mostraron pérdida del estado SystemExit: se preserva su código entero/None y
+se convierte un payload no entero a exit 1, sin retener su mensaje.
+
+### Primera full y precondición de la prueba de sustitución
+
+La primera full conserva 7645 PASS, un fallo y una xfail con 896 archivos
+intactos. El fallo fue antes del segundo comando: TIMEOUT_TEXT en lugar del
+ERROR_TEXT esperado por truncamiento. El intervalo routing→GET /models no
+identifica inicio del reloj de lectura ni fase de la demora; la causa permanece
+sin establecer. Los dos modos pasaron aislados, sin acreditar una corrección.
+
+La prueba de sustitución prepara dos clientes HTTP reales fuera de su reloj de
+setup y conserva todas las aserciones originales, incluido ERROR_TEXT. Siguen
+reales y presupuestados el despacho/preparación por request, la sesión y HTTP;
+preparar clientes no garantiza ausencia de demora del pool. Se cierra también
+cualquier cliente preparado no admitido. No cambió el código de respuestas ni
+sus presupuestos. Dos casos nuevos retienen el retorno de la fábrica del cliente,
+en su worker nativo, más allá del mismo límite y exigen
+TIMEOUT_TEXT y ningún prompt, esperan cierre/generación reales y recién entonces
+sustituyen el feedback aún retenido. Ambos routers verifican una sola voz de
+error, salida vieja abortada, éxito nuevo y PCM exclusivamente nuevo. Se retira
+el supuesto incidental de constructor rápido de esa prueba, sin aceptar otro
+texto de error ni afirmar que se haya explicado el intervalo de la primera full.
+
+La segunda full terminó incompleta por ENOSPC: el reporter falló al hacer flush
+y JUnit quedó vacío. El log contiene 2089 líneas PASS y nueve ERROR sin tracebacks
+completos; no son métricas finales ni permiten atribuir esos nueve errores.
+Los 896 archivos seguían intactos. Después había unos 22 GiB disponibles y pasó
+una prueba de escritura/fsync/lectura. No se borraron datos ni temporales.
+La corrida final usa la misma fuente, otro directorio y muestras externas de
+espacio e inodos en destino y /tmp. No se atribuye la presión transitoria a un
+proceso o cuenta, ni se toma la corrida incompleta como verificación aprobada.
+
+La telemetría final conserva 574 muestras y un mínimo de
+20.78 GiB disponibles, sin interrupción del monitor.
+
+### Verificación y continuidad de calibración
+
+Pasan 34 regresiones nuevas y 33 casos existentes enfocados. Se usan hilos y
+handles reales con hojas USB/audio/modelo sintéticas: read/callback/bootstrap
+retenidos, fallos de setup/cierre, interrupciones, guardas de runtime y errores
+de mkdir/write. Un caso mantiene WakeWordDetector real con sólo el modelo SDK
+sustituido. RMS, máximo wake, metadatos, puerto/canal, CLI, análisis y JSONL
+conservan sus contratos; no se ampliaron presupuestos para obtener verde.
+
+T022-K queda verificada localmente en `72f7eb2`. Full: 7648 casos
+más la xfail conocida en 565.02 segundos, con 896
+archivos idénticos durante la corrida. Evidencia privada:
+`data/autonomous-roadmap-20261102/t022/k/evidence.json`.
+
+El constructor SDK que falla sin devolver objeto no entrega un handle público
+que este caller pueda retirar: se sellan callbacks y se retiran previos conocidos,
+sin acreditar sus asignaciones internas. La revisión sounddevice 0.5.5 corresponde
+al venv de pruebas, no establece la versión de producción. invalidate_device
+retira referencias/cache USB, sin probar disposición física de PyUSB; las hojas
+sintéticas tampoco prueban la disposición física de PortAudio.
+No hubo modelos reales, hardware ni despliegue.
+
+Sigue el benchmark STT A/B: sus closures ocultan dueños y no retiran cargas o
+warmups parciales. Enrollment, ambient/latency, copias SDK y matriz productor–copia–
+destino para T023/T024 siguen pendientes. T021/T022, las 29 familias y los criterios
+C03/C04/C06/C20 permanecen abiertos. G memory_prompt_unavailable sigue sin causa
+ni corrección acreditada; HA resistente a cancelación por más de 60 s sigue
+incumplido. T047 conserva verified_local y sus autoridades separadas.
