@@ -1304,7 +1304,7 @@ implica un fallo; un cierre local conocido conserva ese hecho aunque venza la
 última observación remota. Los adaptadores antiguos sin estos DTO conservan su
 contrato de métricas anterior.
 
-T021 sigue `in_progress`: falta resolver el handoff entre snapshot y suscripción,
+Al cerrar T021-A quedaban pendientes el handoff entre snapshot y suscripción,
 la frescura de la caché heredada y la política de fallos repetidos de eventos.
 Los presupuestos de observación de 15 segundos y la espera máxima de 30 no
 demuestran por sí solos una recuperación en 45 segundos: el retiro real puede
@@ -1323,3 +1323,65 @@ T021 conserva su estado `in_progress`; el plan de continuación está en
 `data/autonomous-roadmap-20261102/t021/b-handoff-review.json`. La integración
 NEXO de T047 sigue verificada localmente dentro del mismo goal, conservando
 separadas identidad acústica, personas, cuentas, consentimiento y permisos.
+
+## Flujo coherente y vigencia de las entidades HA
+
+T021-B sustituye el arranque REST seguido de suscripción por un solo flujo
+`subscribe_entities`: exige el ACK con el ID exacto y su primer inventario
+validado antes de anunciar sincronización. El inventario inicial vacío prueba
+ausencia; un fallo conserva historia y un resultado REST heredado vacío no
+renueva las observaciones anteriores.
+Las actualizaciones compactas se reducen sobre su propia base inmutable,
+separada de las lecturas REST puntuales. Una respuesta tardía no puede sustituir
+una revisión posterior. Si un mensaje WS almacenado precede al estado REST ya
+aceptado, avanza la base del reductor y conserva el valor y las fechas REST;
+los conflictos sin orden demostrable quedan desconocidos.
+
+Cada entidad conserva presencia o ausencia, fuente, instante, vencimiento,
+intento y generación/revisión. La vigencia es de seis segundos y procede de
+la recepción original: serializar, autenticar otro canal o terminar un cálculo
+no la renueva. `ha-ws-entities`, `ha-rest-entity` y `ha-rest-states` identifican
+respectivamente el flujo, una lectura puntual y el inventario REST. Los getters
+sin I/O sólo entregan datos vigentes; una caché antigua sin fecha no prueba
+disponibilidad. `has_domain` distingue un resultado negativo observado de uno
+desconocido. Los fallos de una lectura puntual conservan los datos y las fechas
+anteriores y retiran su vigencia, incluso al agotarse la capacidad para guardar
+otro ID.
+
+Decodificar, validar y reducir se ejecuta fuera del event loop con un único
+trabajo nativo retenido hasta su salida real. Un coordinador serializa el
+cálculo y su commit en el loop; cancelar al observador no libera su capacidad.
+La parada de eventos espera sus propios trabajos y el cierre terminal espera
+también REST antes de cerrar la sesión HTTP. Se mantienen las lecturas REST
+concurrentes usadas por grupos: hasta 513 admisiones y 128 operaciones HTTP,
+con plazo contado desde la entrada. El cupo compartido de cuerpos es de 32 MiB;
+cada lector reserva un cuerpo completo antes de empezar y retiene sus bytes
+hasta terminar el cálculo. Así, los cuerpos parciales no pueden consumir todo
+el cupo sin que alguno pueda completarse. Persisten los límites de 4 MiB por
+mensaje, 4096 entidades y 16 MiB de caché canónica.
+
+El GET heredado `/api/entities/{entity_id}` ahora espera la lectura real y
+entrega el cuerpo canónico con metadatos de fuente y vencimiento, sin caché
+HTTP. Devuelve 200 para presencia vigente, 404 para ausencia observada y 503
+cuando la fuente no permite afirmarlo. Conserva `diagnostics:read`: los roles
+Hogar y Evaluador no obtienen acceso por esta corrección. La autoridad original
+se comprueba después de la lectura y al entregar la respuesta. Un segundo
+control comprueba la vigencia de la fuente en headers/body; su vencimiento no
+se confunde con una sesión retirada.
+
+La unidad pasó 143 casos puros del reductor, 369 específicos, 1126 cruzados y
+77 finales de propiedad/HTTP/flujo. La suite completa pasó 7398 pruebas con la
+única xfail conocida en 505,38 segundos; los 858 archivos congelados conservaron
+sus huellas. Ruff y los 13 casos del verificador del roadmap pasaron.
+Código: `e17c3b0`. Evidencia local:
+`data/autonomous-roadmap-20261102/t021/b/evidence.json`.
+
+En el diagnóstico reproducible de 4096 entidades, la actualización pasó de
+194,226 a 23,946 ms y la mayor pausa del event loop de 194,2 a 10,249 ms. Es
+una medición sintética con el cliente real y conexiones simuladas, sin otra
+suite concurrente; no constituye aceptación de C03 ni prueba física.
+
+T021 continúa `in_progress`: faltan la política de tres fallos de la misma causa
+y la prueba temporal del presupuesto completo de recuperación, incluido el
+retiro real. C06/C20 siguen sin aceptar; esta unidad no acredita HA físico,
+60 segundos ni 72 horas.

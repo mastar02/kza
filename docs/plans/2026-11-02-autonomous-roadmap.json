@@ -1093,12 +1093,14 @@
       "inclusion": "required",
       "status": "in_progress",
       "implementation_commits": [
-        "8b7c5660ebfd4b0c36f55fe9f2bd81d2d3624fd9"
+        "8b7c5660ebfd4b0c36f55fe9f2bd81d2d3624fd9",
+        "e17c3b09b9f55d19d1a3992da1a66b4055ef86e9"
       ],
       "evidence": [
-        "data/autonomous-roadmap-20261102/t021/a-evidence.json"
+        "data/autonomous-roadmap-20261102/t021/a-evidence.json",
+        "data/autonomous-roadmap-20261102/t021/b/evidence.json"
       ],
-      "next_action": "T021-A verificada localmente en 8b7c566: arranque y paradas encadenadas por generación, candidatos/cierres retenidos, canales separados, ID exacto y salud con fuente/fecha/vencimiento propios. Pasan 43 casos nuevos, 148 específicos, 1082 cruzados y full 7188 más una xfail conocida; 853 archivos intactos y Ruff sin hallazgos. T021 sigue in_progress: T021-B debe resolver decoder/stream coherente snapshot-suscripción, TTL de entidades y GET legacy esperado, tres fallos repetidos y prueba temporal completa. C06/C20 no evaluados; sin HA real, despliegue ni garantía física de 60 s."
+      "next_action": "T021-B verificada localmente en e17c3b0: flujo subscribe_entities coherente, observaciones por entidad con CAS y fechas originales, cálculo nativo retenido y GET diagnóstico esperado con permisos y vencimiento separados. Pasan 369 específicos, 1126 cruzados, 77 finales de propiedad/HTTP/flujo y la suite completa de 7398 más una xfail conocida; 858 archivos intactos y Ruff sin hallazgos. T021 sigue in_progress: B3 debe resolver tres fallos de la misma causa, estrategia/circuito y reset confiable, y probar el presupuesto temporal completo con dependencia recuperada y retiro real. C06/C20 no evaluados; sin HA real, despliegue ni garantía física de 60 s."
     },
     {
       "id": "T022",
@@ -2296,7 +2298,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T020/recovery-heartbeat-ownership",
+    "last_verified_unit": "T021-B/coherent-entity-stream-and-native-ownership",
     "user_priority_after_admin_unit": "T047"
   }
 }
