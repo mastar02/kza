@@ -6,6 +6,9 @@ Soporta streaming para menor latencia percibida.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import contextmanager
+from contextvars import Context
 import logging
 import math
 import time
@@ -635,7 +638,167 @@ class XTTS:
         self.speaker_wav = speaker_wav
 
 
-class KokoroTTS:
+class _TTSLease:
+    def __init__(self, owner):
+        self.owner = owner
+        self.active = True
+
+
+class _TTSRetirementError(RuntimeError):
+    """A fixed lifecycle failure, without retaining a native exception."""
+
+
+class _TTSLifecycle:
+    """Per-instance admission; a suspended stream retains an independent lease."""
+
+    def _tts_initialize(self):
+        self._tts_condition = threading.Condition()
+        self._tts_local = threading.local()
+        self._tts_active = 0
+        self._tts_sealed = False
+        self._tts_close_started = False
+        self._tts_close_owner = None
+        self._tts_close_done = threading.Event()
+        self._tts_failure = None
+        self._tts_closing = None
+        self._tts_retained_iterators = []
+
+    def _tts_current(self):
+        lease = getattr(self._tts_local, "lease", None)
+        return lease if lease is not None and lease.owner is self and lease.active else None
+
+    def _tts_reserve(self, *, independent=False):
+        current = self._tts_current()
+        if current is not None and not independent:
+            return current, False
+        with self._tts_condition:
+            if self._tts_sealed and current is None:
+                raise RuntimeError("tts_closed")
+            self._tts_active += 1
+            return _TTSLease(self), True
+
+    @contextmanager
+    def _tts_entered(self, lease):
+        previous = getattr(self._tts_local, "lease", None)
+        self._tts_local.lease = lease
+        try:
+            yield
+        finally:
+            self._tts_local.lease = previous
+
+    def _tts_release(self, lease):
+        with self._tts_condition:
+            if lease.active:
+                lease.active = False
+                self._tts_active -= 1
+                self._tts_condition.notify_all()
+
+    @contextmanager
+    def _tts_admit(self):
+        lease, owned = self._tts_reserve()
+        try:
+            with self._tts_entered(lease):
+                yield
+        finally:
+            if owned:
+                self._tts_release(lease)
+
+    def _tts_close_iterator(self, source):
+        close = getattr(source, "close", None)
+        if close is not None:
+            try:
+                close()
+            except BaseException:
+                # Failed close is not proof that the delegated generator retired.
+                with self._tts_condition:
+                    self._tts_retained_iterators.append(source)
+                    self._tts_sealed = True
+                    self._tts_condition.notify_all()
+                raise
+
+    def _tts_require_retired_iterators(self):
+        with self._tts_condition:
+            if self._tts_retained_iterators:
+                raise _TTSRetirementError("tts_iterator_close_failed")
+
+    def _tts_require_close_caller(self):
+        if self._tts_current() is not None:
+            raise RuntimeError("tts_close_from_worker")
+        with self._tts_condition:
+            if self._tts_close_owner is threading.current_thread() and not self._tts_close_done.is_set():
+                raise RuntimeError("tts_close_from_owner")
+
+    def request_close(self) -> None:
+        """Seal new admission using memory only; never wait for model/native work."""
+        with self._tts_condition:
+            self._tts_sealed = True
+            self._tts_condition.notify_all()
+
+    def wait_closed(self) -> None:
+        """Join actual operations/stream exits synchronously, outside the event loop."""
+        self._tts_require_close_caller()
+        self.request_close()
+        with self._tts_condition:
+            own_close = not self._tts_close_started
+            if own_close:
+                self._tts_close_started = True
+                self._tts_close_owner = threading.current_thread()
+        if own_close:
+            failure = None
+            try:
+                with self._tts_condition:
+                    while self._tts_active:
+                        self._tts_condition.wait()
+                self._tts_release_resources()
+            except _TTSRetirementError as error:
+                failure = str(error)
+            except BaseException:
+                failure = "tts_close_failed"
+            with self._tts_condition:
+                self._tts_failure = failure
+                self._tts_close_owner = None
+                self._tts_close_done.set()
+        else:
+            self._tts_close_done.wait()
+        if self._tts_failure is not None:
+            raise RuntimeError(self._tts_failure)
+
+    def close(self) -> None:
+        """Synchronous retained retirement; async callers use begin_close/aclose."""
+        self.wait_closed()
+
+    def begin_close(self) -> asyncio.Task:
+        """Return the retained owner; observe via shield/aclose, never cancel it."""
+        self._tts_require_close_caller()
+        loop = asyncio.get_running_loop()
+        self.request_close()
+        with self._tts_condition:
+            if self._tts_closing is None:
+                async def finish():
+                    # Publish the owner outside the condition, even with eager tasks.
+                    await asyncio.sleep(0)
+                    await asyncio.to_thread(self.wait_closed)
+
+                self._tts_closing = loop.create_task(finish(), context=Context())
+                self._tts_closing.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception(), context=Context(),
+                )
+            return self._tts_closing
+
+    async def aclose(self) -> None:
+        closing = self.begin_close()
+        cancelled = False
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                cancelled = True
+        closing.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+
+class KokoroTTS(_TTSLifecycle):
     """
     TTS rapido con Kokoro-82M (~1.5GB VRAM).
     Para respuestas cortas de domotica: "Listo", "Luz encendida", etc.
@@ -655,9 +818,17 @@ class KokoroTTS:
         self.lang_code = lang_code
         self._model = None
         self.sample_rate = 24000
+        self._tts_initialize()
+        self._model_lock = threading.RLock()
 
     def load(self):
-        """Cargar Kokoro"""
+        """Load once under native ownership; never reload a sealed instance."""
+        with self._tts_admit():
+            with self._model_lock:
+                if self._model is None:
+                    self._load_model()
+
+    def _load_model(self):
         try:
             import kokoro
 
@@ -688,44 +859,73 @@ class KokoroTTS:
         segmento según split_pattern). Concatenamos los chunks y pasamos
         el audio a np.ndarray.
         """
-        if self._model is None:
-            self.load()
-
-        voice = voice or self.default_voice
-        start = time.perf_counter()
-        chunks: list[np.ndarray] = []
-        for result in self._model(text, voice=voice):
-            chunk = result.audio
-            if chunk is None:
-                continue
-            # Result.audio es torch.Tensor (float32). Convertir a np.
-            if hasattr(chunk, "cpu"):
-                chunk = chunk.cpu().numpy()
-            chunks.append(chunk)
-        if not chunks:
-            audio = np.zeros(0, dtype=np.float32)
-        elif len(chunks) == 1:
-            audio = chunks[0]
-        else:
-            audio = np.concatenate(chunks)
-        elapsed_ms = (time.perf_counter() - start) * 1000
-
-        logger.debug(f"Kokoro TTS ({elapsed_ms:.0f}ms): {text[:30]}...")
-        return audio, elapsed_ms
+        source = result = chunk = chunks = audio = None
+        try:
+            with self._tts_admit():
+                with self._model_lock:
+                    if self._model is None:
+                        self.load()
+                    voice = voice or self.default_voice
+                    start = time.perf_counter()
+                    chunks = []
+                    try:
+                        source = iter(self._model(text, voice=voice))
+                        for result in source:
+                            chunk = result.audio
+                            if chunk is None:
+                                continue
+                            if hasattr(chunk, "cpu"):
+                                chunk = chunk.cpu().numpy()
+                            chunks.append(chunk)
+                        if not chunks:
+                            audio = np.zeros(0, dtype=np.float32)
+                        elif len(chunks) == 1:
+                            audio = chunks[0]
+                        else:
+                            audio = np.concatenate(chunks)
+                        elapsed_ms = (time.perf_counter() - start) * 1000
+                        logger.debug("Kokoro TTS completed in %.0fms", elapsed_ms)
+                        return audio, elapsed_ms
+                    finally:
+                        if source is not None:
+                            self._tts_close_iterator(source)
+        finally:
+            text = voice = source = result = chunk = chunks = audio = None
 
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
-        """Sintetizar en streaming (Kokoro genera rapido, yield en chunks)."""
-        audio, _ = self.synthesize(text)
-        chunk_size = 4096
-        for i in range(0, len(audio), chunk_size):
-            yield audio[i:i + chunk_size]
+        """Admit on first next; retain computed PCM until exhaustion or close.
+
+        Closing before first next owns no lease and starts no inference.
+        """
+        lease = audio = None
+        try:
+            lease, _ = self._tts_reserve(independent=True)
+            with self._tts_entered(lease):
+                audio, _ = self.synthesize(text)
+            text = None
+            for i in range(0, len(audio), 4096):
+                yield audio[i:i + 4096]
+        finally:
+            text = audio = None
+            if lease is not None:
+                self._tts_release(lease)
 
     def speak(self, text: str, blocking: bool = True):
         """Sintetizar y reproducir"""
-        audio, _ = self.synthesize(text)
-        sd.play(audio, samplerate=self.sample_rate)
-        if blocking:
-            sd.wait()
+        audio = None
+        try:
+            with self._tts_admit():
+                audio, _ = self.synthesize(text)
+                sd.play(audio, samplerate=self.sample_rate)
+                if blocking:
+                    sd.wait()
+        finally:
+            text = audio = None
+
+    def _tts_release_resources(self):
+        self._tts_require_retired_iterators()
+        with self._model_lock:
+            self._model = None
 
 
 class Qwen3TTS:
@@ -886,7 +1086,7 @@ class HybridTTS:
             sd.wait()
 
 
-class DualTTS:
+class DualTTS(_TTSLifecycle):
     """
     TTS dual: Kokoro para fast path, Qwen3 para conversacional.
 
@@ -901,20 +1101,23 @@ class DualTTS:
         qwen3_config: dict = None,
         quality_threshold: int = 50,
     ):
+        self._tts_initialize()
         self.kokoro = KokoroTTS(**(kokoro_config or {}))
         self.qwen3 = Qwen3TTS(**(qwen3_config or {})) if qwen3_config else None
+        self._owned_tts_engines = (self.kokoro,) + ((self.qwen3,) if self.qwen3 is not None else ())
         self.quality_threshold = quality_threshold
         self.sample_rate = 24000  # Both engines use 24kHz
 
     def load(self):
         """Cargar motores TTS disponibles."""
-        self.kokoro.load()
-        if self.qwen3:
-            try:
-                self.qwen3.load()
-            except Exception as e:
-                logger.warning(f"Qwen3-TTS no disponible, usando solo Kokoro: {e}")
-                self.qwen3 = None
+        with self._tts_admit():
+            self.kokoro.load()
+            if self.qwen3:
+                try:
+                    self.qwen3.load()
+                except Exception as e:
+                    logger.warning(f"Qwen3-TTS no disponible, usando solo Kokoro: {e}")
+                    self.qwen3 = None
 
     def _select_engine(self, text: str) -> str:
         """Seleccionar motor segun longitud del texto."""
@@ -931,27 +1134,77 @@ class DualTTS:
         Returns:
             (audio, tiempo_ms, motor_usado)
         """
-        if self.qwen3 and (force_quality or self._select_engine(text) == "qwen3"):
-            audio, elapsed = self.qwen3.synthesize(text)
-            return audio, elapsed, "qwen3"
-
-        audio, elapsed = self.kokoro.synthesize(text)
-        return audio, elapsed, "kokoro"
+        audio = None
+        try:
+            with self._tts_admit():
+                if self.qwen3 and (force_quality or self._select_engine(text) == "qwen3"):
+                    audio, elapsed = self.qwen3.synthesize(text)
+                    return audio, elapsed, "qwen3"
+                audio, elapsed = self.kokoro.synthesize(text)
+                return audio, elapsed, "kokoro"
+        finally:
+            text = audio = None
 
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
-        """Streaming delegado al motor seleccionado."""
-        engine = self._select_engine(text)
-        if engine == "qwen3" and self.qwen3:
-            yield from self.qwen3.synthesize_stream(text)
-        else:
-            yield from self.kokoro.synthesize_stream(text)
+        """Admit on first next and retain the delegated generator's real exit.
+
+        Closing before first next owns no lease and starts no inference.
+        """
+        lease = source = chunk = engine = None
+        try:
+            lease, _ = self._tts_reserve(independent=True)
+            with self._tts_entered(lease):
+                engine = self.qwen3 if self._select_engine(text) == "qwen3" and self.qwen3 else self.kokoro
+                source = iter(engine.synthesize_stream(text))
+            text = None
+            while True:
+                try:
+                    with self._tts_entered(lease):
+                        chunk = next(source)
+                except StopIteration:
+                    break
+                yield chunk
+        finally:
+            try:
+                if source is not None:
+                    with self._tts_entered(lease):
+                        self._tts_close_iterator(source)
+            finally:
+                text = source = chunk = engine = None
+                if lease is not None:
+                    self._tts_release(lease)
 
     def speak(self, text: str, blocking: bool = True):
         """Sintetizar y reproducir."""
-        audio, _, engine = self.synthesize(text)
-        sd.play(audio, samplerate=self.sample_rate)
-        if blocking:
-            sd.wait()
+        audio = None
+        try:
+            with self._tts_admit():
+                audio, _, _ = self.synthesize(text)
+                sd.play(audio, samplerate=self.sample_rate)
+                if blocking:
+                    sd.wait()
+        finally:
+            text = audio = None
+
+    def _tts_release_resources(self):
+        self._tts_require_retired_iterators()
+        unsupported = False
+        # A parent lease may still be about to enter a child. Seal children only
+        # after the parent drain, preserving already admitted delegation/streams.
+        for engine in self._owned_tts_engines:
+            if isinstance(engine, _TTSLifecycle):
+                engine.close()
+            else:
+                unsupported = True
+        if unsupported:
+            # Optional Qwen3 has no reviewed retirement API in this unit.
+            # Retain its references and report failure instead of claiming closure.
+            raise _TTSRetirementError("tts_backend_close_unsupported")
+        if not any(self.kokoro is engine for engine in self._owned_tts_engines):
+            self.kokoro = None
+        if not any(self.qwen3 is engine for engine in self._owned_tts_engines):
+            self.qwen3 = None
+        self._owned_tts_engines = ()
 
 
 def create_tts(config: dict) -> PiperTTS | XTTS | HybridTTS | DualTTS:

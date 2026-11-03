@@ -49,27 +49,26 @@ class ApplicationFactories:
     preflight: Callable[[], None] | None = None
 
 
-class STTExecutorOwner:
-    """Own graph-created Whisper executors after their shared borrowers drain."""
+class _ModelResourceOwner:
+    """Own graph-created models after their shared borrowers drain."""
 
-    def __init__(self) -> None:
+    def __init__(self, model_types: tuple[type, ...]) -> None:
+        self._model_types = model_types
         self._models: dict[int, Any] = {}
         self._borrowers: list[Callable[[], asyncio.Task]] = []
         self._closing: asyncio.Task | None = None
 
     def add_model(self, model: Any) -> None:
-        """Register an actual Whisper adapter immediately after construction."""
-        from src.stt.whisper_fast import FastWhisperSTT
-
+        """Register a supported model immediately after construction."""
         if self._closing is not None:
-            raise RuntimeError("stt_executor_owner_closed")
-        if issubclass(type(model), FastWhisperSTT):
+            raise RuntimeError("model_resource_owner_closed")
+        if issubclass(type(model), self._model_types):
             self._models[id(model)] = model
 
     def add_borrower(self, begin_close: Callable[[], asyncio.Task]) -> None:
         """Register the actual drain of a component using a shared adapter."""
         if self._closing is not None:
-            raise RuntimeError("stt_executor_owner_closed")
+            raise RuntimeError("model_resource_owner_closed")
         if begin_close not in self._borrowers:
             self._borrowers.append(begin_close)
 
@@ -117,6 +116,24 @@ class STTExecutorOwner:
             raise asyncio.CancelledError
 
 
+class STTExecutorOwner(_ModelResourceOwner):
+    """Own graph-created Whisper executors and their shared borrowers."""
+
+    def __init__(self) -> None:
+        from src.stt.whisper_fast import FastWhisperSTT
+
+        super().__init__((FastWhisperSTT,))
+
+
+class TTSModelOwner(_ModelResourceOwner):
+    """Own the selected Kokoro/Dual model after native output retires."""
+
+    def __init__(self) -> None:
+        from src.tts.piper_tts import DualTTS, KokoroTTS
+
+        super().__init__((KokoroTTS, DualTTS))
+
+
 @dataclass(frozen=True)
 class ApplicationModels:
     """The exact model instances used by command processing and warmup."""
@@ -157,6 +174,7 @@ class ApplicationGraph:
     ambient_path: Any = None
     nightly_trainer: Any = None
     stt_executors: STTExecutorOwner | None = None
+    tts_models: TTSModelOwner | None = None
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     async def warmup(self) -> None:
@@ -249,6 +267,8 @@ class ApplicationGraph:
         async with AsyncExitStack() as stopping:
             if self.stt_executors is not None:
                 stopping.push_async_callback(self.stt_executors.aclose)
+            if self.tts_models is not None:
+                stopping.push_async_callback(self.tts_models.aclose)
             stopping.push_async_callback(self.pipeline.stop)
             if self.ambient_path is not None:
                 stopping.push_async_callback(_stop_task, self.ambient_path, ambient_task)

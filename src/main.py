@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from src.application import ApplicationFactories, ApplicationGraph, ApplicationModels, STTExecutorOwner
+from src.application import ApplicationFactories, ApplicationGraph, ApplicationModels, STTExecutorOwner, TTSModelOwner
 from src.core.settings_schema import (
     DEFAULT_LOCAL_LLM_GATEWAY,
     check_unresolved_env_vars,
@@ -430,8 +430,12 @@ async def build_application(
         stt_executors.add_model(shadow_stt)
         logger.info(f"STT shadow habilitado: engine={_shadow_engine} (A/B en vivo)")
 
+    # Retain the model even if output or a later factory cannot be constructed.
+    tts_models = TTSModelOwner()
+    shutdown.push_async_callback(tts_models.aclose)
     # Text-to-Speech
     tts = (factories.tts or create_tts)(config.get("tts", {}))
+    tts_models.add_model(tts)
 
     # Vector Database — embedder_model y embedder_device son obligatorios.
     # Fuente de verdad: settings.yaml § embeddings (cuda:0, BAAI/bge-m3).
@@ -610,6 +614,7 @@ async def build_application(
     privacy_services = await build_privacy_services(config, shutdown=shutdown)
     privacy_services.add_borrower(chroma.begin_close)
     privacy_services.add_borrower(stt_executors.begin_close)
+    privacy_services.add_borrower(tts_models.begin_close)
     memory_services = await build_memory_services(config, shutdown=shutdown, privacy=privacy_services)
     memory_manager = memory_services.manager if memory_services is not None else None
     erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
@@ -1326,6 +1331,7 @@ async def build_application(
         hooks=hooks, before_handler_warn_ms=self_warn_ms, user_manager=user_manager,
         ha_client=ha_client, home_actions=home_action_service, reminder_store=reminder_store,
         presence_detector=presence_detector, reminder_wake_event=reminder_wake_event,
+        register_output=tts_models.add_borrower,
     )
     response_handler = voice_services.responses
     reminder_scheduler = voice_services.reminders
@@ -1814,7 +1820,7 @@ async def build_application(
         close_dependencies=(
             ((dashboard.admin_work.begin_close,) if dashboard is not None else ())
             + ((multi_room_loop.begin_close,) if multi_room_loop is not None else ())
-            + (stt_executors.begin_close,)
+            + (stt_executors.begin_close, tts_models.begin_close)
         ),
     )
 
@@ -1830,7 +1836,7 @@ async def build_application(
         models=ApplicationModels(stt, tts, chroma, speaker_identifier, emotion_detector),
         warmup_models=_warmup_models, presence_detector=presence_detector,
         ambient_path=ambient_path, nightly_trainer=nightly_trainer,
-        stt_executors=stt_executors,
+        stt_executors=stt_executors, tts_models=tts_models,
     )
 
 

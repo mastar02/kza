@@ -10,8 +10,10 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from contextvars import Context, ContextVar
 from dataclasses import dataclass, field
 
+from src.core.owned_work import OwnedBlockingWork
 from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.core.voice_delivery import (
     DeliveryState, GenerationState, ResponseBudgets, ResponseResult, ResponseStage, ResponseTimedOut,
@@ -43,6 +45,8 @@ class _Session:
     queue: deque = field(default_factory=deque)
     done: bool = False
     player: StreamingAudioPlayer | None = None
+    native_pending: bool = False
+    abort_task: asyncio.Task | None = None
     delivery: DeliveryState = DeliveryState.COMPLETE
     error: str | None = None
     spoken: int = 0
@@ -110,6 +114,13 @@ class ResponseHandler:
         self._shutdown_task: asyncio.Task | None = None
         self._controllers: dict[int, _Session] = {}
         self._workers: dict[int, _Session] = {}
+        self._native_work = OwnedBlockingWork(capacity=1)
+        self._native_closing: asyncio.Task | None = None
+        self._native_tasks: dict[asyncio.Task, tuple[_Session, threading.Event]] = {}
+        self._callback_scopes: dict[object, int] = {}
+        self._after_context = ContextVar("response_after_owner", default=False)
+        self._hook_tasks: dict[asyncio.Task, int] = {}
+        self._failed_barriers: set[int] = set()
         self._generation_tasks: set[asyncio.Task] = set()
         self._retained_generations: set[asyncio.Task] = set()
         self._abort_tasks: set[asyncio.Task] = set()
@@ -218,58 +229,232 @@ class ResponseHandler:
         return bool(targets)
 
     def get_delivery_status(self) -> dict:
-        """Report actual retained resources, including cancelled native workers."""
+        """Report retained resources, including actual native and callback receipts."""
         with self._ownership:
             return {
                 "closed": self._closed, "pending": len(self._pending),
                 "controllers": len(self._controllers), "workers": len(self._workers),
-                "generations": sum(not task.done() for task in self._generation_tasks),
-                "blocked_generations": sum(source.sync_busy for source in self._generation_sources),
-                "aborts": sum(not task.done() for task in self._abort_tasks),
+                "generations": sum(not t.done() for t in self._generation_tasks),
+                "blocked_generations": sum(s.sync_busy for s in self._generation_sources),
+                "aborts": sum(not t.done() for t in self._abort_tasks),
+                "native_calls": len(self._native_tasks),
+                "native_operations": self._native_work.status()['operations'],
+                "native_retirements": int(self._native_closing is not None and not self._native_closing.done()),
+                "callbacks": len(self._callback_scopes),
+                "hook_tasks": sum(not t.done() for t in self._hook_tasks),
+                "failed_barriers": len(self._failed_barriers),
             }
 
     def retained_delivery_scopes(self) -> frozenset[int]:
-        """Return content-free lifetime tokens, including late workers and aborts."""
+        """Return content-free lifetime tokens through all retained receipts."""
         with self._ownership:
             return frozenset(
                 [s.scope_id for s in (*self._controllers.values(), *self._workers.values())]
+                + [s.scope_id for s, _ in self._native_tasks.values()]
+                + list(self._callback_scopes.values()) + list(self._hook_tasks.values())
+                + list(self._failed_barriers)
                 + [scope for task, scope in self._abort_scopes.items() if not task.done()]
             )
 
     def _controller_finished(self, session: _Session) -> None:
         with self._ownership:
             self._controllers.pop(id(session), None)
+            if session in self._pending:
+                self._pending.remove(session)
+            if not session.native_pending:
+                self._workers.pop(id(session), None)
+                if self._owner is session:
+                    self._owner = None
+            self._ownership.notify_all()
+
+    def _start_native(self, session: _Session, function, *args) -> asyncio.Task:
+        exited = threading.Event()
+
+        def invoke_native():
+            try:
+                return function(*args)
+            finally:
+                exited.set()
+
+        async def invoke():
+            # Register before an eager factory can dispatch actual native work.
+            await asyncio.sleep(0)
+            if session.cancelled.is_set():
+                exited.set()
+                return None
+            return await self._native_work.run(invoke_native)
+
+        operation = invoke()
+        with self._ownership:
+            session.native_pending = True
+            try:
+                task = asyncio.create_task(operation)
+            except BaseException:
+                session.native_pending = False
+                operation.close()
+                raise
+            self._native_tasks[task] = (session, exited)
+
+        def finished(completed):
+            if not completed.cancelled():
+                completed.exception()
+            with self._ownership:
+                if not exited.is_set():
+                    self._failed_barriers.add(session.scope_id)
+                    return
+                self._native_tasks.pop(completed, None)
+                session.native_pending = False
+                self._workers.pop(id(session), None)
+                if self._owner is session:
+                    self._owner = None
+                self._ownership.notify_all()
+            session.signal(session.space)
+
+        task.add_done_callback(finished, context=Context())
+        return task
+
+    def _after_tts(self, session: _Session, payload) -> None:
+        from src.hooks import execute_after_event
+
+        token = object()
+        with self._ownership:
+            self._callback_scopes[token] = session.scope_id
+
+        def delivered():
+            registered = getattr(self.hooks, '_after_tasks', None)
+            before = set(registered) if isinstance(registered, set) else set()
+            context_token = self._after_context.set(True)
+            try:
+                execute_after_event(self.hooks, 'tts', payload)
+            except Exception as error:
+                logger.warning('[Response] After-TTS callback failed: %s', type(error).__name__)
+            finally:
+                self._after_context.reset(context_token)
+                registered = getattr(self.hooks, '_after_tasks', None)
+                created = set(registered)-before if isinstance(registered, set) else set()
+                with self._ownership:
+                    for task in created:
+                        self._hook_tasks[task] = session.scope_id
+                    self._callback_scopes.pop(token, None)
+                for task in created:
+                    def finished(completed):
+                        if not completed.cancelled():
+                            completed.exception()
+                        with self._ownership:
+                            if completed.cancelled():
+                                self._failed_barriers.add(self._hook_tasks.get(completed, session.scope_id))
+                            self._hook_tasks.pop(completed, None)
+                    task.add_done_callback(finished, context=Context())
+
+        if session.loop is None:
+            delivered()
+        else:
+            try:
+                session.loop.call_soon_threadsafe(delivered)
+            except BaseException:
+                with self._ownership:
+                    self._callback_scopes.pop(token, None)
+                raise
 
     async def _close_resources(self) -> None:
+        # Register the retirement owner before an eager factory can dispatch.
+        await asyncio.sleep(0)
+        cancelling = asyncio.create_task(self.cancel(), context=Context())
+        while not cancelling.done():
+            try:
+                await asyncio.shield(cancelling)
+            except asyncio.CancelledError:
+                continue
         try:
-            async with asyncio.timeout(self.shutdown_timeout_s):
-                await self.cancel()
-                while True:
-                    status = self.get_delivery_status()
-                    if not any(status[key] for key in ("controllers", "workers", "generations", "blocked_generations", "aborts")):
-                        return
-                    await asyncio.sleep(0.005)
-        except TimeoutError as error:
-            raise ResponseCloseTimeout("voice_resources_still_running") from error
+            cancelling.result()
+        except Exception:
+            with self._ownership:
+                self._failed_barriers.add(0)
+        keys = ('pending', 'controllers', 'workers', 'generations', 'blocked_generations',
+                'aborts', 'native_calls', 'native_operations', 'native_retirements',
+                'callbacks', 'hook_tasks')
+        while True:
+            status = self.get_delivery_status()
+            if not any(status[key] for key in keys):
+                if self._native_closing is not None:
+                    self._native_closing.result()
+                if status['failed_barriers']:
+                    raise RuntimeError('voice_retirement_unconfirmed')
+                return
+            try:
+                await asyncio.sleep(0.005)
+            except asyncio.CancelledError:
+                continue
 
-    async def aclose(self) -> None:
-        """Close admission, cancel and drain owned resources within the deadline.
+    def begin_close(self) -> asyncio.Task:
+        """Seal admission and return the sole actual retirement task, without a deadline.
 
-        Repeated caller cancellation cannot abandon cleanup. A blocked native
-        synthesis remains visible and retains its slot after a close timeout;
-        it can never start late PCM. A later close may await its real exit.
+        Returns:
+            The same Context-empty owner through timeout and repeated calls.
+
+        Raises:
+            RuntimeError: If an owned after-TTS callback tries to await itself.
         """
+        if self._after_context.get():
+            raise RuntimeError('voice_close_from_callback')
         with self._ownership:
             self._closed = True
-        if self._shutdown_task is None or self._shutdown_task.done():
-            self._shutdown_task = asyncio.create_task(self._close_resources())
+            sessions = tuple({**self._controllers, **self._workers,
+                              **{id(s): s for s, _ in self._native_tasks.values()}}.values())
+        for session in sessions:
+            self._interrupt(session)
+        if self._shutdown_task is None:
+            self._native_closing = self._native_work.begin_close()
+            self._shutdown_task = asyncio.create_task(self._close_resources(), context=Context())
+        return self._shutdown_task
+
+    async def wait_closed(self) -> None:
+        """Wait for real retirement, retaining it through caller cancellation.
+
+        Raises:
+            asyncio.CancelledError: After actual retirement for a cancelled caller.
+            RuntimeError: If the retirement owner attempts to await itself.
+        """
+        closing = self.begin_close()
+        if asyncio.current_task() is closing:
+            raise RuntimeError('voice_close_from_owner')
         cancelled = False
-        while not self._shutdown_task.done():
+        while not closing.done():
             try:
-                await asyncio.shield(self._shutdown_task)
+                await asyncio.shield(closing)
             except asyncio.CancelledError:
                 cancelled = True
-        self._shutdown_task.result()
+        closing.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def aclose(self) -> None:
+        """Observe retirement within its existing deadline without cancelling it.
+
+        Caller cancellation does not abandon cleanup or reset this observer's
+        deadline. A timeout leaves the same actual retirement owner pending.
+
+        Raises:
+            ResponseCloseTimeout: If real resource retirement remains pending.
+            asyncio.CancelledError: After retirement for a cancelled observer.
+        """
+        closing = self.begin_close()
+        if asyncio.current_task() is closing:
+            raise RuntimeError('voice_close_from_owner')
+        deadline = asyncio.get_running_loop().time() + self.shutdown_timeout_s
+        cancelled = False
+        while not closing.done():
+            remaining = deadline-asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise ResponseCloseTimeout('voice_resources_still_running')
+            try:
+                async with asyncio.timeout(remaining):
+                    await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                cancelled = True
+            except TimeoutError as error:
+                raise ResponseCloseTimeout('voice_resources_still_running') from error
+        closing.result()
         if cancelled:
             raise asyncio.CancelledError
 
@@ -398,15 +583,12 @@ class ResponseHandler:
                 session.spoken += 1
         finally:
             if self.hooks is not None and utterance.pcm is None:
-                from src.hooks import TtsPayload, execute_after_event
+                from src.hooks import TtsPayload
                 payload = TtsPayload(
                     timestamp=time.time(), text=text, voice=None,
                     latency_ms=(time.perf_counter() - started) * 1000, success=success,
                 )
-                if session.loop is not None:
-                    session.loop.call_soon_threadsafe(execute_after_event, self.hooks, "tts", payload)
-                else:
-                    execute_after_event(self.hooks, "tts", payload)
+                self._after_tts(session, payload)
 
     def _worker(self, session: _Session) -> None:
         filler_deadline = time.monotonic() + 0.1
@@ -444,7 +626,7 @@ class ResponseHandler:
 
     def _worker_finished(self, session: _Session) -> None:
         with self._ownership:
-            if self._owner is session:
+            if not session.native_pending and self._owner is session:
                 self._owner = None
             self._workers.pop(id(session), None)
             self._ownership.notify_all()
@@ -469,8 +651,7 @@ class ResponseHandler:
         try:
             if not await self._acquire(session):
                 raise asyncio.CancelledError
-            worker = asyncio.create_task(asyncio.to_thread(synthesize))
-            worker.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+            worker = self._start_native(session, synthesize)
             await self._wait_output(session, worker)
             if session.cancelled.is_set():
                 raise asyncio.CancelledError
@@ -533,20 +714,32 @@ class ResponseHandler:
 
     async def _stop_session(self, session: _Session) -> None:
         player = self._interrupt(session)
+        if player is None:
+            with session.condition:
+                player = session.player
         if player is not None:
-            task = asyncio.create_task(asyncio.to_thread(player.stop))
             with self._ownership:
-                self._abort_tasks.add(task)
-                self._abort_scopes[task] = session.scope_id
+                task = session.abort_task
+                if task is None:
+                    async def stop_player():
+                        await asyncio.sleep(0)
+                        await asyncio.to_thread(player.stop)
+                    task = asyncio.create_task(stop_player())
+                    session.abort_task = task
+                    self._abort_tasks.add(task)
+                    self._abort_scopes[task] = session.scope_id
 
-            def finished(completed):
-                with self._ownership:
-                    self._abort_tasks.discard(completed)
-                    self._abort_scopes.pop(completed, None)
-                if not completed.cancelled():
-                    completed.exception()
-
-            task.add_done_callback(finished)
+                    def finished(completed):
+                        failed = completed.cancelled()
+                        if not failed:
+                            failed = completed.exception() is not None
+                        with self._ownership:
+                            if failed:
+                                self._failed_barriers.add(session.scope_id)
+                            else:
+                                self._abort_tasks.discard(completed)
+                                self._abort_scopes.pop(completed, None)
+                    task.add_done_callback(finished, context=Context())
             await self._settle_tasks({task})
 
     async def aspeak(self, text: str, zone_id: str | None = None, stream: bool | None = None,
@@ -576,7 +769,7 @@ class ResponseHandler:
                 return ResponseResult(utterance.text, GenerationState.CANCELLED, DeliveryState.CANCELLED)
             session.queue.append(utterance)
             session.done = True
-            worker = asyncio.create_task(asyncio.to_thread(self._worker, session))
+            worker = self._start_native(session, self._worker, session)
             output_deadline = loop.time() + self.budgets.delivery_s
             if deadline is not None:
                 output_deadline = min(deadline, output_deadline)
@@ -784,7 +977,7 @@ class ResponseHandler:
                 return ResponseResult("", GenerationState.CANCELLED, DeliveryState.CANCELLED)
             if self.llm_use_filler if use_filler is None else use_filler:
                 session.filler = self.llm_filler_phrases[0]
-            worker = asyncio.create_task(asyncio.to_thread(self._worker, session))
+            worker = self._start_native(session, self._worker, session)
             producer = track(asyncio.create_task(produce()))
             interrupted = asyncio.create_task(session.interrupted.wait())
             output_timer = asyncio.create_task(output_limit())

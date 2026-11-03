@@ -1,6 +1,7 @@
 """Application-owned local voice output and feature producer construction."""
 
 import asyncio
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 
@@ -39,7 +40,8 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
                          llm=None, hooks=None, before_handler_warn_ms: float = 5.0,
                          user_manager=None, ha_client=None, home_actions=None,
                          reminder_store=None, presence_detector=None,
-                         reminder_wake_event: asyncio.Event | None = None) -> VoiceServices:
+                         reminder_wake_event: asyncio.Event | None = None,
+                         register_output: Callable[[Callable[[], asyncio.Task]], None] | None = None) -> VoiceServices:
     """Build the same local delivery graph used by main and register cleanup.
 
     Producers close before the shared output owner, including construction or
@@ -64,7 +66,9 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
         response_budgets=ResponseBudgets(**streaming.get("response_timeouts", {})),
         hooks=hooks, before_handler_warn_ms=before_handler_warn_ms,
     )
-    shutdown.push_async_callback(response.aclose)
+    shutdown.push_async_callback(response.wait_closed)
+    if register_output is not None:
+        register_output(response.begin_close)
     features = build_feature_manager(
         config, response_handler=response, zone_manager=zone_manager,
         user_manager=user_manager, ha_client=ha_client,
