@@ -2250,3 +2250,84 @@ destino para T023/T024 siguen pendientes. T021/T022, las 29 familias y los crite
 C03/C04/C06/C20 permanecen abiertos. G memory_prompt_unavailable sigue sin causa
 ni corrección acreditada; HA resistente a cancelación por más de 60 s sigue
 incumplido. T047 conserva verified_local y sus autoridades separadas.
+
+## Retiro de motores del benchmark STT A/B
+
+Dos RED reproducen el defecto original: main retorna 0 y conserva el callable,
+pero siguen vivos el backend Parakeet y el worker nativo Whisper. Son motores
+del CLI standalone, distintos de los recursos seleccionados por ApplicationGraph.
+
+### Propiedad y recibos del benchmark STT
+
+Los builders registran un dueño explícito antes de load y warmup. La sesión
+retira también los motores ya creados si falla el segundo builder, la lectura
+WAV, la inferencia o el reporte. El callable conserva su interfaz y su resultado
+texto/latencia. Un adaptador externo es prestado por defecto: no se cierra ni
+se sella por retirar su callable. El propietario explícito controla su retiro.
+
+El cierre sella nuevas operaciones, espera load/warmup y llamadas admitidas,
+incluida la conversión del resultado, y comienza todos los cierres antes de
+esperarlos. La guarda rechaza el cierre desde la operación o el worker Whisper
+actual antes de crear otro contexto; no depende de un ContextVar heredado.
+La salida del target no sustituye al recibo nativo del closer ni del worker.
+El handle CPython 3.13 verificado cubre también el bootstrap pendiente.
+
+Los errores se propagan como descriptores nuevos sin traceback, contexto o
+mensaje del SDK. Los controles se difieren hasta observar el retiro posible;
+SystemExit conserva entero/None y transforma payload no entero en código 1.
+Una salida de control con código 0 no acredita retiro. El retorno normal 0 de
+main sólo ocurre después del retiro confirmado. La incertidumbre conserva un
+dueño fuerte de proceso; no se reinicia el estado ni se reintenta Thread.start.
+
+### PCM, estadísticas y admisión del cierre STT
+
+La primera suite pasó 38/40. Una falla detectó PCM del WAV anterior retenido en
+el traceback cuando fallaba la lectura siguiente: cada iteración ahora suelta
+audio en finally. Se conservan las sentencias originales de cálculo, las fórmulas
+de retorno, conversión WAV, percentiles y formato del reporte. El AST completo
+del loop cambia por esa limpieza. La otra falla era del fixture del subproceso:
+debía observar los dos fallos agrupados de start/retiro incierto. Una corrección
+intermedia del fixture tuvo TypeError; se conservan ambas corridas y sus fuentes.
+Las aserciones de recurso vivo y dueño retenido no se retiraron.
+
+La primera full terminó con 7700 PASS y una xfail conocida, con 897 archivos
+intactos. No se aceptó como prueba de esta unidad: la revisión descubrió que
+publicar start_called antes del recibo protegido podía dejar un observador
+esperando sin productor si se interrumpía la metadata anterior a Thread.start.
+Dos RED nuevos reproducen esa espera en subprocesos, sin rescatar flags/eventos.
+
+La reserva ahora tiene identidad y un único dueño que finaliza su recibo. El
+finally cubre publicación, salida del lock, registro y start. La notificación es
+consultiva y su interrupción no deja una espera ilimitada del Event. Un fallo
+previo al despacho se informa con retiro no confirmado y recursos retenidos;
+no se finge salida nativa. La reentrada del dueño pendiente se rechaza antes
+de adquirir de nuevo el registro. Cuatro casos prueban ambas interrupciones de
+metadata, notificación interrumpida con postludio nativo retenido y reentrada
+sin un segundo Thread.start.
+
+### Verificación y continuidad del benchmark STT
+
+Pasan 56 casos nuevos y 65 existentes enfocados. Las pruebas usan wrappers
+Parakeet/Whisper y ejecutor/hilos reales, con SDK y lecturas WAV sintéticos.
+Cubren load/warmup/transcripción, conversiones retenidas, ambos cierres, fallos
+parciales, reportes y errores aún vivos mientras se libera PCM. No cargan modelos
+reales ni usan GPU, micrófono, servicios o despliegue.
+
+T022-L queda verificada localmente en `9e57c24`. Full: 7704 casos
+más la xfail conocida en 581.53 segundos, con 897
+archivos idénticos durante la corrida. Evidencia privada:
+`data/autonomous-roadmap-20261102/t022/l/evidence.json`.
+
+El suplemento de inventario conserva el mapa inicial y añade esta cadena de
+producción, copias y destinos. El retiro de referencias públicas no acredita
+borrado de buffers privados ORT/CTranslate2, heap o GPU. WAV fuente, texto de
+muestras y stdout son destinos independientes; faltan su contrato de linaje,
+consentimiento, caducidad, mute, borrado y restore en T023/T024.
+
+Siguen pendientes benchmark_ambient, enrollment, benchmark_latency, copias SDK
+y la matriz completa de productores/copias/destinos de las 29 familias.
+T021/T022 y C03/C04/C06/C20 siguen abiertos; HA resistente supera los 60 s.
+La causa/corrección de G memory_prompt_unavailable, los intervalos iniciales de
+J/K y la presión ENOSPC de K no están acreditados. T047 conserva verified_local
+con asociación voz-persona y autoridades separadas. El siguiente paso local es
+T022-M: retirar los motores propios de benchmark_ambient, con hojas sintéticas.

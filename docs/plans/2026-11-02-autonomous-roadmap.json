@@ -1130,7 +1130,8 @@
         "63b60b4a46313f257dc2853da5c1ef164521d001",
         "24e1c3a7b0dc075048a1b137d6e0344a86804973",
         "cd9ec03680811908bde07acb14634faac6986d77",
-        "72f7eb2d2456480706667b16219d0e75b9dcbad1"
+        "72f7eb2d2456480706667b16219d0e75b9dcbad1",
+        "9e57c24915294049cfb05821dc466f0a7d2e852f"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1143,9 +1144,10 @@
         "data/autonomous-roadmap-20261102/t022/h/evidence.json",
         "data/autonomous-roadmap-20261102/t022/i/evidence.json",
         "data/autonomous-roadmap-20261102/t022/j/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/k/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/k/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/l/evidence.json"
       ],
-      "next_action": "T022-K verificada localmente en 72f7eb2: captura standalone con dueño previo a load/open/start/stream, sello de filas/admisión y retiro tras recibos reales de stream, poller y callbacks. Errores de stop/close observados, dueño incierto retenido sin retry ni éxito artificial, bootstrap pendiente unido por handle CPython 3.13 verificado. El callback y los fallos que escapan del poller propagan descriptores sin traceback SDK tras el drenaje; el error USB interno conserva su camino fail-open. SystemExit preserva entero/None; payload no entero pasa a código 1, sin mensaje. Pasan 34 regresiones nuevas y 33 existentes enfocados; full y hashes en evidencia. Primera full fallida preservada: precondición del test de sustitución ahora prepara clientes reales fuera de setup, manteniendo ERROR_TEXT y todas sus aserciones; dos casos nuevos cubren constructor retenido, timeout y sustitución. Sin cambios de producción/budgets; causa del intervalo original no establecida. Continuar T022-L: owners explícitos de benchmark_stt_ab antes de load/warmup, retiro de ambos motores en fallos parciales/reportes y preservación de conversiones/estadísticas/stdout, con hojas sintéticas. Enrollment, ambient/latency, copias SDK y matriz productor-copia-destino para T023/T024 pendientes. El inventario de 29 familias, T021/T022 y C03/C04/C06/C20 siguen abiertos; G memory_prompt_unavailable sin causa/corrección acreditada y HA resistente >60 s incumplido. T047 conserva verified_local y autoridades separadas."
+      "next_action": "T022-L verificada localmente en 9e57c24: propietarios explícitos del benchmark STT A/B antes de load/warmup, retiro de ambos motores ante fallos parciales y reportes, conversión del resultado dentro de la admisión y recibos nativos de closer/worker. Adaptadores externos prestados por defecto. Se suelta PCM por iteración incluso si falla el siguiente WAV; se conservan las sentencias/formulas de cálculo, conversiones y stdout. La primera full7700 quedó insuficiente por un hueco de admisión luego reproducido con dos RED: reserva por identidad y finalización protegida evitan la espera sin productor; cuatro casos prueban metadata/notificación interrumpida y reentrada sin repetir Thread.start. Retiro incierto conserva al dueño y falla; SystemExit0 no acredita cierre. Pasan 56 regresiones nuevas y 65 existentes enfocados; full final y hashes en evidencia. Continuar T022-M: benchmark_ambient con dueño previo a load, retiro de Whisper/Silero y preservación de mediciones, usando hojas sintéticas. Enrollment, latency, copias SDK y matriz productor-copia-destino para T023/T024 pendientes. El inventario de 29 familias, T021/T022 y C03/C04/C06/C20 siguen abiertos; G memory_prompt_unavailable y los intervalos iniciales J/K sin causa/corrección acreditada, presión ENOSPC K sin atribución y HA resistente >60 s incumplido. T047 conserva verified_local y autoridades separadas."
     },
     {
       "id": "T023",
@@ -2326,7 +2328,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-K/standalone-calibration-retirement",
+    "last_verified_unit": "T022-L/standalone-stt-ab-retirement",
     "user_priority_after_admin_unit": "T047"
   }
 }
