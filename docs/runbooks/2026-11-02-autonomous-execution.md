@@ -1275,3 +1275,51 @@ monitorización, propietarios y grafo. La suite completa pasó 7145 pruebas con
 una xfail conocida en 513,14 segundos; 851 archivos permanecieron iguales y
 Ruff pasó. T020 queda `verified_local`; P2 y los criterios compartidos siguen
 abiertos. Evidencia: `data/autonomous-roadmap-20261102/t020/evidence.json`.
+
+## Propiedad y observaciones de los transportes HA
+
+T021-A conserva un propietario para el arranque de sincronización desde antes
+del primer `await`. Los observadores comparten esa tarea y su cancelación no
+retira el trabajo admitido. Una parada sella la generación de eventos; un cierre
+terminal sella todas las admisiones y no permite recrear la sesión HTTP. Un
+arranque que espera una parada anterior también debe quedar sellado ante una
+segunda parada. Los canales de llamadas, eventos y catálogo conservan sus
+receptores y bloqueos separados. El cliente cierra la sesión HTTP que creó;
+si recibe una sesión por constructor, su cierre corresponde al propietario
+externo y el cliente igualmente sella su propio uso.
+
+Cada candidato y cierre de socket permanece registrado hasta su salida real.
+Un intento fallido retira su socket antes de abrir un sucesor; una suscripción
+requiere la respuesta satisfactoria con su ID exacto. Los cierres no confirmados
+tienen tres intentos acotados y conservan el recurso como pendiente si no se
+resuelven. El cierre terminal observa también las lecturas temporales del
+catálogo. Esperar tareas ya terminadas no debe formar un bucle que impida al
+event loop ejecutar sus callbacks.
+
+Las observaciones de REST, llamadas WS, eventos y catálogo tienen fuente,
+instante y vencimiento propios. Autenticar otro canal o consultar el diagnóstico
+no renueva una observación REST ni la de una entidad. REST sano con eventos
+solicitados caídos produce un diagnóstico degradado. Un canal no solicitado no
+implica un fallo; un cierre local conocido conserva ese hecho aunque venza la
+última observación remota. Los adaptadores antiguos sin estos DTO conservan su
+contrato de métricas anterior.
+
+T021 sigue `in_progress`: falta resolver el handoff entre snapshot y suscripción,
+la frescura de la caché heredada y la política de fallos repetidos de eventos.
+Los presupuestos de observación de 15 segundos y la espera máxima de 30 no
+demuestran por sí solos una recuperación en 45 segundos: el retiro real puede
+seguir pendiente. T021-B debe ejecutar el presupuesto completo con reloj virtual
+y dependencia recuperada en el peor punto del backoff. C06/C20 siguen sin
+aceptar; no se accedió a HA real ni se verificó la recuperación física.
+
+La unidad T021-A pasó 43 casos nuevos, 148 específicos y 1082 cruzados, incluida
+la separación de permisos y el vínculo voz-persona de NEXO. La suite completa
+pasó 7188 pruebas con la xfail conocida en 515,29 segundos. Los 853 archivos
+congelados permanecieron iguales; Ruff y los 13 casos del verificador del
+roadmap pasaron. Código: `8b7c566`. Evidencia local de la unidad:
+`data/autonomous-roadmap-20261102/t021/a-evidence.json`.
+
+T021 conserva su estado `in_progress`; el plan de continuación está en
+`data/autonomous-roadmap-20261102/t021/b-handoff-review.json`. La integración
+NEXO de T047 sigue verificada localmente dentro del mismo goal, conservando
+separadas identidad acústica, personas, cuentas, consentimiento y permisos.

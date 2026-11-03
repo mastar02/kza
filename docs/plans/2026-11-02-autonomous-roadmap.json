@@ -1091,10 +1091,14 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "in_progress",
+      "implementation_commits": [
+        "8b7c5660ebfd4b0c36f55fe9f2bd81d2d3624fd9"
+      ],
+      "evidence": [
+        "data/autonomous-roadmap-20261102/t021/a-evidence.json"
+      ],
+      "next_action": "T021-A verificada localmente en 8b7c566: arranque y paradas encadenadas por generación, candidatos/cierres retenidos, canales separados, ID exacto y salud con fuente/fecha/vencimiento propios. Pasan 43 casos nuevos, 148 específicos, 1082 cruzados y full 7188 más una xfail conocida; 853 archivos intactos y Ruff sin hallazgos. T021 sigue in_progress: T021-B debe resolver decoder/stream coherente snapshot-suscripción, TTL de entidades y GET legacy esperado, tres fallos repetidos y prueba temporal completa. C06/C20 no evaluados; sin HA real, despliegue ni garantía física de 60 s."
     },
     {
       "id": "T022",
