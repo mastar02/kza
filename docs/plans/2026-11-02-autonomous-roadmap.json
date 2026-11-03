@@ -1122,14 +1122,16 @@
       "implementation_commits": [
         "f9d15addfad76cb108eb26d2476e9ead36ee62cb",
         "d6a8af201cab139c20d31ec8cc918275f10ae1c9",
-        "92c28ac383583726235aac667ecda9e8be751143"
+        "92c28ac383583726235aac667ecda9e8be751143",
+        "60c3bab32aa6732bddfd75d82aeae26a8e74d81d"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
         "data/autonomous-roadmap-20261102/t022/b/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/c/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/c/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/d/evidence.json"
       ],
-      "next_action": "T022-C verificada localmente en 92c28ac: admisión discovery/Thread.start y poller XVF retenidos hasta salida real, publicación sellada y sucesor rechazado mientras vive el anterior. MultiRoom posee tuning/start/reset y su cierre retenido; segundo sello tras trabajos admitidos, wait off-loop y dependencia real antes de retirar el grafo. Cuatro RED del controlador y tres de integración pasan; once regresiones nuevas, 284 enfocadas y full de 7436 más xfail conocida en 535,03 s; 866 archivos intactos. Ruff src/tests sin hallazgos; cuatro avisos previos de tools conservados. Continuar K1: executor propio de FastWhisperSTT, sin cerrarlo desde un borrower; luego modelos/executors restantes, productores legacy condicionales, copias internas e inventario completo/mute/restore con T023/T024. El mapa inicial de 29 familias sigue incompleto; C03/C04/C06/C20 sin aceptar y el caso HA resistente de más de 60 s permanece abierto."
+      "next_action": "T022-D verificada localmente en 60c3bab: ejecutores Whisper por instancia con admisión/creación serializada, sello terminal, reentrada admitida y cierre retenido hasta join real; referencia Python del adapter liberada en su worker. El grafo posee las instancias principal, shadow y ambient dedicada, drena sus borrowers y conserva autoridad/lease durante cancelación, fallos parciales y salida del Thread. Registro previo a start y join del handle nativo corrigen falso éxito de submit parcial; guard de CPython 3.13/layout y ejecución en 3.13.12. Dos RED de fábrica y uno de SDK pasan; 18 casos nuevos, 207 pruebas enfocadas y 32 posteriores al cambio del conteo fijo por la presencia exacta de Chroma. La suite completa pasó 7454 casos más la xfail conocida en 577,77 s; 870 archivos intactos y Ruff src/tests sin hallazgos. Continuar TTS seleccionado Dual/Kokoro: owner nativo de síntesis y drenaje real antes de dependientes/lease, conservando la distinción entre timeout y salida; luego otros modelos/executors, copias SDK, legacy condicional e inventario/mute/restore con T023/T024. El mapa inicial de 29 familias sigue incompleto; C03/C04/C06/C20 sin aceptar y el caso HA resistente de más de 60 s permanece intacto."
     },
     {
       "id": "T023",
@@ -2310,7 +2312,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-C/xvf-admission-and-poller-retirement",
+    "last_verified_unit": "T022-D/whisper-executor-ownership",
     "user_priority_after_admin_unit": "T047"
   }
 }

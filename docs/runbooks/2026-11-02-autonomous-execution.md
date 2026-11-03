@@ -1622,3 +1622,72 @@ de privacidad del productor; debe pertenecer al grafo que comparte sus borrowers
 T021/T022 siguen `in_progress`, C03/C04/C06/C20 sin aceptar y el caso HA resistente
 de más de 60 segundos permanece abierto. T047 y la separación voz/persona/cuenta/
 consentimiento/permisos conservan su estado verificado localmente.
+
+## Retiro de ejecutores Whisper compartidos
+
+T022-D conserva dos RED de la fábrica anterior: tanto el cierre del stack como
+`_stop_services` devolvían con los Threads de Whisper principal y shadow vivos.
+Las pruebas usan `load` público, un modelo sintético y el executor real. El dueño
+de aplicación registra cada adapter al construirlo, deduplica por identidad y
+retiene también el motor ambient independiente aunque falle una etapa posterior
+del builder. El cierre de CommandProcessor sigue siendo el de un borrower.
+
+La instancia Whisper reserva admisión y creación antes de construir o enviar al
+pool, con un único executor ante llamadas concurrentes. El lock de ciclo de vida
+se libera durante creación, submit, resultado y shutdown. El sello es terminal;
+la reentrada de trabajo ya admitido usa el Thread real y TLS, sin confiar en un
+identificador numérico reciclable. El cierre conserva un dueño por instancia,
+espera las admisiones y libera su referencia Python al modelo en el worker
+dedicado antes del join. Cancelaciones repetidas del observador conservan ese
+retiro. Otra instancia mantiene su propio executor.
+
+La revisión encontró y reprodujo un tercer RED después de corregir el adapter:
+el executor de CPython encola antes de `Thread.start` y registra el Thread sólo
+después. Un fallo tras arrancarlo podía dejarlo fuera del join, crear otro worker
+y declarar cierre exitoso. La prueba reforzada observó resultado sin error,
+referencia `_model` borrada y Thread anterior todavía vivo antes del cleanup.
+
+El pool de un solo worker registra el Thread en el executor y en el registro del
+intérprete antes de start. Retira únicamente candidatos cuyo handle nativo sigue
+sin identidad tras resolverse ese intento. Conserva los arranques parciales y
+une el handle aun cuando el bootstrap Python todavía no publicó `_started`.
+Esa espera queda fuera de los locks de submit; un trabajo independiente del SDK
+puede avanzar. El contrato se contrastó con el
+[executor de CPython 3.13.0](https://raw.githubusercontent.com/python/cpython/v3.13.0/Lib/concurrent/futures/thread.py)
+y los handles de
+[3.13.0](https://raw.githubusercontent.com/python/cpython/v3.13.0/Modules/_threadmodule.c)
+y [3.13.12](https://raw.githubusercontent.com/python/cpython/v3.13.12/Modules/_threadmodule.c).
+El guard exige CPython 3.13 y el layout privado comprobado antes de crear actores.
+La ejecución fue en 3.13.12; revisar fuentes de 3.13.0 no equivale a ejecutarlas.
+
+El dueño del grafo sella y espera los drenajes reales de comandos, captura/wake y
+ambient antes del cierre de adapters. Se registra como dependencia del pipeline
+y borrower de privacidad; el fallback del stack existe desde la primera
+construcción. Ambient declara propiedad sobre su motor exclusivo y lo cierra
+tras ASR nativo; el modo prestado conserva la instancia utilizable. Los casos
+retienen autoridad, router, sesión HA y lease durante trabajo pendiente y
+cancelación. Otra barrera conserva un Thread real después de retornar el worker
+del executor: prueba salida del Thread, sin afirmar inferencia o destructor CUDA
+todavía ejecutándose. Los recorridos nuevos del grafo prueban teardown sin
+iniciar captura, servicios, playback ni modelos reales.
+
+Los 18 casos nuevos y las 207 pruebas enfocadas pasan. La primera suite completa
+tuvo un fallo: una prueba de Chroma esperaba exactamente un borrower y ahora hay
+dos. Se sustituyó ese conteo por la presencia de su callback débil exacto,
+conservando las comprobaciones de close único y lease. Las 32 pruebas posteriores
+pasan. Los artefactos de aquella ejecución y sus 870 archivos intactos se
+conservan; sólo cambió esa prueba antes de congelar otra vez.
+
+T022-D quedó verificada localmente en `60c3bab`: la segunda suite pasó 7454 casos
+más la xfail conocida en 577,77 segundos, con 870 archivos intactos y Ruff sin
+hallazgos en `src/` y `tests/`. Evidencia:
+`data/autonomous-roadmap-20261102/t022/d/evidence.json`; verificación aceptada:
+`data/autonomous-roadmap-20261102/t022/d/validated/verification.json`.
+
+Liberar la referencia del adapter y unir sus Threads no acredita todas las copias
+CTranslate2/CUDA ni destrucción del executor compartido del proceso. Continúan
+los demás modelos/backends, productores legacy y el inventario completo con
+mute/restore. El siguiente corte identificado es el drenaje nativo de síntesis
+y el motor Dual/Kokoro del grafo. El mapa inicial de 29 familias sigue incompleto;
+T021/T022 siguen `in_progress` y C03/C04/C06/C20 sin aceptar. El caso HA resistente
+de más de 60 segundos y la separación de autoridades de T047 permanecen intactos.
