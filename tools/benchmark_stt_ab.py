@@ -19,10 +19,15 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
-import statistics
 import sys
+import threading
 import time
+from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import Context
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -71,14 +76,18 @@ def _run_engine(name: str, transcribe_fn, wavs: list[Path]) -> dict:
     durations_s: list[float] = []
     samples: list[tuple[str, str]] = []
     for i, path in enumerate(wavs):
-        audio = load_wav_mono16k(path)
-        durations_s.append(len(audio) / TARGET_SR)
-        text, ms = transcribe_fn(audio)
-        latencies.append(ms)
-        if not text.strip():
-            empties += 1
-        if i < 8:
-            samples.append((path.name, text[:60]))
+        audio = None
+        try:
+            audio = load_wav_mono16k(path)
+            durations_s.append(len(audio) / TARGET_SR)
+            text, ms = transcribe_fn(audio)
+            latencies.append(ms)
+            if not text.strip():
+                empties += 1
+            if i < 8:
+                samples.append((path.name, text[:60]))
+        finally:
+            audio = None
     total_audio = sum(durations_s) or 1e-9
     rtf = (sum(latencies) / 1000.0) / total_audio
     return {
@@ -102,42 +111,417 @@ def _print_report(title: str, res: dict) -> None:
         print(f"    {fname}: {txt!r}")
 
 
-def _tc(stt):
-    """Adaptador a (text, ms) vía transcribe_with_confidence.
+_ENGINES: set = set()
 
-    Lo usan todos los motores (existe en Parakeet y Whisper), así el script
-    corre tanto con el árbol refactorizado como con el de producción.
+
+_FAILED_ENGINES: set = set()
+
+
+_ENGINES_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class _Failure:
+    """Keep classification, never a native exception/traceback or payload."""
+
+    stage: str
+    kind: str
+    exit_code: int | None = None
+
+    @classmethod
+    def capture(cls, stage: str, error: BaseException):
+        if isinstance(error, KeyboardInterrupt):
+            return cls(stage, "interrupt")
+        if isinstance(error, SystemExit):
+            code = error.code
+            return cls(stage, "exit", code if code is None or type(code) in (int, bool) else 1)
+        if isinstance(error, GeneratorExit):
+            return cls(stage, "generator")
+        if isinstance(error, asyncio.CancelledError):
+            return cls(stage, "cancel")
+        if not isinstance(error, Exception):
+            return cls(stage, "control")
+        return cls(stage, type(error).__name__)
+
+    def exception(self) -> BaseException:
+        if self.kind == "interrupt":
+            return KeyboardInterrupt()
+        if self.kind == "exit":
+            return SystemExit(self.exit_code)
+        if self.kind == "generator":
+            return GeneratorExit()
+        if self.kind == "cancel":
+            return asyncio.CancelledError()
+        if self.kind == "control":
+            return BaseException(f"{self.stage}:control")
+        return RuntimeError(f"{self.stage}:{self.kind}")
+
+
+def _raise_errors(errors: list[BaseException]) -> None:
+    for error in errors:
+        if not isinstance(error, Exception):
+            raise error
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise ExceptionGroup("benchmark_retirement_failed", errors)
+
+
+class _StartAdmission:
+    """Identify the sole native-start transaction and its originating caller."""
+
+    def __init__(self, owner: threading.Thread):
+        self.owner = owner
+        self.finished = False
+
+class _BenchmarkEngine:
+    """Explicit callable owner; borrowed adapters never receive close or seal."""
+
+    def __init__(self, stt, *, owns_stt: bool = False):
+        if type(owns_stt) is not bool:
+            raise ValueError("benchmark_ownership_must_be_bool")
+        self.stt, self.owns_stt = stt, owns_stt
+        self._condition = threading.Condition()
+        self._sealed = False
+        self._admitted = 0
+        self._workers: dict[threading.Thread, int] = {}
+        self._start_called = False
+        self._start_admission: _StartAdmission | None = None
+        self._admission_done = threading.Event()
+        self._target_exited = threading.Event()
+        self._start_failure = self._close_failure = None
+        self._confirmed = False
+        self._closer = threading.Thread(
+            target=Context().run, args=(self._retire,),
+            name="benchmark-stt-close", daemon=True,
+        )
+        self._handle = getattr(self._closer, "_handle", None)
+        handle_type = getattr(threading, "_ThreadHandle", None)
+        started = getattr(self._closer, "_started", None)
+        # Audit boundary shared with the local K/D native-thread receipts; no
+        # STT private helper import, and no actor starts before this guard.
+        if (sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 13)
+                or handle_type is None or type(self._handle) is not handle_type
+                or type(getattr(self._handle, "ident", None)) is not int or self._handle.ident != 0
+                or not callable(getattr(self._handle, "join", None))
+                or not callable(getattr(self._handle, "is_done", None))
+                or not callable(getattr(started, "is_set", None)) or started.is_set()):
+            raise RuntimeError("benchmark_close_unsupported_runtime")
+        if owns_stt:
+            # The adapter is explicit and retained before load or warmup.
+            with _ENGINES_LOCK:
+                _ENGINES.add(self)
+
+    @contextmanager
+    def _operation(self):
+        caller = threading.current_thread()
+        with self._condition:
+            if self._sealed and not self._workers.get(caller, 0):
+                raise RuntimeError("benchmark_engine_closed")
+            self._admitted += 1
+            self._workers[caller] = self._workers.get(caller, 0) + 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._admitted -= 1
+                remaining = self._workers[caller] - 1
+                if remaining:
+                    self._workers[caller] = remaining
+                else:
+                    self._workers.pop(caller)
+                self._condition.notify_all()
+
+    def initialize(self) -> None:
+        """Admit load and warmup as one operation, including SDK callbacks."""
+        failure = None
+        with self._operation():
+            stt = self.stt
+            try:
+                stt.load()
+                self(np.zeros(TARGET_SR, dtype=np.float32))
+            except BaseException as error:
+                failure = _Failure.capture("benchmark_initialize_failed", error)
+            finally:
+                stt = None
+        if failure is not None:
+            raise failure.exception()
+
+    def __call__(self, audio):
+        failure = None
+        result = stt = r = None
+        try:
+            with self._operation():
+                stt = self.stt
+                try:
+                    r = stt.transcribe_with_confidence(audio)
+                    result = r.text, r.elapsed_ms
+                except BaseException as error:
+                    failure = _Failure.capture("benchmark_transcription_failed", error)
+                finally:
+                    # Discard loans before publishing admitted-operation exit.
+                    stt = r = audio = None
+            if failure is not None:
+                raise failure.exception()
+            return result
+        finally:
+            # Admission may reject before the inner finally has been entered.
+            # A retained rejection traceback must not retain the caller's PCM.
+            stt = r = audio = None
+
+    def require_close_caller(self) -> None:
+        caller = threading.current_thread()
+        with self._condition:
+            if self._workers.get(caller, 0):
+                raise RuntimeError("benchmark_close_from_operation")
+            if caller is self._closer:
+                raise RuntimeError("benchmark_close_from_owner")
+            admission = self._start_admission
+            if admission is not None and admission.owner is caller and not admission.finished:
+                raise RuntimeError("benchmark_close_from_admission")
+            stt = self.stt
+        # FastWhisper dispatches a caller's load/transcribe onto its own pinned
+        # Thread. Check that actual Thread before creating a fresh-context
+        # closer, which would otherwise hide its close-from-worker origin.
+        # These are adapter metadata only; no model or private helper is called.
+        try:
+            worker = vars(stt).get("_worker_thread") if stt is not None else None
+        except TypeError:
+            worker = None
+        if caller is worker:
+            raise RuntimeError("benchmark_close_from_operation")
+
+    def request_close(self) -> None:
+        """Seal only this callable; already admitted load/warmup may finish."""
+        with self._condition:
+            self._sealed = True
+            self._condition.notify_all()
+
+    def begin_close(self) -> threading.Thread:
+        """Resolve one native-start admission even if pre-dispatch metadata fails."""
+        self.require_close_caller()
+        self.request_close()
+        admission = None
+        try:
+            with self._condition:
+                if self._start_admission is None:
+                    admission = _StartAdmission(threading.current_thread())
+                    # Owner identity is part of the single published token.
+                    # A follower never acquires responsibility for this start.
+                    self._start_admission = admission
+                    self._start_called = True
+            if admission is not None:
+                with _ENGINES_LOCK:
+                    _ENGINES.add(self)
+                # No lifecycle lock across SDK/native thread admission.
+                self._closer.start()
+        except BaseException as error:
+            if admission is None or self._start_admission is not admission:
+                raise
+            self._start_failure = _Failure.capture("benchmark_close_start_failed", error)
+        finally:
+            if admission is not None and self._start_admission is admission:
+                try:
+                    self._admission_done.set()
+                finally:
+                    # This plain receipt also covers notification interruption.
+                    # It does not claim that Thread.start dispatched or exited.
+                    admission.finished = True
+        return self._closer
+
+    def _retire(self) -> None:
+        stt = None
+        try:
+            with self._condition:
+                while self._admitted:
+                    self._condition.wait()
+                stt = self.stt
+            if self.owns_stt:
+                # Existing model closure supplies its real native/executor
+                # retirement. No backend/VRAM disposal method is invented.
+                stt.close()
+        except BaseException as error:
+            self._close_failure = _Failure.capture("benchmark_engine_close_failed", error)
+        finally:
+            stt = None
+            self._target_exited.set()
+
+    def wait_closed(self) -> None:
+        """Observe actual native exit through repeated observer interruption."""
+        self.require_close_caller()
+        closer = self.begin_close()
+        controls = []
+        failure = None
+        admission = self._start_admission
+        while admission is not None and not admission.finished:
+            try:
+                # Notification is advisory: its publisher may be interrupted.
+                # Never wait indefinitely on an unset Event after resolution.
+                self._admission_done.wait(.05)
+                if not admission.finished and self._admission_done.is_set():
+                    time.sleep(0)
+            except BaseException as error:
+                item = _Failure.capture("benchmark_close_wait_failed", error)
+                if isinstance(error, Exception):
+                    failure = item
+                    break
+                controls.append(item)
+        if failure is None:
+            if self._handle.ident == 0:
+                failure = _Failure("benchmark_close_unconfirmed", "start")
+            else:
+                while True:
+                    try:
+                        if not closer._started.is_set():
+                            self._handle.join()
+                        else:
+                            closer.join()
+                        if not self._handle.is_done() or not self._target_exited.is_set():
+                            failure = _Failure("benchmark_close_unconfirmed", "exit")
+                        break
+                    except BaseException as error:
+                        item = _Failure.capture("benchmark_close_wait_failed", error)
+                        if isinstance(error, Exception):
+                            failure = item
+                            break
+                        controls.append(item)
+        if failure is None and self._close_failure is None:
+            with self._condition:
+                self.stt = None
+                self._confirmed = True
+            with _ENGINES_LOCK:
+                _ENGINES.discard(self)
+        else:
+            with _ENGINES_LOCK:
+                _FAILED_ENGINES.add(self)
+        errors = [item.exception() for item in
+                  (self._start_failure, self._close_failure, failure, *controls) if item is not None]
+        _raise_errors(errors)
+
+    def close(self) -> None:
+        """Retire this callable; only an owning handle retires its adapter."""
+        self.wait_closed()
+
+
+class _BenchmarkSession:
+    """Own only the distinct engines constructed for this script invocation."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._engines: dict[int, _BenchmarkEngine] = {}
+        self._sealed = False
+
+    def register(self, engine: _BenchmarkEngine) -> None:
+        with self._condition:
+            if self._sealed:
+                raise RuntimeError("benchmark_session_closed")
+            self._engines[id(engine)] = engine
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _kind, prior_error, _traceback):
+        # Every guard is metadata-only, before any seal or context-empty child.
+        with self._condition:
+            engines = tuple(self._engines.values())
+            for engine in engines:
+                engine.require_close_caller()
+            self._sealed = True
+        errors = []
+        for engine in engines:
+            try:
+                engine.request_close()
+            except BaseException as error:
+                errors.append(error)
+        for engine in engines:
+            try:
+                engine.begin_close()
+            except BaseException as error:
+                errors.append(error)
+        for engine in engines:
+            try:
+                engine.wait_closed()
+            except BaseException as error:
+                errors.append(error)
+        if errors:
+            _raise_errors(([prior_error] if prior_error is not None else []) + errors)
+        return False
+
+def _tc(stt, owns_stt: bool = False) -> _BenchmarkEngine:
+    """Explicit callable (text, ms) adapter; external instances are borrowed."""
+    return _BenchmarkEngine(stt, owns_stt=owns_stt)
+
+
+def _initialize_engine(
+    engine: _BenchmarkEngine,
+    register: Callable[[_BenchmarkEngine], None] | None = None,
+) -> _BenchmarkEngine:
+    registered = False
+    try:
+        if register is not None:
+            register(engine)
+            registered = True
+        engine.initialize()
+    except BaseException as prior_error:
+        try:
+            if registered:
+                # The enclosing session must start every other engine's
+                # retirement before joining this potentially held native exit.
+                engine.begin_close()
+            else:
+                engine.close()
+        except BaseException as error:
+            _raise_errors([prior_error, error])
+        raise
+    return engine
+
+def build_parakeet(
+    model_name: str, language: str, *,
+    register: Callable[[_BenchmarkEngine], None] | None = None,
+) -> _BenchmarkEngine:
+    """Build and warm an owned Parakeet benchmark callable.
+
+    Args:
+        model_name: Existing ONNX ASR model selection.
+        language: Transcription language.
+        register: Receives the owner before load and owns cleanup on failure.
+
+    Returns:
+        Callable whose close waits for the adapter's actual retirement.
     """
-    def fn(audio):
-        r = stt.transcribe_with_confidence(audio)
-        return r.text, r.elapsed_ms
-    return fn
-
-
-def build_parakeet(model_name: str, language: str):
-    try:  # tras el refactor 2026-07
-        from src.stt.parakeet_stt import ParakeetSTT
-    except ImportError:  # árbol de producción (aún en ambient)
-        from src.ambient.parakeet_stt import ParakeetSTT
+    from src.stt.parakeet_stt import ParakeetSTT
 
     stt = ParakeetSTT(model_name=model_name, language=language)
-    stt.load()
-    fn = _tc(stt)
-    fn(np.zeros(TARGET_SR, dtype=np.float32))  # warm-up (init onnxruntime)
-    return fn
+    engine = _tc(stt, owns_stt=True)
+    stt = None
+    return _initialize_engine(engine, register)
 
 
-def build_whisper(model: str, device: str, compute_type: str, language: str):
+def build_whisper(
+    model: str, device: str, compute_type: str, language: str, *,
+    register: Callable[[_BenchmarkEngine], None] | None = None,
+) -> _BenchmarkEngine:
+    """Build and warm an owned Whisper benchmark callable.
+
+    Args:
+        model: Existing Whisper model path or identifier.
+        device: Requested device without changing application allocation.
+        compute_type: Existing inference precision.
+        language: Transcription language.
+        register: Receives the owner before load and owns cleanup on failure.
+
+    Returns:
+        Callable whose close waits for the adapter and its native worker.
+    """
     from src.stt.whisper_fast import FastWhisperSTT
 
     stt = FastWhisperSTT(
         model=model, device=device, compute_type=compute_type,
         language=language, beam_size=1, vad_filter=False,
     )
-    stt.load()
-    fn = _tc(stt)
-    fn(np.zeros(TARGET_SR, dtype=np.float32))  # warm-up
-    return fn
+    engine = _tc(stt, owns_stt=True)
+    stt = None
+    return _initialize_engine(engine, register)
 
 
 def main() -> int:
@@ -163,21 +547,22 @@ def main() -> int:
         print("ERROR: no se encontraron wavs. ¿Correr desde la raíz del repo?")
         return 1
 
-    print("\nCargando Parakeet…")
-    pk = build_parakeet(args.parakeet_model, args.language)
-    if captured:
-        _print_report("COMANDOS (captured)", _run_engine("parakeet", pk, captured))
-    if rejected:
-        _print_report("RUIDO/TV (rejected)", _run_engine("parakeet", pk, rejected))
-
-    if args.with_whisper:
-        print("\nCargando Whisper…")
-        wh = build_whisper(args.whisper_model, args.whisper_device,
-                           args.whisper_compute, args.language)
+    with _BenchmarkSession() as engines:
+        print("\nCargando Parakeet…")
+        pk = build_parakeet(args.parakeet_model, args.language, register=engines.register)
         if captured:
-            _print_report("COMANDOS (captured)", _run_engine("whisper", wh, captured))
+            _print_report("COMANDOS (captured)", _run_engine("parakeet", pk, captured))
         if rejected:
-            _print_report("RUIDO/TV (rejected)", _run_engine("whisper", wh, rejected))
+            _print_report("RUIDO/TV (rejected)", _run_engine("parakeet", pk, rejected))
+
+        if args.with_whisper:
+            print("\nCargando Whisper…")
+            wh = build_whisper(args.whisper_model, args.whisper_device,
+                               args.whisper_compute, args.language, register=engines.register)
+            if captured:
+                _print_report("COMANDOS (captured)", _run_engine("whisper", wh, captured))
+            if rejected:
+                _print_report("RUIDO/TV (rejected)", _run_engine("whisper", wh, rejected))
 
     print("\nGate de decisión (plan): Parakeet p95 < ~200ms sobre 'captured' Y "
           "vacío(rejected) claramente > Whisper → seguir a shadow en vivo.")
