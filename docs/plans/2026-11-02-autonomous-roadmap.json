@@ -1095,14 +1095,16 @@
       "implementation_commits": [
         "8b7c5660ebfd4b0c36f55fe9f2bd81d2d3624fd9",
         "e17c3b09b9f55d19d1a3992da1a66b4055ef86e9",
-        "656b50eb4630d431c06724d7d1e0e47d61637164"
+        "656b50eb4630d431c06724d7d1e0e47d61637164",
+        "f9d15addfad76cb108eb26d2476e9ead36ee62cb"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t021/a-evidence.json",
         "data/autonomous-roadmap-20261102/t021/b/evidence.json",
-        "data/autonomous-roadmap-20261102/t021/c/evidence.json"
+        "data/autonomous-roadmap-20261102/t021/c/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/a/evidence.json"
       ],
-      "next_action": "T021-C verificada localmente en 656b50e: cadencia absoluta, reinicio tras inventario válido, propietario de cierre realmente retenido y recuperación del canal de acciones con un temporizador único. La autoridad original se revalida tras cada lectura de preflight, incluso no disponible. Pasan 89 finales y la suite completa de 7418 más una xfail conocida; Ruff sin hallazgos. Los ensayos con controlador/timers reales incluyen 1/4096 entidades, backoff máximo e intento/retiro anteriores. La regla de tres intentos rige la autonomía del agente, no exige circuito permanente ni reset manual del runtime. T021 sigue in_progress: un retiro que ignora cancelación conserva su propietario y supera los 60 s. Coordinar con T022 el inventario de recursos y un aborto con salida real comprobada antes del sucesor. C06/C20 siguen no evaluados; sin aceptación física ni garantía universal de 60 s."
+      "next_action": "T022-A verificada localmente en f9d15ad: cierre iniciado dentro del SDK retenido antes de auth, recibo por conexión capturado, aborto del protocolo al vencer observación y join del mismo propietario; no se confunden descriptor/closed con salida del writer o ping. Pasan 7 casos con aiohttp real y loopback, 414 finales y full de 7425 más una xfail conocida; 863 archivos intactos y Ruff sin hallazgos. El caso anterior de propietario resistente que supera los 60 s permanece intacto e incumplido. T021 sigue in_progress; C06/C20 no evaluados. Completar con T022 las fronteras de salida real sin excluir el retiro del presupuesto ni redefinir dependencia sana; la regla de tres intentos corresponde a autonomía del agente, no a un circuito runtime obligatorio."
     },
     {
       "id": "T022",
@@ -1116,10 +1118,14 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": "Cerrar el inventario de SDK, productores, copias y recursos nativos, empezando por el transporte HA que conserva T021: socket, writer, reader, sesión propia/prestada y trabajo nativo. Precisar aborto, salida real y admisión del sucesor preservando los canales independientes. El inventario por sí solo no resuelve el incumplimiento de C20 ni habilita cerrar una sesión compartida o prestada."
+      "status": "in_progress",
+      "implementation_commits": [
+        "f9d15addfad76cb108eb26d2476e9ead36ee62cb"
+      ],
+      "evidence": [
+        "data/autonomous-roadmap-20261102/t022/a/evidence.json"
+      ],
+      "next_action": "T022-A verificada localmente en f9d15ad: retiro SDK de HA con dueño y recibo reales; 7 casos de SDK, 414 finales y full de 7425 más xfail conocida, 863 archivos intactos, Ruff sin hallazgos. El mapa inicial de 29 familias conserva seis grupos pendientes y no constituye inventario completo. Continuar K4: cleanup de Voces que lanza antes de leave/socket; probar todos los drains y cuerpos pendientes con store/controller reales, sin ACK ni reapertura antes del retiro. Seguir con K2 XVF: conservar thread/generación y drenaje real antes de reinicio. Faltan disposición de modelos/executors, productores legacy condicionales, copias internas y reconciliar mute/restore con T023/T024. C03/C04 siguen no evaluados; C20 resistente no resuelto."
     },
     {
       "id": "T023",
@@ -2300,7 +2306,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T021-C/recovery-cadence-and-confirmed-retirement",
+    "last_verified_unit": "T022-A/sdk-retirement-and-initial-resource-map",
     "user_priority_after_admin_unit": "T047"
   }
 }

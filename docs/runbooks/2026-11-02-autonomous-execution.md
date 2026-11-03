@@ -1459,3 +1459,60 @@ writer, reader, sesión y trabajo nativo, e identificar un aborto que permita
 demostrar su salida real antes del sucesor. Cerrar la sesión compartida afectaría
 a los canales independientes y no corresponde para una sesión prestada. Ese
 inventario no resuelve por sí solo el incumplimiento temporal registrado.
+
+## Propietarios del SDK y mapa inicial de recursos
+
+T022-A reproduce un cierre que nace en `receive()` del SDK, antes de que exista
+el propietario de cierre de KZA. El ensayo usa aiohttp 3.14.0, TCP y WebSockets
+reales contra un servidor de loopback; controla únicamente la hoja de escritura
+para conservar el cierre pendiente. El indicador `closed` ya era verdadero,
+pero el writer y el receptor seguían activos. La reconexión descartaba el socket
+de `_owned_sockets`. Los dos casos RED conservados reproducen esa pérdida de
+propiedad, con y sin aborto físico; no se atribuye al RED una admisión sucesora
+que no se hubiera observado antes de la limpieza del ensayo.
+
+El adaptador por socket captura el response y el recibo `protocol.closed` antes
+de autenticar, y conserva un único propietario para las llamadas `close` del
+SDK y de KZA. La captura utiliza campos privados comprobados con la versión
+instalada; una capacidad ausente conserva el socket como no retirado. La sesión
+inyectada no se reconfigura. La clasificación usa el tipo real para no confundir
+un mock con `spec` con un transporte del SDK.
+
+La observación de cinco segundos puede pedir el aborto del protocolo de esa
+conexión; después sigue esperando al mismo propietario. El aborto es una
+solicitud y el descriptor cerrado es sólo una parte del retiro. La tarea real
+de cierre, el writer HTTP, los pings capturados y el recibo de `connection_lost`
+deben terminar antes de retirar el socket y admitir su sucesor. Un recibo con
+error de desconexión acredita ese callback; uno cancelado no lo acredita.
+Se conservan las referencias a pings antes de que el SDK las borre. El drenaje
+poda tareas completadas y espera sólo pendientes, permitiendo que corran sus
+callbacks de descarte. Estas secuencias están documentadas en las fuentes
+primarias de [ClientWebSocketResponse](https://raw.githubusercontent.com/aio-libs/aiohttp/v3.14.0/aiohttp/client_ws.py)
+y [ResponseHandler](https://raw.githubusercontent.com/aio-libs/aiohttp/v3.14.0/aiohttp/client_proto.py).
+
+Los siete casos comprueban autoclose, aborto, cancelación del observador,
+observación vencida, sesión propia/prestada, ping todavía activo tras borrar su
+campo y ping ya fallido al comenzar el cleanup. Un peer que retiene el ACK de
+CLOSE permite verificar aborto automático, salida real y reconexión. Otro socket
+de la misma sesión prestada responde antes y después del cierre de KZA. Es un
+peer externo adicional; no equivale a comprobar los tres canales HA gestionados
+simultáneamente. El caso que retiene writer/ping sigue pendiente aunque se cierre
+el descriptor. El caso anterior que supera los 60 segundos permanece intacto.
+
+El mapa estático inicial registra 29 familias con creador, dueño, copias,
+participantes, cleanup y pruebas disponibles. Conserva seis grupos pendientes:
+disposición de modelos/executors compartidos; salida real del thread XVF;
+productores y datasets legacy condicionales; cleanup de Voces si `unmount`
+lanza; disposición interna de SDK y copias; e inventario completo de productores,
+destinos, mute y restauración. El mapa no constituye un inventario completo.
+Sus fuentes y lagunas están en
+`data/autonomous-roadmap-20261102/t022/a/resource-inventory.json`.
+
+T021 y T022 siguen `in_progress`; C03/C04/C06/C20 conservan su aceptación
+pendiente. Los transportes son locales y sintéticos respecto de HA; no se
+prueban hardware, cuentas reales, permisos de servicios, latencia física ni una
+garantía universal de 60 segundos. T022-A quedó verificada localmente en
+`f9d15ad`: siete casos del SDK, 414 finales y la suite completa de 7425 pruebas,
+más una xfail conocida, en 553,35 segundos. Los 863 archivos congelados quedaron
+intactos y Ruff no encontró hallazgos. Evidencia:
+`data/autonomous-roadmap-20261102/t022/a/evidence.json`.
