@@ -80,33 +80,41 @@ class DashboardApplication(FastAPI):
 
         async def guarded_send(message):
             nonlocal guard
-            if message['type'] == 'http.response.start':
-                # Logout publishes only its fixed revocation receipt and cookie removal.
-                if not (scope.get('method') == 'POST' and scope.get('path') == '/api/admin/auth/logout'):
-                    guard = scope.get('kza.dashboard_delivery_guard')
-                if not current():
-                    await send({'type': 'http.response.start', 'status': 403, 'headers': [
-                        (b'content-type', b'application/json'), (b'cache-control', b'no-store'),
-                        (b'content-length', str(len(denial)).encode('ascii'))]})
-                    await send({'type': 'http.response.body', 'body': denial})
-                    raise _PrivateDeliveryRetired()
-                elif guard is not None:
-                    message = {**message, 'headers': [
-                        (key, value) for key, value in message.get('headers', [])
-                        if key.lower() != b'cache-control'
-                    ] + [(b'cache-control', b'no-store')]}
-            elif message['type'] == 'http.response.body':
-                if not current():
-                    # Headers may already have reached the peer. Closing the response
-                    # preserves its framing and never presents a replacement as success.
-                    raise _PrivateDeliveryRetired()
-            await send(message)
+            try:
+                if message['type'] == 'http.response.start':
+                    # Logout publishes only its fixed revocation receipt and cookie removal.
+                    if not (scope.get('method') == 'POST' and scope.get('path') == '/api/admin/auth/logout'):
+                        guard = scope.get('kza.dashboard_delivery_guard')
+                    if not current():
+                        await send({'type': 'http.response.start', 'status': 403, 'headers': [
+                            (b'content-type', b'application/json'), (b'cache-control', b'no-store'),
+                            (b'content-length', str(len(denial)).encode('ascii'))]})
+                        await send({'type': 'http.response.body', 'body': denial})
+                        raise _PrivateDeliveryRetired()
+                    elif guard is not None:
+                        message = {**message, 'headers': [
+                            (key, value) for key, value in message.get('headers', [])
+                            if key.lower() != b'cache-control'
+                        ] + [(b'cache-control', b'no-store')]}
+                elif message['type'] == 'http.response.body':
+                    if not current():
+                        # Headers may already have reached the peer. Closing the response
+                        # preserves its framing and never presents a replacement as success.
+                        raise _PrivateDeliveryRetired()
+                await send(message)
+            finally:
+                message = None
 
         owner = getattr(self.state, 'rest_delivery_owner', None)
         try:
             if owner is not None and (scope.get('path') == '/api/conversations'
                     or scope.get('path', '').startswith('/api/voices')
-                    or scope.get('path') == '/api/evaluation' or scope.get('path', '').startswith('/api/evaluation/')):
+                    or scope.get('path') == '/api/evaluation' or scope.get('path', '').startswith('/api/evaluation/')
+                    or scope.get('path') in {'/api/admin/auth/credentials','/api/admin/auth/credential-attempts'}
+                    or scope.get('path','').startswith(('/api/admin/auth/credentials/','/api/admin/auth/credential-attempts/'))):
+                if not isinstance(owner,RestDeliveryOwner):
+                    await RestDeliveryOwner._error(guarded_send,503)
+                    return
                 await owner.scope(super().__call__, scope, receive, guarded_send)
             else:
                 await super().__call__(scope, receive, guarded_send)
@@ -177,24 +185,27 @@ class RestDeliveryOwner:
             finally:
                 message = None
         async def owned_send(message):
-            if len(transmissions)>=2:
-                raise RuntimeError('rest_transport_capacity')
-            if (message.get('type')=='http.response.body' and message.get('body') and operation.private_envelope
-                    and (self.connection(operation.connection,reader=operation.reader,channel=operation.channel) is None
-                        or operation.guard is None or operation.guard() is not True
-                        or (operation.sources or operation.revision is not None) and not operation.metadata().available(self.retention.policy,self.retention.clock()))):
-                message = {'type':'http.response.body','body':b'{"snapshot":null}'}
-            task = asyncio.create_task(transmit(message),context=Context())
-            message = None
-            transmissions.add(task)
-            def finished(done):
-                transmissions.discard(done)
-                if not done.cancelled():
-                    done.exception()
-            task.add_done_callback(finished,context=Context())
-            result = await asyncio.shield(task)
-            if result is RestResult.FAILED:
-                raise RuntimeError('rest_transport_failed')
+            try:
+                if len(transmissions)>=2:
+                    raise RuntimeError('rest_transport_capacity')
+                if (message.get('type')=='http.response.body' and message.get('body') and operation.private_envelope
+                        and (self.connection(operation.connection,reader=operation.reader,channel=operation.channel) is None
+                            or operation.guard is None or operation.guard() is not True
+                            or (operation.sources or operation.revision is not None) and not operation.metadata().available(self.retention.policy,self.retention.clock()))):
+                    message = {'type':'http.response.body','body':b'{"snapshot":null}'}
+                task = asyncio.create_task(transmit(message),context=Context())
+                message = None
+                transmissions.add(task)
+                def finished(done):
+                    transmissions.discard(done)
+                    if not done.cancelled():
+                        done.exception()
+                task.add_done_callback(finished,context=Context())
+                result = await asyncio.shield(task)
+                if result is RestResult.FAILED:
+                    raise RuntimeError('rest_transport_failed')
+            finally:
+                message = None
         try:
             await app(scope,receive,owned_send)
             return RestResult.COMPLETE

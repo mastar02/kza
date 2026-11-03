@@ -138,6 +138,8 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
     path, method = request.url.path, request.scope.get("method", "GET")
     if path in {"/api/admin/auth/whoami", "/api/admin/auth/logout"}:
         return frozenset()
+    if path in {"/api/admin/auth/credentials","/api/admin/auth/credential-attempts"} or path.startswith(("/api/admin/auth/credentials/","/api/admin/auth/credential-attempts/")):
+        return frozenset({DashboardPermission.AUTH_MANAGE})
     read = method in {"GET", "HEAD", "OPTIONS"}
     if path == "/api/admin/users" and read:
         return frozenset({DashboardPermission.ADMIN_MANAGE})

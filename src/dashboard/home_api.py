@@ -151,7 +151,7 @@ def register_home_routes(
     async def private_response_policy(request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Prevent storage of private responses, including handled HTTP errors."""
         response = await call_next(request)
-        if request.url.path.startswith(("/api/home/", "/api/routines/", "/api/memory", "/api/voices", "/api/conversations", "/api/ha/actions")) or request.url.path == "/api/routines" or request.url.path == "/api/evaluation" or request.url.path.startswith("/api/evaluation/"):
+        if request.url.path.startswith(("/api/home/", "/api/routines/", "/api/memory", "/api/voices", "/api/conversations", "/api/ha/actions", "/api/admin/auth/credentials", "/api/admin/auth/credential-attempts")) or request.url.path == "/api/routines" or request.url.path == "/api/evaluation" or request.url.path.startswith("/api/evaluation/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 

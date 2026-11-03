@@ -919,3 +919,56 @@ La siguiente unidad de T013 conectará esta fachada con HTTP y la entrega
 revocable del secreto inicial, y después con Accesos y las vistas de rol NEXO.
 Esta unidad no expone emisión HTTP ni acepta criterios domésticos. T047 conserva
 su verificación local; no hubo cambios de producción.
+
+## Administración HTTP de credenciales
+
+Cinco rutas bajo /api/admin/auth exponen el catálogo de credentials, la consulta
+de credential-attempts y los comandos POST, PUT y DELETE. Todas requieren
+auth:manage, Authority real y los propietarios de trabajo y entrega. La ausencia
+o invalidez de esas dependencias impide operar credenciales. El autenticador
+global conserva su contrato; la exigencia nativa se comprueba antes del cuerpo
+y de los comandos, sin habilitar operaciones mediante el modo legacy standalone. Personas, cuentas canónicas, perfiles vocales y DashboardRole siguen
+siendo autoridades separadas.
+
+El cuerpo JSON tiene límite de 64 KiB y campos cerrados. Rechaza claves
+duplicadas, números no finitos, revisiones fuera del rango nativo, selecciones
+duplicadas y texto que no pueda codificarse en UTF-8. Los errores 422 son fijos
+y no reflejan valores recibidos. No se exige una fecha futura al parsear: una
+intención ya terminada debe poder reconciliarse después de su vencimiento.
+Las primeras ejecuciones siguen sujetas a las guardias temporales nativas.
+
+La emisión de evaluación usa un proveedor diferido con VoiceRegistry y
+PreparedEvaluationScope real. Comprueba que el ledger corresponda al propietario
+de la entrega. El journal se consulta antes de preparar fuentes; el cliente no
+puede aportar hashes de fuentes ni usar la compatibilidad nativa sin proof.
+GET devuelve metadatos; sólo la primera emisión aplicada incluye el secreto.
+Un login administrativo nuevo puede consultar el recibo, pero no repetir la
+mutación bajo el namespace de otra sesión ni recuperar el secreto.
+
+CredentialResponse conserva el emisor original y vincula una sola vez el lease
+del secreto emitido, con la revisión exacta del recibo. Ese guardia permanece en
+el scope exterior tras finalizar la respuesta interna. Verifica sesión, target
+y cierre del propietario antes de headers y de la entrega real del cuerpo,
+incluso detrás del buffering del framework. Un target revocado o revisado entre
+commit y lookup no puede convertirse en un lease posterior.
+
+La secuencia preparar, ejecutar, serializar y enviar queda retenida por el
+propietario administrativo y RestDeliveryOwner; el task devuelve únicamente
+RestResult. No usa tickets, snapshots ni ACK de Voces para completar operaciones
+administrativas. Los mensajes y secretos se limpian en las salidas de error,
+incluida la capacidad del transporte. Cancelar el observador no cancela el
+trabajo nativo ni convierte un replay en una nueva emisión.
+
+La suite completa pasa 6705 pruebas y conserva una xfail conocida. Los 65 casos
+específicos de HTTP pasan; la matriz general incluye además las cinco rutas
+nuevas. Ruff no informa errores y los hashes de 803 fuentes permanecieron
+iguales durante la corrida final. Ambas revisiones independientes están
+cerradas. La primera corrida detectó 15 diferencias de precedencia de
+validación; se corrigió su ubicación preservando el contrato global y se añadió
+la matriz con Authority real y el rechazo de bearer legacy sin esa autoridad.
+Los resultados y logs se conservan en
+`data/autonomous-roadmap-20261102/t013/credential-http-evidence.json`.
+
+La siguiente unidad añadirá el catálogo acotado de muestras del propio
+evaluador y conectará Accesos y la vista de evaluación NEXO con estas rutas. El refactor visual T047 conserva su verificación local. No se despliega
+producción ni se aceptan criterios domésticos mediante esta unidad.
