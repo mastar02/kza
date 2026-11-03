@@ -117,12 +117,13 @@ class _ModelResourceOwner:
 
 
 class STTExecutorOwner(_ModelResourceOwner):
-    """Own graph-created Whisper executors and their shared borrowers."""
+    """Own graph-created Whisper/Parakeet resources after their borrowers drain."""
 
     def __init__(self) -> None:
+        from src.stt.parakeet_stt import ParakeetSTT
         from src.stt.whisper_fast import FastWhisperSTT
 
-        super().__init__((FastWhisperSTT,))
+        super().__init__((FastWhisperSTT, ParakeetSTT))
 
 
 class TTSModelOwner(_ModelResourceOwner):
