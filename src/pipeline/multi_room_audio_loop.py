@@ -384,6 +384,7 @@ class MultiRoomAudioLoop:
         self._ambient_tap = None
         self._ambient_transcriber = None
         self._wake_vad_predictors: dict[str, object] = {}  # one native recurrent state per room
+        self._wake_vad_owned: dict[int, object] = {}  # includes late, unpublished loads
 
         self._watchdog_enabled = stream_watchdog_enabled
         self._watchdog_timeout_s = stream_watchdog_no_frames_timeout_s
@@ -792,6 +793,7 @@ class MultiRoomAudioLoop:
                         pass
                 if failures:
                     raise failures[0]
+                await self._retire_wake_predictors()
 
             async def finish_xvf():
                 await asyncio.shield(xvf_close)
@@ -989,7 +991,7 @@ class MultiRoomAudioLoop:
         await self._sync_direction_observers()
 
     def _load_capture_models(self, rs: RoomStream) -> None:
-        from src.ambient.segmenter import make_silero_predictor
+        from src.ambient.segmenter import _SileroPredictor, make_silero_predictor
         if self._closed:
             return
         rs.wake_detector.load()
@@ -998,6 +1000,8 @@ class MultiRoomAudioLoop:
         if rs.room_id not in self._wake_vad_predictors:
             try:
                 predictor = make_silero_predictor()
+                if issubclass(type(predictor), _SileroPredictor):
+                    self._wake_vad_owned[id(predictor)] = predictor
                 if self._closed:
                     predictor.reset()
                 else:
@@ -1006,6 +1010,26 @@ class MultiRoomAudioLoop:
                 logger.warning('Wake VAD unavailable: %s', type(error).__name__)
                 if not self._closed:
                     self._wake_vad_predictors[rs.room_id] = False
+
+    async def _retire_wake_predictors(self) -> None:
+        """Retire owned models only after capture resets and native work drain."""
+        owned = tuple(self._wake_vad_owned.items())
+
+        async def close(predictor):
+            await predictor.begin_close()
+
+        results = await asyncio.gather(
+            *(close(predictor) for _, predictor in owned), return_exceptions=True,
+        )
+        failures = []
+        for (identity, _), result in zip(owned, results):
+            if isinstance(result, BaseException):
+                failures.append(result)
+            else:
+                self._wake_vad_owned.pop(identity)
+        if failures:
+            raise failures[0]
+        self._wake_vad_predictors.clear()
 
     def _apply_xvf_tuning(self) -> None:
         """Aplica el tuning configurado al DSP (EN RAM). Fail-open por param.

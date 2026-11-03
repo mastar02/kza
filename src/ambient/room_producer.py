@@ -74,11 +74,13 @@ class RoomProducer:
         self, room_id: str, factory, *, require_cleanup: bool = False, boundary_fn=None,
         source_fn: Callable[[str, float], MemorySource] | None = None,
         epoch_available: Callable[[object, str], bool] | None = None,
+        owns_segmenter: bool = False,
     ):
         if source_fn is not None and not callable(epoch_available):
             raise ValueError('ambient_admission_validator_required')
         self.room_id, self._factory = room_id, factory
         self._require_cleanup = require_cleanup
+        self._owns_segmenter = owns_segmenter
         self._segmenter = None
         self._oldest = None
         self._boundary = CaptureBoundary(None, float("-inf"))
@@ -119,6 +121,10 @@ class RoomProducer:
                 reset = getattr(segmenter, "reset", None)
                 if callable(reset):
                     reset()
+                if self._owns_segmenter:
+                    from src.ambient.segmenter import UtteranceSegmenter
+                    if issubclass(type(segmenter), UtteranceSegmenter):
+                        segmenter.close()
             except Exception as error:
                 self._reset_pending = True
                 self._error = RoomProducerError.RESET
@@ -150,6 +156,9 @@ class RoomProducer:
     def _ensure_segmenter(self):
         if self._segmenter is None:
             segmenter = self._factory()
+            if self._owns_segmenter:
+                # Keep a rejected owned candidate available for actual cleanup.
+                self._segmenter = segmenter
             if self._require_cleanup and (
                 not callable(getattr(segmenter, "reset", None))
                 or not hasattr(segmenter, "oldest_timestamp")
@@ -329,7 +338,7 @@ class RoomProducer:
         await self._call(self._prune)
 
     async def discard_private(self) -> bool:
-        """Reset actual VAD/preroll after its worker exits, keeping it reusable."""
+        """Discard segment state on its worker; the room may create fresh state."""
         self.ready.clear()
         return await self._call(self._discard)
 

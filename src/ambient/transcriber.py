@@ -56,9 +56,11 @@ class AmbientTranscriber:
         archiver: AudioArchiver | None = None,
         privacy=None,
         close_timeout_s: float = 1,
+        *, owns_segmenters: bool = False,
     ):
         self._tap = tap
         self._segmenter_factory = segmenter_factory
+        self._owns_segmenters = owns_segmenters
         self._stt = ambient_stt
         self._tagger = tagger
         self._doa = doa_estimator
@@ -122,6 +124,7 @@ class AmbientTranscriber:
         for room_id in self._rooms:
             self._room_states[room_id] = RoomProducer(room_id, self._segmenter_factory,
                 require_cleanup=self._privacy is not None,
+                owns_segmenter=self._owns_segmenters,
                 boundary_fn=self._privacy.scopes.buffer_boundary if self._privacy is not None else None,
                 source_fn=buffer_source if privacy is not None else None,
                 epoch_available=epoch_available if privacy is not None else None)
@@ -782,20 +785,25 @@ def build_ambient_path(
     seg_cfg = ambient_cfg.get("segmenter", {}) or {}
 
     def segmenter_factory() -> UtteranceSegmenter:
-        # Predictor Silero POR ROOM (review final 2026-06-06): el modelo es
-        # stateful (GRU) y el segmenter lo resetea en cada límite de utterance.
-        # Compartirlo entre rooms haría que el cierre de una room corrompa el
-        # estado de la otra a mitad de utterance. El modelo pesa ~2MB: N copias
-        # es trivial frente al bug.
-        return UtteranceSegmenter(
-            vad_predict=make_silero_predictor(),
-            vad_col=ambient_cfg.get("vad_col", 2),
-            speech_threshold=seg_cfg.get("speech_threshold", 0.5),
-            close_silence_ms=seg_cfg.get("close_silence_ms", 700),
-            preroll_ms=seg_cfg.get("preroll_ms", 500),
-            max_segment_s=seg_cfg.get("max_segment_s", 30.0),
-            min_speech_ms=seg_cfg.get("min_speech_ms", 300),
-        )
+        # Each room owns a separate recurrent model and its terminal cleanup.
+        from src.ambient.segmenter import _SileroPredictor
+
+        predictor = make_silero_predictor()
+        try:
+            return UtteranceSegmenter(
+                vad_predict=predictor,
+                owns_vad_predictor=True,
+                vad_col=ambient_cfg.get("vad_col", 2),
+                speech_threshold=seg_cfg.get("speech_threshold", 0.5),
+                close_silence_ms=seg_cfg.get("close_silence_ms", 700),
+                preroll_ms=seg_cfg.get("preroll_ms", 500),
+                max_segment_s=seg_cfg.get("max_segment_s", 30.0),
+                min_speech_ms=seg_cfg.get("min_speech_ms", 300),
+            )
+        except BaseException:
+            if issubclass(type(predictor), _SileroPredictor):
+                predictor.close()
+            raise
 
     sp_cfg = ambient_cfg.get("speaker", {}) or {}
     identifier = SpeakerIdentifier(
@@ -875,6 +883,7 @@ def build_ambient_path(
     transcriber = AmbientTranscriber(
         tap=tap,
         segmenter_factory=segmenter_factory,
+        owns_segmenters=True,
         ambient_stt=ambient_stt,
         tagger=tagger,
         doa_estimator=DoAEstimator(raw_first_col=ambient_cfg.get("raw_first_col", 2)),

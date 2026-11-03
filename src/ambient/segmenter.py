@@ -7,6 +7,9 @@ a col 0 (peor señal para VAD, pero funcional).
 """
 from __future__ import annotations
 
+import asyncio
+from contextlib import contextmanager
+from contextvars import Context
 import logging
 import threading
 from collections import deque
@@ -22,43 +25,235 @@ logger = logging.getLogger(__name__)
 _SILERO_LOAD_LOCK = threading.Lock()
 
 
-def make_silero_predictor() -> Callable[[np.ndarray], float]:
-    """Create a stateful Silero predictor with serialized inference and reset.
+class _SileroLease:
+    def __init__(self, owner):
+        self.owner = owner
+        self.active = True
 
-    Callers processing separate audio streams must own separate predictors.
-    The lock covers the entire chunk, including all native inference windows.
+class _SileroLifecycle:
+    """Retain this adapter's real operations without owning its callers' data."""
+
+    def _silero_initialize(self) -> None:
+        self._silero_condition = threading.Condition()
+        self._silero_local = threading.local()
+        self._silero_active = 0
+        self._silero_sealed = False
+        self._silero_close_started = False
+        self._silero_close_owner = None
+        self._silero_close_done = threading.Event()
+        self._silero_failure = None
+        self._silero_closing = None
+
+    def _silero_current(self):
+        lease = getattr(self._silero_local, "lease", None)
+        return lease if lease is not None and lease.owner is self and lease.active else None
+
+    @contextmanager
+    def _silero_admit(self):
+        lease = self._silero_current()
+        owned = lease is None
+        if owned:
+            with self._silero_condition:
+                if self._silero_sealed:
+                    raise RuntimeError("silero_closed")
+                lease = _SileroLease(self)
+                self._silero_active += 1
+        previous = getattr(self._silero_local, "lease", None)
+        self._silero_local.lease = lease
+        try:
+            yield
+        finally:
+            self._silero_local.lease = previous
+            if owned:
+                with self._silero_condition:
+                    lease.active = False
+                    self._silero_active -= 1
+                    self._silero_condition.notify_all()
+
+    def _silero_require_close_caller(self) -> None:
+        if self._silero_current() is not None:
+            raise RuntimeError("silero_close_from_worker")
+        with self._silero_condition:
+            if (self._silero_close_owner is threading.current_thread()
+                    and not self._silero_close_done.is_set()):
+                raise RuntimeError("silero_close_from_owner")
+
+    def request_close(self) -> None:
+        """Seal admission using memory only, without waiting for model locks."""
+        with self._silero_condition:
+            self._silero_sealed = True
+            self._silero_condition.notify_all()
+
+    def wait_closed(self) -> None:
+        """Drain actual operations and drop only this adapter's Python references."""
+        self._silero_require_close_caller()
+        self.request_close()
+        with self._silero_condition:
+            own_close = not self._silero_close_started
+            if own_close:
+                self._silero_close_started = True
+                self._silero_close_owner = threading.current_thread()
+        if own_close:
+            failure = None
+            try:
+                with self._silero_condition:
+                    while self._silero_active:
+                        self._silero_condition.wait()
+                self._silero_release_resources()
+            except BaseException:
+                failure = "silero_close_failed"
+            with self._silero_condition:
+                self._silero_failure = failure
+                self._silero_close_owner = None
+                self._silero_close_done.set()
+        else:
+            self._silero_close_done.wait()
+        if self._silero_failure is not None:
+            raise RuntimeError(self._silero_failure)
+
+    def close(self) -> None:
+        """Synchronous retirement; async callers use begin_close or aclose."""
+        self.wait_closed()
+
+    def begin_close(self) -> asyncio.Task:
+        """Return the sole retained owner; never cancel this owner directly."""
+        self._silero_require_close_caller()
+        loop = asyncio.get_running_loop()
+        self.request_close()
+        with self._silero_condition:
+            if self._silero_closing is None:
+                async def finish():
+                    # Publish the task outside the condition even with eager tasks.
+                    await asyncio.sleep(0)
+                    await asyncio.to_thread(self.wait_closed)
+
+                self._silero_closing = loop.create_task(finish(), context=Context())
+                self._silero_closing.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception(),
+                    context=Context(),
+                )
+            return self._silero_closing
+
+    async def aclose(self) -> None:
+        """Keep the real retirement owner through repeated observer cancellation."""
+        closing = self.begin_close()
+        cancelled = False
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                cancelled = True
+        closing.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+
+class _SileroPredictor(_SileroLifecycle):
+    """Own one recurrent model; independent streams need separate predictors."""
+
+    def __init__(self, torch_module):
+        self._silero_initialize()
+        self._model_lock = threading.RLock()
+        self._torch = torch_module
+        self._model = None
+        self._utils = None
+        self._ready = False
+
+    def _load(self) -> None:
+        with self._silero_admit():
+            with self._model_lock:
+                if self._ready:
+                    return
+                # Only Hub loading/eval shares this global cache exclusion.
+                # Terminal retirement never acquires this global lock.
+                with _SILERO_LOAD_LOCK:
+                    self._model, self._utils = self._torch.hub.load(
+                        repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True,
+                    )
+                    self._model.eval()
+                self._ready = True
+                # The existing predictor never used the returned utility bundle.
+                self._utils = None
+
+    def __call__(self, chunk_mono: np.ndarray) -> float:
+        with self._silero_admit():
+            with self._model_lock:
+                win = probs = None
+                try:
+                    if not self._ready:
+                        raise RuntimeError("silero_not_loaded")
+                    if chunk_mono.dtype != np.float32:
+                        chunk_mono = chunk_mono.astype(np.float32)
+                    probs = []
+                    for i in range(0, len(chunk_mono) - 511, 512):
+                        win = self._torch.from_numpy(chunk_mono[i : i + 512])
+                        with self._torch.no_grad():
+                            probs.append(float(self._model(win, 16000).item()))
+                    if not probs:
+                        logger.warning(f"Silero predict: chunk de {len(chunk_mono)} samples (<512) — tratado como silencio")
+                        return 0.0
+                    return max(probs)
+                finally:
+                    chunk_mono = win = probs = None
+
+    def reset(self) -> None:
+        with self._silero_admit():
+            with self._model_lock:
+                if not self._ready:
+                    raise RuntimeError("silero_not_loaded")
+                self._model.reset_states()
+
+    def _silero_release_resources(self) -> None:
+        with self._model_lock:
+            self._model = None
+            self._utils = None
+            self._torch = None
+            self._ready = False
+
+
+def make_silero_predictor() -> Callable[[np.ndarray], float]:
+    """Create a separately owned recurrent predictor, loaded before returning.
+
+    The callable/reset contract and whole-chunk exclusion remain reusable until
+    terminal close. Retiring it releases only this adapter's Python references.
     """
     import torch  # torch PRIMERO (regla orden imports CUDA del proyecto)
 
-    # Native room factories can start concurrently. Torch Hub mutates one
-    # shared repository cache during first load; preserve serialized loading.
-    with _SILERO_LOAD_LOCK:
-        model, _utils = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True,
-        )
-        model.eval()
-    model_lock = threading.Lock()
-
-    def predict(chunk_mono: np.ndarray) -> float:
-        if chunk_mono.dtype != np.float32:
-            chunk_mono = chunk_mono.astype(np.float32)
-        with model_lock:
-            probs = []
-            for i in range(0, len(chunk_mono) - 511, 512):
-                win = torch.from_numpy(chunk_mono[i : i + 512])
-                with torch.no_grad():
-                    probs.append(float(model(win, 16000).item()))
-            if not probs:
-                logger.warning(f"Silero predict: chunk de {len(chunk_mono)} samples (<512) — tratado como silencio")
-                return 0.0
-            return max(probs)
-
-    def reset() -> None:
-        with model_lock:
-            model.reset_states()
-
-    predict.reset = reset
-    return predict
+    predictor = _SileroPredictor(torch)
+    failure = None
+    exit_code = None
+    try:
+        try:
+            predictor._load()
+        except KeyboardInterrupt:
+            failure = "interrupt"
+        except SystemExit as error:
+            failure = "exit"
+            code = error.code
+            exit_code = code if code is None or type(code) in (int, bool) else 1
+            code = None
+        except asyncio.CancelledError:
+            failure = "cancel"
+        except GeneratorExit:
+            failure = "generator"
+        except BaseException:
+            failure = "failed"
+        if failure is None:
+            return predictor
+        # Native admission/global/model locks have exited before cleanup.
+        predictor.close()
+    finally:
+        predictor = torch = None
+    # Raise fresh values after the SDK handler, without native cause/context.
+    if failure == "interrupt":
+        raise KeyboardInterrupt
+    if failure == "exit":
+        raise SystemExit(exit_code)
+    if failure == "cancel":
+        raise asyncio.CancelledError
+    if failure == "generator":
+        raise GeneratorExit
+    raise RuntimeError("silero_initialization_failed")
 
 
 class UtteranceSegmenter:
@@ -74,8 +269,11 @@ class UtteranceSegmenter:
         preroll_ms: int = 500,
         max_segment_s: float = 30.0,
         min_speech_ms: int = 300,
+        *, owns_vad_predictor: bool = False,
     ):
         self._vad_predict = vad_predict
+        self._owns_vad_predictor = owns_vad_predictor
+        self._closed = False
         self.sample_rate = sample_rate
         self.vad_col = vad_col
         self.speech_threshold = speech_threshold
@@ -109,6 +307,15 @@ class UtteranceSegmenter:
     def oldest_timestamp(self) -> float | None:
         """Timestamp of the oldest input that may still affect VAD state."""
         return self._state_since
+
+    def close(self) -> None:
+        """Retire an owned predictor on the serialized segmenter worker."""
+        self._closed = True
+        predictor = self._vad_predict
+        if self._owns_vad_predictor and issubclass(type(predictor), _SileroPredictor):
+            predictor.close()
+        self._vad_predict = None
+        self.reset()
 
     def reset(self) -> None:
         """Discard speech, preroll and recurrent VAD state on its native owner."""
@@ -160,6 +367,8 @@ class UtteranceSegmenter:
         opening: CaptureOpening | None = None,
     ) -> list[RawSegment]:
         """Procesar un chunk; devolver los segmentos cerrados (0 o 1)."""
+        if self._closed:
+            raise RuntimeError('ambient_segmenter_closed')
         if self._reset_pending:
             raise RuntimeError('ambient_segmenter_reset_pending')
         opening = self._opening_snapshot(opening, chunk)
