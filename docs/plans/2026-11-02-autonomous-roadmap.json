@@ -1120,12 +1120,14 @@
       "inclusion": "required",
       "status": "in_progress",
       "implementation_commits": [
-        "f9d15addfad76cb108eb26d2476e9ead36ee62cb"
+        "f9d15addfad76cb108eb26d2476e9ead36ee62cb",
+        "d6a8af201cab139c20d31ec8cc918275f10ae1c9"
       ],
       "evidence": [
-        "data/autonomous-roadmap-20261102/t022/a/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/a/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/b/evidence.json"
       ],
-      "next_action": "T022-A verificada localmente en f9d15ad: retiro SDK de HA con dueño y recibo reales; 7 casos de SDK, 414 finales y full de 7425 más xfail conocida, 863 archivos intactos, Ruff sin hallazgos. El mapa inicial de 29 familias conserva seis grupos pendientes y no constituye inventario completo. Continuar K4: cleanup de Voces que lanza antes de leave/socket; probar todos los drains y cuerpos pendientes con store/controller reales, sin ACK ni reapertura antes del retiro. Seguir con K2 XVF: conservar thread/generación y drenaje real antes de reinicio. Faltan disposición de modelos/executors, productores legacy condicionales, copias internas y reconciliar mute/restore con T023/T024. C03/C04 siguen no evaluados; C20 resistente no resuelto."
+      "next_action": "T022-B verificada localmente en d6a8af2: cleanup de Voces preserva el fallo, sella admisión y espera stores/cuerpos aunque fallen unmount, listener o reset; no ACK ni sucesor y sin cambios de permisos o estética. Seis casos RED con owner anterior pasan ahora, frontend 178, backend/empaquetado 254 y full Python 7425 más xfail conocida; 863 archivos intactos y Ruff sin hallazgos. Chromium normal y fallo nativo pasan; se retiene la entrega de un emptied auténtico, no se afirma decoder todavía ejecutándose. Continuar K2 XVF: retener hilo/generación, descartar lecturas tardías y esperar salida real antes de reinicio, integrando llamadores sin bloquear heartbeat sano. Seguir disposición de modelos/executors, productores legacy condicionales, copias internas e inventario completo/mute/restore con T023/T024. El mapa inicial de 29 familias sigue incompleto; C03/C04 no evaluados y C20 resistente de más de 60 s sigue abierto."
     },
     {
       "id": "T023",
@@ -2306,7 +2308,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-A/sdk-retirement-and-initial-resource-map",
+    "last_verified_unit": "T022-B/voice-cleanup-failure-containment",
     "user_priority_after_admin_unit": "T047"
   }
 }

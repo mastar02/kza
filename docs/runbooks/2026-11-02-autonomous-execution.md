@@ -1516,3 +1516,52 @@ garantía universal de 60 segundos. T022-A quedó verificada localmente en
 más una xfail conocida, en 553,35 segundos. Los 863 archivos congelados quedaron
 intactos y Ruff no encontró hallazgos. Evidencia:
 `data/autonomous-roadmap-20261102/t022/a/evidence.json`.
+
+## Retirada de Voces si falla la vista
+
+T022-B reproduce un `unmount` que lanza antes de que `leave()` admita los retiros
+del controlador, socket y audio. El owner conserva ese fallo aunque ya haya
+extraído y borrado la referencia al callback. Sella primero la admisión y prueba
+cada paso público de cleanup por separado. Las vistas, estilos, permisos,
+identidades de persona/perfil vocal y contratos del backend se conservan.
+
+El fallback limpia `profiles`, `captures` y `review` de forma independiente:
+un listener residual de perfiles puede lanzar antes de que un recorrido agregado
+llegue al audio. La espera de `controller.settled()` también es independiente
+de `reset()`, que puede fallar antes de alcanzar las acciones y cuerpos reales.
+El owner espera frames, acciones/canales, retiros de stores, comprobaciones
+auxiliares y disposición antes de resolver. Un fallo conserva el contexto
+bloqueado y devuelve `false`; no equivale a afirmar que cada disposición anidada
+terminó correctamente. Los callbacks sellados no pueden emitir ACK ni admitir
+un sucesor. `frames.catch` mantiene la entrega a `retryAfter` sin devolver su
+promesa de cierre, evitando esperar circularmente al propio frame.
+
+Los seis casos Node usan el store y controlador reales con hojas controladas
+de socket, HTTP y media: salida con/sin listener residual, cada cuerpo de personas,
+cuerpo de mutación o audio como última barrera independiente, y reset remoto
+que no puede olvidar el fallo y programar un retry. Compilar sólo el owner de
+`7f28aa4` en el cache de un proceso Node aislado produjo seis RED; el checkout
+quedó intacto. Los seis pasan con el cambio actual, y el frontend completo pasa
+178 casos. Las hojas Node no se presentan como un decoder nativo.
+
+El recorrido habitual de Chromium conserva login, vínculo manual, paginación,
+permisos, navegación y media, con 123 solicitudes y diez capturas de escritorio,
+390 y 320 px. Otro ensayo reutiliza la misma autoridad/registro reales con PCM
+sintético e inyecta el fallo antes del cleanup real, después de cargar una vista
+previa. La navegación Hogar→Voces pausa y retira el audio y revoca el Blob, pero
+el cierre sigue pendiente al retener la entrega de un `emptied` auténtico.
+No hay nuevo ACK, socket, montaje o consulta privada; tras entregar ese recibo,
+el resultado es `false`, aparece el bloqueo existente y la reapertura continúa
+denegada con la misma sesión y capacidades relevantes.
+
+Ese gate retrasa la entrega JavaScript de un evento confiable emitido por
+Chromium; no demuestra que su decoder siga ejecutándose. Tampoco mide C03,
+acepta el iPhone ni acredita la liberación de todas las copias internas. Los
+artefactos están en `data/autonomous-roadmap-20261102/t022/b/`; los anteriores de
+T047 permanecen intactos. Las 254 pruebas enfocadas de privacidad, permisos,
+canales y empaquetado pasan. T022-B quedó verificada localmente en `d6a8af2`:
+la suite Python completa pasó 7425 casos, más una xfail conocida, en 511,20
+segundos; 863 archivos intactos y Ruff sin hallazgos. Evidencia:
+`data/autonomous-roadmap-20261102/t022/b/evidence.json`.
+T022 conserva pendientes del inventario global; C03/C04/C06/C20 siguen
+sin aceptar y el caso HA no cooperativo que supera los 60 segundos no cambia.
