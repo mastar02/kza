@@ -304,6 +304,12 @@ class DashboardAuthority:
         self._retiring_users: set[str] = set()
         self._retired_users: frozenset[str] = frozenset()
         self._revision_admission: dict[str, int] = {}
+        self._credential_reservations: dict[str, dict] = {}
+        self._credential_revoking: set[str] = set()
+        self._task_mutations: dict[asyncio.Task, tuple] = {}
+        self._committed_tasks: set[asyncio.Task] = set()
+        self._active_commit_witness = None
+        self._attempts = MappingProxyType({})
         self._last_now = 0.0
         self._persisted_floor = 0.0
         self._ready = self._closed = self._failed = False
@@ -314,6 +320,8 @@ class DashboardAuthority:
         self._observed_digest: str | None = None
         self._observed_epoch = self._persisted_epoch = 0
         self._persisted_digest: str | None = None
+        from src.dashboard.credential_commands import NativeCredentialCommands
+        self.commands = NativeCredentialCommands(self)
 
     def _now(self) -> float:
         value = self._clock()
@@ -475,21 +483,101 @@ class DashboardAuthority:
                           if entry else self._credentials.get(digest))
             return bool(credential and self._account_current(credential.user_id)
                         and credential.expires_at > now and credential.revision == original.revision
-                        and (credential.identity not in self._revoking or credential.identity == allow_revoking)
+                        and (credential.identity not in (self._revoking|self._credential_revoking) or credential.identity == allow_revoking)
                         and (credential.revision >= self._revision_admission.get(credential.identity, 0)
                              or credential.identity == allow_revoking)
                         and credential.subject == original.subject and credential.role is original.role
                         and credential.user_id == original.user_id and credential.samples == original.samples
                         and _permissions(credential.role, credential.user_id) == original.permissions)
 
-    def _admit(self, action: str, args: tuple, guard: Callable[[], bool] | None = None) -> asyncio.Task:
+    def _reserve_credential_mutation_locked(self,identity,kind,revision=None,*,cas=False):
+        """Own only this mutation's admission through commit and publication."""
+        if self._closed or not cas and len(self._tasks)>=32:
+            raise RuntimeError('dashboard_authority_closed_or_busy')
+        writers = self._credential_reservations.get(identity,{})
+        if writers and (cas or any(value[2] for value in writers.values())):
+            raise AuthorityRejected('dashboard_credential_writer_busy')
+        owner = object()
+        self._credential_reservations.setdefault(identity,{})[owner] = kind,revision,cas
+        self._recompute_credential_admission_locked(identity)
+        return identity,owner
+
+    def _recompute_credential_admission_locked(self,identity):
+        writers = self._credential_reservations.get(identity,{})
+        revisions = [value[1] for value in writers.values() if value[1] is not None]
+        published = next((entry.revision for entry in self._credentials.values() if entry.identity==identity),0)
+        floor = max([published,*revisions])
+        if revisions:
+            self._revision_admission[identity] = floor
+        else:
+            self._revision_admission.pop(identity,None)
+        if any(value[0]=='revoke' for value in writers.values()):
+            self._credential_revoking.add(identity)
+        else:
+            self._credential_revoking.discard(identity)
+
+    def _release_credential_mutation_locked(self,reservation):
+        if reservation is None:
+            return
+        identity,owner = reservation
+        writers = self._credential_reservations.get(identity)
+        if writers is not None:
+            writers.pop(owner,None)
+            if not writers:
+                self._credential_reservations.pop(identity,None)
+        self._recompute_credential_admission_locked(identity)
+
+    def _release_task_mutation_locked(self,task):
+        self._release_credential_mutation_locked(self._task_mutations.pop(task,None))
+
+    async def _run_transaction(self,action,args,guard):
+        """Retain uncertainty once native commit starts, including publication failures."""
+        witness = threading.Event()
+        self._active_commit_witness = witness
+        try:
+            return await self._work.run(self._transaction,action,args,guard)
+        finally:
+            if witness.is_set():
+                self._committed_tasks.add(asyncio.current_task())
+            self._active_commit_witness = None
+
+    def _publish_state(self,state):
+        result,credentials,sessions,floor,digest,epoch,retired_users,attempts = state
+        with self._state_lock:
+            self._credentials = MappingProxyType(credentials)
+            self._sessions = MappingProxyType(sessions)
+            self._attempts = MappingProxyType(attempts)
+            self._retired_users = retired_users
+            self._retiring_users.difference_update(retired_users)
+            self._last_now = max(self._last_now,floor)
+            self._persisted_floor = max(self._persisted_floor,floor)
+            if not self._ready:
+                self._observed_digest,self._observed_epoch = digest,epoch
+            self._persisted_digest,self._persisted_epoch = digest,epoch
+            self._revoking.intersection_update(set(credentials)|set(sessions)|{entry.identity for entry in credentials.values()})
+            self._ready = True
+            self._observe_legacy()
+        return result
+
+    def _admit(self, action: str, args: tuple, guard: Callable[[], bool] | None = None, *, reservation=None) -> asyncio.Task:
         if self._closed or len(self._tasks) >= 32:
+            with self._state_lock:
+                self._release_credential_mutation_locked(reservation)
             raise RuntimeError("dashboard_authority_closed_or_busy")
-        task = asyncio.create_task(self._operate(action, args, guard), context=Context())
+        try:
+            task = asyncio.create_task(self._operate(action, args, guard), context=Context())
+        except BaseException:
+            with self._state_lock:
+                self._release_credential_mutation_locked(reservation)
+            raise
         self._tasks.add(task)
+        if reservation is not None:
+            self._task_mutations[task] = reservation
         def finished(done):
             self._tasks.discard(done)
-            if not done.cancelled():
+            if done.cancelled():
+                self._failed = True
+            else:
                 done.exception()
         task.add_done_callback(finished, context=Context())
         return task
@@ -497,31 +585,26 @@ class DashboardAuthority:
     async def _operate(self, action: str, args: tuple, guard: Callable[[], bool] | None) -> object:
         async with self._serial:
             try:
-                result, credentials, sessions, floor, digest, epoch, retired_users = await self._work.run(
-                    self._transaction, action, args, guard)
+                if action=='credential_command_run':
+                    result = await self.commands._run_locked(args[0])
+                else:
+                    state = await self._run_transaction(action,args,guard)
+                    result = self._publish_state(state)
                 with self._state_lock:
-                    self._credentials = MappingProxyType(credentials)
-                    self._sessions = MappingProxyType(sessions)
-                    self._retired_users = retired_users
-                    self._retiring_users.difference_update(retired_users)
-                    self._last_now = max(self._last_now, floor)
-                    self._persisted_floor = max(self._persisted_floor, floor)
-                    if not self._ready:
-                        self._observed_digest, self._observed_epoch = digest, epoch
-                    self._persisted_digest, self._persisted_epoch = digest, epoch
-                    self._revoking.intersection_update(set(credentials) | set(sessions) | {
-                        c.identity for c in credentials.values()})
-                    identities = {c.identity for c in credentials.values()}
-                    self._revision_admission = {k: v for k, v in self._revision_admission.items() if k in identities}
-                    self._ready = True
-                self._observe_legacy()
+                    self._release_task_mutation_locked(asyncio.current_task())
                 return result
-            except (PermissionError, AuthorityRejected):
+            except (PermissionError,AuthorityRejected):
+                if asyncio.current_task() in self._committed_tasks:
+                    self._failed = True
+                    raise RuntimeError('dashboard_authority_outcome_unknown') from None
+                with self._state_lock:
+                    self._release_task_mutation_locked(asyncio.current_task())
                 raise
             except BaseException:
                 self._failed = True
                 raise
             finally:
+                self._committed_tasks.discard(asyncio.current_task())
                 args = guard = None
 
     def _open(self) -> None:
@@ -550,32 +633,18 @@ class DashboardAuthority:
             self._open()
         if self._lease_fd is None:
             raise RuntimeError("dashboard_authority_not_initialized")
-        if guard is not None and guard() is not True:
+        command_action = action == "credential_command"
+        if not command_action and guard is not None and guard() is not True:
             raise PermissionError("dashboard_authority_revoked")
+        from src.dashboard.credential_journal import migrate_schema, read_attempts, read_metadata, validate_history
         now = self._now()
         with closing(sqlite3.connect(self.path, timeout=1)) as db, db:
             db.row_factory = sqlite3.Row
+            db.execute("BEGIN IMMEDIATE")
             if action == "initialize":
-                has_meta = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='auth_meta'").fetchone()
-                version = db.execute("SELECT value FROM auth_meta WHERE key='schema_version'").fetchone() if has_meta else None
-                if version is not None and version[0] not in {"1", "2"}:
-                    raise ValueError("unsupported_dashboard_authority_schema")
-                if has_meta and version is None:
-                    raise ValueError("invalid_dashboard_authority_schema")
-                if version is not None and version[0] == "2" and not db.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='retired_users'").fetchone():
-                    raise ValueError("missing_dashboard_account_retirements")
-                db.executescript(_SCHEMA)
-                db.execute("INSERT OR REPLACE INTO auth_meta VALUES ('schema_version','2')")
-            if not db.in_transaction:
-                db.execute("BEGIN IMMEDIATE")
-            meta = dict(db.execute("SELECT key,value FROM auth_meta"))
-            floor = max(now, float(meta.get("clock_floor", 0)))
-            _timestamp(floor)
-            epoch = int(meta.get("legacy_epoch", 0))
-            digest = meta.get("legacy_digest") or None
-            if epoch < 0:
-                raise ValueError("invalid_dashboard_authority_epoch")
+                migrate_schema(db,_SCHEMA)
+            persisted_floor,epoch,digest = read_metadata(db)
+            floor = max(now,persisted_floor)
             db.execute("DELETE FROM sessions WHERE expires_at<=?", (floor,))
             db.execute("DELETE FROM credentials WHERE expires_at<=?", (floor,))
             result = None
@@ -589,6 +658,8 @@ class DashboardAuthority:
                 db.executemany("INSERT OR REPLACE INTO auth_meta VALUES (?,?)", (
                     ("legacy_digest", digest or ""), ("legacy_epoch", str(epoch))))
             elif action == "issue":
+                if db.execute("SELECT 1 FROM credential_attempts WHERE credential_id=? AND kind='revoke' AND outcome='committed'",(args[0],)).fetchone():
+                    raise AuthorityRejected("dashboard_credential_retired")
                 if db.execute("SELECT count(*) FROM credentials").fetchone()[0] >= MAX_CREDENTIALS:
                     raise AuthorityRejected("dashboard_credential_capacity")
                 db.execute("INSERT INTO credentials VALUES (?,?,?,?,?,?,?,?,?)", args)
@@ -619,6 +690,8 @@ class DashboardAuthority:
                 db.execute("DELETE FROM sessions WHERE credential=?", args)
             elif action == "logout":
                 result = db.execute("DELETE FROM sessions WHERE digest=?", args).rowcount == 1
+            elif action == "credential_command":
+                result = self.commands._apply_sql(db,args[0],guard,floor)
             elif action == "refresh":
                 pass
             else:
@@ -632,10 +705,28 @@ class DashboardAuthority:
                 _identifier(row["user_id"])
                 _timestamp(row["retired_at"])
                 retired_users.add(row["user_id"])
-            if guard is not None and guard() is not True:
+            attempts = read_attempts(db)
+            validate_history(credentials,attempts,floor)
+            if command_action:
+                floor = max(floor,self._now())
+                result = self.commands._completed_sql(db,result,floor)
+                db.execute("INSERT OR REPLACE INTO auth_meta VALUES ('clock_floor',?)",(str(floor),))
+                attempts = read_attempts(db)
+                validate_history(credentials,attempts,floor)
+                if result.applied and guard() is not True:
+                    result = self.commands._retired_sql(db,result)
+                    credentials,sessions = self._read(db)
+                    floor = max(floor,self._now())
+                    result = self.commands._completed_sql(db,result,floor)
+                    db.execute("INSERT OR REPLACE INTO auth_meta VALUES ('clock_floor',?)",(str(floor),))
+                    attempts = read_attempts(db)
+                    validate_history(credentials,attempts,floor)
+            elif guard is not None and guard() is not True:
                 raise PermissionError("dashboard_authority_revoked")
+            if self._active_commit_witness is not None:
+                self._active_commit_witness.set()
             db.commit()
-        return result, credentials, sessions, floor, digest, epoch, frozenset(retired_users)
+        return result,credentials,sessions,floor,digest,epoch,frozenset(retired_users),attempts
 
     @staticmethod
     def _read(db: sqlite3.Connection) -> tuple[dict, dict]:
@@ -754,10 +845,11 @@ class DashboardAuthority:
             if original_current() is not True:
                 raise PermissionError('dashboard_grant_denied')
             revision = max(original.revision, self._revision_admission.get(identity, 0)) + 1
-            self._revision_admission[identity] = revision
-        args = (role.value, user_id, now, expires_at, revision,
-                json.dumps([s.to_dict() for s in samples], separators=(",", ":")), identity)
-        return await asyncio.shield(self._admit("revise", args, lambda: original_current() and self._account_current(user_id) and scope_current()))
+            encoded = json.dumps([sample.to_dict() for sample in samples],separators=(',',':'))
+            reservation = self._reserve_credential_mutation_locked(identity,'revise',revision)
+        args = (role.value,user_id,now,expires_at,revision,encoded,identity)
+        return await asyncio.shield(self._admit("revise",args,
+            lambda:original_current() and self._account_current(user_id) and scope_current(),reservation=reservation))
 
     async def login(self, token: str, *, replacing: DashboardLease | None = None) -> IssuedSession:
         """Issue a cookie, optionally replacing this browser's current session atomically."""
@@ -808,8 +900,11 @@ class DashboardAuthority:
         with self._state_lock:
             if not any(c.identity == identity for c in self._credentials.values()):
                 return False
-            self._revoking.add(identity)
-        return await asyncio.shield(self._admit("revoke_credential", (identity,), self._revocation_guard(actor, identity)))
+            current = self._revocation_guard(actor,identity)
+            if current() is not True:
+                raise PermissionError('dashboard_grant_denied')
+            reservation = self._reserve_credential_mutation_locked(identity,'revoke')
+        return await asyncio.shield(self._admit('revoke_credential',(identity,),current,reservation=reservation))
 
     def _revocation_guard(self, actor: DashboardLease, target: str) -> Callable[[], bool]:
         if type(actor.binding) is not str:

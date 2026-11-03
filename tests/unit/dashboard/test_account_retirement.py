@@ -304,7 +304,7 @@ async def test_durable_retirement_allows_retry_after_catalog_replace_failure(gra
 
 
 @pytest.mark.parametrize('version', ['1', '99'])
-async def test_schema_migration_rejects_unknown_version_before_creating_tables(tmp_path, version):
+async def test_invalid_schema_is_rejected_before_creating_tables(tmp_path, version):
     path = tmp_path / 'auth.db'
     with closing(sqlite3.connect(path)) as db, db:
         db.execute('CREATE TABLE auth_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)')
@@ -313,27 +313,23 @@ async def test_schema_migration_rejects_unknown_version_before_creating_tables(t
     before = path.read_bytes()
     service = DashboardAuthority(path, expected_token=lambda: 'synthetic-root')
     try:
-        if version == '99':
-            with pytest.raises(ValueError, match='unsupported_dashboard_authority_schema'):
-                await service.initialize()
-            assert path.read_bytes() == before
-        else:
+        reason = 'unsupported_dashboard_authority_schema' if version=='99' else 'invalid_dashboard_authority_table'
+        with pytest.raises(ValueError,match=reason):
             await service.initialize()
-            with closing(sqlite3.connect(path)) as db:
-                assert db.execute("SELECT value FROM auth_meta WHERE key='schema_version'").fetchone()[0] == '2'
-                assert db.execute('SELECT COUNT(*) FROM retired_users').fetchone()[0] == 0
+        assert path.read_bytes()==before
+        assert not service.available
     finally:
         await service.aclose()
 
 
-async def test_schema_two_missing_retirements_is_rejected_without_repair(graph):
+async def test_current_schema_missing_retirements_is_rejected_without_repair(graph):
     await graph.service.aclose()
     with closing(sqlite3.connect(graph.service.path)) as db, db:
         db.execute('DROP TABLE retired_users')
     before = graph.service.path.read_bytes()
     service = DashboardAuthority(graph.service.path, expected_token=lambda: graph.token)
     try:
-        with pytest.raises(ValueError, match='missing_dashboard_account_retirements'):
+        with pytest.raises(ValueError, match='invalid_dashboard_authority_table'):
             await service.initialize()
         assert graph.service.path.read_bytes() == before
         assert not service.available
@@ -348,6 +344,7 @@ async def test_schema_one_migration_preserves_valid_roles_and_sessions(graph):
     with closing(sqlite3.connect(graph.service.path)) as db, db:
         db.execute("UPDATE auth_meta SET value='1' WHERE key='schema_version'")
         db.execute('DROP TABLE retired_users')
+        db.execute('DROP TABLE credential_attempts')
     service = DashboardAuthority(graph.service.path, clock=lambda: graph.now[0], expected_token=lambda: graph.token,
                                   account_provider=graph.users.active_accounts)
     try:
@@ -357,5 +354,9 @@ async def test_schema_one_migration_preserves_valid_roles_and_sessions(graph):
         assert lease.principal.role is Role.HOME
         assert lease.principal.user_id == graph.target
         assert service.resolve(credential.token).current()
+        with closing(sqlite3.connect(service.path)) as db:
+            assert db.execute("SELECT value FROM auth_meta WHERE key='schema_version'").fetchone()[0]=='3'
+            assert db.execute('SELECT COUNT(*) FROM credential_attempts').fetchone()[0]==0
+            assert db.execute('SELECT COUNT(*) FROM retired_users').fetchone()[0]==0
     finally:
         await service.aclose()

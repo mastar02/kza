@@ -862,3 +862,60 @@ y purga; replay devuelve metadata y no genera ni recupera otro secreto. Antes
 de exponer emisión HTTP faltan esa reconciliación y ownership compartido con
 los writers nativos existentes. No se emitieron credenciales reales ni se
 aceptan criterios domésticos por esta unidad; T047 conserva su verificación local.
+
+## Comandos nativos de credenciales y reconciliación
+
+NativeCredentialCommands reúne emisión, revisión y revocación bajo una intención
+UUID canónica, el namespace del emisor original y el hash del comando solicitado.
+El journal de schema3 registra en la misma transacción el efecto y su recibo
+terminal, committed o no_effect. Sus 4096 marcadores no se purgan al vencer o
+revocar una credencial; al llenarse rechaza nuevas intenciones sin desalojarlos.
+Un replay exacto devuelve metadata antes de preparar fuentes o generar secretos.
+Cambiar el comando o la sesión emisora produce conflicto.
+
+El secreto sólo lo recibe el primer observador de una emisión aplicada. No queda
+en el journal, catálogo, recibo, repr ni resultado del task propietario. Cancelar
+ese observador cierra su slot y conserva el trabajo real; un replay no recupera
+el secreto perdido. Catalog y attempt requieren auth:manage vigente y devuelven
+metadata separada. Otro login administrativo puede reconciliar un recibo seguro;
+repetir la mutación sigue exigiendo el namespace original. HOME y EVALUATOR no
+obtienen esta administración.
+
+CAS exige la revisión esperada y comparte reservas por target con los writers
+nativos existentes. Cada propietario libera sólo su reserva al completar la
+publicación o probar un rechazo previo al commit. Las marcas ambientales de
+retiro de cuenta y revocación permanecen independientes. Las concesiones de
+evaluación de esta fachada requieren PreparedEvaluationScope real, obtenido
+desde metadatos, y revalidan selección, modalidad, fuentes y plazos en la guardia
+nativa final. Una guardia perdida revierte el savepoint y persiste no_effect con
+un snapshot releído. Una revisión propia conserva al emisor original.
+
+Entrar en commit vuelve incierta cualquier excepción posterior, incluida una
+excepción dentro de commit después de confirmar o durante la publicación.
+Authority cierra su disponibilidad y conserva la reserva; reabrir permite leer
+el recibo duradero sin regenerar el secreto. Cancelar el task propietario, aun
+antes del despacho, también cierra la autoridad. El observador público permanece
+protegido por shield y no cancela ese propietario.
+
+La migración de los esquemas 1 y 2 al 3 es atómica. Una base del esquema 3 debe conservar sus tablas,
+columnas, índice único de digest, claves temporales y recibos semánticamente
+válidos. El reloj crudo se valida antes de combinarlo con el actual, y ninguna
+emisión, sesión, retiro o recibo puede superar su reloj persistido. El cruce
+del journal impide que una restauración parcial reactive un target revocado o
+una revisión inferior ya retirada. No se afirma detectar el rollback completo
+de una base sin un ancla externa monotónica.
+
+La suite final pasa 6620 pruebas y conserva una xfail conocida. Las 153 pruebas
+cruzadas se solapan con ese total e incluyen 62 casos nuevos. Ruff no informa
+errores y los hashes de 800 fuentes permanecieron iguales durante la ejecución.
+Las revisiones independientes están cerradas. La primera corrida completa falló
+en tres fixtures antiguos y cuatro pruebas de temporización; los fixtures se
+corrigieron sin relajar los controles y los cuatro casos pasaron en repetición.
+Una segunda corrida quedó incompleta; la corrida final completa terminó con
+exit0 mediante un ejecutor separado y acotado. La evidencia enlaza todos los logs:
+`data/autonomous-roadmap-20261102/t013/credential-commands-evidence.json`.
+
+La siguiente unidad de T013 conectará esta fachada con HTTP y la entrega
+revocable del secreto inicial, y después con Accesos y las vistas de rol NEXO.
+Esta unidad no expone emisión HTTP ni acepta criterios domésticos. T047 conserva
+su verificación local; no hubo cambios de producción.
