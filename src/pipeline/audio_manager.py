@@ -57,6 +57,7 @@ class AudioManager:
         self._wake_factory = wake_factory or WakeWordDetector
 
         self._wake_model: WakeWordDetector | None = None
+        self._wake_closed = False
 
     def load_wake_word(self) -> None:
         """
@@ -65,6 +66,8 @@ class AudioManager:
         Soporta múltiples modelos separados por coma. Called by the serialized
         capture worker, never by the device callback or event loop.
         """
+        if self._wake_closed:
+            raise RuntimeError("wake_backend_closed")
         logger.info(f"Cargando wake word: {self.wake_word_model}")
 
         # Soportar múltiples modelos separados por coma
@@ -106,13 +109,17 @@ class AudioManager:
             self._wake_model.reset()
 
     def close_wake_word(self) -> None:
-        """Release a permanently stopped wake backend after its actual worker exit."""
+        """Retire the owned backend on the serialized capture cleanup worker."""
+        self._wake_closed = True
         model = self._wake_model
         if model is not None:
-            model.reset()
-            delete = getattr(model, 'delete', None)
-            if callable(delete):
-                delete()
+            if issubclass(type(model), WakeWordDetector):
+                model.close()
+            else:
+                model.reset()
+                delete = getattr(model, 'delete', None)
+                if callable(delete):
+                    delete()
             self._wake_model = None
 
     def detect_source_zone(self, audio: np.ndarray = None) -> str | None:

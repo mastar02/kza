@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 from src.application import (
     ApplicationFactories, ApplicationGraph, ApplicationModels,
-    SpeakerModelOwner, STTExecutorOwner, TTSModelOwner,
+    SpeakerModelOwner, STTExecutorOwner, TTSModelOwner, WakeModelOwner,
 )
 from src.core.settings_schema import (
     DEFAULT_LOCAL_LLM_GATEWAY,
@@ -627,6 +627,9 @@ async def build_application(
     shutdown.push_async_callback(speaker_models.aclose)
     speaker_models.add_borrower(voice_registry.begin_close)
     privacy_services.add_borrower(speaker_models.begin_close)
+    wake_models = WakeModelOwner()
+    shutdown.push_async_callback(wake_models.aclose)
+    privacy_services.add_borrower(wake_models.begin_close)
     diagnostic_services = await build_diagnostic_services(config, privacy=privacy_services, owner=erasure_services)
     metrics_emitter = diagnostic_services.emitter
     capture_erasure = await build_capture_erasure(config, privacy=privacy_services, owner=erasure_services)
@@ -1001,6 +1004,7 @@ async def build_application(
                         models=[room_wake_cfg.get("model", "hey_jarvis")],
                         threshold=room_wake_cfg.get("threshold", 0.5),
                     )
+                wake_models.add_model(wake_detector)
                 room_echo = EchoSuppressor(sample_rate=16000)
                 room_streams[room_key] = RoomStream(
                     room_id=room_key,
@@ -1192,6 +1196,7 @@ async def build_application(
             )
             stt_executors.add_borrower(multi_room_loop.begin_close)
             speaker_models.add_borrower(multi_room_loop.begin_close)
+            wake_models.add_borrower(multi_room_loop.begin_close)
             shutdown.push_async_callback(multi_room_loop.stop)
             logger.info(
                 f"MultiRoomAudioLoop created ({len(room_streams)} rooms: "
@@ -1379,6 +1384,7 @@ async def build_application(
     if callable(getattr(type(audio_loop), "begin_close", None)):
         stt_executors.add_borrower(audio_loop.begin_close)
         speaker_models.add_borrower(audio_loop.begin_close)
+        wake_models.add_borrower(audio_loop.begin_close)
     shutdown.push_async_callback(audio_loop.stop)
 
     # === Plan #2 OpenClaw — Compactor + Persister (opcionales) ===
@@ -1834,7 +1840,8 @@ async def build_application(
         close_dependencies=(
             ((dashboard.admin_work.begin_close,) if dashboard is not None else ())
             + ((multi_room_loop.begin_close,) if multi_room_loop is not None else ())
-            + (stt_executors.begin_close, tts_models.begin_close, speaker_models.begin_close)
+            + (stt_executors.begin_close, tts_models.begin_close, speaker_models.begin_close,
+               wake_models.begin_close)
         ),
     )
 
@@ -1851,6 +1858,7 @@ async def build_application(
         warmup_models=_warmup_models, presence_detector=presence_detector,
         ambient_path=ambient_path, nightly_trainer=nightly_trainer,
         stt_executors=stt_executors, tts_models=tts_models, speaker_models=speaker_models,
+        wake_models=wake_models,
     )
 
 

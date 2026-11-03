@@ -135,6 +135,15 @@ class TTSModelOwner(_ModelResourceOwner):
         super().__init__((KokoroTTS, DualTTS))
 
 
+class WakeModelOwner(_ModelResourceOwner):
+    """Own graph-created wake detectors after their capture borrowers drain."""
+
+    def __init__(self) -> None:
+        from src.wakeword.detector import WakeWordDetector
+
+        super().__init__((WakeWordDetector,))
+
+
 class SpeakerModelOwner(_ModelResourceOwner):
     """Own graph-created speaker encoders after their actual borrowers drain."""
 
@@ -186,6 +195,7 @@ class ApplicationGraph:
     stt_executors: STTExecutorOwner | None = None
     tts_models: TTSModelOwner | None = None
     speaker_models: SpeakerModelOwner | None = None
+    wake_models: WakeModelOwner | None = None
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     async def warmup(self) -> None:
@@ -282,6 +292,8 @@ class ApplicationGraph:
                 stopping.push_async_callback(self.tts_models.aclose)
             if self.speaker_models is not None:
                 stopping.push_async_callback(self.speaker_models.aclose)
+            if self.wake_models is not None:
+                stopping.push_async_callback(self.wake_models.aclose)
             stopping.push_async_callback(self.pipeline.stop)
             if self.ambient_path is not None:
                 stopping.push_async_callback(_stop_task, self.ambient_path, ambient_task)

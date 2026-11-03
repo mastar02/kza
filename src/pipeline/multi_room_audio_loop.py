@@ -779,14 +779,19 @@ class MultiRoomAudioLoop:
                     await asyncio.gather(watchdog, return_exceptions=True)
                 if health is not None:
                     await asyncio.gather(asyncio.shield(health), return_exceptions=True)
-                await asyncio.gather(*controllers, *drains, return_exceptions=True)
+                results = await asyncio.gather(*controllers, *drains, return_exceptions=True)
+                failures = [r for r in results[len(controllers):] if isinstance(r, BaseException)]
                 if self._pausing is not None:
+                    # Terminal room drains repeat and acknowledge reset after a
+                    # pause superseded by close; its controller may be rejected.
                     await asyncio.gather(asyncio.shield(self._pausing), return_exceptions=True)
                 if self._wake_clip_writer is not None and not isinstance(self._wake_clip_writer, WakeClipWriter):
                     try:
                         await asyncio.to_thread(self._wake_clip_writer.stop)
                     except Exception:
                         pass
+                if failures:
+                    raise failures[0]
 
             async def finish_xvf():
                 await asyncio.shield(xvf_close)

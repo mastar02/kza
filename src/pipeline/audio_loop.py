@@ -401,11 +401,19 @@ class AudioLoop:
             if isinstance(self.ambient_detector, AudioEventDetector):
                 drains.append(self.ambient_detector.begin_close())
             async def finish():
-                await asyncio.gather(*controllers, *drains, return_exceptions=True)
+                results = await asyncio.gather(*controllers, *drains, return_exceptions=True)
+                failures = [r for r in results[len(controllers):] if isinstance(r, BaseException)]
                 if self._pausing is not None:
+                    # Terminal room drains repeat and acknowledge reset after a
+                    # pause superseded by close; its controller may be rejected.
                     await asyncio.gather(asyncio.shield(self._pausing), return_exceptions=True)
                 if self.ambient_detector is not None:
-                    await self.ambient_detector.stop()
+                    try:
+                        await self.ambient_detector.stop()
+                    except BaseException as error:
+                        failures.append(error)
+                if failures:
+                    raise failures[0]
             self._closing = asyncio.create_task(finish())
         return self._closing
 
