@@ -19,12 +19,15 @@ import stat
 import threading
 import time
 from types import MappingProxyType
-from typing import Callable, Mapping
+from typing import TYPE_CHECKING, Callable, Mapping
 from uuid import uuid4
 
 from src.core.owned_work import OwnedBlockingWork
 from src.core.account_metadata import ActiveAccounts
 from src.core.reader_binding import ReaderBinding
+
+if TYPE_CHECKING:
+    from src.dashboard.evaluation_grants import EvaluationGrantCatalog
 
 
 class DashboardRole(StrEnum):
@@ -419,6 +422,26 @@ class DashboardAuthority:
         lease = DashboardLease(principal, ("session:" if session else "credential:") + digest, session is not None,
                                lambda: self._current(digest, principal, session is not None), self._now, self)
         return lease if lease.current() else None
+
+    def evaluation_grants(self, actor: DashboardLease) -> EvaluationGrantCatalog:
+        """Project only live choices from this original evaluator lease."""
+        if (type(actor) is not DashboardLease or actor._authority is not self
+                or actor.principal.role is not DashboardRole.EVALUATOR
+                or not actor.current(frozenset({DashboardPermission.EVALUATION_READ}))):
+            raise PermissionError('evaluation_catalog_denied')
+        from src.dashboard.evaluation_grants import EvaluationGrantCatalog, EvaluationGrantMetadata
+        with self._state_lock:
+            now = self._now()
+            if len(actor.principal.samples)>64:
+                raise ValueError('invalid_evaluation_catalog')
+            samples = tuple(sample for sample in actor.principal.samples if sample.expires_at>now)
+            grants = tuple(EvaluationGrantMetadata(sample.fingerprint_id,sample.modalities,
+                min(sample.expires_at,actor.principal.expires_at)) for sample in samples)
+            catalog = EvaluationGrantCatalog(actor,now,
+                min([actor.principal.expires_at,*[grant.expires_at for grant in grants]]),grants,samples)
+        if not catalog.current():
+            raise PermissionError('evaluation_catalog_retired')
+        return catalog
 
     def _usable(self) -> bool:
         return self._ready and not self._closed and not self._failed

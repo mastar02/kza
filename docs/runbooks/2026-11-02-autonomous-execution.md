@@ -974,3 +974,46 @@ La siguiente unidad añadirá el catálogo acotado de muestras del propio
 evaluador y conectará Accesos y la vista de evaluación NEXO con estas rutas.
 El refactor visual T047 conserva su verificación local. No se despliega
 producción ni se aceptan criterios domésticos mediante esta unidad.
+
+## Catálogo de concesiones del evaluador
+
+DashboardAuthority.evaluation_grants proyecta únicamente las concesiones del
+lease original de EVALUATOR, con evaluation:read vigente y de la misma
+Authority. Operator no accede a este catálogo aunque posea evaluation:read.
+El getter usa el snapshot de autorización y no consulta SQLite, VoiceRegistry,
+UserManager ni contenido de muestras.
+
+EvaluationGrantMetadata y EvaluationGrantCatalog son DTOs congelados. La
+proyección pública contiene observed_at, expires_at y hasta 64 filas con
+fingerprint_id, modalidades y vencimiento efectivo. No publica hashes, fuentes,
+nombres, Personas, perfiles, audio ni transcripciones. Cada fila se limita por
+su muestra y el lease; el catálogo vence con su primera fila. Un catálogo vacío
+vigente mantiene el límite finito de la sesión. La proyección nunca sustituye
+una sesión retirada por una lista vacía.
+
+GET /api/evaluation/grants rechaza parámetros de consulta y requiere Authority
+y propietario de entrega reales. No necesita un canal WebSocket ni tickets.
+Su scope conserva sources=(), private_envelope=False y el guardia original en
+la frontera exterior de HTTP. Las muestras originales, la sesión y el deadline
+se revalidan durante headers y buffering; el guardia sobrevive a la limpieza
+de la respuesta interna. Un catálogo retenido que vence se retira completo.
+Una petición nueva podrá devolver las concesiones restantes.
+
+El catálogo declara autorización, no disponibilidad del contenido. Una fuente
+retirada puede seguir figurando dentro del plazo concedido; el lector singular
+continúa comprobando existencia, modalidad y fuentes antes de entregar datos.
+El getter conserva el floor temporal en RAM y no añade persistencia: la frontera
+HTTP mantiene synchronize y las reglas de cierre de Authority existentes.
+
+La suite completa pasa 6750 pruebas y conserva una xfail conocida. Pasan 472
+casos cruzados, incluidos 41 nuevos; la matriz general también cubre la ruta.
+Ruff no informa errores y los hashes de 805 fuentes permanecieron iguales
+durante la corrida completa. Las revisiones independientes están cerradas.
+La prueba de contenido retirado usa el contrato LookupError del lector nativo;
+la expectativa inicial se corrigió sin modificar ese comportamiento. Evidencia:
+`data/autonomous-roadmap-20261102/t013/evaluator-catalog-evidence.json`.
+
+La siguiente unidad integrará el selector automático y las vistas de Accesos y
+Evaluación en NEXO. Los borradores de frontend se preparan fuera de src mientras
+se verifica este backend. No se modifican producción ni criterios de aceptación
+doméstica con esta unidad.

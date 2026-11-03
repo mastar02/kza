@@ -155,7 +155,8 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
         if read and ("/runs/" in path or path.endswith("/attempts")):
             return frozenset({DashboardPermission.ROUTINES_MANAGE})
         return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.ROUTINES_MANAGE})
-    if path == "/ws/evaluation" or (method == "GET" and path.startswith("/api/evaluation/samples/") and path.count("/") == 4):
+    if path == "/ws/evaluation" or (method == "GET" and (path == "/api/evaluation/grants"
+            or path.startswith("/api/evaluation/samples/") and path.count("/") == 4)):
         return frozenset({DashboardPermission.EVALUATION_READ})
     if path == "/api/voices" or path.startswith("/api/voices/"):
         if voice_person_scope_requested(request):

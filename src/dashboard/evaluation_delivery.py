@@ -5,7 +5,9 @@ import json
 
 from starlette.responses import Response
 
+from src.dashboard.authority import DashboardAuthority, DashboardLease
 from src.dashboard.evaluation_actor import EvaluationReadActor
+from src.dashboard.evaluation_grants import EvaluationGrantCatalog
 from src.dashboard.live_retention_types import EvaluationScopeFence, RevisionSet
 from src.dashboard.rest_delivery import RestOperation, RestResult
 from src.users.voice_evaluation import EvaluationProjection, VoiceEvaluationReader
@@ -109,3 +111,59 @@ class EvaluationResponse(Response):
             if type(projection) is EvaluationProjection:
                 projection.rows = []
             projection = state = ticket = body = snapshot = fence = send = None
+
+
+class EvaluationGrantsResponse(Response):
+    """Keep the original catalog guard through actual HTTP transmission."""
+
+    def __init__(self, owner, authority: DashboardAuthority, actor: DashboardLease) -> None:
+        super().__init__(content=b'')
+        self.owner,self.authority,self.actor = owner,authority,actor
+
+    async def __call__(self, scope, receive, send) -> None:
+        del receive
+        operation = scope.get('kza.rest_operation')
+        owner,authority,actor = self.owner,self.authority,self.actor
+        catalog = body = failure_send = None
+        started = False
+        try:
+            if type(operation) is not RestOperation:
+                raise RuntimeError('evaluation_catalog_owner_required')
+            operation.sources = ()
+            operation.private_envelope = False
+            operation.channel = 'evaluation:grants'
+            operation.revision = None
+            catalog = authority.evaluation_grants(actor)
+            if type(catalog) is not EvaluationGrantCatalog or catalog.actor is not actor:
+                raise ValueError('invalid_evaluation_catalog')
+            EvaluationGrantCatalog.__post_init__(catalog)
+            def guard(c=catalog,o=owner):
+                return not o.retention._closed and c.current()
+            operation.guard = guard
+            operation.expires_at = catalog.expires_at
+            scope['kza.dashboard_delivery_guard'] = guard
+            if not guard():
+                raise PermissionError('evaluation_catalog_retired')
+            body = json.dumps(catalog.public(),ensure_ascii=False,allow_nan=False,separators=(',',':')).encode()
+            started = True
+            await send({'type':'http.response.start','status':200,'headers':[
+                (b'content-type',b'application/json'),(b'cache-control',b'no-store')]})
+            if not guard():
+                raise PermissionError('evaluation_catalog_retired')
+            await send({'type':'http.response.body','body':body})
+        except (Exception,asyncio.CancelledError) as error:
+            status = 403 if isinstance(error,PermissionError) else 503
+            if not started:
+                failure_send = send
+        finally:
+            self.owner = self.authority = self.actor = None
+            catalog = body = owner = authority = actor = scope = send = operation = None
+        if failure_send is not None:
+            try:
+                await failure_send({'type':'http.response.start','status':status,'headers':[
+                    (b'content-type',b'application/json'),(b'cache-control',b'no-store')]})
+                await failure_send({'type':'http.response.body','body':b'{"detail":"evaluation_catalog_unavailable"}'})
+            except (Exception,asyncio.CancelledError):
+                pass
+            finally:
+                failure_send = None

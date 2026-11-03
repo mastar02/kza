@@ -105,3 +105,82 @@ class PreparedEvaluationScope:
                 and policy.lifecycle_generation==self.generation)
         except Exception:
             return False
+
+
+@dataclass(frozen=True,repr=False)
+class EvaluationGrantMetadata:
+    """One authorized choice without source proofs or sample content."""
+
+    fingerprint_id: str
+    modalities: frozenset[EvaluationModality]
+    expires_at: float
+
+    def __post_init__(self) -> None:
+        EvaluationGrantSelection(self.fingerprint_id,self.modalities,self.expires_at)
+        if self.expires_at<0:
+            raise ValueError('invalid_evaluation_grant_metadata')
+
+    def public(self) -> dict:
+        """Return a detached metadata row for the evaluator selector."""
+        return {'fingerprint_id':self.fingerprint_id,
+            'modalities':sorted(mode.value for mode in self.modalities),'expires_at':self.expires_at}
+
+
+@dataclass(frozen=True,repr=False)
+class EvaluationGrantCatalog:
+    """An exact projection of the original evaluator lease's live choices."""
+
+    actor: DashboardLease = field(repr=False)
+    observed_at: float
+    expires_at: float
+    grants: tuple[EvaluationGrantMetadata,...]
+    samples: tuple[EvaluationSample,...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        self._validate()
+        if not self.current():
+            raise PermissionError('evaluation_catalog_retired')
+
+    def _validate(self) -> None:
+        if (type(self.actor) is not DashboardLease or type(self.actor._authority) is not DashboardAuthority
+                or self.actor.principal.role is not DashboardRole.EVALUATOR
+                or type(self.actor.principal.samples) is not tuple or len(self.actor.principal.samples)>64
+                or any(type(sample) is not EvaluationSample for sample in self.actor.principal.samples)
+                or type(self.grants) is not tuple or len(self.grants)>64
+                or type(self.samples) is not tuple or len(self.samples)!=len(self.grants)
+                or any(type(value) not in (int,float) or not math.isfinite(value) or value<0
+                    for value in (self.observed_at,self.expires_at,self.actor.principal.expires_at))):
+            raise ValueError('invalid_evaluation_catalog')
+        expected = tuple(sample for sample in self.actor.principal.samples if sample.expires_at>self.observed_at)
+        if len(expected)!=len(self.samples) or any(a is not b for a,b in zip(expected,self.samples)):
+            raise ValueError('invalid_evaluation_catalog_samples')
+        for sample,grant in zip(self.samples,self.grants):
+            if (type(sample) is not EvaluationSample or type(grant) is not EvaluationGrantMetadata
+                    or grant.fingerprint_id!=sample.fingerprint_id or grant.modalities!=sample.modalities
+                    or grant.expires_at!=min(sample.expires_at,self.actor.principal.expires_at)):
+                raise ValueError('invalid_evaluation_catalog_grant')
+            EvaluationGrantMetadata.__post_init__(grant)
+        if (len({grant.fingerprint_id for grant in self.grants})!=len(self.grants)
+                or self.expires_at!=min([self.actor.principal.expires_at,*[grant.expires_at for grant in self.grants]])):
+            raise ValueError('invalid_evaluation_catalog_deadline')
+
+    def current(self) -> bool:
+        """Recheck only original authorization and exact deadlines, without I/O."""
+        try:
+            self._validate()
+            now = self.actor._clock()
+            if (type(now) not in (int,float) or not math.isfinite(now)
+                    or not self.observed_at<=now<self.expires_at
+                    or not self.actor.current(frozenset({'evaluation:read'}))):
+                return False
+            if any(self.actor.sample(sample.fingerprint_id) is not sample for sample in self.samples):
+                return False
+            return (self.actor.current(frozenset({'evaluation:read'}))
+                and self.actor._clock()<self.expires_at)
+        except Exception:
+            return False
+
+    def public(self) -> dict:
+        """Expose choices while keeping the original lease and proofs private."""
+        return {'observed_at':self.observed_at,'expires_at':self.expires_at,
+            'grants':[grant.public() for grant in self.grants]}
