@@ -1121,13 +1121,15 @@
       "status": "in_progress",
       "implementation_commits": [
         "f9d15addfad76cb108eb26d2476e9ead36ee62cb",
-        "d6a8af201cab139c20d31ec8cc918275f10ae1c9"
+        "d6a8af201cab139c20d31ec8cc918275f10ae1c9",
+        "92c28ac383583726235aac667ecda9e8be751143"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/b/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/b/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/c/evidence.json"
       ],
-      "next_action": "T022-B verificada localmente en d6a8af2: cleanup de Voces preserva el fallo, sella admisión y espera stores/cuerpos aunque fallen unmount, listener o reset; no ACK ni sucesor y sin cambios de permisos o estética. Seis casos RED con owner anterior pasan ahora, frontend 178, backend/empaquetado 254 y full Python 7425 más xfail conocida; 863 archivos intactos y Ruff sin hallazgos. Chromium normal y fallo nativo pasan; se retiene la entrega de un emptied auténtico, no se afirma decoder todavía ejecutándose. Continuar K2 XVF: retener hilo/generación, descartar lecturas tardías y esperar salida real antes de reinicio, integrando llamadores sin bloquear heartbeat sano. Seguir disposición de modelos/executors, productores legacy condicionales, copias internas e inventario completo/mute/restore con T023/T024. El mapa inicial de 29 familias sigue incompleto; C03/C04 no evaluados y C20 resistente de más de 60 s sigue abierto."
+      "next_action": "T022-C verificada localmente en 92c28ac: admisión discovery/Thread.start y poller XVF retenidos hasta salida real, publicación sellada y sucesor rechazado mientras vive el anterior. MultiRoom posee tuning/start/reset y su cierre retenido; segundo sello tras trabajos admitidos, wait off-loop y dependencia real antes de retirar el grafo. Cuatro RED del controlador y tres de integración pasan; once regresiones nuevas, 284 enfocadas y full de 7436 más xfail conocida en 535,03 s; 866 archivos intactos. Ruff src/tests sin hallazgos; cuatro avisos previos de tools conservados. Continuar K1: executor propio de FastWhisperSTT, sin cerrarlo desde un borrower; luego modelos/executors restantes, productores legacy condicionales, copias internas e inventario completo/mute/restore con T023/T024. El mapa inicial de 29 familias sigue incompleto; C03/C04/C06/C20 sin aceptar y el caso HA resistente de más de 60 s permanece abierto."
     },
     {
       "id": "T023",
@@ -2308,7 +2310,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-B/voice-cleanup-failure-containment",
+    "last_verified_unit": "T022-C/xvf-admission-and-poller-retirement",
     "user_priority_after_admin_unit": "T047"
   }
 }

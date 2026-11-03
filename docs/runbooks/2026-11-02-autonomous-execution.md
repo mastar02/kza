@@ -1565,3 +1565,60 @@ segundos; 863 archivos intactos y Ruff sin hallazgos. Evidencia:
 `data/autonomous-roadmap-20261102/t022/b/evidence.json`.
 T022 conserva pendientes del inventario global; C03/C04/C06/C20 siguen
 sin aceptar y el caso HA no cooperativo que supera los 60 segundos no cambia.
+
+## Retiro confirmado del poller XVF
+
+T022-C conserva cuatro RED del controlador anterior: perder el slot de un hilo
+todavía vivo al vencer el join, publicar una lectura USB tardía con fecha nueva,
+admitir un sucesor que revive el loop anterior y arrancar después de un stop
+durante discovery. Con el controlador corregido, otros tres RED de integración
+mostraron que `begin_close` dejaba activo el poller y que el grafo retiraba el
+router antes de su salida. Los ensayos usan el controlador y los Threads reales
+con una hoja USB sintética retenida; sus barreras se liberan en el cleanup.
+
+Cada corrida reserva su generación, Event y recibo de admisión antes de descubrir
+el dispositivo. Registra el Thread antes de iniciarlo y conserva ese dueño
+durante discovery, `Thread.start` y salida. `request_stop` sella publicación y
+admisión con memoria; `stop` observa durante un presupuesto nominal de un segundo
+sin borrar un hilo vivo. `wait_stopped` espera la admisión y el join del Thread
+capturado fuera del event loop. La comprobación del token y la escritura de la
+muestra comparten lock. El historial ya publicado se conserva tras stop y se
+limpia al admitir una corrida nueva.
+
+MultiRoom conserva tuning, start y reset del controlador mediante trabajo nativo
+propio. Su único `_closing`, con contexto vacío, posee también el drenaje de
+captura, dirección, telemetría y los joins XVF. Tras drenar los trabajos admitidos
+repite el sello: un start admitido que aún no había entrado puede comenzar después
+del primer `request_stop`. Los checks de `_closed` impiden que la continuación de
+start reactive dirección. `stop` observa ese mismo dueño con timeout y shield;
+cancelarlo o agotar su espera conserva el retiro pendiente.
+
+La fábrica añade el `begin_close` real de MultiRoom a las dependencias de cierre
+del pipeline. Esa espera precede a la retirada de dependientes y queda fuera del
+catch que registra errores de `audio_loop.stop`. Los casos del stack de fábrica
+y de `_stop_services` retienen router, autoridad, sesión HA y lease de privacidad
+durante el USB pendiente, incluso con cancelación repetida. Estos casos prueban
+teardown; sólo inician el poller sintético y mantienen apagados captura, servicios
+y productores de modelos. Un contador asyncio acredita progreso durante la
+espera, sin presentarlo como medición numérica de C03.
+
+Los once casos nuevos incluyen discovery pendiente, cancelación de observadores,
+inicio tardío tras el primer sello y tuning con una escritura USB retenida. Las
+284 pruebas enfocadas pasan. T022-C quedó verificada localmente en `92c28ac`: la
+suite completa pasó 7436 casos más la xfail conocida en 535,03 segundos; los 866
+archivos congelados quedaron intactos. Ruff pasó sobre `src/` y `tests/`. Un
+chequeo ampliado encontró cuatro imports sin uso previos en `tools/`, que sigue
+intacto. Una ejecución iniciada por error antes de congelar se detuvo y archivó
+sin aceptarla; la evidencia corresponde a la ejecución posterior congelada.
+Artefactos: `data/autonomous-roadmap-20261102/t022/c/evidence.json`.
+
+El retiro del poller conserva el handle compartido y no acredita disposición de
+lectores administrativos independientes, threads del executor compartido, SDK o
+todas sus copias internas. El mapa inicial de 29 familias sigue incompleto.
+Continúan modelos/executors, productores legacy condicionales e inventario de
+productores/destinos y mute/restore con T023/T024. El siguiente corte identificado
+es el executor propio de FastWhisperSTT, cuyo cierre manual aparece en la prueba
+de privacidad del productor; debe pertenecer al grafo que comparte sus borrowers.
+T021/T022 siguen `in_progress`, C03/C04/C06/C20 sin aceptar y el caso HA resistente
+de más de 60 segundos permanece abierto. T047 y la separación voz/persona/cuenta/
+consentimiento/permisos conservan su estado verificado localmente.
