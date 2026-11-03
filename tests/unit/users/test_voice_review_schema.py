@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from dataclasses import replace
+import json
 import sqlite3
 
 import pytest
@@ -23,6 +24,7 @@ CURRENT_COLUMNS = LEGACY_COLUMNS + ('audio_metadata_json', 'transcript_metadata_
 PUBLIC_REVIEW_KEYS = {
     'id', 'observed_at', 'expires_at', 'transcript', 'room_id', 'duration_s',
     'clip_duration_s', 'clip_truncated', 'transcript_scope', 'audio_mime', 'audio_base64',
+    'audio_metadata', 'transcript_metadata',
 }
 
 
@@ -233,7 +235,7 @@ def raw_review(voices, identity):
 
 
 @pytest.mark.asyncio
-async def test_metadata_round_trip_is_private_and_public_review_keys_stay_unchanged(tmp_path):
+async def test_metadata_round_trip_projects_only_the_new_closed_operator_review_contract(tmp_path):
     async with graph(tmp_path) as (_, _, voices, clock):
         source = memory_source(now=clock.now)
         review = known_review()
@@ -248,7 +250,12 @@ async def test_metadata_round_trip_is_private_and_public_review_keys_stay_unchan
         public = await voices.acall(voices.ledger.review_capture, identity, ACTOR)
         assert set(public) == PUBLIC_REVIEW_KEYS
         assert public['expires_at'] == source.expires_at
-        assert 'synthetic-opening' not in str(public)
+        assert public['audio_metadata'] == json.loads(row['audio_metadata_json'])
+        assert public['transcript_metadata'] == json.loads(row['transcript_metadata_json'])
+        assert public['audio_metadata']['provenance']['selected_channel'] == 0
+        assert public['transcript_metadata']['provenance']['selected_channel'] == 1
+        assert not {'audio_metadata_json','transcript_metadata_json','sources_json','embedding',
+            'usb_port','serial','device_index'} & set(public)
 
 
 @pytest.mark.asyncio

@@ -63,15 +63,17 @@
         || view.getUint16(22, true) !== 1 || view.getUint32(24, true) !== 16000
         || view.getUint32(28, true) !== 32000 || view.getUint16(32, true) !== 2 || view.getUint16(34, true) !== 16
         || text(36, 4) !== 'data' || view.getUint32(40, true) !== bytes.length - 44
-        || bytes.length - 44 !== Math.round(row.clip_duration_s * 16000) * 2) throw Error('invalid evaluation WAV');
+        || (bytes.length - 44) % 2 || row.clip_duration_s !== (bytes.length - 44) / 32000) throw Error('invalid evaluation WAV');
     return bytes;
   }
   function validateRow(row, choice, augmented = false) {
     const fields = choice.modality === 'audio_preview'
-      ? ['id', 'modality', 'audio_mime', 'clip_duration_s', 'audio_base64']
-      : ['id', 'modality', 'transcript_scope', 'transcript'];
+      ? ['id', 'modality', 'audio_mime', 'clip_duration_s', 'audio_base64', 'audio_metadata']
+      : ['id', 'modality', 'transcript_scope', 'transcript', 'transcript_metadata'];
     if (augmented) fields.push('observed_at', 'expires_at');
     if (!keys(row, fields) || row.id !== choice.fingerprint_id || row.modality !== choice.modality) throw Error('invalid evaluation row');
+    if (choice.modality === 'audio_preview') voiceAPI.copyAudioMetadata(row.audio_metadata);
+    else voiceAPI.copyTranscriptMetadata(row.transcript_metadata);
     if (choice.modality === 'transcript_full' && (row.transcript_scope !== 'full_segment' || !validText(row.transcript))) throw Error('invalid evaluation text');
   }
   function validateEnvelope(document, choice) {
@@ -126,9 +128,12 @@
           if (!Number.isFinite(budget) || budget <= 0) throw Error('expired evaluation row');
           let projected;
           if (selected.modality === 'audio_preview') {
-            objectURL = url.createObjectURL(new Blob([audioBytes(row)], { type: 'audio/wav' }));
-            projected = { id: row.id, modality: row.modality, expires_at: row.expires_at, audio_url: objectURL, clip_duration_s: row.clip_duration_s };
-          } else projected = { id: row.id, modality: row.modality, expires_at: row.expires_at, transcript: row.transcript };
+            const bytes = audioBytes(row), metadata = voiceAPI.copyAudioMetadata(row.audio_metadata, { previewFrames:(bytes.length-44)/2 });
+            objectURL = url.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+            projected = { id: row.id, modality: row.modality, expires_at: row.expires_at, audio_url: objectURL,
+              clip_duration_s: row.clip_duration_s, audio_metadata:metadata };
+          } else projected = { id: row.id, modality: row.modality, expires_at: row.expires_at, transcript: row.transcript,
+            transcript_metadata:voiceAPI.copyTranscriptMetadata(row.transcript_metadata) };
           clear(); entry = { row: Object.freeze(projected), mono: nowMono + budget, wall: nowWall + budget }; objectURL = null;
           status = 'real'; arm(); notify(); return true;
         } catch (_) {

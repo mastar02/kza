@@ -147,10 +147,16 @@
         } else review.append(node('p',message(state.review,'Elegí una muestra para escucharla y revisar su transcripción.')));
       }
       else {
+        const audioDetails = root.KzaVoicePrivacy.metadataDetails('audio',row.audio_metadata);
+        const transcriptDetails = root.KzaVoicePrivacy.metadataDetails('transcript',row.transcript_metadata);
         const audio = doc.createElement('audio'); audio.controls = true; audio.preload = 'auto'; audio.src = row.audio_url;
         review.append(node('p',row.room_id ? `Habitación: ${row.room_id}` : 'Habitación sin registrar'),audio,
           node('p',row.clip_truncated ? `Primeros ${row.clip_duration_s} segundos de un segmento de ${row.duration_s} segundos.` : `Fragmento de ${row.clip_duration_s} segundos.`, 'mute'),
-          node('h3','Transcripción del segmento'),node('p',row.transcript || 'Sin transcripción disponible.'));
+          ...audioDetails.map(text => node('p',text,'mute')),
+          node('h3','Transcripción del segmento'),
+          ...transcriptDetails.map(text => node('p',text,'mute')),
+          node('p',row.transcript || 'Sin transcripción disponible.'),
+          node('p','El fragmento de audio y la transcripción pueden corresponder a ventanas y canales distintos.','mute'));
         state.review.attachMedia(audio);
       }
       state.review.committed(state.review.deliveryToken());

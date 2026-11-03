@@ -21,7 +21,8 @@ function capture(id,created,group) {
 }
 function fixture(rows) {
   const doc={createElement(tag){return new Element(tag,this);},addEventListener(){},removeEventListener(){}};
-  const root={addEventListener(){},removeEventListener(){}};
+  const root={addEventListener(){},removeEventListener(){},
+    KzaVoicePrivacy:require('../../src/dashboard/frontend/obs/src/voice-privacy.js')};
   const store=values=>{
     const subscribers=new Set();let status='real';
     return {snapshot:()=>values,status:()=>status,subscribe:callback=>{subscribers.add(callback);return ()=>subscribers.delete(callback);},
@@ -79,13 +80,15 @@ test('listening exposes an empty player immediately and preserves edits while lo
   assert.equal(f.state.review.media,undefined);
   assert.ok(descendants(captures).includes(input));
   assert.equal(input.value,'Draft name');
-  const row={...rows[1],audio_url:'blob:synthetic-selected',clip_duration_s:3,transcript:'Synthetic phrase'};
+  const row={...rows[1],audio_url:'blob:synthetic-selected',clip_duration_s:3,transcript:'Synthetic phrase',
+    audio_metadata:null,transcript_metadata:null};
   f.state.review.update([row],'real');
   assert.equal(review.attributes['aria-busy'],'false');
   assert.ok(buttons.every(button=>!button.disabled&&button.textContent==='Escuchar'));
   const player=f.state.review.media;
   assert.equal(player.src,row.audio_url);
   assert.equal(player.preload,'auto');
+  assert.ok(descendants(review).some(node=>node.textContent==='No consta si el texto fue recortado.'));
   buttons[0].listeners.click();
   assert.equal(f.requested.length,1);
   assert.equal(f.state.review.media,player);
@@ -93,6 +96,7 @@ test('listening exposes an empty player immediately and preserves edits while lo
   assert.equal(f.state.review.media,player);
   f.state.review.update([],'expired');
   assert.ok(!descendants(review).some(node=>node.tagName==='audio'));
+  assert.ok(!descendants(review).some(node=>node.textContent==='No consta si el texto fue recortado.'));
   buttons[0].listeners.click();
   assert.equal(f.requested.length,2);
   f.stop();

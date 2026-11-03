@@ -203,7 +203,20 @@
       if (row && row.audio_url === renderedAudio) { state.review.committed(state.review.deliveryToken()); return; }
       state.review.detachMedia(); renderedAudio = row?.audio_url ?? null; review.replaceChildren(node('h3', 'Escuchar muestra'));
       if (!row) review.append(node('p', message(state.review, 'Elegí una muestra para escucharla.')));
-      else { const audio = doc.createElement('audio'); audio.controls = true; audio.preload = 'metadata'; audio.src = row.audio_url; audio.setAttribute('aria-label', 'Audio de la muestra seleccionada'); review.append(audio, node('p', row.room_id ? `Habitación: ${row.room_id}` : 'Habitación sin registrar', 'identity-muted'), node('p', `Fragmento de ${row.clip_duration_s.toFixed(1)} s${row.clip_truncated ? ` de un segmento de ${row.duration_s.toFixed(1)} s` : ''}.`, 'identity-muted'), node('h4', 'Transcripción del segmento'), node('p', row.transcript || 'Sin transcripción disponible.')); state.review.attachMedia(audio); }
+      else {
+        const audioDetails = root.KzaVoicePrivacy.metadataDetails('audio', row.audio_metadata);
+        const transcriptDetails = root.KzaVoicePrivacy.metadataDetails('transcript', row.transcript_metadata);
+        const audio = doc.createElement('audio'); audio.controls = true; audio.preload = 'metadata'; audio.src = row.audio_url;
+        audio.setAttribute('aria-label', 'Audio de la muestra seleccionada');
+        review.append(audio, node('p', row.room_id ? `Habitación: ${row.room_id}` : 'Habitación sin registrar', 'identity-muted'),
+          node('p', `Fragmento de ${row.clip_duration_s.toFixed(1)} s${row.clip_truncated ? ` de un segmento de ${row.duration_s.toFixed(1)} s` : ''}.`, 'identity-muted'),
+          ...audioDetails.map(text => node('p', text, 'identity-muted')),
+          node('h4', 'Transcripción del segmento'),
+          ...transcriptDetails.map(text => node('p', text, 'identity-muted')),
+          node('p', row.transcript || 'Sin transcripción disponible.'),
+          node('p', 'El fragmento de audio y la transcripción pueden corresponder a ventanas y canales distintos.', 'identity-muted'));
+        state.review.attachMedia(audio);
+      }
       state.review.committed(state.review.deliveryToken());
     }
     const stops = [state.profiles.subscribe(drawProfiles), state.captures.subscribe(drawCaptures), state.review.subscribe(drawReview)], check = () => { for (const key of ['profiles', 'captures', 'review']) state[key].check(); };

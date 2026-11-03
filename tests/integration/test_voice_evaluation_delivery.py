@@ -74,11 +74,13 @@ async def test_exact_evaluation_response_has_one_closed_selected_payload(evaluat
         row = snapshot['rows'][0]
         assert row['id']==g.identity and row['modality']==modality.value
         if modality is EvaluationModality.AUDIO_PREVIEW:
-            assert set(row)=={'id','modality','audio_mime','audio_base64','clip_duration_s'}
+            assert set(row)=={'id','modality','audio_mime','audio_base64','clip_duration_s','audio_metadata'}
             assert base64.b64decode(row['audio_base64'])==g.review.audio_wav
+            assert row['audio_metadata'] is None
         else:
-            assert set(row)=={'id','modality','transcript_scope','transcript'}
+            assert set(row)=={'id','modality','transcript_scope','transcript','transcript_metadata'}
             assert row['transcript']==g.review.transcript
+            assert row['transcript_metadata'] is None
         for source in g.sources:
             assert await g.bus._retention.receipts.pending(source.conversation_id)==1
 

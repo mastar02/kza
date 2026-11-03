@@ -1,7 +1,7 @@
 /* The evaluator owner supplies only granted metadata and one modality. */
 (function (root) {
   'use strict';
-  const LABELS = { audio_preview: 'Audio breve', transcript_full: 'Transcripción completa' };
+  const LABELS = { audio_preview: 'Audio breve', transcript_full: 'Transcripción del segmento' };
   function mountEvaluation({ container, controller }) {
     const doc = container.ownerDocument, store = controller.store;
     let active = true, choosing = false, rendered = null, renderedToken = null, renderedStatus = null;
@@ -45,17 +45,20 @@
         renderedStatus = store.status(); content.append(node('p', text, 'identity-empty')); return;
       }
       rendered = row; renderedToken = token;
-      const identity = node('code', row.id, 'identity-muted'); identity.style.overflowWrap = 'anywhere';
-      content.append(node('p', LABELS[row.modality], 'eyebrow'), identity,
+      content.append(node('p', LABELS[row.modality], 'eyebrow'), node('p', 'Muestra autorizada para esta sesión.', 'identity-muted'),
         node('p', `Consulta vigente hasta ${new Date(row.expires_at * 1000).toLocaleString()}`, 'identity-muted'));
       if (row.modality === 'audio_preview') {
+        const details = root.KzaVoicePrivacy.metadataDetails('audio', row.audio_metadata);
         const audio = doc.createElement('audio'); audio.controls = true; audio.preload = 'none';
         audio.style.width = '100%'; audio.style.maxWidth = '100%'; audio.style.minWidth = '0';
         audio.setAttribute('aria-label', 'Escuchar audio breve de evaluación'); audio.src = row.audio_url;
         store.attachMedia(audio); content.append(audio, node('p', `Audio breve · ${row.clip_duration_s.toFixed(1)} s`, 'identity-muted'));
+        content.append(...details.map(text => node('p', text, 'identity-muted')));
       } else {
+        const details = root.KzaVoicePrivacy.metadataDetails('transcript', row.transcript_metadata);
         const transcript = node('pre', row.transcript, 'evaluation-transcript');
         transcript.style.whiteSpace = 'pre-wrap'; transcript.style.overflowWrap = 'anywhere'; content.append(transcript);
+        content.append(...details.map(text => node('p', text, 'identity-muted')));
       }
       // The real receipt remains outstanding while these nodes or a decoder own the sample.
       store.committed(token);
@@ -68,8 +71,9 @@
       if (!state.grants.length) {
         const option = node('option', state.status === 'real' ? 'Sin concesiones vigentes' : 'Catálogo no disponible'); option.value = ''; choices.append(option);
       }
-      for (const grant of state.grants) {
-        const option = node('option', grant.fingerprint_id); option.value = grant.fingerprint_id; choices.append(option);
+      for (const [index, grant] of state.grants.entries()) {
+        const option = node('option', `Muestra ${index + 1} · vence ${new Date(grant.expires_at * 1000).toLocaleString()}`);
+        option.value = grant.fingerprint_id; choices.append(option);
       }
       choices.value = state.selected?.fingerprint_id || '';
       const grant = state.grants.find(value => value.fingerprint_id === state.selected?.fingerprint_id);

@@ -6,6 +6,7 @@ from dataclasses import dataclass,field
 import hashlib
 import json
 import math
+import sqlite3
 import struct
 from uuid import UUID,uuid4
 from weakref import ref
@@ -24,6 +25,9 @@ from src.users.voice_groups import VoiceGroups
 from src.users.voice_projection import VoiceProjection
 from src.users.voice_people import VoicePersonLinks
 from src.dashboard.live_retention_types import RevisionSet,RevisionStamp
+
+
+MAX_REVIEW_SOURCE_BYTES = 262144
 
 
 @dataclass(frozen=True)
@@ -251,61 +255,97 @@ class VoiceLedger:
         data = row = capture = audio_provenance = audio_span = None
         transcript_provenance = transcript_span = transcript_truncated = None
         audio_metadata = transcript_metadata = None
+        audio_document = transcript_document = None
+        invalid = denied = unavailable = False
         try:
             actor.require_current()
             with self.ledger._transaction() as db:
                 actor.require_current()
-                row = db.execute('''SELECT v.sources_json,v.expires_at,
-                    r.audio_wav,r.transcript,r.room_id,r.duration_s,r.clip_duration_s,
+                row = db.execute('''SELECT CAST(v.sources_json AS BLOB) AS sources_json,v.expires_at,
+                    r.audio_wav,CAST(r.transcript AS BLOB) AS transcript,
+                    CAST(r.room_id AS BLOB) AS room_id,r.duration_s,r.clip_duration_s,
                     CAST(r.audio_metadata_json AS BLOB) AS audio_metadata_json,
                     CAST(r.transcript_metadata_json AS BLOB) AS transcript_metadata_json
                     FROM voice_capture_reviews r
                     JOIN voice_fingerprints v ON v.id=r.fingerprint_id WHERE v.id=?
-                    AND length(r.audio_wav)<=192044 AND length(r.transcript)<=8192
+                    AND typeof(v.sources_json)='text'
+                    AND length(CAST(v.sources_json AS BLOB)) BETWEEN 1 AND ?
+                    AND typeof(v.expires_at) IN ('integer','real')
+                    AND v.expires_at>=0 AND v.expires_at<=1.7976931348623157e308
+                    AND typeof(r.audio_wav)='blob'
+                    AND length(r.audio_wav) BETWEEN 25644 AND 192044
+                    AND typeof(r.transcript)='text'
+                    AND length(CAST(r.transcript AS BLOB))<=32768
+                    AND (r.room_id IS NULL OR (typeof(r.room_id)='text'
+                        AND length(CAST(r.room_id AS BLOB)) BETWEEN 1 AND 512))
+                    AND typeof(r.duration_s) IN ('integer','real') AND r.duration_s BETWEEN 0.8 AND 30.0
+                    AND typeof(r.clip_duration_s) IN ('integer','real')
+                    AND r.clip_duration_s BETWEEN 0.8 AND 6.0 AND r.clip_duration_s<=r.duration_s
                     AND (r.audio_metadata_json IS NULL OR
-                        (typeof(r.audio_metadata_json)='text' AND length(CAST(r.audio_metadata_json AS BLOB))<=?))
+                        (typeof(r.audio_metadata_json)='text' AND length(CAST(r.audio_metadata_json AS BLOB)) BETWEEN 1 AND ?))
                     AND (r.transcript_metadata_json IS NULL OR
-                        (typeof(r.transcript_metadata_json)='text' AND length(CAST(r.transcript_metadata_json AS BLOB))<=?))''',
-                    (identity,MAX_METADATA_BYTES,MAX_METADATA_BYTES)).fetchone()
-                if row is None or not self._live(row):
+                        (typeof(r.transcript_metadata_json)='text' AND length(CAST(r.transcript_metadata_json AS BLOB)) BETWEEN 1 AND ?))''',
+                    (identity,MAX_REVIEW_SOURCE_BYTES,MAX_METADATA_BYTES,MAX_METADATA_BYTES)).fetchone()
+                if row is None:
+                    raise LookupError('voice_capture_unavailable')
+                row = dict(row)
+                row['sources_json'] = row['sources_json'].decode('utf-8')
+                if not self._live(row):
                     raise LookupError('voice_capture_unavailable')
             # SQLite has already detached this bounded row. Preview validation
             # and encoding must not hold the authority's writer transaction.
             actor.require_current()
             if not self._live(row):
                 raise LookupError('voice_capture_unavailable')
-            valid = True
-            try:
-                audio_metadata = (None if row['audio_metadata_json'] is None
-                    else row['audio_metadata_json'].decode('utf-8'))
-                transcript_metadata = (None if row['transcript_metadata_json'] is None
-                    else row['transcript_metadata_json'].decode('utf-8'))
-                audio_provenance,audio_span = decode_audio_metadata(audio_metadata)
-                transcript_provenance,transcript_span,transcript_truncated = decode_transcript_metadata(
-                    transcript_metadata)
-                capture = VoiceCaptureReview(row['audio_wav'],row['transcript'],row['room_id'],
-                    row['duration_s'],row['clip_duration_s'],audio_provenance=audio_provenance,
-                    audio_span=audio_span,transcript_provenance=transcript_provenance,
-                    transcript_span=transcript_span,transcript_truncated=transcript_truncated)
-            except ValueError:
-                valid = False
-            if not valid:
-                raise LookupError('voice_capture_unavailable')
+            row['transcript'] = row['transcript'].decode('utf-8')
+            row['room_id'] = None if row['room_id'] is None else row['room_id'].decode('utf-8')
+            audio_metadata = (None if row['audio_metadata_json'] is None
+                else row['audio_metadata_json'].decode('utf-8'))
+            transcript_metadata = (None if row['transcript_metadata_json'] is None
+                else row['transcript_metadata_json'].decode('utf-8'))
+            audio_provenance,audio_span = decode_audio_metadata(audio_metadata)
+            transcript_provenance,transcript_span,transcript_truncated = decode_transcript_metadata(
+                transcript_metadata)
+            capture = VoiceCaptureReview(row['audio_wav'],row['transcript'],row['room_id'],
+                row['duration_s'],row['clip_duration_s'],audio_provenance=audio_provenance,
+                audio_span=audio_span,transcript_provenance=transcript_provenance,
+                transcript_span=transcript_span,transcript_truncated=transcript_truncated)
+            # Transfer canonical fresh documents, never raw JSON aliases.
+            audio_metadata = encode_audio_metadata(audio_provenance,audio_span)
+            transcript_metadata = encode_transcript_metadata(
+                transcript_provenance,transcript_span,transcript_truncated)
+            audio_document = None if audio_metadata is None else json.loads(audio_metadata)
+            transcript_document = None if transcript_metadata is None else json.loads(transcript_metadata)
             actor.require_current()
             data = {'id':identity,'observed_at':self.ledger.clock(),'expires_at':row['expires_at'],
                 'transcript':capture.transcript,'room_id':capture.room_id,
                 'duration_s':capture.duration_s,'clip_duration_s':capture.clip_duration_s,
                 'clip_truncated':capture.clip_duration_s<capture.duration_s,
                 'transcript_scope':'full_segment','audio_mime':'audio/wav',
-                'audio_base64':base64.b64encode(capture.audio_wav).decode('ascii')}
+                'audio_base64':base64.b64encode(capture.audio_wav).decode('ascii'),
+                'audio_metadata':audio_document,'transcript_metadata':transcript_document}
             actor.require_current()
             if not self._live(row):
                 raise LookupError('voice_capture_unavailable')
             return data
+        except PermissionError:
+            denied = True
+        except sqlite3.Error:
+            unavailable = True
+        except (LookupError,ValueError,TypeError,KeyError,AttributeError,OverflowError,RecursionError):
+            invalid = True
         finally:
             row = data = capture = audio_provenance = audio_span = None
             transcript_provenance = transcript_span = transcript_truncated = None
             audio_metadata = transcript_metadata = None
+            audio_document = transcript_document = None
+        # Raising after the handlers drops private decoder/SQLite contexts.
+        if denied:
+            raise PermissionError('voice_review_denied')
+        if unavailable:
+            raise RuntimeError('voice_capture_unavailable')
+        if invalid:
+            raise LookupError('voice_capture_unavailable')
 
     @staticmethod
     def _profile(row):

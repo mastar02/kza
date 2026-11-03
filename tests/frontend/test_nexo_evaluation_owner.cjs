@@ -52,11 +52,68 @@ function catalogue() {
 }
 function sample(mode = 'audio_preview') {
   const row = mode === 'audio_preview'
-    ? { id: FP, modality: mode, audio_mime: 'audio/wav', clip_duration_s: .8, audio_base64: wav() }
-    : { id: FP, modality: mode, transcript_scope: 'full_segment', transcript: 'Synthetic granted text' };
+    ? { id: FP, modality: mode, audio_mime: 'audio/wav', clip_duration_s: .8, audio_base64: wav(), audio_metadata: null }
+    : { id: FP, modality: mode, transcript_scope: 'full_segment', transcript: 'Synthetic granted text', transcript_metadata: null };
   return { connection_id: ID, channel: 'evaluation:sample', snapshot: { event_id: EVENT, observed_at: 1000,
     expires_at: 1050, receipt: { ticket: TICKET, nonce: NONCE }, channel: 'evaluation:sample', rows: [row] } };
 }
+function captureMetadata(text = false) {
+  return { schema_version: 1,
+    provenance: { source: 'live_input', source_ref: 'synthetic-private-origin', lane: 'ambient',
+      stream_generation: 3, segment_generation: 5, source_channels: 2, selected_channel: text ? 1 : 0,
+      sample_rate_hz: 16000, frame_count: text ? 160001 : 12800,
+      dsp: { certainty: 'unknown', declared_revision: null, observed_revision: null } },
+    span: { start_frame: 0, end_frame: text ? 160001 : 12800 },
+    ...(text ? { text_truncated: true } : {}) };
+}
+
+test('evaluation metadata is closed per modality, including null and missing fields', () => {
+  for (const mode of ['audio_preview', 'transcript_full']) {
+    const selection = { fingerprint_id: FP, modality: mode, expires_at: 1100 };
+    const expected = mode === 'audio_preview' ? 'audio_metadata' : 'transcript_metadata';
+    const foreign = mode === 'audio_preview' ? 'transcript_metadata' : 'audio_metadata';
+    const known = sample(mode); known.snapshot.rows[0][expected] = captureMetadata(mode === 'transcript_full');
+    assert.doesNotThrow(() => validateEnvelope(known, selection));
+    const absent = sample(mode); delete absent.snapshot.rows[0][expected]; assert.throws(() => validateEnvelope(absent, selection));
+    const mixed = sample(mode); mixed.snapshot.rows[0][foreign] = null; assert.throws(() => validateEnvelope(mixed, selection));
+    for (const value of [undefined, '{}', {}, false, { ...captureMetadata(mode === 'transcript_full'), extra: null }]) {
+      const wrong = sample(mode); wrong.snapshot.rows[0][expected] = value;
+      assert.throws(() => validateEnvelope(wrong, selection));
+    }
+  }
+});
+
+test('only selected metadata reaches the store and clears with the current modality', async () => {
+  for (const mode of ['audio_preview', 'transcript_full']) {
+    const document = sample(mode), key = mode === 'audio_preview' ? 'audio_metadata' : 'transcript_metadata';
+    document.snapshot.rows[0][key] = captureMetadata(mode === 'transcript_full');
+    const g = setup({ fetch: async path => ({ ok: true, status: 200,
+      json: async () => path === '/api/evaluation/grants' ? catalogue() : document }) });
+    try {
+      await ready(g); const controller = g.controllers.at(-1);
+      assert.equal(await controller.choose(FP, mode), true); assert.equal(controller.load(), true); await turn();
+      const [row] = controller.store.snapshot(); assert.ok(row && row[key]);
+      assert.equal(Object.hasOwn(row, mode === 'audio_preview' ? 'transcript_metadata' : 'audio_metadata'), false);
+      document.snapshot.rows[0][key].provenance.source_ref = 'changed-after-decoder';
+      assert.equal(row[key].provenance.source_ref, 'synthetic-private-origin');
+      controller.clearSample(); await turn(); assert.deepEqual(controller.store.snapshot(), []);
+      assert.deepEqual(g.revoked, g.allocated);
+    } finally { await g.owner.leave(); }
+  }
+});
+
+test('audio metadata must match actual WAV frames before allocating a Blob', async () => {
+  const document = sample(); document.snapshot.rows[0].audio_metadata = captureMetadata();
+  document.snapshot.rows[0].audio_metadata.provenance.frame_count = 12801;
+  document.snapshot.rows[0].audio_metadata.span.end_frame = 12801;
+  const g = setup({ fetch: async path => ({ ok: true, status: 200,
+    json: async () => path === '/api/evaluation/grants' ? catalogue() : document }) });
+  try {
+    await ready(g); const controller = g.controllers.at(-1);
+    assert.equal(controller.load(), true); await turn();
+    assert.deepEqual(controller.store.snapshot(), []); assert.deepEqual(g.allocated, []);
+  } finally { await g.owner.leave(); }
+});
 
 test('transcripts use backend codepoint and UTF-8 limits, including supplementary characters', () => {
   const selection = { fingerprint_id: FP, modality: 'transcript_full', expires_at: 1100 };

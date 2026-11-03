@@ -74,8 +74,8 @@ async def authorized_read(g,actor,reads):
     allowed={'facts':{'id','revision','expires_at','state'},
         'conversation_tombstones':{'conversation_id','deleted_at'},
         'voice_fingerprints':{'id','sources_json','expires_at'},
-        'voice_capture_reviews':{'fingerprint_id'}|({'audio_wav','clip_duration_s'}
-            if actor.modality is EvaluationModality.AUDIO_PREVIEW else {'transcript'})}
+        'voice_capture_reviews':{'fingerprint_id'}|({'audio_wav','duration_s','clip_duration_s','audio_metadata_json'}
+            if actor.modality is EvaluationModality.AUDIO_PREVIEW else {'transcript','transcript_metadata_json'})}
     def authorize(operation,table,column,*_):
         if operation==sqlite3.SQLITE_READ:
             reads.append((table,column))
@@ -104,13 +104,17 @@ async def test_exact_modality_never_reads_other_payload_or_operator_metadata(eva
     row=projection.rows[0]
     assert row['id']==g.identity and row['modality']==modality.value
     if modality is EvaluationModality.AUDIO_PREVIEW:
-        assert set(row)=={'id','modality','audio_mime','audio_base64','clip_duration_s'}
+        assert set(row)=={'id','modality','audio_mime','audio_base64','clip_duration_s','audio_metadata'}
         assert base64.b64decode(row['audio_base64'])==g.review.audio_wav
-        assert ('voice_capture_reviews','transcript') not in reads
+        assert row['audio_metadata'] is None  # Legacy sources are not upgraded from current state.
+        assert not {'transcript','transcript_metadata_json','room_id'} & {
+            column for table,column in reads if table=='voice_capture_reviews'}
     else:
-        assert set(row)=={'id','modality','transcript_scope','transcript'}
+        assert set(row)=={'id','modality','transcript_scope','transcript','transcript_metadata'}
         assert row['transcript']==g.review.transcript
-        assert ('voice_capture_reviews','audio_wav') not in reads
+        assert row['transcript_metadata'] is None
+        assert not {'audio_wav','duration_s','clip_duration_s','audio_metadata_json','room_id'} & {
+            column for table,column in reads if table=='voice_capture_reviews'}
     assert frozenset(projection.sources)==frozenset(g.sources) and projection.source_digests==g.digests
     assert projection.revision.current()
 

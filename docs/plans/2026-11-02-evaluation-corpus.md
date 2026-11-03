@@ -66,8 +66,41 @@ procedencia suficiente pueden seguir inventariados, pero no son comparables.
 No abre archivos, calcula métricas, prueba el canal físico o reemplaza la
 autoridad vigente de consentimiento, revocaciones y tombstones. El adaptador
 de lectura deberá revalidar esa autoridad y la identidad real de los archivos.
-El transporte desde los productores reales y su persistencia siguen dentro de
-T014; las garantías de borrado y restauración se completan con T022/T024.
+Las garantías generales de borrado y restauración se completan con T022/T024.
+
+En las capturas nativas, `CaptureOpening` viaja con cada bloque desde el holder
+del stream. Pre-roll, segmentos y snapshots conservan las aportaciones
+desconocidas; un bloque posterior conocido no vuelve a etiquetar el audio
+anterior. Un cambio conocido de apertura o canal retira el buffer y el estado
+recurrente antes de mezclar entradas. La ventana completa que recibió STT y el
+audio recortado del comando tienen referencias independientes. El canal de STT
+se fija antes de la inferencia y no se consulta otra vez al reutilizar el texto.
+Sin lectura real del DSP, su estado permanece desconocido.
+
+Las revisiones de voz conservan documentos nativos cerrados de **versión 1**,
+distintos del esquema 2 del manifiesto del corpus:
+
+- `audio_metadata` contiene `schema_version`, `provenance` y `span`. La ventana
+  del fragmento corresponde a los frames reales del WAV mono de 16 kHz, con
+  hasta seis segundos de una entrada de entre 0,8 y 30 segundos.
+- `transcript_metadata` añade `text_truncated`, booleano o desconocido. Su
+  procedencia, tasa, canal y ventana pertenecen a la entrada original de STT;
+  no se les aplica el límite de 30 segundos del audio de revisión. El recorte
+  local del texto se registra antes de limitarlo a 8192 caracteres.
+
+Un documento `null` conserva el desconocido histórico. El texto puede conocer
+su recorte aunque su procedencia y ventana sean desconocidas. Un documento
+no nulo malformado vuelve la muestra no disponible; no se sustituye por datos
+de la configuración actual. El operador recibe ambos documentos y el evaluador
+recibe únicamente el de la modalidad concedida. Los lectores limitan tipos y
+bytes en SQLite antes de obtener las columnas; cada modalidad valida sólo su
+payload. El navegador valida y copia el mismo contrato y rechaza contadores
+que no pueda representar exactamente. Retirar acceso también retira los
+metadatos, el DOM y el recurso de audio del consumidor original.
+
+La interfaz distingue el fragmento, la entrada de STT y el recorte conocido o
+desconocido del texto. Estos campos no prueban alineación de palabras ni
+autentican personas, conceden permisos o sustituyen consentimiento vigente.
 
 ## Separación y apertura de la reserva
 

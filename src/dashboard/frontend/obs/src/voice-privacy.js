@@ -2,6 +2,90 @@
   'use strict';
   const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
   const VF = /^vf_[0-9a-f]{64}$/;
+  const OPAQUE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+  const SOURCES = new Set(['live_input', 'consented_recording']);
+  const LANES = new Set(['command', 'ambient', 'evaluation']);
+  function closed(value, names) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      && Object.getPrototypeOf(value) === Object.prototype
+      && Object.keys(value).length === names.length && names.every(name => Object.hasOwn(value, name));
+  }
+  function integer(value, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) {
+    // Native counters are int64; the browser admits only exactly representable
+    // integers. Unsafe values are rejected, never rounded or made unknown.
+    return Number.isSafeInteger(value) && value >= minimum && value <= maximum;
+  }
+  function revision(value) { return typeof value === 'string' && OPAQUE.test(value); }
+  function boundedText(value, maximum, maximumBytes, minimum = 0) {
+    if (typeof value !== 'string' || value.length > maximum * 2) return false;
+    let count = 0;
+    for (const character of value) {
+      const code = character.codePointAt(0);
+      if (++count > maximum || code >= 0xd800 && code <= 0xdfff) return false;
+    }
+    return count >= minimum && new TextEncoder().encode(value).length <= maximumBytes;
+  }
+  function copyProvenance(value) {
+    const names = ['source', 'source_ref', 'lane', 'stream_generation', 'segment_generation',
+      'source_channels', 'selected_channel', 'sample_rate_hz', 'frame_count', 'dsp'];
+    if (!closed(value, names) || !SOURCES.has(value.source) || !revision(value.source_ref)
+        || !LANES.has(value.lane) || !integer(value.stream_generation) || !integer(value.segment_generation)
+        || !integer(value.source_channels, 1, 64) || !integer(value.selected_channel, 0, value.source_channels - 1)
+        || !integer(value.sample_rate_hz, 8000, 192000) || !integer(value.frame_count, 1)
+        || !closed(value.dsp, ['certainty', 'declared_revision', 'observed_revision'])) throw Error('invalid capture metadata');
+    const dsp = value.dsp, declared = dsp.declared_revision, observed = dsp.observed_revision;
+    if (declared !== null && !revision(declared) || observed !== null && !revision(observed)
+        || !['unknown', 'declared', 'observed'].includes(dsp.certainty)
+        || dsp.certainty === 'unknown' && (declared !== null || observed !== null)
+        || dsp.certainty === 'declared' && (declared === null || observed !== null)
+        || dsp.certainty === 'observed' && observed === null) throw Error('invalid capture metadata');
+    return Object.freeze({ source: value.source, source_ref: value.source_ref, lane: value.lane,
+      stream_generation: value.stream_generation, segment_generation: value.segment_generation,
+      source_channels: value.source_channels, selected_channel: value.selected_channel,
+      sample_rate_hz: value.sample_rate_hz, frame_count: value.frame_count,
+      dsp: Object.freeze({ certainty: dsp.certainty, declared_revision: declared, observed_revision: observed }) });
+  }
+  function copyCaptureMetadata(value, transcript, { previewFrames, durationS } = {}) {
+    if (value === null) return null;
+    const names = ['schema_version', 'provenance', 'span', ...(transcript ? ['text_truncated'] : [])];
+    if (!closed(value, names) || value.schema_version !== 1 || !Number.isInteger(value.schema_version)
+        || transcript && value.text_truncated !== null && typeof value.text_truncated !== 'boolean') throw Error('invalid capture metadata');
+    let provenance = null, span = null;
+    if (value.provenance === null || value.span === null) {
+      if (!transcript || value.provenance !== null || value.span !== null || value.text_truncated === null) throw Error('invalid capture metadata');
+    } else {
+      provenance = copyProvenance(value.provenance);
+      if (!closed(value.span, ['start_frame', 'end_frame']) || !integer(value.span.start_frame)
+          || !integer(value.span.end_frame, 1, provenance.frame_count)
+          || value.span.start_frame >= value.span.end_frame) throw Error('invalid capture metadata');
+      span = Object.freeze({ start_frame: value.span.start_frame, end_frame: value.span.end_frame });
+      if (span.start_frame !== 0 || span.end_frame !== (transcript ? provenance.frame_count : Math.min(provenance.frame_count, 96000))) throw Error('invalid capture metadata');
+      if (!transcript && (provenance.sample_rate_hz !== 16000 || !integer(provenance.frame_count, 12800, 480000)
+          || previewFrames !== undefined && (!integer(previewFrames, 12800, 96000) || span.end_frame !== previewFrames)
+          || durationS !== undefined && (!Number.isFinite(durationS) || durationS !== provenance.frame_count / 16000))) throw Error('invalid capture metadata');
+    }
+    const copy = { schema_version: 1, provenance, span, ...(transcript ? { text_truncated: value.text_truncated } : {}) };
+    if (new TextEncoder().encode(JSON.stringify(copy)).length > 4096) throw Error('invalid capture metadata');
+    return Object.freeze(copy);
+  }
+  function copyAudioMetadata(value, options) { return copyCaptureMetadata(value, false, options); }
+  function copyTranscriptMetadata(value) { return copyCaptureMetadata(value, true); }
+  function metadataDetails(kind, value) {
+    const text = kind === 'transcript', metadata = text ? copyTranscriptMetadata(value) : copyAudioMetadata(value);
+    const label = text ? 'transcripción' : 'audio', lines = [];
+    if (metadata?.provenance) {
+      const p = metadata.provenance, span = metadata.span;
+      const number = value => value.toLocaleString('es-UY');
+      lines.push(text ? `Entrada completa del STT: ${number(span.end_frame)} muestras.`
+        : `Vista previa: ${number(span.end_frame)} muestras de una entrada de ${number(p.frame_count)} muestras.`);
+      const lane = { command: 'comandos', ambient: 'ambiente', evaluation: 'evaluación' }[p.lane];
+      lines.push(`Canal ${p.selected_channel} · ${number(p.sample_rate_hz)} Hz · ${lane}.`);
+      lines.push({ unknown: 'Estado DSP desconocido.', declared: 'DSP declarado; aplicación sin verificar.', observed: 'Estado DSP observado.' }[p.dsp.certainty]);
+    } else lines.push(`Ventana y canal de ${label}: desconocidos.`);
+    if (text) lines.push(metadata?.text_truncated === true ? 'El texto fue recortado para revisión.'
+      : metadata?.text_truncated === false ? 'Texto conservado sin recorte.' : 'No consta si el texto fue recortado.');
+    return lines;
+  }
   function createVoiceStore(kind, { monotonic = () => performance.now(), wall = Date.now,
       schedule = setTimeout, cancel = clearTimeout, url = root?.URL || URL, includePerson = false, personId = null } = {}) {
     if (typeof includePerson !== 'boolean' || personId !== null && (!includePerson || typeof personId !== 'string' || !personId.length || personId.length > 128)) throw Error('invalid voice person scope');
@@ -95,22 +179,31 @@
           group_revision:value.group_revision, group_size:value.group_size, group_state:value.group_state,
           group_reason:value.group_reason, group_similarity:value.group_similarity, group_expires_at:value.group_expires_at };
       }
-      if (kind !== 'review' || typeof value.transcript !== 'string' || value.transcript.length>8192
-          || value.room_id !== null && (typeof value.room_id !== 'string' || value.room_id.length>128)
+      if (kind !== 'review' || !closed(value, ['id', 'observed_at', 'expires_at', 'transcript', 'room_id',
+          'duration_s', 'clip_duration_s', 'clip_truncated', 'transcript_scope', 'audio_mime', 'audio_base64',
+          'audio_metadata', 'transcript_metadata'])
+          || !boundedText(value.transcript, 8192, 32768)
+          || value.room_id !== null && !boundedText(value.room_id, 128, 512, 1)
           || value.audio_mime !== 'audio/wav' || value.transcript_scope !== 'full_segment'
           || !Number.isFinite(value.duration_s) || value.duration_s<.8 || value.duration_s>30
           || !Number.isFinite(value.clip_duration_s) || value.clip_duration_s<.8 || value.clip_duration_s>Math.min(value.duration_s,6)
+          || typeof value.clip_truncated !== 'boolean' || value.clip_truncated !== (value.clip_duration_s<value.duration_s)
           || typeof value.audio_base64 !== 'string' || value.audio_base64.length>256060
           || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.audio_base64)) throw Error('invalid listening sample');
+      const transcriptMetadata = copyTranscriptMetadata(value.transcript_metadata);
       const raw = atob(value.audio_base64), bytes = Uint8Array.from(raw,c => c.charCodeAt(0));
       const view = new DataView(bytes.buffer), text = (offset,size) => String.fromCharCode(...bytes.slice(offset,offset+size));
       if (bytes.length<44 || bytes.length>192044 || text(0,4)!=='RIFF' || text(8,4)!=='WAVE'
           || text(12,4)!=='fmt ' || view.getUint32(16,true)!==16 || view.getUint16(20,true)!==1
-          || view.getUint16(22,true)!==1 || view.getUint32(24,true)!==16000 || view.getUint16(34,true)!==16
+          || view.getUint32(4,true)!==bytes.length-8 || view.getUint16(22,true)!==1
+          || view.getUint32(24,true)!==16000 || view.getUint32(28,true)!==32000
+          || view.getUint16(32,true)!==2 || view.getUint16(34,true)!==16
           || text(36,4)!=='data' || view.getUint32(40,true)!==bytes.length-44
-          || bytes.length-44!==Math.round(value.clip_duration_s*16000)*2) throw Error('invalid listening WAV');
+          || (bytes.length-44)%2 || value.clip_duration_s!==(bytes.length-44)/32000) throw Error('invalid listening WAV');
+      const audioMetadata = copyAudioMetadata(value.audio_metadata, { previewFrames:(bytes.length-44)/2, durationS:value.duration_s });
       return { id:value.id, transcript:value.transcript, room_id:value.room_id, duration_s:value.duration_s,
         clip_duration_s:value.clip_duration_s, clip_truncated:value.clip_duration_s<value.duration_s,
+        audio_metadata:audioMetadata, transcript_metadata:transcriptMetadata,
         audio_url:url.createObjectURL(new Blob([bytes],{type:'audio/wav'})) };
     }
     return {
@@ -149,7 +242,7 @@
     return Object.assign(state,{ clear() { for (const key of ['profiles','captures','review']) state[key].clear(); },
       retired:() => Promise.all(['profiles','captures','review'].map(key => state[key].retired())) });
   }
-  const api = { createVoiceStore,createVoiceState };
+  const api = { createVoiceStore,createVoiceState,copyAudioMetadata,copyTranscriptMetadata,metadataDetails };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.KzaVoicePrivacy = api;
 })(typeof window === 'undefined' ? null : window);

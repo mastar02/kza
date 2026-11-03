@@ -10,7 +10,8 @@ function wave(seconds=1) {
   buffer.write('data',36); buffer.writeUInt32LE(buffer.length-44,40); return buffer.toString('base64');
 }
 function review() { return { id:VF, observed_at:2000000000,expires_at:2000000060,transcript:'Synthetic private voice phrase',
-  room_id:'Synthetic room',duration_s:1,clip_duration_s:1,audio_mime:'audio/wav',transcript_scope:'full_segment',audio_base64:wave() }; }
+  room_id:'Synthetic room',duration_s:1,clip_duration_s:1,clip_truncated:false,audio_mime:'audio/wav',transcript_scope:'full_segment',audio_base64:wave(),
+  audio_metadata:null,transcript_metadata:null }; }
 function profile() { return { id:A, name:'Synthetic reviewed profile',revision:1,confirmed_at:2000000000,
   observed_at:2000000000,expires_at:2000000300 }; }
 class Media extends EventTarget {
