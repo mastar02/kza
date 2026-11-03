@@ -1038,13 +1038,15 @@
       "status": "in_progress",
       "implementation_commits": [
         "7f5046e95e34cccd62e2ebb6e0db8bbfd942ac76",
-        "265352dcea9dfd4a8ced9beff883f7ff5dc30e7e"
+        "265352dcea9dfd4a8ced9beff883f7ff5dc30e7e",
+        "9e6dcfd43347bdaf5392b3bf97c01c35b4fb431c"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t014/corpus-contract-evidence.json",
-        "data/autonomous-roadmap-20261102/t014/review-native-evidence.json"
+        "data/autonomous-roadmap-20261102/t014/review-native-evidence.json",
+        "data/autonomous-roadmap-20261102/t014/opening-transport-evidence.json"
       ],
-      "next_action": "Metadatos nativos verificados en 265352d: audio/STT independientes, codecs JSON acotados, PCM y WAV exactos, propiedad de trabajos, migración atómica con datos anteriores desconocidos y primera escritura sin renovación. Pasan 318 casos cruzados y la suite completa con 6977 pruebas más una xfail conocida; 841 archivos permanecieron iguales. Conectar CaptureOpening con paquetes, pre-roll y segmentos reales; conservar la entrada STT original cuando wake recorta otro audio, sin inferirla de covers(). Después coordinar lectores y validadores frontend por modalidad, incluidos límites por bytes de campos restaurados. T014 sigue en curso; no se acepta C04/C12 ni se acredita instalación/rollback."
+      "next_action": "Núcleo y transporte de aperturas verificados en 9e6dcfd: 62 casos dirigidos, Ruff sin hallazgos y suite completa de 7008 pruebas más una xfail conocida; 844 archivos permanecieron iguales. Descriptor por paquete, acumulación desconocida conservadora y referencias de PCM inequívocas; sin cambios de autoridad o retención. Integrar y probar las propuestas privadas revisadas de productores de comando/ambient: holder real, pre-roll, canal fijo, snapshots y entrada STT original separada del audio recortado. Después coordinar lectores/frontend por modalidad y límites de bytes/tipo en campos restaurados. T014 sigue en curso; C04/C12 y evidencia física/release pendientes."
     },
     {
       "id": "T020",
@@ -2279,7 +2281,7 @@
     "last_verified_phase": "P0",
     "last_verified_task": "T013",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T014/native-review-metadata",
+    "last_verified_unit": "T014/capture-opening-packets",
     "user_priority_after_admin_unit": "T047"
   }
 }
