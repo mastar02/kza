@@ -1131,7 +1131,8 @@
         "24e1c3a7b0dc075048a1b137d6e0344a86804973",
         "cd9ec03680811908bde07acb14634faac6986d77",
         "72f7eb2d2456480706667b16219d0e75b9dcbad1",
-        "9e57c24915294049cfb05821dc466f0a7d2e852f"
+        "9e57c24915294049cfb05821dc466f0a7d2e852f",
+        "cc8578836dec02308468e84d094ffe478d5ee53b"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1145,9 +1146,10 @@
         "data/autonomous-roadmap-20261102/t022/i/evidence.json",
         "data/autonomous-roadmap-20261102/t022/j/evidence.json",
         "data/autonomous-roadmap-20261102/t022/k/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/l/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/l/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/m/evidence.json"
       ],
-      "next_action": "T022-L verificada localmente en 9e57c24: propietarios explícitos del benchmark STT A/B antes de load/warmup, retiro de ambos motores ante fallos parciales y reportes, conversión del resultado dentro de la admisión y recibos nativos de closer/worker. Adaptadores externos prestados por defecto. Se suelta PCM por iteración incluso si falla el siguiente WAV; se conservan las sentencias/formulas de cálculo, conversiones y stdout. La primera full7700 quedó insuficiente por un hueco de admisión luego reproducido con dos RED: reserva por identidad y finalización protegida evitan la espera sin productor; cuatro casos prueban metadata/notificación interrumpida y reentrada sin repetir Thread.start. Retiro incierto conserva al dueño y falla; SystemExit0 no acredita cierre. Pasan 56 regresiones nuevas y 65 existentes enfocados; full final y hashes en evidencia. Continuar T022-M: benchmark_ambient con dueño previo a load, retiro de Whisper/Silero y preservación de mediciones, usando hojas sintéticas. Enrollment, latency, copias SDK y matriz productor-copia-destino para T023/T024 pendientes. El inventario de 29 familias, T021/T022 y C03/C04/C06/C20 siguen abiertos; G memory_prompt_unavailable y los intervalos iniciales J/K sin causa/corrección acreditada, presión ENOSPC K sin atribución y HA resistente >60 s incumplido. T047 conserva verified_local y autoridades separadas."
+      "next_action": "T022-M verificada localmente en cc85788: propiedad explícita y retiro nativo de benchmark ambient y STT A/B, con registro Silero antes de carga y recibos internos de operación/cierre. Nueve RED acreditan los huecos; pasan 78 regresiones nuevas, las 56 STT A/B y las suites existentes. El observador de wake graph espera su propio dueño y conserva las nueve aserciones originales, con cinco comprobaciones adicionales. Se preservan la primera full insuficiente, las dos full fallidas y los prefijos diagnósticos; la aceptación corresponde sólo a la full final y sus hashes. Continuar T022-N con la admisión interna Speaker y scripts/enroll_voice.py: dueños previos a load, dry-run, rechazo, fallos y publicación; incluir scripts en la congelación. Usar hojas sintéticas. Siguen pendientes benchmark_latency, copias privadas del SDK y la matriz productor-copia-destino de T023/T024. T021/T022, el inventario de 29 familias y C03/C04/C06/C20 permanecen abiertos. Los intervalos previos de M, G, J/K y ENOSPC K siguen sin causa acreditada; HA resistente >60 s sigue incumplido. T047 conserva verified_local y autoridades separadas."
     },
     {
       "id": "T023",
@@ -2328,7 +2330,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-L/standalone-stt-ab-retirement",
+    "last_verified_unit": "T022-M/standalone-ambient-benchmark-retirement",
     "user_priority_after_admin_unit": "T047"
   }
 }

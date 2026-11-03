@@ -2331,3 +2331,145 @@ La causa/corrección de G memory_prompt_unavailable, los intervalos iniciales de
 J/K y la presión ENOSPC de K no están acreditados. T047 conserva verified_local
 con asociación voz-persona y autoridades separadas. El siguiente paso local es
 T022-M: retirar los motores propios de benchmark_ambient, con hojas sintéticas.
+
+## Retiro de recursos del benchmark ambient
+
+Dos RED reproducen el defecto standalone: STT retorna con el worker Whisper
+nativo vivo y VAD conserva el modelo Silero con el callable retenido. Se usan
+los wrappers reales, con SDK y lecturas WAV sintéticos.
+
+### Propiedad y fallos del benchmark ambient
+
+ResourceOwner concentra el retiro compartido con STT A/B. La especialización
+mantiene inicialización/conversión; los handles prestados no cierran el adaptador
+externo. El grupo comienza todos los cierres antes de esperarlos. Los hooks de
+las 56 pruebas anteriores apuntan al registro y constructor de hilos reales del
+helper; sus 175 aserciones, incluidos probes embebidos, conservan el AST al
+normalizar las referencias movidas del registro.
+
+Ambient instala al dueño antes de asignar PCM o adquirir modelos. Whisper se
+publica antes de load. La fábrica Silero ofrece register antes de su carga eager,
+conserva la llamada sin argumentos y retira el predictor si falla registro o
+inicialización. El callback se suelta en finally. Cada cuerpo mantiene una
+operación admitida y descarta errores SDK, PCM y aliases antes de cerrar.
+DoA sólo suelta referencias locales: no tiene actor nativo ni API close.
+
+La guarda Silero se ejecuta en el caller original antes del contexto vacío del
+closer. Un caso llama al predictor real desde otro hilo, fuera de la operación
+genérica de M: exige silero_close_from_worker y cero despachos, une ese hilo y
+recién después permite concluir el benchmark y retirar el modelo.
+
+### Recibos compartidos de operación y cierre
+
+Dos RED interrumpen Condition.__exit__ tras publicar una operación genérica: el
+cuerpo nunca entra, queda una reserva fantasma y el closer real no termina. El
+lease por identidad ahora queda protegido desde antes de publicarlo; active=False
+precede limpieza/notificación fallible. El closer consulta operaciones activas
+con espera acotada, sin depender de una notificación perdida.
+
+Otros dos RED retienen el postludio nativo del closer e interrumpen su notificación
+con RuntimeError o KeyboardInterrupt. El cierre directo anterior devolvía el
+fallo antes de la salida nativa. Ahora conserva un descriptor y observa el mismo
+token/handle antes de propagarlo, sin repetir Thread.start. Se conservan guarda
+CPython 3.13, bootstrap pendiente, salida del target y join nativo. La
+incertidumbre conserva al dueño fuerte y no confirma retiro. SystemExit mantiene
+códigos seguros; un control con código 0 no prueba cierre, aunque el retorno
+normal del benchmark exige retiro confirmado. Los seis RED y fuentes se guardan
+sin rescatar flags/eventos.
+
+### Admisión interna de Silero
+
+La primera full terminó con 7773 PASS y una xfail conocida, con 899 archivos
+intactos. No verificó la unidad: la revisión posterior encontró el mismo hueco
+antes del try dentro del adaptador Silero, tanto al admitir una operación como
+al elegir el dueño del cierre. El recibo genérico de M no corrige reservas
+internas de cada adaptador. Se conservan esa corrida y sus fuentes exactas.
+
+Tres RED reproducen carga/predicción sin entrar al modelo y un segundo caller
+bloqueado tras fallar la reserva del cierre. Silero ahora publica leases por
+identidad dentro del try; los desactiva antes de restaurar TLS o notificar. La
+guarda comprueba también el hilo real en la frontera previa a instalar TLS.
+El cierre tiene una sola reserva, fallo por defecto y recibo finished finalizado
+aun si falla la metadata o la notificación; los seguidores consultan ese recibo
+con espera acotada. Una disposición incierta no se reintenta ni se confirma: el
+dueño M retiene al predictor/modelo. Los fallos del intento de cierre conservan
+RuntimeError fijo silero_close_failed; no se promete preservar allí toda clase
+de control. Las clases completas predictor/segmentador y la fábrica conservan
+su AST. Seis casos adicionales cubren publicación/restauración TLS, préstamo
+anidado y notificación de cierre interrumpida, sin fabricar un Event exitoso.
+
+### Mediciones y alcance de la prueba ambient
+
+Se conservan por AST synth_speech, main y los tres loops medidos, además de los
+helpers WAV, estadísticas y builders de STT A/B. Permanecen opciones, primera
+columna del WAV, diagnóstico de tasa distinta de 16 kHz, warmup STT de dos
+segundos, chunks VAD de 1280, estado recurrente y DoA con seed 7. Se mantienen
+los resultados previos de iteraciones cero/negativas, sin añadir validación que
+oculte los caminos de retiro.
+
+CUDA se sincroniza y muestrea con el modelo residente. Las cadenas conservan
+fórmulas/formato y se emiten después del retiro confirmado: cambia deliberadamente
+el orden relativo entre logs y cierre. Las pruebas sintéticas no acreditan RTF,
+WER, VRAM real o acústica de campo.
+
+### Revalidación tras el fallo del caso de sustitución
+
+La full corregida conservó 7781 PASS, un fallo y una xfail, con los 899 archivos
+intactos. El caso previo de sustitución directa esperaba ERROR_TEXT y recibió
+TIMEOUT_TEXT antes de crear el segundo comando. El intervalo STT→GET de unos
+574 ms no identifica por sí solo el reloj o la fase; la causa queda sin atribuir.
+No cambió en M la producción ni la prueba de respuestas, incluida la preparación
+de dos clientes introducida en K. Los dos modos pasaron aislados.
+
+Dos diagnósticos con colección completa se detuvieron tras ese caso: ambos
+pasaron 1988 pruebas y conservaron sus aserciones. Observaron lecturas cobradas
+de 0,09–1,91 ms, presupuestos restantes positivos y ningún timeout. El primero
+registró GC mayor de 593,62 ms terminado antes del primer reloj; el segundo
+movió el parseo AST del observador a antes de colección y sólo vio GC menor.
+La instrumentación puede alterar la planificación y las asignaciones de memoria;
+esos resultados no explican el fallo previo ni acreditan una corrección. Los
+relojes y la política de GC se mantuvieron; los presupuestos y mensajes esperados
+no cambiaron. La revalidación completa normal posterior conservó el mismo código;
+sus resultados y las trazas anteriores se preservan. Un resultado verde no
+atribuye retrospectivamente los intervalos de M/K.
+
+### Observación independiente del cierre de wake word
+
+La revalidación normal del mismo código terminó con 7781 PASS, un fallo de
+wake graph y una xfail conocida, con los 899 hashes idénticos y sin falta de
+espacio. El caso de respuesta anterior pasó. El nuevo fallo conservó una
+conjunción `owner.done()` y clase RuntimeError que no registraba cuál de sus
+dos condiciones falló; no acredita por sí solo una causa de ejecución.
+
+La revisión encontró que privacidad puede propagar el primer fallo mientras
+otro dueño sigue observando sus propios drenajes. La prueba ahora espera el
+mismo dueño de wake word mediante `shield`, con un watchdog de observación de
+tres segundos, antes de exigir su error terminal. Conserva las nueve aserciones
+originales y agrega cinco: clase del resultado, identidad estable y retención
+del modelo, SQLite y permiso de escritura después de terminar ese dueño.
+No cambia algoritmos ni plazos de producción. Los seis casos de wake graph
+pasaron en 12,63 segundos. La corrida fallida y sus hashes quedan preservados;
+esta corrección del observador no atribuye una causa única al fallo histórico.
+
+### Verificación y continuidad del benchmark ambient
+
+Pasan 78 casos nuevos. La validación corregida reúne esos 78 y 44 existentes de
+Silero, segmentación y DoA; antes pasaron las 56 regresiones STT A/B y 101
+existentes enfocados, además de 11 iniciales de fábrica/segmentador. Los nueve
+RED quedan preservados. La extracción mantiene los cuerpos del candidato
+revisado; root añade tipos/docstrings y dataclass de identidad para los tickets.
+
+T022-M queda verificada localmente en `cc85788`. Full: 7782 casos
+más la xfail conocida en 557.24 segundos, con 899
+archivos idénticos durante la corrida. Evidencia privada:
+`data/autonomous-roadmap-20261102/t022/m/evidence.json`.
+
+El inventario es un suplemento parcial de las 29 familias. Referencias conocidas
+e hilos observados no acreditan borrado de heap privado, Hub cache, ORT/CTranslate2
+o GPU. WAV, texto y logs/stdout son destinos independientes: linaje, consentimiento,
+caducidad, mute, borrado y restore siguen pendientes en T023/T024. Enrollment y
+benchmark_latency continúan pendientes. T021/T022 y C03/C04/C06/C20 siguen abiertos;
+HA resistente supera 60 s. Las causas de G, los primeros intervalos J/K y ENOSPC K
+no están acreditadas. T047 conserva integración local y autoridades separadas.
+Sigue T022-N con enrollment y su reserva interna Speaker; el script se incluirá
+expresamente en el próximo snapshot de fuentes.
