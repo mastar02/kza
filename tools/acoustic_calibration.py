@@ -123,17 +123,233 @@ def load_condition(directory: Path, condition: str) -> dict[str, list[float]]:
 
 # ---------------------------------------------------------------- captura
 
-def _spenergy_poller(controller, rows: list, stop: threading.Event) -> None:
+_CAPTURES: set = set()
+
+_FAILED_CAPTURES: set = set()
+
+_FAILED_CAPTURES_LOCK = threading.Lock()
+
+class _CaptureOwner:
+    """Own capture admission and actual retirement before publishing JSONL."""
+
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.stop = threading.Event()
+        self.rows: list[dict] = []
+        self.detector = self.controller = self.stream = self.poller = None
+        self.poller_handle = None
+        self.poller_exited = threading.Event()
+        self.poller_start_entered = False
+        self.callbacks = 0
+        self.sealed = False
+        self.retired = False
+        self.uncertain = False
+        self.failures: list[BaseException] = []
+        self.controls: list[BaseException] = []
+        self.retirement_attempted = False
+        # Retain before any SDK/model operation, including an interruption in
+        # cleanup metadata. GC or a retained exception is never the owner.
+        with _FAILED_CAPTURES_LOCK:
+            _CAPTURES.add(self)
+
+    def publish(self, row: dict) -> None:
+        with self.condition:
+            if not self.sealed:
+                self.rows.append(row)
+
+    def admit_callback(self) -> bool:
+        with self.condition:
+            if self.sealed:
+                return False
+            self.callbacks += 1
+            return True
+
+    def finish_callback(self) -> None:
+        with self.condition:
+            self.callbacks -= 1
+            self.condition.notify_all()
+
+    def start_poller(self) -> None:
+        self.poller = threading.Thread(target=self._poll, daemon=True)
+        handle = getattr(self.poller, "_handle", None)
+        handle_type = getattr(threading, "_ThreadHandle", None)
+        started = getattr(self.poller, "_started", None)
+        if (sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 13)
+                or handle_type is None or type(handle) is not handle_type
+                or type(getattr(handle, "ident", None)) is not int or handle.ident != 0
+                or not callable(getattr(handle, "join", None))
+                or not callable(getattr(handle, "is_done", None))
+                or not callable(getattr(started, "is_set", None)) or started.is_set()):
+            raise RuntimeError("calibration_poller_unsupported_runtime")
+        self.poller_handle = handle
+        self.poller_start_entered = True
+        self.poller.start()
+
+    def record_worker_failure(self, error: BaseException, code: str) -> None:
+        # Keep no SDK traceback, context or payload in the process owner.
+        if isinstance(error, Exception):
+            failure = RuntimeError(code)
+        else:
+            try:
+                if isinstance(error, SystemExit):
+                    exit_code = error.code
+                    if exit_code is not None and type(exit_code) is not int:
+                        exit_code = 1
+                    failure = type(error)(exit_code)
+                else:
+                    failure = type(error)()
+            except BaseException:
+                failure = BaseException(code)
+        with self.condition:
+            self.failures.append(failure)
+            if not isinstance(failure, Exception):
+                self.controls.append(failure)
+            self.sealed = True
+            self.stop.set()
+
+    def _poll(self) -> None:
+        try:
+            _spenergy_poller(self.controller, self.rows, self.stop, publish=self.publish)
+        except BaseException as error:
+            self.record_worker_failure(error, "calibration_poller_failed")
+        finally:
+            self.poller_exited.set()
+
+    def _attempt(self, function, *, uncertain: bool = False) -> bool:
+        try:
+            function()
+            return True
+        except BaseException as error:
+            self.failures.append(error)
+            if not isinstance(error, Exception):
+                self.controls.append(error)
+            if uncertain:
+                self.uncertain = True
+            return False
+
+    def _join_poller(self) -> bool:
+        if self.poller is None or not self.poller_start_entered:
+            return True
+        handle = self.poller_handle
+        if handle is None or handle.ident == 0:
+            # An exception from start does not prove no native dispatch. Keep
+            # this owner reachable rather than deriving exit from ident=None.
+            self.uncertain = True
+            self.failures.append(RuntimeError("calibration_poller_start_unconfirmed"))
+            return False
+        while True:
+            try:
+                if self.poller is threading.current_thread():
+                    raise RuntimeError("calibration_poller_self_join")
+                # Same CPython 3.13 native join boundary as _PinnedWorker in
+                # stt.pinned_executor, without coupling calibration to STT.
+                if not self.poller._started.is_set():
+                    handle.join()
+                else:
+                    self.poller.join()
+                if not handle.is_done() or not self.poller_exited.is_set():
+                    raise RuntimeError("calibration_poller_exit_unconfirmed")
+                self.poller = self.poller_handle = None
+                return True
+            except BaseException as error:
+                if not isinstance(error, Exception):
+                    self.controls.append(error)
+                    continue
+                self.failures.append(error)
+                self.uncertain = True
+                return False
+
+    def _wait_callbacks(self) -> bool:
+        while True:
+            try:
+                with self.condition:
+                    if not self.callbacks:
+                        return True
+                    self.condition.wait()
+            except BaseException as error:
+                if not isinstance(error, Exception):
+                    self.controls.append(error)
+                    continue
+                self.failures.append(error)
+                self.uncertain = True
+                return False
+
+    def retire(self, prior_error: BaseException | None = None) -> None:
+        if self.retirement_attempted:
+            raise RuntimeError("calibration_retirement_already_attempted")
+        self.retirement_attempted = True
+        with self.condition:
+            self.sealed = True
+            self.stop.set()
+        if self.stream is not None:
+            # InputStream.__exit__ uses ignore_errors=True and cannot provide
+            # this receipt. Invoke the equivalent public operations directly,
+            # without a duplicate __exit__/close or retry after close failure.
+            active = None
+            try:
+                active = self.stream.active
+            except AttributeError:
+                pass
+            except BaseException as error:
+                self.failures.append(error)
+                if not isinstance(error, Exception):
+                    self.controls.append(error)
+            if active is not False:
+                self._attempt(lambda: self.stream.stop(ignore_errors=False))
+            if self._attempt(lambda: self.stream.close(ignore_errors=False), uncertain=True):
+                self.stream = None
+        poller_done = self._join_poller()
+        callbacks_done = self._wait_callbacks()
+        if poller_done and callbacks_done and self.detector is not None:
+            if self._attempt(self.detector.close, uncertain=True):
+                self.detector = None
+        if poller_done and self.controller is not None:
+            # This drops Python references/cache only; it is not proof of a
+            # physical PyUSB/libusb handle being released.
+            if self._attempt(self.controller.invalidate_device, uncertain=True):
+                self.controller = None
+        self.retired = not self.uncertain
+        if self.uncertain:
+            # A traceback or GC is not a durable owner of a failed resource.
+            with _FAILED_CAPTURES_LOCK:
+                _FAILED_CAPTURES.add(self)
+        else:
+            with _FAILED_CAPTURES_LOCK:
+                _CAPTURES.discard(self)
+        if prior_error is not None and not isinstance(prior_error, Exception):
+            raise prior_error
+        if self.controls:
+            raise self.controls[0]
+        if self.failures:
+            errors = ([prior_error] if prior_error is not None else []) + self.failures
+            if len(errors) == 1:
+                raise errors[0]
+            raise ExceptionGroup("calibration_capture_failed", errors)
+
+    def snapshot(self) -> list[dict]:
+        with self.condition:
+            if not self.retired or self.failures:
+                raise RuntimeError("calibration_retirement_unconfirmed")
+            return list(self.rows)
+
+def _spenergy_poller(controller, rows: list, stop: threading.Event, *, publish=None) -> None:
     """Thread: pollea SPENERGY[3] cada 40ms y acumula filas. Fail-open."""
     while not stop.is_set():
+        vals = row = None
         try:
             vals = controller.read_spenergy()
+            if vals is not None:
+                row = {"t": time.time(), "kind": "spenergy", "value": float(vals[3])}
+                if publish is not None:
+                    publish(row)
+                elif not stop.is_set():
+                    rows.append(row)
         except Exception as exc:
             print(f"⚠️  SPENERGY poller error: {exc} — datos SPENERGY incompletos")
             break
-        if vals is not None:
-            rows.append({"t": time.time(), "kind": "spenergy", "value": float(vals[3])})
-        time.sleep(SPENERGY_POLL_S)
+        finally:
+            vals = row = None
+        stop.wait(SPENERGY_POLL_S)
 
 
 def run_capture(
@@ -145,76 +361,80 @@ def run_capture(
     out_dir: Path,
     usb_port: str | None = None,
 ) -> Path:
-    """Captura RMS + score wake + SPENERGY durante duration_s. Devuelve el JSONL."""
+    """Capture scalar measurements, publishing JSONL only after real retirement.
+
+    InputStream construction has no public pre-return resource receipt. A
+    constructor failure still seals callbacks and retires all previously
+    acquired resources; this tool cannot claim disposal of an unreturned SDK
+    object or physical libusb internals.
+    """
     import sounddevice as sd
 
     from src.wakeword.detector import WakeWordDetector
     from src.audio.xvf_controller import XvfController
 
-    # Solo se llama a .predict() — el detector threshold no se usa (los scores raw se graban).
-    detector = WakeWordDetector(models=[model_path])
-    detector.load()
-
-    controller = XvfController(usb_port=usb_port)
-    spenergy_ok = controller.open()
-    if not spenergy_ok:
-        print("⚠️  XVF3800 no accesible — se mide sin SPENERGY (RMS + wake igual sirven)")
-
-    rows: list[dict] = []
-    rows.append({
-        "meta": True, "condition": condition, "device": device,
-        "channel": channel, "model": model_path, "duration_s": duration_s,
-        "started_at": time.time(),
-    })
-
-    stop = threading.Event()
-    poller = None
-    if spenergy_ok:
-        poller = threading.Thread(
-            target=_spenergy_poller, args=(controller, rows, stop), daemon=True
-        )
-        poller.start()
-
-    def callback(indata, frames, time_info, status):
-        if status:
-            print(f"⚠️ sd callback status: {status}", flush=True)
-        ch = channel if indata.shape[1] > channel else 0
-        chunk = indata[:, ch].copy()
-        now = time.time()
-        rms = float(np.sqrt(np.mean(chunk ** 2)))
-        rows.append({"t": now, "kind": "rms", "value": rms})
-        scores = detector.predict(chunk)
-        if scores:
-            rows.append({"t": now, "kind": "wake", "value": float(max(scores.values()))})
-
-    if channel == 0:
-        print(
-            "⚠️  --channel 0: el XVF3800 tiene 2 canales — abrirlo como 1ch puede "
-            "garbler el audio. Considera usar --channel 1 o superior en dispositivos "
-            "multi-canal (ver _resolve_capture_channels en src/pipeline/multi_room_audio_loop.py)."
-        )
-    print(f"▶ Capturando condición '{condition}' por {duration_s:.0f}s "
-          f"(device={device}, channel={channel})...")
-    stream = sd.InputStream(
-        device=device, samplerate=SAMPLE_RATE,
-        # abrir canales suficientes para que el índice `channel` exista
-        channels=max(channel + 1, 1),
-        dtype="float32", blocksize=CHUNK_SIZE, callback=callback,
-    )
+    owner = _CaptureOwner()
     try:
-        with stream:
-            deadline = time.time() + duration_s
-            while time.time() < deadline:
-                time.sleep(1.0)
-                elapsed = duration_s - (deadline - time.time())
-                print(f"  ... {elapsed:.0f}/{duration_s:.0f}s ({len(rows)} muestras)", end="\r")
+        # Own each object before calling operations that load/open native work.
+        owner.detector = WakeWordDetector(models=[model_path])
+        owner.detector.load()
+        owner.controller = XvfController(usb_port=usb_port)
+        spenergy_ok = owner.controller.open()
+        if not spenergy_ok:
+            print("⚠️  XVF3800 no accesible — se mide sin SPENERGY (RMS + wake igual sirven)")
+        owner.publish({
+            "meta": True, "condition": condition, "device": device,
+            "channel": channel, "model": model_path, "duration_s": duration_s,
+            "started_at": time.time(),
+        })
+        if spenergy_ok:
+            owner.start_poller()
+
+        def callback(indata, frames, time_info, status):
+            if not owner.admit_callback():
+                return
+            chunk = scores = None
+            try:
+                if status:
+                    print(f"⚠️ sd callback status: {status}", flush=True)
+                ch = channel if indata.shape[1] > channel else 0
+                chunk = indata[:, ch].copy()
+                now = time.time()
+                rms = float(np.sqrt(np.mean(chunk ** 2)))
+                owner.publish({"t": now, "kind": "rms", "value": rms})
+                scores = owner.detector.predict(chunk)
+                if scores:
+                    owner.publish({"t": now, "kind": "wake", "value": float(max(scores.values()))})
+            except BaseException as error:
+                owner.record_worker_failure(error, "calibration_callback_failed")
+            finally:
+                # Discard owned PCM/driver parameters before publishing count0.
+                # Stream.close's strict receipt additionally covers SDK callers.
+                del indata, chunk, scores, time_info, status
+                owner.finish_callback()
+
+        if channel == 0:
+            print(
+                "⚠️  --channel 0: el XVF3800 tiene 2 canales — abrirlo como 1ch puede "
+                "garbler el audio. Considera usar --channel 1 o superior en dispositivos "
+                "multi-canal (ver _resolve_capture_channels en src/pipeline/multi_room_audio_loop.py)."
+            )
+        print(f"▶ Capturando condición '{condition}' por {duration_s:.0f}s "
+              f"(device={device}, channel={channel})...")
+        owner.stream = sd.InputStream(
+            device=device, samplerate=SAMPLE_RATE,
+            channels=max(channel + 1, 1), dtype="float32", blocksize=CHUNK_SIZE,
+            callback=callback,
+        )
+        owner.stream.__enter__()
+        deadline = time.time() + duration_s
+        while time.time() < deadline and not owner.stop.is_set():
+            time.sleep(1.0)
+            elapsed = duration_s - (deadline - time.time())
+            print(f"  ... {elapsed:.0f}/{duration_s:.0f}s ({len(owner.rows)} muestras)", end="\r")
     finally:
-        stop.set()
-        if poller is not None:
-            poller.join(timeout=1.0)
-        # Snapshot después del join para evitar race si el poller agrega filas
-        # durante el timeout de 1 s (el hilo puede seguir corriendo brevemente).
-        snapshot = list(rows)
+        owner.retire(sys.exc_info()[1])
+    snapshot = owner.snapshot()
 
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")

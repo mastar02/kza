@@ -1,6 +1,8 @@
 """Deadline authority across the real router, worker, generation and output."""
 
 import asyncio
+import threading
+from collections import deque
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from contextlib import AsyncExitStack
@@ -269,37 +271,127 @@ async def test_cancel_while_error_is_playing_stays_silent(monkeypatch, cancel):
         await owner.aclose()
 
 
+async def _prepared_generation_clients(owner, endpoint, stack):
+    """Prepare two owned HTTP clients outside the cancellation-test clock."""
+    clients = deque()
+    for _ in range(2):
+        client = await asyncio.to_thread(endpoint.build, owner.llm.base_url)
+        stack.push_async_callback(client.close)
+        await asyncio.to_thread(client.prepare, owner.llm.api_style)
+        clients.append(client)
+    return clients
+
 @pytest.mark.parametrize('orchestrated', [True, False])
 async def test_new_request_cancels_old_error_without_repeating_it_in_both_routers(monkeypatch, orchestrated):
     router, orchestrator, worker, owner, engine, backend, endpoint = routed(monkeypatch,
         [event('incomplete'), event(finish='length')], timeout=2, orchestrated=orchestrated,
         response_budgets=budgets(feedback_s=1))
-    backend.release_tail.clear()
-    old = asyncio.create_task(router.process_command(CommandEvent(
-        np.zeros(16000, dtype=np.float32), room_id='origin')))
-    new = None
-    try:
-        await until(lambda: backend.outputs and backend.outputs[-1].draining.is_set())
-        assert engine.calls == [ERROR_TEXT]
-        endpoint.body.parts = [event('Una respuesta nueva.'), event(finish='stop')]
-        new = asyncio.create_task(router.process_command(CommandEvent(
-            np.zeros(16000, dtype=np.float32), room_id='origin')))
-        await until(lambda: len(backend.outputs) == 2)
-        backend.release_tail.set()
-        assert not (await old)['success'] and (await new)['success']
-        assert engine.calls == [ERROR_TEXT, 'Una respuesta nueva.']
-        assert backend.outputs[0].aborted.is_set()
-        np.testing.assert_array_equal(np.concatenate(backend.outputs[1].frames)[:, 0], engine.audio('Una respuesta nueva.'))
-        if orchestrator:
-            assert orchestrator.context_manager.get('unknown') is None
-            assert orchestrator.context_manager.get_household('origin').conversation_history == []
-    finally:
-        backend.release_tail.set()
-        if worker:
-            orchestrator._running = False
-            worker.cancel()
-        await asyncio.gather(*(t for t in (old, new, worker) if t is not None), return_exceptions=True)
-        await owner.aclose()
+    old = new = None
+    async with AsyncExitStack() as stack:
+        stack.push_async_callback(owner.aclose)
+        try:
+            # This case requires a truncated response. Transport construction is
+            # setup here; worker dispatch and request preparation remain budgeted.
+            clients = await _prepared_generation_clients(owner, endpoint, stack)
+            monkeypatch.setattr(owner.llm, '_new_async_client', lambda _url: clients.popleft())
+            backend.release_tail.clear()
+            old = asyncio.create_task(router.process_command(CommandEvent(
+                np.zeros(16000, dtype=np.float32), room_id='origin')))
+            new = None
+            await until(lambda: backend.outputs and backend.outputs[-1].draining.is_set())
+            assert engine.calls == [ERROR_TEXT]
+            endpoint.body.parts = [event('Una respuesta nueva.'), event(finish='stop')]
+            new = asyncio.create_task(router.process_command(CommandEvent(
+                np.zeros(16000, dtype=np.float32), room_id='origin')))
+            await until(lambda: len(backend.outputs) == 2)
+            backend.release_tail.set()
+            assert not (await old)['success'] and (await new)['success']
+            assert engine.calls == [ERROR_TEXT, 'Una respuesta nueva.']
+            assert backend.outputs[0].aborted.is_set()
+            np.testing.assert_array_equal(np.concatenate(backend.outputs[1].frames)[:, 0], engine.audio('Una respuesta nueva.'))
+            if orchestrator:
+                assert orchestrator.context_manager.get('unknown') is None
+                assert orchestrator.context_manager.get_household('origin').conversation_history == []
+        finally:
+            backend.release_tail.set()
+            if worker:
+                orchestrator._running = False
+                worker.cancel()
+            await asyncio.gather(*(t for t in (old, new, worker) if t is not None), return_exceptions=True)
+            await owner.aclose()
+
+@pytest.mark.parametrize('orchestrated', [True, False])
+async def test_new_request_cancels_constructor_timeout_feedback_in_both_routers(monkeypatch, orchestrated):
+    router, orchestrator, worker, owner, engine, backend, endpoint = routed(monkeypatch,
+        [event('unused old response'), event(finish='stop')], timeout=2,
+        orchestrated=orchestrated, response_budgets=budgets(feedback_s=1))
+    entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+    old = new = None
+    async with AsyncExitStack() as stack:
+        stack.push_async_callback(owner.aclose)
+        try:
+            clients = await _prepared_generation_clients(owner, endpoint, stack)
+            first_client, second_client = tuple(clients)
+            admitted = []
+
+            def construct(_base_url):
+                client = clients.popleft()
+                admitted.append(client)
+                if client is first_client:
+                    entered.set()
+                    assert release.wait(10), 'constructor release missing'
+                    returned.set()
+                return client
+
+            monkeypatch.setattr(owner.llm, '_new_async_client', construct)
+            backend.release_tail.clear()
+            old = asyncio.create_task(router.process_command(CommandEvent(
+                np.zeros(16000, dtype=np.float32), room_id='origin')))
+            await until(entered.is_set)
+            # Establish expiry of the unchanged .3 s generation budget; this
+            # sleep asserts no upper bound on system performance.
+            await asyncio.sleep(.35)
+            assert not returned.is_set()
+            await until(lambda: backend.outputs and backend.outputs[-1].draining.is_set())
+            assert engine.calls == [TIMEOUT_TEXT]
+            assert endpoint.requests == []
+            assert admitted == [first_client]
+            assert owner.get_delivery_status()['generations'] >= 1
+            assert not first_client.is_closed()
+            assert not old.done()
+
+            # Observe actual constructor/client cleanup before a second
+            # generation enters; the old error PCM stays in device drain.
+            release.set()
+            await until(lambda: first_client.is_closed()
+                and owner.get_delivery_status()['generations'] == 0)
+            assert returned.is_set()
+            assert endpoint.requests == []
+            assert backend.outputs[0].draining.is_set()
+            assert not old.done()
+            endpoint.body.parts = [event('Una respuesta nueva.'), event(finish='stop')]
+            new = asyncio.create_task(router.process_command(CommandEvent(
+                np.zeros(16000, dtype=np.float32), room_id='origin')))
+            await until(lambda: len(backend.outputs) == 2)
+            backend.release_tail.set()
+            assert not (await old)['success'] and (await new)['success']
+            assert engine.calls == [TIMEOUT_TEXT, 'Una respuesta nueva.']
+            assert admitted == [first_client, second_client]
+            assert first_client.is_closed() and second_client.is_closed()
+            assert backend.outputs[0].aborted.is_set()
+            np.testing.assert_array_equal(np.concatenate(backend.outputs[1].frames)[:, 0], engine.audio('Una respuesta nueva.'))
+            assert sum(request.method == 'POST' for request in endpoint.requests) == 1
+            if orchestrator:
+                assert orchestrator.context_manager.get('unknown') is None
+                assert orchestrator.context_manager.get_household('origin').conversation_history == []
+        finally:
+            release.set()
+            backend.release_tail.set()
+            if worker:
+                orchestrator._running = False
+                worker.cancel()
+            await asyncio.gather(*(t for t in (old, new, worker) if t is not None), return_exceptions=True)
+            await owner.aclose()
 
 
 @pytest.mark.parametrize('resource', ['client', 'body'])
