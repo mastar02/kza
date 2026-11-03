@@ -1004,9 +1004,10 @@
         "data/autonomous-roadmap-20261102/t047/person-native-evidence.json",
         "data/autonomous-roadmap-20261102/t047/person-filter-evidence.json",
         "data/autonomous-roadmap-20261102/t013/evaluation-native-evidence.json",
-        "data/autonomous-roadmap-20261102/t013/evaluation-http-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/evaluation-http-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/credential-proof-evidence.json"
       ],
-      "next_action": "Exact evaluator native+HTTP/control consumers verified locally: singular selected payload, original actor/immutable source proof, exclusive EVALUATION_CONTROL_ONLY protocol3, ticket and actual outer-body guards, mode/cookie durable isolation. Full6527+knownxfail/Ruff0/frozen793; cross501 including37newHTTP/control cases, independent reviews closed. Next credential authority preparation/API: server-derived actual-source proof with final pure guard, one-time token and durable consumed-attempt identity/reconciliation; then separate role-based NEXO views. T047 stays verified_local; no criteria accepted."
+      "next_action": "Native prepared evaluation scopes verified locally: metadata-only actual sources/review presence, exact clamped deadlines, weak policy plus opening generation, original issuer match and pure data guard before seal/final commit; self-revise and cancellation preserved. Full6558+knownxfail/Ruff0/frozen795; cross216 including31new preparation cases, independent reviews closed. Next specific durable credential command journal/CAS/safe metadata with shared legacy writer ownership, one-time secret/replay reconciliation; then HTTP management and separate NEXO role views. Native prepared_scope=None remains trusted compatibility, never an untrusted HTTP fallback. T047 stays verified_local; no criteria accepted."
     },
     {
       "id": "T014",
@@ -2259,7 +2260,7 @@
     "last_verified_phase": "P0",
     "last_verified_task": "T047",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T013/evaluation-http-control",
+    "last_verified_unit": "T013/credential-prepared-scope",
     "user_priority_after_admin_unit": "T047"
   }
 }

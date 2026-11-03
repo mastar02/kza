@@ -822,3 +822,43 @@ de credenciales y la navegación por rol. La siguiente unidad preparará proofs
 de fuentes reales y una identidad duradera del intento antes de exponer tokens
 de un solo envío. T047 conserva su estado y no se acepta ningún criterio por
 esta verificación local.
+
+## Preparación nativa de concesiones de evaluación
+
+VoiceEvaluationReader prepara concesiones desde metadatos reales y la
+existencia de la fila de review. No consulta audio, transcript, embeddings,
+modelos, personas, grupos ni perfiles. Conserva los hashes de las declaraciones
+originales completas y limita cada muestra por los vencimientos solicitados,
+de credencial, fingerprint, fuentes y dependencias. La duración de la sesión
+emisora no limita automáticamente una concesión emitida mientras tenía autoridad.
+
+PreparedEvaluationScope es inmutable y conserva el emisor original, las muestras
+y sus fuentes tipadas. Usa una referencia débil al ledger y una generación de
+apertura monotónica. Cerrar y reabrir el mismo objeto no revive la preparación,
+incluso si un ledger de memoria vacío vuelve a considerar vigentes las fuentes.
+Su predicado puro comprueba fuentes, generación y ambos relojes antes y después
+de la consulta, sin volver a exigir `issuer.current()`.
+
+Authority acepta opcionalmente ese proof tipado, exige actor, rol, muestras y
+vencimiento coincidentes antes de generar el token o sellar una revisión y
+lo revalida en la guardia nativa final. Una revisión propia conserva la guardia
+especial del emisor original. Un binding nativo inválido se rechaza antes del
+sello. La compatibilidad nativa con `prepared_scope=None` se conserva; la futura
+emisión HTTP no debe usarla como fallback para concesiones de evaluación.
+
+Las pruebas usan authorizer SQLite para impedir toda lectura de payload y
+cubren plazos exactos, cambios de fuentes en el commit, revisión propia,
+mismatches sin retirar leases previos, reloj atrasado, cierre/reapertura y
+cancelación del observador esperando la salida real del trabajo retenido.
+La suite final pasa 6558 pruebas y conserva una xfail conocida. Las 216 pruebas
+cruzadas se solapan con ese total e incluyen 31 casos nuevos. Ruff no informa
+errores y los hashes de 795 fuentes permanecieron iguales durante la ejecución.
+Las revisiones independientes están cerradas; evidencia:
+`data/autonomous-roadmap-20261102/t013/credential-proof-evidence.json`.
+
+La siguiente unidad de T013 añadirá el journal duradero específico de comandos
+de credenciales, CAS y catálogo seguro. El marcador debe sobrevivir a revocación
+y purga; replay devuelve metadata y no genera ni recupera otro secreto. Antes
+de exponer emisión HTTP faltan esa reconciliación y ownership compartido con
+los writers nativos existentes. No se emitieron credenciales reales ni se
+aceptan criterios domésticos por esta unidad; T047 conserva su verificación local.

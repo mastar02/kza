@@ -698,20 +698,34 @@ class DashboardAuthority:
             raise ValueError("invalid_dashboard_evaluation_scope")
         return now
 
+    def _prepared_evaluation_guard(self,actor,role,expires_at,user_id,samples,prepared_scope):
+        """Bind a server proof without borrowing another login or issuer guard."""
+        if prepared_scope is None:
+            return lambda:True
+        from src.dashboard.evaluation_grants import PreparedEvaluationScope
+        if (type(prepared_scope) is not PreparedEvaluationScope
+                or not prepared_scope.matches(actor,role,expires_at,user_id,samples)):
+            raise PermissionError('dashboard_grant_scope_mismatch')
+        return lambda:prepared_scope.current(self._now())
+
     async def issue_credential(self, actor: DashboardLease, *, subject: str, role: DashboardRole,
                                expires_at: float, user_id: str | None = None,
-                               samples: tuple[EvaluationSample, ...] = ()) -> IssuedCredential:
+                               samples: tuple[EvaluationSample, ...] = (),
+                               prepared_scope: object | None = None) -> IssuedCredential:
         """Issue a bounded role grant; HTTP resolves user/source bindings first."""
         if (type(actor) is not DashboardLease or actor._authority is not self
                 or not actor.current(frozenset({DashboardPermission.AUTH_MANAGE}))):
             raise PermissionError("dashboard_grant_denied")
         now = self._validate_grant(subject, role, expires_at, user_id, samples)
+        scope_current = self._prepared_evaluation_guard(actor,role,expires_at,user_id,samples,prepared_scope)
+        if scope_current() is not True:
+            raise PermissionError('dashboard_grant_scope_retired')
         identity, token = str(uuid4()), "kza_" + secrets.token_urlsafe(32)
         try:
             args = (identity, _hash(token), subject, role.value, user_id, now, expires_at, 1,
                     json.dumps([s.to_dict() for s in samples], separators=(",", ":")))
             await asyncio.shield(self._admit("issue", args, lambda: actor.current(frozenset({DashboardPermission.AUTH_MANAGE}))
-                                            and self._account_current(user_id)))
+                                            and self._account_current(user_id) and scope_current()))
             lease = self.resolve(token)
             if lease is None:
                 raise PermissionError("dashboard_grant_expired")
@@ -722,7 +736,8 @@ class DashboardAuthority:
 
     async def revise_credential(self, actor: DashboardLease, identity: str, *, role: DashboardRole,
                                 expires_at: float, user_id: str | None = None,
-                                samples: tuple[EvaluationSample, ...] = ()) -> bool:
+                                samples: tuple[EvaluationSample, ...] = (),
+                                prepared_scope: object | None = None) -> bool:
         """Keep the secret but retire every lease and session of the old grant."""
         if (type(actor) is not DashboardLease or actor._authority is not self
                 or not actor.current(frozenset({DashboardPermission.AUTH_MANAGE}))):
@@ -731,13 +746,18 @@ class DashboardAuthority:
             original = next((c for c in self._credentials.values() if c.identity == identity), None)
             if original is None:
                 return False
+            original_current = self._revocation_guard(actor, identity)
             now = self._validate_grant(original.subject, role, expires_at, user_id, samples)
+            scope_current = self._prepared_evaluation_guard(actor,role,expires_at,user_id,samples,prepared_scope)
+            if scope_current() is not True:
+                raise PermissionError('dashboard_grant_scope_retired')
+            if original_current() is not True:
+                raise PermissionError('dashboard_grant_denied')
             revision = max(original.revision, self._revision_admission.get(identity, 0)) + 1
             self._revision_admission[identity] = revision
         args = (role.value, user_id, now, expires_at, revision,
                 json.dumps([s.to_dict() for s in samples], separators=(",", ":")), identity)
-        original_current = self._revocation_guard(actor, identity)
-        return await asyncio.shield(self._admit("revise", args, lambda: original_current() and self._account_current(user_id)))
+        return await asyncio.shield(self._admit("revise", args, lambda: original_current() and self._account_current(user_id) and scope_current()))
 
     async def login(self, token: str, *, replacing: DashboardLease | None = None) -> IssuedSession:
         """Issue a cookie, optionally replacing this browser's current session atomically."""
@@ -792,9 +812,14 @@ class DashboardAuthority:
         return await asyncio.shield(self._admit("revoke_credential", (identity,), self._revocation_guard(actor, identity)))
 
     def _revocation_guard(self, actor: DashboardLease, target: str) -> Callable[[], bool]:
+        if type(actor.binding) is not str:
+            raise PermissionError('invalid_dashboard_binding')
         if actor.binding.startswith("legacy:"):
             return actor.current
-        digest = actor.binding.split(":", 1)[1]
+        prefix,separator,digest = actor.binding.partition(':')
+        if (not separator or prefix!=('session' if actor.session else 'credential')
+                or len(digest)!=64 or any(char not in '0123456789abcdef' for char in digest)):
+            raise PermissionError('invalid_dashboard_binding')
         return lambda: self._current(digest, actor.principal, actor.session, allow_revoking=target)
 
     async def logout(self, actor: DashboardLease) -> bool:

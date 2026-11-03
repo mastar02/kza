@@ -6,8 +6,13 @@ import json
 import math
 import re
 import sqlite3
+from weakref import ref
 
-from src.dashboard.authority import EvaluationModality, source_digest
+from src.dashboard.authority import (
+    DashboardAuthority, DashboardLease, DashboardRole, EvaluationModality, EvaluationSample,
+    MAX_CREDENTIAL_TTL_S, source_digest,
+)
+from src.dashboard.evaluation_grants import EvaluationGrantRecord, EvaluationGrantSelection, PreparedEvaluationScope
 from src.dashboard.evaluation_actor import EvaluationReadActor
 from src.dashboard.live_retention_types import EvaluationScopeFence, RevisionSet
 from src.memory.fact_ledger import FactLedger, MemorySource
@@ -99,6 +104,80 @@ class VoiceEvaluationReader:
         if type(ledger) is not FactLedger:
             raise ValueError('invalid_evaluation_ledger')
         self.ledger = ledger
+
+    def prepare_grant(self,issuer: DashboardLease,selections: tuple[EvaluationGrantSelection,...],
+                      credential_expires_at: float) -> PreparedEvaluationScope:
+        """Prepare real metadata only; the grant issuer never reads private bytes."""
+        if (type(issuer) is not DashboardLease or type(issuer._authority) is not DashboardAuthority
+                or issuer.principal.role is not DashboardRole.OPERATOR
+                or not issuer.current(frozenset({'auth:manage'}))):
+            raise PermissionError('evaluation_grant_denied')
+        if (type(selections) is not tuple or not 1<=len(selections)<=64
+                or any(type(selection) is not EvaluationGrantSelection for selection in selections)
+                or len({selection.fingerprint_id for selection in selections})!=len(selections)
+                or type(credential_expires_at) not in (int,float) or not math.isfinite(credential_expires_at)):
+            raise ValueError('invalid_evaluation_grant_selection')
+        observed = issuer._clock()
+        if (not observed<credential_expires_at<=observed+MAX_CREDENTIAL_TTL_S
+                or any(selection.expires_at<=observed for selection in selections)):
+            raise ValueError('invalid_evaluation_grant_deadline')
+        records = []
+        generation = None
+        metadata = sources = digests = sample = result = None
+        denied = invalid = False
+
+        def guard():
+            if not issuer.current(frozenset({'auth:manage'})):
+                raise PermissionError('evaluation_grant_denied')
+            if generation is not None and self.ledger.lifecycle_generation!=generation:
+                raise LookupError('evaluation_grant_unavailable')
+            now = max(issuer._clock(),self.ledger.clock())
+            if any(now>=record.sample.expires_at or not self.ledger.sources_available(record.sources)
+                    for record in records):
+                raise LookupError('evaluation_grant_unavailable')
+
+        try:
+            with self.ledger._transaction(guard) as db:
+                generation = self.ledger.lifecycle_generation
+                for selection in selections:
+                    guard()
+                    metadata = db.execute('''SELECT sources_json,expires_at FROM voice_fingerprints AS f
+                        WHERE f.id=? AND length(CAST(f.sources_json AS BLOB))<=?
+                        AND EXISTS(SELECT 1 FROM voice_capture_reviews AS r WHERE r.fingerprint_id=f.id)''',
+                        (selection.fingerprint_id,MAX_SOURCE_JSON_BYTES)).fetchone()
+                    if metadata is None:
+                        raise LookupError('evaluation_grant_unavailable')
+                    sources,digests = _source_proof(metadata['sources_json'])
+                    if sum(len(record.sample.source_digests) for record in records)+len(digests)>1024:
+                        raise LookupError('evaluation_grant_unavailable')
+                    expiry = metadata['expires_at']
+                    if type(expiry) not in (int,float) or not math.isfinite(expiry):
+                        raise LookupError('evaluation_grant_unavailable')
+                    deadline = min(credential_expires_at,selection.expires_at,expiry,
+                        *[source.expires_at for source in sources],
+                        *[dep.expires_at for source in sources for dep in source.fact_dependencies
+                            if dep.expires_at is not None])
+                    sample = EvaluationSample(selection.fingerprint_id,digests,selection.modalities,deadline)
+                    records.append(EvaluationGrantRecord(selection,sample,sources,expiry))
+                    metadata = sources = digests = sample = None
+                    guard()
+            guard()
+            result = PreparedEvaluationScope(issuer,ref(self.ledger),generation,credential_expires_at,tuple(records))
+            if not result.current(issuer._clock()):
+                raise LookupError('evaluation_grant_unavailable')
+            guard()
+            return result
+        except PermissionError:
+            denied = True
+        except (LookupError,ValueError,TypeError,OverflowError,RecursionError,sqlite3.Error):
+            invalid = True
+        finally:
+            metadata = sources = digests = sample = result = None
+            records.clear()
+        if denied:
+            raise PermissionError('evaluation_grant_denied')
+        if invalid:
+            raise LookupError('evaluation_grant_unavailable')
 
     def read(self, actor: EvaluationReadActor) -> EvaluationProjection:
         if type(actor) is not EvaluationReadActor:

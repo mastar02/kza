@@ -221,6 +221,7 @@ class FactLedger:
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
         self._authority_available = False
+        self._lifecycle_generation = 0
         self._deleted_conversations: frozenset[str] = frozenset()
         self._deleted_times: dict[str, float] = {}
         self._pending_deleted_times: dict[str, float] = {}
@@ -248,6 +249,11 @@ class FactLedger:
             callback = reference()
             if callback is not None:
                 callback(self._pending_conversations)
+
+    @property
+    def lifecycle_generation(self) -> int:
+        """Identify this opening without locks, IO or reusable object addresses."""
+        return self._lifecycle_generation
 
     def initialize(self) -> None:
         """Create the private ledger without importing legacy documents."""
@@ -290,6 +296,7 @@ class FactLedger:
                 self._deleted_times = deleted_times
                 self._deleted_conversations = frozenset(deleted_times)
                 self._db = db
+                self._lifecycle_generation += 1
                 self._authority_available = True
             except BaseException:
                 # No failed initializer may publish a connection that lets a
@@ -406,6 +413,8 @@ class FactLedger:
     def close(self) -> None:
         """Release the connection after all owning worker operations finish."""
         with self._lock:
+            if self._authority_available or self._db is not None:
+                self._lifecycle_generation += 1
             self._authority_available = False
             self._voice_person_proof.invalidate()
             if self._db is not None:
