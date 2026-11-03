@@ -949,7 +949,7 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "89f3db99917e9a848a74e04573db0f7010863fbe",
         "3953b1e791621611683289f27dc009d9b57a7d66",
@@ -986,7 +986,8 @@
         "d2ff4cea731fdf6b923318d239daa0b969833ada",
         "f227d94234c33c7c14363dfa0a89e21a9c5dca8e",
         "aca57f91d497169e805db25e0c8baf45dfc1d744",
-        "c627fbd87b0638eb0524343da14a5cb2058bd7c1"
+        "c627fbd87b0638eb0524343da14a5cb2058bd7c1",
+        "83011eacdbe954437515691b0ee84466468fde0e"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
@@ -1014,9 +1015,10 @@
         "data/autonomous-roadmap-20261102/t013/credential-commands-evidence.json",
         "data/autonomous-roadmap-20261102/t013/credential-http-evidence.json",
         "data/autonomous-roadmap-20261102/t013/evaluator-catalog-evidence.json",
-        "data/autonomous-roadmap-20261102/t013/nexo-ui-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/nexo-ui-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/closure-evidence.json"
       ],
-      "next_action": "Accesos y Evaluación NEXO verificados localmente en c627fbd: comandos CAS y recibos reales, credencial de entrega única, personas por ID canónico, selección desde Voces y consulta por modalidad. Pasan 160 pruebas de frontend, Ruff y Chromium para Accesos, Hogar y Voces, con anchuras 320/390, 51 perfiles y revocación durante audio; 309 archivos Python de producto siguen iguales al backend verificado. Revisar las obligaciones restantes de autoridad y caducidad de T013 antes de marcar toda la tarea como verified_local. Conservar la separación entre cuenta, voz, consentimiento y rol; ningún criterio doméstico está aceptado."
+      "next_action": "Sesiones y autoridades verificadas localmente en 83011ea: matriz actual de 956 casos, NEXO y orientación de acceso comprobados; conservar la identidad original y los límites durante T014 y las siguientes integraciones. AUD-01 no acredita grabaciones privadas reales; C02/C04/C07 siguen sin aceptar y la evidencia física permanece pendiente."
     },
     {
       "id": "T014",
@@ -1033,10 +1035,10 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
+      "status": "in_progress",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Añadir procedencia tipada y comparación de intervalos exactos al manifiesto privado; después transportar con la PCM real los canales y generaciones diferenciadas y persistir bajo el mismo deadline/borrado. No completar legacy por inferencia, no confundir DSP declarado con observado ni recortar texto por proporción temporal."
     },
     {
       "id": "T020",
@@ -1492,7 +1494,7 @@
         "data/autonomous-roadmap-20261102/t047/person-inverse-evidence.json",
         "data/autonomous-roadmap-20261102/t013/nexo-ui-evidence.json"
       ],
-      "next_action": "Frontend NEXO verificado localmente hasta c627fbd: Hogar, Voces, Personas, Acciones, Accesos y Evaluación conectados al backend real, con vínculo manual canónico, concesiones por modalidad y retiro efectivo del audio. Pasan 160 pruebas de frontend, Ruff y Chromium de escritorio y anchuras 320/390, incluida paginación de 51 perfiles. Conservar estas regresiones durante la revisión de las obligaciones restantes de T013. No se acepta ningún criterio ni la fase P4.",
+      "next_action": "Conservar las regresiones NEXO verificadas durante T014 y tareas posteriores. T013 quedó verified_local con orientación de acceso, roles y límites comprobados; no se acepta ningún criterio ni la fase P4.",
       "design_reference": {
         "path": "/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd",
         "source_commit": "d686fcde52a34c3b786decf167eebdb91dceb6d6",
@@ -2267,11 +2269,11 @@
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
     "field_authorized": false,
-    "next_task": "T013",
+    "next_task": "T014",
     "last_verified_phase": "P0",
-    "last_verified_task": "T047",
+    "last_verified_task": "T013",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T013/nexo-access-evaluation",
+    "last_verified_unit": "T013/local-closure",
     "user_priority_after_admin_unit": "T047"
   }
 }
