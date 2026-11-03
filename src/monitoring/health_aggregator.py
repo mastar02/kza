@@ -5,10 +5,17 @@ scheduler to produce an overall system health status.
 """
 
 import logging
+import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import StrEnum
+
+from src.home_assistant.ha_client import (
+    HAChannelObservation,
+    HAConnectionState,
+    HAHealthStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +71,9 @@ class HealthAggregator:
         priority_queue=None,
         reminder_scheduler=None,
         audio_health_provider=None,
+        health_clock=None,
     ):
+        self._health_clock = health_clock or time.time
         self._audio_health_provider = audio_health_provider
         self._ha_client = ha_client
         self._latency_monitor = latency_monitor
@@ -127,7 +136,22 @@ class HealthAggregator:
                 detail="HA client not configured",
             )
 
-        health = self._ha_client.get_health_status()
+        try:
+            health = self._ha_client.get_health_status()
+        except Exception as error:
+            return SubsystemHealth(name="home_assistant", status=OverallStatus.UNHEALTHY,
+                detail=f"HA health unavailable: {type(error).__name__}")
+
+        channels = {name: getattr(health, name, None)
+                    for name in ("rest", "calls", "events", "registry")}
+        native = any(type(value) is HAChannelObservation for value in channels.values())
+        reported = type(health) is HAHealthStatus and any(value is not None for value in channels.values())
+        if native or reported:
+            return self._check_ha_channels(health, channels)
+
+        # Standalone integrations and older test doubles may report only the
+        # original metrics DTO. ws_connected continues to mean calls, never
+        # event-subscription readiness.
         state_str = str(health.state)
 
         if state_str == "connected":
@@ -151,6 +175,68 @@ class HealthAggregator:
                 "last_error": health.last_error_message,
             },
         )
+
+    @staticmethod
+    def _ha_channel(value, name: str, now: float) -> dict:
+        sources = {"rest": "ha_rest", "calls": "ha_ws_calls",
+                   "events": "ha_ws_events", "registry": "ha_ws_registry"}
+        if (type(value) is not HAChannelObservation or type(value.state) is not HAConnectionState
+                or value.source != sources[name] or type(value.phase) is not str
+                or type(value.required) is not bool or type(value.generation) is not int
+                or value.generation < 0 or value.reason is not None and type(value.reason) is not str):
+            raise ValueError("invalid_ha_channel_observation")
+        for instant in (value.observed_at, value.expires_at, value.attempted_at):
+            if instant is not None and (type(instant) not in (int, float)
+                    or not math.isfinite(instant) or instant < 0):
+                raise ValueError("invalid_ha_channel_observation")
+        if ((value.observed_at is None) != (value.expires_at is None)
+                or value.observed_at is not None and value.expires_at <= value.observed_at):
+            raise ValueError("invalid_ha_channel_observation")
+        current = value.observed_at is not None and value.observed_at <= now < value.expires_at
+        state, phase = str(value.state), value.phase
+        if value.phase in {"closed", "stopped"}:
+            pass
+        elif value.expires_at is not None and now >= value.expires_at:
+            state, phase = "unknown", "expired"
+        elif value.observed_at is not None and now < value.observed_at:
+            state, phase = "unknown", "future"
+        elif state == "connected" and not current:
+            state = "unknown"
+        return {"state": state, "source": value.source, "phase": phase,
+            "observed_at": value.observed_at, "expires_at": value.expires_at,
+            "reason": value.reason, "attempted_at": value.attempted_at,
+            "required": value.required, "generation": value.generation, "current": current}
+
+    def _check_ha_channels(self, health, channels) -> SubsystemHealth:
+        try:
+            now = self._health_clock()
+            if type(now) not in (int, float) or not math.isfinite(now) or now < 0:
+                raise ValueError("invalid_ha_health_clock")
+            projected = {name: self._ha_channel(value, name, now)
+                         for name, value in channels.items() if value is not None}
+        except (ValueError, TypeError, AttributeError):
+            return SubsystemHealth(name="home_assistant", status=OverallStatus.UNHEALTHY,
+                detail="HA transport observation unavailable")
+
+        rest = projected.get("rest")
+        unavailable = [name for name, value in projected.items()
+                       if value["required"] and (value["state"] != "connected" or not value["current"])]
+        if rest is None:
+            unavailable.insert(0, "rest")
+        if rest is not None and rest["state"] in {"auth_error", "disconnected"}:
+            status = OverallStatus.UNHEALTHY
+        elif rest is None or not rest["current"] or rest["state"] != "connected" or unavailable:
+            status = OverallStatus.DEGRADED
+        else:
+            status = OverallStatus.HEALTHY
+        detail = "; ".join(f"{name}:{value['state']} ({value['phase']})"
+                           for name, value in projected.items()) or "rest:unknown"
+        if rest is None and projected:
+            detail = "rest:unknown; " + detail
+        return SubsystemHealth(name="home_assistant", status=status, detail=detail,
+            extra={"error_count": health.error_count, "success_count": health.success_count,
+                "avg_latency_ms": health.avg_latency_ms, "ws_connected": health.ws_connected,
+                "last_error": health.last_error_message, "channels": projected})
 
     def _check_latency(self) -> SubsystemHealth:
         """Check latency monitor health."""

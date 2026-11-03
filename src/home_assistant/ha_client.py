@@ -97,6 +97,10 @@ STATE_OBSERVATION_TTL_S = 6.0
 REGISTRY_OBSERVATION_TTL_S = 60.0
 WS_AUTH_TIMEOUT = 5.0           # WebSocket auth handshake timeout
 WS_CALL_TIMEOUT = 2.0           # WebSocket service-call timeout
+STATE_SYNC_ATTEMPT_TIMEOUT_S = 15.0
+STATE_SYNC_BACKOFF_INITIAL_S = 5.0
+STATE_SYNC_BACKOFF_MAX_S = 30.0
+TRANSPORT_OBSERVATION_TTL_S = 60.0
 AUTOMATION_TIMEOUT = 10.0       # Automation CRUD operations
 RELOAD_TIMEOUT = 5.0            # Automation reload
 
@@ -115,6 +119,20 @@ class HAConnectionState(StrEnum):
     DISCONNECTED = "disconnected"
     AUTH_ERROR = "auth_error"
     UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class HAChannelObservation:
+    """Transport evidence only; it does not renew an entity observation."""
+    state: HAConnectionState = HAConnectionState.UNKNOWN
+    source: str = ''
+    phase: str = 'unobserved'
+    observed_at: float | None = None
+    expires_at: float | None = None
+    reason: str | None = None
+    attempted_at: float | None = None
+    required: bool = False
+    generation: int = 0
 
 
 @dataclass
@@ -139,6 +157,10 @@ class HAHealthStatus:
     avg_latency_ms: float = 0.0
     ws_connected: bool = False
     last_error_message: str = ""
+    rest: HAChannelObservation | None = None
+    calls: HAChannelObservation | None = None
+    events: HAChannelObservation | None = None
+    registry: HAChannelObservation | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +175,8 @@ class HomeAssistantClient:
     """
 
     def __init__(self, url: str, token: str, timeout: float = REST_TIMEOUT_DEFAULT,
-                 state_confirmation_timeout_s: float = 0.3, operation_confirmation_timeouts: dict[str, float] | None = None):
+                 state_confirmation_timeout_s: float = 0.3, operation_confirmation_timeouts: dict[str, float] | None = None,
+                 *, session: aiohttp.ClientSession | None = None):
         self.url = url.rstrip("/")
         self.token = token
         self.timeout = timeout
@@ -169,8 +192,29 @@ class HomeAssistantClient:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
         }
-        self._session: aiohttp.ClientSession | None = None
+        self._session: aiohttp.ClientSession | None = session
+        self._session_owned = session is None
         self._session_lock = asyncio.Lock()
+        self._closed = False
+        self._transport_generation = 0
+        self._state_generation = 0
+        self._events_attempt_generation = 0
+        self._close_task = None
+        self._state_stop_task = None
+        self._state_stop_owner = None
+        self._state_start_ready = None
+        self._calls_connect_task = None
+        self._registry_read_task = None
+        self._transport_tasks: dict[asyncio.Task, str] = {}
+        self._ws_open_tasks: dict[str, asyncio.Task] = {}
+        self._ws_handshake_locks = {name: asyncio.Lock() for name in ('calls', 'events', 'registry')}
+        self._owned_sockets: dict[int, tuple[object, str]] = {}
+        self._socket_close_tasks: dict[int, asyncio.Task] = {}
+        self._ws_registry = None
+        self._channel_observations = {
+            name: HAChannelObservation(source='ha_rest' if name == 'rest' else 'ha_ws_' + name,
+                required=name == 'rest') for name in ('rest', 'calls', 'events', 'registry')
+        }
         # Dual WebSocket connections (fix 2026-04-24): aiohttp forbids concurrent
         # receive() on the same WS. _ws_calls is used by call_service_ws (short
         # bounded receives), _ws_events is used by the state subscribe loop
@@ -249,37 +293,144 @@ class HomeAssistantClient:
             Active aiohttp.ClientSession instance.
         """
         async with self._session_lock:
+            if self._closed:
+                raise aiohttp.ClientConnectionError('ha_client_closed')
             if self._session is None or self._session.closed:
                 self._session = aiohttp.ClientSession(
                     headers=self.headers,
                     timeout=aiohttp.ClientTimeout(total=self.timeout)
                 )
+                self._session_owned = True
         return self._session
 
-    def _record_success(self, latency_ms: float) -> None:
+    def _transport_current(self, generation: int, purpose: str, state_generation: int,
+                           attempt_generation: int) -> bool:
+        return (not self._closed and generation == self._transport_generation
+            and (purpose != 'events' or state_generation == self._state_generation
+                 and attempt_generation == self._events_attempt_generation))
+
+    def _observe_channel(self, channel: str, phase: str, state: HAConnectionState,
+                         reason: str | None = None, *, evidence: bool = False,
+                         attempted_at: float | None = None, required: bool | None = None) -> None:
+        previous = self._channel_observations[channel]
+        observed = time.time() if evidence else previous.observed_at
+        self._channel_observations[channel] = replace(previous, phase=phase, state=state,
+            reason=reason, observed_at=observed,
+            expires_at=observed + TRANSPORT_OBSERVATION_TTL_S if evidence else previous.expires_at,
+            attempted_at=attempted_at if attempted_at is not None else previous.attempted_at,
+            required=previous.required if required is None else required,
+            generation=self._state_generation if channel == 'events' else self._transport_generation)
+
+    def _channel_status(self, channel: str) -> HAChannelObservation:
+        value = self._channel_observations[channel]
+        if (value.expires_at is not None and time.time() >= value.expires_at
+                and value.phase not in ('stopped', 'closed')):
+            return replace(value, state=HAConnectionState.UNKNOWN, phase='expired',
+                           reason='ha_transport_observation_expired')
+        return value
+
+    def _retain_transport(self, operation, purpose: str) -> asyncio.Task:
+        task = asyncio.create_task(operation, context=Context())
+        self._transport_tasks[task] = purpose
+        def finished(done):
+            self._transport_tasks.pop(done, None)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished, context=Context())
+        return task
+
+    async def _close_socket(self, ws, purpose: str) -> None:
+        if ws is None:
+            return
+        key = id(ws)
+        if ws.closed is True:
+            self._owned_sockets.pop(key, None)
+            return
+        task = self._socket_close_tasks.get(key)
+        if task is None:
+            async def finish():
+                for attempt in range(3):
+                    try:
+                        await ws.close()
+                        if ws.closed is not True:
+                            raise aiohttp.ClientConnectionError('ha_socket_close_unconfirmed')
+                        self._owned_sockets.pop(key, None)
+                        return
+                    except Exception:
+                        self._observe_channel(purpose, 'retiring', HAConnectionState.UNKNOWN,
+                                              'ha_socket_close_pending')
+                        if attempt < 2:
+                            await asyncio.sleep(.05 * (2 ** attempt))
+                logger.warning('HA socket retirement unresolved [%s]; review required', purpose)
+                raise aiohttp.ClientConnectionError('ha_socket_retirement_unresolved')
+            task = self._socket_close_tasks[key] = self._retain_transport(finish(), purpose)
+            def finished(done):
+                if (self._socket_close_tasks.get(key) is done and not done.cancelled()
+                        and done.exception() is None):
+                    self._socket_close_tasks.pop(key, None)
+            task.add_done_callback(finished, context=Context())
+        await asyncio.shield(task)
+
+    async def _retire_socket(self, purpose: str, ws=None) -> None:
+        attr = '_ws_' + purpose
+        if ws is None:
+            ws = getattr(self, attr, None)
+        if getattr(self, attr, None) is ws:
+            setattr(self, attr, None)
+        if purpose == 'calls':
+            self._ws_connected = False
+        if ws is not None:
+            self._observe_channel(purpose, 'retiring', HAConnectionState.UNKNOWN,
+                                  'ha_socket_retiring')
+            await self._close_socket(ws, purpose)
+        else:
+            for candidate, kind in tuple(self._owned_sockets.values()):
+                if kind == purpose:
+                    await self._close_socket(candidate, purpose)
+
+    async def _drain_transports(self, purpose: str | None = None) -> None:
+        while True:
+            tasks = tuple(task for task, kind in self._transport_tasks.items()
+                          if (purpose is None or purpose == kind) and not task.done()
+                          and task is not asyncio.current_task())
+            if not tasks:
+                return
+            await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+
+    def _record_success(self, latency_ms: float, *, channel: str = 'rest') -> None:
         """Record a successful HA call for health tracking."""
+        if self._closed:
+            return
         self._success_count += 1
         self._last_success_ts = time.time()
         self._has_auth_error = False
+        self._observe_channel(channel, 'ready', HAConnectionState.CONNECTED, evidence=True)
         # Exponential moving average (alpha=0.3)
         if self._avg_latency_ms == 0.0:
             self._avg_latency_ms = latency_ms
         else:
             self._avg_latency_ms = 0.7 * self._avg_latency_ms + 0.3 * latency_ms
 
-    def _record_error(self, error: Exception, context: str) -> None:
+    def _record_error(self, error: Exception, context: str, *, channel: str = 'rest') -> None:
         """Record a failed HA call for health tracking."""
+        if self._closed:
+            return
         self._error_count += 1
         self._last_error_ts = time.time()
         self._last_error_message = f"{context}: {error}"
         if isinstance(error, aiohttp.ClientResponseError) and error.status in (401, 403):
             self._has_auth_error = True
+        denied = isinstance(error, aiohttp.ClientResponseError) and error.status in (401, 403)
+        self._observe_channel(channel, 'denied' if denied else 'failed',
+            HAConnectionState.AUTH_ERROR if denied else HAConnectionState.DISCONNECTED,
+            'ha_auth_denied' if denied else 'ha_transport_failure', evidence=True)
 
     # ==================== REST API ====================
 
     async def get_state_snapshot(self) -> HAStatesSnapshot:
         """Read states serially, preserving successful observation time on failure."""
         async with self._state_snapshot_lock:
+            generation = self._transport_generation
             started = time.perf_counter()
             attempted_at = datetime.now(UTC)
             reason = "ha_states_unavailable"
@@ -303,6 +454,8 @@ class HomeAssistantClient:
                 ):
                     reason = "ha_states_invalid"
                     raise ValueError("Invalid HA states response")
+                if self._closed or generation != self._transport_generation:
+                    raise aiohttp.ClientConnectionError('ha_state_observation_retired')
                 observed_at = datetime.now(UTC)
                 self._home_states = HAStatesSnapshot(True, observed_at, None, tuple(states),
                     observed_at + timedelta(seconds=STATE_OBSERVATION_TTL_S), attempted_at)
@@ -320,6 +473,10 @@ class HomeAssistantClient:
             Reduced registry data, retaining previous content and time on failure.
         """
         async with self._registry_lock:
+            generation = self._transport_generation
+            if self._closed:
+                previous = self._area_assignments or HAAreaAssignments(False, None, None)
+                return replace(previous, available=False, reason='ha_client_closed')
             if self._area_assignments is not None and monotonic() < self._registry_refresh_at:
                 return self._area_assignments
             previous = self._area_assignments or HAAreaAssignments(False, None, None)
@@ -345,13 +502,15 @@ class HomeAssistantClient:
                         assignments[entity["entity_id"]] = area_id
                 if not all(isinstance(key, str) and isinstance(value, str) for key, value in names.items()):
                     raise ValueError("Invalid area registry")
+                if self._closed or generation != self._transport_generation:
+                    raise aiohttp.ClientConnectionError('ha_registry_observation_retired')
                 observed_at = datetime.now(UTC)
                 self._area_assignments = HAAreaAssignments(
                     True, observed_at, None, names, assignments,
                     observed_at + timedelta(seconds=REGISTRY_OBSERVATION_TTL_S), attempted_at,
                 )
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, TypeError) as error:
-                self._record_error(error, "get_area_assignments")
+                self._record_error(error, "get_area_assignments", channel='registry')
                 self._area_assignments = replace(
                     previous, available=False, reason="ha_registries_unavailable", attempted_at=attempted_at,
                 )
@@ -360,32 +519,49 @@ class HomeAssistantClient:
             return self._area_assignments
 
     async def _read_home_registries(self) -> tuple[list[dict], list[dict], list[dict]]:
-        """Read only registry list commands with a bounded temporary connection."""
+        """Retain the temporary registry reader before its first transport await."""
+        if self._closed:
+            raise aiohttp.ClientConnectionError('ha_client_closed')
+        task = self._registry_read_task
+        if task is None or task.done():
+            task = self._registry_read_task = self._retain_transport(
+                self._read_home_registries_owned(self._transport_generation), 'registry')
+            def finished(done):
+                if self._registry_read_task is done:
+                    self._registry_read_task = None
+            task.add_done_callback(finished, context=Context())
+        return await asyncio.shield(task)
+
+    async def _read_home_registries_owned(self, generation):
         ws = None
         try:
             async with asyncio.timeout(REST_TIMEOUT_BULK):
-                ws = await self._open_ws_authenticated("registry")
+                ws = await self._open_ws_authenticated('registry')
                 if ws is None:
-                    raise ValueError("Registry websocket unavailable")
+                    raise aiohttp.ClientConnectionError('ha_registry_unavailable')
                 results = []
-                for message_id, registry in enumerate(("area", "entity", "device"), start=1):
-                    await ws.send_json({"id": message_id, "type": f"config/{registry}_registry/list"})
+                for message_id, registry in enumerate(('area', 'entity', 'device'), start=1):
+                    if self._closed or generation != self._transport_generation:
+                        raise aiohttp.ClientConnectionError('ha_registry_retired')
+                    await ws.send_json({'id': message_id, 'type': f'config/{registry}_registry/list'})
                     message = await ws.receive_json()
-                    if (
-                        not isinstance(message, dict)
-                        or message.get("id") != message_id
-                        or message.get("type") != "result"
-                        or message.get("success") is not True
-                    ):
-                        raise ValueError("Invalid registry result")
-                    result = message.get("result")
+                    if (not isinstance(message, dict) or message.get('id') != message_id
+                            or message.get('type') != 'result' or message.get('success') is not True):
+                        raise ValueError('ha_registry_result_invalid')
+                    result = message.get('result')
                     if not isinstance(result, list) or any(not isinstance(item, dict) for item in result):
-                        raise ValueError("Invalid registry entries")
+                        raise ValueError('ha_registry_entries_invalid')
                     results.append(result)
+                if self._closed or generation != self._transport_generation:
+                    raise aiohttp.ClientConnectionError('ha_registry_retired')
+                self._observe_channel('registry', 'ready', HAConnectionState.CONNECTED, evidence=True)
                 return results[0], results[1], results[2]
         finally:
-            if ws is not None:
-                await ws.close()
+            opening = self._ws_open_tasks.get('registry')
+            if opening is not None:
+                await asyncio.gather(asyncio.shield(opening), return_exceptions=True)
+            await self._retire_socket('registry', ws)
+
 
     async def get_all_entities(self) -> list[dict]:
         """Obtener todas las entidades de Home Assistant."""
@@ -1016,116 +1192,126 @@ class HomeAssistantClient:
 
     # ==================== WebSocket (menor latencia) ====================
 
-    async def _open_ws_authenticated(
-        self, purpose: str
-    ) -> aiohttp.ClientWebSocketResponse | None:
-        """Open a new authenticated WebSocket connection to HA.
+    async def _open_ws_authenticated(self, purpose: str):
+        """Join a retained, generation-bound handshake for one channel."""
+        if purpose not in self._ws_handshake_locks or self._closed:
+            return None
+        task = self._ws_open_tasks.get(purpose)
+        if task is None or task.done():
+            task = self._retain_transport(self._open_ws_owned(purpose,
+                self._transport_generation, self._state_generation,
+                self._events_attempt_generation), purpose)
+            self._ws_open_tasks[purpose] = task
+            def finished(done):
+                if self._ws_open_tasks.get(purpose) is done:
+                    self._ws_open_tasks.pop(purpose, None)
+            task.add_done_callback(finished, context=Context())
+        return await asyncio.shield(task)
 
-        Each HA WebSocket requires an auth handshake even with a long-lived
-        token:
-            1. Server sends {"type": "auth_required"}.
-            2. Client sends {"type": "auth", "access_token": TOKEN}.
-            3. Server sends {"type": "auth_ok"} on success.
-
-        Args:
-            purpose: "calls", "events" or "registry". Used only for log messages.
-
-        Returns:
-            The authenticated aiohttp.ClientWebSocketResponse, or None on
-            failure. The caller decides which attribute to store the result on
-            (self._ws_calls or self._ws_events).
-        """
-        ws_url = self.url.replace("http", "ws") + "/api/websocket"
-        ws = None
-        authenticated = False
-        try:
-            session = await self._ensure_session()
-
-            ws = await session.ws_connect(
-                ws_url,
-                heartbeat=30.0,  # Ping cada 30s para mantener conexion
-            )
-
-            # Auth handshake
-            msg = await asyncio.wait_for(
-                ws.receive_json(),
-                timeout=WS_AUTH_TIMEOUT,
-            )
-
-            if msg.get("type") != "auth_required":
-                logger.error(
-                    f"WS[{purpose}] unexpected first frame (expected auth_required): {msg}"
-                )
+    async def _open_ws_owned(self, purpose, generation, state_generation, attempt_generation):
+        async with self._ws_handshake_locks[purpose]:
+            def current():
+                return self._transport_current(generation, purpose, state_generation, attempt_generation)
+            if not current():
                 return None
+            await self._retire_socket(purpose)
+            for previous, kind in tuple(self._owned_sockets.values()):
+                if kind == purpose:
+                    await self._close_socket(previous, purpose)
+            if not current():
+                return None
+            ws = None
+            published = False
+            deadline = monotonic() + STATE_SYNC_ATTEMPT_TIMEOUT_S
+            self._observe_channel(purpose, 'connecting', HAConnectionState.UNKNOWN,
+                'ha_connecting', attempted_at=time.time())
+            try:
+                async with asyncio.timeout(STATE_SYNC_ATTEMPT_TIMEOUT_S):
+                    session = await self._ensure_session()
+                    if not current():
+                        return None
+                    ws = await session.ws_connect(self.url.replace('http', 'ws') + '/api/websocket', heartbeat=30.0)
+                    self._owned_sockets[id(ws)] = (ws, purpose)
+                    if not current():
+                        return None
+                    first = await asyncio.wait_for(ws.receive_json(), timeout=WS_AUTH_TIMEOUT)
+                    if not isinstance(first, dict) or first.get('type') != 'auth_required':
+                        raise ValueError('ha_ws_protocol_invalid')
+                    if not current():
+                        return None
+                    await ws.send_json({'type': 'auth', 'access_token': self.token})
+                    result = await asyncio.wait_for(ws.receive_json(), timeout=WS_AUTH_TIMEOUT)
+                    if not isinstance(result, dict) or result.get('type') != 'auth_ok':
+                        if isinstance(result, dict) and result.get('type') == 'auth_invalid':
+                            if current():
+                                self._has_auth_error = True
+                                self._observe_channel(purpose, 'denied', HAConnectionState.AUTH_ERROR,
+                                    'ha_auth_denied', evidence=True)
+                            logger.warning('HA WebSocket authentication denied [%s]', purpose)
+                            return None
+                        raise ValueError('ha_ws_protocol_invalid')
+                    if not current() or monotonic() >= deadline:
+                        return None
+                    setattr(self, '_ws_' + purpose, ws)
+                    if purpose == 'calls':
+                        self._ws_connected = True
+                    self._observe_channel(purpose, 'authenticated',
+                        HAConnectionState.UNKNOWN if purpose == 'events' else HAConnectionState.CONNECTED,
+                        evidence=True)
+                    published = True
+                    return ws
+            except (asyncio.TimeoutError, aiohttp.ClientError, ValueError, OSError) as error:
+                if current():
+                    self._record_error(error, 'open_ws(' + purpose + ')', channel=purpose)
+                logger.warning('HA WebSocket unavailable [%s]: %s', purpose, type(error).__name__)
+                return None
+            finally:
+                if ws is not None and not published:
+                    await self._close_socket(ws, purpose)
 
-            await ws.send_json({
-                "type": "auth",
-                "access_token": self.token,
-            })
-
-            auth_result = await asyncio.wait_for(
-                ws.receive_json(),
-                timeout=WS_AUTH_TIMEOUT,
-            )
-
-            if auth_result.get("type") == "auth_ok":
-                logger.info(f"WebSocket HA[{purpose}] conectado y autenticado")
-                authenticated = True
-                return ws
-
-            self._has_auth_error = True
-            logger.error(f"Auth WebSocket[{purpose}] fallo: {auth_result}")
-            return None
-
-        except asyncio.TimeoutError:
-            logger.error(f"WebSocket[{purpose}] auth timeout after {WS_AUTH_TIMEOUT}s")
-            self._record_error(asyncio.TimeoutError(), f"open_ws({purpose})")
-            return None
-        except aiohttp.ClientConnectorError as e:
-            logger.error(f"HA unavailable (open_ws[{purpose}]): {e}")
-            self._record_error(e, f"open_ws({purpose})")
-            return None
-        except Exception as e:
-            logger.error(f"Error conectando WebSocket HA[{purpose}]: {e}")
-            self._record_error(e, f"open_ws({purpose})")
-            return None
-        finally:
-            if ws is not None and not authenticated:
-                await ws.close()
 
     async def connect_websocket(self) -> bool:
-        """Conectar el canal de calls via WebSocket para menor latencia.
-
-        Incluye auto-reconexion en caso de fallo. Usa _open_ws_authenticated
-        para el handshake. Solo afecta al canal self._ws_calls.
-        """
-        if self._ws_connected and self._ws_calls and not self._ws_calls.closed:
+        """Join one calls connection owner; observer cancellation cannot lose it."""
+        if self._closed:
+            return False
+        self._observe_channel('calls', self._channel_observations['calls'].phase,
+            self._channel_observations['calls'].state, required=True)
+        if self._ws_connected and self._ws_calls is not None and not self._ws_calls.closed:
             return True
+        task = self._calls_connect_task
+        if task is None or task.done():
+            task = self._calls_connect_task = self._retain_transport(
+                self._connect_calls_owned(self._transport_generation), 'calls')
+            def finished(done):
+                if self._calls_connect_task is done:
+                    self._calls_connect_task = None
+            task.add_done_callback(finished, context=Context())
+        return await asyncio.shield(task)
 
+    async def _connect_calls_owned(self, generation) -> bool:
         async with self._ws_connect_lock:
-            # Re-chequear adentro del lock: otro caller pudo conectar mientras
-            # esperábamos, y un segundo handshake filtraría ese socket.
-            if self._ws_connected and self._ws_calls and not self._ws_calls.closed:
+            if self._closed or generation != self._transport_generation:
+                return False
+            if self._ws_connected and self._ws_calls is not None and not self._ws_calls.closed:
                 return True
-
-            previous = self._ws_calls
-            ws = await self._open_ws_authenticated("calls")
+            await self._retire_socket('calls')
+            if self._closed or generation != self._transport_generation:
+                return False
+            try:
+                ws = await self._open_ws_authenticated('calls')
+            except aiohttp.ClientError:
+                return False
             if ws is None:
                 self._ws_connected = False
                 return False
-
+            if self._closed or generation != self._transport_generation:
+                await self._retire_socket('calls', ws)
+                return False
             self._ws_calls = ws
             self._ws_connected = True
             self._ws_reconnect_attempts = 0
-
-            # Cerrar el socket que reemplazamos. aiohttp no libera el fd solo.
-            if previous is not None and previous is not ws:
-                try:
-                    await previous.close()
-                except Exception as e:
-                    logger.debug(f"Error cerrando _ws_calls reemplazado: {e}")
-
             return True
+
 
     async def ensure_websocket_connected(self) -> bool:
         """Asegurar que el canal de calls esta conectado, reconectar si es necesario."""
@@ -1271,7 +1457,7 @@ class HomeAssistantClient:
             elapsed = (time.perf_counter() - t_start) * 1000
             success = response.get("success", False)
             if success:
-                self._record_success(elapsed)
+                self._record_success(elapsed, channel="calls")
                 logger.debug(f"WS: {domain}.{service} -> {entity_id} ({elapsed:.0f}ms)")
             else:
                 # El body es la única evidencia de POR QUÉ falló. Sin esto, un
@@ -1288,220 +1474,238 @@ class HomeAssistantClient:
                 f"WebSocket timeout for {domain}.{service} on {entity_id} "
                 f"after {elapsed:.0f}ms (limit {WS_CALL_TIMEOUT}s), fallback to REST"
             )
-            self._record_error(asyncio.TimeoutError(), f"call_service_ws({domain}.{service})")
+            self._record_error(asyncio.TimeoutError(), f"call_service_ws({domain}.{service})", channel="calls")
             return None
 
         except Exception as e:
             logger.error(f"Error WebSocket: {e}")
             self._ws_connected = False  # Marcar para reconexion
-            self._record_error(e, f"call_service_ws({domain}.{service})")
+            self._record_error(e, f"call_service_ws({domain}.{service})", channel="calls")
             return None
+
 
     # ==================== State Prefetch Cache (S6) ====================
 
-    async def start_state_sync(
-        self,
-        full_refresh_interval_s: float = 300.0,
-    ) -> None:
-        """Arrancar el loop de prefetch de state cache.
-
-        1. Snapshot inicial REST (/api/states) para poblar el cache.
-        2. Subscribe WS state_changed para updates incrementales.
-        3. Refresh periódico como fallback si el WS se cae en silencio.
-
-        Idempotente: si ya está corriendo, no-op.
-
-        Args:
-            full_refresh_interval_s: Cada cuántos segundos rehacer el snapshot
-                REST completo para atrapar drift si se perdieron events.
-        """
-        if self._state_sync_running and self._state_subscribe_task and not self._state_subscribe_task.done():
-            logger.debug("State sync ya está corriendo")
+    async def start_state_sync(self, full_refresh_interval_s: float = 300.0) -> None:
+        """Publish the retained warmup/loop owner before any startup await."""
+        if self._closed:
             return
-
-        # Keep failed startup authentication visible, without a new burst of
-        # handshakes. The existing bounded reconnect loop owns future attempts.
-        ready = False
-        if not self._has_auth_error:
-            try:
-                await self._wait_for_ws_ready(max_attempts=3, backoff_s=2.0)
-                ready = True
-            except RuntimeError:
-                logger.warning("HA events warmup deferred; background reconnection remains active")
-        if ready:
-            try:
-                await self.connect_websocket()
-            except Exception:
-                logger.warning("HA calls warmup deferred")
-
-        self._state_full_refresh_interval_s = full_refresh_interval_s
+        stopping = self._state_stop_task
+        if (self._state_sync_running and self._state_subscribe_task is not None
+                and not self._state_subscribe_task.done()):
+            ready = self._state_start_ready
+            if ready is not None:
+                await asyncio.shield(ready)
+            return
+        self._state_generation += 1
+        generation = self._state_generation
         self._state_sync_running = True
-        self._state_subscribe_task = asyncio.create_task(self._state_sync_loop(), context=Context())
-        logger.info("HA state prefetch cache: sync loop arrancado")
+        self._state_full_refresh_interval_s = full_refresh_interval_s
+        ready = self._state_start_ready = asyncio.get_running_loop().create_future()
+        self._observe_channel('events', 'starting', HAConnectionState.UNKNOWN,
+            'ha_state_sync_starting', required=True)
+        self._state_subscribe_task = asyncio.create_task(
+            self._state_sync_owned(generation, stopping, ready), context=Context())
+        self._state_subscribe_task.add_done_callback(
+            lambda done: None if done.cancelled() else done.exception(), context=Context())
+        await asyncio.shield(ready)
 
-    async def _wait_for_ws_ready(
-        self,
-        max_attempts: int = 3,
-        backoff_s: float = 2.0,
-    ) -> None:
-        """Pre-conectar el canal events con retries antes del background loop.
-
-        En LAN, el primer ws_connect post-snapshot REST grande (~329 entities)
-        puede demorar 5-7s mientras HA termina de servir el payload. El
-        timeout default de 5s del handshake auth lo dispara aunque HA esté
-        sano. Reintentar 3 veces con backoff resuelve el race sin ocultar
-        fallos reales (un HA caído sigue fallando los 3 intentos en ~10s).
-
-        Args:
-            max_attempts: Cuántos intentos antes de propagar.
-            backoff_s: Espera entre intentos (lineal, no exponencial — el
-                problema es transient ms, no sostenido).
-
-        Raises:
-            RuntimeError: si tras `max_attempts` no se pudo abrir el WS.
-        """
-        for attempt in range(1, max_attempts + 1):
+    async def _state_sync_owned(self, generation, stopping, ready):
+        warm = False
+        try:
+            if stopping is not None:
+                await asyncio.shield(stopping)
+            if not self._state_current(generation):
+                return
             try:
-                ws = await self._open_ws_authenticated("events")
+                async with asyncio.timeout(STATE_SYNC_ATTEMPT_TIMEOUT_S):
+                    if not self._has_auth_error:
+                        await self._wait_for_ws_ready(max_attempts=1, backoff_s=0.)
+                        warm = True
+                        if self._state_current(generation):
+                            await self.connect_websocket()
+            except (RuntimeError, aiohttp.ClientError, asyncio.TimeoutError):
+                logger.warning('HA warmup deferred to bounded state recovery')
+            finally:
+                if not ready.done():
+                    ready.set_result(warm and self._state_current(generation))
+            if not self._state_current(generation):
+                return
+            if self._state_current(generation):
+                await self._state_sync_loop()
+        except asyncio.CancelledError:
+            return
+        finally:
+            if not ready.done():
+                ready.set_result(False)
+            if generation == self._state_generation:
+                self._state_sync_running = False
+
+    def _state_current(self, generation):
+        return not self._closed and self._state_sync_running and generation == self._state_generation
+
+    async def _state_retry_wait(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+
+
+    async def _wait_for_ws_ready(self, max_attempts: int = 3, backoff_s: float = 2.0) -> None:
+        generation = self._state_generation
+        for attempt in range(max_attempts):
+            if self._closed or generation != self._state_generation:
+                return
+            try:
+                ws = await self._open_ws_authenticated('events')
+            except aiohttp.ClientError:
+                raise
+            except ConnectionError:
+                ws = None
+            if self._closed or generation != self._state_generation:
                 if ws is not None:
-                    self._ws_events = ws
-                    if attempt > 1:
-                        logger.info(
-                            f"WS events ready en intento {attempt}/{max_attempts}"
-                        )
-                    return
-            except Exception as e:
-                logger.warning(
-                    f"WS warmup intento {attempt}/{max_attempts} excepción: {e}"
-                )
-            if attempt < max_attempts:
-                await asyncio.sleep(backoff_s)
-        raise RuntimeError(
-            f"WS HA events no disponible tras {max_attempts} intentos"
-        )
+                    await self._retire_socket('events', ws)
+                return
+            if ws is not None:
+                self._ws_events = ws
+                return
+            if attempt + 1 < max_attempts:
+                await self._state_retry_wait(backoff_s)
+        raise RuntimeError('ha_events_warmup_unavailable')
+
 
     async def stop_state_sync(self) -> None:
-        """Parar el loop de sync (para shutdown graceful)."""
-        self._state_sync_running = False
-        if self._state_subscribe_task:
-            self._state_subscribe_task.cancel()
-            try:
-                await self._state_subscribe_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._state_subscribe_task = None
-        # Cerrar la conexión dedicada de events. Se reabrirá cuando start_state_sync
-        # vuelva a correr.
-        if self._ws_events is not None and not self._ws_events.closed:
-            try:
-                await self._ws_events.close()
-            except Exception as e:
-                logger.debug(f"Error cerrando _ws_events: {e}")
-        self._ws_events = None
+        """Seal events synchronously; retain actual retirement across observer cancel."""
+        task = self._state_stop_task
+        owner = self._state_subscribe_task
+        if task is None or task.done() or self._state_stop_owner is not owner:
+            previous = task
+            self._state_generation += 1
+            self._events_attempt_generation += 1
+            generation = self._state_generation
+            self._state_sync_running = False
+            self._state_stop_owner = owner
+            if self._state_start_ready is not None and not self._state_start_ready.done():
+                self._state_start_ready.set_result(False)
+            self._observe_channel('events', 'stopping', HAConnectionState.UNKNOWN,
+                'ha_state_sync_stopping', required=False)
+            task = self._state_stop_task = asyncio.create_task(
+                self._stop_state_owned(owner, generation, previous), context=Context())
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
+        await asyncio.shield(task)
+
+    async def _stop_state_owned(self, owner, generation, previous=None):
+        if owner is not None and not owner.done():
+            owner.cancel()
+        if previous is not None:
+            await asyncio.shield(previous)
+        await self._retire_socket('events')
+        if owner is not None:
+            await asyncio.gather(asyncio.shield(owner), return_exceptions=True)
+        await self._drain_transports('events')
+        for ws, purpose in tuple(self._owned_sockets.values()):
+            if purpose == 'events':
+                await self._close_socket(ws, purpose)
+        if generation == self._state_generation:
+            if self._state_subscribe_task is owner:
+                self._state_subscribe_task = None
+            self._observe_channel('events', 'stopped', HAConnectionState.DISCONNECTED,
+                'ha_state_sync_stopped', required=False)
+
 
     async def _state_sync_loop(self) -> None:
-        """Loop resiliente: reconnect con backoff exponencial si el WS falla.
-
-        Nunca propaga excepciones — si algo sale mal, loguea y reintenta. El
-        servicio de voz debe seguir funcionando aunque HA esté caído.
-        """
-        backoff = 5.0
-        max_backoff = 60.0
-        while self._state_sync_running:
+        """One event receiver with capped retry delay; no service/action replay."""
+        generation = self._state_generation
+        backoff = STATE_SYNC_BACKOFF_INITIAL_S
+        while self._state_current(generation):
             try:
                 await self._subscribe_and_sync()
-                # Si salimos limpiamente (WS cerrado por HA), resetear backoff
-                backoff = 5.0
+                backoff = STATE_SYNC_BACKOFF_INITIAL_S
             except asyncio.CancelledError:
-                logger.info("HA state sync cancelado")
                 return
-            except Exception as e:
-                logger.warning(
-                    f"HA state sync error: {e}, reconnectando en {backoff:.0f}s"
-                )
-                try:
-                    await asyncio.sleep(backoff)
-                except asyncio.CancelledError:
+            except Exception as error:
+                if not self._state_current(generation):
                     return
-                backoff = min(backoff * 2, max_backoff)
+                logger.warning('HA events attempt failed: %s', type(error).__name__)
+                self._observe_channel('events', 'retrying',
+                    self._channel_observations['events'].state, 'ha_events_retry_pending')
+            if self._state_current(generation):
+                await self._state_retry_wait(backoff)
+                backoff = min(backoff * 2, STATE_SYNC_BACKOFF_MAX_S)
+
 
     async def _subscribe_and_sync(self) -> None:
-        """Ciclo de vida: snapshot REST → subscribe WS → consumir events.
-
-        Cada iteración del outer loop (_state_sync_loop) rehace esto para
-        garantizar consistencia después de una reconexión.
-
-        Usa el canal dedicado self._ws_events — independiente del canal de
-        calls — para evitar el race de aiohttp 'Concurrent call to receive()'.
-        """
-        # 1. Snapshot inicial REST para poblar cache completo
-        await self._refresh_full_state_snapshot()
-
-        # 2. Abrir (o reutilizar) la conexión dedicada de events.
-        if self._ws_events is None or self._ws_events.closed:
-            ws = await self._open_ws_authenticated("events")
-            if ws is None:
-                raise RuntimeError("No se pudo conectar al WebSocket de HA (events)")
-            self._ws_events = ws
-
-        # 3. Subscribe al event state_changed (id counter propio del canal).
-        self._ws_msg_id_events += 1
-        subscribe_id = self._ws_msg_id_events
-        await self._ws_events.send_json({
-            "id": subscribe_id,
-            "type": "subscribe_events",
-            "event_type": "state_changed",
-        })
-
-        # Esperar confirmación del subscribe (result message)
-        # HA responde con {"id": N, "type": "result", "success": true}
+        """One exact-ID subscription; snapshot/cache handoff remains T021-B."""
+        generation = self._state_generation
+        ws = None
+        deadline = monotonic() + STATE_SYNC_ATTEMPT_TIMEOUT_S
         try:
-            confirm = await asyncio.wait_for(
-                self._ws_events.receive_json(),
-                timeout=WS_AUTH_TIMEOUT,
-            )
-        except asyncio.TimeoutError as e:
-            raise RuntimeError("Timeout esperando confirmación de subscribe") from e
-
-        if confirm.get("type") != "result" or not confirm.get("success", False):
-            raise RuntimeError(f"Subscribe no confirmado: {confirm}")
-
-        logger.info("HA state prefetch: suscripto a state_changed (canal events)")
-
-        # 4. Consumir events hasta que el WS se cierre o nos cancelen
-        last_full = time.time()
-        while self._state_sync_running:
-            try:
-                msg = await asyncio.wait_for(
-                    self._ws_events.receive_json(),
-                    timeout=30.0,  # timeout largo, solo para no colgar para siempre
-                )
-            except asyncio.TimeoutError:
-                # Sin events por 30s es normal (HA idle). Chequear si toca refresh.
-                if time.time() - last_full > self._state_full_refresh_interval_s:
-                    await self._refresh_full_state_snapshot()
-                    last_full = time.time()
-                continue
-
-            if msg.get("type") == "event":
-                self._handle_state_changed(msg.get("event", {}))
-
-            # Refresh periódico para atrapar events perdidos (por si acaso)
-            if time.time() - last_full > self._state_full_refresh_interval_s:
+            async with asyncio.timeout(STATE_SYNC_ATTEMPT_TIMEOUT_S):
                 await self._refresh_full_state_snapshot()
-                last_full = time.time()
+                if not self._state_current(generation):
+                    return
+                ws = self._ws_events
+                if ws is None or ws.closed:
+                    ws = await self._open_ws_authenticated('events')
+                if ws is None or not self._state_current(generation):
+                    raise aiohttp.ClientConnectionError('ha_events_unavailable')
+                self._ws_events = ws
+                self._ws_msg_id_events += 1
+                subscribe_id = self._ws_msg_id_events
+                await ws.send_json({'id': subscribe_id, 'type': 'subscribe_events', 'event_type': 'state_changed'})
+                confirm = await asyncio.wait_for(ws.receive_json(), timeout=WS_AUTH_TIMEOUT)
+                if (not isinstance(confirm, dict) or type(confirm.get('id')) is not int
+                        or confirm['id'] != subscribe_id or confirm.get('type') != 'result'
+                        or confirm.get('success') is not True):
+                    raise ValueError('ha_subscribe_confirmation_invalid')
+                if not self._state_current(generation) or monotonic() >= deadline:
+                    return
+                self._observe_channel('events', 'subscribed', HAConnectionState.CONNECTED, evidence=True)
+            last_full = monotonic()
+            while self._state_current(generation) and self._ws_events is ws:
+                try:
+                    message = await asyncio.wait_for(ws.receive_json(), timeout=30.)
+                except asyncio.TimeoutError:
+                    if ws.closed:
+                        raise aiohttp.ClientConnectionError('ha_events_disconnected')
+                    message = None
+                if not self._state_current(generation):
+                    return
+                if message is not None:
+                    if not isinstance(message, dict):
+                        raise ValueError('ha_event_frame_invalid')
+                    if message.get('type') == 'event':
+                        if type(message.get('id')) is not int or message['id'] != subscribe_id:
+                            raise ValueError('ha_event_subscription_invalid')
+                        self._handle_state_changed(message.get('event', {}))
+                        self._observe_channel('events', 'subscribed', HAConnectionState.CONNECTED, evidence=True)
+                if monotonic() - last_full > self._state_full_refresh_interval_s:
+                    await self._refresh_full_state_snapshot()
+                    last_full = monotonic()
+        except Exception as error:
+            if self._state_current(generation) and self._channel_observations['events'].state is not HAConnectionState.AUTH_ERROR:
+                self._record_error(error, 'state_sync', channel='events')
+            raise
+        finally:
+            await self._retire_event_attempt(ws)
+
+    async def _retire_event_attempt(self, ws=None):
+        self._events_attempt_generation += 1
+        opening = self._ws_open_tasks.get('events')
+        await self._retire_socket('events', ws)
+        if opening is not None:
+            await asyncio.gather(asyncio.shield(opening), return_exceptions=True)
+        await self._retire_socket('events')
+
 
     async def _refresh_full_state_snapshot(self) -> None:
-        """Repoblar cache completo via REST /api/states."""
+        generation, transport = self._state_generation, self._transport_generation
         states = await self._fetch_all_states_rest()
-        if not states:
-            logger.warning("HA state snapshot vacío — posible error de conexión")
+        if self._closed or generation != self._state_generation or transport != self._transport_generation:
             return
-        # Replace atomically: construimos dict nuevo y lo asignamos
-        new_cache = {st["entity_id"]: st for st in states if "entity_id" in st}
-        self._state_cache = new_cache
+        if not states:
+            logger.warning('HA state snapshot empty; retaining legacy cache without renewal')
+            return
+        self._state_cache = {state['entity_id']: state for state in states if 'entity_id' in state}
         self._state_last_full_refresh = time.time()
-        logger.info(f"HA state cache snapshot: {len(new_cache)} entities")
+
 
     def _handle_state_changed(self, event: dict) -> None:
         """Aplicar un event state_changed al cache.
@@ -1545,20 +1749,43 @@ class HomeAssistantClient:
         self._state_callbacks.append(callback)
 
     async def close(self) -> None:
-        """Cerrar conexiones (ambos canales WS + session HTTP)."""
+        """Terminal admission seal with retained socket/session retirement."""
+        if self._close_task is None:
+            self._closed = True
+            self._transport_generation += 1
+            self._state_generation += 1
+            self._events_attempt_generation += 1
+            self._state_sync_running = False
+            if self._state_start_ready is not None and not self._state_start_ready.done():
+                self._state_start_ready.set_result(False)
+            for channel in self._channel_observations:
+                self._observe_channel(channel, 'closing', HAConnectionState.UNKNOWN,
+                    'ha_client_closing', required=False)
+            self._close_task = asyncio.create_task(self._close_owned(), context=Context())
+            self._close_task.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
+        await asyncio.shield(self._close_task)
+
+    async def _close_owned(self):
         await self.stop_state_sync()
-        for attr_name in ("_ws_events", "_ws_calls"):
-            ws = getattr(self, attr_name, None)
-            if ws is not None and not ws.closed:
-                try:
-                    await ws.close()
-                except Exception as e:
-                    logger.debug(f"Error cerrando {attr_name}: {e}")
-        self._ws_events = None
-        self._ws_calls = None
+        for purpose in ('events', 'calls', 'registry'):
+            await self._retire_socket(purpose)
+        for ws, purpose in tuple(self._owned_sockets.values()):
+            await self._close_socket(ws, purpose)
+        await self._drain_transports()
+        for ws, purpose in tuple(self._owned_sockets.values()):
+            await self._close_socket(ws, purpose)
+        async with self._session_lock:
+            session = self._session
+            if self._session_owned and session is not None and not session.closed:
+                await session.close()
+                if session.closed is not True:
+                    raise aiohttp.ClientConnectionError('ha_session_close_unconfirmed')
+        self._ws_calls = self._ws_events = self._ws_registry = None
         self._ws_connected = False
-        if self._session and not self._session.closed:
-            await self._session.close()
+        for channel in self._channel_observations:
+            self._observe_channel(channel, 'closed', HAConnectionState.DISCONNECTED,
+                'ha_client_closed', required=False)
+
 
     # ==================== Health Status ====================
 
@@ -1590,6 +1817,10 @@ class HomeAssistantClient:
             avg_latency_ms=round(self._avg_latency_ms, 2),
             ws_connected=self._ws_connected,
             last_error_message=self._last_error_message,
+            rest=self._channel_status('rest'),
+            calls=self._channel_status('calls'),
+            events=self._channel_status('events'),
+            registry=self._channel_status('registry'),
         )
 
     # ==================== Utilidades ====================

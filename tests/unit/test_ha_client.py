@@ -464,6 +464,7 @@ class TestHAHealthStatus:
         field_names = {f.name for f in fields(HAHealthStatus)}
         expected = {
             "state", "last_success_ts", "last_error_ts", "error_count",
-            "success_count", "avg_latency_ms", "ws_connected", "last_error_message"
+            "success_count", "avg_latency_ms", "ws_connected", "last_error_message",
+            "rest", "calls", "events", "registry",
         }
         assert expected == field_names

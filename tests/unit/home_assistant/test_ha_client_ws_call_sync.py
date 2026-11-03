@@ -164,8 +164,9 @@ async def test_concurrent_connect_does_one_handshake(client):
 async def test_reconnect_closes_the_dead_socket(client):
     """Reconnecting must close the socket it replaces, not leak it."""
     dead = MagicMock()
-    dead.closed = True
-    dead.close = AsyncMock()
+    # An unusable connection may still own an open transport descriptor.
+    dead.closed = False
+    dead.close = AsyncMock(side_effect=lambda: setattr(dead, "closed", True))
     client._ws_calls = dead
     client._ws_connected = False
 

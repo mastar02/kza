@@ -256,6 +256,7 @@ class TestWaitForWsReady:
         """Si _open_ws_authenticated funciona al toque → 1 sola llamada."""
         ws_mock = MagicMock()
         ws_mock.closed = False
+        ws_mock.close = AsyncMock(side_effect=lambda: setattr(ws_mock, "closed", True))
         ha._open_ws_authenticated = AsyncMock(return_value=ws_mock)
 
         await ha._wait_for_ws_ready(max_attempts=3, backoff_s=0.0)
@@ -268,6 +269,7 @@ class TestWaitForWsReady:
         """Si la primera devuelve None, reintenta hasta success."""
         ws_mock = MagicMock()
         ws_mock.closed = False
+        ws_mock.close = AsyncMock(side_effect=lambda: setattr(ws_mock, "closed", True))
         ha._open_ws_authenticated = AsyncMock(side_effect=[None, ws_mock])
 
         await ha._wait_for_ws_ready(max_attempts=3, backoff_s=0.0)
@@ -280,7 +282,7 @@ class TestWaitForWsReady:
         """Si todos los intentos fallan, propaga RuntimeError."""
         ha._open_ws_authenticated = AsyncMock(return_value=None)
 
-        with pytest.raises(RuntimeError, match="no disponible tras 3 intentos"):
+        with pytest.raises(RuntimeError, match="ha_events_warmup_unavailable"):
             await ha._wait_for_ws_ready(max_attempts=3, backoff_s=0.0)
 
         assert ha._open_ws_authenticated.await_count == 3
@@ -290,6 +292,7 @@ class TestWaitForWsReady:
         """Excepción en _open_ws_authenticated cuenta como intento fallido."""
         ws_mock = MagicMock()
         ws_mock.closed = False
+        ws_mock.close = AsyncMock(side_effect=lambda: setattr(ws_mock, "closed", True))
         ha._open_ws_authenticated = AsyncMock(
             side_effect=[ConnectionError("transient"), ws_mock]
         )
@@ -404,11 +407,12 @@ class TestSubscribeAndSync:
         ha.ensure_websocket_connected = AsyncMock(return_value=True)
         ws_mock = MagicMock()
         ws_mock.closed = False
+        ws_mock.close = AsyncMock(side_effect=lambda: setattr(ws_mock, "closed", True))
         ws_mock.send_json = AsyncMock()
 
         messages = [
             {"id": 2, "type": "result", "success": True},
-            {"type": "event", "event": {
+            {"id": 2, "type": "event", "event": {
                 "data": {"entity_id": "light.a", "new_state": {"state": "on"}},
             }},
         ]

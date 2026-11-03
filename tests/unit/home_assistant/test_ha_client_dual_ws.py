@@ -66,11 +66,11 @@ async def test_close_shuts_down_both_connections(client):
     """close() must close _ws_events AND _ws_calls."""
     ws_events = MagicMock()
     ws_events.closed = False
-    ws_events.close = AsyncMock()
+    ws_events.close = AsyncMock(side_effect=lambda: setattr(ws_events, "closed", True))
 
     ws_calls = MagicMock()
     ws_calls.closed = False
-    ws_calls.close = AsyncMock()
+    ws_calls.close = AsyncMock(side_effect=lambda: setattr(ws_calls, "closed", True))
 
     client._ws_events = ws_events
     client._ws_calls = ws_calls
@@ -92,11 +92,11 @@ async def test_stop_state_sync_closes_events_channel_only(client):
     """stop_state_sync closes _ws_events but leaves _ws_calls alone."""
     ws_events = MagicMock()
     ws_events.closed = False
-    ws_events.close = AsyncMock()
+    ws_events.close = AsyncMock(side_effect=lambda: setattr(ws_events, "closed", True))
 
     ws_calls = MagicMock()
     ws_calls.closed = False
-    ws_calls.close = AsyncMock()
+    ws_calls.close = AsyncMock(side_effect=lambda: setattr(ws_calls, "closed", True))
 
     client._ws_events = ws_events
     client._ws_calls = ws_calls
@@ -119,6 +119,7 @@ async def test_subscribe_and_sync_opens_events_channel_when_missing(client, monk
 
     ws_events = MagicMock()
     ws_events.closed = False
+    ws_events.close = AsyncMock(side_effect=lambda: setattr(ws_events, "closed", True))
     ws_events.send_json = AsyncMock()
 
     messages = [
@@ -152,7 +153,8 @@ async def test_subscribe_and_sync_opens_events_channel_when_missing(client, monk
 
     assert opened["count"] == 1
     assert opened["purpose"] == "events"
-    assert client._ws_events is ws_events
+    assert client._ws_events is None
+    assert ws_events.closed is True
     # Subscribe was sent on the events channel using the events id counter.
     ws_events.send_json.assert_awaited_once()
     sent = ws_events.send_json.await_args[0][0]
