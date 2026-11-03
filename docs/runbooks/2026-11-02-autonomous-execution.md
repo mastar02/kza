@@ -1691,3 +1691,72 @@ mute/restore. El siguiente corte identificado es el drenaje nativo de síntesis
 y el motor Dual/Kokoro del grafo. El mapa inicial de 29 familias sigue incompleto;
 T021/T022 siguen `in_progress` y C03/C04/C06/C20 sin aceptar. El caso HA resistente
 de más de 60 segundos y la separación de autoridades de T047 permanecen intactos.
+
+## Retiro nativo de síntesis y modelos TTS seleccionados
+
+T022-E conserva tres RED de la fábrica anterior: el modelo Kokoro seleccionado
+seguía referenciado después de cerrar el stack y después de `_stop_services`;
+otro caso liberaba el descriptor de autoridad con el iterador sintético de
+inferencia todavía retenido. Las aserciones posteriores sobre privacidad y
+sesión de ese tercer caso no llegaron a ejecutarse en RED. Los recorridos
+corregidos prueban ambas vías de teardown sin iniciar servicios de producción,
+captura, playback físico ni modelos reales.
+
+`ResponseHandler.begin_close` conserva un único dueño del retiro real.
+`aclose` observa ese dueño con su plazo existente; vencer el plazo no lo cancela
+ni declara salida. `wait_closed`, usado por el stack de servicios de voz, espera
+su terminación y resiste cancelaciones repetidas del observador. La síntesis
+retiene su recibo nativo y el drenaje de trabajo aunque `_worker_finished` ya
+haya vaciado la telemetría. La vía síncrona conserva el controller hasta retornar.
+También se esperan el aborto real, la entrega del callback after-TTS y sólo las
+tareas de hooks creadas por esa entrega; un peer del registry sigue independiente.
+
+Kokoro sella la admisión por instancia, carga una sola vez y serializa carga e
+inferencia con un lock separado de la condición de cierre. La reserva incluye
+el cierre explícito del iterador del SDK, incluso ante error de conversión.
+Un stream reserva desde su primer `next` y conserva el préstamo hasta agotar o
+cerrar el generador; cerrarlo sin iniciarlo no carga ni admite trabajo. Se retira
+el debug que incluía texto y se conserva la medición de tiempo.
+
+Dual drena sus delegaciones antes de sellar y cerrar los hijos que creó. Así
+puede terminar una llamada ya admitida que todavía no había entrado al hijo.
+Los motores prestados que reemplazan un hijo no se cierran. El Qwen3 opcional conserva
+referencias y devuelve `tts_backend_close_unsupported`, sin afirmar un retiro
+que no tiene contrato revisado. Los demás motores y `create_tts` conservan su AST.
+
+El dueño de modelos del grafo registra el TTS inmediatamente después de crearlo
+y registra el output antes de construir las demás features. Pipeline y privacidad
+esperan ese drenaje antes de retirar modelos y dependientes. El fallback del
+stack cubre también un fallo posterior de construcción. El dueño STT comparte
+la coordinación sin cambiar la propiedad de sus instancias.
+
+Si falla un recibo de aborto, el mismo dueño termina con el error fijo
+`voice_retirement_unconfirmed` una vez drenados los actores comprobables. La
+barrera fallida sigue visible; modelo y lease SQLite no se liberan. Un subproceso
+offline verifica esa retención sin resetear flags privados para simular éxito;
+el proceso es el dueño final del lease fallido. Esto no demuestra retención de
+DashboardAuthority en un fallo terminal. Cancelar directamente un dueño interno
+queda fuera del contrato: sus observadores usan wait/shield.
+
+La primera suite completa dejó cinco fallos de borrado/caducidad de sugerencias:
+se había cambiado el contrato de `retained_delivery_scopes` de `frozenset` a
+`tuple`, rompiendo la intersección de scopes. Se restaura el tipo original sin
+quitar los nuevos recibos. Sus 874 archivos congelados y los fallos se conservan
+en `e/failed-verification.json`; sólo ese método cambia entre las dos suites
+completas. Pasan 84 pruebas enfocadas posteriores, incluidas las 25 nuevas;
+antes habían pasado 176 de voz/ciclo de vida y 38 de STT/Chroma. T022-E queda verificada
+localmente en `744edac`: la suite completa pasa 7479 casos más la
+xfail conocida en 609,19 segundos; 874 archivos de `src/`,
+`tests/` y `tools/` permanecen idénticos durante la ejecución. Ruff no encuentra
+hallazgos en `src/` y `tests/`. Evidencia:
+`data/autonomous-roadmap-20261102/t022/e/evidence.json`; verificación:
+`data/autonomous-roadmap-20261102/t022/e/validated/verification.json`.
+
+El siguiente corte es retirar los encoders seleccionados de `SpeakerIdentifier`
+después de sus borrowers reales, distinguiendo propiedad y préstamo. Siguen
+pendientes otros motores, copias internas SDK/CUDA, productores legacy y el mapa
+completo con mute/restore de T023/T024. `GenerationStream.sync_busy` no acredita
+por sí solo salida del Thread legacy. T021/T022 siguen `in_progress`, el mapa
+inicial de 29 familias sigue incompleto y C03/C04/C06/C20 continúan sin aceptar.
+El caso HA resistente de más de 60 segundos y la separación de autoridades de
+T047 permanecen intactos. No hay despliegue ni aceptación física adelantada.

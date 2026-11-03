@@ -1123,15 +1123,17 @@
         "f9d15addfad76cb108eb26d2476e9ead36ee62cb",
         "d6a8af201cab139c20d31ec8cc918275f10ae1c9",
         "92c28ac383583726235aac667ecda9e8be751143",
-        "60c3bab32aa6732bddfd75d82aeae26a8e74d81d"
+        "60c3bab32aa6732bddfd75d82aeae26a8e74d81d",
+        "744edac224d78069abdf6b3e242346e55b9e2478"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
         "data/autonomous-roadmap-20261102/t022/b/evidence.json",
         "data/autonomous-roadmap-20261102/t022/c/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/d/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/d/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/e/evidence.json"
       ],
-      "next_action": "T022-D verificada localmente en 60c3bab: ejecutores Whisper por instancia con admisión/creación serializada, sello terminal, reentrada admitida y cierre retenido hasta join real; referencia Python del adapter liberada en su worker. El grafo posee las instancias principal, shadow y ambient dedicada, drena sus borrowers y conserva autoridad/lease durante cancelación, fallos parciales y salida del Thread. Registro previo a start y join del handle nativo corrigen falso éxito de submit parcial; guard de CPython 3.13/layout y ejecución en 3.13.12. Dos RED de fábrica y uno de SDK pasan; 18 casos nuevos, 207 pruebas enfocadas y 32 posteriores al cambio del conteo fijo por la presencia exacta de Chroma. La suite completa pasó 7454 casos más la xfail conocida en 577,77 s; 870 archivos intactos y Ruff src/tests sin hallazgos. Continuar TTS seleccionado Dual/Kokoro: owner nativo de síntesis y drenaje real antes de dependientes/lease, conservando la distinción entre timeout y salida; luego otros modelos/executors, copias SDK, legacy condicional e inventario/mute/restore con T023/T024. El mapa inicial de 29 familias sigue incompleto; C03/C04/C06/C20 sin aceptar y el caso HA resistente de más de 60 s permanece intacto."
+      "next_action": "T022-E verificada localmente en 744edac: Response conserva recibos nativos, callbacks/aborto propios y dueño real más allá del timeout del observador; grafo retiene modelos TTS Dual/Kokoro y dependientes hasta drenaje real. Kokoro carga idempotente, sella admisión y conserva streams/iteradores hasta su salida; Dual retira sólo hijos propios después de las delegaciones admitidas. Fallo de recibo termina el mismo owner con error fijo, conservando modelo y lease de privacidad. Tres RED de fábrica pasan, 25 regresiones nuevas, 214 existentes enfocadas y 84 posteriores a restaurar el contrato original frozenset de scopes; full 7479 más una xfail conocida en 609,19 s, 874 archivos intactos, Ruff src/tests sin hallazgos. Continuar con SpeakerIdentifier: propiedad/retiro de encoders principal y ambient, borrowers reales y distinción préstamo/propiedad; después demás modelos/copias SDK, legacy condicional y mapa/mute/restore con T023/T024. Qwen3 opcional sin contrato de retiro devuelve unsupported explícito. El mapa inicial de 29 familias sigue incompleto; T021/T022 en progreso, C03/C04/C06/C20 sin aceptar y el caso HA resistente de más de 60 s permanece intacto."
     },
     {
       "id": "T023",
@@ -2312,7 +2314,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-D/whisper-executor-ownership",
+    "last_verified_unit": "T022-E/tts-native-and-selected-model-retirement",
     "user_priority_after_admin_unit": "T047"
   }
 }
