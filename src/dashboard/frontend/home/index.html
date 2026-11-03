@@ -18,8 +18,8 @@
 <section class="hero"><div><p class="eyebrow">TU ESPACIO. TU CONTROL.</p><h1>Tu casa, en <span>sintonía.</span></h1><p>Todo lo que importa, conectado a ti.</p></div><div class="weather"><svg aria-hidden="true"><use href="/home/nexo/icons.svg#i-house"/></svg><div><div class="weather-main">Control local</div><div class="weather-detail">KZA · TU HOGAR</div></div></div></section>
 <div id="demo-banner" class="demo-banner" role="status" hidden>Demostración · Datos sintéticos, no representan el estado de tu casa.</div>
 <section class="panel access-panel" id="login-panel" aria-labelledby="login-title">
-<p class="eyebrow">TU ACCESO, TU ESPACIO</p><h2 id="login-title">Bienvenido a casa.</h2><p>Ingresá con tu credencial de acceso a KZA.</p>
-<form id="login-form"><label for="token">Credencial de acceso</label><input id="token" name="token" type="password" autocomplete="current-password" required><button class="primary-button" type="submit">Entrar a KZA →</button></form>
+<p class="eyebrow">TU ACCESO, TU ESPACIO</p><h2 id="login-title">Bienvenido a casa.</h2><p id="login-guidance">Pedí al administrador del hogar una credencial de KZA. Para revisar muestras, solicitá un acceso de evaluación temporal. La credencial de Home Assistant no funciona aquí.</p>
+<form id="login-form"><label for="token">Credencial de acceso</label><input id="token" name="token" type="password" autocomplete="current-password" aria-describedby="login-guidance" required><button class="primary-button" type="submit">Entrar a KZA →</button></form>
 <p id="login-error" class="message" role="alert"></p><button class="text-button" id="retry-logout" hidden>Reintentar cerrar sesión</button><p class="fine-print">Tu credencial no se guarda en el navegador.</p>
 </section>
 <section id="nexo-workspace" hidden aria-label="Tu hogar">

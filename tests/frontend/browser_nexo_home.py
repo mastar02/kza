@@ -165,6 +165,8 @@ async def main() -> None:
                     await page.command("Page.navigate", {"url": f"http://127.0.0.1:{port}/"})
                     await page.wait_for("document.querySelector('#login-panel') && document.querySelector('#login-error').textContent.length>0")
                     assert [request["path"] for request in requests] == ["/api/admin/auth/whoami"]
+                    assert await page.evaluate("document.querySelector('#token').getAttribute('aria-describedby')==='login-guidance' && document.querySelector('#login-guidance').textContent.includes('administrador del hogar') && document.querySelector('#login-guidance').textContent.includes('evaluación temporal') && document.querySelector('#login-guidance').textContent.includes('Home Assistant no funciona')")
+                    await screenshot(page, evidence / 'login-guidance.png')
 
                     marker = len(requests)
                     await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,get:()=>true})")

@@ -1070,3 +1070,31 @@ verificado (6750 pruebas y una xfail conocida); esta unidad cambia frontend y
 pruebas de navegador. No se repite esa suite como si validara el frontend.
 T013 sigue en curso, T047 permanece verified_local, no se acepta ningún criterio
 doméstico ni se despliega en producción.
+
+## Cierre local de sesiones y autoridades
+
+La revisión de T013 contrasta su alcance con ACCESS-01, AUD-01 y los contratos
+de H1/H3. La matriz actual verifica rechazo HTTP/WS antes de consumir servicios,
+roles del servidor, identidad del login original, límites de tiempo, revocación,
+operaciones nativas retenidas, entrega privada y evaluación por muestra y modalidad.
+La voz anónima conserva sólo el ámbito doméstico compartido; una asociación
+vocal no habilita historial, preferencias ni autoridad personal.
+
+La auditoría encontró una obligación pendiente de ACCESS-01: explicar cómo
+obtener el acceso. La entrada NEXO ahora indica pedir una credencial de KZA al
+administrador del hogar, solicitar evaluación temporal para revisar muestras y
+no usar una credencial de Home Assistant. La explicación está vinculada al campo
+mediante aria-describedby; Chromium verifica el contenido y el recorrido de login.
+
+Pasan 956 casos actuales de autoridad, sesiones, adaptadores nativos, comandos
+de credenciales y evaluación. No se suman a las 6750 pruebas anteriores como si
+fueran casos distintos. Los 309 archivos Python de producto siguen iguales al
+backend previamente verificado. También pasan el recorrido NEXO de Hogar/Personas
+y Ruff. Los avisos de deprecación de datetime y el overflow provocado por una
+entrada negativa se conservan en el log; no son fallos de esta unidad.
+
+T013 queda verified_local. Esto no demuestra acceso a grabaciones reales actuales
+ni acepta C02, C04 o C07: siguen pendientes las matrices de aceptación, el inventario
+y retiro global, la auditoría completa de accesibilidad y la evidencia de campo.
+T014 conserva la procedencia técnica y los intervalos; T033/T035 conservan sus
+recorridos completos. Evidencia: `data/autonomous-roadmap-20261102/t013/closure-evidence.json`.
