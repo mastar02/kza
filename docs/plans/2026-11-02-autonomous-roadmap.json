@@ -1125,7 +1125,8 @@
         "92c28ac383583726235aac667ecda9e8be751143",
         "60c3bab32aa6732bddfd75d82aeae26a8e74d81d",
         "744edac224d78069abdf6b3e242346e55b9e2478",
-        "4359d9139487e3d5b021117e3ec0e4e8386f5ab3"
+        "4359d9139487e3d5b021117e3ec0e4e8386f5ab3",
+        "c7be0178dbb1dfdbe723a1fbee94be0b4cc3b94c"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1133,9 +1134,10 @@
         "data/autonomous-roadmap-20261102/t022/c/evidence.json",
         "data/autonomous-roadmap-20261102/t022/d/evidence.json",
         "data/autonomous-roadmap-20261102/t022/e/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/f/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/f/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/g/evidence.json"
       ],
-      "next_action": "T022-F verificada localmente en 4359d91: SpeakerIdentifier con admisión terminal por instancia, carga idempotente y serializada, nested identify/verify/enrollment ya admitidos y retiro retenido de referencias modelo/tipo/cache. Owner del grafo registra principal y ambient temprano, drena Registry aun después del retorno del tagger, comandos/warmup, captura/wake y admin; conserva autoridad/lease durante cancelación, postludio nativo y fallos parciales. Dos RED de fábrica pasan;23 casos nuevos y525 existentes enfocados; full 7502 más una xfail conocida en 578,92 s, 877 archivos intactos y Ruff src/tests sin hallazgos. Continuar Parakeet seleccionado para shadow/ambient: actualmente STTExecutorOwner filtra sólo FastWhisper, y Parakeet carece de retiro. Implementar propiedad por instancia y drenaje real sin executor nuevo injustificado; distinguir propio/préstamo, dos instancias y fallo parcial. Emotion deshabilitado queda condicional; standalone ambient sin owner, otras copias SDK/legacy e inventario/mute/restore T023/T024 siguen pendientes. Mapa inicial29 familias incompleto;T021/T022 en progreso,C03/C04/C06/C20 sin aceptar y caso HA resistente >60s intacto."
+      "next_action": "T022-G verificada localmente en c7be017: ownerSTT admite Parakeet y mantiene registros/drains existentes; lifecycle por instancia con carga/inferencia serializada, admisión terminal/nested y dueño retenido hasta recognize/strip/resultado/retorno. Wrapper ambient sólo retira motor propio. Cuatro RED producto pasan tras separar4erroresfixture previos;23new+235existentes enfocados; full 7525 más xfail conocida en 549,15 s, 880 intactos,Ruff0. Continuar OpenWakeWord seleccionado: retirar _oww_model sólo después de captura/workers reales, distinguir reset/pause reutilizables y cierre terminal, no recargar tras sello, peer independiente, ambas rutas conSDKsintético. Silero porroom activo queda siguiente; Emotion/Moonshine condicionales, standalone y copiasSDK/mute/restore siguen pendientes. onnx_asr no instalado en venvtest ni versiónruntime establecida; published0.11/0.12 no acredita sesiones/pools/proveedor efectivo. Mapa29familias incompleto;T021/T022/C03/C04/C06/C20 abiertos y HA>60s intacto. Conservar/investigar además primer full con memory_prompt_unavailable en precondición household:1aislado+100variantes diagnosticadas pasaron, causa no capturada ni corregida; segunda full sininstrumentación misma fuente, no aceptar criterios por ello."
     },
     {
       "id": "T023",
@@ -2316,7 +2318,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-F/speaker-encoder-retirement",
+    "last_verified_unit": "T022-G/parakeet-model-retirement",
     "user_priority_after_admin_unit": "T047"
   }
 }

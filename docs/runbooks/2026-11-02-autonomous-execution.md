@@ -1820,3 +1820,76 @@ T021/T022 siguen `in_progress`, el inventario inicial de 29 familias incompleto 
 C03/C04/C06/C20 sin aceptar. El caso HA resistente de más de 60 segundos y la
 separación de autoridades de T047 permanecen intactos; no hay despliegue ni
 aceptación física adelantada.
+
+## Retiro de Parakeet seleccionado
+
+T022-G conserva cuatro RED de la fábrica anterior: Parakeet principal y shadow
+seguían referenciados tanto después del cierre del stack como de
+`_stop_services`. La primera corrida de la fixture falló antes de construir el
+grafo porque `offline_config` no contiene `stt`; se corrigió con `setdefault` y
+se preservó como error de setup, separado de los cuatro RED del producto.
+
+El owner STT ya recibía los motores principal, shadow y ambient antes de sus
+dependientes, pero su filtro sólo admitía FastWhisper. Ahora incluye Parakeet y
+conserva los drenajes reales existentes de comandos/warmup, captura/wake,
+AmbientSTT y transcriber. No agrega un executor dedicado. El wrapper ambient
+sólo retira un motor declarado propio; el prestado continúa utilizable.
+
+Parakeet reserva admisión por instancia y serializa carga e inferencia con un
+RLock separado de la condición de cierre. El sello sólo modifica memoria. Las
+llamadas ya admitidas pueden terminar sus llamadas anidadas después del sello;
+las nuevas reciben `parakeet_closed`. El único dueño Context vacío espera hasta
+el retorno real, incluyendo `recognize`, `strip`, construcción de STTResult y
+el wrapper de tupla. Después retira su referencia `_model`, sin tocar peers ni
+invocar un supuesto método close del SDK. La reentrada desde worker o closer
+falla y la cancelación repetida del observador conserva el dueño real.
+
+Los tres cuerpos públicos y sus firmas conservan su AST al retirar los wrappers
+de admisión/lock: misma llamada al loader, idioma, normalización, texto vacío,
+señales de confianza en None y log de tiempo sin transcripción. Se conserva
+incluso el comportamiento previo del argumento sample_rate ignorado por el
+wrapper; esto no acredita soporte nuevo para otras frecuencias.
+
+Las pruebas del grafo crean tres instancias distintas y retienen simultáneamente
+shadow y ambient. Cancelan observadores y dos veces el cierre, liberan primero
+shadow y comprueban que el otro motor sigue reteniendo lease, autoridad y sesión.
+Otra barrera mantiene el postludio AmbientSTT después del retorno del modelo.
+Se cubre carga seguida de fallo antes de completar el wrapper ambient, weakrefs,
+rechazo de recarga, propietario/prestado y entrada anidada posterior al sello.
+
+La primera full dejó un fallo previo al recorrido de voz: el prompt usado para
+preparar elegibilidad personal devolvió `memory_prompt_unavailable`. No hubo
+Parakeet en esa rama ni timeout en esa ruta. Se preservan los 880 archivos y la
+corrida en `g/failed-verification.json`. El caso aislado pasó; otras 100 variantes
+con un diagnóstico de clase/frames sin payload también pasaron y no capturaron
+excepción. La causa sigue sin establecerse: no se cambió código, presupuesto,
+retry ni aserción, y no se declara corregido. La segunda full es sin instrumentar
+y usa la misma instantánea byte a byte. Esta incertidumbre continúa abierta
+antes de aceptar criterios.
+
+Pasan 23 regresiones nuevas y 235 pruebas existentes enfocadas. T022-G queda
+verificada localmente en `c7be017`: full 7525 casos más la xfail
+conocida en 549,15 segundos, con 880 archivos idénticos durante
+la ejecución. Ruff no encuentra hallazgos en `src/` y `tests/`. Evidencia:
+`data/autonomous-roadmap-20261102/t022/g/evidence.json`; verificación:
+`data/autonomous-roadmap-20261102/t022/g/validated/verification.json`.
+
+El venv de validación contiene ORT 1.26.0 pero no onnx_asr; requirements declara
+onnx-asr>=0.11.0 sin fijar versión. Las fuentes publicadas de
+[adapters 0.11](https://raw.githubusercontent.com/istupakov/onnx-asr/v0.11.0/src/onnx_asr/adapters.py)
+y [0.12](https://raw.githubusercontent.com/istupakov/onnx-asr/v0.12.0/src/onnx_asr/adapters.py)
+muestran el retorno de texto para el camino usado. El
+[loader 0.11](https://raw.githubusercontent.com/istupakov/onnx-asr/v0.11.0/src/onnx_asr/loader.py)
+usa proveedores disponibles por defecto: la etiqueta CPU no prueba el proveedor
+efectivo de otro runtime. Estas revisiones no prueban la versión instalada en
+producción ni la destrucción de todas las sesiones/pools/copias ONNX; el cierre
+acreditado usa wrappers reales con hojas SDK sintéticas. Se mantienen los
+argumentos y no se instala ni ejecuta un modelo real.
+
+El siguiente corte es OpenWakeWord seleccionado: separar reset reutilizable de
+retiro terminal del backend después del drenaje de captura. Silero por habitación
+sigue activo y requiere su propia prueba. Continúan las copias SDK, standalone
+sin dueño, ramas condicionales y el mapa completo con mute/restore T023/T024.
+T021/T022 siguen `in_progress`, las 29 familias iniciales incompletas y
+C03/C04/C06/C20 sin aceptar. HA resistente de más de 60 segundos y autoridades
+separadas de T047 permanecen intactos; no hay despliegue ni aceptación física.
