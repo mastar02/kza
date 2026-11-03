@@ -984,7 +984,8 @@
         "d47585d2e2b15106397780c7790bc60153afec14",
         "6d775a84626a93f4100ec7c5320807df1e4bf70c",
         "d2ff4cea731fdf6b923318d239daa0b969833ada",
-        "f227d94234c33c7c14363dfa0a89e21a9c5dca8e"
+        "f227d94234c33c7c14363dfa0a89e21a9c5dca8e",
+        "aca57f91d497169e805db25e0c8baf45dfc1d744"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t013/foundation-evidence.json",
@@ -1010,9 +1011,10 @@
         "data/autonomous-roadmap-20261102/t013/evaluation-http-evidence.json",
         "data/autonomous-roadmap-20261102/t013/credential-proof-evidence.json",
         "data/autonomous-roadmap-20261102/t013/credential-commands-evidence.json",
-        "data/autonomous-roadmap-20261102/t013/credential-http-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/credential-http-evidence.json",
+        "data/autonomous-roadmap-20261102/t013/evaluator-catalog-evidence.json"
       ],
-      "next_action": "HTTP credential management verified locally: five auth:manage routes with required real Authority and owned work, closed bounded UTF8 JSON, original-actor durable replay, lazy actual EVAL proof, one-time secret bound to original issuer and issued revision through buffering, cancellation and transport errors. Shared authentication contract preserved; legacy bearer cannot operate credentials without native Authority. Full6705+knownxfail/Ruff0/frozen803;65 direct HTTP cases and expanded route matrix, independent reviews closed. Next own EVALUATOR grant metadata catalog (IDs/modalities/deadlines only; no VoiceRegistry/payload) for automatic sample selection, then NEXO Accesos and isolated evaluator views per nexo-access-plan. Preserve T047 verified_local, separate person/account/voice/role permissions, no criteria accepted."
+      "next_action": "Own evaluator grant catalog verified locally: GET /api/evaluation/grants and pure native exact original-lease projection, EVALUATOR role gate, cap64, IDs/modalities/deadlines only, empty manifest bounded by lease expiry, outer HTTP guard survives buffering and retirement, no VoiceRegistry/payload IO. Full6750+knownxfail/Ruff0/frozen805; cross472 including41new, reviews closed. Next integrate NEXO Accesos and isolated Evaluacion UI with automatic authorized selector using nexo-access-plan.json and reviewed private drafts. Preserve one-time token handling, original identities, media/decoder drains and separate account/person/voice/role permissions. T047 remains verified_local; no criteria accepted."
     },
     {
       "id": "T014",
@@ -2265,7 +2267,7 @@
     "last_verified_phase": "P0",
     "last_verified_task": "T047",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T013/credential-http",
+    "last_verified_unit": "T013/evaluator-grant-catalog",
     "user_priority_after_admin_unit": "T047"
   }
 }
