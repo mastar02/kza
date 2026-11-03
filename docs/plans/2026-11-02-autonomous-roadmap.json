@@ -649,8 +649,10 @@
         "H5"
       ],
       "dependency_level": "verified_local",
-      "status": "in_progress",
-      "evidence": []
+      "status": "verified_local",
+      "evidence": [
+        "data/autonomous-roadmap-20261102/p1-local-evidence.json"
+      ]
     },
     {
       "id": "P2",
@@ -1035,20 +1037,23 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "7f5046e95e34cccd62e2ebb6e0db8bbfd942ac76",
         "265352dcea9dfd4a8ced9beff883f7ff5dc30e7e",
         "9e6dcfd43347bdaf5392b3bf97c01c35b4fb431c",
-        "751a0d71dfe6e89104fabb944ecb19560398bab1"
+        "751a0d71dfe6e89104fabb944ecb19560398bab1",
+        "16b400310e2785297be342c5f51566e728306c82"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t014/corpus-contract-evidence.json",
         "data/autonomous-roadmap-20261102/t014/review-native-evidence.json",
         "data/autonomous-roadmap-20261102/t014/opening-transport-evidence.json",
-        "data/autonomous-roadmap-20261102/t014/producers-evidence.json"
+        "data/autonomous-roadmap-20261102/t014/producers-evidence.json",
+        "data/autonomous-roadmap-20261102/t014/reader-evidence.json",
+        "data/autonomous-roadmap-20261102/t014/task-evidence.json"
       ],
-      "next_action": "Productores nativos verificados en 751a0d7: apertura observada por stream, metadatos por bloque en pre-roll y estado recurrente, canal fijo, snapshots tempranos y ventanas independientes de STT/audio recortado. El resultado STT no retiene el DTO ni el PCM del motor y se registra la truncación antes de recortar texto. Pasan 58 casos nuevos, 615 cruzados y 7066 de la suite completa, con una xfail conocida; 847 archivos intactos y Ruff sin hallazgos. Aplicar conjuntamente las propuestas privadas de lectores y frontend tras cerrar su revisión, actualizar consumidores y fixtures y verificar Chromium NEXO. Validar campos restaurados por tipo/bytes antes de fetch y exponer sólo metadatos de la modalidad autorizada. T014 sigue en curso; C04/C12, evidencia física e instalación/rollback pendientes."
+      "next_action": "Contrato de procedencia y evaluación verificado localmente en 16b4003: corpus tipado, aperturas/paquetes/productores, persistencia nativa, lectores acotados y UI por modalidad. Auditoría de diez obligaciones sin entregables software pendientes; 56 casos nuevos, 785 cruzados, 172 Node y Chromium real en 1425/390/320 px pasan. Suite completa: 7122 pruebas y una xfail conocida, 849 archivos intactos; Ruff sin hallazgos. Conservar estos contratos y autoridades durante T020 y tareas posteriores. C04/C12 y evidencia física siguen sin aceptar; corpus real, DSP físico, métricas, iPhone y release/rollback corresponden a sus tareas/ventana autorizada."
     },
     {
       "id": "T020",
@@ -2279,11 +2284,11 @@
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
     "field_authorized": false,
-    "next_task": "T014",
-    "last_verified_phase": "P0",
-    "last_verified_task": "T013",
+    "next_task": "T020",
+    "last_verified_phase": "P1",
+    "last_verified_task": "T014",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T014/runtime-capture-producers",
+    "last_verified_unit": "T014/modality-reader-projections",
     "user_priority_after_admin_unit": "T047"
   }
 }
