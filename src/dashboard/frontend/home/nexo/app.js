@@ -9,6 +9,10 @@ import '../../obs/src/voice-privacy.js';
 import '../../obs/src/voice-channel.js';
 import './voice-owner.js';
 import './voices.js';
+import './access-owner.js';
+import './access.js';
+import './evaluation-owner.js';
+import './evaluation.js';
 import { createHouse } from './house.js';
 
 const core = window.HomeUI, state = window.NexoState;
@@ -17,6 +21,10 @@ const session = state.createSession();
 const roleLabels = { operator: 'Administración', home: 'Acceso de hogar', evaluator: 'Evaluación temporal' };
 let epoch = 0, poller, sessionTimer, ticker, catalog = null, clock = null, lastError = null;
 let roomId, layer = 'lights', house, logoutPending = false, authBusy = false, activeView = null;
+let navigationVersion = 0, desiredView = null, accessView = null, viewsReady = true, viewDrain = Promise.resolve(true), privateSuspended = false;
+const viewIds = { home: 'home-view', actions: 'actions-view', people: 'people-view', voices: 'voices-view', access: 'access-view', evaluation: 'evaluation-view' };
+const viewHashes = { home: '#hogar', actions: '#acciones', people: '#personas', voices: '#voces', access: '#accesos', evaluation: '#evaluacion' };
+const auxiliaryView = view => ['people', 'voices', 'access', 'evaluation'].includes(view);
 try { logoutPending = sessionStorage.getItem('kza.logoutPending') === 'true'; } catch (_) { /* Storage is optional. */ }
 
 function node(tag, className, text) {
@@ -58,11 +66,59 @@ const people = window.NexoPeople.createPeople({ container: byId('people-view'), 
 const voices = window.NexoVoiceOwner.createVoiceOwner({ session,
   fetch: window.fetch.bind(window), connect: url => new WebSocket(url),
   socketUrl: () => `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/voices`,
-  mount: controller => window.NexoVoices.mountVoices({ container: byId('voices-content'), dialog: byId('voice-dialog'), linkDialog: byId('voice-link-dialog'), controller, icon }),
+  mount: controller => window.NexoVoices.mountVoices({ container: byId('voices-content'), dialog: byId('voice-dialog'), linkDialog: byId('voice-link-dialog'), controller, icon,
+    onEvaluate: session.role() === 'operator' && session.can('auth:manage') ? prepareEvaluation : undefined }),
   onStatus: message => { byId('voice-connection').textContent = message; },
   verifyIdentity: async () => { const identity = await api('/api/admin/auth/whoami'); return identity?.ok === true && ['voices:read', 'voices:review'].every(permission => identity.permissions?.includes(permission)); },
   onUnauthorized: () => retire('Tu acceso a Voces dejó de estar vigente. Iniciá sesión nuevamente.')
 });
+
+async function verifyIdentity(permissions, role, options = {}) {
+  const generation = options.generation ?? session.generation();
+  if (generation !== session.generation() || !session.active()) return null;
+  try {
+    const identity = await transport('/api/admin/auth/whoami', { signal: options.signal });
+    if (generation !== session.generation() || !session.active()) return null;
+    return identity?.ok === true && identity.role === role && permissions.every(permission => identity.permissions?.includes(permission));
+  } catch (error) {
+    if (generation !== session.generation() || !session.active()) return null;
+    return [401, 403].includes(error.status) ? false : null;
+  }
+}
+const access = window.NexoAccessOwner.createAccessOwner({ session, fetch: window.fetch.bind(window),
+  verifyIdentity: options => verifyIdentity(['auth:manage'], 'operator', options),
+  onUnauthorized: () => retire('Tu acceso de administración dejó de estar vigente.') });
+const evaluator = window.NexoEvaluationOwner.createEvaluationOwner({ session,
+  fetch: window.fetch.bind(window), connect: url => new WebSocket(url),
+  socketUrl: () => `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/evaluation`,
+  mount: controller => window.NexoEvaluation.mountEvaluation({ container: byId('evaluation-content'), controller }),
+  onStatus: message => { byId('evaluation-connection').textContent = message; },
+  verifyIdentity: options => verifyIdentity(['evaluation:read'], 'evaluator', options),
+  onUnauthorized: () => retire('Tu acceso de evaluación dejó de estar vigente.') });
+function closeAccess() {
+  const dispose = accessView; accessView = null; dispose?.();
+  return access.leave();
+}
+async function prepareEvaluation(values) {
+  const generation = session.generation();
+  if (activeView !== 'voices' || session.role() !== 'operator' || !session.can('auth:manage')) return false;
+  let selections;
+  try { selections = window.NexoAccessOwner.parseSelections(values); } catch { return false; }
+  if (!selections.length || !await activate('access')) return false;
+  if (generation !== session.generation() || activeView !== 'access' || !session.can('auth:manage')) return false;
+  return accessView?.openEvaluation(selections) === true;
+}
+function trackViewDrain(promises) {
+  viewsReady = false;
+  const pending = Promise.all(promises).then(values => values.every(value => value !== false), () => false);
+  viewDrain = pending;
+  pending.then(ok => { if (viewDrain === pending) { viewsReady = ok; lockAuthentication(authBusy); } });
+  return pending;
+}
+function drainViews() {
+  people.leave();
+  return trackViewDrain([voices.leave(), evaluator.leave(), closeAccess()]);
+}
 
 function pendingLogout(value) {
   logoutPending = value;
@@ -71,7 +127,8 @@ function pendingLogout(value) {
 }
 function lockAuthentication(value) {
   authBusy = value;
-  for (const control of [...byId('login-form').elements, byId('retry-logout'), byId('logout')]) control.disabled = value;
+  for (const control of byId('login-form').elements) control.disabled = value || !viewsReady;
+  for (const control of [byId('retry-logout'), byId('logout')]) control.disabled = value;
 }
 function destroyHouse() {
   house?.destroy(); house = null;
@@ -79,10 +136,13 @@ function destroyHouse() {
   byId('expand-map').setAttribute('aria-expanded', 'false');
 }
 function retire(message = '') {
-  epoch++; session.clear(); transport.invalidateSession();
+  epoch++; navigationVersion++; desiredView = null; privateSuspended = false; session.clear(); transport.invalidateSession();
   clearTimeout(sessionTimer); poller?.stop(); poller = null; ticker?.stop(); ticker = null;
-  voices.clear(); people.clear(); actions.clear(); destroyHouse(); catalog = clock = lastError = null; roomId = undefined; activeView = null;
-  byId('voice-connection').textContent = '';
+  people.clear(); const accessClosing = closeAccess();
+  trackViewDrain([voices.clear(), evaluator.clear(), access.clear(), accessClosing]);
+  actions.clear(); destroyHouse(); catalog = clock = lastError = null; roomId = undefined; activeView = null;
+  byId('voice-connection').textContent = ''; byId('evaluation-connection').textContent = '';
+  byId('view-transition-status').hidden = true;
   for (const id of ['room-list', 'room-controls', 'action-list', 'app-nav', 'rail-nav', 'additional-tools']) byId(id).replaceChildren();
   for (const id of ['lights-total', 'entities-total', 'rooms-total', 'room-count']) byId(id).textContent = '—';
   byId('nexo-workspace').hidden = true; byId('login-panel').hidden = false;
@@ -253,7 +313,9 @@ function renderNavigation() {
     { id: 'home', label: 'Hogar 3D', icon: 'house' },
     { id: 'voices', label: 'Voces', icon: 'mic' },
     { id: 'people', label: 'Personas', icon: 'user' },
-    { id: 'actions', label: 'Acciones', icon: 'list' }
+    { id: 'actions', label: 'Acciones', icon: 'list' },
+    { id: 'access', label: 'Accesos', icon: 'shield' },
+    { id: 'evaluation', label: 'Evaluación', icon: 'mic' }
   ].filter(view => session.views().includes(view.id));
   for (const target of ['app-nav', 'rail-nav']) {
     const container = byId(target); container.replaceChildren();
@@ -269,36 +331,67 @@ function renderNavigation() {
   if (session.can('routines:execute')) { const link = node('a', 'text-button', 'Rutinas del hogar ↗'); link.href = '/home/legacy.html'; tools.append(link); }
   if (session.can('diagnostics:read')) { const link = node('a', 'text-button', 'Micrófonos y diagnóstico ↗'); link.href = '/home/legacy.html'; tools.append(link); }
 }
-function activate(view, push = true) {
-  if (!session.views().includes(view) || !['home', 'actions', 'people', 'voices'].includes(view)) return;
-  if (push && activeView !== view) history.pushState({ view }, '', { home: '#hogar', actions: '#acciones', people: '#personas', voices: '#voces' }[view]);
-  if (activeView === 'people' && view !== 'people') people.leave();
-  if (activeView === 'voices' && view !== 'voices') voices.leave();
-  activeView = view;
-  byId('home-view').hidden = view !== 'home'; byId('actions-view').hidden = view !== 'actions';
-  byId('people-view').hidden = view !== 'people'; byId('voices-view').hidden = view !== 'voices'; byId('workspace-toolbar').hidden = ['people', 'voices'].includes(view);
-  if (view === 'people') people.open();
-  if (view === 'voices') voices.open();
-  poller?.setHidden(document.hidden || ['people', 'voices'].includes(view));
-  if (document.hidden || ['people', 'voices'].includes(view)) ticker?.stop(); else ticker?.start();
-  for (const control of document.querySelectorAll('[data-view]')) {
-    const active = control.dataset.view === view; control.classList.toggle('active', active);
-    if (active) control.setAttribute('aria-current', 'page'); else control.removeAttribute('aria-current');
-  }
+async function activate(view, push = true, force = false) {
+  if (!session.views().includes(view) || !Object.hasOwn(viewIds, view)) return false;
+  if (!force && activeView === view && desiredView === view) return true;
+  const version = ++navigationVersion, generation = session.generation();
+  desiredView = view;
+  if (push && activeView !== view) history.pushState({ view }, '', viewHashes[view]);
+  activeView = null;
+  for (const id of Object.values(viewIds)) byId(id).hidden = true;
+  byId('workspace-toolbar').hidden = true;
+  const status = byId('view-transition-status'); status.hidden = false; status.textContent = 'Preparando vista…';
+  poller?.setHidden(true); ticker?.stop();
   if (view !== 'home') destroyHouse();
-  else if (!house) {
-    byId('map-loading').hidden = false;
-    house = createHouse({ container: byId('house-canvas'), onReady(ready) {
-      byId('map-loading').hidden = true;
-      for (const id of ['view-3d', 'view-top', 'zoom-in', 'zoom-out', 'reset-view']) byId(id).disabled = !ready;
-    } });
-    cameraView('3d', false);
+  const stillCurrent = () => version === navigationVersion && desiredView === view && generation === session.generation() && session.views().includes(view);
+  try {
+    const drained = await drainViews();
+    if (!stillCurrent()) return false;
+    if (!drained) throw Error('La vista anterior no terminó de liberar sus recursos. Recargá la página para continuar.');
+    activeView = view; byId(viewIds[view]).hidden = false; status.hidden = true;
+    byId('restricted-view').hidden = true;
+    byId('workspace-toolbar').hidden = auxiliaryView(view);
+    if (document.hidden && auxiliaryView(view)) {
+      privateSuspended = true;
+      status.hidden = false; status.textContent = 'La consulta se reanudará cuando vuelvas a esta pestaña.';
+      return true;
+    }
+    let opened = true;
+    if (view === 'people') people.open();
+    if (view === 'voices') opened = await voices.open();
+    if (view === 'access') {
+      accessView = window.NexoAccess.mountAccess({ container: byId('access-view'), dialog: byId('access-dialog'),
+        secretDialog: byId('access-secret-dialog'), controller: access, icon });
+      opened = await access.open();
+    }
+    if (view === 'evaluation') opened = await evaluator.open();
+    if (!stillCurrent()) return false;
+    if (!opened) throw Error('No pudimos abrir esta vista. Podés reintentar la consulta.');
+    privateSuspended = false;
+    poller?.setHidden(document.hidden || auxiliaryView(view));
+    if (document.hidden || auxiliaryView(view)) ticker?.stop(); else ticker?.start();
+    for (const control of document.querySelectorAll('[data-view]')) {
+      const selected = control.dataset.view === view; control.classList.toggle('active', selected);
+      if (selected) control.setAttribute('aria-current', 'page'); else control.removeAttribute('aria-current');
+    }
+    if (view === 'home' && !house) {
+      byId('map-loading').hidden = false;
+      house = createHouse({ container: byId('house-canvas'), onReady(ready) {
+        byId('map-loading').hidden = true;
+        for (const id of ['view-3d', 'view-top', 'zoom-in', 'zoom-out', 'reset-view']) byId(id).disabled = !ready;
+      } });
+      cameraView('3d', false);
+    }
+    if (!auxiliaryView(view)) renderControls();
+    return true;
+  } catch (error) {
+    if (stillCurrent()) { status.hidden = false; status.replaceChildren(node('span', '', error.message), button('Reintentar', () => activate(view, false, true))); }
+    return false;
   }
-  if (!['people', 'voices'].includes(view)) renderControls();
 }
 function requestedView() {
-  const requested = { '#acciones': 'actions', '#personas': 'people', '#voces': 'voices', '#hogar': 'home' }[location.hash] || 'home';
-  const available = session.views().filter(view => ['home', 'actions', 'people', 'voices'].includes(view));
+  const requested = Object.keys(viewHashes).find(view => viewHashes[view] === location.hash) || 'home';
+  const available = session.views().filter(view => Object.hasOwn(viewIds, view));
   return available.includes(requested) ? requested : available[0];
 }
 function cameraView(view, apply = true) {
@@ -317,8 +410,11 @@ async function bootstrap() {
     byId('login-panel').hidden = true; byId('nexo-workspace').hidden = false; byId('logout').hidden = false;
     byId('session-label').textContent = roleLabels[session.role()]; byId('login-error').textContent = '';
     renderNavigation(); armSessionTimer();
-    const home = session.can('home:read'); byId('restricted-view').hidden = Boolean(requestedView()); byId('home-view').hidden = !home; byId('actions-view').hidden = true; byId('people-view').hidden = true; byId('refresh').hidden = !home;
-    activate(requestedView(), false);
+    const home = session.can('home:read'); byId('restricted-view').hidden = Boolean(requestedView());
+    for (const id of Object.values(viewIds)) byId(id).hidden = true;
+    byId('refresh').hidden = !home;
+    if (requestedView()) await activate(requestedView(), false, true);
+    if (started !== epoch || !session.active()) return;
     if (!home) { byId('connection-status').textContent = 'Sesión vigente.'; return; }
     const generation = session.generation();
     poller = core.createPoller({
@@ -331,7 +427,7 @@ async function bootstrap() {
       onError(error) { if (session.generation() === generation && session.active()) { lastError = error; updateTemporal(); } }
     });
     ticker = core.createFreshnessTicker({ read: () => freshness(), onTick: updateTemporal });
-    poller.setHidden(document.hidden || ['people', 'voices'].includes(activeView)); if (!document.hidden && !['people', 'voices'].includes(activeView)) ticker.start(); poller.start();
+    poller.setHidden(document.hidden || auxiliaryView(activeView)); if (!document.hidden && !auxiliaryView(activeView)) ticker.start(); poller.start();
   } catch (error) {
     if (started === epoch) retire(error.status === 401 ? 'Ingresá para consultar tu hogar.' : error.message);
   }
@@ -340,7 +436,10 @@ async function bootstrap() {
 byId('login-form').addEventListener('submit', async event => {
   event.preventDefault(); if (authBusy) { byId('token').value = ''; return; } lockAuthentication(true);
   let token = byId('token').value; retire(); pendingLogout(false); const started = epoch;
-  try { await api('/api/admin/auth/login', { method: 'POST', body: { token } }); if (started === epoch) await bootstrap(); }
+  try {
+    if (!await viewDrain || started !== epoch) throw Error('La vista anterior todavía no terminó de cerrar.');
+    await api('/api/admin/auth/login', { method: 'POST', body: { token } }); if (started === epoch) await bootstrap();
+  }
   catch (error) { if (started === epoch || error.status === 401 && !session.active()) byId('login-error').textContent = error.status === 401 ? 'La credencial no es válida.' : error.message; }
   finally { token = null; lockAuthentication(false); }
 });
@@ -349,7 +448,10 @@ async function logout() {
   lockAuthentication(true);
   pendingLogout(true); retire('Cerrando sesión…');
   try { await api('/api/admin/auth/logout', { method: 'POST' }); pendingLogout(false); byId('login-error').textContent = 'Sesión cerrada.'; }
-  catch (_) { byId('login-error').textContent = 'Se ocultaron los datos. No pudimos confirmar el cierre de la sesión.'; }
+  catch (error) {
+    if (error.status === 401) { pendingLogout(false); byId('login-error').textContent = 'La sesión ya no está vigente.'; }
+    else byId('login-error').textContent = 'Se ocultaron los datos. No pudimos confirmar el cierre de la sesión.';
+  }
   finally { lockAuthentication(false); }
 }
 byId('logout').addEventListener('click', logout); byId('retry-logout').addEventListener('click', logout);
@@ -367,7 +469,18 @@ byId('expand-map').addEventListener('click', () => { const expanded = document.b
 byId('help-button').addEventListener('click', () => byId('info-dialog').showModal());
 for (const id of ['dialog-close', 'dialog-done']) byId(id).addEventListener('click', () => byId('info-dialog').close());
 document.addEventListener('keydown', event => { if (event.key === 'Escape') { document.body.classList.remove('map-expanded'); byId('expand-map').setAttribute('aria-expanded', 'false'); } });
-document.addEventListener('visibilitychange', () => { if (!session.active()) { if (!byId('nexo-workspace').hidden) retire('Tu sesión venció.'); return; } armSessionTimer(); if (document.hidden || ['people', 'voices'].includes(activeView)) ticker?.stop(); else { updateTemporal(); ticker?.start(); } poller?.setHidden(document.hidden || ['people', 'voices'].includes(activeView)); if (!document.hidden && activeView === 'people') people.refresh(); });
+document.addEventListener('visibilitychange', () => {
+  if (!session.active()) { if (!byId('nexo-workspace').hidden) retire('Tu sesión venció.'); return; }
+  armSessionTimer();
+  if (document.hidden || auxiliaryView(activeView)) ticker?.stop(); else { updateTemporal(); ticker?.start(); }
+  poller?.setHidden(document.hidden || auxiliaryView(activeView));
+  const privateView = desiredView || activeView;
+  if (auxiliaryView(privateView)) {
+    if (document.hidden) { privateSuspended = true; ++navigationVersion; activeView = privateView; void drainViews(); }
+    else if (privateSuspended) void activate(privateView, false, true);
+    else if (privateView === 'people') people.refresh();
+  }
+});
 window.addEventListener('popstate', () => activate(requestedView(), false));
 window.addEventListener('pagehide', () => retire());
 window.addEventListener('pageshow', event => { if (event.persisted) bootstrap(); });

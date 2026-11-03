@@ -1,7 +1,7 @@
 /* Session and catalog presentation; voice labels never select authority. */
 (function (root) {
   'use strict';
-  const VIEWS = { home: ['home:read'], actions: ['home:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'] };
+  const VIEWS = { home: ['home:read'], actions: ['home:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'], access: ['auth:manage'], evaluation: ['evaluation:read'] };
   function createSession({ wall = Date.now, monotonic = () => root.performance.now() } = {}) {
     let identity = null, deadline = 0, generation = 0;
     function clear() { identity = null; deadline = 0; generation++; }
@@ -20,7 +20,8 @@
     function can(permission) { return active() && identity.permissions.has(permission); }
     return { accept, clear, active, can, remaining, generation: () => generation,
       role: () => active() ? identity.role : null,
-      views: () => Object.keys(VIEWS).filter(view => VIEWS[view].every(can)) };
+      views: () => Object.keys(VIEWS).filter(view => VIEWS[view].every(can)
+        && (view !== 'evaluation' || identity?.role === 'evaluator') && (view !== 'access' || identity?.role === 'operator')) };
   }
   function sessionRetired(error) {
     const code = typeof error?.detail === 'string' ? error.detail : error?.detail?.code;

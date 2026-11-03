@@ -1017,3 +1017,56 @@ La siguiente unidad integrará el selector automático y las vistas de Accesos y
 Evaluación en NEXO. Los borradores de frontend se preparan fuera de src mientras
 se verifica este backend. No se modifican producción ni criterios de aceptación
 doméstica con esta unidad.
+
+## Accesos y evaluación en NEXO
+
+La interfaz incorpora Accesos para operator con auth:manage y Evaluación para
+evaluator con evaluation:read. El evaluador carga automáticamente su catálogo
+de concesiones y consulta una muestra y modalidad sólo por acción explícita.
+No crea la casa 3D ni consulta Hogar, Personas o Voces. La estética, navegación
+y presentación adaptable proceden de la referencia NEXO aprobada en T047.
+
+Accesos usa el catálogo, los comandos CAS y los recibos del backend real.
+Cada gesto fija un request_id y un cuerpo antes del envío; un resultado incierto
+se consulta por recibo y no repite la emisión. La credencial se entrega una vez
+al panel visible, enmascarada, con copia explícita; nunca entra en snapshots,
+almacenamiento del navegador, URLs ni recibos. Cerrar, ocultar o sustituir la
+sesión elimina el panel. El catálogo admite paginación y distingue fallo de una
+lista vacía. El selector de Personas conserva IDs canónicos y desambigua homónimos.
+
+Voces permite preparar una concesión desde muestras vigentes y modalidades
+elegidas explícitamente. Transfiere sólo IDs y límites temporales a Accesos;
+primero retira la revisión de audio. La importación abre un borrador: emitirlo
+requiere otra confirmación. La cuenta, su nivel, el vínculo manual perfil-persona,
+el rol del dashboard y el alcance de evaluación siguen siendo independientes.
+
+El propietario de Evaluación usa el canal exclusivo, recibos y lector singular
+ya verificados. Sólo una modalidad ocupa la vista. Cambiarla, ocultar la pestaña,
+revocar o cerrar la sesión retira DOM, Blob y audio; el siguiente contexto espera
+el emptied y estado nativo del decodificador. No hay ACK por timeout. Una limpieza
+visual fallida todavía retira los recursos y bloquea la reapertura. La navegación
+comprueba generación, rol y visibilidad después de cada barrera; una respuesta
+anterior no recupera la vista. Un 403 funcional verifica la sesión original.
+El logout con 401 reconoce que la sesión ya no es válida y permite otro login;
+un error de transporte conserva el cierre pendiente.
+
+Pasan 160 pruebas de frontend y Ruff. Chromium real contra servicios locales
+con datos sintéticos cubre HOME/OPERATOR, modificación y revocación CAS, emisión
+única, pérdida de recibo sin POST duplicado, selección de dos muestras con
+modalidades distintas, consulta aislada del evaluador, audio/transcripción,
+retirada con emptied retenido, revocación durante reproducción y nuevo login.
+También pasan las regresiones de Hogar/Personas y Voces, incluida la paginación
+de 51 perfiles. Hay capturas de escritorio y anchuras 390/320 sin desborde de página.
+
+La ejecución en navegador detectó y corrigió los campos required ocultos para
+HOME/OPERATOR, el estado loading que bloqueaba el selector y la salida de una
+sesión ya revocada. Las revisiones añadieron cobertura de Unicode por puntos de
+código, revisiones exactas y fallo de limpieza. Se conserva la evidencia de los
+intentos anteriores; no se presentan como validaciones finales.
+
+Evidencia: `data/autonomous-roadmap-20261102/t013/nexo-ui-evidence.json`.
+Los 309 archivos Python de producto coinciden con el snapshot del backend
+verificado (6750 pruebas y una xfail conocida); esta unidad cambia frontend y
+pruebas de navegador. No se repite esa suite como si validara el frontend.
+T013 sigue en curso, T047 permanece verified_local, no se acepta ningún criterio
+doméstico ni se despliega en producción.

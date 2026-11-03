@@ -1,7 +1,7 @@
 /* NEXO presentation over the existing, expiring voice stores. */
 (function (root) {
   'use strict';
-  function mountVoices({ container, dialog, linkDialog, controller, icon }) {
+  function mountVoices({ container, dialog, linkDialog, controller, icon, onEvaluate }) {
     const doc = container.ownerDocument, state = controller.state, selected = new Set();
     let active = true, profileId = null, renderedAudio = null, busy = false, needsRefresh = false;
     let linkToken = null, catalogue = null, catalogueStatus = 'waiting', linkDraft = null;
@@ -29,10 +29,27 @@
     const confirm = button('Confirmar perfil', () => {}, 'identity-primary'); confirm.type = 'submit';
     const merge = button('Unir grupos', () => correct('merge')), split = button('Separar muestras', () => correct('split')), unknown = button('Dejar como desconocido', () => correct('unknown'));
     const corrections = node('div', '', 'review-corrections'); corrections.append(merge, split, unknown);
+    const evaluation = node('section', '', 'voice-evaluation-selection'), evaluationModes = [];
+    const prepareEvaluation = button('Preparar acceso de evaluación', () => {
+      if (prepareEvaluation.disabled || !active) return;
+      const modalities = evaluationModes.filter(input => input.checked).map(input => input.value);
+      const rows = state.captures.snapshot().filter(row => selected.has(row.id) && row.review_available);
+      if (rows.length !== selected.size || !modalities.length) return;
+      const grants = rows.map(row => Object.freeze({ fingerprint_id: row.id, expires_at: row.expires_at, modalities: [...modalities] }));
+      void onEvaluate?.(grants);
+    });
+    if (onEvaluate) {
+      evaluation.append(node('h3', 'Evaluación temporal'), node('p', 'Elegí una o más muestras y autorizá cada modalidad. En Accesos podrás revisar el alcance antes de emitir una credencial.', 'identity-muted'));
+      for (const [value, text] of [['audio_preview', 'Audio breve'], ['transcript_full', 'Transcripción completa']]) {
+        const label = node('label', text), input = node('input'); input.type = 'checkbox'; input.value = value;
+        input.addEventListener('change', updateSelection); evaluationModes.push(input); label.prepend(input); evaluation.append(label);
+      }
+      evaluation.append(prepareEvaluation);
+    }
     const modal = node('div', '', 'nexo-voice-modal'); modal.append(sampleList, review); form.append(selection, label, confirm);
     dialog.replaceChildren(button('Cerrar', closeDialog), button('Actualizar', refresh), node('h2', 'Revisá antes de confirmar.'), node('p', 'El perfil confirmado se conserva hasta que lo borres. El audio y la transcripción siguen venciendo con su captura original.', 'modal-description'), modal, corrections,
-      node('p', 'Unir incluye todas las muestras de los grupos elegidos, también las de otras páginas. Separar crea otro grupo sólo con las muestras marcadas.', 'relationship-note'), form, error);
-    function closeDialog() { if (dialog.open) dialog.close(); selected.clear(); name.value = ''; renderedAudio = null; state.review.detachMedia(); review.replaceChildren(); controller.closeReview(); state.review.committed(null); updateSelection(); }
+      node('p', 'Unir incluye todas las muestras de los grupos elegidos, también las de otras páginas. Separar crea otro grupo sólo con las muestras marcadas.', 'relationship-note'), form, ...(onEvaluate ? [evaluation] : []), error);
+    function closeDialog() { if (dialog.open) dialog.close(); selected.clear(); name.value = ''; for (const input of evaluationModes) input.checked = false; renderedAudio = null; state.review.detachMedia(); review.replaceChildren(); controller.closeReview(); state.review.committed(null); updateSelection(); }
     function openDialog() { if (!active) return; error.textContent = ''; if (!dialog.open) dialog.showModal(); drawSamples(); }
     function updateSelection() {
       const chosen = state.captures.snapshot().filter(row => selected.has(row.id)), chosenGroups = new Map(chosen.map(row => [row.group_id, row]));
@@ -42,6 +59,8 @@
       merge.disabled = locked || chosenGroups.size < 2 || [...chosenGroups.values()].reduce((total, row) => total + row.group_size, 0) > 32;
       split.disabled = locked || !selected.size || chosenGroups.size !== 1 || selected.size >= [...chosenGroups.values()][0]?.group_size;
       unknown.disabled = locked || !selected.size;
+      prepareEvaluation.disabled = locked || !selected.size || chosen.length !== selected.size || chosen.some(row => !row.review_available) || !evaluationModes.some(input => input.checked);
+      for (const input of evaluationModes) input.disabled = locked;
       for (const input of sampleList.querySelectorAll('input')) input.disabled = locked || input.dataset.available !== 'true';
       for (const control of detail.querySelectorAll('button')) control.disabled = locked || control.id === 'voice-person-load' && catalogueStatus === 'loading';
     }

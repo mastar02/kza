@@ -12,6 +12,7 @@ import time
 
 import aiohttp
 import uvicorn
+from starlette.routing import WebSocketRoute
 from websockets.asyncio.client import connect
 
 from src.dashboard.api import DashboardAPI
@@ -109,6 +110,13 @@ async def main() -> None:
             "kitchen": RoomConfig("kitchen", "Cocina", "la cocina", default_climate="climate.test_ac"),
         }
         dashboard = DashboardAPI(authority=authority, ha_client=ha, home_actions=actions, home_rooms=rooms, user_manager=users)
+
+        async def unavailable_live_channel(websocket):
+            # This fixture has household services only; private live services are exercised separately.
+            await websocket.close(code=1013)
+
+        for route in ['/ws/voices', '/ws/evaluation']:
+            dashboard.app.router.routes.insert(0, WebSocketRoute(route, unavailable_live_channel))
 
         @dashboard.app.middleware("http")
         async def record_request(request, call_next):
@@ -230,15 +238,19 @@ async def main() -> None:
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
 
                     marker = len(requests)
+                    # This household-only fixture also covers hidden evaluator bootstrap.
+                    await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:true})")
                     await login(page, evaluator.token, "Evaluación temporal")
-                    assert await page.evaluate("!document.querySelector('#restricted-view').hidden && !document.querySelector('#app-nav').children.length")
+                    await page.wait_for("!document.querySelector('#evaluation-view').hidden && !!document.querySelector('#app-nav [data-view=evaluation]')")
+                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].every(node=>node.dataset.view==='evaluation') && !document.querySelector('#house-canvas canvas')")
                     assert not any(request["path"].startswith('/api/home/') or request["path"] in {"/api/users", "/api/voices", "/api/conversations"} for request in requests[marker:])
                     await page.evaluate("document.querySelector('#logout').click()")
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
 
+                    await page.evaluate("delete document.hidden")
                     await login(page, operator.token, "Administración")
                     await page.wait_for("document.querySelector('#app-nav [data-view=voices]') && document.querySelector('#room-list').children.length>0")
-                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,voices,people,actions'")
+                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,voices,people,actions,access'")
                     assert not any(request['path'] == '/api/admin/users' for request in requests)
                     await page.command('Emulation.setDeviceMetricsOverride', {'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False})
                     await page.evaluate("document.querySelector('#app-nav [data-view=people]').click()")

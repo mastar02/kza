@@ -7,6 +7,16 @@ const people = require('../../src/dashboard/frontend/home/nexo/people.js');
 const identity = (permissions, role = 'home', expires_at = 10) => ({ ok: true, role, permissions, expires_at });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 
+test('Access and Evaluation views require both their permission and their dashboard role', () => {
+  const session = nexo.createSession({ wall: () => 0, monotonic: () => 0 });
+  for (const [role, expected] of [['operator', ['access']], ['home', []], ['evaluator', ['evaluation']]]) {
+    session.accept(identity(['auth:manage', 'evaluation:read'], role));
+    assert.deepEqual(session.views(), expected);
+  }
+  session.accept(identity([], 'operator'));
+  assert.deepEqual(session.views(), []);
+});
+
 test('pending bootstrap and HOME cannot query private or diagnostic sources', async () => {
   const session = nexo.createSession({ wall: () => 0, monotonic: () => 0 });
   const pending = deferred(), requests = [];
@@ -29,7 +39,7 @@ test('EVALUATOR and a read-only identity cannot submit household effects', async
   let requests = 0;
   const api = nexo.createScopedApi({ session, transport: async () => { requests++; } });
   session.accept(identity(['evaluation:read'], 'evaluator'));
-  assert.deepEqual(session.views(), []);
+  assert.deepEqual(session.views(), ['evaluation']);
   await assert.rejects(api('/api/home/catalog'), error => error.sent === false);
   session.accept(identity(['home:read']));
   await assert.rejects(api('/api/home/actions', { method: 'POST' }), error => error.sent === false);

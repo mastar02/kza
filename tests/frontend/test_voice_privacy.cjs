@@ -116,6 +116,7 @@ test('group metadata is detached and expires at its earliest contributor without
   const f=fixture('captures'),input=groupedCapture();
   assert(f.store.receive([{...input,private_name:'Not a group field'}],{mono:0,wall:2000000000000}));
   const cached=f.store.snapshot()[0];assert.equal(cached.group_id,A);assert.equal(cached.group_revision,2);
+  assert.equal(cached.expires_at,2000000010);
   assert.equal(cached.private_name,undefined);assert(Object.isFrozen(cached));
   f.advance(10000);f.store.check();assert.deepEqual(f.store.snapshot(),[]);
 });

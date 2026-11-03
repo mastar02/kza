@@ -90,6 +90,7 @@
             || value.group_expires_at-value.observed_at>172800
             || value.group_similarity!==null && (!Number.isFinite(value.group_similarity) || Math.abs(value.group_similarity)>1)) throw Error('invalid capture metadata');
         return { id:value.id, duration_s:value.duration_s, created_at:value.created_at, review_available:value.review_available,
+          expires_at:Math.min(value.expires_at,value.group_expires_at),
           suggested_profile:value.suggested_profile, similarity:value.similarity, group_id:value.group_id,
           group_revision:value.group_revision, group_size:value.group_size, group_state:value.group_state,
           group_reason:value.group_reason, group_similarity:value.group_similarity, group_expires_at:value.group_expires_at };
