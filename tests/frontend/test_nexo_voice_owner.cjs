@@ -335,3 +335,192 @@ test('captured person scope cannot adopt mutations to its caller configuration',
   const raw={...personScope(g,'A','A:1')};await readyScope(g,raw);raw.personId='B';raw.scopeKey='B:2';assert.equal(await g.owner.open(raw),true);assert.equal(g.sockets.length,1);assert.equal(g.controllers[0].personId,'A');
   await g.controllers[0].refresh();await g.controllers[0].settled();assert(calls.every(path=>new URL(path,'http://synthetic').searchParams.get('person_id')==='A'));await g.owner.leave();
 });
+
+for (const throwingSubscriber of [false, true]) test('throwing voice view cleanup still retires media and socket before blocking reentry: listener=' + throwingSubscriber, async () => {
+  const { Media, review } = require('../mocks/voice_browser.cjs');
+  const { createVoiceState } = require('../../src/dashboard/frontend/obs/src/voice-privacy.js');
+  const now = Date.now()/1000;
+  const batch = { ...profileBatch(), channel:'voices:review', rows:[{ ...review(), observed_at:now, expires_at:now+60 }] };
+  const allocated = [], revoked = [];
+  let unsubscribe = () => {};
+  let controller, socket, media, closing, reentry, fail = false, cleanupCalls = 0, mounts = 0, unauthorized = 0;
+  const g = setup({
+    createState: options => createVoiceState({ ...options, url:{
+      createObjectURL() { const id = 'blob:throwing-voice-' + (allocated.length+1); allocated.push(id); return id; },
+      revokeObjectURL(id) { revoked.push(id); },
+    } }),
+    mount(value) {
+      controller = value; mounts++;
+      unsubscribe = value.state.profiles.subscribe(() => { if (fail && throwingSubscriber) throw Error('synthetic residual profile listener'); });
+      return () => {
+        cleanupCalls++;
+        if (fail) throw Error('synthetic voice renderer cleanup failure');
+        unsubscribe(); value.leave();
+        for (const kind of ['profiles','captures','review']) value.state[kind].committed(null);
+      };
+    },
+    onUnauthorized: () => unauthorized++,
+    fetch: async path => ({ ok:true, status:200, json:async () => path.endsWith('/review')
+      ? { connection_id:UUID, channel:'voices:review', snapshot:batch } : voiceEnvelope(path) }),
+  });
+  try {
+    socket = await ready(g);
+    assert(controller.review(review().id)); await controller.settled();
+    assert.equal(controller.state.review.snapshot().length, 1);
+    media = new Media(); controller.state.review.attachMedia(media); controller.state.review.committed(batch.event_id);
+    const generation = g.session.generation(), sent = socket.sent.length, mounted = mounts;
+    assert.equal(allocated.length, 1); fail = true;
+    assert.doesNotThrow(() => { closing = g.owner.leave(); });
+    let settled = false; closing.then(() => { settled = true; }); await turn();
+    assert.equal(socket.readyState, 3); assert.equal(media.paused, true); assert.equal(media.isConnected, false);
+    assert.deepEqual(revoked, allocated); assert.equal(controller.state.review.snapshot().length, 0);
+    assert.equal(controller.state.review.pendingRetirements(), 1); assert.equal(settled, false);
+    reentry = g.owner.open(); await turn();
+    assert.equal(g.sockets.length, 1); assert.equal(mounts, mounted); assert.equal(socket.sent.length, sent);
+    media.emptied(); assert.equal(await closing, false); assert.equal(await reentry, false);
+    assert.equal(await g.owner.leave(), false); assert.equal(await g.owner.open(), false);
+    assert.equal(cleanupCalls, 1); assert.equal(g.sockets.length, 1); assert.equal(socket.sent.length, sent);
+    assert.equal(g.session.generation(), generation); assert.equal(g.session.active(), true);
+    assert.equal(g.session.can('admin:manage'), false); assert.equal(unauthorized, 0);
+  } finally {
+    fail = false; unsubscribe();
+    controller?.leave(); controller?.state.clear();
+    if (controller) for (const kind of ['profiles','captures','review']) controller.state[kind].committed(null);
+    media?.emptied(); socket?.close();
+    await Promise.allSettled([closing, reentry, g.owner.leave()]);
+  }
+});
+
+for (const last of ['people', 'mutation', 'media']) test('throwing view cleanup keeps '+last+' as an independent retirement barrier', async () => {
+  const { Media, review } = require('../mocks/voice_browser.cjs');
+  const peopleBody = deferred(), mutationBody = deferred(), peopleEntered = deferred(), mutationEntered = deferred();
+  const now = Date.now()/1000, batch = { ...profileBatch(), channel:'voices:review',
+    rows:[{ ...review(), observed_at:now, expires_at:now+60 }] };
+  const calls = []; let failCleanup = false, cleanupCalls = 0, acceptedPeople = 0;
+  const g = setup({
+    mount(controller) {
+      g.controllers.push(controller); g.mounted.add(controller);
+      return () => {
+        cleanupCalls++; g.mounted.delete(controller);
+        if (failCleanup) throw Error('synthetic voice view cleanup failure');
+        controller.leave();
+        for (const kind of ['profiles','captures','review']) controller.state[kind].committed(null);
+      };
+    },
+    fetch: async (path, options = {}) => {
+      calls.push([path, options.method || 'GET']);
+      if (path === '/api/admin/users') return { ok:true, status:200,
+        json:() => { peopleEntered.resolve(); return peopleBody.promise; } };
+      if (options.method === 'PUT') return { ok:true, status:200,
+        arrayBuffer:() => { mutationEntered.resolve(); return mutationBody.promise; } };
+      if (path.endsWith('/review')) return { ok:true, status:200,
+        json:async () => ({ connection_id:UUID, channel:'voices:review', snapshot:batch }) };
+      return { ok:true, status:200, json:async () => voiceEnvelope(path) };
+    },
+  });
+  let controller, media, loading, saving, closing, stopResidual;
+  try {
+    g.session.accept(adminIdentity);
+    const socket = await ready(g); controller = g.controllers[0];
+    assert.equal(controller.review(review().id), true); await controller.settled();
+    media = new Media(); controller.state.review.attachMedia(media);
+    controller.state.review.committed(batch.event_id);
+    // A failed renderer cleanup can also leave a view subscriber attached.
+    // It fails on profiles, before real controller.leave/reset can reach review or actions.
+    stopResidual = controller.state.profiles.subscribe(() => {
+      if (failCleanup) throw Error('synthetic residual voice view listener');
+    });
+    loading = controller.loadPeople(() => { acceptedPeople++; });
+    saving = controller.setPerson(UUID, 'null', 1, 0);
+    await peopleEntered.promise; await mutationEntered.promise;
+    const sent = socket.sent.length, requestCount = calls.length, generation = g.session.generation();
+    failCleanup = true;
+    closing = g.owner.leave();
+    let settled = false; closing.then(() => { settled = true; }, () => { settled = true; });
+    assert.equal(socket.readyState, 3); assert.equal(media.paused, true); assert.equal(media.isConnected, false);
+    assert.equal(controller.state.review.snapshot().length, 0);
+    assert.ok(controller.state.review.pendingRetirements() > 0);
+    await turn(); assert.equal(settled, false);
+    const release = {
+      people:() => peopleBody.resolve(personRows),
+      mutation:() => mutationBody.resolve(new ArrayBuffer(0)),
+      media:() => media.emptied(),
+    };
+    for (const kind of ['people','mutation','media']) {
+      if (kind === last) continue;
+      release[kind]();
+      if (kind === 'people') assert.equal(await loading, false);
+      if (kind === 'mutation') assert.equal(await saving, false);
+      if (kind === 'media') await controller.state.retired();
+      await turn(); assert.equal(settled, false);
+      assert.equal(socket.sent.length, sent); assert.equal(calls.length, requestCount);
+    }
+    release[last]();
+    assert.equal(await loading, false); assert.equal(await saving, false);
+    await controller.state.retired(); assert.equal(await closing, false);
+    assert.equal(acceptedPeople, 0); assert.equal(cleanupCalls, 1);
+    assert.equal(socket.sent.length, sent); assert.equal(calls.length, requestCount);
+    assert.equal(g.session.generation(), generation); assert.equal(g.session.can('admin:manage'), true);
+    assert.equal(await g.owner.open(), false); assert.equal(g.sockets.length, 1);
+  } finally {
+    peopleBody.resolve(personRows); mutationBody.resolve(new ArrayBuffer(0));
+    // Cleanup also joins a RED run where unmount threw before native retirement admission.
+    stopResidual?.();
+    controller?.leave(); media?.emptied();
+    await Promise.allSettled([loading, saving, closing].filter(Boolean));
+    await g.owner.leave();
+  }
+});
+
+test('remote reset remembers failed view cleanup and admits no ACK or retry before native retirement', async () => {
+  const { Media, review } = require('../mocks/voice_browser.cjs');
+  const now = Date.now()/1000, batch = { ...profileBatch(), channel:'voices:review',
+    rows:[{ ...review(), observed_at:now, expires_at:now+60 }] };
+  const timers = new Set(), calls = []; let failCleanup = false, cleanupCalls = 0, mounts = 0;
+  const g = setup({
+    mount(controller) {
+      mounts++; g.controllers.push(controller); g.mounted.add(controller);
+      return () => {
+        cleanupCalls++; g.mounted.delete(controller);
+        if (failCleanup) throw Error('synthetic reset cleanup failure');
+        controller.leave();
+        for (const kind of ['profiles','captures','review']) controller.state[kind].committed(null);
+      };
+    },
+    schedule(callback, delay) { const timer = { callback, delay }; timers.add(timer); return timer; },
+    cancel(timer) { timers.delete(timer); },
+    fetch: async (path, options = {}) => {
+      calls.push([path, options.method || 'GET']);
+      return { ok:true, status:200, json:async () => path.endsWith('/review')
+        ? { connection_id:UUID, channel:'voices:review', snapshot:batch } : voiceEnvelope(path) };
+    },
+  });
+  let controller, media;
+  try {
+    const socket = await ready(g); controller = g.controllers[0];
+    assert.equal(controller.review(review().id), true); await controller.settled();
+    media = new Media(); controller.state.review.attachMedia(media);
+    controller.state.review.committed(batch.event_id);
+    const sent = socket.sent.length, requestCount = calls.length, generation = g.session.generation();
+    failCleanup = true;
+    socket.event('message', { type:'live_reset', payload:{
+      id:'60000000-0000-4000-8000-000000000006', nonce:'70000000-0000-4000-8000-000000000007',
+    }, ts:'' });
+    await turn();
+    assert.equal(cleanupCalls, 1); assert.equal(socket.readyState, 3);
+    assert.equal(media.paused, true); assert.equal(media.isConnected, false);
+    assert.equal(controller.state.review.snapshot().length, 0);
+    assert.ok(controller.state.review.pendingRetirements() > 0);
+    assert.equal(socket.sent.length, sent); assert.equal(timers.size, 0);
+    assert.equal(mounts, 1); assert.equal(g.sockets.length, 1); assert.equal(calls.length, requestCount);
+    media.emptied(); await controller.state.retired(); await turn();
+    // Do not call leave before this assertion: that would hide an erroneous automatic retry.
+    assert.equal(timers.size, 0); assert.equal(socket.sent.length, sent);
+    assert.equal(cleanupCalls, 1); assert.equal(mounts, 1); assert.equal(calls.length, requestCount);
+    assert.equal(g.session.generation(), generation); assert.equal(g.session.can('voices:review'), true);
+    assert.equal(await g.owner.open(), false); assert.equal(g.sockets.length, 1);
+  } finally {
+    controller?.leave(); media?.emptied();
+    await g.owner.leave();
+  }
+});

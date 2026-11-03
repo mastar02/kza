@@ -70,33 +70,38 @@
       && session.generation() === context.generation && generation === context.generation;
     function unmount(context) {
       const stop = context.unmount; context.unmount = null;
-      if (stop) stop();
+      try { if (stop) stop(); } catch (error) { context.cleanupFailed = true; throw error; }
     }
     function seal(context) {
       if (context.sealed) return;
       context.sealed = true; context.phase = 'closed';
-      for (const abort of context.auxAborts || []) abort.abort();
-      unmount(context); context.controller?.leave();
-      context.socket?.close();
+      const attempt = operation => { try { operation(); } catch (_) { context.cleanupFailed = true; } };
+      for (const abort of context.auxAborts || []) attempt(() => abort.abort());
+      attempt(() => unmount(context)); attempt(() => context.controller?.leave());
+      // A residual view listener can throw before the next store is cleared.
+      for (const kind of ['profiles','captures','review']) attempt(() => context.state?.[kind].clear());
+      attempt(() => context.socket?.close());
     }
     function drain(context) {
       if (closing) return closing;
       seal(context);
       if (current === context) current = null;
       closing = (async () => {
-        try {
-          await context.frames;
-          if (context.controller && !await context.controller.reset()) throw Error('voice_retirement_incomplete');
-          await context.state?.retired();
-          await Promise.allSettled([...(context.checks || [])]);
-          context.controller?.dispose(); context.live?.dispose();
-          await context.state?.retired();
-          return true;
-        } catch {
+        const attempt = async operation => { try { await operation(); } catch (_) { context.cleanupFailed = true; } };
+        await attempt(() => context.frames);
+        await attempt(async () => { if (context.controller && !await context.controller.reset()) throw Error('voice_retirement_incomplete'); });
+        // reset can fail before it reaches its actual action/channel drain.
+        await attempt(() => context.controller?.settled());
+        await attempt(() => context.state?.retired());
+        await attempt(() => Promise.allSettled([...(context.checks || [])]));
+        await attempt(() => context.controller?.dispose()); await attempt(() => context.live?.dispose());
+        await attempt(() => context.state?.retired());
+        if (context.cleanupFailed) {
           // Retain the actual owner if withdrawal could not be established.
           blocked = context; report(context,'No se pudo confirmar la retirada de la vista anterior.');
           return false;
         }
+        return true;
       })();
       const pending = closing;
       pending.then(() => { if (closing === pending) closing = null; });
@@ -119,7 +124,7 @@
       if (closing && !await closing) return false;
       if (blocked || !wanted || !allowed() || session.generation() !== attempt || generation !== attempt || request !== requested || !viewCurrent(requested)) return false;
       if (current) return true;
-      const context = { generation: attempt, request:requested, sealed: false, phase: 'hello', frames: Promise.resolve(), unmount: null,
+      const context = { generation: attempt, request:requested, sealed: false, cleanupFailed: false, phase: 'hello', frames: Promise.resolve(), unmount: null,
         checks:new Set(), auxAborts:new Set(), includePerson:session.can('admin:manage') };
       current = context;
       try {
