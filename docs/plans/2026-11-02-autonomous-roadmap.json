@@ -666,7 +666,7 @@
         "H4"
       ],
       "dependency_level": "verified_local",
-      "status": "planned",
+      "status": "in_progress",
       "evidence": []
     },
     {
@@ -1070,10 +1070,14 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "verified_local",
+      "implementation_commits": [
+        "35b5829e6922041cfa56fde15f6c7ac502ae2c5f"
+      ],
+      "evidence": [
+        "data/autonomous-roadmap-20261102/t020/evidence.json"
+      ],
+      "next_action": "Verificado localmente en 35b5829: recuperación finita y publicación independientes, un controlador y una escritura real por vez, startup sin recovery rival, época sellada y drenaje antes de reanudar, catálogo global sin retries concurrentes. Pasan 23 casos nuevos, 166 cruzados y otros 89 de salud/propiedad/grafo; full 7145 más una xfail conocida, 851 archivos intactos y Ruff sin hallazgos. Preservar estos propietarios y hechos age_s/ever durante T021 y las tareas siguientes. C03/C19/C20, HA/WS, USB físico, soak y P2 conservan sus verificaciones pendientes."
     },
     {
       "id": "T021",
@@ -2284,11 +2288,11 @@
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
     "field_authorized": false,
-    "next_task": "T020",
+    "next_task": "T021",
     "last_verified_phase": "P1",
-    "last_verified_task": "T014",
+    "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T014/modality-reader-projections",
+    "last_verified_unit": "T020/recovery-heartbeat-ownership",
     "user_priority_after_admin_unit": "T047"
   }
 }
