@@ -16,6 +16,7 @@ import weakref
 import numpy as np
 import pytest
 
+from src.core import resource_retirement as resources
 from src.stt.parakeet_stt import ParakeetSTT
 from src.stt.whisper_fast import FastWhisperSTT
 from tools import benchmark_stt_ab as bench
@@ -159,7 +160,7 @@ class _SDK:
             def __getattr__(self, name):
                 return getattr(threading, name)
 
-        monkeypatch.setattr(bench, "threading", ThreadingProxy(), raising=False)
+        monkeypatch.setattr(resources, "threading", ThreadingProxy())
 
     def before(self, stage):
         self.events.append(stage)
@@ -321,7 +322,7 @@ def test_builder_registers_before_partial_initialization_and_retires(
     registered = []
     sdk.fail[kind + "-" + stage] = error_type
     with pytest.raises(BaseException) as failure:
-        with bench._BenchmarkSession() as session:
+        with resources.ResourceSession(error_prefix="benchmark") as session:
             def register(engine):
                 assert engine.stt._model is None
                 if kind == "whisper":
@@ -691,7 +692,7 @@ def test_initialization_system_exit_preserves_safe_code_without_retaining_pcm(
 ):
     sdk.fail[kind + "-" + stage] = lambda _message: SystemExit(exit_code)
     with pytest.raises(SystemExit) as failure:
-        with bench._BenchmarkSession() as session:
+        with resources.ResourceSession(error_prefix="benchmark") as session:
             sdk.build(kind, register=session.register)
     assert failure.value.code == (exit_code if type(exit_code) is int else 1)
     assert failure.value.__cause__ is None
@@ -746,7 +747,7 @@ def test_external_close_waits_actual_result_text_conversion(sdk, monkeypatch):
 
 
 def test_session_starts_both_closers_before_joining_first_held_model_drop(sdk):
-    session = bench._BenchmarkSession()
+    session = resources.ResourceSession(error_prefix="benchmark")
     session.__enter__()
     sdk.build("parakeet", register=session.register)
     sdk.build("whisper", register=session.register)
@@ -882,7 +883,8 @@ namespace = runpy.run_path(sys.argv[1])
 fault = sys.argv[2]
 leaves = namespace['_SDK'](pytest.MonkeyPatch())
 module = namespace['bench']
-session = module._BenchmarkSession()
+resources = namespace['resources']
+session = resources.ResourceSession(error_prefix="benchmark")
 engine = leaves.build('parakeet', register=session.register)
 adapter = engine.stt
 model = leaves.models['parakeet'][0]
@@ -897,7 +899,7 @@ engine._closer.start = counted_start
 
 # Arm faults only after wrapper, model and registry initialization succeeded.
 if fault in ('registry', 'reentry'):
-    original_lock = module._ENGINES_LOCK
+    original_lock = resources._OWNERS_LOCK
 
     class RegistryFault:
         def __enter__(self):
@@ -916,7 +918,7 @@ if fault in ('registry', 'reentry'):
         def __exit__(self, *args):
             return original_lock.__exit__(*args)
 
-    module._ENGINES_LOCK = RegistryFault()
+    resources._OWNERS_LOCK = RegistryFault()
 elif fault == 'condition':
     original_condition = engine._condition
 
@@ -990,8 +992,8 @@ if fault in ('registry', 'condition'):
     assert engine._handle.ident == 0
     assert not engine._confirmed
     assert engine.stt is adapter and model() is not None
-    assert engine in module._ENGINES
-    assert engine in module._FAILED_ENGINES
+    assert engine in resources._OWNERS
+    assert engine in resources._FAILED_OWNERS
     reason = 'admission_resolved_unconfirmed'
 else:
     assert state['start_calls'] == 1

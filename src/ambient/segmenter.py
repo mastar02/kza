@@ -13,7 +13,7 @@ from contextvars import Context
 import logging
 import threading
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import numpy as np
@@ -28,7 +28,17 @@ _SILERO_LOAD_LOCK = threading.Lock()
 class _SileroLease:
     def __init__(self, owner):
         self.owner = owner
+        self.thread = threading.current_thread()
         self.active = True
+
+@dataclass(eq=False)
+class _SileroCloseAdmission:
+    """Resolve one inline close attempt without retrying uncertain disposal."""
+
+    owner: threading.Thread
+    failure: str | None = "silero_close_failed"
+    finished: bool = False
+
 
 class _SileroLifecycle:
     """Retain this adapter's real operations without owning its callers' data."""
@@ -36,13 +46,20 @@ class _SileroLifecycle:
     def _silero_initialize(self) -> None:
         self._silero_condition = threading.Condition()
         self._silero_local = threading.local()
-        self._silero_active = 0
+        self._silero_leases: set[_SileroLease] = set()
         self._silero_sealed = False
         self._silero_close_started = False
         self._silero_close_owner = None
+        self._silero_close_admission: _SileroCloseAdmission | None = None
         self._silero_close_done = threading.Event()
         self._silero_failure = None
         self._silero_closing = None
+
+
+    @property
+    def _silero_active(self) -> int:
+        with self._silero_condition:
+            return sum(lease.active for lease in self._silero_leases)
 
     def _silero_current(self):
         lease = getattr(self._silero_local, "lease", None)
@@ -50,32 +67,43 @@ class _SileroLifecycle:
 
     @contextmanager
     def _silero_admit(self):
+        previous = getattr(self._silero_local, "lease", None)
         lease = self._silero_current()
         owned = lease is None
         if owned:
-            with self._silero_condition:
-                if self._silero_sealed:
-                    raise RuntimeError("silero_closed")
-                lease = _SileroLease(self)
-                self._silero_active += 1
-        previous = getattr(self._silero_local, "lease", None)
-        self._silero_local.lease = lease
+            lease = _SileroLease(self)
         try:
-            yield
-        finally:
-            self._silero_local.lease = previous
             if owned:
                 with self._silero_condition:
-                    lease.active = False
-                    self._silero_active -= 1
-                    self._silero_condition.notify_all()
+                    if self._silero_sealed:
+                        raise RuntimeError("silero_closed")
+                    self._silero_leases.add(lease)
+            self._silero_local.lease = lease
+            yield
+        finally:
+            if owned:
+                # Logical exit precedes TLS restoration and fallible notification.
+                # Nested borrowers never deactivate their parent's actual lease.
+                lease.active = False
+            try:
+                self._silero_local.lease = previous
+            finally:
+                if owned:
+                    with self._silero_condition:
+                        self._silero_leases.discard(lease)
+                        self._silero_condition.notify_all()
 
     def _silero_require_close_caller(self) -> None:
         if self._silero_current() is not None:
             raise RuntimeError("silero_close_from_worker")
+        caller = threading.current_thread()
         with self._silero_condition:
-            if (self._silero_close_owner is threading.current_thread()
-                    and not self._silero_close_done.is_set()):
+            # Publication may precede installing TLS; the identity still owns
+            # the operation and must not wait for itself during that boundary.
+            if any(lease.active and lease.thread is caller for lease in self._silero_leases):
+                raise RuntimeError("silero_close_from_worker")
+            admission = self._silero_close_admission
+            if admission is not None and admission.owner is caller and not admission.finished:
                 raise RuntimeError("silero_close_from_owner")
 
     def request_close(self) -> None:
@@ -85,31 +113,54 @@ class _SileroLifecycle:
             self._silero_condition.notify_all()
 
     def wait_closed(self) -> None:
-        """Drain actual operations and drop only this adapter's Python references."""
+        """Retire once, keeping metadata/SDK failure terminal and observable."""
         self._silero_require_close_caller()
-        self.request_close()
-        with self._silero_condition:
-            own_close = not self._silero_close_started
-            if own_close:
-                self._silero_close_started = True
-                self._silero_close_owner = threading.current_thread()
-        if own_close:
-            failure = None
-            try:
-                with self._silero_condition:
-                    while self._silero_active:
-                        self._silero_condition.wait()
-                self._silero_release_resources()
-            except BaseException:
-                failure = "silero_close_failed"
+        admission = None
+        try:
+            self.request_close()
             with self._silero_condition:
-                self._silero_failure = failure
-                self._silero_close_owner = None
-                self._silero_close_done.set()
-        else:
-            self._silero_close_done.wait()
-        if self._silero_failure is not None:
-            raise RuntimeError(self._silero_failure)
+                if self._silero_close_admission is None:
+                    admission = _SileroCloseAdmission(threading.current_thread())
+                    # The token publishes origin and responsibility atomically;
+                    # the compatibility flags never elect a second disposal.
+                    self._silero_close_admission = admission
+                    self._silero_close_started = True
+                    self._silero_close_owner = admission.owner
+            if admission is not None:
+                with self._silero_condition:
+                    while any(lease.active for lease in self._silero_leases):
+                        # Exit notification is advisory, including notify faults.
+                        self._silero_condition.wait(.05)
+                self._silero_release_resources()
+                admission.failure = None
+        except BaseException:
+            if admission is None or self._silero_close_admission is not admission:
+                raise
+            # Preserve the established fixed close-error contract. No uncertain
+            # metadata/disposal failure permits a second resource release.
+            admission.failure = "silero_close_failed"
+        finally:
+            if admission is not None and self._silero_close_admission is admission:
+                try:
+                    self._silero_failure = admission.failure
+                    self._silero_close_owner = None
+                    self._silero_close_done.set()
+                except BaseException:
+                    admission.failure = "silero_close_failed"
+                    self._silero_failure = admission.failure
+                finally:
+                    # This receipt also resolves an interrupted notification.
+                    # It confirms attempt resolution, not successful disposal.
+                    admission.finished = True
+        current = self._silero_close_admission
+        if current is None:
+            raise RuntimeError("silero_close_failed")
+        while not current.finished:
+            with self._silero_condition:
+                if not current.finished:
+                    self._silero_condition.wait(.05)
+        if current.failure is not None:
+            raise RuntimeError(current.failure)
 
     def close(self) -> None:
         """Synchronous retirement; async callers use begin_close or aclose."""
@@ -211,11 +262,18 @@ class _SileroPredictor(_SileroLifecycle):
             self._ready = False
 
 
-def make_silero_predictor() -> Callable[[np.ndarray], float]:
+def make_silero_predictor(
+    register: Callable[[Callable[[np.ndarray], float]], None] | None = None,
+) -> Callable[[np.ndarray], float]:
     """Create a separately owned recurrent predictor, loaded before returning.
 
     The callable/reset contract and whole-chunk exclusion remain reusable until
     terminal close. Retiring it releases only this adapter's Python references.
+
+    Args:
+        register: Optional metadata callback publishing the predictor to its
+            caller's owner before load. Failed registration or initialization
+            still retires the predictor through this factory's lifecycle.
     """
     import torch  # torch PRIMERO (regla orden imports CUDA del proyecto)
 
@@ -224,6 +282,8 @@ def make_silero_predictor() -> Callable[[np.ndarray], float]:
     exit_code = None
     try:
         try:
+            if register is not None:
+                register(predictor)
             predictor._load()
         except KeyboardInterrupt:
             failure = "interrupt"
@@ -243,7 +303,7 @@ def make_silero_predictor() -> Callable[[np.ndarray], float]:
         # Native admission/global/model locks have exited before cleanup.
         predictor.close()
     finally:
-        predictor = torch = None
+        predictor = torch = register = None
     # Raise fresh values after the SDK handler, without native cause/context.
     if failure == "interrupt":
         raise KeyboardInterrupt

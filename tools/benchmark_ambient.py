@@ -37,78 +37,189 @@ def synth_speech(seconds: float, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
     return sig.astype(np.float32)
 
 
+def _retire_and_raise(owner, failures) -> None:
+    """Leave raw exception handlers before retiring native resources."""
+    from src.core.resource_retirement import raise_errors
+
+    errors = []
+    try:
+        owner.close()
+    except BaseException as error:
+        errors.append(error)
+    raise_errors([item.exception() for item in failures] + errors)
+
+
+def _emit_reports(reports) -> None:
+    line = None
+    try:
+        for line in reports:
+            logger.info(line)
+    finally:
+        reports = line = None
+
+
 def bench_stt(model: str, device: str, wav: str | None, iterations: int) -> None:
-    import torch  # torch PRIMERO (regla orden imports CUDA del proyecto)
-    from src.stt.whisper_fast import FastWhisperSTT
+    """Measure an owned STT model and retire it before emitting the summary.
 
-    if wav:
-        import soundfile as sf
-        audio, sr = sf.read(wav, dtype="float32")
-        if audio.ndim > 1:
-            audio = audio[:, 0]
-        if sr != SAMPLE_RATE:
-            raise SystemExit(f"wav debe ser 16kHz (es {sr})")
-    else:
-        audio = synth_speech(8.0)
-        logger.info("⚠️  audio sintético: RTF válido, WER no medible")
+    Args:
+        model: Whisper model name or path.
+        device: Existing CPU or CUDA device selection.
+        wav: Optional 16 kHz source WAV; otherwise use synthetic speech.
+        iterations: Number of timed transcription calls.
+    """
+    from src.core.resource_retirement import ResourceFailure, ResourceOwner
 
-    stt = FastWhisperSTT(
-        model=model, device=device, compute_type="int8_float16",
-        language="es", beam_size=1, initial_prompt=None, vad_filter=False,
-    )
-    stt.load()
-    is_cuda = "cuda" in device
-    if is_cuda:
-        dev_idx = int(device.split(":")[-1]) if ":" in device else 0
-        torch.cuda.synchronize(dev_idx)
+    owner = ResourceOwner(owns_resource=True, error_prefix="ambient_stt",
+                          thread_name="ambient-stt-close")
+    failures = []
+    reports = validation = None
+    audio = stt = text = torch = sf = None
+    try:
+        try:
+            with owner.operation():
+                try:
+                    import torch  # torch PRIMERO (regla orden imports CUDA del proyecto)
+                    from src.stt.whisper_fast import FastWhisperSTT
 
-    # warmup
-    stt.transcribe(audio[: SAMPLE_RATE * 2])
+                    if wav:
+                        import soundfile as sf
+                        audio, sr = sf.read(wav, dtype="float32")
+                        if audio.ndim > 1:
+                            audio = audio[:, 0]
+                        if sr != SAMPLE_RATE:
+                            validation = f"wav debe ser 16kHz (es {sr})"
+                    else:
+                        audio = synth_speech(8.0)
+                        logger.info("⚠️  audio sintético: RTF válido, WER no medible")
 
-    dur_s = len(audio) / SAMPLE_RATE
-    times = []
-    for _ in range(iterations):
-        t0 = time.perf_counter()
-        text, _ = stt.transcribe(audio)
-        times.append(time.perf_counter() - t0)
-    rtf = float(np.median(times)) / dur_s
-    logger.info(f"STT {model} @ {device}")
-    logger.info(f"  audio={dur_s:.1f}s iter={iterations}")
-    logger.info(f"  latencia mediana={np.median(times)*1000:.0f}ms p95={np.percentile(times,95)*1000:.0f}ms")
-    logger.info(f"  RTF={rtf:.3f}  (continuo viable si <0.5; cómodo si <0.2)")
-    logger.info(f"  texto: {text[:80]!r}")
-    if is_cuda:
-        torch.cuda.synchronize(dev_idx)
-        logger.info(f"  VRAM torch allocated: {torch.cuda.memory_allocated(dev_idx)/2**20:.0f} MiB "
-                    f"(delta carga: ver nvidia-smi — ctranslate2 no reporta a torch)")
-        logger.info("  ⚠️ medir VRAM real con: nvidia-smi --query-compute-apps=pid,used_memory --format=csv")
+                    if validation is None:
+                        stt = FastWhisperSTT(
+                            model=model, device=device, compute_type="int8_float16",
+                            language="es", beam_size=1, initial_prompt=None, vad_filter=False,
+                        )
+                        owner.adopt(stt, owns_resource=True)
+                        stt.load()
+                        is_cuda = "cuda" in device
+                        if is_cuda:
+                            dev_idx = int(device.split(":")[-1]) if ":" in device else 0
+                            torch.cuda.synchronize(dev_idx)
+
+                        # warmup
+                        stt.transcribe(audio[: SAMPLE_RATE * 2])
+
+                        dur_s = len(audio) / SAMPLE_RATE
+                        times = []
+                        for _ in range(iterations):
+                            t0 = time.perf_counter()
+                            text, _ = stt.transcribe(audio)
+                            times.append(time.perf_counter() - t0)
+                        rtf = float(np.median(times)) / dur_s
+                        # Sampling/formatting stay in their original order with
+                        # the model alive; only actual report rendering moves.
+                        reports = [
+                            f"STT {model} @ {device}",
+                            f"  audio={dur_s:.1f}s iter={iterations}",
+                            f"  latencia mediana={np.median(times)*1000:.0f}ms p95={np.percentile(times,95)*1000:.0f}ms",
+                            f"  RTF={rtf:.3f}  (continuo viable si <0.5; cómodo si <0.2)",
+                            f"  texto: {text[:80]!r}",
+                        ]
+                        if is_cuda:
+                            torch.cuda.synchronize(dev_idx)
+                            reports.append(
+                                f"  VRAM torch allocated: {torch.cuda.memory_allocated(dev_idx)/2**20:.0f} MiB "
+                                f"(delta carga: ver nvidia-smi — ctranslate2 no reporta a torch)")
+                            reports.append("  ⚠️ medir VRAM real con: nvidia-smi --query-compute-apps=pid,used_memory --format=csv")
+                except BaseException as error:
+                    failures.append(ResourceFailure.capture("ambient_stt_failed", error))
+                finally:
+                    audio = stt = text = torch = sf = None
+        except BaseException as error:
+            failures.append(ResourceFailure.capture("ambient_stt_scope_failed", error))
+        # No SDK exception context is active across the closer invocation.
+        _retire_and_raise(owner, failures)
+        if validation is not None:
+            # Preserve the existing pre-model CLI diagnostic, not SDK payload.
+            raise SystemExit(validation)
+        _emit_reports(reports)
+    finally:
+        audio = stt = text = torch = sf = reports = None
 
 
 def bench_vad(iterations: int) -> None:
-    from src.ambient.segmenter import make_silero_predictor
+    """Measure an owned recurrent predictor and retire it before reporting.
 
-    predict = make_silero_predictor()
-    chunk = synth_speech(0.08)  # 1280 samples = chunk del pipeline
-    predict(chunk)  # warmup
-    t0 = time.perf_counter()
-    for _ in range(iterations):
-        predict(chunk)
-    per_chunk_ms = (time.perf_counter() - t0) / iterations * 1000
-    logger.info(f"Silero VAD: {per_chunk_ms:.2f} ms/chunk de 80ms "
-                f"({per_chunk_ms/80*100:.1f}% de un core — continuo viable si <50%)")
+    Args:
+        iterations: Number of timed 80 ms chunk predictions.
+    """
+    from src.core.resource_retirement import ResourceFailure, ResourceOwner
+
+    owner = ResourceOwner(owns_resource=True, error_prefix="ambient_vad",
+                          thread_name="ambient-vad-close")
+    failures = []
+    predict = chunk = register = reports = None
+    try:
+        try:
+            with owner.operation():
+                try:
+                    from src.ambient.segmenter import make_silero_predictor
+
+                    def register(predictor):
+                        owner.adopt(predictor, owns_resource=True,
+                                    caller_guard=predictor._silero_require_close_caller)
+
+                    # Factory registration happens before its eager _load.
+                    predict = make_silero_predictor(register=register)
+                    chunk = synth_speech(0.08)  # 1280 samples = chunk del pipeline
+                    predict(chunk)  # warmup
+                    t0 = time.perf_counter()
+                    for _ in range(iterations):
+                        predict(chunk)
+                    per_chunk_ms = (time.perf_counter() - t0) / iterations * 1000
+                    reports = [f"Silero VAD: {per_chunk_ms:.2f} ms/chunk de 80ms "
+                               f"({per_chunk_ms/80*100:.1f}% de un core — continuo viable si <50%)"]
+                except BaseException as error:
+                    failures.append(ResourceFailure.capture("ambient_vad_failed", error))
+                finally:
+                    predict = chunk = register = None
+        except BaseException as error:
+            failures.append(ResourceFailure.capture("ambient_vad_scope_failed", error))
+        _retire_and_raise(owner, failures)
+        _emit_reports(reports)
+    finally:
+        predict = chunk = register = reports = None
 
 
 def bench_doa(iterations: int) -> None:
-    from src.ambient.doa import DoAEstimator
+    """Measure synthetic DoA estimates and discard local segment references.
 
-    est = DoAEstimator()
-    seg = np.random.default_rng(7).normal(0, 0.1, size=(SAMPLE_RATE * 3, 6)).astype(np.float32)
-    est.estimate(seg)  # warmup
-    t0 = time.perf_counter()
-    for _ in range(iterations):
-        est.estimate(seg)
-    per_seg_ms = (time.perf_counter() - t0) / iterations * 1000
-    logger.info(f"DoA GCC-PHAT: {per_seg_ms:.1f} ms por segmento de 3s (CPU)")
+    Args:
+        iterations: Number of timed three-second segment estimates.
+    """
+    from src.core.resource_retirement import ResourceFailure, raise_errors
+
+    failures = []
+    est = seg = reports = None
+    try:
+        try:
+            from src.ambient.doa import DoAEstimator
+
+            est = DoAEstimator()
+            seg = np.random.default_rng(7).normal(0, 0.1, size=(SAMPLE_RATE * 3, 6)).astype(np.float32)
+            est.estimate(seg)  # warmup
+            t0 = time.perf_counter()
+            for _ in range(iterations):
+                est.estimate(seg)
+            per_seg_ms = (time.perf_counter() - t0) / iterations * 1000
+            reports = [f"DoA GCC-PHAT: {per_seg_ms:.1f} ms por segmento de 3s (CPU)"]
+        except BaseException as error:
+            failures.append(ResourceFailure.capture("ambient_doa_failed", error))
+        finally:
+            # No native DoA actor/close API exists: discard only local references.
+            est = seg = None
+        raise_errors([item.exception() for item in failures])
+        _emit_reports(reports)
+    finally:
+        est = seg = reports = None
 
 
 def main() -> None:

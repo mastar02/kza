@@ -313,7 +313,18 @@ async def failure_child(path, kind):
             assert detector._oww_model is sdk.models[0]() and sdk.models[0]() is not None
             if kind == 'multi':
                 owner = graph.wake_models.begin_close()
+                # Privacy can report another borrower's failure before this
+                # independent owner has observed all of its own drains.
+                async with asyncio.timeout(3):
+                    owner_results = await asyncio.gather(
+                        asyncio.shield(owner), return_exceptions=True,
+                    )
+                assert isinstance(owner_results[0], RuntimeError)
                 assert owner.done() and isinstance(owner.exception(), RuntimeError)
+                assert graph.wake_models.begin_close() is owner
+                assert graph.privacy.resource_status()['writer_lease']
+                assert graph.privacy.ledger._db is not None
+                assert detector._oww_model is sdk.models[0]() and sdk.models[0]() is not None
             assert observations['service_calls'] == 0
             print('failed_capture_retains_backend_and_privacy_lease_' + kind, flush=True)
         finally:
