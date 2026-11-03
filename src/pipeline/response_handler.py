@@ -91,6 +91,7 @@ class ResponseHandler:
         playback_drain_timeout_s: float | None = None,
         shutdown_timeout_s: float = 1.0,
         response_budgets: ResponseBudgets | None = None,
+        owns_response_cache: bool = False,
     ) -> None:
         if any(type(n) is not int or n <= 0 for n in
                (sentence_queue_capacity, sentence_max_chars, max_pending_responses)):
@@ -111,6 +112,7 @@ class ResponseHandler:
         self.shutdown_timeout_s = shutdown_timeout_s
         self.budgets = response_budgets or ResponseBudgets()
         self._closed = False
+        self._owned_response_caches: dict[int, ResponseCache] = {}
         self._shutdown_task: asyncio.Task | None = None
         self._controllers: dict[int, _Session] = {}
         self._workers: dict[int, _Session] = {}
@@ -132,6 +134,8 @@ class ResponseHandler:
         self._earcon_audio, self._earcon_sr = None, 24000
         self._generation = GenerationStream(llm)
         self._generation_sources: set[GenerationStream | GuardedGeneration] = {self._generation}
+        if owns_response_cache and response_cache is not None:
+            self.register_owned_response_cache(response_cache)
 
     @property
     def is_speaking(self) -> bool:
@@ -155,9 +159,30 @@ class ResponseHandler:
         if self.zone_manager is not None:
             self.zone_manager.set_active_zone(zone_id)
 
+    def register_owned_response_cache(self, cache: ResponseCache) -> None:
+        """Own a graph-created cache before build without activating it yet."""
+        if not issubclass(type(cache), ResponseCache):
+            raise ValueError("unsupported_owned_response_cache")
+        with self._ownership:
+            if self._closed:
+                raise RuntimeError("voice_delivery_closed")
+            self._owned_response_caches[id(cache)] = cache
+
+    def attach_response_cache(self, cache: ResponseCache, *, owned: bool = False) -> None:
+        """Activate a ready cache; injected caches are borrowed by default."""
+        with self._ownership:
+            if self._closed:
+                raise RuntimeError("voice_delivery_closed")
+            if owned and self._owned_response_caches.get(id(cache)) is not cache:
+                raise RuntimeError("response_cache_unregistered")
+            self._response_cache = cache
+
     def set_earcon(self, audio, sr: int) -> None:
-        """Inject a preloaded PCM earcon."""
-        self._earcon_audio, self._earcon_sr = audio, sr
+        """Inject a preloaded PCM earcon while delivery admission is open."""
+        with self._ownership:
+            if self._closed:
+                raise RuntimeError("voice_delivery_closed")
+            self._earcon_audio, self._earcon_sr = audio, sr
 
     def _session(self, zone_id, room_context, *, asynchronous: bool) -> _Session:
         if zone_id is None and room_context is not None:
@@ -269,18 +294,38 @@ class ResponseHandler:
 
     def _start_native(self, session: _Session, function, *args) -> asyncio.Task:
         exited = threading.Event()
+        pins = []
+        try:
+            with self._ownership:
+                for cache in self._owned_response_caches.values():
+                    pin = cache.retain_current_operation()
+                    if pin is not None:
+                        pins.append(pin)
+        except BaseException:
+            for pin in pins:
+                pin.release()
+            raise
+
+        def release_pins():
+            for pin in pins:
+                pin.release()
 
         def invoke_native():
             try:
                 return function(*args)
             finally:
                 exited.set()
+                # An uncertain/cancelled observer may already be terminal.
+                # Otherwise its completion callback supplies the full receipt.
+                if task.done():
+                    release_pins()
 
         async def invoke():
             # Register before an eager factory can dispatch actual native work.
             await asyncio.sleep(0)
             if session.cancelled.is_set():
                 exited.set()
+                release_pins()
                 return None
             return await self._native_work.run(invoke_native)
 
@@ -292,6 +337,7 @@ class ResponseHandler:
             except BaseException:
                 session.native_pending = False
                 operation.close()
+                release_pins()
                 raise
             self._native_tasks[task] = (session, exited)
 
@@ -300,8 +346,11 @@ class ResponseHandler:
                 completed.exception()
             with self._ownership:
                 if not exited.is_set():
+                    # A failed submission may still leave executable native
+                    # work. Only its actual finally can release those pins.
                     self._failed_barriers.add(session.scope_id)
                     return
+                release_pins()
                 self._native_tasks.pop(completed, None)
                 session.native_pending = False
                 self._workers.pop(id(session), None)
@@ -356,6 +405,30 @@ class ResponseHandler:
                     self._callback_scopes.pop(token, None)
                 raise
 
+    async def _retire_response_resources(self) -> None:
+        """Release output resources after every admitted native/hook borrower."""
+        with self._ownership:
+            owned = tuple(self._owned_response_caches.items())
+
+        async def close_cache(cache):
+            await cache.aclose()
+
+        results = await asyncio.gather(
+            *(close_cache(cache) for _, cache in owned), return_exceptions=True,
+        )
+        failures = []
+        with self._ownership:
+            for (identity, _), result in zip(owned, results):
+                if isinstance(result, BaseException):
+                    failures.append(result)
+                else:
+                    self._owned_response_caches.pop(identity)
+            if not failures:
+                self._response_cache = None
+                self._earcon_audio = None
+        if failures:
+            raise failures[0]
+
     async def _close_resources(self) -> None:
         # Register the retirement owner before an eager factory can dispatch.
         await asyncio.sleep(0)
@@ -380,6 +453,7 @@ class ResponseHandler:
                     self._native_closing.result()
                 if status['failed_barriers']:
                     raise RuntimeError('voice_retirement_unconfirmed')
+                await self._retire_response_resources()
                 return
             try:
                 await asyncio.sleep(0.005)
@@ -398,7 +472,11 @@ class ResponseHandler:
         if self._after_context.get():
             raise RuntimeError('voice_close_from_callback')
         with self._ownership:
+            for cache in self._owned_response_caches.values():
+                cache.require_close_caller()
             self._closed = True
+            for cache in self._owned_response_caches.values():
+                cache.request_close()
             sessions = tuple({**self._controllers, **self._workers,
                               **{id(s): s for s, _ in self._native_tasks.values()}}.values())
         for session in sessions:
@@ -883,14 +961,27 @@ class ResponseHandler:
             tokens = source.astream(prompt, max_tokens=max_tokens, temperature=temperature)
             iterator = tokens.__aiter__()
             read = None
+            read_finished_at = None
             failed = False
             remaining = self.budgets.generation_s
+
+            async def read_next():
+                nonlocal read_finished_at
+                try:
+                    return await anext(iterator)
+                finally:
+                    # Charge the provider until its actual read completes,
+                    # excluding later scheduling of this consumer continuation.
+                    read_finished_at = loop.time()
+
             try:
                 while True:
+                    read_finished_at = None
                     started = loop.time()
-                    read = track(asyncio.create_task(anext(iterator)))
+                    read = track(asyncio.create_task(read_next()))
                     done, _ = await asyncio.wait({read}, timeout=max(0, remaining))
-                    remaining -= loop.time() - started
+                    ended = read_finished_at if read_finished_at is not None else loop.time()
+                    remaining -= ended - started
                     if not done:
                         read.cancel()
                         raise ResponseTimedOut(ResponseStage.GENERATION)

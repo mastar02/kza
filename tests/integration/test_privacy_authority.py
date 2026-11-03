@@ -381,13 +381,17 @@ async def test_cancelled_initialization_keeps_cleanup_registered_until_native_ex
         await building
     privacy = instances[0]
     privacy._close_timeout_s = .02
+    close_owner = privacy.begin_close()
     try:
         with pytest.raises(WorkCloseTimeout):
             await stack.aclose()
+        assert privacy.begin_close() is close_owner and not close_owner.done()
         assert privacy.resource_status()['operations'] == 1
     finally:
         release.set()
-        await privacy.aclose()
+        # The bounded observer can time out again while initialization exits.
+        # Cleanup waits the retained owner, without assuming I/O fits in 20ms.
+        await asyncio.shield(close_owner)
     assert privacy.ledger._db is None and not privacy.resource_status()['writer_lease']
 
 

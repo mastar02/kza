@@ -213,11 +213,16 @@ class ApplicationGraph:
             from src.tts.response_cache import ResponseCache
 
             cache = ResponseCache(models.tts, synthesize_callback=responses.asynthesize)
+            registered = False
             try:
+                responses.register_owned_response_cache(cache)
+                registered = True
                 await cache.build()
-                responses._response_cache = cache
+                responses.attach_response_cache(cache, owned=True)
                 logger.info("Application response cache ready: %s phrases", cache.size())
             except Exception:
+                if not registered:
+                    await cache.aclose()
                 logger.warning("Application response cache unavailable; continuing without cache")
 
     async def _start_services(self) -> None:
