@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
@@ -33,10 +33,13 @@ async def owned_resource(resource):
         await finish_owned_close(asyncio.create_task(resource.close()))
 
 
+CloseTaskFactory = Callable[[Callable[[], Awaitable[None]]], asyncio.Task[None]]
+
 class OwnedHTTPBody(httpx.AsyncByteStream):
     """Protect the real byte-stream close behind HTTPX's early closed flag."""
 
-    def __init__(self, stream: httpx.AsyncByteStream):
+    def __init__(self, stream: httpx.AsyncByteStream, *, close_task_factory: CloseTaskFactory | None=None) -> None:
+        self._close_task_factory = close_task_factory
         self._stream = stream
         self._closing: asyncio.Task | None = None
 
@@ -46,7 +49,7 @@ class OwnedHTTPBody(httpx.AsyncByteStream):
 
     async def aclose(self) -> None:
         if self._closing is None:
-            self._closing = asyncio.create_task(self._stream.aclose())
+            self._closing = self._close_task_factory(self._stream.aclose) if self._close_task_factory is not None else asyncio.create_task(self._stream.aclose())
         await finish_owned_close(self._closing)
 
 
@@ -181,11 +184,13 @@ class HTTPGenerationStream:
 class HTTPGenerationClient:
     """One-request HTTPX client with explicit resource ownership and no retries."""
 
-    def __init__(self, base_url: str, *, api_key: str, timeout: float = 120,
-                 verify: bool = True, http_client: httpx.AsyncClient | None = None):
+    def __init__(self, base_url: str, *, api_key: str, timeout: float=120, verify: bool=True, http_client: httpx.AsyncClient | None=None, own_client: Callable[[HTTPGenerationClient], CloseTaskFactory] | None=None) -> None:
+        self._close_task_factory: CloseTaskFactory | None = None
         self._client = http_client or httpx.AsyncClient(verify=verify, timeout=timeout, follow_redirects=False)
-        self.base_url = base_url.rstrip("/") + "/"
-        self._headers = {"Authorization": "Bearer " + api_key, "Accept-Encoding": "identity"}
+        if own_client is not None:
+            self._close_task_factory = own_client(self)
+        self.base_url = base_url.rstrip('/') + '/'
+        self._headers = {'Authorization': 'Bearer ' + api_key, 'Accept-Encoding': 'identity'}
         self._models_request: httpx.Request | None = None
         self._completion_path: str | None = None
 
@@ -204,13 +209,13 @@ class HTTPGenerationClient:
 
     async def _send(self, request: httpx.Request) -> httpx.Response:
         response = await self._client.send(request, stream=True, follow_redirects=False)
-        response.stream = OwnedHTTPBody(response.stream)
+        response.stream = OwnedHTTPBody(response.stream, close_task_factory=self._close_task_factory)
         try:
             response.raise_for_status()
-            if response.headers.get("content-encoding", "identity").lower() != "identity":
-                raise ValueError("unsupported_generation_encoding")
+            if response.headers.get('content-encoding', 'identity').lower() != 'identity':
+                raise ValueError('unsupported_generation_encoding')
         except BaseException:
-            await finish_owned_close(asyncio.create_task(response.aclose()))
+            await finish_owned_close(self._close_task_factory(response.aclose) if self._close_task_factory is not None else asyncio.create_task(response.aclose()))
             raise
         return response
 
@@ -220,22 +225,22 @@ class HTTPGenerationClient:
             data = bytearray()
             if response.is_stream_consumed:
                 if len(response.content) > limit:
-                    raise ValueError("generation_metadata_limit")
+                    raise ValueError('generation_metadata_limit')
                 data.extend(response.content)
             else:
                 async for chunk in response.aiter_raw():
-                    if len(data)+len(chunk) > limit:
-                        raise ValueError("generation_metadata_limit")
+                    if len(data) + len(chunk) > limit:
+                        raise ValueError('generation_metadata_limit')
                     data.extend(chunk)
                     await asyncio.sleep(0)
             payload = json.loads(data)
             if not isinstance(payload, dict):
-                raise ValueError("invalid_generation_payload")
-            if "error" in payload:
-                raise RuntimeError("generation_provider_error")
+                raise ValueError('invalid_generation_payload')
+            if 'error' in payload:
+                raise RuntimeError('generation_provider_error')
             return payload
         finally:
-            await finish_owned_close(asyncio.create_task(response.aclose()))
+            await finish_owned_close(self._close_task_factory(response.aclose) if self._close_task_factory is not None else asyncio.create_task(response.aclose()))
 
     async def models(self) -> list[str]:
         """Read a bounded discovery payload without sending a prompt."""
@@ -286,11 +291,9 @@ class HTTPGenerationClient:
 
     async def stream(self, payload: dict, *, style: str, max_chars: int) -> HTTPGenerationStream:
         """Open the pinned completion endpoint exactly once."""
-        request = self._client.build_request("POST", self.base_url+self._completion_path,
-            headers=self._headers | {"Accept": "text/event-stream"}, json=payload)
+        request = self._client.build_request('POST', self.base_url + self._completion_path, headers=self._headers | {'Accept': 'text/event-stream'}, json=payload)
         response = await self._send(request)
-        if response.headers.get("content-type", "").partition(";")[0].strip().lower() != "text/event-stream":
-            await finish_owned_close(asyncio.create_task(response.aclose()))
-            raise ValueError("invalid_generation_content_type")
-        # JSON may escape a non-BMP codepoint as two six-byte surrogates.
-        return HTTPGenerationStream(response, style, min(1048576, max(65536, max_chars*12+4096)))
+        if response.headers.get('content-type', '').partition(';')[0].strip().lower() != 'text/event-stream':
+            await finish_owned_close(self._close_task_factory(response.aclose) if self._close_task_factory is not None else asyncio.create_task(response.aclose()))
+            raise ValueError('invalid_generation_content_type')
+        return HTTPGenerationStream(response, style, min(1048576, max(65536, max_chars * 12 + 4096)))

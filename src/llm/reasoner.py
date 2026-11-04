@@ -20,7 +20,8 @@ import httpx
 
 from src.core.egress import EgressPolicy, ProcessingDestination
 
-from src.llm.http_generation import HTTPGenerationClient, owned_resource as _owned_async_resource
+from src.llm.http_generation import HTTPGenerationClient
+from src.llm.http_reasoner_lifecycle import HttpReasonerLifecycle, _raise_failures as _http_raise_failures
 from src.llm.router_lifecycle import _FastRouterLifecycle
 
 
@@ -498,83 +499,80 @@ class HttpReasoner:
         self._last_metrics: dict | None = None
         self._metrics_tracker = None
         self._endpoint_id: str | None = None
+        self._http_lifecycle = HttpReasonerLifecycle(self)
 
     def _try_connect(self, base_url: str, preferred_model: str | None) -> tuple[object, str]:
-        """Conectar a un endpoint OpenAI-compat y resolver el model id.
-
-        Returns (client, resolved_model_id). Raises if endpoint doesn't respond.
-        """
-        self.policy.require_allowed(base_url)
-        from openai import OpenAI
-        client = OpenAI(
-            base_url=base_url, api_key=_resolve_api_key(base_url, self.api_key_env), timeout=self.timeout,
-            http_client=httpx.Client(follow_redirects=False, verify=self.verify_ssl),
-        )
-        models = client.models.list()
-        ids = [m.id for m in models.data]
-        if preferred_model and preferred_model in ids:
-            return client, preferred_model
-        if ids:
-            if preferred_model:
-                logger.warning(
-                    f"Modelo '{preferred_model}' no está en {base_url}; uso '{ids[0]}'"
-                )
-            return client, ids[0]
-        raise RuntimeError(f"Endpoint {base_url} no lista ningún modelo")
+        """Connect with a preallocated owner for every returned SDK/HTTP handle."""
+        with self._http_lifecycle.sync():
+            self.policy.require_allowed(base_url)
+            from openai import OpenAI
+            bundle = self._http_lifecycle.new_bundle()
+            api_key = models = ids = value = original = None
+            failures = []
+            try:
+                api_key = _resolve_api_key(base_url, self.api_key_env)
+                bundle.http = httpx.Client(follow_redirects=False, verify=self.verify_ssl)
+                bundle.sdk = OpenAI(base_url=base_url, api_key=api_key,
+                                    timeout=self.timeout, http_client=bundle.http)
+                models = bundle.sdk.models.list()
+                ids = [m.id for m in models.data]
+                if preferred_model and preferred_model in ids:
+                    value = bundle.sdk, preferred_model
+                elif ids:
+                    if preferred_model:
+                        logger.warning(f"Modelo '{preferred_model}' no está en {base_url}; uso '{ids[0]}'")
+                    value = bundle.sdk, ids[0]
+                else:
+                    raise RuntimeError(f"Endpoint {base_url} no lista ningún modelo")
+            except BaseException as error:
+                original = error
+            finally:
+                api_key = models = ids = None
+            if original is not None:
+                failures = self._http_lifecycle.retire_attempt(bundle)
+            try:
+                _http_raise_failures(failures, original)
+                return value
+            finally:
+                original = value = bundle = None
 
     def load(self):
-        try:
-            self._client, self._resolved_model = self._try_connect(self.base_url, self.model)
-            self._resolved_base_url = self.base_url
-            logger.info(
-                f"HttpReasoner OK → {self.base_url} (modelo: {self._resolved_model})"
-            )
-        except Exception as e:
-            logger.error(f"HttpReasoner no pudo contactar {self.base_url}: {e}")
-            raise
+        with self._http_lifecycle.sync():
+            try:
+                self._client, self._resolved_model = self._try_connect(self.base_url, self.model)
+                self._resolved_base_url = self.base_url
+                logger.info(f'HttpReasoner OK → {self.base_url} (modelo: {self._resolved_model})')
+            except Exception as e:
+                logger.error(f'HttpReasoner no pudo contactar {self.base_url}: {e}')
+                raise
 
-    def _create_completion(
-        self,
-        prompt: str,
-        *,
-        max_tokens: int,
-        temperature: float,
-        top_p: float | None = None,
-        stop=None,
-        stream: bool = False,
-    ):
+    def _create_completion(self, prompt: str, *, max_tokens: int, temperature: float, top_p: float | None=None, stop=None, stream: bool=False):
         """Llamar al endpoint según api_style. Devuelve el objeto resp del SDK.
 
-        top_p sólo se envía si viene explícito (None = no mandarlo, para no
-        alterar el wire-call del path legacy completions que no lo enviaba).
+            top_p sólo se envía si viene explícito (None = no mandarlo, para no
+            alterar el wire-call del path legacy completions que no lo enviaba).
 
-        Args:
-            prompt: Texto de entrada.
-            max_tokens: Tokens máximos de respuesta.
-            temperature: Temperatura de muestreo.
-            top_p: Top-p para nucleus sampling. None = no enviar al API.
-            stop: Secuencias de parada opcionales.
-            stream: Si True, activa streaming.
+            Args:
+                prompt: Texto de entrada.
+                max_tokens: Tokens máximos de respuesta.
+                temperature: Temperatura de muestreo.
+                top_p: Top-p para nucleus sampling. None = no enviar al API.
+                stop: Secuencias de parada opcionales.
+                stream: Si True, activa streaming.
 
-        Returns:
-            Objeto respuesta del SDK (o iterador si stream=True).
-        """
-        self.policy.require_allowed(self.base_url)
-        kwargs = {
-            "model": self._resolved_model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stream": stream,
-        }
-        if top_p is not None:
-            kwargs["top_p"] = top_p
-        if stop:
-            kwargs["stop"] = stop
-        if self.api_style == "chat":
-            return self._client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}], **kwargs
-            )
-        return self._client.completions.create(prompt=prompt, **kwargs)
+            Returns:
+                Objeto respuesta del SDK (o iterador si stream=True).
+            """
+        with self._http_lifecycle.sync():
+            self.policy.require_allowed(self.base_url)
+            kwargs = {'model': self._resolved_model, 'max_tokens': max_tokens, 'temperature': temperature, 'stream': stream}
+            if top_p is not None:
+                kwargs['top_p'] = top_p
+            if stop:
+                kwargs['stop'] = stop
+            if self.api_style == 'chat':
+                return self._client.chat.completions.create(messages=[{'role': 'user', 'content': prompt}], **kwargs)
+            return self._client.completions.create(prompt=prompt, **kwargs)
 
     def _extract_text(self, resp) -> str:
         """Texto de una respuesta no-streaming, según api_style.
@@ -607,37 +605,17 @@ class HttpReasoner:
         except (AttributeError, IndexError):
             return ""
 
-    def __call__(
-        self,
-        prompt: str,
-        max_tokens: int = 1024,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-        top_k: int = 40,
-        repeat_penalty: float = 1.1,
-        stop: list[str] | None = None,
-    ) -> dict:
+    def __call__(self, prompt: str, max_tokens: int=1024, temperature: float=0.7, top_p: float=0.9, top_k: int=40, repeat_penalty: float=1.1, stop: list[str] | None=None) -> dict:
         """Completions-style: devuelve {choices: [{text: ...}], usage: {...}}."""
-        if self._client is None:
-            self.load()
-        start = time.perf_counter()
-        resp = self._create_completion(
-            prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stop=stop,
-        )
-        text = self._extract_text(resp)
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.debug(f"HttpReasoner ({elapsed_ms:.0f}ms) {len(prompt)}chars → {len(text)}chars")
-        return {
-            "choices": [{"text": text}],
-            "usage": {
-                "prompt_tokens": getattr(resp.usage, "prompt_tokens", 0),
-                "completion_tokens": getattr(resp.usage, "completion_tokens", 0),
-            },
-        }
+        with self._http_lifecycle.sync():
+            if self._client is None:
+                self.load()
+            start = time.perf_counter()
+            resp = self._create_completion(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, stop=stop)
+            text = self._extract_text(resp)
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.debug(f'HttpReasoner ({elapsed_ms:.0f}ms) {len(prompt)}chars → {len(text)}chars')
+            return {'choices': [{'text': text}], 'usage': {'prompt_tokens': getattr(resp.usage, 'prompt_tokens', 0), 'completion_tokens': getattr(resp.usage, 'completion_tokens', 0)}}
 
     def generate(self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7) -> str:
         """Generar sólo el texto (drop-in de LLMReasoner.generate). Sync.
@@ -658,234 +636,214 @@ class HttpReasoner:
     def _new_async_client(self, base_url: str) -> HTTPGenerationClient:
         """Build transport objects off-loop without initializing SDK model types."""
         self.policy.require_allowed(base_url)
-        return HTTPGenerationClient(base_url, api_key=_resolve_api_key(base_url, self.api_key_env),
-                                    timeout=self.timeout, verify=self.verify_ssl)
+        return HTTPGenerationClient(base_url, api_key=_resolve_api_key(base_url, self.api_key_env), timeout=self.timeout, verify=self.verify_ssl, own_client=self._http_lifecycle.async_client_adopter())
 
     def _prepare_async_generation(self, base_url: str, style: str) -> _AsyncGenerationResources:
         """Prepare owned transport resources outside the capture loop."""
         resources = _AsyncGenerationResources(self._new_async_client(base_url))
         try:
             resources.client.prepare(style)
-        except Exception as error:
+        except BaseException as error:
             resources.error = error
         return resources
 
     @asynccontextmanager
     async def _async_generation_session(self, admission: Callable[[], bool] | None = None):
-        """Pin consent/configuration and retain constructor and client cleanup."""
-        if admission is not None and not admission():
-            raise asyncio.CancelledError
-        base_url, style, configured_model = self.base_url, self.api_style, self.model
-        self.policy.require_allowed(base_url)
-        if style not in {"chat", "completions"}:
-            raise ValueError("unsupported_api_style")
-        initializing = asyncio.create_task(asyncio.to_thread(self._prepare_async_generation, base_url, style))
-        try:
-            resources = await asyncio.shield(initializing)
-        except asyncio.CancelledError:
-            # Do not abandon a newly constructed async client in a worker.
-            async def discard_client() -> None:
-                resources = await initializing
-                await resources.client.close()
-
-            cleanup = asyncio.create_task(discard_client())
-            # A second cancellation must not abandon constructor-owned resources.
-            while not cleanup.done():
+        """Preserve request-local owners under the instance Task lifetime."""
+        owner = self._http_lifecycle
+        with owner.session() as lease:
+            initializing = initialization = cleanup = resources = preparing = discarding = None
+            try:
+                if admission is not None and not admission():
+                    raise asyncio.CancelledError
+                base_url, style, configured_model = self.base_url, self.api_style, self.model
+                self.policy.require_allowed(base_url)
+                if style not in {"chat", "completions"}:
+                    raise ValueError("unsupported_api_style")
+                initialization = owner.initialization(lease, self._prepare_async_generation, base_url, style)
+                preparing = initialization.prepare()
                 try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    continue
-            cleanup.result()
-            raise
-        async with _owned_async_resource(resources.client):
-            if resources.error is not None:
-                raise resources.error
-            self.policy.require_allowed(base_url)
-            model = self._resolved_model if (
-                self._resolved_base_url == base_url
-                and (configured_model is None or self._resolved_model == configured_model)
-            ) else None
-            if model is None:
-                ids = await resources.client.models()
-                if configured_model is not None:
-                    if configured_model not in ids:
-                        raise RuntimeError("configured_model_unavailable")
-                    model = configured_model
-                elif ids:
-                    model = ids[0]
-                else:
-                    raise RuntimeError("endpoint_has_no_model")
-            # A consent change while discovering models still blocks the prompt.
-            self.policy.require_allowed(base_url)
-            if (self.base_url, self.api_style, self.model) != (base_url, style, configured_model):
-                raise RuntimeError("reasoner_configuration_changed")
-            if admission is not None and not admission():
-                raise asyncio.CancelledError
-            yield resources.client, model, style
+                    initializing = asyncio.create_task(preparing)
+                except BaseException:
+                    owner.uncertain(initialization.reservation, preparing,
+                                    "http_reasoner_prepare_dispatch_unconfirmed")
+                    raise
+                try:
+                    await asyncio.shield(initializing)
+                    resources = initialization.resources
+                except BaseException as original:
+                    discarding = owner.discard(lease, initializing, initialization)
+                    try:
+                        cleanup = asyncio.create_task(discarding)
+                    except BaseException:
+                        owner.uncertain(initialization.discard_reservation, discarding,
+                                        "http_reasoner_discard_dispatch_unconfirmed")
+                        raise
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            continue
+                    failures = cleanup.result()
+                    _http_raise_failures(failures, original)
+                if resources is None:
+                    raise RuntimeError("http_reasoner_initialization_unconfirmed")
+                if resources.client is None:
+                    original, resources.error = resources.error, None
+                    try:
+                        raise original from None
+                    finally:
+                        original = None
+                async with owner.owned(lease, resources.client, initialization=initialization):
+                    if resources.error is not None:
+                        original, resources.error = resources.error, None
+                        try:
+                            raise original
+                        finally:
+                            original = None
+                    self.policy.require_allowed(base_url)
+                    model = self._resolved_model if (
+                        self._resolved_base_url == base_url
+                        and (configured_model is None or self._resolved_model == configured_model)
+                    ) else None
+                    if model is None:
+                        ids = await resources.client.models()
+                        if configured_model is not None:
+                            if configured_model not in ids:
+                                raise RuntimeError("configured_model_unavailable")
+                            model = configured_model
+                        elif ids:
+                            model = ids[0]
+                        else:
+                            raise RuntimeError("endpoint_has_no_model")
+                    self.policy.require_allowed(base_url)
+                    if (self.base_url, self.api_style, self.model) != (base_url, style, configured_model):
+                        raise RuntimeError("reasoner_configuration_changed")
+                    if admission is not None and not admission():
+                        raise asyncio.CancelledError
+                    yield resources.client, model, style
+            finally:
+                if resources is not None:
+                    resources.error = None
+                if initialization is not None:
+                    owner.release_initialization(initialization)
+                initializing = initialization = cleanup = resources = preparing = discarding = admission = owner = None
 
     def astream_with_admission(self, prompt: str, *, admission: Callable[[], bool], **kwargs) -> AsyncIterator[dict]:
         """Expose source admission at the actual native prompt-send boundary."""
         return self.astream(prompt, admission=admission, **kwargs)
 
-    async def astream(
-        self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7,
-        *, max_chars: int = 65536, admission: Callable[[], bool] | None = None,
-    ) -> AsyncIterator[dict]:
-        """Yield sanitized text deltas with native async I/O and owned resources.
-
-        The endpoint/model/style remain those configured for this request. A
-        terminal stop is required; truncation or premature EOF cannot become a
-        complete answer. Both stream and client close on cancellation, timeout,
-        failure. Consumers use contextlib.aclosing when stopping before EOF.
-        This method never retries a partial run.
-
-        Args:
-            prompt: Input already admitted by the caller's privacy policy.
-            max_tokens: Existing endpoint token budget, without changing model.
-            temperature: Sampling temperature.
-            max_chars: Maximum raw text retained, including hidden reasoning.
-
-        Yields:
-            Dictionaries containing token, accumulated text and chunk count.
-
-        Raises:
-            Exception: Denied egress, transport failure, idle timeout, incomplete
-                generation or invalid protocol; no held tail is flushed on error.
-        """
-        if type(max_chars) is not int or max_chars <= 0:
-            raise ValueError("invalid_generation_limit")
-        async with self._async_generation_session(admission) as (client, model, style):
-            options = {"model": model, "max_tokens": max_tokens, "temperature": temperature, "stream": True}
-            if style == "chat":
-                options["messages"] = [{"role": "user", "content": prompt}]
-            else:
-                options["prompt"] = prompt
-            stream = await client.stream(options, style=style, max_chars=max_chars)
-            raw = emitted = ""
-            count = received = 0
-            finish_reason = None
-            async with _owned_async_resource(stream):
-                iterator = stream.__aiter__()
+    async def astream(self, prompt: str, max_tokens: int = 1024,
+                      temperature: float = 0.7, *, max_chars: int = 65536,
+                      admission: Callable[[], bool] | None = None) -> AsyncIterator[dict]:
+        """Yield the unchanged SSE body without suspended context/TLS state."""
+        with self._http_lifecycle.task(streaming=True) as lease:
+            stream = chunk = original = None
+            failures = []
+            try:
+                stream = self._http_astream_body(prompt, max_tokens, temperature,
+                                                max_chars=max_chars, admission=admission)
+                self._http_lifecycle.attach_async_stream(lease, stream)
                 while True:
                     try:
-                        chunk = await asyncio.wait_for(anext(iterator), self.idle_timeout_s) if self.idle_timeout_s else await anext(iterator)
+                        chunk = await self._http_lifecycle.run_task(lease, anext(stream), consumer=True)
                     except StopAsyncIteration:
                         break
-                    except TimeoutError as error:
-                        from src.llm.idle_watchdog import IdleTimeoutError
-                        raise IdleTimeoutError(self.idle_timeout_s, received) from error
-                    received += 1
-                    if chunk.empty:
-                        continue
-                    if finish_reason is not None and (chunk.text or chunk.finish_reason is not None):
-                        raise ValueError("generation_after_finish")
-                    if chunk.finish_reason is not None:
-                        finish_reason = chunk.finish_reason
-                    token = chunk.text
-                    if type(token) is not str:
-                        raise ValueError("invalid_stream_text")
-                    if len(raw) + len(token) > max_chars:
-                        raise ValueError("generation_text_limit")
-                    raw += token
-                    answer = _strip_reasoning(raw)
-                    safe = answer[:-_THINK_HOLDBACK] if len(answer) > _THINK_HOLDBACK else ""
-                    if len(safe) > len(emitted):
-                        delta, emitted = safe[len(emitted):], safe
+                    yield chunk
+            except BaseException as error:
+                original = error
+            finally:
+                try:
+                    if stream is not None:
+                        await self._http_lifecycle.run_task(lease, stream.aclose(), consumer=True)
+                        self._http_lifecycle.retired_async_stream(lease)
+                except BaseException as error:
+                    failures.extend(self._http_lifecycle.record_failure("http_reasoner_async_stream_close_failed", error))
+                finally:
+                    stream = chunk = prompt = admission = None
+            try:
+                _http_raise_failures(failures, original)
+            finally:
+                original = None
+
+    def generate_stream(self, prompt: str, max_tokens: int = 1024,
+                        temperature: float = 0.7, **_ignored):
+        """Lazy SDK stream; retain source/iterator through actual cleanup."""
+        with self._http_lifecycle.stream() as lease:
+            source = iterator = chunk = tok = answer = safe = new = final = record = None
+            raw = emitted = ""
+            count = 0
+            exhausted = False
+            original = None
+            failures = []
+            try:
+                with self._http_lifecycle.entered(lease):
+                    if self._client is None:
+                        self.load()
+                    source = self._create_completion(prompt, max_tokens=max_tokens,
+                                                     temperature=temperature, stream=True)
+                    self._http_lifecycle.attach_source(lease, source)
+                    iterator = iter(source)
+                    self._http_lifecycle.attach_iterator(lease, iterator)
+                while True:
+                    with self._http_lifecycle.entered(lease):
+                        try:
+                            chunk = next(iterator)
+                        except StopIteration:
+                            exhausted = True
+                            break
+                        tok = self._extract_stream_delta(chunk)
+                        if not tok:
+                            continue
+                        raw += tok
+                        answer = _strip_reasoning(raw)
+                        safe = answer[:-_THINK_HOLDBACK] if len(answer) > _THINK_HOLDBACK else ""
+                        if len(safe) > len(emitted):
+                            new = safe[len(emitted):]
+                            emitted = safe
+                            count += 1
+                            record = {"token": new, "text": emitted, "token_count": count}
+                        else:
+                            record = None
+                    if record is not None:
+                        yield record
+                with self._http_lifecycle.entered(lease):
+                    final = _strip_reasoning(raw)
+                    if len(final) > len(emitted):
                         count += 1
-                        yield {"token": delta, "text": emitted, "token_count": count}
-                    # Buffered SSE bodies must not starve other asyncio work.
-                    await asyncio.sleep(0)
-                if finish_reason != "stop":
-                    raise RuntimeError("generation_truncated" if finish_reason == "length" else "generation_incomplete")
-                final = _strip_reasoning(raw)
-                if len(final) > len(emitted):
-                    count += 1
-                    yield {"token": final[len(emitted):], "text": final, "token_count": count}
+                        record = {"token": final[len(emitted):], "text": final, "token_count": count}
+                    else:
+                        record = None
+                if record is not None:
+                    yield record
+            except BaseException as error:
+                original = error
+            finally:
+                try:
+                    with self._http_lifecycle.entered(lease):
+                        failures.extend(self._http_lifecycle.close_sources(
+                            lease, source, iterator, exhausted=exhausted))
+                except BaseException as error:
+                    failures.extend(self._http_lifecycle.record_failure(
+                        "http_reasoner_stream_cleanup_failed", error))
+                finally:
+                    prompt = source = iterator = raw = emitted = chunk = tok = answer = safe = new = final = record = None
+                    _ignored = {}
+            try:
+                _http_raise_failures(failures, original)
+            finally:
+                original = None
 
-    def generate_stream(self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7, **_ignored):
-        """Streaming sync token-por-token (drop-in de LLMReasoner.generate_stream).
-
-        Yields dicts {"token", "text", "token_count"} para consumidores legacy.
-        Requiere un worker fuera del event loop. El worker de conversación usa
-        ``astream`` para que una lectura de red no congele la captura.
-
-        Args:
-            prompt: Texto de entrada.
-            max_tokens: Tokens máximos a generar.
-            temperature: Temperatura de muestreo.
-            **_ignored: Kwargs extra ignorados (top_p, top_k, etc.) para compat
-                con la firma completa de LLMReasoner.generate_stream.
-
-        Yields:
-            dict con claves "token" (fragmento actual), "text" (acumulado),
-            "token_count" (número de tokens emitidos hasta ahora).
-        """
-        if self._client is None:
-            self.load()
-        resp = self._create_completion(
-            prompt, max_tokens=max_tokens, temperature=temperature, stream=True
-        )
-        # Filtrado incremental del <think>: acumulamos el crudo y solo emitimos
-        # la porción de RESPUESTA (post-</think>). Retenemos un tail de
-        # _THINK_HOLDBACK chars para no emitir un tag partido en el borde de un
-        # chunk; al final se hace flush del resto. Sum de tokens emitidos ==
-        # _strip_reasoning(crudo completo) → el worker del slow-path recibe la
-        # respuesta limpia (sin chain-of-thought que el TTS hablaría).
-        raw = ""
-        emitted = ""
-        count = 0
-        for chunk in resp:
-            tok = self._extract_stream_delta(chunk)
-            if not tok:
-                continue
-            raw += tok
-            answer = _strip_reasoning(raw)
-            safe = answer[:-_THINK_HOLDBACK] if len(answer) > _THINK_HOLDBACK else ""
-            if len(safe) > len(emitted):
-                new = safe[len(emitted):]
-                emitted = safe
-                count += 1
-                yield {"token": new, "text": emitted, "token_count": count}
-        # Flush: emitir el resto de la respuesta final (incluye el tail retenido).
-        final = _strip_reasoning(raw)
-        if len(final) > len(emitted):
-            count += 1
-            yield {"token": final[len(emitted):], "text": final, "token_count": count}
-
-    async def complete(
-        self,
-        prompt: str,
-        max_tokens: int = 512,
-        temperature: float = 0.7,
-        **_ignored,
-    ) -> str:
-        """Return complete text using owned native HTTP or idle-limited SSE.
-
-        Both paths retain the configured endpoint/model and require a terminal
-        stop. Usage metrics come only from the nonstream provider response.
-        """
-        self._last_metrics = None
-        if self.idle_timeout_s:
-            async with aclosing(self.astream(prompt, max_tokens, temperature)) as stream:
-                return "".join([chunk["token"] async for chunk in stream]).strip()
-
-        async with self._async_generation_session() as (client, model, style):
-            if style == "chat" and self.policy.destination is ProcessingDestination.CLOUD:
-                logger.info("Cloud reasoning: sending ~%d chars to %s (model=%s)",
-                            len(prompt), urlparse(self.base_url).hostname, model)
-            options = {"model": model, "max_tokens": max_tokens, "temperature": temperature, "stream": False}
-            if style == "chat":
-                options["messages"] = [{"role": "user", "content": prompt}]
-            else:
-                options["prompt"] = prompt
-            t0 = time.perf_counter()
-            result = await client.complete(options, style=style, max_chars=65536)
-            elapsed_ms = (time.perf_counter() - t0) * 1000
-            if result.tokens is not None:
-                self._last_metrics = {"tokens": result.tokens, "ms": elapsed_ms}
-                if self._metrics_tracker is not None and self._endpoint_id and result.tokens > 0:
-                    self._metrics_tracker.record(self._endpoint_id, result.tokens, elapsed_ms)
-            return _strip_reasoning(result.text).strip()
+    async def complete(self, prompt: str, max_tokens: int = 512,
+                       temperature: float = 0.7, **_ignored) -> str:
+        """Complete under a Task identity, including actual request cleanup."""
+        with self._http_lifecycle.task() as lease:
+            try:
+                with self._http_lifecycle.task_entered(lease):
+                    return await self._http_complete_body(prompt, max_tokens, temperature, **_ignored)
+            finally:
+                prompt = None
+                _ignored = {}
 
     # Métodos no aplicables (LoRA, GGUF load) — stubs para backward compat
     def load_lora(self, *a, **kw):
@@ -900,6 +858,128 @@ class HttpReasoner:
             "base_url": self._resolved_base_url or self.base_url,
             "model": self._resolved_model,
         }
+
+    async def _http_complete_body(self, prompt: str, max_tokens: int=512, temperature: float=0.7, **_ignored) -> str:
+        """Return complete text using owned native HTTP or idle-limited SSE.
+
+            Both paths retain the configured endpoint/model and require a terminal
+            stop. Usage metrics come only from the nonstream provider response.
+            """
+        self._last_metrics = None
+        if self.idle_timeout_s:
+            async with aclosing(self.astream(prompt, max_tokens, temperature)) as stream:
+                return ''.join([chunk['token'] async for chunk in stream]).strip()
+        async with self._async_generation_session() as (client, model, style):
+            if style == 'chat' and self.policy.destination is ProcessingDestination.CLOUD:
+                logger.info('Cloud reasoning: sending ~%d chars to %s (model=%s)', len(prompt), urlparse(self.base_url).hostname, model)
+            options = {'model': model, 'max_tokens': max_tokens, 'temperature': temperature, 'stream': False}
+            if style == 'chat':
+                options['messages'] = [{'role': 'user', 'content': prompt}]
+            else:
+                options['prompt'] = prompt
+            t0 = time.perf_counter()
+            result = await client.complete(options, style=style, max_chars=65536)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            if result.tokens is not None:
+                self._last_metrics = {'tokens': result.tokens, 'ms': elapsed_ms}
+                if self._metrics_tracker is not None and self._endpoint_id and (result.tokens > 0):
+                    self._metrics_tracker.record(self._endpoint_id, result.tokens, elapsed_ms)
+            return _strip_reasoning(result.text).strip()
+
+    def request_close(self) -> None:
+        """Seal this instance against new generation and initialization."""
+        self._http_lifecycle.request_close()
+
+    def _http_require_close_caller(self) -> None:
+        """Reject callers that would wait for their own operation."""
+        self._http_lifecycle.require_close_caller()
+
+    def wait_closed(self) -> None:
+        """Wait off-loop for actual instance resource retirement."""
+        self._http_lifecycle.wait_closed()
+
+    def close(self) -> None:
+        """Retire this instance from a synchronous caller."""
+        self.wait_closed()
+
+    def begin_close(self) -> asyncio.Task:
+        """Start one retained asynchronous instance retirement."""
+        return self._http_lifecycle.begin_close()
+
+    async def aclose(self) -> None:
+        """Observe actual retirement through repeated caller cancellation."""
+        await self._http_lifecycle.aclose(self.begin_close())
+
+    async def _http_astream_body(self, prompt: str, max_tokens: int=1024, temperature: float=0.7, *, max_chars: int=65536, admission: Callable[[], bool] | None=None) -> AsyncIterator[dict]:
+        """Yield sanitized text deltas with native async I/O and owned resources.
+
+            The endpoint/model/style remain those configured for this request. A
+            terminal stop is required; truncation or premature EOF cannot become a
+            complete answer. Both stream and client close on cancellation, timeout,
+            failure. Consumers use contextlib.aclosing when stopping before EOF.
+            This method never retries a partial run.
+
+            Args:
+                prompt: Input already admitted by the caller's privacy policy.
+                max_tokens: Existing endpoint token budget, without changing model.
+                temperature: Sampling temperature.
+                max_chars: Maximum raw text retained, including hidden reasoning.
+
+            Yields:
+                Dictionaries containing token, accumulated text and chunk count.
+
+            Raises:
+                Exception: Denied egress, transport failure, idle timeout, incomplete
+                    generation or invalid protocol; no held tail is flushed on error.
+            """
+        if type(max_chars) is not int or max_chars <= 0:
+            raise ValueError('invalid_generation_limit')
+        async with self._async_generation_session(admission) as (client, model, style):
+            options = {'model': model, 'max_tokens': max_tokens, 'temperature': temperature, 'stream': True}
+            if style == 'chat':
+                options['messages'] = [{'role': 'user', 'content': prompt}]
+            else:
+                options['prompt'] = prompt
+            stream = await client.stream(options, style=style, max_chars=max_chars)
+            raw = emitted = ''
+            count = received = 0
+            finish_reason = None
+            async with self._http_lifecycle.owned(self._http_lifecycle.current_task_lease(), stream):
+                iterator = stream.__aiter__()
+                while True:
+                    try:
+                        chunk = await self._http_lifecycle.read_next(self._http_lifecycle.current_task_lease(), iterator, self.idle_timeout_s) if self.idle_timeout_s else await anext(iterator)
+                    except StopAsyncIteration:
+                        break
+                    except TimeoutError as error:
+                        from src.llm.idle_watchdog import IdleTimeoutError
+                        raise IdleTimeoutError(self.idle_timeout_s, received) from error
+                    received += 1
+                    if chunk.empty:
+                        continue
+                    if finish_reason is not None and (chunk.text or chunk.finish_reason is not None):
+                        raise ValueError('generation_after_finish')
+                    if chunk.finish_reason is not None:
+                        finish_reason = chunk.finish_reason
+                    token = chunk.text
+                    if type(token) is not str:
+                        raise ValueError('invalid_stream_text')
+                    if len(raw) + len(token) > max_chars:
+                        raise ValueError('generation_text_limit')
+                    raw += token
+                    answer = _strip_reasoning(raw)
+                    safe = answer[:-_THINK_HOLDBACK] if len(answer) > _THINK_HOLDBACK else ''
+                    if len(safe) > len(emitted):
+                        delta, emitted = (safe[len(emitted):], safe)
+                        count += 1
+                        yield {'token': delta, 'text': emitted, 'token_count': count}
+                    await asyncio.sleep(0)
+                if finish_reason != 'stop':
+                    raise RuntimeError('generation_truncated' if finish_reason == 'length' else 'generation_incomplete')
+                final = _strip_reasoning(raw)
+                if len(final) > len(emitted):
+                    count += 1
+                    yield {'token': final[len(emitted):], 'text': final, 'token_count': count}
 
 
 class FastRouter(_FastRouterLifecycle):

@@ -135,6 +135,27 @@ class TTSModelOwner(_ModelResourceOwner):
         super().__init__((KokoroTTS, DualTTS))
 
 
+class HttpReasonerOwner(_ModelResourceOwner):
+    """Retire factory-created HTTP reasoners after their actual borrowers."""
+
+    def __init__(self) -> None:
+        """Capture the supported HTTP backend type without acquiring it."""
+        from src.llm.reasoner import HttpReasoner
+        super().__init__((HttpReasoner,))
+
+    def begin_close(self) -> asyncio.Task:
+        """Guard the caller and retire only actual owned HTTP backends."""
+        if not self._models:
+            if self._closing is None:
+                async def empty():
+                    return None
+                self._closing = asyncio.create_task(empty(), context=Context())
+            return self._closing
+        for reasoner in self._models.values():
+            reasoner._http_require_close_caller()
+        return super().begin_close()
+
+
 class WakeModelOwner(_ModelResourceOwner):
     """Own graph-created wake detectors after their capture borrowers drain."""
 
@@ -196,6 +217,7 @@ class ApplicationGraph:
     tts_models: TTSModelOwner | None = None
     speaker_models: SpeakerModelOwner | None = None
     wake_models: WakeModelOwner | None = None
+    http_reasoners: HttpReasonerOwner | None = None
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     async def warmup(self) -> None:
@@ -299,6 +321,8 @@ class ApplicationGraph:
                 stopping.push_async_callback(self.speaker_models.aclose)
             if self.wake_models is not None:
                 stopping.push_async_callback(self.wake_models.aclose)
+            if self.http_reasoners is not None:
+                stopping.push_async_callback(self.http_reasoners.aclose)
             stopping.push_async_callback(self.pipeline.stop)
             if self.ambient_path is not None:
                 stopping.push_async_callback(_stop_task, self.ambient_path, ambient_task)

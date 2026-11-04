@@ -5,6 +5,7 @@ Entry point principal
 """
 
 import asyncio
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 import logging
 import os
@@ -17,8 +18,9 @@ from dotenv import load_dotenv
 
 from src.application import (
     ApplicationFactories, ApplicationGraph, ApplicationModels,
-    SpeakerModelOwner, STTExecutorOwner, TTSModelOwner, WakeModelOwner,
+    HttpReasonerOwner, SpeakerModelOwner, STTExecutorOwner, TTSModelOwner, WakeModelOwner,
 )
+from src.core.owned_work import OwnedBlockingWork
 from src.core.settings_schema import (
     DEFAULT_LOCAL_LLM_GATEWAY,
     check_unresolved_env_vars,
@@ -66,6 +68,7 @@ from src.audio.echo_suppressor import EchoSuppressor
 from src.audio.direction_observer import parse_direction_observation
 from src.conversation.follow_up_mode import FollowUpMode
 from src.orchestrator import MultiUserOrchestrator
+from src.orchestrator.context_manager import ContextManager
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
 from src.training.conversation_collector import build_conversation_collector
 from src.training.stt_correction_collector import build_stt_correction_collector
@@ -459,6 +462,8 @@ async def build_application(
 
     # LLM Reasoner — HTTP al kza-72b.service (default) o local GGUF (fallback)
     from src.llm import HttpReasoner
+    http_reasoners = HttpReasonerOwner()
+    shutdown.push_async_callback(http_reasoners.aclose)
     reasoner_config = config.get("reasoner", {})
     reasoner_mode = reasoner_config.get("mode", "http")
 
@@ -491,8 +496,9 @@ async def build_application(
                 destination=reasoner_config.get("destination", "cloud"),
                 cloud_consent=reasoner_config.get("cloud", {}).get("consent", False),
             )
+            http_reasoners.add_model(llm)
             try:
-                llm.load()
+                await asyncio.to_thread(llm.load)
                 info = llm.get_info()
                 logger.info(f"LLM reasoner (cloud) vía HTTP → {info['base_url']} modelo={info['model']}")
             except Exception as e:
@@ -617,6 +623,8 @@ async def build_application(
     # Privacy authority always exists; semantic recall remains optional.
     privacy_services = await build_privacy_services(config, shutdown=shutdown)
     privacy_services.add_borrower(chroma.begin_close)
+    privacy_services.add_borrower(http_reasoners.begin_close)
+    http_reasoners.add_borrower(chroma.begin_close)
     privacy_services.add_borrower(stt_executors.begin_close)
     privacy_services.add_borrower(tts_models.begin_close)
     if fast_router is not None:
@@ -1271,6 +1279,7 @@ async def build_application(
         model_locks=multi_room_loop.native_model_locks if multi_room_loop is not None else None,
     )
     stt_executors.add_borrower(command_processor.begin_close)
+    http_reasoners.add_borrower(command_processor.begin_close)
     speaker_models.add_borrower(command_processor.begin_close)
     shutdown.push_async_callback(command_processor.aclose)
 
@@ -1346,12 +1355,17 @@ async def build_application(
     # Response handler (TTS + streaming + zone routing)
     # El response_cache (S2) se inicializa post-warmup abajo y se inyecta via
     # attach_response_cache — esto mantiene el orden: DI → warmup → build cache.
+    def _register_voice_output(begin_close: Callable[[], asyncio.Task]) -> None:
+        """Capture the shared response drain before later builders run."""
+        tts_models.add_borrower(begin_close)
+        http_reasoners.add_borrower(begin_close)
+
     voice_services = build_voice_services(
         config, tts=tts, shutdown=shutdown, zone_manager=zone_manager, llm=llm,
         hooks=hooks, before_handler_warn_ms=self_warn_ms, user_manager=user_manager,
         ha_client=ha_client, home_actions=home_action_service, reminder_store=reminder_store,
         presence_detector=presence_detector, reminder_wake_event=reminder_wake_event,
-        register_output=tts_models.add_borrower,
+        register_output=_register_voice_output,
     )
     response_handler = voice_services.responses
     reminder_scheduler = voice_services.reminders
@@ -1488,8 +1502,9 @@ async def build_application(
                 cloud_consent=compaction_endpoint.cloud_consent,
                 timeout=compaction_cfg.get("timeout_s", 30.0),
             )
+            http_reasoners.add_model(compaction_reasoner)
             try:
-                compaction_reasoner.load()
+                await asyncio.to_thread(compaction_reasoner.load)
                 compactor = Compactor(
                     reasoner=compaction_reasoner,
                     max_summary_tokens=compaction_cfg.get("max_summary_tokens", 200),
@@ -1568,6 +1583,8 @@ async def build_application(
         )
 
         shutdown.push_async_callback(orchestrator.stop)
+        if isinstance(orchestrator.context_manager, ContextManager):
+            http_reasoners.add_borrower(orchestrator.context_manager.begin_close)
         context_erasure.attach_manager(orchestrator.context_manager)
 
     # Request router (command routing: orchestrated + legacy paths)
@@ -1641,6 +1658,9 @@ async def build_application(
     )
 
     shutdown.push_async_callback(request_router.aclose)
+    query_work = getattr(request_router, "_query_work", None)
+    if isinstance(query_work, OwnedBlockingWork):
+        http_reasoners.add_borrower(query_work.begin_close)
     context_erasure.attach_router(request_router)
     suggestion_erasure.attach_router(request_router)
 
@@ -1844,7 +1864,7 @@ async def build_application(
             ((dashboard.admin_work.begin_close,) if dashboard is not None else ())
             + ((multi_room_loop.begin_close,) if multi_room_loop is not None else ())
             + (stt_executors.begin_close, tts_models.begin_close, speaker_models.begin_close,
-               wake_models.begin_close)
+               wake_models.begin_close, http_reasoners.begin_close)
         ),
     )
 
@@ -1861,7 +1881,7 @@ async def build_application(
         warmup_models=_warmup_models, presence_detector=presence_detector,
         ambient_path=ambient_path, nightly_trainer=nightly_trainer,
         stt_executors=stt_executors, tts_models=tts_models, speaker_models=speaker_models,
-        wake_models=wake_models,
+        wake_models=wake_models, http_reasoners=http_reasoners,
     )
 
 
