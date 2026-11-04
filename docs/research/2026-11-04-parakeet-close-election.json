@@ -1,0 +1,678 @@
+{
+  "schema_version": 1,
+  "task": "T022",
+  "unit": "T022-U/parakeet-close-election",
+  "status": "verified_local",
+  "prepared_at_utc": "2026-11-04T14:56:51.642571+00:00",
+  "implementation_commit": "75b2878e1fe665447eb84d1428c02de9be85fcee",
+  "baseline_commit": "920b1f1e2d2436314ef1b65a33851303338ef812",
+  "private_evidence_root": "data/autonomous-roadmap-20261102/t022/u",
+  "scope": [
+    "One actual Thread-owned close token replaces the prior started/owner/Event/failure fields. Pending is None; sole producer publishes one immutable final result tuple.",
+    "Selection, disposal and finalization are covered by outer try; guarded notify and actual Condition exit precede final tuple publication. Followers wait on the real predicate with advisory50ms checks.",
+    "Existing actual active-Thread admission guard remains; pending elected owner cannot close itself. No disposer retry/re-election after the final failed token."
+  ],
+  "baseline_red": {
+    "scenario_count": 1,
+    "status": "genuine_existing_public_close_RED",
+    "observed": {
+      "scenario_count": 1,
+      "source_sha256": "4242cbc5148f431c0d9a94825c9c3fcabd01fc6cda8825babc5d75709aa37281",
+      "fault_invocations": 1,
+      "first_actual_thread_joined": true,
+      "first_result": {
+        "error_type": "KeyboardInterrupt",
+        "original_control": true,
+        "fixed_failure": false
+      },
+      "after_first": {
+        "sealed": true,
+        "published_owner_is_first": true,
+        "completion_observed": false,
+        "fixed_failure_observed": false,
+        "active_operations": 0,
+        "sentinel_retained": true,
+        "dispose_invocations": 0
+      },
+      "distinct_actual_threads": true,
+      "follower_actual_thread_joined": false,
+      "follower_actual_thread_alive": true,
+      "follower_result": {},
+      "follower_finished": false,
+      "actual_completion_wait_entered": true,
+      "actual_completion_wait_calls": 1,
+      "actual_completion_wait_returns": 0,
+      "dispose_invocations": 0,
+      "sentinel_retained": true,
+      "sdk_imported": false,
+      "limits": "Only metadata protocol on a preloaded synthetic sentinel. Pending-observer process exit is containment, not SDK/backend retirement or OS leakage evidence.",
+      "contract_passed": false
+    },
+    "terminal": {
+      "command": [
+        "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+        "/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/u/close-election-baseline.py"
+      ],
+      "started_at_utc": "2026-11-04T14:13:13.121585+00:00",
+      "finished_at_utc": "2026-11-04T14:13:15.261328+00:00",
+      "terminal_exit_code": 1,
+      "probe_sha256": "04b63983fc91fff3580d70fd8c1dcc30f82b7cd5c7f939acdc3300a4c1c72130"
+    },
+    "root_session_reported": 67266,
+    "classification": "Joined first invocation, actual second caller pending in delegated completion wait; no live elected producer and no disposal invocation.",
+    "limits": "One protocol failure, not SDK/backend or OS leak proof; process exit is containment only."
+  },
+  "green_replay": {
+    "status": "green_existing_public_close_replay",
+    "observed": {
+      "scenario_count": 1,
+      "source_sha256": "4f8f4e86df5825d6c817cca8c747505c76971e18c9c37521d28adbdb66abd1c2",
+      "fault_invocations": 1,
+      "first_actual_thread_joined": true,
+      "first_result": {
+        "error_type": "RuntimeError",
+        "original_control": false,
+        "fixed_failure": true
+      },
+      "after_first": {
+        "sealed": true,
+        "published_owner_is_first": true,
+        "completion_observed": true,
+        "fixed_failure_observed": true,
+        "active_operations": 0,
+        "sentinel_retained": true,
+        "dispose_invocations": 0
+      },
+      "distinct_actual_threads": true,
+      "follower_actual_thread_joined": true,
+      "follower_actual_thread_alive": false,
+      "follower_result": {
+        "error_type": "RuntimeError",
+        "original_control": false,
+        "fixed_failure": true
+      },
+      "follower_finished": true,
+      "actual_completion_wait_entered": false,
+      "actual_completion_wait_calls": 0,
+      "actual_completion_wait_returns": 0,
+      "dispose_invocations": 0,
+      "sentinel_retained": true,
+      "sdk_imported": false,
+      "limits": "Only metadata protocol on a preloaded synthetic sentinel. Pending-observer process exit is containment, not SDK/backend retirement or OS leakage evidence.",
+      "contract_passed": true
+    },
+    "terminal": {
+      "command": [
+        "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+        "/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/u/close-election-green.py"
+      ],
+      "started_at_utc": "2026-11-04T14:23:21.244871+00:00",
+      "finished_at_utc": "2026-11-04T14:23:21.457965+00:00",
+      "terminal_exit_code": 0,
+      "probe_sha256": "ffed4d1176dfb3a93368f632d8b044aef7e987b2c4bc2d280ed05a782c6073b2"
+    },
+    "adaptation": {
+      "baseline_probe_sha256": "04b63983fc91fff3580d70fd8c1dcc30f82b7cd5c7f939acdc3300a4c1c72130",
+      "candidate_probe_sha256": "ffed4d1176dfb3a93368f632d8b044aef7e987b2c4bc2d280ed05a782c6073b2",
+      "candidate_source_sha256": "4f8f4e86df5825d6c817cca8c747505c76971e18c9c37521d28adbdb66abd1c2",
+      "existing_public_close_invocation_AST_identical": true,
+      "Condition_publication_exit_fault_AST_identical": true,
+      "adaptations": [
+        "source guard",
+        "three actual receipt selectors retargeted from old state/Event to the selected token",
+        "removed obsolete Event forwarding; observe actual Condition.wait instead"
+      ],
+      "policy_delta": "First published-election control now returns fixed parakeet_close_failed, as does the follower. This is deliberate, not unchanged exception propagation.",
+      "scenario_count": 1,
+      "limits": "Same public caller sequence/conceptual publication fault, not a byte-identical harness; no compatibility aliases fabricated for old metadata."
+    },
+    "byte_identical_harness": false,
+    "scope": "Same public close caller sequence and post-publication Condition-exit fault AST; explicit source-guard, three receipt-selector and Event-to-real-Condition observation adaptations. No fake compatibility Event/flags and no identical-bytes/guard-only claim."
+  },
+  "exception_policy": {
+    "after_elected_publication": "The old first owner escaped its original KeyboardInterrupt and left a follower waiting. New elected-boundary metadata/control failure deliberately yields fixed RuntimeError(parakeet_close_failed) for owner and followers. It is not unchanged raw-control propagation.",
+    "before_election_and_follower_observation": "Original caller exception semantics are preserved when this caller never elected or while merely observing an existing owner.",
+    "stored_outcome": "Only actual Thread owner and None/final immutable tuple; original exception/payload/traceback is not stored in the token."
+  },
+  "retention_semantics": {
+    "failure_before_disposal": "Retain the actual original wrapper model reference and final failed token; no disposal call or retry.",
+    "failure_after_actual_release": "The model field may already be None when a later notification/Condition-exit metadata error converts the final result to failure. Do not claim universal retained model/backend handle, object destruction or allocator erasure in this path.",
+    "retry": "Neither early nor late failure permits another disposal attempt or replacement election."
+  },
+  "new_cases": {
+    "component_cases": 11,
+    "actual_factory_graph_cases": 1,
+    "new_unique_total": 12,
+    "component_scope": "The11-node new close-protocol module and its existing root component/retargeting receipts. No graph integration test or normal-full acceptance is included.",
+    "graph_scope": "Actual build_application/STTExecutorOwner/public close/AsyncExitStack and actual privacy ledger/writer lease with synthetic preloaded Parakeet sentinel; no actual onnx_asr/model load.",
+    "graph_corrected_terminal": {
+      "command": [
+        "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/integration/test_parakeet_close_failure.py",
+        "--junitxml=/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/u/graph-fixed.xml"
+      ],
+      "terminal_exit_code": 0
+    },
+    "graph_corrected_actual_XML_counts": {
+      "testcases": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "targeted_validation": {
+    "status": "passed_targeted_only",
+    "session_id": 39618,
+    "terminal_exit_code": 0,
+    "counts": {
+      "tests": 203,
+      "passed": 203,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "new_unique_cases": 12,
+    "all_T191_included": true,
+    "duration_seconds": 19.079,
+    "source_files": 972,
+    "script_files": 37,
+    "source_snapshot_sha256": "bafc26a242c89bab6bf8e849721a4d3d18e9eb704265eda0fbbc81328266877d",
+    "source_unchanged": true,
+    "normal_full_pending": true,
+    "artifacts_sha256": {
+      "targeted-initial.xml": "8742f79a34566aea762357d6548f92422c248a4960aaf8b71736a17d7f6c8911",
+      "targeted-initial.log": "0140db36a938d6f48d734265c597fd7cd9d757863aaeff375c61dc174dee42b3",
+      "targeted-initial-terminal.json": "1dedfc7119412b8f4175543c85159a5928e91fa21c9f271060ace8c0d8699cfc",
+      "source-snapshot.json": "bafc26a242c89bab6bf8e849721a4d3d18e9eb704265eda0fbbc81328266877d",
+      "source-scope-proof.json": "8c279cf0447f560234fe9439d02cc3bf0209f14e8578a599ddb32e2baf616f4f",
+      "green-replay-proof.json": "ceada58a4137d652fbb9ecdedc422fe7f3eedc9e7d0eb1a95386cac006489dee",
+      "graph-fixed.xml": "70008b3055a83ac14a6d73b09ff5850887105d0f97511529249f4357a4b32f10",
+      "graph-fixed.log": "5d85053b19ad7ce753d8ecc290347b71dc23f2966519b21e05fa69efd3f0d356"
+    }
+  },
+  "overlap_rule": "203 directed PASS already include all T191 and all12 new U cases (11 component +1 graph). Baseline/replay/attempts/earlier selections are not added to203. No full result is inferred.",
+  "preserved_initial_graph_failure": {
+    "classification": {
+      "run": "graph-initial.xml/log",
+      "terminal_exit_code": 1,
+      "classification": "new regression test row-shape assertion failure; not additional product RED",
+      "failed_assertion": "SELECT1 fetchone equality against tuple",
+      "source_application_unchanged_sha256": "4f8f4e86df5825d6c817cca8c747505c76971e18c9c37521d28adbdb66abd1c2",
+      "retained": "original test source, XML/log/terminal and pytest-436 failed graph state"
+    },
+    "corrected_oracle": "graph.privacy.ledger._db.execute('SELECT 1').fetchone()[0] == 1",
+    "interpretation": "Initial sqlite3.Row-versus-tuple oracle failure is a test assertion/setup issue, NOT a second product RED. Original source/XML/log/terminal and pytest-436 failed graph state remain preserved; application source hash stayed4f8. Only scalar oracle was corrected.",
+    "original_artifacts": [
+      "graph-initial-test-source.py",
+      "graph-initial.xml",
+      "graph-initial.log",
+      "graph-initial-terminal.json"
+    ]
+  },
+  "source_and_AST": {
+    "scope_proof": {
+      "candidate_source_sha256": "4f8f4e86df5825d6c817cca8c747505c76971e18c9c37521d28adbdb66abd1c2",
+      "ParakeetSTT_entire_AST_preserved": true,
+      "T_lease_entire_AST_preserved": true,
+      "T_admission_current_active_begin_close_aclose_AST_preserved": true,
+      "changed_lifecycle_methods": [
+        "_parakeet_initialize",
+        "_parakeet_require_close_caller",
+        "wait_closed"
+      ],
+      "added_class": "_ParakeetClose actual ownerThread and single immutable result",
+      "removed_fields": [
+        "_parakeet_close_started",
+        "_parakeet_close_owner",
+        "_parakeet_close_done",
+        "_parakeet_failure"
+      ],
+      "policy_delta": "After elected publication, metadata controls become fixed terminal parakeet_close_failed; before an election or in an observing follower they retain caller exception semantics. No retry of an elected failure.",
+      "notification_order": "guarded notification and Condition exit precede final tuple publication in nested finally; observers cannot see success then revoked failure",
+      "follower_wait": "Condition predicate, advisory50ms; no completion Event remains"
+    },
+    "cross_unit_proof": {
+      "added": [
+        "tests/integration/test_parakeet_close_failure.py",
+        "tests/unit/stt/test_parakeet_close_protocol.py"
+      ],
+      "changed": [
+        "src/stt/parakeet_stt.py"
+      ],
+      "removed": [],
+      "other_969_source_rows_identical": true,
+      "source_snapshot_sha256": "bafc26a242c89bab6bf8e849721a4d3d18e9eb704265eda0fbbc81328266877d"
+    },
+    "snapshot": {
+      "path": "data/autonomous-roadmap-20261102/t022/u/source-snapshot.json",
+      "sha256": "bafc26a242c89bab6bf8e849721a4d3d18e9eb704265eda0fbbc81328266877d"
+    },
+    "file_count": 972,
+    "script_count": 37,
+    "changed_source_and_new_test_hashes": {
+      "src/stt/parakeet_stt.py": "4f8f4e86df5825d6c817cca8c747505c76971e18c9c37521d28adbdb66abd1c2",
+      "tests/integration/test_parakeet_close_failure.py": "ad9032c51eb7b4526f31340d76d28ebc877c8b800f0f9dd8a5dff4b9babda667",
+      "tests/unit/stt/test_parakeet_close_protocol.py": "8299cfc05899c74af222e7fe030a04849abc607c381e05d08682dd43a6309777"
+    },
+    "preservation": "Whole ParakeetSTT class and complete T lease/admission/current/active/begin_close/aclose AST preserved. Only initialize/require_close_caller/wait_closed plus the new close-token class changed; other969 frozen rows identical."
+  },
+  "reviews": {
+    "baseline": {
+      "sha256": "1d3cb887896c6bbca37741ba0df63e0137b64247963ed66ad19767223d0619bc",
+      "keys": [
+        "schema_version",
+        "unit",
+        "status",
+        "approved_for_exact_existing_source_baseline",
+        "at_utc",
+        "inputs",
+        "scenario_count",
+        "scope",
+        "checks",
+        "predicted_old_source_shape_static_only",
+        "intended_future_policy_to_document",
+        "harness_risks",
+        "blockers",
+        "limits",
+        "only_write",
+        "navigation"
+      ]
+    },
+    "implementation": {
+      "binding": {
+        "sha256": "58c24eca16d29c031a5fc8fa4d9b7045d371d31fbb211414943abdc72608aaf2",
+        "keys": [
+          "schema_version",
+          "unit",
+          "status",
+          "approved",
+          "at_utc",
+          "inputs",
+          "independent_AST_checks",
+          "changed_lifecycle_methods",
+          "findings",
+          "reviewed_protocol",
+          "race_outcomes",
+          "important_retention_limit",
+          "runtime_attribution",
+          "future_probe_compatibility",
+          "remaining_limits",
+          "protected_boundaries",
+          "method"
+        ]
+      },
+      "approved": true
+    },
+    "component": {
+      "binding": {
+        "sha256": "1e68fae81efbefb1d99b8fdb55e89d05899a90360a3aec29617ac39ca2a0ff67",
+        "keys": [
+          "schema_version",
+          "unit",
+          "status",
+          "approved",
+          "blockers",
+          "scope",
+          "current_sha256",
+          "findings",
+          "retargeting",
+          "existing_component_receipt",
+          "limits"
+        ]
+      },
+      "approved": true
+    },
+    "graph": {
+      "binding": {
+        "sha256": "6fb8b784f36d8f6de1e1549f3cc4dc92064f1d73d0aeaecc8383049b47a9a915",
+        "keys": [
+          "schema_version",
+          "unit",
+          "review_kind",
+          "approved",
+          "status",
+          "test_path",
+          "test_symbol",
+          "read_method",
+          "source_binding",
+          "fixture_checks",
+          "termination_receipts",
+          "containment_checks",
+          "runtime_claims",
+          "limits"
+        ]
+      },
+      "approved": true,
+      "review_hash_limit": "No additional shell/metadata execution was performed in this review; receipt binds the named current Serena symbols and corrected SQL expression, not an independently calculated source hash. Root must bind its frozen file hash when consuming the review.",
+      "root_file_binding": {
+        "path": "tests/integration/test_parakeet_close_failure.py",
+        "sha256": "ad9032c51eb7b4526f31340d76d28ebc877c8b800f0f9dd8a5dff4b9babda667"
+      },
+      "scope_note": "The graph review did not independently calculate a file hash or observe terminal result; root review-bindings and frozen manifest bind the corrected source, while graph-fixed terminal/XML provide runtime evidence."
+    }
+  },
+  "full_validation": {
+    "schema_version": 1,
+    "unit": "T022-U/parakeet-close-election",
+    "status": "verified_normal_full",
+    "source_head": "75b2878e1fe665447eb84d1428c02de9be85fcee",
+    "source_snapshot_sha256": "bafc26a242c89bab6bf8e849721a4d3d18e9eb704265eda0fbbc81328266877d",
+    "source_files": 972,
+    "script_files": 37,
+    "source_unchanged": true,
+    "counts": {
+      "tests": 8046,
+      "passed": 8045,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "known_xfail": 1,
+      "ordinary_skipped": 0
+    },
+    "known_xfail": [
+      {
+        "classname": "tests.unit.nlu.test_regex_extractor",
+        "name": "test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]",
+        "skipped": [
+          {
+            "type": "pytest.xfail",
+            "message": "limitación documentada del regex puro"
+          }
+        ]
+      }
+    ],
+    "duration_seconds": 658.419,
+    "session_id": 26200,
+    "runner_terminal_exit_code": 0,
+    "pytest_terminal_exit_code": 0,
+    "started_at_utc": "2026-11-04T14:52:12.561956+00:00",
+    "finished_at_utc": "2026-11-04T15:03:16.910217+00:00",
+    "storage_preflight": {
+      "at_utc": "2026-11-04T14:52:12.561936+00:00",
+      "monotonic": 2464344.277637319,
+      "available_bytes": 79519571968,
+      "tmp_available_bytes": 79519571968,
+      "free_inodes": 48720367,
+      "tmp_free_inodes": 48720367
+    },
+    "minimum_available_bytes": 77959188480,
+    "storage_aborted": false,
+    "minimum_preflight_bytes": 5368709120,
+    "abort_floor_bytes": 536870912,
+    "interpreter": "Python 3.13.12",
+    "command": [
+      "timeout",
+      "1500",
+      "nice",
+      "-n",
+      "10",
+      "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+      "-m",
+      "pytest",
+      "tests",
+      "--junitxml=/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/u/normal-full-attempt-01/full.xml"
+    ],
+    "environment": {
+      "base": "inherited os.environ.copy; no complete historical environment equality claimed",
+      "explicit_updates": {
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "ANONYMIZED_TELEMETRY": "False"
+      }
+    },
+    "directed_coverage": {
+      "U": {
+        "unique_directed_cases": 203,
+        "all_in_full": true
+      },
+      "T": {
+        "unique_directed_cases": 191,
+        "all_in_full": true
+      },
+      "S": {
+        "unique_directed_cases": 715,
+        "all_in_full": true
+      },
+      "R": {
+        "unique_directed_cases": 664,
+        "all_in_full": true
+      }
+    },
+    "collection_scope": {
+      "prior_T_full_cases": 8034,
+      "all_prior_T_full_ids_preserved": true,
+      "current_ids_equal_prior_full_union_U_directed": true,
+      "new_U_case_ids": 12
+    },
+    "counts_not_additive": true,
+    "artifacts": {
+      "full-runner.py": {
+        "size": 2662,
+        "sha256": "17756d0adafbfedf9008803b5994fc16d42834bef6895525cbaaa19ec241872c"
+      },
+      "preparation-proof.json": {
+        "size": 489,
+        "sha256": "18b2158083265523d999d3d4d8120884d85ec22937e92e67b172cb4d59854772"
+      },
+      "source.json": {
+        "size": 166234,
+        "sha256": "bafc26a242c89bab6bf8e849721a4d3d18e9eb704265eda0fbbc81328266877d"
+      },
+      "source-post.json": {
+        "size": 166234,
+        "sha256": "bafc26a242c89bab6bf8e849721a4d3d18e9eb704265eda0fbbc81328266877d"
+      },
+      "full.log": {
+        "size": 2102280,
+        "sha256": "d542130cda19004165ea02b523117200edf3fde2fb7844cf15c8d7d71a0bd26f"
+      },
+      "full.xml": {
+        "size": 2285186,
+        "sha256": "c36eb76bf9acefd5f619c7a717b29c14b6bd13b82c75b92ae1babaa05467c5b9"
+      },
+      "full-status.json": {
+        "size": 652,
+        "sha256": "d9102c17d6fd8d0816ba398b90fd9c7e6036854ec114be8cece5c071fc857301"
+      },
+      "storage-telemetry.json": {
+        "size": 165521,
+        "sha256": "2c8e620834ac13d71c4db8d39b4b7209775472b7d1d8708557ffe771951ad058"
+      },
+      "terminal-receipt.json": {
+        "size": 249,
+        "sha256": "722b4df9dc51ccec035fd54b98c95ab209430d041d16c603fa1dc34539b4a6d2"
+      }
+    },
+    "limits": [
+      "Selected Parakeet close election and outcome publication only; no SDK-private/model allocation/physical erasure proof.",
+      "T022 remains in_progress, all21 criteria unaccepted; Wake/other families and historical failure causes remain open."
+    ],
+    "normal_full_verified": true,
+    "verification_receipt": "data/autonomous-roadmap-20261102/t022/u/normal-full-attempt-01/acceptance-proof.json",
+    "verification_receipt_sha256": "3047e4be6eea6d8a03f2f9db8b0d76a1c612bdf4d7daf8ff5c414d46909b49cb"
+  },
+  "product_boundaries": {
+    "objective_not_complete": true,
+    "T022_status": "in_progress",
+    "criteria_total": 21,
+    "criteria_accepted": [],
+    "criteria_remain_open": true,
+    "T020_P1_T047": "unchanged",
+    "authority_separation": "voice/person/account/consent/permission remain separate; voice identity never grants account permissions.",
+    "production": "No deployment, model SDK request, GPU/audio/USB/hardware or production mutation. No global inventory/private-copy erasure acceptance."
+  },
+  "excluded_boundaries": [
+    "Wake remains excluded.",
+    "Async Task-factory and borrowed-executor admission metadata is unchanged/outside U; no new actor/framework or global SDK lifetime guarantee.",
+    "Arbitrary repeated asynchronous interruption of innermost plain tuple publication, unknown private participants, unreturned constructor resources and physical/native allocation erasure are not certified."
+  ],
+  "artifacts": [
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/baseline-red-proof.json",
+      "sha256": "f5f1d5363a08f186eaf34ee70479b8214e18cc437b42d58f552c7323bfafe90d"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/baseline-terminal.json",
+      "sha256": "57cbfb3c334c1c90b25eeec0c3f18e1afc4140ea5bb74b2eb9daa4a4c36d1d21"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/baseline-review.json",
+      "sha256": "1d3cb887896c6bbca37741ba0df63e0137b64247963ed66ad19767223d0619bc"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/baseline-source.py",
+      "sha256": "4242cbc5148f431c0d9a94825c9c3fcabd01fc6cda8825babc5d75709aa37281"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/close-election-baseline.py",
+      "sha256": "04b63983fc91fff3580d70fd8c1dcc30f82b7cd5c7f939acdc3300a4c1c72130"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/close-election-green.py",
+      "sha256": "ffed4d1176dfb3a93368f632d8b044aef7e987b2c4bc2d280ed05a782c6073b2"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/green-adaptation-proof.json",
+      "sha256": "6aeb59ac6cb47440ec05719a39ce6b989b6fe41f3aacef139321b5efb026958e"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/green-replay-proof.json",
+      "sha256": "ceada58a4137d652fbb9ecdedc422fe7f3eedc9e7d0eb1a95386cac006489dee"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/green-replay.log",
+      "sha256": "abfd693b1571a863e3490c4886c4c2d15063b0cd1166c89610aa7ca5f342b5bd"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/green-terminal.json",
+      "sha256": "b800a77938fe27965684d60bb829a5d0ce7bc9565bb4f7cbc3cd05a1a76976aa"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/implementation-review.json",
+      "sha256": "58c24eca16d29c031a5fc8fa4d9b7045d371d31fbb211414943abdc72608aaf2"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/source-scope-proof.json",
+      "sha256": "8c279cf0447f560234fe9439d02cc3bf0209f14e8578a599ddb32e2baf616f4f"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/cross-unit-source-proof.json",
+      "sha256": "2229c4c9d0197e67eccee029c459b268ff02781a47b938ceccc825149d120be3"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/test-review.json",
+      "sha256": "1e68fae81efbefb1d99b8fdb55e89d05899a90360a3aec29617ac39ca2a0ff67"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/graph-test-review.json",
+      "sha256": "6fb8b784f36d8f6de1e1549f3cc4dc92064f1d73d0aeaecc8383049b47a9a915"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/review-bindings.json",
+      "sha256": "90efcf68958136d51f08bc218a4eb9db5c9be220773ae4bc96c277f8892546fa"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/graph-initial-classification.json",
+      "sha256": "754f4f3fbf40401b1b5a6ea587054e9e4af19889b5cfee8ffc8108f037963dc7"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/graph-initial-test-source.py",
+      "sha256": "ee035d1f26ccea17be885e5e71b5e1f595ec39b77f90182799abf0387b7ed7ea"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/graph-initial.xml",
+      "sha256": "d02d95311493253c573fdce9ca66769765c34586897fe9745dd6687ec329b571"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/graph-initial.log",
+      "sha256": "120d1b6c7d8ad74bff5ca5d6dcee14dc26896e39cddb03ab4b092fc1d53587d4"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/graph-initial-terminal.json",
+      "sha256": "f89bc7c7e515f6a8522dc4a24ef154a2b7a2823be5707f06cfa37535afd40e8d"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/graph-fixed.xml",
+      "sha256": "70008b3055a83ac14a6d73b09ff5850887105d0f97511529249f4357a4b32f10"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/graph-fixed.log",
+      "sha256": "5d85053b19ad7ce753d8ecc290347b71dc23f2966519b21e05fa69efd3f0d356"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/graph-fixed-terminal.json",
+      "sha256": "8f92e82a6bc4022a14b511914f7fb3b35ed13360713f4f74a57486af8e9ba2d2"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/component-initial.xml",
+      "sha256": "16d5ec872b18b8dd98f90cd719aa7cfc8112b08649f5e1d9cb5fd24430cfc0af"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/component-initial-terminal.json",
+      "sha256": "8cfb550ff3326fc042349f8c3e494ab560184d6065a6d9b0b81fed9a56a7acbb"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/targeted-proof.json",
+      "sha256": "fc5910e62efcf1a8648b4ab3984b4b20147db6a6e88e1aae18815d74d16fa795"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/targeted-initial.xml",
+      "sha256": "8742f79a34566aea762357d6548f92422c248a4960aaf8b71736a17d7f6c8911"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/targeted-initial.log",
+      "sha256": "0140db36a938d6f48d734265c597fd7cd9d757863aaeff375c61dc174dee42b3"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/targeted-initial-terminal.json",
+      "sha256": "1dedfc7119412b8f4175543c85159a5928e91fa21c9f271060ace8c0d8699cfc"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/source-snapshot.json",
+      "sha256": "bafc26a242c89bab6bf8e849721a4d3d18e9eb704265eda0fbbc81328266877d"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/code-staged-proof.json",
+      "sha256": "aaf77898ee18d9748387f8ea3f6bb47b18c05b8d5ad1b20865dee504b1064ee8"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/code-delivery.json",
+      "sha256": "54738b0263718de5923ecc3576ff46d8b6273c9d6753d2bb1692384cb2c59091"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/u/normal-full-attempt-01/acceptance-proof.json",
+      "sha256": "3047e4be6eea6d8a03f2f9db8b0d76a1c612bdf4d7daf8ff5c414d46909b49cb"
+    }
+  ],
+  "source_delivery_history": {
+    "status": "source_committed_and_pushed_targeted_green_full_running",
+    "implementation_commit": "75b2878e1fe665447eb84d1428c02de9be85fcee",
+    "targeted_cases": 203,
+    "new_unique_cases": 12,
+    "push_session": 6161,
+    "push_terminal_exit_code": 0,
+    "full_session": 26200,
+    "full_pending": true,
+    "scope": "Parakeet close election/notification/outcome publication only; T admission and whole ParakeetSTT protected",
+    "wake_excluded": true
+  },
+  "historical_template_notes": [
+    "Early unit-plan status baseline_preparation and reviewer runtime-pending statements are historical checkpoints, not overwritten by later directed receipts.",
+    "Keep failed/new-test oracle attempts and every root receipt immutable. Current full remains pending until terminal acceptance gates."
+  ],
+  "history_note": "The original private template, source_delivery_history and directed normal_full_pending flag retain earlier checkpoint attribution. The current normal full is separately verified in full_validation. Earlier attempts are not rewritten or added to counts.",
+  "verified_at_utc": "2026-11-04T15:08:09.009065+00:00",
+  "prepared_from_template_sha256": "618052a78232461e57edb815254eead4a657515948b5747ecf61002bdf8f5134",
+  "ruff": {
+    "paths": [
+      "src/stt/parakeet_stt.py",
+      "tests/unit/stt/test_parakeet_close_protocol.py",
+      "tests/integration/test_parakeet_close_failure.py"
+    ],
+    "terminal_exit_code": 0,
+    "findings": 0,
+    "receipt": "data/autonomous-roadmap-20261102/t022/u/ruff-final.json"
+  }
+}
