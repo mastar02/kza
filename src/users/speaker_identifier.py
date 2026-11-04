@@ -31,22 +31,37 @@ class SpeakerMatch:
 class _SpeakerLease:
     def __init__(self, owner):
         self.owner = owner
+        self.thread = threading.current_thread()
         self.active = True
 
 
 class _SpeakerLifecycle:
     """Retain this adapter's real operations without owning its callers' data."""
 
+    @dataclass(eq=False)
+    class _CloseAdmission:
+        """Resolve one close attempt without retrying uncertain disposal."""
+
+        owner: threading.Thread
+        failure: str | None = "speaker_close_failed"
+        finished: bool = False
+
     def _speaker_initialize(self) -> None:
         self._speaker_condition = threading.Condition()
         self._speaker_local = threading.local()
-        self._speaker_active = 0
+        self._speaker_leases: set[_SpeakerLease] = set()
         self._speaker_sealed = False
         self._speaker_close_started = False
         self._speaker_close_owner = None
+        self._speaker_close_admission: _SpeakerLifecycle._CloseAdmission | None = None
         self._speaker_close_done = threading.Event()
         self._speaker_failure = None
         self._speaker_closing = None
+
+    @property
+    def _speaker_active(self) -> int:
+        with self._speaker_condition:
+            return sum(lease.active for lease in self._speaker_leases)
 
     def _speaker_current(self):
         lease = getattr(self._speaker_local, "lease", None)
@@ -54,32 +69,43 @@ class _SpeakerLifecycle:
 
     @contextmanager
     def _speaker_admit(self):
+        previous = getattr(self._speaker_local, "lease", None)
         lease = self._speaker_current()
         owned = lease is None
         if owned:
-            with self._speaker_condition:
-                if self._speaker_sealed:
-                    raise RuntimeError("speaker_closed")
-                lease = _SpeakerLease(self)
-                self._speaker_active += 1
-        previous = getattr(self._speaker_local, "lease", None)
-        self._speaker_local.lease = lease
+            lease = _SpeakerLease(self)
         try:
-            yield
-        finally:
-            self._speaker_local.lease = previous
             if owned:
                 with self._speaker_condition:
-                    lease.active = False
-                    self._speaker_active -= 1
-                    self._speaker_condition.notify_all()
+                    if self._speaker_sealed:
+                        raise RuntimeError("speaker_closed")
+                    self._speaker_leases.add(lease)
+            self._speaker_local.lease = lease
+            yield
+        finally:
+            if owned:
+                # Logical exit precedes TLS restoration and fallible notification.
+                # Nested borrowers never deactivate their parent's actual lease.
+                lease.active = False
+            try:
+                self._speaker_local.lease = previous
+            finally:
+                if owned:
+                    with self._speaker_condition:
+                        self._speaker_leases.discard(lease)
+                        self._speaker_condition.notify_all()
 
     def _speaker_require_close_caller(self) -> None:
         if self._speaker_current() is not None:
             raise RuntimeError("speaker_close_from_worker")
+        caller = threading.current_thread()
         with self._speaker_condition:
-            if (self._speaker_close_owner is threading.current_thread()
-                    and not self._speaker_close_done.is_set()):
+            # Publication may precede installing TLS; the identity still owns
+            # the operation and must not wait for itself during that boundary.
+            if any(lease.active and lease.thread is caller for lease in self._speaker_leases):
+                raise RuntimeError("speaker_close_from_worker")
+            admission = self._speaker_close_admission
+            if admission is not None and admission.owner is caller and not admission.finished:
                 raise RuntimeError("speaker_close_from_owner")
 
     def request_close(self) -> None:
@@ -89,31 +115,53 @@ class _SpeakerLifecycle:
             self._speaker_condition.notify_all()
 
     def wait_closed(self) -> None:
-        """Drain actual operations and drop only this adapter's Python references."""
+        """Retire once, keeping metadata/SDK failure terminal and observable."""
         self._speaker_require_close_caller()
-        self.request_close()
-        with self._speaker_condition:
-            own_close = not self._speaker_close_started
-            if own_close:
-                self._speaker_close_started = True
-                self._speaker_close_owner = threading.current_thread()
-        if own_close:
-            failure = None
-            try:
-                with self._speaker_condition:
-                    while self._speaker_active:
-                        self._speaker_condition.wait()
-                self._speaker_release_resources()
-            except BaseException:
-                failure = "speaker_close_failed"
+        admission = self._CloseAdmission(threading.current_thread())
+        try:
+            self.request_close()
             with self._speaker_condition:
-                self._speaker_failure = failure
-                self._speaker_close_owner = None
-                self._speaker_close_done.set()
-        else:
-            self._speaker_close_done.wait()
-        if self._speaker_failure is not None:
-            raise RuntimeError(self._speaker_failure)
+                if self._speaker_close_admission is None:
+                    # Identity alone elects disposal; publication and lock exit
+                    # are covered before compatibility metadata can fail.
+                    self._speaker_close_admission = admission
+                    self._speaker_close_started = True
+                    self._speaker_close_owner = admission.owner
+            if self._speaker_close_admission is admission:
+                with self._speaker_condition:
+                    while any(lease.active for lease in self._speaker_leases):
+                        # Notifications are advisory, including cleanup faults.
+                        self._speaker_condition.wait(.05)
+                self._speaker_release_resources()
+                admission.failure = None
+        except BaseException:
+            if self._speaker_close_admission is not admission:
+                raise
+            # Preserve the established fixed close-error contract. An uncertain
+            # metadata/disposal failure never admits a second resource release.
+            admission.failure = "speaker_close_failed"
+        finally:
+            if self._speaker_close_admission is admission:
+                try:
+                    self._speaker_failure = admission.failure
+                    self._speaker_close_owner = None
+                    self._speaker_close_done.set()
+                except BaseException:
+                    admission.failure = "speaker_close_failed"
+                    self._speaker_failure = admission.failure
+                finally:
+                    # This is attempt resolution, including notify failure;
+                    # it is not an acknowledgement of successful disposal.
+                    admission.finished = True
+        current = self._speaker_close_admission
+        if current is None:
+            raise RuntimeError("speaker_close_failed")
+        while not current.finished:
+            with self._speaker_condition:
+                if not current.finished:
+                    self._speaker_condition.wait(.05)
+        if current.failure is not None:
+            raise RuntimeError(current.failure)
 
     def close(self) -> None:
         """Synchronous retirement; async callers use begin_close or aclose."""

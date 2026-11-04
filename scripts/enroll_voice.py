@@ -22,15 +22,21 @@ import logging
 import sys
 import time
 import wave
+from contextlib import ExitStack
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from src.core.resource_retirement import (  # noqa: E402
+    ResourceFailure, ResourceOwner, ResourceSession, raise_errors,
+)
 from src.users.speaker_identifier import SpeakerIdentifier  # noqa: E402
 
 logging.basicConfig(
@@ -112,6 +118,219 @@ def intra_user_consistency(embeddings: list[np.ndarray]) -> float:
     return float(np.mean(sims)) if sims else 0.0
 
 
+@dataclass
+class _EnrollmentVAD:
+    """Hold only this direct-Hub invocation's model, utilities and module aliases."""
+
+    model: Any = None
+    utilities: Any = None
+    torch_mod: Any = None
+
+    def load(self) -> None:
+        import torch
+
+        self.torch_mod = torch
+        self.model, self.utilities = torch.hub.load(
+            repo_or_dir="snakers4/silero-vad",
+            model="silero_vad",
+            trust_repo=True,
+        )
+
+    def close(self) -> None:
+        # Direct Hub provides no disposal API. Drop our aliases after the
+        # generic owner's admitted work drains; global/SDK caches are separate.
+        self.model = self.utilities = self.torch_mod = None
+
+
+@dataclass
+class _EnrollmentResult:
+    """Keep only the final publication vector and scalar statistics."""
+
+    mean_emb: np.ndarray | None = None
+    dim: int = 0
+    n_samples: int = 0
+    skipped_short: int = 0
+    skipped_vad: int = 0
+    consistency: float = 0.0
+
+
+def _collect_enrollment(args: argparse.Namespace, wavs: list[Path],
+                        speaker_owner: ResourceOwner,
+                        vad_owner: ResourceOwner | None) -> _EnrollmentResult:
+    audios, embeddings = [], []
+    audio = trimmed = emb = mean_emb = spk = vad = vad_model = torch_mod = None
+    try:
+        # Cargar silero-vad si trim activo
+        vad_model = None
+        torch_mod = None
+        if args.vad_trim:
+            logger.info("Cargando silero-vad para trim de silencios...")
+            vad = _EnrollmentVAD()
+            vad_owner.adopt(vad, owns_resource=True)
+            vad.load()
+            vad_model, torch_mod = vad.model, vad.torch_mod
+
+        min_samples = int(args.min_duration * SAMPLE_RATE)
+        audios: list[np.ndarray] = []
+        skipped_short = 0
+        skipped_vad = 0
+        for w in wavs:
+            audio = load_wav(w)
+            if audio is None:
+                continue
+            if args.vad_trim and vad_model is not None:
+                trimmed = vad_trim(audio, vad_model, torch_mod,
+                                   threshold=args.vad_threshold,
+                                   min_speech_s=args.min_speech_s)
+                if trimmed is None:
+                    skipped_vad += 1
+                    continue
+                audio = trimmed
+            if len(audio) < min_samples and not args.vad_trim:
+                skipped_short += 1
+                continue
+            audios.append(audio)
+        if not audios:
+            return _EnrollmentResult()
+        logger.info("Audios válidos: %d (skipped_short=%d skipped_vad=%d)",
+                    len(audios), skipped_short, skipped_vad)
+
+        logger.info("Cargando SpeakerIdentifier (%s @ %s)...", args.model, args.device)
+        t0 = time.time()
+        spk = SpeakerIdentifier(model_name=args.model, device=args.device)
+        speaker_owner.adopt(spk, owns_resource=True, caller_guard=spk._speaker_require_close_caller)
+        spk.load()
+        logger.info("Loaded en %.1fs", time.time() - t0)
+
+        logger.info("Extrayendo embeddings...")
+        t0 = time.time()
+        embeddings = []
+        for i, audio in enumerate(audios):
+            emb = spk.get_embedding(audio)
+            embeddings.append(emb)
+            if (i + 1) % 10 == 0:
+                logger.info("  %d/%d embeddings (%.2fs acumulado)",
+                            i + 1, len(audios), time.time() - t0)
+        logger.info("Embeddings extraídos en %.1fs", time.time() - t0)
+
+        dim = embeddings[0].shape[0]
+        logger.info("Embedding dim = %d", dim)
+
+        consistency = intra_user_consistency(embeddings)
+        logger.info("Consistencia intra-user (mean pairwise cos sim): %.3f", consistency)
+        if consistency < 0.70:
+            msg = ("Consistencia baja (<0.70) — verifique que las muestras sean "
+                   "del mismo speaker o considere re-grabar.")
+            if not args.vad_trim:
+                msg += " Probá agregar --vad-trim para descartar el silencio de cada WAV."
+            logger.warning(msg)
+
+        mean_emb = np.mean(embeddings, axis=0)
+        norm = np.linalg.norm(mean_emb)
+        if norm > 0:
+            mean_emb = mean_emb / norm
+        logger.info("Embedding promedio L2-normalizado (shape=%s, norm=%.4f)",
+                    mean_emb.shape, float(np.linalg.norm(mean_emb)))
+
+        return _EnrollmentResult(mean_emb, dim, len(embeddings), skipped_short,
+                                 skipped_vad, consistency)
+    finally:
+        audios.clear()
+        embeddings.clear()
+        audio = trimmed = emb = mean_emb = spk = vad = vad_model = torch_mod = None
+
+
+def _prepare_enrollment(args: argparse.Namespace, wavs: list[Path],
+                        session: ResourceSession) -> _EnrollmentResult:
+    speaker = ResourceOwner(owns_resource=True, error_prefix="enrollment_speaker")
+    session.register(speaker)
+    vad = None
+    if args.vad_trim:
+        vad = ResourceOwner(owns_resource=True, error_prefix="enrollment_vad")
+        session.register(vad)
+    failures = []
+    result = None
+    try:
+        with ExitStack() as operations:
+            operations.enter_context(speaker.operation())
+            if vad is not None:
+                operations.enter_context(vad.operation())
+            try:
+                result = _collect_enrollment(args, wavs, speaker, vad)
+            except BaseException as error:
+                failures.append(ResourceFailure.capture("enrollment_prepare_failed", error))
+    except BaseException as error:
+        failures.append(ResourceFailure.capture("enrollment_operation_failed", error))
+    finally:
+        speaker = vad = None
+    if failures:
+        if result is not None:
+            result.mean_emb = None
+        result = None
+        raise_errors([failure.exception() for failure in failures],
+                     message="enrollment_prepare_failed")
+    return result
+
+
+def _publish_enrollment(args: argparse.Namespace, wav_dirs: list[Path],
+                        result: _EnrollmentResult) -> int:
+    mean_emb = metadata = None
+    failure = None
+    try:
+        if result.n_samples == 0:
+            logger.error("Ningún audio válido (min_duration=%.1fs, vad=%s)",
+                         args.min_duration, args.vad_trim)
+            return 1
+        mean_emb, dim = result.mean_emb, result.dim
+        skipped_short, consistency = result.skipped_short, result.consistency
+        if args.dry_run:
+            logger.info("dry-run — no se guarda nada.")
+            return 0
+
+        if consistency < args.min_consistency and not args.force:
+            logger.error(
+                "Consistencia %.3f < %.2f — embedding REJECTED. ECAPA con esta "
+                "consistencia produce muchos falsos negativos en el speaker filter. "
+                "Opciones: (1) re-grabar 20-30 frases continuas de 3-4s; "
+                "(2) re-correr con --vad-trim si no se usó; "
+                "(3) bajar --min-consistency o pasar --force si entendés el riesgo.",
+                consistency, args.min_consistency,
+            )
+            return 2
+
+        out_dir = (ROOT / args.output_dir).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        emb_path = out_dir / f"{args.user}_voice.npy"
+        meta_path = out_dir / f"{args.user}_voice.json"
+
+        np.save(emb_path, mean_emb.astype(np.float32))
+        metadata = {
+            "user_id": args.user,
+            "model": args.model,
+            "device": args.device,
+            "embedding_dim": int(dim),
+            "n_samples": result.n_samples,
+            "n_skipped_short": skipped_short,
+            "min_duration_s": args.min_duration,
+            "intra_consistency": round(consistency, 4),
+            "source_dirs": [str(p.relative_to(ROOT)) for p in wav_dirs],
+            "vad_trim": args.vad_trim,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        meta_path.write_text(json.dumps(metadata, indent=2))
+
+        logger.info("Guardado: %s", emb_path)
+        logger.info("Metadata: %s", meta_path)
+        logger.info("Listo. Usar en config con rooms.wake_word.speaker_filter.embedding_path")
+        return 0
+    except BaseException as error:
+        failure = ResourceFailure.capture("enrollment_publish_failed", error)
+    finally:
+        result.mean_emb = None
+        mean_emb = metadata = result = None
+    raise failure.exception() from None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--user", default="gabriel",
@@ -157,121 +376,15 @@ def main() -> int:
         logger.error("Sin WAVs en ninguno de los dirs: %s", wav_dirs)
         return 1
 
-    # Cargar silero-vad si trim activo
-    vad_model = None
-    torch_mod = None
-    if args.vad_trim:
-        logger.info("Cargando silero-vad para trim de silencios...")
-        import torch as torch_mod
-        vad_model, _ = torch_mod.hub.load(
-            repo_or_dir="snakers4/silero-vad",
-            model="silero_vad",
-            trust_repo=True,
-        )
-
-    min_samples = int(args.min_duration * SAMPLE_RATE)
-    audios: list[np.ndarray] = []
-    skipped_short = 0
-    skipped_vad = 0
-    for w in wavs:
-        audio = load_wav(w)
-        if audio is None:
-            continue
-        if args.vad_trim and vad_model is not None:
-            trimmed = vad_trim(audio, vad_model, torch_mod,
-                               threshold=args.vad_threshold,
-                               min_speech_s=args.min_speech_s)
-            if trimmed is None:
-                skipped_vad += 1
-                continue
-            audio = trimmed
-        if len(audio) < min_samples and not args.vad_trim:
-            skipped_short += 1
-            continue
-        audios.append(audio)
-    if not audios:
-        logger.error("Ningún audio válido (min_duration=%.1fs, vad=%s)",
-                     args.min_duration, args.vad_trim)
-        return 1
-    logger.info("Audios válidos: %d (skipped_short=%d skipped_vad=%d)",
-                len(audios), skipped_short, skipped_vad)
-
-    logger.info("Cargando SpeakerIdentifier (%s @ %s)...", args.model, args.device)
-    t0 = time.time()
-    spk = SpeakerIdentifier(model_name=args.model, device=args.device)
-    spk.load()
-    logger.info("Loaded en %.1fs", time.time() - t0)
-
-    logger.info("Extrayendo embeddings...")
-    t0 = time.time()
-    embeddings = []
-    for i, audio in enumerate(audios):
-        emb = spk.get_embedding(audio)
-        embeddings.append(emb)
-        if (i + 1) % 10 == 0:
-            logger.info("  %d/%d embeddings (%.2fs acumulado)",
-                        i + 1, len(audios), time.time() - t0)
-    logger.info("Embeddings extraídos en %.1fs", time.time() - t0)
-
-    dim = embeddings[0].shape[0]
-    logger.info("Embedding dim = %d", dim)
-
-    consistency = intra_user_consistency(embeddings)
-    logger.info("Consistencia intra-user (mean pairwise cos sim): %.3f", consistency)
-    if consistency < 0.70:
-        msg = ("Consistencia baja (<0.70) — verifique que las muestras sean "
-               "del mismo speaker o considere re-grabar.")
-        if not args.vad_trim:
-            msg += " Probá agregar --vad-trim para descartar el silencio de cada WAV."
-        logger.warning(msg)
-
-    mean_emb = np.mean(embeddings, axis=0)
-    norm = np.linalg.norm(mean_emb)
-    if norm > 0:
-        mean_emb = mean_emb / norm
-    logger.info("Embedding promedio L2-normalizado (shape=%s, norm=%.4f)",
-                mean_emb.shape, float(np.linalg.norm(mean_emb)))
-
-    if args.dry_run:
-        logger.info("dry-run — no se guarda nada.")
-        return 0
-
-    if consistency < args.min_consistency and not args.force:
-        logger.error(
-            "Consistencia %.3f < %.2f — embedding REJECTED. ECAPA con esta "
-            "consistencia produce muchos falsos negativos en el speaker filter. "
-            "Opciones: (1) re-grabar 20-30 frases continuas de 3-4s; "
-            "(2) re-correr con --vad-trim si no se usó; "
-            "(3) bajar --min-consistency o pasar --force si entendés el riesgo.",
-            consistency, args.min_consistency,
-        )
-        return 2
-
-    out_dir = (ROOT / args.output_dir).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    emb_path = out_dir / f"{args.user}_voice.npy"
-    meta_path = out_dir / f"{args.user}_voice.json"
-
-    np.save(emb_path, mean_emb.astype(np.float32))
-    metadata = {
-        "user_id": args.user,
-        "model": args.model,
-        "device": args.device,
-        "embedding_dim": int(dim),
-        "n_samples": len(embeddings),
-        "n_skipped_short": skipped_short,
-        "min_duration_s": args.min_duration,
-        "intra_consistency": round(consistency, 4),
-        "source_dirs": [str(p.relative_to(ROOT)) for p in wav_dirs],
-        "vad_trim": args.vad_trim,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    meta_path.write_text(json.dumps(metadata, indent=2))
-
-    logger.info("Guardado: %s", emb_path)
-    logger.info("Metadata: %s", meta_path)
-    logger.info("Listo. Usar en config con rooms.wake_word.speaker_filter.embedding_path")
-    return 0
+    result = session = None
+    try:
+        with ResourceSession(error_prefix="enrollment") as session:
+            result = _prepare_enrollment(args, wavs, session)
+        return _publish_enrollment(args, wav_dirs, result)
+    finally:
+        if result is not None:
+            result.mean_emb = None
+        result = session = None
 
 
 if __name__ == "__main__":
