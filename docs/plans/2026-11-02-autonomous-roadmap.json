@@ -1140,7 +1140,8 @@
         "f7301b2fbeaa35b949bc8848719a25d69463350b",
         "a87e8048e83af48d5f737e83ebd0f15628e939b2",
         "3013d085eba6eaba9f9227bcad5f9021a756a71e",
-        "75b2878e1fe665447eb84d1428c02de9be85fcee"
+        "75b2878e1fe665447eb84d1428c02de9be85fcee",
+        "a838165cf77b1bb67735866f458b5fe709874e48"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1173,9 +1174,12 @@
         "data/autonomous-roadmap-20261102/t022/t/normal-full-attempt-01/acceptance-proof.json",
         "docs/research/2026-11-04-parakeet-close-election.json",
         "data/autonomous-roadmap-20261102/t022/u/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/u/normal-full-attempt-01/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t022/u/normal-full-attempt-01/acceptance-proof.json",
+        "docs/research/2026-11-04-wake-lifecycle-metadata.json",
+        "data/autonomous-roadmap-20261102/t022/v/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/acceptance-proof.json"
       ],
-      "next_action": "T022-U verificada localmente: elección y resultado único de cierre Parakeet,203 dirigidos incluidos12 nuevos y full normal8045 aprobados+1xfail conocida sobre972 archivos/37 scripts idénticos, sin fallos/errores ni aborto de capacidad. Conserva todos los8034 IDs de la full T más los12 nuevos; conjuntos dirigidos no aditivos. Siguiente unidad Wake: obtener dos baselines públicos independientes de admisión y elección/cierre antes de editar; preservar reset reutilizable y esperar retorno real de su disposer antes de inyectar notificación. Quedan SDK/copias/CLI y T021/T022/C03/C04/C06/C20 abiertos; M/G/J/K/ENOSPC K sin atribuir, HA resistente >60s pendiente, T020/P1/T047 y autoridades separadas conservados."
+      "next_action": "T022-V verificada localmente: admisión y resultado único de cierre Wake,298 dirigidos incluidos23 nuevos/H29 y full normal8068 aprobados+1xfail conocida sobre975 archivos incluidos37 scripts idénticos, sin fallos/errores ni aborto. Conserva todos los8046 IDs de la full U y23 nuevos; conjuntos no aditivos. Pytest0 durable en estado/XML/log; terminal del runner desconocido por respuesta truncada y handle no disponible. Siguiente unidad: RED público HermesCliReasoner.generate con Popen real de executable temporal inerte, child-ready confirmado y OSError de communicate; observar hijo aún vivo y limpiarlo realmente en fixture antes de editar. No ejecutar Hermes/modelos/red ni inferir retiro de descendientes privados. Siguen SDK/copias/factories/CLI y T021/T022/C03/C04/C06/C20 abiertos; M/G/J/K/ENOSPC K sin atribuir, HA resistente >60s pendiente, T020/P1/T047 y autoridades separadas conservados."
     },
     {
       "id": "T023",

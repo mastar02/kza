@@ -1,0 +1,809 @@
+{
+  "schema_version": 1,
+  "task": "T022",
+  "unit": "T022-V/wake-lifecycle-metadata",
+  "status": "verified_local",
+  "prepared_at_utc": "2026-11-04T16:09:32.694837+00:00",
+  "implementation_commit": "a838165cf77b1bb67735866f458b5fe709874e48",
+  "baseline_commit": "8ddc3e7b2356aae84d8c53accc449c09963572fe",
+  "private_evidence_root": "data/autonomous-roadmap-20261102/t022/v",
+  "scope": [
+    "Actual owner/Thread identity leases replace wake active-counter authority; derived read-only active view, try-protected publication/TLS and logical deactivation before fallible cleanup.",
+    "Sole actual Thread-owned canonical close token, pending None then one immutable outcome after actual disposition/unwind and guarded notification/Condition exit.",
+    "Caller guard observes actual active/pending owner Thread despite missing TLS; followers use actual predicate/advisory50ms wait without re-election or disposal retry."
+  ],
+  "genuine_baseline_red": {
+    "status": "two_genuine_existing_public_API_RED",
+    "scenario_count": 2,
+    "A": {
+      "api": "set_threshold(.61) then close",
+      "observed": {
+        "callback_invocations": 0,
+        "threshold_unchanged": true,
+        "backend_never_loaded": true,
+        "scenario_count": 1,
+        "source_sha256": "bed04badfd78bdadb3d5a9758298e3650402d0d7081e0ccdad0d9500aeb145d4",
+        "fault_invocations": 1,
+        "original_operation_control_preserved": true,
+        "active_after_operation": 1,
+        "callback_retained_before_close": true,
+        "actual_close_condition_wait_observed": true,
+        "actual_closer_thread_alive": true,
+        "actual_close_finished": false,
+        "close_result": {},
+        "callback_retained_after_close_observation": true,
+        "sdk_imported": false,
+        "limits": "Registered callback and threshold metadata only, no SDK/model/audio; process exit contains a pending closer and is not backend retirement.",
+        "contract_passed": false
+      },
+      "terminal": {
+        "command": [
+          "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+          "/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/v/admission-baseline-02.py"
+        ],
+        "started_at_utc": "2026-11-04T15:28:33.253439+00:00",
+        "finished_at_utc": "2026-11-04T15:28:35.461903+00:00",
+        "terminal_exit_code": 1,
+        "probe_sha256": "42717ed14d5a5aeacbfcd0ab582fdf124303556b80ec89e3a590382744bd18b5"
+      }
+    },
+    "B": {
+      "api": "two close calls on distinct actual Threads",
+      "observed": {
+        "callback_invocations": 0,
+        "threshold_unchanged": true,
+        "backend_never_loaded": true,
+        "scenario_count": 1,
+        "source_sha256": "bed04badfd78bdadb3d5a9758298e3650402d0d7081e0ccdad0d9500aeb145d4",
+        "fault_invocations": 1,
+        "first_actual_thread_joined": true,
+        "first_result": {
+          "error_type": "KeyboardInterrupt",
+          "original_control": true,
+          "fixed_failure": false
+        },
+        "after_first": {
+          "sealed": true,
+          "published_owner_is_first": true,
+          "completion_observed": false,
+          "fixed_failure_observed": false,
+          "active_operations": 0,
+          "callback_retained": true,
+          "dispose_invocations": 0
+        },
+        "distinct_actual_threads": true,
+        "follower_actual_thread_joined": false,
+        "follower_actual_thread_alive": true,
+        "follower_result": {},
+        "follower_finished": false,
+        "actual_completion_wait_entered": true,
+        "actual_completion_wait_calls": 1,
+        "actual_completion_wait_returns": 0,
+        "dispose_invocations": 0,
+        "callback_retained": true,
+        "sdk_imported": false,
+        "limits": "Registered callback metadata only, no SDK/model/audio; pending-observer process exit is containment, not backend retirement or OS leakage evidence.",
+        "contract_passed": false
+      },
+      "terminal": {
+        "command": [
+          "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+          "/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/v/close-election-baseline-02.py"
+        ],
+        "started_at_utc": "2026-11-04T15:28:35.462133+00:00",
+        "finished_at_utc": "2026-11-04T15:28:37.661354+00:00",
+        "terminal_exit_code": 1,
+        "probe_sha256": "a10e1627dfa3fa03aae609d0a6d5752c2c76638011eb2531b32284e1dc5f716c"
+      }
+    },
+    "initial_attempts": "initial-setup-classification.json: both invalid guard paths failed before project import/actors, NOT RED",
+    "limits": "Callback/metadata protocol only; no SDK/model/audio/backend or OS leak proof. Child process exit contains pending observers and is not retirement."
+  },
+  "initial_setup_not_RED": {
+    "classification": {
+      "status": "first_two_attempts_setup_error_not_RED",
+      "cause": "Adapted probe source guard path was src/stt/wake_stt.py; FileNotFoundError occurred before project import or actors.",
+      "retained": [
+        "admission-baseline.py",
+        "close-election-baseline.py",
+        "admission-red.log",
+        "close-election-red.log",
+        "admission-terminal.json",
+        "close-election-terminal.json"
+      ],
+      "next_probe_changes": "Only literal guard path corrected to actual src/wakeword/detector.py; source unchangedbed04 and scenario bodies unchanged.",
+      "corrected_probe_sha256": {
+        "admission-baseline-02.py": "42717ed14d5a5aeacbfcd0ab582fdf124303556b80ec89e3a590382744bd18b5",
+        "close-election-baseline-02.py": "a10e1627dfa3fa03aae609d0a6d5752c2c76638011eb2531b32284e1dc5f716c"
+      },
+      "genuine_RED_count": 0
+    },
+    "counted_as_product_RED": false,
+    "preservation": "Original incorrect-guard scripts388f5a43/262b16aa, FileNotFoundError logs and terminals remain immutable. Both stopped before project import/actors; only corrected02 scenarios count as the two genuine REDs.",
+    "corrected_review_binding": {
+      "ref": {
+        "path": "data/autonomous-roadmap-20261102/t022/v/baseline-review-corrected.json",
+        "sha256": "443d9700ebb16b788eae2c97fda476c3a2b44aa2d58f46463c8b7d267e92a42d"
+      },
+      "approved_for_root_baseline_runs": true
+    },
+    "setup_fix": "Only literal source guard path changed from nonexistent src/stt/wake_stt.py to actual src/wakeword/detector.py; no product/source change."
+  },
+  "green_replays": {
+    "proof": {
+      "status": "two_green_existing_API_replays",
+      "A": {
+        "callback_invocations": 0,
+        "threshold_unchanged": true,
+        "backend_never_loaded": true,
+        "scenario_count": 1,
+        "source_sha256": "7fa3ecaf063327bac2e3e318cde4ed1d431cb3ebdebf6fa5ddf5b02481bec63a",
+        "fault_invocations": 1,
+        "original_operation_control_preserved": true,
+        "active_after_operation": 0,
+        "callback_retained_before_close": true,
+        "actual_close_condition_wait_observed": false,
+        "actual_closer_thread_alive": false,
+        "actual_close_finished": true,
+        "close_result": {
+          "returned": true
+        },
+        "callback_retained_after_close_observation": false,
+        "sdk_imported": false,
+        "limits": "Registered callback and threshold metadata only, no SDK/model/audio; process exit contains a pending closer and is not backend retirement.",
+        "contract_passed": true
+      },
+      "B": {
+        "callback_invocations": 0,
+        "threshold_unchanged": true,
+        "backend_never_loaded": true,
+        "scenario_count": 1,
+        "source_sha256": "7fa3ecaf063327bac2e3e318cde4ed1d431cb3ebdebf6fa5ddf5b02481bec63a",
+        "fault_invocations": 1,
+        "first_actual_thread_joined": true,
+        "first_result": {
+          "error_type": "RuntimeError",
+          "original_control": false,
+          "fixed_failure": true
+        },
+        "after_first": {
+          "sealed": true,
+          "published_owner_is_first": true,
+          "completion_observed": true,
+          "fixed_failure_observed": true,
+          "active_operations": 0,
+          "callback_retained": true,
+          "dispose_invocations": 0
+        },
+        "distinct_actual_threads": true,
+        "follower_actual_thread_joined": true,
+        "follower_actual_thread_alive": false,
+        "follower_result": {
+          "error_type": "RuntimeError",
+          "original_control": false,
+          "fixed_failure": true
+        },
+        "follower_finished": true,
+        "actual_completion_wait_entered": false,
+        "actual_completion_wait_calls": 0,
+        "actual_completion_wait_returns": 0,
+        "dispose_invocations": 0,
+        "callback_retained": true,
+        "sdk_imported": false,
+        "limits": "Registered callback metadata only, no SDK/model/audio; pending-observer process exit is containment, not backend retirement or OS leakage evidence.",
+        "contract_passed": true
+      },
+      "adaptations": "green-adaptation-proof.json",
+      "policy_delta": "Only owned elected close controls normalize to fixed wake_close_failed; admission preserves original control."
+    },
+    "adaptations": {
+      "scenario_count": 2,
+      "A": {
+        "guard_only_changed": true,
+        "scenario_AST_identical_after_guard_normalization": true
+      },
+      "B": {
+        "public_close_invocation_AST_identical": true,
+        "publication_exit_fault_AST_identical": true,
+        "actual_selectors_retargeted_to_new_token": true,
+        "obsolete_Event_trace_replaced_by_actual_Condition_wait_trace": true,
+        "first_caller_control_policy_intentionally_normalized": true,
+        "byte_identity_claimed": false
+      },
+      "green_probe_sha256": {
+        "admission-green.py": "2c10cf9eae27ae25346f0a9855c19464322b791aaf0a1adb9c04a49c33e0fc72",
+        "close-election-green.py": "38611b6cb7f5d52188e6a02a412e7a76aaa45082d619b9154d482933b03b7a72"
+      }
+    },
+    "terminal_A": {
+      "command": [
+        "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+        "/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/v/admission-green.py"
+      ],
+      "started_at_utc": "2026-11-04T15:35:58.695242+00:00",
+      "finished_at_utc": "2026-11-04T15:35:58.886652+00:00",
+      "terminal_exit_code": 0,
+      "probe_sha256": "2c10cf9eae27ae25346f0a9855c19464322b791aaf0a1adb9c04a49c33e0fc72"
+    },
+    "terminal_B": {
+      "command": [
+        "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+        "/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/v/close-election-green.py"
+      ],
+      "started_at_utc": "2026-11-04T15:35:58.886971+00:00",
+      "finished_at_utc": "2026-11-04T15:35:59.073599+00:00",
+      "terminal_exit_code": 0,
+      "probe_sha256": "38611b6cb7f5d52188e6a02a412e7a76aaa45082d619b9154d482933b03b7a72"
+    },
+    "A": "Admission scenario AST unchanged after source-guard normalization; original operation control identity preserved.",
+    "B": "Actual canonical-token selectors and Event-to-real-Condition wait observation retargeted explicitly; public close sequence and publication fault concept preserved, byte identity false. Elected owner control intentionally normalizes to fixed wake_close_failed for owner/followers.",
+    "scalar_scope": "Those fresh children record callback0, unchanged threshold, backend never loaded and actual package absence(openwakeword/onnxruntime). Process exit is containment, not an OS/backend/native retirement receipt."
+  },
+  "exception_and_outcome_policy": {
+    "admitted_operation": "Original injected control propagates after actual logical deactivation/cleanup attempts.",
+    "owned_elected_close": "Post-publication control/error becomes fresh exact RuntimeError(wake_close_failed), stored as safe tuple outcome; this deliberately replaces old raw owner control escape.",
+    "pre_election_and_nonowner": "Original caller-control semantics remain; an observing follower cannot poison another real owner.",
+    "publication": "No success tuple until actual disposer has returned and final guarded notify/Condition exit has finished. A later metadata error must never revoke previously visible success.",
+    "retry": "Final failed identity remains terminal; no second disposal/election."
+  },
+  "actual_disposer_phase_and_retention": {
+    "unchanged_body": "Whole _wake_release_resources AST preserved, including _model_lock and its INNER _wake_condition after object/callback reference clearing.",
+    "fault_phase_oracle": "Unit hooks distinguish disposer entries (invocation only) from returned, written only AFTER the original bound implementation returns. Final-notify/exit race faults require returned1, excluding the disposer internal Condition at entries1/returned0. An earlier callback/backendNone flag is not a completed-disposer receipt.",
+    "partial_failure": "A failure before actual release retains original callback/backend fields. After the body cleared those fields, an internal Condition/final-notification error may leave callback/backend alreadyNone and some scalar metadata stale. Do not claim universal retained handles or object/native/allocator/copy erasure. Never retry or resurrect opaque resources.",
+    "watchdog_rule": "Real Thread/Task/public return/error and stable token are receipts; waited/finished Events, fixture durations and process exit alone are not."
+  },
+  "new_tests_and_overlap": {
+    "component_cases": 22,
+    "component_actual_XML": {
+      "testcases": 22,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "component_root_terminal": {
+      "command": [
+        "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/unit/wakeword/test_wake_admission_metadata.py",
+        "tests/unit/wakeword/test_wake_close_metadata.py",
+        "--junitxml=/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/v/component-initial.xml"
+      ],
+      "terminal_exit_code": 0
+    },
+    "graph_cases": 1,
+    "graph_actual_XML": {
+      "testcases": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "graph_root_terminal": {
+      "command": [
+        "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/integration/test_wake_metadata_failure.py",
+        "--junitxml=/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/v/graph-initial.xml"
+      ],
+      "terminal_exit_code": 0
+    },
+    "new_unique_cases": 23,
+    "targeted_includes_all_H29_original_ids": true,
+    "count_rule": "22 component+1 graph form23 unique new cases; all are already inside298 directed PASS. H29 and earlier selections/replays overlap and are not added to298. No expected full total is derived."
+  },
+  "targeted_validation": {
+    "status": "passed_targeted_only",
+    "session_id": 45732,
+    "terminal_exit_code": 0,
+    "counts": {
+      "tests": 298,
+      "passed": 298,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "new_unique_cases": 23,
+    "all_H29_original_case_ids_included": true,
+    "duration_seconds": 27.8,
+    "source_files": 975,
+    "script_files": 37,
+    "source_snapshot_sha256": "a05a7bd4d4702c238356a9e495a712bb89eaec6332ac66ed93cbcb190962a81a",
+    "source_unchanged": true,
+    "normal_full_pending": true,
+    "artifacts_sha256": {
+      "targeted-initial.xml": "81f511f77d27415d553f0d2031770a5cd06d81fe363ed7fcafabbced4b591730",
+      "targeted-initial.log": "33bce5e557f76317c8e03b99fd1d14c41b9fbe52e4b07c769e056074843784ff",
+      "targeted-initial-terminal.json": "ff1aa50fc9b97f1ad36d69261fac3888917565163329b1342bcd66a0ae7af8e5",
+      "component-initial.xml": "0a79a4f5905590861c173537919c8796d361b1399ae57d7365ce9b3a8e191d06",
+      "graph-initial.xml": "96ef7baf26bf561348d00115c4628e94146da44b4f133e233b30352852564341",
+      "source-snapshot.json": "a05a7bd4d4702c238356a9e495a712bb89eaec6332ac66ed93cbcb190962a81a",
+      "source-scope-proof.json": "b1ac1bb69ff986a54f69927fd26a8dd204e1e6ac4b0497f5ea4fab4b200ba77d",
+      "baseline-red-proof.json": "1f9125f18f556b330f42da461171196e3ad09a2b64712e1bf906a6cce16489a9",
+      "green-replay-proof.json": "58d5c71445a7c44957dd1ccc0cc2845aa2e5c8b5331f9fd142d980bd7cf4fea5"
+    }
+  },
+  "loaded_reset_algorithm_scope": {
+    "WakeWordDetector_entire_AST_preserved": true,
+    "whole_class_AST_sha256": "455f147283179c0a4a78eb51eb5e8eb61eec5079fb8cf29df8cf07e42f417c5d",
+    "begin_close_aclose_close_request_close_preserved": true,
+    "empty_reset": "New reusable reset/reset_refractory metadata case uses empty backend and preserves callback/nonterminal behavior before terminal seal; it is not a loaded actual SDK reset/inference claim.",
+    "H_regressions": "All29 original H case IDs are included per root selection proof; whole-class AST and those separately attributed existing native/synthetic-leaf regressions protect prior behavior. New22 tests do not replace or broaden those receipts."
+  },
+  "actual_graph_proof_scope": [
+    "Actual build_application with selected exact WakeWordDetector registered in actual WakeModelOwner; existing configured H fixture and synthetic reset-only backend leaf, no load/predict/detect/model/audio.",
+    "Actual stack.aclose first drives real borrower drains and selected detector close; it is not a prefailed model causing an unrelated reset borrower error.",
+    "Instance begin_close observer delegates the ORIGINAL bound method and returns the UNCHANGED actual Task; all selected Tasks are identical and are detector._wake_closing.",
+    "Actual retained WakeModelOwner task and selected original model task terminate, are not cancelled, and report exact RuntimeError(wake_close_failed). Stack task also actually fails; a success facade plus a separate error ledger cannot pass.",
+    "One selected post-election fault, zero disposer entry/return, exact backend/model registration retained. Reset-leaf calls are recorded without an incorrect zero-reset requirement; callback and household service calls remain0.",
+    "After terminal graph failure, actual privacy writer lease remains held and actual SQLite ledger answers SELECT1 via fetchone()[0]==1. No claim that unrelated dashboard/HA callbacks remain open after stack unwinding.",
+    "Parsed child receipt follows all assertions/asyncio.run. os._exit0 only contains intentionally failed retained resources; it is not successful backend/privacy retirement. SDK absence assertions apply to that child."
+  ],
+  "source_scope": {
+    "snapshot": {
+      "path": "data/autonomous-roadmap-20261102/t022/v/source-snapshot.json",
+      "sha256": "a05a7bd4d4702c238356a9e495a712bb89eaec6332ac66ed93cbcb190962a81a"
+    },
+    "file_count": 975,
+    "script_count": 37,
+    "proof": {
+      "candidate_source_sha256": "7fa3ecaf063327bac2e3e318cde4ed1d431cb3ebdebf6fa5ddf5b02481bec63a",
+      "WakeWordDetector_entire_AST_preserved": true,
+      "native_class_AST_sha256": "455f147283179c0a4a78eb51eb5e8eb61eec5079fb8cf29df8cf07e42f417c5d",
+      "changed_lifecycle_methods": [
+        "_wake_admit",
+        "_wake_current",
+        "_wake_initialize",
+        "_wake_require_close_caller",
+        "wait_closed"
+      ],
+      "new_active_property": "read-only count derived from actual active identity leases",
+      "lease_thread": "actual threading.Thread identity",
+      "new_close_class": "_WakeClose: ownerThread + one immutable outcome, None pending",
+      "begin_close_aclose_close_request_close_AST_preserved": true,
+      "removed_redundant_fields": [
+        "_wake_close_started",
+        "_wake_close_owner",
+        "_wake_close_done",
+        "_wake_failure"
+      ],
+      "disposer_entire_AST_preserved": true,
+      "notification_order": "guarded notify and Condition exit precede single final result tuple; selected disposal must return or unwind first",
+      "close_policy_delta": "Post-election owner controls normalize to wake_close_failed; pre-election/nonowner controls preserve caller semantics, no elected disposal retry"
+    },
+    "cross_unit": {
+      "added": [
+        "tests/integration/test_wake_metadata_failure.py",
+        "tests/unit/wakeword/test_wake_admission_metadata.py",
+        "tests/unit/wakeword/test_wake_close_metadata.py"
+      ],
+      "changed": [
+        "src/wakeword/detector.py"
+      ],
+      "removed": [],
+      "other_971_source_rows_identical": true,
+      "source_snapshot_sha256": "a05a7bd4d4702c238356a9e495a712bb89eaec6332ac66ed93cbcb190962a81a"
+    },
+    "source_and_test_bindings": {
+      "src/wakeword/detector.py": "7fa3ecaf063327bac2e3e318cde4ed1d431cb3ebdebf6fa5ddf5b02481bec63a",
+      "tests/integration/test_wake_metadata_failure.py": "8af71297a66c5917e0077d9d4ea32d74d7b1c18a694287a380ab61172a0ad9e7",
+      "tests/unit/wakeword/test_wake_admission_metadata.py": "8736705265b712bc7efae6744cc30a32ed73b6df234ec15c0b8318fa35374a85",
+      "tests/unit/wakeword/test_wake_close_metadata.py": "9cf3f8004e0207bca0c140a119ae347295c943b5dfa594aa28ff11eba484fbd7"
+    }
+  },
+  "reviews": {
+    "implementation": {
+      "ref": {
+        "path": "data/autonomous-roadmap-20261102/t022/v/implementation-review.json",
+        "sha256": "a015dabc9c73c6ce4f72e3bdfa954b1b4dd039d98fdcf00c45dd6a4049326533"
+      },
+      "approved": true
+    },
+    "component": {
+      "ref": {
+        "path": "data/autonomous-roadmap-20261102/t022/v/test-review.json",
+        "sha256": "36fa25c8d2845e5387cd293005c3d73a22b2f912fe2f5100b88f9903d2866793"
+      },
+      "approved": true
+    },
+    "graph": {
+      "ref": {
+        "path": "data/autonomous-roadmap-20261102/t022/v/graph-test-review.json",
+        "sha256": "ab6cdcec732397a71e60de09231cbada301fecf2ad30a766b3bb35b2e18fbc3d"
+      },
+      "approved": true,
+      "review_hash_limit": "Root must bind its actual frozen source hash when consuming this receipt. No shell execution was used to calculate a source hash under this review's no-exec constraint.",
+      "root_consumed_frozen_binding": {
+        "path": "tests/integration/test_wake_metadata_failure.py",
+        "sha256": "8af71297a66c5917e0077d9d4ea32d74d7b1c18a694287a380ab61172a0ad9e7"
+      }
+    },
+    "all_bindings": {
+      "path": "data/autonomous-roadmap-20261102/t022/v/review-bindings.json",
+      "sha256": "8fe18e14c4c58d63f2623392be176fde2c2025fe61c9fb723c4415042cdd7f3e"
+    },
+    "history_note": "Review runtime-pending statements and unit-plan baseline_preparation are historical. Generic review-bindings approved:null for differently named approval fields is not a rejection; corrected baseline review uses approved_for_root_baseline_runs=true. Do not overwrite old receipts."
+  },
+  "full_validation": {
+    "status": "verified_normal_full",
+    "normal_full_verified": true,
+    "session_id": 68559,
+    "attempt_root": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01",
+    "source_head": "a838165cf77b1bb67735866f458b5fe709874e48",
+    "source_snapshot_sha256": "a05a7bd4d4702c238356a9e495a712bb89eaec6332ac66ed93cbcb190962a81a",
+    "source_files": 975,
+    "script_files": 37,
+    "runner_terminal_exit_code": null,
+    "runner_terminal_limit": "Last pre-compaction write_stdin output was truncated; no raw runner exit payload recovered. Subsequent handle returned Unknown process id68559. No runner exit0 claimed as observed.",
+    "pytest_terminal_exit_code": 0,
+    "actual_outcomes": {
+      "tests": 8069,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 8068,
+      "known_xfail": 1,
+      "ordinary_skipped": 0
+    },
+    "duration_seconds": 654.744,
+    "minimum_available_bytes": 74744963072,
+    "storage_aborted": false,
+    "post_run_sources_unchanged": true,
+    "verification_artifact": {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/acceptance-proof.json",
+      "sha256": "ec2a84af5f2e4ef904774ff9140ca1405111c9c1bc445f821abea443e86e5a11"
+    },
+    "terminal_receipt": {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/terminal-receipt.json",
+      "sha256": "b63751eb00f2aa2a45378b9e01ae2ff066401a03592b5321d27f287bbbd3103b"
+    },
+    "terminal_artifacts": {
+      "full-runner.py": {
+        "size": 2662,
+        "sha256": "9a4de1db6f4f1acfb7acde3cbc25a31f60028ee1f59f1a486c12ebfe77cfdda2"
+      },
+      "preparation-proof.json": {
+        "size": 489,
+        "sha256": "aa942250abf4ecc070b3cb01f76a2e569879f7125838f9202bfca6704746f94e"
+      },
+      "source.json": {
+        "size": 166782,
+        "sha256": "a05a7bd4d4702c238356a9e495a712bb89eaec6332ac66ed93cbcb190962a81a"
+      },
+      "source-post.json": {
+        "size": 166782,
+        "sha256": "a05a7bd4d4702c238356a9e495a712bb89eaec6332ac66ed93cbcb190962a81a"
+      },
+      "full.log": {
+        "size": 2105601,
+        "sha256": "ce73a1fd0038c661fac123c941f7255f598a2afce67223b352882d585a16cbe0"
+      },
+      "full.xml": {
+        "size": 2288976,
+        "sha256": "02da72558a1ee799d1a78853b8383d49df767bb88779f69876f30e1532431125"
+      },
+      "full-status.json": {
+        "size": 650,
+        "sha256": "b6c2d74dfd83cb33b5fd52720d4f8afac35e54f4b7c6399362d1419ac2b99319"
+      },
+      "storage-telemetry.json": {
+        "size": 164766,
+        "sha256": "2d4c1cde8bbce8ffe87baf53a655dc1945e68d1fead7d6f09d55d152219bbd74"
+      },
+      "terminal-receipt.json": {
+        "size": 674,
+        "sha256": "b63751eb00f2aa2a45378b9e01ae2ff066401a03592b5321d27f287bbbd3103b"
+      }
+    },
+    "unchanged_storage_bytes": {
+      "preflight": 5368709120,
+      "abort_floor": 536870912
+    },
+    "collection_scope": {
+      "prior_U_full_cases": 8046,
+      "all_prior_U_full_ids_preserved": true,
+      "current_ids_equal_prior_full_union_V_directed": true,
+      "new_V_case_ids": 23
+    },
+    "directed_coverage": {
+      "V": {
+        "unique_directed_cases": 298,
+        "all_in_full": true
+      },
+      "H_original29": {
+        "unique_directed_cases": 29,
+        "all_in_full": true
+      },
+      "U": {
+        "unique_directed_cases": 203,
+        "all_in_full": true
+      },
+      "T": {
+        "unique_directed_cases": 191,
+        "all_in_full": true
+      },
+      "S": {
+        "unique_directed_cases": 715,
+        "all_in_full": true
+      },
+      "R": {
+        "unique_directed_cases": 664,
+        "all_in_full": true
+      }
+    },
+    "counts_not_additive": true,
+    "command": [
+      "timeout",
+      "1500",
+      "nice",
+      "-n",
+      "10",
+      "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+      "-m",
+      "pytest",
+      "tests",
+      "--junitxml=/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/full.xml"
+    ],
+    "environment": {
+      "base": "inherited os.environ.copy; no complete historical environment equality claimed",
+      "explicit_updates": {
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "ANONYMIZED_TELEMETRY": "False"
+      }
+    }
+  },
+  "product_boundaries": {
+    "objective_not_complete": true,
+    "T022_status": "in_progress",
+    "criteria_total": 21,
+    "criteria_accepted": [],
+    "all_criteria_open": true,
+    "T020_P1_T047": "unchanged",
+    "authority_separation": "Acoustic voice, person, account, consent and permissions remain distinct. Voice identity does not confer account authority.",
+    "production": "No deployment, model SDK request, GPU/audio/USB/hardware or production acceptance."
+  },
+  "excluded": [
+    "Task-factory/borrowed-executor admission metadata remains unchanged and outside V.",
+    "No new actor/executor/framework or unrelated SDK/CLI family closure.",
+    "No universal immunity to arbitrary repeated signals, unreturned constructor internals, private SDK participants, native object destruction, allocator/copy destination erasure or physical stability."
+  ],
+  "artifacts": [
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/admission-baseline.py",
+      "sha256": "388f5a43c8259ec67b53fce5732b58b7c0e3d548ebbf96fea14ada3e4da5cbd3"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/close-election-baseline.py",
+      "sha256": "262b16aac0b4033a52f89c390c33efae50d212c779fca7dfdfdac94ccf50a64a"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/admission-red.log",
+      "sha256": "2afd39b4f8dcb37a2e1aec8304d562a4bb362ecfce32b9546cdf88261e7fc6ac"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/close-election-red.log",
+      "sha256": "23a0e04a19783bab2a28edc8fa0e0fe3ed771d2e29d98789b9be4db36564fb2a"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/admission-terminal.json",
+      "sha256": "d050c0d229491e962b85362e792c5361e1b4a7da928ca63785d5bb35480fb0f0"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/close-election-terminal.json",
+      "sha256": "ef24fbb305cb8d97efda0b7e49ab5518f4f7e85c155e2cdb15f131a3e59bb714"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/baseline-review.json",
+      "sha256": "cd51acfad060b65bee4b50364cb804eb1717968d89a6b5698dd6726b52dc3591"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/initial-setup-classification.json",
+      "sha256": "1ca506fa7d4215308c366fec54be4667d0479fc2a9615b025d9a0e9266d10ca7"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/admission-baseline-02.py",
+      "sha256": "42717ed14d5a5aeacbfcd0ab582fdf124303556b80ec89e3a590382744bd18b5"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/close-election-baseline-02.py",
+      "sha256": "a10e1627dfa3fa03aae609d0a6d5752c2c76638011eb2531b32284e1dc5f716c"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/admission-red-02.log",
+      "sha256": "ab2090e37a4ca4a42d3476f07959e425901f91a119ae076003f88b327ddb9c79"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/close-election-red-02.log",
+      "sha256": "6b24015e6f7f2ea82d94d20634d346a7bd28644fd60dfe8dd7ed1765099331d1"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/admission-terminal-02.json",
+      "sha256": "8623a7a21f0598feaee88ea3c4ebd5aa4964b5fa600ab710427dfcbce9b6c35a"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/close-election-terminal-02.json",
+      "sha256": "103c626c764d9a6040662de995e5ca20ada71ea06b6dae576ef4f3659015e9f9"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/baseline-review-corrected.json",
+      "sha256": "443d9700ebb16b788eae2c97fda476c3a2b44aa2d58f46463c8b7d267e92a42d"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/baseline-red-proof.json",
+      "sha256": "1f9125f18f556b330f42da461171196e3ad09a2b64712e1bf906a6cce16489a9"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/baseline-source.py",
+      "sha256": "bed04badfd78bdadb3d5a9758298e3650402d0d7081e0ccdad0d9500aeb145d4"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/admission-green.py",
+      "sha256": "2c10cf9eae27ae25346f0a9855c19464322b791aaf0a1adb9c04a49c33e0fc72"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/close-election-green.py",
+      "sha256": "38611b6cb7f5d52188e6a02a412e7a76aaa45082d619b9154d482933b03b7a72"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/admission-green.log",
+      "sha256": "6bb84055b5c77e9ee4862655a9d0dc6475fae57230bdd81a6e75cf866282df63"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/close-election-green.log",
+      "sha256": "93deeade4b81956ccf51ec40ef82c54cf3e3c23581a5c4b5625fd09f76641957"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/admission-green-terminal.json",
+      "sha256": "3423521f73332b3679dcd08c4a1b853727b6051fc72b3e9419593ae5579534eb"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/close-election-green-terminal.json",
+      "sha256": "bf481b22490b62e8620f714e7fcecfdaa27a6ac524df1ab651eeb704ae86b35e"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/green-adaptation-proof.json",
+      "sha256": "9583ecf81b7bfd95330cc41c01070d4ff519a2c9dca40d6209320985937b3537"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/green-replay-proof.json",
+      "sha256": "58d5c71445a7c44957dd1ccc0cc2845aa2e5c8b5331f9fd142d980bd7cf4fea5"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/implementation-review.json",
+      "sha256": "a015dabc9c73c6ce4f72e3bdfa954b1b4dd039d98fdcf00c45dd6a4049326533"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/source-scope-proof.json",
+      "sha256": "b1ac1bb69ff986a54f69927fd26a8dd204e1e6ac4b0497f5ea4fab4b200ba77d"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/cross-unit-source-proof.json",
+      "sha256": "f82f9fa94896adf4e80e35ef0a4e6957d39ff73959973455ee61c3aa59dae304"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/test-review.json",
+      "sha256": "36fa25c8d2845e5387cd293005c3d73a22b2f912fe2f5100b88f9903d2866793"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/graph-test-review.json",
+      "sha256": "ab6cdcec732397a71e60de09231cbada301fecf2ad30a766b3bb35b2e18fbc3d"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/review-bindings.json",
+      "sha256": "8fe18e14c4c58d63f2623392be176fde2c2025fe61c9fb723c4415042cdd7f3e"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/component-initial.xml",
+      "sha256": "0a79a4f5905590861c173537919c8796d361b1399ae57d7365ce9b3a8e191d06"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/component-initial-terminal.json",
+      "sha256": "645056ca83323ee654d68eea7acfc2116c8fd4a7be1be41ee1a2178788012d04"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/graph-initial.xml",
+      "sha256": "96ef7baf26bf561348d00115c4628e94146da44b4f133e233b30352852564341"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/graph-initial.log",
+      "sha256": "f8b85594a01cde6f454a8833e8d86a01931b36c08f870f627515a9971cc21330"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/graph-initial-terminal.json",
+      "sha256": "c3466e7f95cf16db4b8bec00527870e074d845064431c241494d6d5114e61b5e"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/targeted-proof.json",
+      "sha256": "d9d68020cb3b13a62676874bb175ad4d840be19177e1715b83f72383f1f3a836"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/targeted-initial.xml",
+      "sha256": "81f511f77d27415d553f0d2031770a5cd06d81fe363ed7fcafabbced4b591730"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/targeted-initial.log",
+      "sha256": "33bce5e557f76317c8e03b99fd1d14c41b9fbe52e4b07c769e056074843784ff"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/targeted-initial-terminal.json",
+      "sha256": "ff1aa50fc9b97f1ad36d69261fac3888917565163329b1342bcd66a0ae7af8e5"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/source-snapshot.json",
+      "sha256": "a05a7bd4d4702c238356a9e495a712bb89eaec6332ac66ed93cbcb190962a81a"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/code-staged-proof.json",
+      "sha256": "8fe18e14c4c58d63f2623392be176fde2c2025fe61c9fb723c4415042cdd7f3e"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/code-delivery.json",
+      "sha256": "17cc641c8151ed8777f7ddc6dc1532d392acbe2aa3c70d6fc65b436064ce328a"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/full-runner.py",
+      "sha256": "9a4de1db6f4f1acfb7acde3cbc25a31f60028ee1f59f1a486c12ebfe77cfdda2"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/preparation-proof.json",
+      "sha256": "aa942250abf4ecc070b3cb01f76a2e569879f7125838f9202bfca6704746f94e"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/source.json",
+      "sha256": "a05a7bd4d4702c238356a9e495a712bb89eaec6332ac66ed93cbcb190962a81a"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/source-post.json",
+      "sha256": "a05a7bd4d4702c238356a9e495a712bb89eaec6332ac66ed93cbcb190962a81a"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/full.log",
+      "sha256": "ce73a1fd0038c661fac123c941f7255f598a2afce67223b352882d585a16cbe0"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/full.xml",
+      "sha256": "02da72558a1ee799d1a78853b8383d49df767bb88779f69876f30e1532431125"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/full-status.json",
+      "sha256": "b6c2d74dfd83cb33b5fd52720d4f8afac35e54f4b7c6399362d1419ac2b99319"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/storage-telemetry.json",
+      "sha256": "2d4c1cde8bbce8ffe87baf53a655dc1945e68d1fead7d6f09d55d152219bbd74"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/terminal-receipt.json",
+      "sha256": "b63751eb00f2aa2a45378b9e01ae2ff066401a03592b5321d27f287bbbd3103b"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/acceptance-proof.json",
+      "sha256": "ec2a84af5f2e4ef904774ff9140ca1405111c9c1bc445f821abea443e86e5a11"
+    }
+  ],
+  "source_delivery_history": {
+    "status": "source_committed_and_pushed_targeted_green_full_running",
+    "implementation_commit": "a838165cf77b1bb67735866f458b5fe709874e48",
+    "targeted_cases": 298,
+    "new_unique_cases": 23,
+    "all_H29_original_ids_included": true,
+    "push_session": 25950,
+    "push_terminal_exit_code": 0,
+    "full_session": 68559,
+    "full_pending": true,
+    "scope": "Wake operation admission and canonical close outcome; entire WakeWordDetector AST preserved",
+    "outside_scope": [
+      "Task-factory/borrowed-executor admission",
+      "otherSDKfamilies/CLI",
+      "realSDKmodel/audio/GPU/hardware/production",
+      "universalphysical/privateerasure"
+    ]
+  },
+  "history_note": "Earlier full_pending and passed_targeted_only receipts are immutable historical states. Current normal full verification is recorded separately below.",
+  "verified_at_utc": "2026-11-04T16:23:05.427863+00:00",
+  "template": {
+    "path": "data/autonomous-roadmap-20261102/t022/v/evidence-template.json",
+    "sha256": "4f81505bad646bc0c9656de8c3a4fffec6eb56a4a6be78cf4bb6add347cae686"
+  }
+}
