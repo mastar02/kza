@@ -42,6 +42,13 @@ class _ParakeetLease:
         self.thread = threading.current_thread()
         self.active = True
 
+
+class _ParakeetClose:
+    def __init__(self):
+        self.owner = threading.current_thread()
+        # None is pending; the sole owner publishes one immutable outcome.
+        self.result: tuple[str | None] | None = None
+
 class _ParakeetLifecycle:
     """Retain this adapter's real operations without owning its callers' data."""
 
@@ -50,10 +57,7 @@ class _ParakeetLifecycle:
         self._parakeet_local = threading.local()
         self._parakeet_leases = []
         self._parakeet_sealed = False
-        self._parakeet_close_started = False
-        self._parakeet_close_owner = None
-        self._parakeet_close_done = threading.Event()
-        self._parakeet_failure = None
+        self._parakeet_close: _ParakeetClose | None = None
         self._parakeet_closing = None
 
     @property
@@ -101,8 +105,9 @@ class _ParakeetLifecycle:
             if any(lease.active and lease.thread is current
                    for lease in self._parakeet_leases):
                 raise RuntimeError("parakeet_close_from_worker")
-            if (self._parakeet_close_owner is current
-                    and not self._parakeet_close_done.is_set()):
+            closing = self._parakeet_close
+            if (closing is not None and closing.owner is current
+                    and closing.result is None):
                 raise RuntimeError("parakeet_close_from_owner")
 
     def request_close(self) -> None:
@@ -112,31 +117,44 @@ class _ParakeetLifecycle:
             self._parakeet_condition.notify_all()
 
     def wait_closed(self) -> None:
-        """Drain actual operations and drop only this adapter's Python references."""
+        """Drain actual operations and publish one truthful close outcome."""
         self._parakeet_require_close_caller()
         self.request_close()
-        with self._parakeet_condition:
-            own_close = not self._parakeet_close_started
-            if own_close:
-                self._parakeet_close_started = True
-                self._parakeet_close_owner = threading.current_thread()
-        if own_close:
-            failure = None
-            try:
+        candidate = _ParakeetClose()
+        failure = "parakeet_close_failed"
+        try:
+            with self._parakeet_condition:
+                if self._parakeet_close is None:
+                    self._parakeet_close = candidate
+            if self._parakeet_close is candidate:
                 with self._parakeet_condition:
                     while self._parakeet_active:
                         self._parakeet_condition.wait(timeout=0.05)
                 self._parakeet_release_resources()
-            except BaseException:
-                failure = "parakeet_close_failed"
+                failure = None
+        except BaseException:
+            if self._parakeet_close is not candidate:
+                raise
+            failure = "parakeet_close_failed"
+        finally:
+            if self._parakeet_close is candidate:
+                try:
+                    with self._parakeet_condition:
+                        self._parakeet_condition.notify_all()
+                except BaseException:
+                    failure = "parakeet_close_failed"
+                finally:
+                    # Publish after fallible notification/lock exit so success
+                    # cannot become visible before a later metadata failure.
+                    candidate.result = (failure,)
+        closing = self._parakeet_close
+        while closing.result is None:
             with self._parakeet_condition:
-                self._parakeet_failure = failure
-                self._parakeet_close_owner = None
-                self._parakeet_close_done.set()
-        else:
-            self._parakeet_close_done.wait()
-        if self._parakeet_failure is not None:
-            raise RuntimeError(self._parakeet_failure)
+                if closing.result is None:
+                    self._parakeet_condition.wait(timeout=0.05)
+        failure = closing.result[0]
+        if failure is not None:
+            raise RuntimeError(failure)
 
     def close(self) -> None:
         """Synchronous retirement; async callers use begin_close or aclose."""
