@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "unit": "T023-B/reusable-auxiliary-capture-pause",
+  "task_ids": [
+    "T023"
+  ],
+  "criterion_ids": [
+    "C04"
+  ],
+  "status": "verified_local_prerequisite",
+  "baseline_revision": "34265b46d3561478fae9112c9a29d563db61baa6",
+  "implementation_commit": "a746f106042c95271de53b326804f4532445b160",
+  "sources": {
+    "src/pipeline/multi_room_audio_loop.py": "399683aa12a8ce7b431df9ad647259fcaa71861ba3f5dbbe836ee41cb3979b63",
+    "tests/integration/test_capture_auxiliary_pause.py": "f046bf8ee1f9a152898eb11e4c9ec66ccb98de5a0bb740c10b193404aab8bf5b"
+  },
+  "change": "Reusable MultiRoom capture pause now seals and drains selected XVF, direction, USB inventory and audio-health publication. Actual native/start/read/write/join owners remain retained after observer cancellation. Late starts are sealed again and stale generations cannot publish or reconcile.",
+  "resume": "Legacy synchronous resume_admission remains; drain_resume observes actual auxiliary readiness. First startup after an earlier completed prestart resume still performs the actual configured startup without replacing pending native work. Paused warmup remains permitted; single capture behavior is unchanged.",
+  "directed": {
+    "passed": 379,
+    "new_cases": 7,
+    "duration_seconds": 31.949,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "A171_subset": true
+  },
+  "initial_outcomes": {
+    "first_new_contract": "6 PASS on initial source502e98;0.740s XML",
+    "first_broad": "377 PASS/1 implementation regression on source502e98;33.503s XML. Existing start-after-close caller contract expected capture_closed, receivedNone; corrected.",
+    "static_gap": "Prestart resume cached a receipt that omitted actual first startup; corrected with completed-start epoch marker and seventh public-sequence test. No old-code runtime RED claimed.",
+    "current_broad": "All379 PASS on source399683aa/testf046bf8e; earlier outcomes retained unchanged.",
+    "full_review_parser": "Initial metadata parser did not match the original log summary; original review is preserved. Corrected parser matches original8102PASS+1xfail log; no test rerun or metric replacement."
+  },
+  "API": [
+    "pause_admission seals all selected auxiliary generations before awaits.",
+    "drain_pause retains real input/callback/model/writer/auxiliary exits and preserves explicit retry after terminal failure.",
+    "resume_admission preserves existing synchronous API; drain_resume rejects superseded/unknown readiness and follows actual same-epoch startup.",
+    "Diagnostics project paused/retiring state from cached data without new I/O or invented freshness."
+  ],
+  "normal_full": {
+    "counts": {
+      "tests": 8103,
+      "passed": 8102,
+      "failures": 0,
+      "errors": 0,
+      "known_xfail": 1,
+      "ordinary_skipped": 0
+    },
+    "duration_seconds": 691.262,
+    "source_files": 980,
+    "script_files": 37,
+    "source_snapshot_sha256": "fdbde5c1552dc52bb606c320a78615fe2ba4cf25dd31159e6815bf528afb4625",
+    "source_unchanged": true,
+    "session_id": 81630,
+    "runner_terminal_exit_code": 0,
+    "pytest_terminal_exit_code": 0,
+    "minimum_available_bytes": 69299007488,
+    "storage_aborted": false,
+    "collection_scope": {
+      "exact_prior_A8096_union_new7": true,
+      "prior_A": 8096,
+      "new_ids": 7,
+      "directed_subset": 379,
+      "A171_subset": 171,
+      "characterization47_subset": 47
+    }
+  },
+  "normal_full_proof": {
+    "path": "data/autonomous-roadmap-20261102/t023/b/normal-full-attempt-01/acceptance-proof.json",
+    "sha256": "b44f2eabafecb8af118d5865538ce7d34bbae71d00a1948233940255c14e08b9"
+  },
+  "counts_not_additive": true,
+  "genuine_original_feature_RED_count": 0,
+  "artifacts": {
+    "data/autonomous-roadmap-20261102/t023/b/unit-plan.json": "ab135126d6b6bff7253bfadbbf763cf82913682a21fc78db6c7e5d78cfce8f20",
+    "data/autonomous-roadmap-20261102/t023/b/directed-proof.json": "cfbe83f58c0e9a2f5171fa6b1c2e8d0899ca65e55031ed114f1715125a53ff40",
+    "data/autonomous-roadmap-20261102/t023/b/start-caller-correction.json": "f57a2de6ea51c4c35971c3a112371393169d3588896b3d51e727cc3cb8b86ebf",
+    "data/autonomous-roadmap-20261102/t023/b/first-start-correction.json": "6a1d48655ac08ab4fe6364c5b6e0d7051bb8d31c153f3769ecbdcd3ce1769e72",
+    "data/autonomous-roadmap-20261102/t023/b/publication-final-review.json": "4f850604021f3db98c8543174c01a34a54f1f04e89fdb3760b5e39d86269e161",
+    "data/autonomous-roadmap-20261102/t023/b/lifecycle-review.json": "83778a891dc3699dcc89b08da78399c3683a4f854c097efec17e71c48c60ae8c",
+    "data/autonomous-roadmap-20261102/t023/b/author-delta-review.json": "353d13eefaef11590391bfd34c1edd31a1114620524b9a58c672a06c1369adb4",
+    "data/autonomous-roadmap-20261102/t023/b/finalizer-preflight-review.json": "b564d858e1f57378bf70be22db8147524c907337465e3570633c0326e3f26b21",
+    "data/autonomous-roadmap-20261102/t023/b/full-review.json": "580a2d56b37a9370e69e1821845efdd3d5158c5ad07d9180c7e504bd137db306",
+    "data/autonomous-roadmap-20261102/t023/b/single-start-review.json": "1a58b35bde5bd988ea2a8b90666368a3dbb8e617832a602cd60fbbf11e28891f",
+    "data/autonomous-roadmap-20261102/t023/b/c-parent-ownership.json": "1336cefa69078858b2214d20061186fbc2d4523a30af098d506971a116e8772d",
+    "data/autonomous-roadmap-20261102/t023/b/c-integration-notes.json": "d79d87b04e2cf4b32a96ebc49f687f6b5f76fb671a66b16127cd2bd76bdcd7a2",
+    "data/autonomous-roadmap-20261102/t023/b/next-boundary-plan.json": "4eeb81404379d3a0a7d05397a83af71b84bdb67253b9c2db04e92fd31536079b",
+    "data/autonomous-roadmap-20261102/t023/b/full-review-initial.json": "faf0850d25a82a56ff12d61213fe4f356bc9e6e7549c05b17d4fd9df59c62b34"
+  },
+  "next_unit": "T023-C: actual durable global policy/factory/parent writer drains, distinct administrative capability and authenticated nonvoice HTTP/UI. Reuse complete awaited turn parent ownership; do not add duplicate pipeline/router pause layers without evidence. Bind owned browser/admin recording and unknown participant states honestly.",
+  "limits": [
+    "B supplies selected capture auxiliary barriers, not a durable global controller, global HTTP/UI toggle, completed total mute ACK or T023/C04 acceptance.",
+    "No physical USB disposal, new universal Thread admission proof, terminal model shutdown for reusable mute, native SDK/copy/allocator erase or restore antirollback acceptance.",
+    "Synthetic USB/read/model/driver leaves and temporary files only; tests do not prove all four physical microphones or browser recording retirement. No production/hardware/models/providers used.",
+    "All21 criteria and T022 residual SDK/copy/CLI/constructor/task uncertainty remain open; T020/P1/T047 and voice/person/account/consent/permission separation unchanged."
+  ]
+}

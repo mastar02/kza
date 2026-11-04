@@ -1202,14 +1202,18 @@
       "inclusion": "required",
       "status": "in_progress",
       "implementation_commits": [
-        "ec24701020ff3ae19f539b7bd80ca55bdec27acc"
+        "ec24701020ff3ae19f539b7bd80ca55bdec27acc",
+        "a746f106042c95271de53b326804f4532445b160"
       ],
       "evidence": [
         "docs/research/2026-11-04-capture-suspension-composition.json",
         "data/autonomous-roadmap-20261102/t023/a/evidence.json",
-        "data/autonomous-roadmap-20261102/t023/a/normal-full-attempt-01/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t023/a/normal-full-attempt-01/acceptance-proof.json",
+        "docs/research/2026-11-04-capture-auxiliary-pause.json",
+        "data/autonomous-roadmap-20261102/t023/b/evidence.json",
+        "data/autonomous-roadmap-20261102/t023/b/normal-full-attempt-01/acceptance-proof.json"
       ],
-      "next_action": "T023-A verificada localmente: sellos independientes en CaptureScopes y VoiceRegistry, 171 casos dirigidos incluidos cuatro nuevos, y suite completa con 8.095 aprobados y una xfail conocida. Los 979 archivos, incluidos 37 scripts, conservaron sus bytes; runner y pytest terminaron en código 0. Todavía no habilita control ni confirmación de mute global. Seguir con T023-B: pausa reutilizable de XVF, dirección, telemetría y audio-health, con arranques tardíos y recibos nativos reales en fixtures locales. Después completar política durable ante reinicios, censo y fábrica, capacidad admin:manage distinta, HTTP/UI y reactivación autenticada sin voz. T023, C04 y los 21 criterios siguen abiertos. No se acredita seguridad multithread nueva ni cierre del ingreso observe/copy previo al job. Se conservan las obligaciones de T022, T020/P1/T047 y las autoridades separadas."
+      "next_action": "T023-B verificada localmente: pausa reutilizable de XVF, dirección, inventario USB y publicación de estado, con recibos nativos y siete casos nuevos dentro de 379 dirigidos. La suite completa conserva los casos anteriores y agrega los siete nuevos sobre 980 archivos, incluidos 37 scripts. Se corrigieron una regresión del caller start cerrado y el primer arranque posterior a una reanudación previa; se conservan los primeros resultados. Seguir con T023-C: política global durable ante reinicios, fábrica real y drenaje de escritores independientes, capacidad administrativa distinta, HTTP/UI y reactivación autenticada sin voz. Reutilizar el parentesco del turno awaitado; comprobar captura del navegador y participantes desconocidos. No hay todavía confirmación de mute global ni aceptación de T023/C04 o de los 21 criterios. T022, T020/P1/T047 y las autoridades separadas conservan sus obligaciones."
     },
     {
       "id": "T024",
@@ -2374,7 +2378,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T023-A/independent-capture-suspension-reasons",
+    "last_verified_unit": "T023-B/reusable-auxiliary-capture-pause",
     "user_priority_after_admin_unit": "T047"
   }
 }
