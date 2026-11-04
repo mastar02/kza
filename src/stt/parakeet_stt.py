@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 class _ParakeetLease:
     def __init__(self, owner):
         self.owner = owner
+        self.thread = threading.current_thread()
         self.active = True
 
 class _ParakeetLifecycle:
@@ -47,7 +48,7 @@ class _ParakeetLifecycle:
     def _parakeet_initialize(self) -> None:
         self._parakeet_condition = threading.Condition()
         self._parakeet_local = threading.local()
-        self._parakeet_active = 0
+        self._parakeet_leases = []
         self._parakeet_sealed = False
         self._parakeet_close_started = False
         self._parakeet_close_owner = None
@@ -55,37 +56,52 @@ class _ParakeetLifecycle:
         self._parakeet_failure = None
         self._parakeet_closing = None
 
+    @property
+    def _parakeet_active(self) -> int:
+        return sum(lease.active for lease in self._parakeet_leases)
+
     def _parakeet_current(self):
         lease = getattr(self._parakeet_local, "lease", None)
-        return lease if lease is not None and lease.owner is self and lease.active else None
+        return lease if (lease is not None and lease.owner is self
+                         and lease.thread is threading.current_thread()
+                         and lease.active) else None
 
     @contextmanager
     def _parakeet_admit(self):
         lease = self._parakeet_current()
         owned = lease is None
         if owned:
-            with self._parakeet_condition:
-                if self._parakeet_sealed:
-                    raise RuntimeError("parakeet_closed")
-                lease = _ParakeetLease(self)
-                self._parakeet_active += 1
+            lease = _ParakeetLease(self)
         previous = getattr(self._parakeet_local, "lease", None)
-        self._parakeet_local.lease = lease
         try:
-            yield
-        finally:
-            self._parakeet_local.lease = previous
             if owned:
                 with self._parakeet_condition:
-                    lease.active = False
-                    self._parakeet_active -= 1
-                    self._parakeet_condition.notify_all()
+                    if self._parakeet_sealed:
+                        raise RuntimeError("parakeet_closed")
+                    self._parakeet_leases.append(lease)
+            self._parakeet_local.lease = lease
+            yield
+        finally:
+            # Logical exit precedes fallible TLS restoration and notification.
+            if owned:
+                lease.active = False
+            try:
+                self._parakeet_local.lease = previous
+            finally:
+                if owned:
+                    with self._parakeet_condition:
+                        self._parakeet_leases = [
+                            active for active in self._parakeet_leases if active.active
+                        ]
+                        self._parakeet_condition.notify_all()
 
     def _parakeet_require_close_caller(self) -> None:
-        if self._parakeet_current() is not None:
-            raise RuntimeError("parakeet_close_from_worker")
+        current = threading.current_thread()
         with self._parakeet_condition:
-            if (self._parakeet_close_owner is threading.current_thread()
+            if any(lease.active and lease.thread is current
+                   for lease in self._parakeet_leases):
+                raise RuntimeError("parakeet_close_from_worker")
+            if (self._parakeet_close_owner is current
                     and not self._parakeet_close_done.is_set()):
                 raise RuntimeError("parakeet_close_from_owner")
 
@@ -109,7 +125,7 @@ class _ParakeetLifecycle:
             try:
                 with self._parakeet_condition:
                     while self._parakeet_active:
-                        self._parakeet_condition.wait()
+                        self._parakeet_condition.wait(timeout=0.05)
                 self._parakeet_release_resources()
             except BaseException:
                 failure = "parakeet_close_failed"
