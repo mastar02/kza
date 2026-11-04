@@ -1134,7 +1134,8 @@
         "9e57c24915294049cfb05821dc466f0a7d2e852f",
         "cc8578836dec02308468e84d094ffe478d5ee53b",
         "7e1b0fe632215a22657c0e8710b67c03769620eb",
-        "e6e753fdbb924683da757da15a5cce01779f7491"
+        "e6e753fdbb924683da757da15a5cce01779f7491",
+        "8a6df6dd1875a0aae59b733192b5aaaac9fff27c"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1151,9 +1152,10 @@
         "data/autonomous-roadmap-20261102/t022/l/evidence.json",
         "data/autonomous-roadmap-20261102/t022/m/evidence.json",
         "data/autonomous-roadmap-20261102/t022/n/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/o/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/o/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/p/evidence.json"
       ],
-      "next_action": "T022-O verificada localmente: benchmark de latencia con dueños antes de carga y retiro real antes del resultado; Piper/Emotion con leases e iteradores; FastRouter con pool propio, SDK/HTTP y gates del grafo/privacidad. Se preservan egress, clases SDK para observador presente, concurrencia predeterminada, mediciones/CLI y controles seguros por hoja. HA usa snapshot vigente con disponibilidad explícita. RED y full congelada en evidencia. Continuar T022-P: reservas/TLS/cierre pre-try del viejo _TTSLifecycle Kokoro/Dual con RED genuinos. Inventario de 29 familias y copias/destinos T023/T024 pendientes; T021/T022 y C03/C04/C06/C20 abiertos. Causas M/G/J/K y ENOSPC K sin acreditar; HA resistente >60 s incumplido. T047 NEXO conserva integración local y autoridades separadas."
+      "next_action": "T022-P verificada localmente: Kokoro/Dual comparten leases por identidad y cierre de intento único, con limpieza de PCM/SDK dentro de admisión y fuente/iterador retenidos antes de iterar. Se comprueba al llamador original a través de coordinadores e hijos propios, preservando overrides públicos y etiquetas fijas. Selección, cálculo, intervalos y vistas de 4096 conservados; 30 RED únicos y 49 casos nuevos con regresiones y full congelada en evidencia. Continuar T022-Q: reconciliar 29 familias, productores/actores/copias/destinos actuales y followups N/O supersedidos sin borrar historia. Executor compartido saturado, SDK privado y matriz T023/T024 siguen sin prueba completa. T021/T022 y C03/C04/C06/C20 abiertos; M/G/J/K y ENOSPC K sin causa acreditada, HA resistente >60 s incumplido. T047 NEXO y autoridades separadas conservadas."
     },
     {
       "id": "T023",
@@ -2334,7 +2336,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-O/standalone-latency-retirement",
+    "last_verified_unit": "T022-P/tts-lifecycle-retirement",
     "user_priority_after_admin_unit": "T047"
   }
 }

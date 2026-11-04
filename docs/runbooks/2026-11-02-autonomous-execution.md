@@ -2646,3 +2646,19 @@ y la evidencia física. Las causas históricas M/G/J/K y ENOSPC K no quedan
 atribuidas; el retiro HA resistente a cancelación mayor a 60 s sigue incumplido.
 No se usaron modelos reales, hardware, servicios de producción ni despliegue.
 T047 conserva la integración NEXO local y sus autoridades separadas.
+
+## Reservas y retiro del TTS compartido
+
+T022-P sustituye el lifecycle antiguo de Kokoro y Dual por la admisión por identidad del adaptador corregido, conservando la compatibilidad `_tts_*`. Las reservas identifican al Thread real. El stream conserva su lease entre porciones sin dejar TLS suspendido; cada reanudación registra al último consumidor. La autoespera desde ese consumidor se rechaza antes del sello, también al pasar el stream entre hilos.
+
+La publicación de reservas y TLS queda dentro del `try`; la lease propia se desactiva antes de la limpieza falible y un préstamo anidado no desactiva al padre. El token único de cierre conserva su recibo aunque falle una notificación consultiva. No se reintenta una disposición incierta ni se presenta como confirmada.
+
+El puente async valida al llamador original antes de sellar y despachar. Usa el drenaje privado sólo con `wait_closed` estándar y sin override de instancia; en otro caso conserva el target público anterior. Dual comprueba además las guardas de sus hijos propios en el llamador original, sin sellarlos todavía. Tras drenar al padre, sólo delega por el drenaje privado cuando ambos métodos públicos del hijo son estándar y no tienen overrides de instancia; los demás casos conservan `engine.close()`. Permanecen el rechazo de reentrada desde el disposer y la propiedad de reemplazos prestados y peers. El backend opcional sin contrato de cierre conserva su barrera explícita.
+
+La fuente se retiene antes de `iter` y el iterador efectivo antes de consumirlo. Ambos se observan si son distintos; sólo el cierre confirmado o el agotamiento real retiran cada referencia. Los alias locales de PCM, texto y resultados se limpian dentro de las leases de síntesis y reproducción. Las conversiones, concatenación, selección, relojes y reproducción se conservan; las porciones de 4096 muestras mantienen la misma vista sin copia adicional de PCM.
+
+Los códigos fijos siguen siendo `tts_closed`, `tts_close_from_worker`, `tts_close_from_owner`, `tts_iterator_close_failed`, `tts_backend_close_unsupported` y `tts_close_failed`. La fase y el marcador propio determinan los fallos específicos; no se copian mensajes del SDK ni etiquetas de un hijo.
+
+T022-P queda verificada localmente en `8a6df6d`. Pasan 49 casos nuevos y 510 regresiones existentes. Full: 7953 casos más la xfail conocida en 581.45 segundos, con 959 archivos idénticos de src/tests/tools/scripts, incluidos 37 scripts. Se conservan los RED y fallos de fixture con sus versiones. Las hojas SDK/modelo son sintéticas; adaptadores, clientes y handles son reales.
+
+`current-source-semantic-proof.json` liga la preservación a los hashes vivos finales; la primera prueba queda en `history/`. Este corte no acredita borrado de VRAM, todas las copias privadas del SDK o reproducción global. La saturación del executor predeterminado prestado y la espera de limpieza en su cola no están resueltas ni tienen aquí un límite universal. T022 y sus criterios siguen abiertos. La siguiente Q concilia inventario, evidencia y destinos de copias; no presupone otra implementación ni aceptación de recursos pendientes.
