@@ -59,6 +59,7 @@ class CaptureScopes:
         self._ingress = {}
         self._ingress_authority = object()
         self._suspended_origins = frozenset()
+        self._suspension_reasons: dict[MemoryOrigin, set[object | None]] = {}
         self._origin_fences = {}
         self._lock = threading.Lock()
         ledger.add_revocation_observer(self._retire_conversations)
@@ -76,33 +77,59 @@ class CaptureScopes:
         return CaptureEpoch(key[1], key[0], self.ledger.clock()+48*3600,
             retired=key[0] in self._suspended_origins,authority=self._ingress_authority)
 
-    def suspend_origin(self, origin: MemoryOrigin) -> None:
-        """Seal one producer lane without revoking its historical conversation."""
+    def suspend_origin(self, origin: MemoryOrigin, *, reason: object | None = None) -> None:
+        """Seal a lane for one server-owned reason without revoking history.
+
+        The default reason preserves existing callers. Independent controls use
+        a stable object() identity and can release only their own suspension.
+        """
         if type(origin) is not MemoryOrigin:
             raise ValueError('invalid_capture_origin')
+        if reason is not None and type(reason) is not object:
+            raise ValueError('invalid_capture_suspension_reason')
         with self._lock:
+            self._suspension_reasons.setdefault(origin, set()).add(reason)
             if origin in self._suspended_origins:
                 return
             self._suspended_origins = self._suspended_origins | {origin}
-            self._origin_fences = {**self._origin_fences,origin:max(self.ledger.clock(),self._origin_fences.get(origin,float('-inf')))}
             for key,ingress in self._ingress.items():
                 if key[0] is origin:
                     ingress.current.retired = True
+            self._origin_fences = {**self._origin_fences,origin:max(self.ledger.clock(),self._origin_fences.get(origin,float('-inf')))}
 
-    def resume_origin(self, origin: MemoryOrigin) -> None:
-        """Replace retired admissions and reject all pre-resume input."""
+    def resume_origin(self, origin: MemoryOrigin, *, reason: object | None = None) -> None:
+        """Release one suspension; fresh input starts only after the last release."""
         if type(origin) is not MemoryOrigin:
             raise ValueError('invalid_capture_origin')
+        if reason is not None and type(reason) is not object:
+            raise ValueError('invalid_capture_suspension_reason')
         with self._lock:
-            self._origin_fences = {**self._origin_fences,origin:max(self.ledger.clock(),self._origin_fences.get(origin,float('-inf')))}
+            reasons = self._suspension_reasons.get(origin)
+            if reasons:
+                if reason not in reasons:
+                    return
+                if len(reasons) > 1:
+                    reasons.remove(reason)
+                    return
+            elif reason is not None:
+                return
+            # Prepare fresh epochs before releasing the last reason. A failed
+            # clock/epoch allocation must leave the old fence retryable.
+            fence = max(self.ledger.clock(), self._origin_fences.get(origin, float('-inf')))
+            epochs = {key: self._new_epoch(key) for key in self._ingress if key[0] is origin}
+            # Preserve legacy resume's boundary without a prior default reason.
+            if reasons:
+                del self._suspension_reasons[origin]
+            self._origin_fences = {**self._origin_fences, origin: fence}
             self._suspended_origins = self._suspended_origins - {origin}
             for key in tuple(self._scopes):
                 if key[0] is origin:
                     del self._scopes[key]
-            for key,ingress in self._ingress.items():
-                if key[0] is origin:
-                    ingress.current.retired = True
-                    ingress.current = self._new_epoch(key)
+            for key, epoch in epochs.items():
+                ingress = self._ingress[key]
+                ingress.current.retired = True
+                epoch.retired = False
+                ingress.current = epoch
 
     def _require_origin(self, origin, captured_at):
         if type(origin) is not MemoryOrigin:

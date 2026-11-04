@@ -64,6 +64,7 @@ class VoiceRegistry:
         self._loop = asyncio.get_running_loop()
         self._maintenance = self._closing = None
         self._closed = False
+        self._suspension_reasons: dict[MemoryOrigin, set[object | None]] = {}
         self._suspended_origins = frozenset()
         self._dropped = self._failed = 0
 
@@ -132,19 +133,47 @@ class VoiceRegistry:
             return False
         return True
 
-    def suspend_origin(self, origin: MemoryOrigin) -> None:
-        """Seal one recording lane while keeping command observations available."""
-        self._suspended_origins = self._suspended_origins | {origin}
+    def suspend_origin(self, origin: MemoryOrigin, *, reason: object | None = None) -> None:
+        """Seal one lane until each independent suspension reason is released."""
+        if type(origin) is not MemoryOrigin:
+            raise ValueError('invalid_capture_origin')
+        if reason is not None and type(reason) is not object:
+            raise ValueError('invalid_capture_suspension_reason')
+        reasons = self._suspension_reasons.get(origin)
+        if reasons is None:
+            suspended = self._suspended_origins | {origin}
+            self._suspension_reasons[origin] = {reason}
+            self._suspended_origins = suspended
+        else:
+            reasons.add(reason)
 
     def pending_origin(self, origin: MemoryOrigin) -> int:
         """Count actual retained PCM/model/commit owners for this lane."""
         return sum(any(source.origin is origin for source in job.sources) for job in self._jobs.values())
 
-    def resume_origin(self, origin: MemoryOrigin) -> None:
-        """Old model work must finish before its lane may accept new captures."""
+    def resume_origin(self, origin: MemoryOrigin, *, reason: object | None = None) -> None:
+        """Release only this reason; the last release requires actual work exit."""
+        if type(origin) is not MemoryOrigin:
+            raise ValueError('invalid_capture_origin')
+        if reason is not None and type(reason) is not object:
+            raise ValueError('invalid_capture_suspension_reason')
+        if self._closed:
+            raise RuntimeError('voice_registry_closed')
+        reasons = self._suspension_reasons.get(origin)
+        if reasons is None:
+            if reason is None and self.pending_origin(origin):
+                raise RuntimeError('voice_lane_still_owned')
+            return
+        if reason not in reasons:
+            return
+        if len(reasons) > 1:
+            reasons.remove(reason)
+            return
         if self.pending_origin(origin):
             raise RuntimeError('voice_lane_still_owned')
-        self._suspended_origins = self._suspended_origins - {origin}
+        suspended = self._suspended_origins - {origin}
+        del self._suspension_reasons[origin]
+        self._suspended_origins = suspended
 
     def _start(self, slot, job):
         task = asyncio.create_task(self._work.run(self._observe_native,job),context=Context())
