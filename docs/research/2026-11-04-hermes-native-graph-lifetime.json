@@ -1,0 +1,442 @@
+{
+  "schema_version": 1,
+  "task": "T022",
+  "unit": "T022-X/hermes-native-graph-lifetime",
+  "status": "verified_local",
+  "private_evidence_root": "data/autonomous-roadmap-20261102/t022/x",
+  "baseline_commit": "8d4ec51a345da9403b228df182cf5494d75146ae",
+  "implementation_commit": "e2d5f83478b6535e64b602847529543da5eba551",
+  "scope": [
+    "Actual Hermes native-call lifetime and main/compactor graph retirement after public complete observer cancellation, including instance-associated failed W process-owner barrier.",
+    "Exactly two production paths: src/llm/hermes_reasoner.py and src/main.py. New seven-case unit and six-case actual-graph modules; no application.py/backend/framework change.",
+    "Preserve W process retirement policy, generation/usage/argv/timeout algorithms and consent gates. No real Hermes/model/provider/hardware request or physical acceptance."
+  ],
+  "genuine_baseline_red": {
+    "status": "one_genuine_existing_public_graph_lifetime_RED",
+    "scenario_count": 1,
+    "proof": {
+      "path": "data/autonomous-roadmap-20261102/t022/x/baseline-red-proof.json",
+      "sha256": "e83e9ddd792a55e854271f3a89f7b904d64b8957132953c5945b1cdf3385fbec"
+    },
+    "probe_terminal_exit_code": 1,
+    "outer_driver_terminal_exit_code": 0,
+    "driver_limit": "Driver0 is evidence capture, not a successful probe/product result.",
+    "public_path": "build_application -> actual main Hermes.complete observer cancel -> existing AsyncExitStack.aclose",
+    "before_close": "Cancelled public observer, SAME actual concurrent Future RUNNING/not done, actual child alive and same W owner/proc/pipes registered; privacy writer/DB initially open, release absent.",
+    "actual_contradiction": "Stack.aclose returns normally before release while that actual Future remains RUNNING/not done/not cancelled and child alive. Actual privacy writer lease, DB and authority lease are closed; service_calls0.",
+    "fixture_afterwards": "Actual release, direct-child wait and both pipe-close returns; SAME Futures done and default-pool Threads joined; cleanup errors empty. These later fixture receipts are not product retirement.",
+    "preparation_history": "Original0109 and revision02 were prepared but NEVER run. Revision02 adds inert-child20s self-bound;03 also forces setup/cleanup errors to code2. Only first actual03 run counts as the one genuine RED. Earlier preflight NOT_executed fields are historical states, not extra runtime attempts.",
+    "limits": "One main/factory-stack RED on synthetic inert auth/-z and actual child/Future only. No separate baseline RED for compactor/runtime/postlude or candidate APIs; no permanent leak/private descendant claim."
+  },
+  "initial_test_failures_not_RED": {
+    "component": {
+      "classification": "57PASS plus1 new stream-test oracle FAIL, not another baseline RED",
+      "cause": "New test expected a string from generate_stream; existing API yields one dict with token/text/token_count. Failure preceded the yield-lifetime assertion. Production source unchanged.",
+      "correction": "Correct only the new expected chunk shape, preserving actual paused-generator close guard. Corrected isolated stream case subsequently1PASS/terminal0; all7 unit cases later pass inside410.",
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t022/x/initial-component-classification.json",
+        "sha256": "9d125ab1f51d3b0ff9b40a6ddb694ea26fe8ecb960b0b9a417dc5ea993eb7f80"
+      }
+    },
+    "graph": {
+      "classification": "Initial2PASS plus3 invalid-accessor failures and1 external-watchdog failure, not a product RED",
+      "initial_fixture_error": "The new fixture used graph.models.llm; actual selected main reasoner is graph.pipeline._orchestrator.llm. Registration/stack/runtime fail AttributeError. This was a new test assumption, not a missing product API.",
+      "correction": "Bind the actual orchestrator.llm and attempt real stack cleanup on failed-cleanup setup failure when no closing Task started. No fabricated controller/API or product change.",
+      "watchdog_limit": "failed-cleanup hit external60s watchdog. Exact internal wait cause is NOT independently attributed. Its setup shares the invalid accessor and skipped stack-cleanup path, but that observation is not a proven single cause.",
+      "corrected_result": "The4 initially failing graph selections subsequently4PASS/terminal0; all6 graph selections pass inside broad410. The initial2 passing cases overlap, not extra additions.",
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t022/x/initial-graph-classification.json",
+        "sha256": "f4feefcbef536d65f0073da6f38eeb9abb6dabdeff1e599687f9ef934f2e4319"
+      }
+    },
+    "counted_as_new_baseline_RED": false
+  },
+  "lifecycle_and_outcome_contract": {
+    "API": [
+      "aload",
+      "request_close",
+      "begin_close",
+      "aclose",
+      "wait_closed",
+      "close"
+    ],
+    "guard": "_hermes_require_close_caller",
+    "fixed_close_failure": "hermes_retirement_unconfirmed",
+    "W_fixed_normal_cleanup_failure": "hermes_process_retirement_failed",
+    "sync": "Nested real-Thread leases span admitted native public operations; logical deactivation precedes fallible cleanup. Outer generate/__call__ lease spans the test's delegated _run postlude.",
+    "async": "Per-call retained Task is born in Context(), awaits actual to_thread(_hermes_invoke), and returns None internally. Public observer cancellation detaches without cancelling that Task. Task.done AND job_returned after the native Future await are required; native_finished alone is not completion.",
+    "authority": "No Thread/TLS/ContextVar authority is suspended across await/yield. Guard actual native Thread/close owner in original caller before Context/seal; an idle reused worker is not an active lease. Sync close stays off-loop; async close polls admitted predicates without occupying a default-pool worker.",
+    "stream": "Complete native pull is admitted and its lease is left before the single existing chunk is yielded. No lease remains suspended on the caller at yield.",
+    "outcomes": "Worker catches BaseException into outcome for a still-live observer and returns None to retained Task. Observer cleanup clears value/error links; abandoned native controls do not escape that Task. Ordinary generation error does not fail close if resources really retired.",
+    "uncertainty": "Unknown dispatch or an instance-associated non-retired W owner after actual job return produces the same retained fixed close failure, not success. No retry or global-registry-emptiness shortcut.",
+    "borrowed_pool": "Uses actual borrowed default executor without a new capacity/executor or product shutdown. Root reports unit9-call/after-close pool-usability witness; this is not whole-pool ownership or starvation immunity."
+  },
+  "main_and_graph_scope": [
+    "Main creates two distinct actual Hermes instances and registers each before its owned aload. Local nominal cohort uses existing model-resource owner protocol in main; no application.py change.",
+    "Root integration proof/review records5 real shared borrowers (Chroma, CommandProcessor, shared Response, ContextManager and query work), plus privacy/pipeline/stack fallback dependency.",
+    "Actual inert auth/-z, original constructors/load and real Popen are delegated. ThreadPoolExecutor.submit forwards ALL work and TLS envelope associates actual concurrent Future at actual _run entry, not via an obsolete partial selector.",
+    "Actual retained begin_close Task is returned unchanged. Async model-close donecallback records actual Future.done; caller ContextVar marker set before complete remains its False default in the worker.",
+    "Held main/compactor jobs survive consumer cancellation and repeated separate close-observer cancellation through factory-stack and runtime-then-stack paths. Child can be reaped/pipes closed while the same native callable remains in its in-_run postlude; privacy must still wait. One instance's release cannot acknowledge the other.",
+    "Partial after-main/after-compactor construction failures retain the selected real sync generate through its in-call postlude. External fixture-owned ThreadPool Future publication is not product-owned native receipt: model close requires the sync lease/postlude return; fixture separately waits actual external Future and joins its own pool.",
+    "One actual W killpg-failure graph case has native Future terminal but unretired instance-linked process owner. Actual model close fails, attempted stack fails and actual privacy writer/usable ledger stay held. Fixture later reaps/closes without resetting retained production owners."
+  ],
+  "new_tests_and_overlap": {
+    "new_unit_cases": 7,
+    "new_graph_cases": 6,
+    "new_unique_cases": 13,
+    "unit_selections": [
+      "concurrent",
+      "external-close",
+      "reentry",
+      "cancel-control",
+      "error-clean",
+      "load-call",
+      "stream-yield"
+    ],
+    "graph_selections": [
+      "registration",
+      "stack",
+      "runtime",
+      "after-main",
+      "after-compactor",
+      "failed-cleanup"
+    ],
+    "all_inside_directed_410": true,
+    "all_previous_W397_ids_included": true,
+    "legacy_Hermes41_and_W_OS10_included": true,
+    "counts_not_additive": true,
+    "limit": "7+6 new IDs are already inside410; corrected isolated1/4 and earlier pass selections overlap. No future full count is derived."
+  },
+  "targeted_validation": {
+    "status": "passed_targeted_only",
+    "session_id": 28105,
+    "terminal_exit_code": 0,
+    "counts": {
+      "tests": 410,
+      "passed": 410,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "junit_duration_seconds": 93.711,
+    "log_duration_seconds": 93.73,
+    "source_files": 978,
+    "script_files": 37,
+    "source_snapshot_sha256": "7d92f90689412a933554b2906fffd90166ba15a66b4aa75656361ae45f8bafb7",
+    "source_unchanged": true,
+    "normal_full_pending": true,
+    "proof": {
+      "path": "data/autonomous-roadmap-20261102/t022/x/targeted-proof.json",
+      "sha256": "8639f32e381e1779faf43ecafa8fcaeb2ed204f13c286ad8ee16e5c97ea98aea"
+    }
+  },
+  "source_scope": {
+    "snapshot": {
+      "path": "data/autonomous-roadmap-20261102/t022/x/source-snapshot.json",
+      "sha256": "7d92f90689412a933554b2906fffd90166ba15a66b4aa75656361ae45f8bafb7"
+    },
+    "file_count": 978,
+    "script_count": 37,
+    "hermes_sha256": "fa2aafe0b071c587fa207c7023af4dd0979c02445d95057a5282870d7ed4d34c",
+    "main_sha256": "b93a05d6d956a885bb47b89104dbc3ce3e7e0b465d4783eb4c32c21a5a986798",
+    "production_changed": [
+      "src/llm/hermes_reasoner.py",
+      "src/main.py"
+    ],
+    "tests_added": [
+      "tests/integration/test_hermes_graph_lifecycle.py",
+      "tests/unit/llm/test_hermes_call_lifecycle.py"
+    ],
+    "removed": [],
+    "other_974_rows_identical": true,
+    "W_ProcessOwner_all4_methods_AST_identical": true,
+    "W_delta": "reasoner association field and instance tracking before Popen; no change to ProcessOwner postinit/adopt/failed/retire bodies.",
+    "unchanged_existing_methods": [
+      "_build_cmd",
+      "_kill_process_group",
+      "_record_usage",
+      "get_info",
+      "load_lora",
+      "unload_lora"
+    ],
+    "enveloped_or_dispatch_methods": [
+      "__init__",
+      "load",
+      "_run",
+      "__call__",
+      "generate",
+      "generate_stream",
+      "complete"
+    ],
+    "new_async_method": "aload",
+    "algorithm_limit": "Protected payload blocks checked after admission unwrap; _run comparison already contained explicit reasoner/tracking association. Not byte equality to W0f or whole-class AST preservation.",
+    "proofs": [
+      {
+        "path": "data/autonomous-roadmap-20261102/t022/x/source-scope-proof.json",
+        "sha256": "4629dc48c86c6e61304758ac79989086a436a3ae6ed3eafcdbea7724be0db7d3"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t022/x/cross-unit-source-proof.json",
+        "sha256": "81fb06fd02d077ac5120c0e351fa154a2c5f9b9a9fbc522eedf82280eec6cfa0"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t022/x/implementation-notes.json",
+        "sha256": "326e057697d9c870d377a8327df25ff3f90d7cd2ffe967aa24eef53af4a01dcc"
+      }
+    ]
+  },
+  "source_delivery_history": {
+    "status": "implemented_directed410_source_committed_pushed_full_running",
+    "implementation_commit": "e2d5f83478b6535e64b602847529543da5eba551",
+    "push_session": 14248,
+    "push_terminal_exit_code": 0,
+    "full_session": 40294,
+    "runner_pid": 2141205,
+    "pytest_wrapper_pid": 2141212,
+    "source_files": 978,
+    "script_files": 37,
+    "source_snapshot_sha256": "7d92f90689412a933554b2906fffd90166ba15a66b4aa75656361ae45f8bafb7",
+    "targeted_cases": 410,
+    "new_unit_cases": 7,
+    "new_graph_cases": 6,
+    "full_pending": true,
+    "scope": "Hermes call receipts/context/close +main/compactor early cohort/privatewriter barriers; originalbaseline1actualRED, initialtestfixturefailures keptseparately",
+    "objective_not_complete": true
+  },
+  "full_validation": {
+    "status": "verified_normal_full",
+    "normal_full_verified": true,
+    "session_id": 40294,
+    "attempt_root": "data/autonomous-roadmap-20261102/t022/x/normal-full-attempt-01",
+    "source_head": "e2d5f83478b6535e64b602847529543da5eba551",
+    "source_snapshot_sha256": "7d92f90689412a933554b2906fffd90166ba15a66b4aa75656361ae45f8bafb7",
+    "source_files": 978,
+    "script_files": 37,
+    "runner_terminal_exit_code": 0,
+    "pytest_terminal_exit_code": 0,
+    "actual_outcomes": {
+      "tests": 8092,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 8091,
+      "known_xfail": 1,
+      "ordinary_skipped": 0
+    },
+    "duration_seconds": 687.5,
+    "minimum_available_bytes": 71723241472,
+    "storage_aborted": false,
+    "post_run_sources_unchanged": true,
+    "verification_artifact": {
+      "path": "data/autonomous-roadmap-20261102/t022/x/normal-full-attempt-01/acceptance-proof.json",
+      "sha256": "7f2ad27a9b5f3199e9f32ec0ac1abcc34dcc6653ac9c1e4ac3d7a6c26a976f12"
+    },
+    "terminal_receipt": {
+      "path": "data/autonomous-roadmap-20261102/t022/x/normal-full-attempt-01/terminal-receipt.json",
+      "sha256": "c4f0922b9013079b3e1a632466cf343459e6e416cb3534621b7d7334ae704d08"
+    },
+    "terminal_artifacts": {
+      "full-runner.py": {
+        "size": 2662,
+        "sha256": "30322de59350eb98531c3764d92ae55b7c44ec9d20c78b2830fef250fc085e3a"
+      },
+      "preparation-proof.json": {
+        "size": 489,
+        "sha256": "77881e9176942c19cce7074cbdd1746ad0404be18c7fb4164168f4a1dd03cd7a"
+      },
+      "source.json": {
+        "size": 167329,
+        "sha256": "7d92f90689412a933554b2906fffd90166ba15a66b4aa75656361ae45f8bafb7"
+      },
+      "source-post.json": {
+        "size": 167329,
+        "sha256": "7d92f90689412a933554b2906fffd90166ba15a66b4aa75656361ae45f8bafb7"
+      },
+      "full.log": {
+        "size": 2108159,
+        "sha256": "1d7975861be9a64c547ce09ac4e44b9a068ca90d19441758661d218ff8e54932"
+      },
+      "full.xml": {
+        "size": 2292137,
+        "sha256": "9703c2248d0a779831b7005ff0321de1617f6c7767512fff250682524a65d7d3"
+      },
+      "full-status.json": {
+        "size": 652,
+        "sha256": "63039e45e7fd2b877e2f2197ed1626cc54bdbb45a4d738567c2b1335e651e04f"
+      },
+      "storage-telemetry.json": {
+        "size": 172711,
+        "sha256": "8a1449e10bd3b916b7170b249b54d37a14db73d686050339ad6279bafc71a6a1"
+      },
+      "terminal-receipt.json": {
+        "size": 413,
+        "sha256": "c4f0922b9013079b3e1a632466cf343459e6e416cb3534621b7d7334ae704d08"
+      }
+    },
+    "unchanged_storage_bytes": {
+      "preflight": 5368709120,
+      "abort_floor": 536870912
+    },
+    "collection_scope": {
+      "prior_W_full_cases": 8079,
+      "all_prior_W_full_ids_preserved": true,
+      "current_ids_equal_prior_full_union_X_directed": true,
+      "new_X_case_ids": 13
+    },
+    "directed_coverage": {
+      "X": {
+        "unique_directed_cases": 410,
+        "all_in_full": true
+      },
+      "W": {
+        "unique_directed_cases": 397,
+        "all_in_full": true
+      },
+      "V": {
+        "unique_directed_cases": 298,
+        "all_in_full": true
+      },
+      "H_original29": {
+        "unique_directed_cases": 29,
+        "all_in_full": true
+      },
+      "U": {
+        "unique_directed_cases": 203,
+        "all_in_full": true
+      },
+      "T": {
+        "unique_directed_cases": 191,
+        "all_in_full": true
+      },
+      "S": {
+        "unique_directed_cases": 715,
+        "all_in_full": true
+      },
+      "R": {
+        "unique_directed_cases": 664,
+        "all_in_full": true
+      }
+    },
+    "counts_not_additive": true,
+    "command": [
+      "timeout",
+      "1500",
+      "nice",
+      "-n",
+      "10",
+      "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+      "-m",
+      "pytest",
+      "tests",
+      "--junitxml=/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/x/normal-full-attempt-01/full.xml"
+    ],
+    "environment": {
+      "base": "inherited os.environ.copy; no complete historical environment equality claimed",
+      "explicit_updates": {
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "ANONYMIZED_TELEMETRY": "False"
+      }
+    }
+  },
+  "reviews": [
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/x/implementation-review.json",
+      "sha256": "a578e857bc6ae863d16042f236331adb9b81995d54748cd7b5ec8bf0e2c8e8fd",
+      "scope": "Approved scoped static two-production-path/seven-unit review, not full/graph runtime acceptance."
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/x/graph-test-review-corrected.json",
+      "sha256": "8fc98eac9b457c67afedae36d7b08cf00ea1fb7ae8f8ee852b655803fd4a21e8",
+      "scope": "Approved corrected graph-test binding/setup-cleanup delta; no source changes or runtime by reviewer."
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/x/baseline-review.json",
+      "sha256": "c2ba3499202efb244531d809e8ebfb1999d987fee056c12ab983995d42244608",
+      "scope": "Static bounded existing-API probe review before root actual03 run."
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/x/design-review.json",
+      "sha256": "b3f61a02aca70a1eac38210c0fd8e724b8f54bf133e9d2571f58746a17127fa1",
+      "scope": "Private design review, not new runtime evidence."
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/x/graph-test-review.json",
+      "sha256": "850369aa57f8f2b8aa310201d15a01b0acde85399e9f77b21b0229de16b47fb1",
+      "scope": "Historical initial static test review; current corrected binding is the8fc receipt, not this earlier source assumption."
+    }
+  ],
+  "artifacts_sha256": {
+    "graph-baseline-03.py": "8e9fc704e7008eb1b5df104228db614bf8b453089be647af930addff9c71280a",
+    "graph-baseline-receipt-01.json": "f60400a435194284c77029e07e2d7fc40472ac8d7173148b5d9fe28752ba6536",
+    "graph-baseline-terminal-01.json": "fe50801197b92170333e9d4e694e7a42ec1974e9d6c6297a18d74c3db3517c90",
+    "graph-baseline-log-01.log": "988a5b8eafb0e60f59ab09331806cb55536010495009fb3093f97051903bc241",
+    "preparation-notes.json": "dcdf20f7123cc4215ab33e770932f365a68a1e9870f36bb7dc97282539b2b7b5",
+    "revision-03-preflight.json": "71008ca60def129f54dadd795eeaab54cfc8680f70c3673a13d984e7ea1e12c6",
+    "component-initial.xml": "4e1851917f325a9de4ab248cee19b22c429152cc8937c17e41ccd7c411e178c5",
+    "component-initial.log": "bbbe01dc3f47b2d8321214d46e2fbdb76fb482fae02f6b8d17d40515cd12f006",
+    "component-initial-terminal.json": "65f0c7bd9dfeaa7f0009ee0b507ec84a51487134f53ccfb7d5d5c83eeeaa79aa",
+    "unit-tests-initial.py": "4a3fe1a6aea3dd5370251e14e40f33c02a6ee4f7a708fee49e1af30bb55b6a48",
+    "stream-corrected.xml": "7c7f55bce71ea9537cbe4cbf6cc37253c1cb5c4f42ba8e24c8bea67221096ecc",
+    "stream-corrected-terminal.json": "36b8172024453ee53b62754573862defc6211c169b96edc774e8e0e3d5b90fd9",
+    "graph-initial.xml": "cc214d7350cc98b3a8c004ed6497cc98f99bb2dd8d7fd44c00e5c1c332bd939a",
+    "graph-initial.log": "df779e5df781409320c79717a8579d8d182dd0725d192129e444e92e6b411533",
+    "graph-initial-terminal.json": "d1e964cd9e55008a330f6783c6232bae6be24d7eec61e7269f60b0c948308ffe",
+    "graph-tests-initial.py": "61ae0eeaacdbc9527e2ca22ff75d289d76c5c91594142c23470574eb74765f3e",
+    "graph-corrected.xml": "f5edc40029badbda1a0e03f6650bfce40f3ffa6f472293a99d14ceaa096b927a",
+    "graph-corrected-terminal.json": "5cf93f17c0163e9cc03e6f26762a2d52c6db9d46c3873512d7ccc5928029bc77",
+    "targeted-initial.xml": "512d43606995a02b512f1d65a06ba9312d98579c8d6642d015aec7380f02d1ce",
+    "targeted-initial.log": "e043cd7b406e0e482acc4ae19ea913b8171bb706e8bb19a985f8b57217c50b61",
+    "targeted-initial-terminal.json": "8d7826f95e048b07a5f7fe1b923c986df65c3bb715fc546885eedd0f40d6f4f3",
+    "code-staged-proof.json": "78b2d3ce8e054ba9278b1a46b83fc5790c4ef6cb0583a354c77f64d7049511c2",
+    "lifecycle-design.json": "5dbbd2e733918946186549e4c2fcf6cded59d1b6d5aa4b0686b61dd304b413f8",
+    "test-plan.json": "d8da384da7ec759e3bc6220d931b8457beee6091d8b7973d9e3a69f9dd20e846",
+    "code-delivery.json": "0dcd44e0165c4d61a897efcf725bb06298299e3a46db0aa2e48bd2aced153b6e",
+    "source-scope-proof.json": "4629dc48c86c6e61304758ac79989086a436a3ae6ed3eafcdbea7724be0db7d3",
+    "cross-unit-source-proof.json": "81fb06fd02d077ac5120c0e351fa154a2c5f9b9a9fbc522eedf82280eec6cfa0",
+    "collection-scope-plan.json": "f270f42230604c3682cef5837c70a0de9031db6c74ad7df300e8af4740894e0a",
+    "next-boundary-plan.json": "6c8455a4ba4c5d39aa0f777aa4d6d1c6840efc296ba544076db1eb69953eed13",
+    "normal-full-attempt-01/full-runner.py": "30322de59350eb98531c3764d92ae55b7c44ec9d20c78b2830fef250fc085e3a",
+    "normal-full-attempt-01/preparation-proof.json": "77881e9176942c19cce7074cbdd1746ad0404be18c7fb4164168f4a1dd03cd7a",
+    "normal-full-attempt-01/source.json": "7d92f90689412a933554b2906fffd90166ba15a66b4aa75656361ae45f8bafb7",
+    "normal-full-attempt-01/source-post.json": "7d92f90689412a933554b2906fffd90166ba15a66b4aa75656361ae45f8bafb7",
+    "normal-full-attempt-01/full.log": "1d7975861be9a64c547ce09ac4e44b9a068ca90d19441758661d218ff8e54932",
+    "normal-full-attempt-01/full.xml": "9703c2248d0a779831b7005ff0321de1617f6c7767512fff250682524a65d7d3",
+    "normal-full-attempt-01/full-status.json": "63039e45e7fd2b877e2f2197ed1626cc54bdbb45a4d738567c2b1335e651e04f",
+    "normal-full-attempt-01/storage-telemetry.json": "8a1449e10bd3b916b7170b249b54d37a14db73d686050339ad6279bafc71a6a1",
+    "normal-full-attempt-01/terminal-receipt.json": "c4f0922b9013079b3e1a632466cf343459e6e416cb3534621b7d7334ae704d08",
+    "normal-full-attempt-01/acceptance-proof.json": "7f2ad27a9b5f3199e9f32ec0ac1abcc34dcc6653ac9c1e4ac3d7a6c26a976f12"
+  },
+  "product_boundaries": {
+    "goal_status": "active",
+    "objective_not_complete": true,
+    "T022_status": "in_progress",
+    "criteria_total": 21,
+    "criteria_accepted": [],
+    "all_criteria_open": true,
+    "T020_P1_T047": "unchanged",
+    "authority_separation": "Acoustic voice, person, account, session, consent and permissions remain separate; voice grants no account authority.",
+    "production": "No deployment, real Hermes/provider/model/hardware or physical acceptance."
+  },
+  "limits": [
+    "Fixed diagnostic codes/outcome cleanup do not erase Popen.args/prompt/pipes, caller tracebacks or private runtime data. No payload absence/wipe claim.",
+    "No whole borrowed-pool/Thread-queue/internal-data ownership or erasure, private SDK/allocator copies, all-descendant extinction, hidden/unreturned constructor disposition, universal starvation bound or arbitrary repeated-signal atomicity.",
+    "Exact internal cause of initial graph watchdog remains unattributed. Initial tests, corrected tests and genuine old-public-API RED retain separate provenance.",
+    "No full, criterion, T022 or goal acceptance from directed evidence. Root alone owns live code/runtime/Git and final evidence/public delivery."
+  ],
+  "verified_at_utc": "2026-11-04T18:36:34.904877+00:00",
+  "template": {
+    "path": "data/autonomous-roadmap-20261102/t022/x/evidence-template.json",
+    "sha256": "041b273176ef2edf2cb02c5df1d5021906b91c7a782b97a173078b87c2f748d5"
+  },
+  "history_note": "Earlier pending/null receipts remain immutable historical stages. Current verified normal full is recorded separately below.",
+  "next_boundary": {
+    "plan": {
+      "path": "data/autonomous-roadmap-20261102/t022/x/next-boundary-plan.json",
+      "sha256": "6c8455a4ba4c5d39aa0f777aa4d6d1c6840efc296ba544076db1eb69953eed13"
+    },
+    "parent_task": "T023",
+    "status": "planned_not_implemented",
+    "scope": "Independent required durable global mute; preserve correct ambient-only pause, no fabricated RED from missing feature. T022 inventory/native/private-copy obligations remain open."
+  }
+}

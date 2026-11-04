@@ -1142,7 +1142,8 @@
         "3013d085eba6eaba9f9227bcad5f9021a756a71e",
         "75b2878e1fe665447eb84d1428c02de9be85fcee",
         "a838165cf77b1bb67735866f458b5fe709874e48",
-        "ac8ae1ce450b05efc1d6e3f2c93d02be3fc1a110"
+        "ac8ae1ce450b05efc1d6e3f2c93d02be3fc1a110",
+        "e2d5f83478b6535e64b602847529543da5eba551"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1181,9 +1182,12 @@
         "data/autonomous-roadmap-20261102/t022/v/normal-full-attempt-01/acceptance-proof.json",
         "docs/research/2026-11-04-hermes-process-retirement.json",
         "data/autonomous-roadmap-20261102/t022/w/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/w/normal-full-attempt-01/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t022/w/normal-full-attempt-01/acceptance-proof.json",
+        "docs/research/2026-11-04-hermes-native-graph-lifetime.json",
+        "data/autonomous-roadmap-20261102/t022/x/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/x/normal-full-attempt-01/acceptance-proof.json"
       ],
-      "next_action": "T022-W verificada localmente: retiro de Popen devuelto/pipes ante fallo de comunicación,397 dirigidos incluidos10OS+41legacy y full normal8078 aprobados+1xfail conocida sobre976 archivos incluidos37 scripts idénticos; cero fallos/errores/aborto, terminalrunner ypytest0. Conserva todos8069 IDs de fullV más10 nuevos, con2oráculos timeout adaptados explícitamente al PGID adquirido. Siguiente unidadX: obtener RED aún no ejecutado con build_application/Hermes.complete cancelado con hijo inerte/nativeFuture reales activos y stack.aclose; privacidad no debe liberarse antes de salida real. W retiene proceso/Popen.args pero no prueba espera nativa/grafo, cierre async/main/compactor ni borrado. Fuente/mainmáx2, sinHermes/model/redreal. SiguenSDK/copias/CLI/factories,T021/T022/C03/C04/C06/C20 abiertos; M/G/J/K/ENOSPC K sinatribuir, HAresistente>60s pendiente,T020/P1/T047 yautoridades separadas conservados."
+      "next_action": "T022-X verificada localmente: recibos nativos por llamada Hermes/Context vacío/cierre principal+compactor,410 dirigidos incluidos13 nuevos y fullnormal8091PASS+1xfail conocida sobre978 archivos incluidos37scripts idénticos;0fallos/errores/aborto,runner/pytest0. Conserva todos8079 IDs de fullW y13nuevos. Cierre esperaCFuture/postlude real, conserva privacidad anteWownerincierto aunconFutureterminal;poolprestado no dispuesto. Inicialesstreamoráculo/graphaccessor/watchdog sonfixtures separados del únicoRED e83; causa interna delwatchdogsinatribuir. SiguienteunidadindependienteT023-A: caracterizar pausaambiental correcta(permitecomandos) y preparar muteGLOBALdurable/barrera real/capacidad distinta conreactivación autenticada no voz; no APIabsence comoRED ni ampliarambient:control. T022 sigueabierto: SDKprivados/copias/CLI/constructores/admisiónincierta;T021/C03/C04/C06/C20/21criterios abiertos, HAresistente>60s yM/G/J/K/ENOSPC pendientes,T020/P1/T047/autoridadesseparadas conservados."
     },
     {
       "id": "T023",
