@@ -420,6 +420,19 @@ class MultiRoomAudioLoop:
         self._running = False
         self._paused = False
         self._pausing = None
+        self._auxiliary_epoch = 0
+        self._auxiliary_phase = 'idle'
+        self._auxiliary_resume_task = None
+        self._auxiliary_resume_epoch = None
+        self._auxiliary_started_epoch = None
+        self._auxiliary_pause_task = None
+        self._capture_start_task = None
+        self._start_requested = False
+        self._run_started = False
+        self._auxiliary_start_failed = False
+        self._microphone_stop_task = None
+        self._direction_join_tasks = {}
+        self._xvf_pause_joins = {}
         self._streams: dict = {}
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
         self._on_post_command_callback: Callable[[dict, CommandEvent], Awaitable[None]] | None = None
@@ -613,13 +626,18 @@ class MultiRoomAudioLoop:
                 event = step = None
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
-        """Expose finite capture, early STT and dispatch owners without idle loops."""
+        """Expose finite capture and auxiliary owners without idle loops."""
         tasks = self._capture_tasks | self._capture_batches | self._early_tasks | self._dispatch_tasks | self._capture_native._tasks
+        tasks |= set(self._xvf_native._tasks)
         for room in self._capture_rooms.values():
             tasks |= set(room.snapshot_operations())
         tasks |= set(self._inputs.snapshot_operations())
-        tasks.update(task for task in (self._recovery_task, self._input_recovery_pause)
-                     if task is not None and not task.done())
+        tasks.update(task for task in (
+            self._recovery_task, self._input_recovery_pause, self._capture_start_task,
+            self._auxiliary_resume_task, self._auxiliary_pause_task, self._microphone_read_task,
+        ) if task is not None and not task.done())
+        tasks.update(task for task in self._direction_join_tasks.values() if not task.done())
+        tasks.update(task for task in self._xvf_pause_joins.values() if not task.done())
         if self._pausing is not None and not self._pausing.done():
             tasks.add(self._pausing)
         if isinstance(self._wake_clip_writer, WakeClipWriter):
@@ -640,11 +658,15 @@ class MultiRoomAudioLoop:
         await asyncio.gather(*(room.prune_private() for room in self._capture_rooms.values()))
 
     def capture_status(self) -> dict:
-        """Report counts and admission without transcripts or capture identifiers."""
+        """Report real auxiliary admission/ownership without private media."""
         return {'closed': self._closed, 'paused': self._paused, 'operations': len(self.snapshot_operations()),
                 'batches': len(self._capture_batches), 'source_scopes': self._scopes.resource_status(),
                 'inputs': self._inputs.resource_status(),
                 'audio_health': self._audio_health_work.status(),
+                'auxiliary_phase': self._auxiliary_phase,
+                'auxiliary_epoch': self._auxiliary_epoch,
+                'auxiliary_resume_pending': (self._auxiliary_resume_task is not None
+                                             and not self._auxiliary_resume_task.done()),
                 'rooms': [room.resource_status() for room in self._capture_rooms.values()]}
 
     def begin_pause_inputs(self) -> asyncio.Task:
@@ -666,9 +688,171 @@ class MultiRoomAudioLoop:
                 lambda done: None if done.cancelled() else done.exception(), context=Context())
         return self._input_recovery_pause
 
+    def _auxiliary_allowed(self, epoch=None) -> bool:
+        return (not self._closed and not self._paused
+                and (epoch is None or epoch == self._auxiliary_epoch))
+
+    def _seal_auxiliaries(self) -> None:
+        self._direction_started = False
+        with self._direction_lock:
+            rooms = tuple(self._direction_observers)
+        for room_id in rooms:
+            self._invalidate_direction(room_id)
+        for ctrl in self._xvf_by_room.values():
+            if isinstance(ctrl, XvfController):
+                ctrl.request_stop()
+        telemetry = self._microphone_telemetry_task
+        if telemetry is not None and not telemetry.done():
+            telemetry.cancel()
+        self._microphone_inventory_ready.set()
+
+    def _start_microphone_telemetry(self, epoch) -> None:
+        if not self._running or not self._run_started or not self._auxiliary_allowed(epoch):
+            return
+        if self._microphone_telemetry_task is None or self._microphone_telemetry_task.done():
+            self._microphone_stop_task = None
+            self._microphone_telemetry_task = asyncio.create_task(
+                self._microphone_telemetry_loop(), context=Context())
+
+    async def _ensure_capture_models(self) -> None:
+        if self._capture_start_task is None:
+            async def initialize():
+                for rs in self.room_streams.values():
+                    if self._closed:
+                        return
+                    try:
+                        with producer_context(rs.room_id):
+                            await self._capture_native.run(self._load_capture_models, rs)
+                    except Exception as error:
+                        logger.error('Room wake unavailable: %s', type(error).__name__)
+                        await self._capture_rooms[rs.room_id].begin_close()
+            self._capture_start_task = asyncio.create_task(initialize(), context=Context())
+            self._capture_start_task.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception(), context=Context())
+        await asyncio.shield(self._capture_start_task)
+
+    async def _start_auxiliaries(self, epoch) -> None:
+        try:
+            if self._start_requested:
+                await self._ensure_capture_models()
+                if not self._auxiliary_allowed(epoch):
+                    self._seal_auxiliaries()
+                    return
+                await self._xvf_native.run(self._apply_xvf_tuning)
+                if not self._auxiliary_allowed(epoch):
+                    self._seal_auxiliaries()
+                    return
+                if self.spenergy_gate_enabled:
+                    for room_id, ctrl in self._xvf_by_room.items():
+                        if not self._auxiliary_allowed(epoch):
+                            self._seal_auxiliaries()
+                            return
+                        try:
+                            started = await self._xvf_native.run(ctrl.start)
+                        except Exception as error:
+                            self._auxiliary_start_failed = True
+                            logger.warning('SPENERGY start failed in %s: %s',
+                                           room_id, type(error).__name__)
+                        else:
+                            if not started:
+                                logger.warning('SPENERGY unavailable in %s; gate remains fail-open', room_id)
+                        if not self._auxiliary_allowed(epoch):
+                            self._seal_auxiliaries()
+                            return
+                self._direction_started = True
+                await self._sync_direction_observers()
+                if not self._auxiliary_allowed(epoch):
+                    self._seal_auxiliaries()
+                    return
+                self._auxiliary_started_epoch = epoch
+            self._start_microphone_telemetry(epoch)
+            if self._run_started and self._auxiliary_allowed(epoch):
+                await self._refresh_microphone_inventory()
+                if not self._auxiliary_allowed(epoch):
+                    self._seal_auxiliaries()
+                    return
+            if self._auxiliary_allowed(epoch):
+                self._auxiliary_phase = 'unknown' if self._auxiliary_start_failed else 'running'
+        except BaseException:
+            if self._auxiliary_allowed(epoch):
+                self._auxiliary_phase = 'failed'
+                self.pause_admission()
+                self._auxiliary_phase = 'failed'
+            raise
+
+    def _schedule_auxiliary_resume(self) -> asyncio.Task:
+        epoch = self._auxiliary_epoch
+        task = self._auxiliary_resume_task
+        needs_first_start = (task is not None and task.done() and self._start_requested
+                             and self._auxiliary_started_epoch != epoch)
+        if task is None or self._auxiliary_resume_epoch != epoch or needs_first_start:
+            self._auxiliary_resume_epoch = epoch
+            self._auxiliary_resume_task = asyncio.create_task(
+                self._start_auxiliaries(epoch), context=Context())
+            self._auxiliary_resume_task.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception(), context=Context())
+        return self._auxiliary_resume_task
+
+    async def drain_resume(self) -> None:
+        """Observe retained restart, including startup requested during a resume."""
+        if self._closed or self._paused or self._auxiliary_resume_task is None:
+            raise RuntimeError('capture_resume_unavailable')
+        epoch = self._auxiliary_epoch
+        while True:
+            task = self._auxiliary_resume_task
+            await asyncio.shield(task)
+            if self._closed or self._paused or epoch != self._auxiliary_epoch:
+                raise RuntimeError('capture_resume_superseded')
+            if task is not self._auxiliary_resume_task:
+                continue
+            if self._start_requested and self._auxiliary_started_epoch != epoch:
+                self._schedule_auxiliary_resume()
+                continue
+            if self._auxiliary_start_failed or self._auxiliary_phase != 'running':
+                raise RuntimeError('capture_auxiliary_resume_unconfirmed')
+            return
+
+    async def _drain_auxiliaries(self) -> None:
+        errors = []
+        startup = self._auxiliary_resume_task
+        if startup is not None:
+            results = await asyncio.gather(asyncio.shield(startup), return_exceptions=True)
+            errors.extend(result for result in results if isinstance(result, BaseException))
+        native = tuple(self._xvf_native._tasks)
+        health = tuple(self._audio_health_work._tasks)
+        await asyncio.gather(self._xvf_native.drain_admitted(),
+                             self._audio_health_work.drain_admitted())
+        for task in native + health:
+            if task.cancelled():
+                errors.append(RuntimeError('capture_auxiliary_work_unconfirmed'))
+            elif task.exception() is not None:
+                errors.append(task.exception())
+        # An admitted start can enter after the first memory-only stop.
+        self._seal_auxiliaries()
+        for ctrl in self._xvf_by_room.values():
+            if not isinstance(ctrl, XvfController):
+                errors.append(RuntimeError('unsupported_capture_pause_controller'))
+                continue
+            key = id(ctrl)
+            if key not in self._xvf_pause_joins:
+                self._xvf_pause_joins[key] = asyncio.create_task(
+                    asyncio.to_thread(ctrl.wait_stopped), context=Context())
+        drains = [self._stop_microphone_telemetry(), self._stop_direction_observers()]
+        drains.extend(asyncio.shield(task) for task in self._xvf_pause_joins.values())
+        results = await asyncio.gather(*drains, return_exceptions=True)
+        errors.extend(result for result in results if isinstance(result, BaseException))
+        if self._auxiliary_start_failed:
+            errors.append(RuntimeError('capture_auxiliary_start_unconfirmed'))
+        if errors:
+            raise errors[0]
+
     def pause_admission(self) -> None:
-        """Seal voice epochs, capture and callbacks before draining actual work."""
+        """Seal capture and auxiliary generations before any wait."""
+        if not self._paused:
+            self._auxiliary_epoch += 1
+            self._auxiliary_phase = 'retiring'
         self._paused = True
+        self._seal_auxiliaries()
         if self._privacy is not None:
             from src.memory.fact_ledger import MemoryOrigin
             self._privacy.scopes.suspend_origin(MemoryOrigin.VOICE)
@@ -679,34 +863,66 @@ class MultiRoomAudioLoop:
             self._wake_clip_writer.pause_admission()
 
     async def drain_pause(self) -> None:
-        """Retain real drivers, callbacks, native capture and reset until exit."""
+        """Retain one complete reusable pause, including real USB/IO exits."""
         if not self._paused or self._closed:
             raise RuntimeError('capture_pause_unavailable')
-        if self._pausing is None or self._pausing.done():
+        retry = (self._pausing is not None and self._pausing.done()
+                 and (self._pausing.cancelled() or self._pausing.exception() is not None))
+        if self._pausing is None or retry:
+            if retry:
+                self._auxiliary_phase = 'retiring'
+                self._xvf_pause_joins = {key: task for key, task in self._xvf_pause_joins.items()
+                                         if not task.done() or not task.cancelled() and task.exception() is None}
+                self._direction_join_tasks = {key: task for key, task in self._direction_join_tasks.items()
+                                              if not task.done() or not task.cancelled() and task.exception() is None}
+                if self._microphone_stop_task is not None and self._microphone_stop_task.done():
+                    if self._microphone_stop_task.cancelled() or self._microphone_stop_task.exception() is not None:
+                        self._microphone_stop_task = None
             async def finish():
-                tasks = None
+                errors = []
+                self._auxiliary_pause_task = asyncio.create_task(
+                    self._drain_auxiliaries(), context=Context())
                 try:
                     while True:
                         tasks = {task for task in self.snapshot_operations()
-                                 if task is not asyncio.current_task() and not task.done()}
+                                 if task not in (asyncio.current_task(), self._auxiliary_pause_task)
+                                 and not task.done()}
                         if not tasks:
                             break
-                        await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
-                    await asyncio.shield(self.begin_pause_inputs())
-                    await asyncio.gather(*(room.drain_pause() for room in self._capture_rooms.values()))
+                        await asyncio.gather(*(asyncio.shield(task) for task in tasks),
+                                             return_exceptions=True)
+                    try:
+                        await asyncio.shield(self.begin_pause_inputs())
+                    except BaseException as error:
+                        errors.append(error)
+                    results = await asyncio.gather(
+                        *(room.drain_pause() for room in self._capture_rooms.values()),
+                        return_exceptions=True)
+                    errors.extend(result for result in results if isinstance(result, BaseException))
                     if isinstance(self._wake_clip_writer, WakeClipWriter):
-                        await self._wake_clip_writer.drain_pause()
+                        try:
+                            await self._wake_clip_writer.drain_pause()
+                        except BaseException as error:
+                            errors.append(error)
                     elif self._wake_clip_writer is not None:
-                        raise RuntimeError('unsupported_capture_pause_writer')
+                        errors.append(RuntimeError('unsupported_capture_pause_writer'))
                     self.follow_up.end_conversation(reason='capture_paused')
-                finally:
-                    tasks = None
+                except BaseException as error:
+                    errors.append(error)
+                results = await asyncio.gather(
+                    asyncio.shield(self._auxiliary_pause_task), return_exceptions=True)
+                errors.extend(result for result in results if isinstance(result, BaseException))
+                if errors:
+                    self._auxiliary_phase = 'failed'
+                    raise errors[0]
+                self._auxiliary_phase = 'paused'
             self._pausing = asyncio.create_task(finish(), context=Context())
-            self._pausing.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
+            self._pausing.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception(), context=Context())
         await asyncio.shield(self._pausing)
 
     def resume_admission(self) -> None:
-        """Renew voice epochs and reopen only after all old native work and reset."""
+        """Schedule fresh capture only after every old pause receipt succeeds."""
         if self._closed or self._pausing is None or not self._pausing.done():
             raise RuntimeError('capture_pause_still_owned')
         self._pausing.result()
@@ -719,9 +935,14 @@ class MultiRoomAudioLoop:
             room.resume_admission()
         if isinstance(self._wake_clip_writer, WakeClipWriter):
             self._wake_clip_writer.resume_admission()
+        self._auxiliary_epoch += 1
+        self._xvf_pause_joins.clear()
+        self._auxiliary_pause_task = None
         self._paused = False
         self._pausing = None
+        self._auxiliary_phase = 'resuming'
         self.resume_inputs()
+        self._schedule_auxiliary_resume()
 
     def resume_inputs(self) -> None:
         """Reallow driver opening after actual close; never reuse an old handle."""
@@ -746,6 +967,9 @@ class MultiRoomAudioLoop:
         """Seal admission and retain all capture/XVF work until its real exit."""
         self._closed = True
         self._running = False
+        self._auxiliary_epoch += 1
+        self._auxiliary_phase = 'closing'
+        self._seal_auxiliaries()
         if self._closing is None:
             for ctrl in self._xvf_by_room.values():
                 if isinstance(ctrl, XvfController):
@@ -769,6 +993,8 @@ class MultiRoomAudioLoop:
             drains = [room.begin_close() for room in self._capture_rooms.values()]
             drains.append(self._inputs.begin_close())
             drains.extend((input_pause, health_close, self._capture_native.begin_close()))
+            drains.extend(task for task in (self._capture_start_task, self._auxiliary_resume_task)
+                          if task is not None)
             if isinstance(self._wake_clip_writer, WakeClipWriter):
                 drains.append(self._wake_clip_writer.begin_close())
             self._microphone_inventory_ready.set()
@@ -942,53 +1168,24 @@ class MultiRoomAudioLoop:
         return True
 
     async def start(self):
-        """Initialize wake word detectors for all rooms."""
+        """Initialize models and retain auxiliary startup through cancellation."""
         if self._closed:
             raise RuntimeError('capture_closed')
-        for rs in self.room_streams.values():
-            try:
-                with producer_context(rs.room_id):
-                    await self._capture_native.run(self._load_capture_models, rs)
-            except Exception as error:
-                logger.error('Room wake unavailable: %s', type(error).__name__)
-                await self._capture_rooms[rs.room_id].begin_close()
+        self._start_requested = True
+        if not self._auxiliary_allowed():
+            await self._ensure_capture_models()
+        else:
+            # A prior resume may have finished before startup was requested.
+            # Never replace pending work; after it returns, ensure this epoch
+            # also completed its actual configured startup.
+            while self._auxiliary_allowed():
+                await asyncio.shield(self._schedule_auxiliary_resume())
+                if self._closed:
+                    raise RuntimeError('capture_closed')
+                if self._auxiliary_started_epoch == self._auxiliary_epoch:
+                    break
         if self._closed:
             raise RuntimeError('capture_closed')
-        # Tuning del DSP ANTES de arrancar el poller (review Fase 1): así los
-        # writes corren con USB single-threaded (sin transfers concurrentes
-        # sobre el mismo handle), y en to_thread para no bloquear el event
-        # loop (cada ctrl_transfer con retries puede tardar segundos).
-        await self._xvf_native.run(self._apply_xvf_tuning)
-        if self._closed:
-            raise RuntimeError('capture_closed')
-        # Pre-gate SPENERGY: poller solo si el gate está habilitado (fail-open).
-        if self.spenergy_gate_enabled:
-            for room_id, ctrl in self._xvf_by_room.items():
-                try:
-                    if self._closed:
-                        raise RuntimeError('capture_closed')
-                    started = await self._xvf_native.run(ctrl.start)
-                    if self._closed:
-                        raise RuntimeError('capture_closed')
-                    if started:
-                        logger.info(
-                            f"Pre-gate SPENERGY activo en {room_id} "
-                            f"(umbral {self.spenergy_threshold:.0f})"
-                        )
-                    else:
-                        logger.warning(
-                            f"Pre-gate SPENERGY no pudo iniciar en {room_id} — "
-                            f"gate OFF (fail-open)"
-                        )
-                except Exception as e:
-                    logger.warning(
-                        f"Pre-gate SPENERGY error al iniciar en {room_id} — gate OFF: {e}"
-                    )
-        if self._closed:
-            raise RuntimeError('capture_closed')
-        # Reuse the handle opened by a configured legacy gate; DoA never enables it.
-        self._direction_started = True
-        await self._sync_direction_observers()
 
     def _load_capture_models(self, rs: RoomStream) -> None:
         from src.ambient.segmenter import _SileroPredictor, make_silero_predictor
@@ -1401,45 +1598,61 @@ class MultiRoomAudioLoop:
                 self._invalidate_direction(room)
 
     async def _refresh_microphone_inventory(self) -> None:
-        """Await one worker read; never queue another behind a slow sysfs read."""
-        reader = self._microphone_reader or microphone_status.read_usb_microphones
-        worker = asyncio.create_task(asyncio.to_thread(reader, self._microphone_usb_root))
-        self._microphone_read_task = worker
+        """Share one actual read; reject late publication and reconciliation."""
+        epoch = self._auxiliary_epoch
+        if not self._auxiliary_allowed(epoch):
+            return
+        worker = self._microphone_read_task
+        if worker is None:
+            reader = self._microphone_reader or microphone_status.read_usb_microphones
+            worker = asyncio.create_task(
+                asyncio.to_thread(reader, self._microphone_usb_root), context=Context())
+            self._microphone_read_task = worker
         try:
             inventory = await asyncio.shield(worker)
         except asyncio.CancelledError:
-            # to_thread cannot stop a running worker. Keep it tracked so stop
-            # awaits completion instead of leaking reads or queuing retries.
             raise
-        except Exception:
-            logger.exception("[microphone-telemetry] Inventory reader failed")
+        except Exception as error:
+            logger.warning('Microphone inventory failed: %s', type(error).__name__)
             inventory = UsbInventory(
                 observed_at=self._microphone_wall_clock(),
-                observed_monotonic=self._microphone_monotonic(), success=False,
-            )
-        finally:
-            if worker.done():
-                self._microphone_read_task = None
+                observed_monotonic=self._microphone_monotonic(), success=False)
+        if not self._auxiliary_allowed(epoch) or self._microphone_read_task is not worker:
+            return
+        self._microphone_read_task = None
         self._publish_microphone_inventory(inventory)
-        await self._sync_direction_observers()
+        if self._auxiliary_allowed(epoch):
+            await self._sync_direction_observers()
 
     async def _microphone_telemetry_loop(self) -> None:
-        """Refresh USB observations independently of watchdog enablement."""
-        while self._running:
+        """Poll only while capture auxiliaries may admit native work."""
+        while self._running and self._auxiliary_allowed():
             await self._refresh_microphone_inventory()
+            if not self._auxiliary_allowed():
+                return
             await asyncio.sleep(self._microphone_interval_s)
 
     async def _stop_microphone_telemetry(self) -> None:
-        """Cancel polling and drain its outstanding worker before returning."""
-        task = self._microphone_telemetry_task
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            self._microphone_telemetry_task = None
-        worker = self._microphone_read_task
-        if worker is not None:
-            await asyncio.gather(worker, return_exceptions=True)
-            self._microphone_read_task = None
+        """Join a retained stop owner without cancelling the actual read."""
+        if self._microphone_stop_task is None:
+            async def finish():
+                task = self._microphone_telemetry_task
+                if task is not None:
+                    task.cancel()
+                    await asyncio.gather(asyncio.shield(task), return_exceptions=True)
+                worker = self._microphone_read_task
+                if worker is not None:
+                    await asyncio.shield(worker)
+                    if worker.cancelled():
+                        raise RuntimeError('microphone_read_unconfirmed')
+                    if self._microphone_read_task is worker:
+                        self._microphone_read_task = None
+                if self._microphone_telemetry_task is task:
+                    self._microphone_telemetry_task = None
+            self._microphone_stop_task = asyncio.create_task(finish(), context=Context())
+            self._microphone_stop_task.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception(), context=Context())
+        await asyncio.shield(self._microphone_stop_task)
 
     def _retire_microphone_capture(self, room_id: str) -> None:
         self._invalidate_direction(room_id)
@@ -1502,9 +1715,12 @@ class MultiRoomAudioLoop:
 
     async def _sync_direction_observers(self) -> None:
         """Reconcile identity-bound workers outside GET and the audio callback."""
-        if not self._direction_started or not self._direction_room_ids:
+        epoch = self._auxiliary_epoch
+        if not self._direction_started or not self._direction_room_ids or not self._auxiliary_allowed(epoch):
             return
         async with self._direction_lifecycle_lock:
+            if not self._direction_started or not self._auxiliary_allowed(epoch):
+                return
             snapshot = self._base_microphone_snapshot()
             current = {mic.room_id: mic for mic in snapshot.microphones} if snapshot else {}
             with self._direction_lock:
@@ -1513,13 +1729,17 @@ class MultiRoomAudioLoop:
             for room in changed:
                 self._invalidate_direction(room)
             await self._drain_retired_directions()
+            if not self._direction_started or not self._auxiliary_allowed(epoch):
+                return
             for room_id in self._direction_room_ids:
-                if not self._direction_started:
+                if not self._direction_started or not self._auxiliary_allowed(epoch):
                     return
                 with self._direction_lock:
                     needs_reset = room_id in self._direction_needs_reset
                 if needs_reset:
                     await self._xvf_native.run(self._xvf_by_room[room_id].invalidate_device)
+                    if not self._direction_started or not self._auxiliary_allowed(epoch):
+                        return
                     with self._direction_lock:
                         self._direction_needs_reset.discard(room_id)
                 # Identity/generation can change while an old worker drains.
@@ -1531,7 +1751,8 @@ class MultiRoomAudioLoop:
                 with self._direction_lock:
                     fresh = self._base_microphone_snapshot()
                     fresh_mic = next((mic for mic in fresh.microphones if mic.room_id == room_id), None) if fresh else None
-                    if (not self._direction_started or room_id in self._direction_observers
+                    if (not self._direction_started or not self._auxiliary_allowed(epoch)
+                            or room_id in self._direction_observers
                             or self._direction_key(fresh_mic) != key):
                         continue
                     observer = DirectionObserver(
@@ -1546,14 +1767,27 @@ class MultiRoomAudioLoop:
                     observer.start()
 
     async def _drain_retired_directions(self) -> None:
-        # Keep ownership until the join actually completes. A cancelled to_thread
-        # await does not stop the worker; a subsequent stop must still find it.
+        """Keep observers and shared real join tasks until successful return."""
         with self._direction_lock:
             retired = tuple(self._direction_retired)
         for observer in retired:
-            await asyncio.to_thread(self._drain_direction_observer, observer)
+            if observer not in self._direction_join_tasks:
+                self._direction_join_tasks[observer] = asyncio.create_task(
+                    asyncio.to_thread(self._drain_direction_observer, observer), context=Context())
+        tasks = tuple(self._direction_join_tasks[observer] for observer in retired)
+        results = await asyncio.gather(*(asyncio.shield(task) for task in tasks),
+                                       return_exceptions=True)
+        errors = []
+        for observer, result in zip(retired, results):
+            if isinstance(result, BaseException):
+                errors.append(result)
+                continue
             with self._direction_lock:
-                self._direction_retired.remove(observer)
+                if observer in self._direction_retired:
+                    self._direction_retired.remove(observer)
+            self._direction_join_tasks.pop(observer, None)
+        if errors:
+            raise errors[0]
 
     async def _stop_direction_observers(self) -> None:
         """Invalidate all generations before awaiting complete worker drainage."""
@@ -1574,7 +1808,10 @@ class MultiRoomAudioLoop:
         with self._direction_lock:
             for mic in snapshot.microphones:
                 direction = microphone_status.DirectionSnapshot(
-                    state=microphone_status.DirectionState.DISABLED, reason=self._direction_reason,
+                    state=microphone_status.DirectionState.DISABLED,
+                    reason=('capture_retirement_failed' if self._auxiliary_phase == 'failed'
+                            else 'capture_retiring' if self._auxiliary_phase in ('retiring', 'closing')
+                            else 'capture_paused') if self._paused or self._closed else self._direction_reason,
                 )
                 if mic.room_id in self._direction_room_ids and self._direction_started:
                     observer = self._direction_observers.get(mic.room_id)
@@ -1611,7 +1848,7 @@ class MultiRoomAudioLoop:
                 self._audio_health_timed_out = True
                 logger.warning('Audio health publication pending: native write still owned')
             return
-        if self._closed:
+        if not self._auxiliary_allowed():
             return
         from src.monitoring.audio_health import write_audio_health
 
@@ -1655,27 +1892,26 @@ class MultiRoomAudioLoop:
 
 
     async def run(self):
-        """Start voice after a bounded identity budget and own telemetry tasks."""
+        """Own capture while paused without admitting auxiliary work."""
         if self._closed:
             raise RuntimeError('capture_closed')
         self._running = True
+        self._run_started = True
         self._recovery_ready = False
         self._loop = asyncio.get_running_loop()
         self._microphone_inventory_ready.clear()
-        self._microphone_telemetry_task = asyncio.create_task(self._microphone_telemetry_loop())
+        epoch = self._auxiliary_epoch
+        self._start_microphone_telemetry(epoch)
         if self._watchdog_enabled:
-            # Initial native construct/configure/start can wait indefinitely.
-            # Publish first, but do not recover a still-opening input owner.
             self._watchdog_task = asyncio.create_task(self._stream_watchdog(), context=Context())
         try:
-            try:
-                await asyncio.wait_for(self._microphone_inventory_ready.wait(), self._microphone_startup_budget_s)
-            except TimeoutError:
-                # Do not delay voice indefinitely behind a sysfs read. The
-                # existing worker remains tracked; there is no replacement read.
-                self._publish_microphone_inventory(UsbInventory(
-                    self._microphone_wall_clock(), self._microphone_monotonic(), False,
-                ))
+            if self._auxiliary_allowed(epoch):
+                try:
+                    await asyncio.wait_for(self._microphone_inventory_ready.wait(), self._microphone_startup_budget_s)
+                except TimeoutError:
+                    if self._auxiliary_allowed(epoch):
+                        self._publish_microphone_inventory(UsbInventory(
+                            self._microphone_wall_clock(), self._microphone_monotonic(), False))
             if self._running:
                 await self._run_capture()
         finally:
