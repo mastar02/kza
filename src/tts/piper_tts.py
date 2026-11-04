@@ -19,6 +19,8 @@ from typing import Generator, Callable
 import numpy as np
 import sounddevice as sd
 
+from src.core.adapter_lifecycle import _AdapterLifecycle
+
 logger = logging.getLogger(__name__)
 
 
@@ -355,64 +357,63 @@ class StreamingAudioPlayer:
             }
 
 
-class PiperTTS:
+class PiperTTS(_AdapterLifecycle):
     """
     Text-to-Speech ultra-rápido con Piper
     Latencia: ~50-80ms
     """
-    
-    def __init__(
-        self,
-        model: str = "es_ES-davefx-medium.onnx",
-        sample_rate: int = 22050
-    ):
+
+    def __init__(self, model: str='es_ES-davefx-medium.onnx', sample_rate: int=22050):
         self.model_path = model
         self.sample_rate = sample_rate
+        self._adapter_initialize('tts')
         self._voice = None
-    
-    def load(self, warmup: bool = True):
+
+    def load(self, warmup: bool=True):
         """
         Cargar modelo Piper.
 
         Args:
             warmup: Si True, ejecuta síntesis dummy para calentar el modelo (reduce latencia de primer uso)
         """
-        try:
-            from piper import PiperVoice
-
-            logger.info(f"Cargando Piper: {self.model_path}")
-            start = time.time()
-
-            self._voice = PiperVoice.load(self.model_path)
-
-            elapsed = time.time() - start
-            logger.info(f"Piper cargado en {elapsed:.1f}s")
-
-            # Warmup: síntesis dummy para pre-calentar el modelo ONNX
-            if warmup:
-                self._warmup()
-
-        except ImportError:
-            logger.error("Piper no instalado: pip install piper-tts")
-            raise
+        with self._adapter_admit():
+            with self._adapter_lock:
+                try:
+                    try:
+                        from piper import PiperVoice
+                        logger.info(f'Cargando Piper: {self.model_path}')
+                        start = time.time()
+                        self._voice = PiperVoice.load(self.model_path)
+                        elapsed = time.time() - start
+                        logger.info(f'Piper cargado en {elapsed:.1f}s')
+                        if warmup:
+                            self._warmup()
+                    except ImportError:
+                        logger.error('Piper no instalado: pip install piper-tts')
+                        raise
+                finally:
+                    PiperVoice = None
 
     def _warmup(self):
         """
         Pre-calentar el modelo con síntesis dummy.
         Reduce latencia del primer uso real de ~80ms a ~50ms.
         """
-        if self._voice is None:
-            return
+        with self._adapter_admit():
+            with self._adapter_lock:
+                try:
+                    if self._voice is None:
+                        return
+                    try:
+                        t_warmup = time.perf_counter()
+                        _ = self._voice.synthesize('Hola')
+                        warmup_ms = (time.perf_counter() - t_warmup) * 1000
+                        logger.debug(f'Piper warmup completado en {warmup_ms:.0f}ms')
+                    except Exception as e:
+                        logger.warning(f'Piper warmup falló (no crítico): {e}')
+                finally:
+                    _ = None
 
-        try:
-            t_warmup = time.perf_counter()
-            # Texto corto para warmup rápido
-            _ = self._voice.synthesize("Hola")
-            warmup_ms = (time.perf_counter() - t_warmup) * 1000
-            logger.debug(f"Piper warmup completado en {warmup_ms:.0f}ms")
-        except Exception as e:
-            logger.warning(f"Piper warmup falló (no crítico): {e}")
-    
     def synthesize(self, text: str) -> tuple[np.ndarray, float]:
         """
         Sintetizar texto a audio
@@ -423,18 +424,19 @@ class PiperTTS:
         Returns:
             (audio_array, tiempo_ms)
         """
-        if self._voice is None:
-            self.load()
-        
-        start = time.perf_counter()
-        
-        audio = self._voice.synthesize(text)
-        
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.debug(f"Piper TTS ({elapsed_ms:.0f}ms): {text[:30]}...")
-        
-        return np.array(audio), elapsed_ms
-    
+        with self._adapter_admit():
+            with self._adapter_lock:
+                try:
+                    if self._voice is None:
+                        self.load()
+                    start = time.perf_counter()
+                    audio = self._voice.synthesize(text)
+                    elapsed_ms = (time.perf_counter() - start) * 1000
+                    logger.debug(f'Piper TTS ({elapsed_ms:.0f}ms): {text[:30]}...')
+                    return (np.array(audio), elapsed_ms)
+                finally:
+                    audio = text = None
+
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         """
         Sintetizar texto a audio en streaming (chunks).
@@ -445,31 +447,53 @@ class PiperTTS:
         Yields:
             Chunks de audio como numpy arrays
         """
-        if self._voice is None:
-            self.load()
+        source = iterator = audio_chunk = chunk_array = None
+        exhausted = False
+        with self._adapter_stream_admit() as lease:
+            try:
+                with self._adapter_entered(lease):
+                    with self._adapter_lock:
+                        if self._voice is None:
+                            self.load()
+                        source = self._voice.synthesize_stream_raw(text)
+                        self._adapter_track_iterator(source)
+                        iterator = iter(source)
+                        self._adapter_track_iterator(iterator)
+                while True:
+                    with self._adapter_entered(lease):
+                        with self._adapter_lock:
+                            try:
+                                audio_chunk = next(iterator)
+                            except StopIteration:
+                                exhausted = True
+                                break
+                            chunk_array = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32) / 32768.0
+                            audio_chunk = None
+                    yield chunk_array
+            finally:
+                try:
+                    with self._adapter_entered(lease):
+                        with self._adapter_lock:
+                            try:
+                                self._adapter_close_iterator(iterator, exhausted=exhausted)
+                            finally:
+                                if source is not iterator:
+                                    self._adapter_close_iterator(source, exhausted=exhausted)
+                finally:
+                    source = iterator = audio_chunk = chunk_array = text = None
 
-        # Piper soporta streaming nativo
-        for audio_chunk in self._voice.synthesize_stream_raw(text):
-            # Convertir bytes a numpy array (int16 -> float32)
-            chunk_array = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32) / 32768.0
-            yield chunk_array
-
-    def speak(self, text: str, blocking: bool = True):
+    def speak(self, text: str, blocking: bool=True):
         """Sintetizar y reproducir por parlantes"""
-        audio, _ = self.synthesize(text)
-        sd.play(audio, samplerate=self.sample_rate)
-        if blocking:
-            sd.wait()
+        with self._adapter_admit():
+            try:
+                audio, _ = self.synthesize(text)
+                sd.play(audio, samplerate=self.sample_rate)
+                if blocking:
+                    sd.wait()
+            finally:
+                audio = _ = text = None
 
-    def speak_stream(
-        self,
-        text: str,
-        device: int = None,
-        buffer_ms: int = 150,
-        prebuffer_ms: int = 30,
-        *, on_player: Callable | None = None, cancel_event: threading.Event | None = None,
-        stall_timeout_s: float = 1.0, drain_timeout_s: float | None = None,
-    ) -> bool:
+    def speak_stream(self, text: str, device: int=None, buffer_ms: int=150, prebuffer_ms: int=30, *, on_player: Callable | None=None, cancel_event: threading.Event | None=None, stall_timeout_s: float=1.0, drain_timeout_s: float | None=None) -> bool:
         """
         Sintetizar y reproducir en streaming (menor latencia).
 
@@ -481,38 +505,28 @@ class PiperTTS:
             buffer_ms: Tamaño del buffer (mayor = más suave, menor = menos latencia)
             prebuffer_ms: Pre-buffer antes de iniciar (latencia inicial vs suavidad)
         """
-        player = StreamingAudioPlayer(
-            sample_rate=self.sample_rate,
-            device=device,
-            buffer_ms=buffer_ms,
-            prebuffer_ms=prebuffer_ms, cancel_event=cancel_event,
-            stall_timeout_s=stall_timeout_s, drain_timeout_s=drain_timeout_s,
-        )
-        if on_player is not None:
+        with self._adapter_admit():
             try:
-                on_player(player)
-            except Exception:
-                player.stop()
-                raise
+                player = StreamingAudioPlayer(sample_rate=self.sample_rate, device=device, buffer_ms=buffer_ms, prebuffer_ms=prebuffer_ms, cancel_event=cancel_event, stall_timeout_s=stall_timeout_s, drain_timeout_s=drain_timeout_s)
+                if on_player is not None:
+                    try:
+                        on_player(player)
+                    except Exception:
+                        player.stop()
+                        raise
+                start_time = time.perf_counter()
+                first_audio_time = [None]
 
-        start_time = time.perf_counter()
-        first_audio_time = [None]
-
-        def on_first_chunk():
-            first_audio_time[0] = time.perf_counter()
-
-        completed = player.play_stream(self.synthesize_stream(text), on_first_chunk=on_first_chunk)
-
-        # Log latencia
-        if first_audio_time[0]:
-            latency_ms = (first_audio_time[0] - start_time) * 1000
-            stats = player.get_stats()
-            logger.info(
-                f"TTS Streaming: latencia={latency_ms:.0f}ms, "
-                f"underruns={stats['underruns']}, "
-                f"prebuffer={prebuffer_ms}ms"
-            )
-        return completed
+                def on_first_chunk():
+                    first_audio_time[0] = time.perf_counter()
+                completed = player.play_stream(self.synthesize_stream(text), on_first_chunk=on_first_chunk)
+                if first_audio_time[0]:
+                    latency_ms = (first_audio_time[0] - start_time) * 1000
+                    stats = player.get_stats()
+                    logger.info(f'TTS Streaming: latencia={latency_ms:.0f}ms, underruns={stats['underruns']}, prebuffer={prebuffer_ms}ms')
+                return completed
+            finally:
+                text = player = on_player = cancel_event = None
 
     def get_stream_generator(self, text: str) -> Generator[np.ndarray, None, None]:
         """
@@ -524,16 +538,27 @@ class PiperTTS:
         Returns:
             Generador que yield chunks de audio
         """
-        return self.synthesize_stream(text)
+        with self._adapter_admit():
+            try:
+                return self.synthesize_stream(text)
+            finally:
+                text = None
 
     def save(self, text: str, output_path: str | Path) -> float:
         """Sintetizar y guardar a archivo"""
-        import soundfile as sf
-        
-        audio, elapsed_ms = self.synthesize(text)
-        sf.write(str(output_path), audio, self.sample_rate)
-        
-        return elapsed_ms
+        with self._adapter_admit():
+            try:
+                import soundfile as sf
+                audio, elapsed_ms = self.synthesize(text)
+                sf.write(str(output_path), audio, self.sample_rate)
+                return elapsed_ms
+            finally:
+                audio = text = sf = None
+
+    def _adapter_release_resources(self) -> None:
+        """Drop this instance's voice after actual operations/iterators retire."""
+        with self._adapter_lock:
+            self._voice = None
 
 
 class XTTS:

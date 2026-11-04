@@ -580,6 +580,7 @@ async def build_application(
             destination=router_config.get("destination", "cloud"),
             cloud_consent=reasoner_config.get("cloud", {}).get("consent", False),
         )
+        shutdown.push_async_callback(fast_router.aclose)
         logger.info(f"Fast router (HTTP) → {router_config.get('base_url', 'http://127.0.0.1:8101/v1')}")
 
     # LLMRouter — candidate chain con cooldown y failover (plan #1 OpenClaw 2026-04-28).
@@ -618,6 +619,8 @@ async def build_application(
     privacy_services.add_borrower(chroma.begin_close)
     privacy_services.add_borrower(stt_executors.begin_close)
     privacy_services.add_borrower(tts_models.begin_close)
+    if fast_router is not None:
+        privacy_services.add_borrower(fast_router.begin_close)
     memory_services = await build_memory_services(config, shutdown=shutdown, privacy=privacy_services)
     memory_manager = memory_services.manager if memory_services is not None else None
     erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,

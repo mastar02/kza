@@ -21,12 +21,14 @@ import httpx
 from src.core.egress import EgressPolicy, ProcessingDestination
 
 from src.llm.http_generation import HTTPGenerationClient, owned_resource as _owned_async_resource
+from src.llm.router_lifecycle import _FastRouterLifecycle
 
 
 @dataclass
 class _AsyncGenerationResources:
     client: HTTPGenerationClient
     error: Exception | None = None
+
 
 
 logger = logging.getLogger(__name__)
@@ -900,7 +902,7 @@ class HttpReasoner:
         }
 
 
-class FastRouter:
+class FastRouter(_FastRouterLifecycle):
     """
     Router rápido — cliente HTTP al fast LLM (:8101, kza-llm-fast.service,
     Qwen2.5-7B-Instruct Q4_K_M en ik_llama.cpp).
@@ -936,6 +938,7 @@ REGLAS:
         self.timeout = timeout
         self.api_key_env = api_key_env
         self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent)
+        self._router_initialize()
         self._client = None
         self._available = False
         self._last_metrics: dict | None = None
@@ -947,29 +950,44 @@ REGLAS:
 
     def load(self):
         """Inicializar cliente OpenAI + verificar que el modelo existe en el catálogo."""
-        self.policy.require_allowed(self.base_url)
-        from openai import OpenAI
-
-        logger.info(f"Conectando al vLLM compartido en {self.base_url} (modelo: {self.model_name})")
-        self._client = OpenAI(
-            base_url=self.base_url, api_key=_resolve_api_key(self.base_url, self.api_key_env), timeout=self.timeout,
-            http_client=httpx.Client(follow_redirects=False),
-        )
-
+        clients = owner = models = ids = api_key = endpoint = request_timeout = None
         try:
-            models = self._client.models.list()
-            ids = [m.id for m in models.data]
-            if self.model_name not in ids:
-                logger.warning(
-                    f"Modelo '{self.model_name}' no está en el catálogo vLLM. "
-                    f"Disponibles: {ids}. Ver Notion KZA pág 8 §4.4 para pedir uno nuevo."
-                )
-            else:
-                self._available = True
-                logger.info(f"Router HTTP listo — modelo '{self.model_name}' disponible")
-        except Exception as e:
-            logger.error(f"No se pudo contactar vLLM compartido: {e}")
-            self._available = False
+            with self._adapter_admit():
+                try:
+                    self.policy.require_allowed(self.base_url)
+                    from openai import OpenAI
+
+                    logger.info(f"Conectando al vLLM compartido en {self.base_url} (modelo: {self.model_name})")
+                    endpoint = self.base_url
+                    api_key = _resolve_api_key(self.base_url, self.api_key_env)
+                    request_timeout = self.timeout
+                    clients, owner = self._router_new_clients()
+                    with owner.operation():
+                        clients.http = httpx.Client(follow_redirects=False)
+                        clients.sdk = OpenAI(
+                            base_url=endpoint, api_key=api_key, timeout=request_timeout,
+                            http_client=clients.http,
+                        )
+                        self._client = clients.sdk
+
+                        try:
+                            models = self._client.models.list()
+                            ids = [m.id for m in models.data]
+                            if self.model_name not in ids:
+                                logger.warning(
+                                    f"Modelo '{self.model_name}' no está en el catálogo vLLM. "
+                                    f"Disponibles: {ids}. Ver Notion KZA pág 8 §4.4 para pedir uno nuevo."
+                                )
+                            else:
+                                self._available = True
+                                logger.info(f"Router HTTP listo — modelo '{self.model_name}' disponible")
+                        except Exception:
+                            logger.error("No se pudo contactar vLLM compartido")
+                            self._available = False
+                finally:
+                    clients = owner = models = ids = api_key = endpoint = request_timeout = None
+        finally:
+            self = clients = owner = models = ids = api_key = endpoint = request_timeout = None
 
     async def complete(
         self,
@@ -989,15 +1007,19 @@ REGLAS:
         tras cada call exitosa para que el LLMRouter pueda samplearlo y forwardar
         a un MetricsTracker. No-op si el endpoint no devuelve `usage`.
         """
-        import asyncio
+        try:
+            return await self._router_complete(prompt, max_tokens, temperature, stop)
+        finally:
+            self = prompt = stop = _ignored = None
 
-        def _call():
+    def _complete_native(self, prompt, max_tokens, temperature, stop):
+        extra = resp = usage = None
+        try:
             self.policy.require_allowed(self.base_url)
             if self._client is None:
                 self.load()
             t0 = time.perf_counter()
-            # `stop` is opt-in: omitting the key keeps the request byte-identical
-            # to the pre-2026-08-04 behaviour for every existing caller.
+            # Omit absent stops exactly as the existing completion request.
             extra = {"stop": stop} if stop else {}
             self.policy.require_allowed(self.base_url)
             resp = self._client.completions.create(
@@ -1015,8 +1037,8 @@ REGLAS:
                 if self._metrics_tracker is not None and self._endpoint_id and tokens > 0:
                     self._metrics_tracker.record(self._endpoint_id, tokens, elapsed_ms)
             return resp.choices[0].text
-
-        return await asyncio.to_thread(_call)
+        finally:
+            self = prompt = stop = extra = resp = usage = None
 
     def generate(
         self,
@@ -1036,32 +1058,37 @@ REGLAS:
         prompt ("Texto: ...\nCategoría: ..."), lo que ensucia el output. Medido
         +18 puntos accuracy en classify (benchmarks/router/REPORT.md).
         """
-        self.policy.require_allowed(self.base_url)
-        if self._client is None:
-            self.load()
-
-        start = time.perf_counter()
-        results: list[str] = []
-        kwargs = {"extra_body": extra_body} if extra_body else {}
-        if stop:
-            kwargs["stop"] = stop
-        for prompt in prompts:
-            self.policy.require_allowed(self.base_url)
+        results = kwargs = prompt = resp = None
+        with self._adapter_admit():
             try:
-                resp = self._client.completions.create(
-                    model=self.model_name,
-                    prompt=prompt,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    **kwargs,
-                )
-                results.append(resp.choices[0].text)
-            except Exception as e:
-                logger.error(f"Router HTTP error: {e}")
-                results.append("")
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.debug(f"Router HTTP ({elapsed_ms:.0f}ms, {len(prompts)} prompts)")
-        return results
+                self.policy.require_allowed(self.base_url)
+                if self._client is None:
+                    self.load()
+
+                start = time.perf_counter()
+                results: list[str] = []
+                kwargs = {"extra_body": extra_body} if extra_body else {}
+                if stop:
+                    kwargs["stop"] = stop
+                for prompt in prompts:
+                    self.policy.require_allowed(self.base_url)
+                    try:
+                        resp = self._client.completions.create(
+                            model=self.model_name,
+                            prompt=prompt,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            **kwargs,
+                        )
+                        results.append(resp.choices[0].text)
+                    except Exception:
+                        logger.error("Router HTTP request failed")
+                        results.append("")
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                logger.debug(f"Router HTTP ({elapsed_ms:.0f}ms, {len(prompts)} prompts)")
+                return results
+            finally:
+                self = prompts = extra_body = stop = results = kwargs = prompt = resp = None
 
     def load_lora(self, lora_path: str):
         """LoRA no soportado vía HTTP en vLLM compartido. Requiere coordinación con infra (R3)."""
