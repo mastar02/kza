@@ -2567,3 +2567,82 @@ siguen en T023/T024. Continúa el benchmark de latencia y sus modelos/transporte
 T021/T022 y C03/C04/C06/C20 permanecen abiertos. Las causas históricas de M
 (respuesta y observador wake), G y los primeros intervalos J/K, además de ENOSPC
 K, siguen sin acreditarse. HA resistente supera 60 segundos.
+
+## Retiro de recursos del benchmark de latencia
+
+T022-O da propiedad explícita a las cargas lazy de STT, Piper, Emotion,
+FastRouter y HA en tools/benchmark_latency.py. Los métodos individuales pueden
+reutilizar sus componentes hasta aclose o la salida del contexto; run_full y
+el CLI retiran sus recursos antes de renderizar el resultado. Los componentes
+prestados conservan su dueño externo.
+
+Los dueños síncronos se registran antes de adquirir modelos o clientes. El
+cierre sella las operaciones, inicia todos los retiros y espera los recibos
+reales; HA se cierra en su loop. Cancelar al observador no cancela ese dueño.
+Un fallo incierto conserva referencias fuertes y no acredita retiro exitoso.
+Los fallos propietarios guardan descriptores fijos por hoja; varios controles
+conocidos se reconstruyen en un grupo nuevo después del drenaje, sin conservar
+mensajes, frames, etiquetas o estructura del grupo original.
+
+### Adaptadores, transporte y aplicación
+
+Piper y Emotion admiten llamadas bajo leases por identidad. El modelo no se
+retira mientras haya una llamada o un iterador nativo admitido. Piper registra
+la fuente y el iterador antes de consumirlos y conserva los cierres fallidos.
+Una espera de cierre desde el consumidor de un stream suspendido se rechaza,
+también después de migrar ese consumidor a otro Thread. Los arrays devueltos
+y el playback global no quedan convertidos en propiedad del adaptador.
+
+FastRouter conserva su política de egress: el destino cloud sin consentimiento
+se rechaza antes de resolver credenciales o construir HTTPX/OpenAI. Las pruebas
+LOCAL usan destino explícito. complete usa ahora un pool propio lazy con la
+concurrencia predeterminada de CPython y copy_context. Este cambio de despacho
+permite unir sus workers nativos antes de cerrar los clientes; no acredita una
+mejora de latencia. HttpReasoner conserva su implementación.
+
+El executor publica Thread y handle antes de start. Un start incierto rompe la
+admisión y conserva sus metadatos; no se reintenta por ver ident cero o una señal
+Python sin publicar. Se rechaza shutdown desde el propio submit o worker. La
+prueba de ident cero acredita este contrato de admisión, sin afirmar que haya
+reproducido una fuga de un actor del sistema operativo.
+
+Una cancelación de complete descarta sólo trabajo que aún no empezó. El trabajo
+nativo iniciado conserva sus entradas hasta su finally y su salida real se
+comprueba aparte. El observador presente recibe la clase original del error SDK;
+al abandonarlo se vacía el resultado mutable. El fallo observado del Lock
+después de registrar el resultado del callable se convierte en metadatos seguros,
+sin dejar su excepción SDK cruda en el Future nativo. Marca el retiro incierto y
+mantiene los dueños de clientes, incluso después de unir el pool. Otros fallos
+arbitrarios de Lock o disposición pending no quedan cubiertos por esa prueba.
+
+La fábrica del grafo registra el cierre de FastRouter inmediatamente después
+de construirlo, antes de load. Los cierres de sus consumidores se ejecutan
+antes por orden LIFO; el Router drena su propio trabajo nativo. El gate de
+privacidad también espera su retiro antes de cerrar ledger, executor
+y lease de escritura. Esto no convierte una vinculación vocal en autorización.
+
+### Mediciones y verificación de latencia
+
+Se conservan generador de audio, fórmulas de resumen, render, CLI, orden de
+muestras y los seis intervalos de medición de éxito. Los errores de muestra
+siguen valiendo cero y muestran una clase segura. La opción --audio del texto
+histórico sigue sin estar implementada por el parser. Se conserva el fallback
+ordinario de warmup Piper y los fallbacks neutral/secuencial de Emotion.
+
+La medición HA pasa de get_states, inexistente en el cliente actual, a una
+llamada get_state_snapshot por iteración. available=True cuenta los estados,
+incluso cero; available=False es una muestra fallida con cero milisegundos,
+aunque el snapshot conserve estados anteriores. No se presenta el fallo local
+anterior a transporte como una medición exitosa de HA.
+
+T022-O queda verificada localmente en `e6e753f`. Pasan 68 casos nuevos y 671 regresiones existentes. Full: 7904 casos más la xfail conocida en 598.02 segundos, con 948 archivos idénticos de src/tests/tools/scripts, incluidos 37 scripts. Se conservan los RED y fallos de fixture con sus versiones. Las hojas SDK/modelo son sintéticas; adaptadores, clientes y handles son reales.
+
+La evidencia está en data/autonomous-roadmap-20261102/t022/o/evidence.json.
+El inventario sigue siendo un suplemento parcial. El próximo trabajo T022-P
+corrige las reservas anteriores al try y el cierre de _TTSLifecycle usado por
+Kokoro/Dual; este nuevo helper no demuestra corregidos esos controles antiguos.
+T021/T022 y C03/C04/C06/C20 siguen abiertos, junto a la matriz de copias/destinos
+y la evidencia física. Las causas históricas M/G/J/K y ENOSPC K no quedan
+atribuidas; el retiro HA resistente a cancelación mayor a 60 s sigue incumplido.
+No se usaron modelos reales, hardware, servicios de producción ni despliegue.
+T047 conserva la integración NEXO local y sus autoridades separadas.

@@ -1133,7 +1133,8 @@
         "72f7eb2d2456480706667b16219d0e75b9dcbad1",
         "9e57c24915294049cfb05821dc466f0a7d2e852f",
         "cc8578836dec02308468e84d094ffe478d5ee53b",
-        "7e1b0fe632215a22657c0e8710b67c03769620eb"
+        "7e1b0fe632215a22657c0e8710b67c03769620eb",
+        "e6e753fdbb924683da757da15a5cce01779f7491"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1149,9 +1150,10 @@
         "data/autonomous-roadmap-20261102/t022/k/evidence.json",
         "data/autonomous-roadmap-20261102/t022/l/evidence.json",
         "data/autonomous-roadmap-20261102/t022/m/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/n/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/n/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/o/evidence.json"
       ],
-      "next_action": "T022-N verificada localmente en 7e1b0fe: inscripción con dueños antes de carga, retiro de aliases PCM/vectores y cierre nativo antes de salidas o publicación; admisión/cierre internos Speaker protegidos por identidad. Se conservan helpers/loops/CLI, controles conocidos y NPY→metadata→JSON con sus fallos parciales. Cinco RED preservados; regresiones nuevas, existentes y full con src/tests/tools/scripts en evidencia. Continuar T022-O con tools/benchmark_latency.py y sus modelos/transportes reales usando hojas sintéticas y mediciones originales. T021/T022, inventario de 29 familias y C03/C04/C06/C20 abiertos; copias privadas SDK y matriz de destinos T023/T024 pendientes. M/G/J/K y ENOSPC K sin causa acreditada, HA resistente >60 s incumplido. T047 conserva integración local y permisos separados."
+      "next_action": "T022-O verificada localmente: benchmark de latencia con dueños antes de carga y retiro real antes del resultado; Piper/Emotion con leases e iteradores; FastRouter con pool propio, SDK/HTTP y gates del grafo/privacidad. Se preservan egress, clases SDK para observador presente, concurrencia predeterminada, mediciones/CLI y controles seguros por hoja. HA usa snapshot vigente con disponibilidad explícita. RED y full congelada en evidencia. Continuar T022-P: reservas/TLS/cierre pre-try del viejo _TTSLifecycle Kokoro/Dual con RED genuinos. Inventario de 29 familias y copias/destinos T023/T024 pendientes; T021/T022 y C03/C04/C06/C20 abiertos. Causas M/G/J/K y ENOSPC K sin acreditar; HA resistente >60 s incumplido. T047 NEXO conserva integración local y autoridades separadas."
     },
     {
       "id": "T023",
@@ -2332,7 +2334,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-N/standalone-enrollment-retirement",
+    "last_verified_unit": "T022-O/standalone-latency-retirement",
     "user_priority_after_admin_unit": "T047"
   }
 }
