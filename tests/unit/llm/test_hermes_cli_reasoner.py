@@ -220,12 +220,9 @@ def test_run_raises_on_timeout_with_timeout_in_message(mock_popen, mock_getpgid,
 
 
 @patch("src.llm.hermes_reasoner.os.killpg")
-@patch("src.llm.hermes_reasoner.os.getpgid", return_value=9999)
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
-def test_run_kills_process_group_on_timeout(mock_popen, mock_getpgid, mock_killpg):
-    """El bug que este mecanismo previene: un hermes colgado sin fallback deja el
-    slow path sin reasoner Y un proceso zombie. proc.kill() no alcanza si hermes
-    forkea hijos — hace falta matar el process group completo (os.killpg)."""
+def test_run_kills_process_group_on_timeout(mock_popen, mock_killpg):
+    """El grupo adquirido por start_new_session conserva el PID del hijo."""
     import signal
     proc = _fake_popen(pid=4242)
     proc.communicate.side_effect = subprocess.TimeoutExpired(cmd=["hermes"], timeout=90.0)
@@ -235,22 +232,23 @@ def test_run_kills_process_group_on_timeout(mock_popen, mock_getpgid, mock_killp
     with pytest.raises(RuntimeError):
         r._run("hola")
 
-    mock_getpgid.assert_called_once_with(4242)
-    mock_killpg.assert_called_once_with(9999, signal.SIGKILL)
+    mock_killpg.assert_called_once_with(4242, signal.SIGKILL)
     proc.wait.assert_called_once()
 
 
 @patch("src.llm.hermes_reasoner.os.killpg", side_effect=ProcessLookupError)
-@patch("src.llm.hermes_reasoner.os.getpgid", return_value=9999)
 @patch("src.llm.hermes_reasoner.subprocess.Popen")
-def test_run_timeout_survives_process_already_dead(mock_popen, mock_getpgid, mock_killpg):
-    """Race: el proceso termina solo justo antes del killpg — no debe romper el timeout handling."""
-    proc = _fake_popen()
+def test_run_timeout_survives_process_already_dead(mock_popen, mock_killpg):
+    """El grupo ya ausente conserva el timeout y exige wait del hijo directo."""
+    import signal
+    proc = _fake_popen(pid=4242)
     proc.communicate.side_effect = subprocess.TimeoutExpired(cmd=["hermes"], timeout=90.0)
     mock_popen.return_value = proc
     r = HermesCliReasoner(cloud_consent=True)
     with pytest.raises(RuntimeError, match="timed out"):
         r._run("hola")
+    mock_killpg.assert_called_once_with(4242, signal.SIGKILL)
+    proc.wait.assert_called_once()
 
 
 @patch("src.llm.hermes_reasoner.subprocess.Popen")

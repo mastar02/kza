@@ -13,8 +13,11 @@ import os
 import signal
 import subprocess
 import tempfile
+import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TextIO
 
 from src.core.egress import EgressPolicy
 
@@ -72,6 +75,120 @@ def warn_if_router_timeout_misaligned(
         )
         return True
     return False
+
+
+_HERMES_PROCESS_LOCK = threading.Lock()
+_HERMES_PROCESS_OWNERS: set[_HermesProcessOwner] = set()
+
+
+@dataclass(eq=False)
+class _HermesProcessOwner:
+    """Retain one CLI process until its known retirement receipts complete."""
+
+    usage_path: str
+    proc: subprocess.Popen | None = None
+    stdout: TextIO | None = None
+    stderr: TextIO | None = None
+    pgid: int | None = None
+    phase_codes: list[str] = field(default_factory=list)
+    launch_called: bool = False
+    wait_confirmed: bool = False
+    signal_confirmed: bool = False
+    stdout_closed: bool = False
+    stderr_closed: bool = False
+    usage_removed: bool = False
+    cleanup_started: bool = False
+    cleanup_finished: bool = False
+    retired: bool = False
+
+    def __post_init__(self) -> None:
+        with _HERMES_PROCESS_LOCK:
+            _HERMES_PROCESS_OWNERS.add(self)
+
+    def adopt(self, proc: subprocess.Popen) -> None:
+        """Record the returned process before communicating with it."""
+        self.proc = proc
+        # start_new_session=True makes the child's PID its initial group ID.
+        self.pgid = proc.pid
+        self.stdout = proc.stdout
+        self.stderr = proc.stderr
+
+    def _failed(
+        self, phase: str, error: BaseException, controls: list[BaseException]
+    ) -> None:
+        self.phase_codes.append(phase)
+        if not isinstance(error, Exception):
+            controls.append(error)
+
+    def retire(self, *, terminate: bool) -> list[BaseException]:
+        """Attempt each known receipt once, retaining any uncertain resources."""
+        if self.cleanup_started:
+            return []
+        self.cleanup_started = True
+        controls: list[BaseException] = []
+        proc = self.proc
+        if proc is None:
+            if self.launch_called:
+                self.phase_codes.append("launch_unconfirmed")
+        else:
+            if terminate:
+                try:
+                    os.killpg(self.pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    self.signal_confirmed = True
+                except BaseException as error:
+                    self._failed("group_signal_failed", error, controls)
+                else:
+                    self.signal_confirmed = True
+
+            if not self.wait_confirmed:
+                try:
+                    if terminate and not self.signal_confirmed:
+                        # A failed signal does not justify an unbounded wait.
+                        proc.wait(timeout=0)
+                    else:
+                        proc.wait()
+                except BaseException as error:
+                    self._failed("process_wait_failed", error, controls)
+                else:
+                    self.wait_confirmed = True
+
+            for name in ("stdout", "stderr"):
+                pipe = getattr(self, name)
+                if pipe is None:
+                    self.phase_codes.append(f"{name}_unconfirmed")
+                    continue
+                try:
+                    pipe.close()
+                except BaseException as error:
+                    self._failed(f"{name}_close_failed", error, controls)
+                else:
+                    setattr(self, f"{name}_closed", True)
+
+        process_retired = (
+            (proc is None and not self.launch_called)
+            or (
+                proc is not None
+                and self.wait_confirmed
+                and self.stdout_closed
+                and self.stderr_closed
+                and (not terminate or self.signal_confirmed)
+            )
+        )
+        if process_retired and not self.phase_codes:
+            try:
+                Path(self.usage_path).unlink(missing_ok=True)
+            except BaseException as error:
+                self._failed("usage_unlink_failed", error, controls)
+            else:
+                self.usage_removed = True
+
+        if self.usage_removed and not self.phase_codes:
+            with _HERMES_PROCESS_LOCK:
+                _HERMES_PROCESS_OWNERS.remove(self)
+            self.retired = True
+        self.cleanup_finished = True
+        return controls
 
 
 class HermesCliReasoner:
@@ -201,11 +318,14 @@ class HermesCliReasoner:
         self._last_metrics = None
         fd, usage_path = tempfile.mkstemp(suffix=".json", prefix="hermes-usage-")
         os.close(fd)
+        owner = _HermesProcessOwner(usage_path)
+        primary: BaseException | None = None
         try:
             cmd = self._build_cmd(prompt, usage_path)
             start = time.perf_counter()
+            owner.launch_called = True
             try:
-                proc = subprocess.Popen(
+                owner.proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -216,12 +336,15 @@ class HermesCliReasoner:
                 )
             except OSError as e:
                 raise RuntimeError(f"hermes -z could not start: {e}") from e
+            proc = owner.proc
+            owner.adopt(proc)
             try:
                 stdout, stderr = proc.communicate(timeout=self.timeout_s)
             except subprocess.TimeoutExpired as e:
-                self._kill_process_group(proc)
                 raise RuntimeError(f"hermes -z timed out after {self.timeout_s}s") from e
             elapsed_ms = (time.perf_counter() - start) * 1000
+            # A successful communicate returns only after its actual wait.
+            owner.wait_confirmed = True
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"hermes -z failed (exit={proc.returncode}): {stderr.strip()}"
@@ -232,8 +355,27 @@ class HermesCliReasoner:
                     f"hermes -z returned empty output (exit=0), stderr={stderr.strip()!r}"
                 )
             return stdout.strip(), tokens
+        except BaseException as error:
+            primary = error
+            raise
         finally:
-            Path(usage_path).unlink(missing_ok=True)
+            controls: list[BaseException] = []
+            try:
+                controls = owner.retire(terminate=not owner.wait_confirmed)
+            except BaseException as error:
+                # The strong registry remains the owner even if metadata fails.
+                owner.phase_codes.append("retirement_unconfirmed")
+                if not isinstance(error, Exception):
+                    controls.append(error)
+            if controls:
+                errors = ([primary] if primary is not None else []) + [
+                    error for error in controls if error is not primary
+                ]
+                if len(errors) == 1:
+                    raise errors[0]
+                raise BaseExceptionGroup("hermes_process_cleanup_controls", errors)
+            if primary is None and not owner.retired:
+                raise RuntimeError("hermes_process_retirement_failed")
 
     @staticmethod
     def _kill_process_group(proc: subprocess.Popen) -> None:
