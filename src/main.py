@@ -1787,6 +1787,25 @@ async def build_application(
         ambient_control = await build_ambient_control(privacy=privacy_services,path=ambient_path,
             voices=voice_registry,shutdown=shutdown)
 
+    from src.memory.capture_control import build_capture_control
+    from src.memory.capture_native import build_capture_native_drains
+
+    active_audio_loop = multi_room_loop if multi_room_loop else audio_loop
+    capture_drains, capture_native_supported = build_capture_native_drains(
+        model_owners=(stt_executors, tts_models, speaker_models, wake_models,
+                      http_reasoners, hermes_reasoners),
+        router=request_router, responses=response_handler,
+        context_manager=orchestrator.context_manager if orchestrator else None,
+    )
+    capture_control = await build_capture_control(
+        privacy=privacy_services, audio_loop=active_audio_loop,
+        command_processor=command_processor, ambient_control=ambient_control,
+        voices=voice_registry,
+        collectors=(stt_correction_collector, conversation_collector),
+        native_drains=capture_drains, native_supported=capture_native_supported,
+        shutdown=shutdown,
+    )
+
     if dashboard_config.get("enabled", True):
         health_aggregator = HealthAggregator(
             ha_client=ha_client,
@@ -1825,6 +1844,7 @@ async def build_application(
             memory_manager=memory_manager,
             voice_registry=voice_registry,
             ambient_control=ambient_control,
+            capture_control=capture_control,
         )
         speaker_models.add_borrower(dashboard.admin_work.begin_close)
         shutdown.push_async_callback(dashboard.stop)
@@ -1884,9 +1904,6 @@ async def build_application(
         )
         shutdown.push_async_callback(lambda: asyncio.to_thread(nightly_trainer.stop_scheduler))
 
-    # Use MultiRoomAudioLoop if rooms are configured, else fall back to AudioLoop
-    active_audio_loop = multi_room_loop if multi_room_loop else audio_loop
-
     # Assemble the slim VoicePipeline
     pipeline = VoicePipeline(
         audio_loop=active_audio_loop,
@@ -1920,6 +1937,7 @@ async def build_application(
         ambient_path=ambient_path, nightly_trainer=nightly_trainer,
         stt_executors=stt_executors, tts_models=tts_models, speaker_models=speaker_models,
         wake_models=wake_models, http_reasoners=http_reasoners,
+        capture_control=capture_control,
     )
 
 

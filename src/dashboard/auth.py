@@ -165,6 +165,8 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
         return frozenset({DashboardPermission.VOICES_READ if read else DashboardPermission.VOICES_REVIEW})
     if path == "/api/memory" or path.startswith("/api/memory/"):
         return frozenset({DashboardPermission.MEMORY_READ if read else DashboardPermission.MEMORY_REVIEW})
+    if path == "/api/capture" or path.startswith("/api/capture/"):
+        return frozenset({DashboardPermission.ADMIN_MANAGE})
     if path == "/api/ambient" or path.startswith("/api/ambient/"):
         return frozenset({DashboardPermission.AMBIENT_CONTROL})
     if path == "/ws/voices":
@@ -216,15 +218,16 @@ async def require_dashboard_access(
     authorization: Optional[str] = Header(None),
     kza_dashboard_token: Optional[str] = Cookie(None, alias=COOKIE_NAME),
 ) -> DashboardPrincipal | None:
-    """Protect application routes by default, with exact public entry points.
+    """Protect every route except the exact public and retire-only surfaces.
 
-    Only the home HTML and token login are public application routes. Static
-    mounts contain UI assets and have no private data. New API/WS routes inherit
-    this dependency even when their handler omits a session parameter.
+    Recorder retirement accepts its opaque capability after logout. Its route
+    checks that capability; the exception here never authorizes capture or unmute.
     """
     public = request.scope["type"] == "http" and (
         (request.scope["method"] == "GET" and request.url.path == "/")
-        or (request.scope["method"] == "POST" and request.url.path == "/api/admin/auth/login")
+        or (request.scope["method"] == "POST" and request.url.path in {
+            "/api/admin/auth/login", "/api/capture/recorders/retire",
+        })
     )
     if public:
         await require_dashboard_origin(request, kza_dashboard_token)

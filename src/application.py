@@ -55,6 +55,7 @@ class _ModelResourceOwner:
     def __init__(self, model_types: tuple[type, ...]) -> None:
         self._model_types = model_types
         self._models: dict[int, Any] = {}
+        self._capture_unreviewed = False
         self._borrowers: list[Callable[[], asyncio.Task]] = []
         self._closing: asyncio.Task | None = None
 
@@ -64,6 +65,9 @@ class _ModelResourceOwner:
             raise RuntimeError("model_resource_owner_closed")
         if issubclass(type(model), self._model_types):
             self._models[id(model)] = model
+        elif model is not None:
+            # Recording uncertainty grants no ownership of a foreign instance.
+            self._capture_unreviewed = True
 
     def add_borrower(self, begin_close: Callable[[], asyncio.Task]) -> None:
         """Register the actual drain of a component using a shared adapter."""
@@ -218,6 +222,7 @@ class ApplicationGraph:
     speaker_models: SpeakerModelOwner | None = None
     wake_models: WakeModelOwner | None = None
     http_reasoners: HttpReasonerOwner | None = None
+    capture_control: Any = None
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     async def warmup(self) -> None:
@@ -286,10 +291,17 @@ class ApplicationGraph:
             await self._start_services()
             if self.dashboard is not None:
                 dashboard_task = asyncio.create_task(self.dashboard.start(), name="application-dashboard")
-            if self.ambient_path is not None:
+            capture = self.capture_control.snapshot() if self.capture_control is not None else None
+            blocked = capture is not None and capture["ingress_sealed"] and (
+                not capture["supported"] or capture["error_code"] is not None
+            )
+            if self.ambient_path is not None and not blocked:
                 ambient_task = asyncio.create_task(self.ambient_path.start(), name="application-ambient")
                 ambient_task.add_done_callback(_report_ambient_failure)
-            await self.pipeline.run()
+            if blocked:
+                await asyncio.Future()
+            else:
+                await self.pipeline.run()
         except KeyboardInterrupt:
             logger.info("Application stopping")
         finally:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import Context
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -123,6 +124,8 @@ class STTCorrectionCollector:
         self._work = OwnedBlockingWork(worker=store._offload, capacity=8)
         self._closed = False
         self._closing = None
+        self._paused = False
+        self._pausing = None
         self._close_timeout_s = close_timeout_s
         self._active: dict[str, CorrectionJob] = {}
         self._jobs: dict[str, CorrectionJob] = {}
@@ -154,7 +157,7 @@ class STTCorrectionCollector:
         return not self._closed and not self._store._closed and self._store.privacy.sources_available(sources)
 
     def _job_live(self, job):
-        if self._store.ledger.clock() >= min(job.deadline, self._store.deadline_for(job.id, job.deadline)) or not self._live(job.sources):
+        if self._paused or self._store.ledger.clock() >= min(job.deadline, self._store.deadline_for(job.id, job.deadline)) or not self._live(job.sources):
             job.cancelled.set()
         return not job.cancelled.is_set()
 
@@ -166,6 +169,8 @@ class STTCorrectionCollector:
         job = None
         copied = None
         try:
+            if self._paused:
+                return None
             feedback = PRODUCER_CONTEXT.get().sources if correction_sources is None else correction_sources
             if type(sources) is not tuple or type(feedback) is not tuple or not sources or not feedback or not self._live(sources) or not self._live(feedback):
                 return None
@@ -406,6 +411,39 @@ class STTCorrectionCollector:
         await self._native(shorten)
         await self._store.reconcile()
 
+    def pause_admission(self) -> None:
+        """Seal new writes without retiring historical views or the work owner."""
+        if not self._paused:
+            self._paused = True
+            self._pausing = None
+        for job in tuple(self._jobs.values()):
+            job.cancelled.set()
+
+    async def drain_pause(self) -> None:
+        """Observe actual admitted native work through one retained pause owner."""
+        if not self._paused:
+            raise RuntimeError('stt_correction_not_paused')
+        if self._pausing is None:
+            async def finish():
+                await self._work.drain_admitted()
+                if self._jobs or self._active:
+                    raise RuntimeError('stt_correction_pause_unconfirmed')
+            self._pausing = asyncio.create_task(finish(), context=Context())
+        await asyncio.shield(self._pausing)
+
+    def resume_admission(self) -> None:
+        """Reopen writes only after the same pause has really drained."""
+        if self._closed:
+            raise RuntimeError('stt_correction_closed')
+        if not self._paused:
+            return
+        if self._pausing is None or not self._pausing.done() or self._pausing.cancelled():
+            raise RuntimeError('stt_correction_pause_pending')
+        self._pausing.result()
+        if self._jobs or self._active:
+            raise RuntimeError('stt_correction_pause_unconfirmed')
+        self._paused = False
+
     def begin_close(self) -> asyncio.Task:
         """Close admission and keep actual native writes and reads under the lease."""
         self._closed = True
@@ -431,7 +469,9 @@ class STTCorrectionCollector:
 
     def resource_status(self) -> dict:
         """Report ownership counts without transcription, user names or file paths."""
-        return {'closed': self._closed, 'operations': self._work.status()['operations'],
+        return {'closed': self._closed, 'paused': self._paused,
+                'pause_pending': self._pausing is not None and not self._pausing.done(),
+                'operations': self._work.status()['operations'],
                 'capacity': self._work.status()['capacity'], 'active_writes': len(self._active),
                 'pending_writes': len(self._jobs),
                 'read_views': len(self._views), 'view_capacity': 256, 'errors': self._errors}

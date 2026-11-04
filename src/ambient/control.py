@@ -43,6 +43,7 @@ class AmbientControl:
         self._target = self._persisted = True
         self._phase = 'initializing'
         self._ready = self._closed = False
+        self._capture_suspended = False
         self._operation = self._closing = None
         self._seal()
 
@@ -57,12 +58,37 @@ class AmbientControl:
     def _unseal(self):
         if self._closed:
             raise RuntimeError('ambient_control_closed')
+        if self._capture_suspended:
+            return
         self.privacy.scopes.resume_origin(MemoryOrigin.AMBIENT)
         if self.voices is not None:
             self.voices.resume_origin(MemoryOrigin.AMBIENT)
         self.path.transcriber.resume_admission()
         if self.path.distiller is not None:
             self.path.distiller.set_paused(False)
+
+    def pause_capture(self) -> None:
+        """Hold capture independently of the user's durable ambient preference."""
+        self._capture_suspended = True
+        self._seal()
+
+    async def drain_capture(self) -> None:
+        """Wait for the local transition and its actual private work to finish."""
+        if self._closed:
+            await asyncio.shield(self.begin_close())
+            return
+        operation = self._operation
+        if operation is not None and not operation.done():
+            await asyncio.shield(operation)
+        await self._drain()
+
+    def resume_capture(self) -> None:
+        """Release only the global hold; an independently paused path stays paused."""
+        if self._closed or not self._ready or (self._operation is not None and not self._operation.done()):
+            raise RuntimeError('ambient_capture_still_owned')
+        self._capture_suspended = False
+        if not self._target:
+            self._unseal()
 
     def _load(self):
         with self.privacy.ledger._transaction() as db:
@@ -179,7 +205,8 @@ class AmbientControl:
             pending+=self.voices.pending_origin(MemoryOrigin.AMBIENT)
         return {'revision':self._revision,'target_paused':self._target,'persisted_paused':self._persisted,
             'phase':self._phase,'admission_paused':self.path.transcriber._paused,
-            'pending_operations':pending,'command_capture_affected':False,'total_mute_supported':False}
+            'pending_operations':pending,'command_capture_affected':False,'total_mute_supported':False,
+            'global_capture_paused':self._capture_suspended}
 
     def begin_close(self) -> asyncio.Task:
         """Retain transitions and real native drain after observer cancellation."""

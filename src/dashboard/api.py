@@ -40,6 +40,9 @@ from src.dashboard.voice_api import register_voice_routes
 from src.dashboard.evaluation_api import register_evaluation_routes
 from src.dashboard.credential_api import register_credential_routes
 from src.dashboard.ambient_api import register_ambient_routes
+from src.dashboard.capture_api import register_capture_routes
+from src.dashboard.capture_browser_api import register_capture_browser_routes
+from src.dashboard.capture_ingress import CaptureIngressMiddleware
 from src.dashboard.observability import register_observability_routes
 from src.dashboard.observation_http import entity_observation_metadata, observation_headers
 from src.rooms.room_context import RoomConfig
@@ -197,6 +200,7 @@ class DashboardAPI:
         memory_manager=None,
         voice_registry=None,
         ambient_control=None,
+        capture_control=None,
     ):
         self.scheduler = routine_scheduler
         self.authority = authority
@@ -224,6 +228,7 @@ class DashboardAPI:
         self.memory_manager = memory_manager
         self.voice_registry = voice_registry
         self.ambient_control = ambient_control
+        self.capture_control = capture_control
         self.home_actions = home_actions if home_actions is not None else (
             HomeActionService(ha_client) if ha_client is not None else None
         )
@@ -242,6 +247,9 @@ class DashboardAPI:
         )
         self.app.state.dashboard_authority = authority
         self.admin_work = ensure_admin_work(self.app)
+        if self.capture_control is not None:
+            self.capture_control.bind_enrollment_work(self.admin_work)
+            self.app.add_middleware(CaptureIngressMiddleware, control=self.capture_control)
         self.app.state.rest_delivery_owner = event_bus._retention.rest if event_bus is not None and event_bus._retention is not None else None
 
         # CORS — use explicit config; default to restrictive same-origin
@@ -977,6 +985,8 @@ class DashboardAPI:
         register_evaluation_routes(self.app,voices=self.voice_registry)
         register_credential_routes(self.app,work=self.admin_work,voices=self.voice_registry)
         register_ambient_routes(self.app,control=self.ambient_control)
+        register_capture_routes(self.app, control=self.capture_control)
+        register_capture_browser_routes(self.app, control=self.capture_control)
 
         register_home_routes(
             self.app, catalog=self.home_catalog, actions=self.home_actions,

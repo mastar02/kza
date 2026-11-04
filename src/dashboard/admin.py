@@ -242,7 +242,18 @@ def register_admin_routes(
             user_id: str, request: Request,
             samples: list[UploadFile] = File(..., description="WAV mono PCM, entre 3 y 16 muestras"),
         ):
-            current = session_guard(request, frozenset({'admin:manage'}))
+            original = session_guard(request, frozenset({'admin:manage'}))
+            control = getattr(app.state, "capture_control", None)
+            upload = request.scope.get("kza_capture_upload")
+            if control is not None and upload is None:
+                raise HTTPException(503, "capture_upload_unowned")
+
+            def current():
+                return (original() is True and (control is None or
+                        upload.current() is True and control.capture_allowed is True))
+
+            if current() is not True:
+                raise HTTPException(403, "dashboard_authority_retired")
             if user_manager is None or speaker_identifier is None:
                 raise HTTPException(503, "user_manager o speaker_identifier no inyectados")
             if getattr(user_manager, "voice_review_managed", False) is True:
@@ -254,6 +265,7 @@ def register_admin_routes(
                 for sample in samples:
                     require_current(current)
                     payload = await sample.read(_MAX_AUDIO_BYTES + 1)
+                    require_current(current)
                     if len(payload) > _MAX_AUDIO_BYTES:
                         raise HTTPException(413, "audio_sample_too_large")
                     payloads.append(payload)
@@ -270,6 +282,8 @@ def register_admin_routes(
                 payloads = payload = None
             if receipt is None:
                 raise HTTPException(404, "user_not_found")
+            if current() is not True:
+                raise HTTPException(403, "dashboard_authority_retired")
             return {"ok": True, "user_id": receipt.user_id, "samples": receipt.samples,
                     "embedding_dim": receipt.embedding_dim}
 

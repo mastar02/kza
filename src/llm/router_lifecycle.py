@@ -220,6 +220,8 @@ class _FastRouterLifecycle(_AdapterLifecycle):
         self._router_executor = None
         self._router_work: set[_RouterWork] = set()
         self._router_work_failure = False
+        self._router_native_futures = set()
+        self._router_dispatch_uncertain = False
 
     def _router_new_clients(self):
         # The global ResourceOwner registry retains this bundle and router
@@ -278,8 +280,33 @@ class _FastRouterLifecycle(_AdapterLifecycle):
                 self._router_work.add(work)
             executor = self._router_get_executor()
             # No adapter/lifecycle lock crosses Thread.start/native admission.
-            native = executor.submit(work.run)
-            wrapped = asyncio.wrap_future(native)
+            try:
+                native = executor.submit(work.run)
+                wrapped = asyncio.wrap_future(native)
+            except BaseException:
+                # A submit exception may follow dispatch without returning its
+                # Future. Logical lease retirement cannot prove native return.
+                with self._adapter_condition:
+                    self._router_dispatch_uncertain = True
+                raise
+            with self._adapter_condition:
+                self._router_native_futures.add(native)
+
+            def finished(done, owner=self):
+                try:
+                    with owner._adapter_condition:
+                        owner._router_native_futures.discard(done)
+                except BaseException:
+                    owner._router_work_failure = True
+                finally:
+                    owner = done = None
+
+            try:
+                native.add_done_callback(finished)
+            except BaseException:
+                with self._adapter_condition:
+                    self._router_dispatch_uncertain = True
+                raise
             wrapped.add_done_callback(_observe_future)
             await asyncio.shield(wrapped)
             return work.deliver()
@@ -312,7 +339,10 @@ class _FastRouterLifecycle(_AdapterLifecycle):
             self._router_session.__exit__(None, None, None)
             self._client = None
             self._router_executor = None
-            self._router_work.clear()
+            with self._adapter_condition:
+                self._router_work.clear()
+                self._router_native_futures.clear()
+                self._router_dispatch_uncertain = False
             with _ROUTERS_LOCK:
                 _ROUTERS.discard(self)
         finally:

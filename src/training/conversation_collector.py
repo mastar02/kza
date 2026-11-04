@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import Context
 from dataclasses import dataclass, field
 from enum import StrEnum
 import hashlib
@@ -220,6 +221,7 @@ class ConversationCollector:
         self._close_timeout_s = close_timeout_s
         self._work = OwnedBlockingWork(worker=store._offload, capacity=8)
         self._closed, self._closing = False, None
+        self._paused, self._pausing = False, None
         self._jobs: dict[str,RecordJob] = {}
         self._active = set()
         self._views = WeakSet()
@@ -236,7 +238,7 @@ class ConversationCollector:
         return now < self._store.deadline_for(identifier, deadline) and all(now < self._store.deadline_for(i,d) for i,d in parents)
 
     def _job_live(self, job):
-        if not self._live(job.sources) or not self._receipts_live(job.id, job.deadline, job.parents):
+        if self._paused or not self._live(job.sources) or not self._receipts_live(job.id, job.deadline, job.parents):
             job.cancelled.set()
         return not job.cancelled.is_set()
 
@@ -264,7 +266,7 @@ class ConversationCollector:
         try:
             if user_name is not None and (type(user_name) is not str or len(user_name)>128):
                 raise ValueError('invalid_conversation_name')
-            if not self._live(sources):
+            if self._paused or not self._live(sources):
                 raise PermissionError('conversation_sources_required')
             self._current_scope = (PRODUCER_CONTEXT.get().room_id or '', sources[0].conversation_id)
             return sources[0].conversation_id
@@ -282,7 +284,7 @@ class ConversationCollector:
         """Publish a turn only with explicit input and full response provenance."""
         job = data = None
         try:
-            if type(input_sources) is not tuple or type(response_sources) is not tuple or not self._live(input_sources) or not self._live(response_sources):
+            if self._paused or type(input_sources) is not tuple or type(response_sources) is not tuple or not self._live(input_sources) or not self._live(response_sources):
                 return None
             sources = merge_sources(input_sources,response_sources)
             if len(sources)>64:
@@ -304,7 +306,7 @@ class ConversationCollector:
 
     async def _submit(self, job):
         try:
-            if not self._live(job.sources) or len(self._jobs)>=8 or self._work.status()['operations']>=8:
+            if self._paused or not self._live(job.sources) or len(self._jobs)>=8 or self._work.status()['operations']>=8:
                 job.clear()
                 return None
             self._jobs[job.id] = job
@@ -447,6 +449,8 @@ class ConversationCollector:
                 raise PermissionError('conversation_parent_invalidated')
 
     def _commit(self, db, job):
+        if self._paused or job.cancelled.is_set():
+            raise PermissionError('conversation_capture_paused')
         self._parents_live(db,job)
         if job.action is RecordAction.FEEDBACK:
             old = job.parents[0][0]
@@ -685,6 +689,40 @@ class ConversationCollector:
             finally:
                 self._views_lock.release()
 
+    def pause_admission(self) -> None:
+        """Seal new writes without retiring historical views or the work owner."""
+        if not self._paused:
+            self._paused = True
+            self._pausing = None
+        self._current_scope = None
+        for job in tuple(self._jobs.values()):
+            job.cancelled.set()
+
+    async def drain_pause(self) -> None:
+        """Observe actual admitted native work through one retained pause owner."""
+        if not self._paused:
+            raise RuntimeError('conversation_not_paused')
+        if self._pausing is None:
+            async def finish():
+                await self._work.drain_admitted()
+                if self._jobs or self._active:
+                    raise RuntimeError('conversation_pause_unconfirmed')
+            self._pausing = asyncio.create_task(finish(), context=Context())
+        await asyncio.shield(self._pausing)
+
+    def resume_admission(self) -> None:
+        """Reopen writes only after the same pause has really drained."""
+        if self._closed:
+            raise RuntimeError('conversation_closed')
+        if not self._paused:
+            return
+        if self._pausing is None or not self._pausing.done() or self._pausing.cancelled():
+            raise RuntimeError('conversation_pause_pending')
+        self._pausing.result()
+        if self._jobs or self._active:
+            raise RuntimeError('conversation_pause_unconfirmed')
+        self._paused = False
+
     def begin_close(self) -> asyncio.Task:
         self._closed = True
         self._current_scope = None
@@ -709,7 +747,9 @@ class ConversationCollector:
             raise WorkCloseTimeout('conversation_native_work_still_running') from None
 
     def resource_status(self) -> dict:
-        return {'closed':self._closed,'operations':self._work.status()['operations'],'capacity':8,
+        return {'closed':self._closed,'paused':self._paused,
+                'pause_pending':self._pausing is not None and not self._pausing.done(),
+                'operations':self._work.status()['operations'],'capacity':8,
                 'pending_writes':len(self._jobs),'active_writes':len(self._active),
                 'read_views':len(self._views),'view_capacity':256,'errors':self._errors}
 

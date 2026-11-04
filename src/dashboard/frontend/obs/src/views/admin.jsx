@@ -83,35 +83,9 @@ function LoginModal({ onLogin }) {
 
 // ---------------- Audio recorder ----------------
 
-async function recordWavSample(durationSec = 3) {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, sampleRate: 48000, echoCancellation: true, noiseSuppression: true },
-  });
-  const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
-  const src = ctx.createMediaStreamSource(stream);
-  const proc = ctx.createScriptProcessor(4096, 1, 1);
-  const chunks = [];
-  proc.onaudioprocess = (e) => {
-    chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-  };
-  src.connect(proc); proc.connect(ctx.destination);
-  await new Promise((res) => setTimeout(res, durationSec * 1000));
-  proc.disconnect(); src.disconnect();
-  stream.getTracks().forEach(t => t.stop());
-  await ctx.close();
-
-  // concat + downsample 48k → 16k (factor 3, average)
-  const total = chunks.reduce((n, c) => n + c.length, 0);
-  const merged = new Float32Array(total);
-  let off = 0;
-  for (const c of chunks) { merged.set(c, off); off += c.length; }
-  const targetLen = Math.floor(merged.length / 3);
-  const ds = new Int16Array(targetLen);
-  for (let i = 0; i < targetLen; i++) {
-    const a = (merged[i*3] + merged[i*3+1] + merged[i*3+2]) / 3;
-    ds[i] = Math.max(-32768, Math.min(32767, Math.round(a * 32767)));
-  }
-  return encodeWav(ds, 16000);
+async function recordWavSample(durationSec = 3, owner) {
+  if (!owner) throw new Error('La captura no está disponible.');
+  return await owner.recordWavSample(durationSec, encodeWav);
 }
 
 function encodeWav(int16Samples, sampleRate) {
@@ -217,38 +191,86 @@ function EnrollButton({ userId, onDone }) {
   const [open, setOpen] = React.useState(false);
   const [step, setStep] = React.useState(0);  // 0..ENROLL_SAMPLES
   const [recording, setRecording] = React.useState(false);
-  const [samples, setSamples] = React.useState([]);
   const [err, setErr] = React.useState(null);
   const [submitting, setSubmitting] = React.useState(false);
+  const ownerRef = React.useRef(null);
+  const liveRef = React.useRef(true);
 
-  const reset = () => { setStep(0); setRecording(false); setSamples([]); setErr(null); setSubmitting(false); };
+  const reset = () => { setStep(0); setRecording(false); setErr(null); setSubmitting(false); };
+
+  React.useEffect(() => {
+    liveRef.current = true;
+    return () => {
+      liveRef.current = false;
+      const owner = ownerRef.current;
+      ownerRef.current = null;
+      owner?.stop().catch(() => {});
+    };
+  }, []);
+
+  const close = () => {
+    const owner = ownerRef.current;
+    ownerRef.current = null;
+    setOpen(false); reset();
+    owner?.stop().catch(() => {});
+  };
+
+  const begin = () => {
+    reset();
+    if (!window.KzaCaptureRecorder) {
+      setErr('La captura no está disponible.'); setOpen(true); return;
+    }
+    const owner = window.KzaCaptureRecorder.createModalOwner({
+      onRetiring() {
+        if (liveRef.current && ownerRef.current === owner) {
+          ownerRef.current = null; setOpen(false); reset();
+        }
+      },
+    });
+    ownerRef.current = owner;
+    setOpen(true);
+  };
 
   const captureOne = async () => {
+    const owner = ownerRef.current;
+    if (!owner) { setErr('La captura no está disponible.'); return; }
     setErr(null); setRecording(true);
     try {
-      const blob = await recordWavSample(3);
-      setSamples(s => [...s, blob]);
-      setStep(s => s + 1);
-    } catch (e) { setErr(String(e.message || e)); }
-    finally { setRecording(false); }
+      await recordWavSample(3, owner);
+      if (!liveRef.current || ownerRef.current !== owner || !owner.current()) return;
+      setStep(owner.sampleCount());
+    } catch (_) {
+      if (liveRef.current && ownerRef.current === owner) setErr('La captura no está disponible.');
+    } finally {
+      if (liveRef.current && ownerRef.current === owner) setRecording(false);
+    }
   };
 
   const submit = async () => {
+    const owner = ownerRef.current;
+    if (!owner || !owner.current()) return;
     setSubmitting(true); setErr(null);
-    const fd = new FormData();
-    samples.forEach((b, i) => fd.append("samples", b, `sample_${i}.wav`));
     try {
-      const r = await authedFetch(`/api/admin/users/${userId}/enroll`, {
-        method: "POST", body: fd,
-      });
-      if (!r.ok) { setErr((await r.json()).detail || `HTTP ${r.status}`); return; }
-      setOpen(false); reset(); onDone();
-    } catch (e) { setErr(String(e)); }
-    finally { setSubmitting(false); }
+      const r = await owner.uploadSamples(`/api/admin/users/${userId}/enroll`);
+      if (!liveRef.current || ownerRef.current !== owner || !owner.current()) return;
+      if (!r.ok) {
+        const body = await r.json();
+        if (liveRef.current && ownerRef.current === owner && owner.current()) {
+          setErr(body.detail || `HTTP ${r.status}`);
+        }
+        return;
+      }
+      await owner.stop();
+      if (liveRef.current) onDone();
+    } catch (_) {
+      if (liveRef.current && ownerRef.current === owner) setErr('No se pudo completar la inscripción.');
+    } finally {
+      if (liveRef.current && ownerRef.current === owner) setSubmitting(false);
+    }
   };
 
   if (!open) {
-    return <button className="btn" onClick={() => { reset(); setOpen(true); }}>🎙 enrolar</button>;
+    return <button className="btn" onClick={begin}>🎙 enrolar</button>;
   }
   return (
     <div style={{
@@ -258,7 +280,7 @@ function EnrollButton({ userId, onDone }) {
       <div className="card" style={{ width: 480 }}>
         <div className="card-h">
           <h3>Enrolar voz · {userId}</h3>
-          <button className="btn" onClick={() => setOpen(false)}>×</button>
+          <button className="btn" onClick={close}>×</button>
         </div>
         <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div className="mute mono" style={{ fontSize: 11 }}>
